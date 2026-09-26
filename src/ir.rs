@@ -470,6 +470,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "map_get"
             | "map_put"
             | "ir_text"
+            | "lex_src"
             | "str_slice"
             | "int_to_str"
             | "char_to_str"
@@ -722,29 +723,39 @@ fn lower_expr(
                 });
                 d
             };
-            for st in &else_block.stmts {
-                lower_stmt(
-                    st,
-                    &mut else_body,
-                    &mut else_env,
-                    counter,
-                    &mut Vec::new(),
-                    tensors,
-                    dim_params,
-                    fn_names,
-                );
-            }
-            let else_val = if let Some(t) = &else_block.tail {
-                lower_expr(
-                    t,
-                    &mut else_body,
-                    &mut else_env,
-                    counter,
-                    &mut Vec::new(),
-                    tensors,
-                    dim_params,
-                    fn_names,
-                )
+            let else_val = if let Some(else_block) = else_block {
+                for st in &else_block.stmts {
+                    lower_stmt(
+                        st,
+                        &mut else_body,
+                        &mut else_env,
+                        counter,
+                        &mut Vec::new(),
+                        tensors,
+                        dim_params,
+                        fn_names,
+                    );
+                }
+                if let Some(t) = &else_block.tail {
+                    lower_expr(
+                        t,
+                        &mut else_body,
+                        &mut else_env,
+                        counter,
+                        &mut Vec::new(),
+                        tensors,
+                        dim_params,
+                        fn_names,
+                    )
+                } else {
+                    *counter += 1;
+                    let d = format!("t{counter}");
+                    else_body.push(IrInst::ConstInt {
+                        dest: d.clone(),
+                        value: 0,
+                    });
+                    d
+                }
             } else {
                 *counter += 1;
                 let d = format!("t{counter}");

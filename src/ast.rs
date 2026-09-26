@@ -231,7 +231,8 @@ pub enum Expr {
     If {
         cond: Box<Expr>,
         then_block: Block,
-        else_block: Block,
+        #[serde(default)]
+        else_block: Option<Block>,
         span: Span,
     },
     Try {

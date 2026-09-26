@@ -873,13 +873,18 @@ impl Parser {
             self.bump();
         }
         self.skip_newlines();
-        self.expect(TokenKind::Else, "expected else after if")?;
-        self.expect(TokenKind::Newline, "expected newline after else")?;
-        self.expect(TokenKind::Indent, "expected indented else body")?;
-        let else_block = self.parse_block_inner()?;
-        if self.at(TokenKind::Dedent) {
+        let else_block = if self.at(TokenKind::Else) {
             self.bump();
-        }
+            self.expect(TokenKind::Newline, "expected newline after else")?;
+            self.expect(TokenKind::Indent, "expected indented else body")?;
+            let else_block = self.parse_block_inner()?;
+            if self.at(TokenKind::Dedent) {
+                self.bump();
+            }
+            Some(else_block)
+        } else {
+            None
+        };
         Ok(Expr::If {
             cond: Box::new(cond),
             then_block,

@@ -297,12 +297,14 @@ fn track_expr(
             if let Some(t) = &then_block.tail {
                 track_expr(t, &then_env, moved, params, taken, used)?;
             }
-            let mut else_env = env.clone();
-            for st in &else_block.stmts {
-                track_stmt(st, &mut else_env, moved, params, taken, used)?;
-            }
-            if let Some(t) = &else_block.tail {
-                track_expr(t, &else_env, moved, params, taken, used)?;
+            if let Some(else_block) = else_block {
+                let mut else_env = env.clone();
+                for st in &else_block.stmts {
+                    track_stmt(st, &mut else_env, moved, params, taken, used)?;
+                }
+                if let Some(t) = &else_block.tail {
+                    track_expr(t, &else_env, moved, params, taken, used)?;
+                }
             }
             Ok(named("Int", *span))
         }
@@ -419,6 +421,7 @@ fn is_borrow_fn(name: &str) -> bool {
             | "map_get"
             | "map_put"
             | "ir_text"
+            | "lex_src"
             | "str_slice"
             | "argc"
             | "write_file"

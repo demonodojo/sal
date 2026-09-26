@@ -279,9 +279,11 @@ fn format_expr(e: &Expr, indent: usize) -> String {
             let pad = "    ".repeat(indent);
             let mut s = format!("if {}\n", format_expr(cond, indent));
             s.push_str(&format_block(then_block, indent + 1));
-            s.push_str(&pad);
-            s.push_str("else\n");
-            s.push_str(&format_block(else_block, indent + 1));
+            if let Some(else_block) = else_block {
+                s.push_str(&pad);
+                s.push_str("else\n");
+                s.push_str(&format_block(else_block, indent + 1));
+            }
             // trim trailing newline from format_block for expression context — keep it
             if s.ends_with('\n') {
                 s.pop();

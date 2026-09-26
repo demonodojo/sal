@@ -150,14 +150,14 @@ pattern      → "_"
 pattern_list → pattern_list "," pattern
              | pattern
              | ε
-if_expr      → "if" expr suite "else" suite
+if_expr      → "if" expr suite ("else" suite | ε)
 ```
 
 El parámetro a la izquierda de `=>` en `lambda` es un `IDENT`. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda.
 
 `load[F32, 4, 4]("w.salt")` es un `postfix`: argumentos de tipo (`F32`, `4`, `4`) y luego la llamada. `4` y `?` son `type_arg`, no un tipo con el número por nombre.
 
-`else` es obligatorio. `to gpu x + 1` es `(to gpu x) + 1`. `try x + 1` es `try (x + 1)`. `x => x * 2` es `x => (x * 2)`.
+Sin `else`, el `if` vale `Unit`; la suite then se ejecuta pero no es el valor del `if`. Con `else`, el valor es el de la rama then. `to gpu x + 1` es `(to gpu x) + 1`. `try x + 1` es `try (x + 1)`. `x => x * 2` es `x => (x * 2)`.
 
 ### Tipos
 

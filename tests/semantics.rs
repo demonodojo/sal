@@ -43,6 +43,30 @@ fn run_semantics(src: &str) -> Result<(), Vec<sal_compiler::diag::Diagnostic>> {
 }
 
 #[test]
+fn if_without_else_as_stmt_ok_for_int_return() {
+    expect_ok(
+        r#"
+fn main() -> Int
+    if true
+        x = 1
+    0
+"#,
+    );
+}
+
+#[test]
+fn if_without_else_as_tail_rejects_non_unit_return() {
+    expect_code(
+        r#"
+fn main() -> Int
+    if true
+        1
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
 fn e_tensor_elem_rejects_float() {
     expect_code(
         r#"

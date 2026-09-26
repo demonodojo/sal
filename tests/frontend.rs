@@ -2,7 +2,7 @@
 //! No network; pure parse + format checks.
 
 use sal_compiler::ast::{
-    BinOp, Dim, Effect, Expr, Item, Pattern, Place, StringPart, TensorElem, Type, TypeArg,
+    BinOp, Dim, Effect, Expr, Item, Pattern, Place, Stmt, StringPart, TensorElem, Type, TypeArg,
 };
 use sal_compiler::fmt::format_program;
 use sal_compiler::parser::parse;
@@ -389,6 +389,67 @@ fn import_path_is_left_recursive() {
     assert!(matches!(&p.items[0], Item::Import(i) if i.path == "pkg.mod.item"));
     let p = assert_parse("import \"std/prelude.sal\"\n");
     assert!(matches!(&p.items[0], Item::Import(i) if i.path == "std/prelude.sal"));
+}
+
+#[test]
+fn if_without_else_has_no_else_block() {
+    match tail_of(
+        "fn f() -> Int\n    if true\n        1\n",
+    ) {
+        Expr::If { else_block, .. } => assert!(else_block.is_none()),
+        other => panic!("expected if, got {other:?}"),
+    }
+    match tail_of(
+        "fn f() -> Int\n    if true\n        1\n    else\n        2\n",
+    ) {
+        Expr::If { else_block, .. } => assert!(else_block.is_some()),
+        other => panic!("expected if with else, got {other:?}"),
+    }
+}
+
+#[test]
+fn if_else_binds_to_inner_if() {
+    let src = r#"fn f() -> Int
+    if true
+        if false
+            1
+        else
+            2
+    0
+"#;
+    let p = assert_parse(src);
+    let Item::Fn(f) = &p.items[0] else { panic!() };
+    assert_eq!(f.body.stmts.len(), 1);
+    let Stmt::Expr(Expr::If {
+        then_block,
+        else_block,
+        ..
+    }) = &f.body.stmts[0]
+    else {
+        panic!("expected outer if as statement");
+    };
+    assert!(else_block.is_none());
+    let Some(Expr::If {
+        else_block: inner_else,
+        ..
+    }) = then_block.tail.as_deref()
+    else {
+        panic!("expected inner if in then tail");
+    };
+    assert!(inner_else.is_some());
+    assert!(matches!(f.body.tail.as_deref(), Some(Expr::Int { value: 0, .. })));
+}
+
+#[test]
+fn fmt_if_without_else_is_idempotent() {
+    use sal_compiler::fmt::format_program;
+    let src = "fn main() -> Int\n    if true\n        1\n    0\n";
+    let p1 = parse(src).expect("parse");
+    let f1 = format_program(&p1);
+    assert!(!f1.contains("else"));
+    let p2 = parse(&f1).expect("re-parse");
+    let f2 = format_program(&p2);
+    assert_eq!(f1, f2);
 }
 
 #[test]

@@ -234,6 +234,7 @@ pub fn emit_llvm_with_tensors(
     s.push_str("declare i64 @sal_map_get(ptr, ptr)\n");
     s.push_str("declare i64 @sal_map_put(ptr, ptr, i64)\n");
     s.push_str("declare ptr @sal_ir_text(ptr)\n");
+    s.push_str("declare ptr @sal_lex_src(ptr)\n");
     s.push_str("declare ptr @sal_str_slice(ptr, i64, i64)\n");
     s.push_str("declare ptr @sal_int_to_str(i64)\n");
     s.push_str("declare ptr @sal_char_to_str(i64)\n");
@@ -1571,6 +1572,13 @@ fn emit_runtime_or_user_call(
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d}_p = call ptr @sal_ir_text(ptr {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_lex_src" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_lex_src(ptr {a})\n"));
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
         }

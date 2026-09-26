@@ -239,8 +239,10 @@ fn check_expr_devices(
             check_expr_devices(cond, env, expected.clone())?;
             let mut then_env = env.clone();
             check_block_devices(then_block, &mut then_env, expected.clone())?;
-            let mut else_env = env.clone();
-            check_block_devices(else_block, &mut else_env, expected)?;
+            if let Some(else_block) = else_block {
+                let mut else_env = env.clone();
+                check_block_devices(else_block, &mut else_env, expected)?;
+            }
             Ok(named("Int", *span))
         }
         Expr::Try { expr, .. } => check_expr_devices(expr, env, expected),

@@ -38,6 +38,8 @@ Dos tensores del mismo elemento y la misma forma unifican eje a eje. `?` unifica
 
 La lambda de una sentencia se tipa al usarla. `x => e` no es un valor de primera clase que se guarde: si se liga a un `let` o se devuelve, `E_TYPE` en este arranque. El parámetro no lleva tipo escrito; sale del callback (`map`).
 
+Un `if` sin `else` tiene tipo `Unit`; la rama then se comprueba igual. Un `if` con `else` tiene el tipo de la rama then.
+
 Cada expresión del AST tipado guarda su tipo, su lugar y el span. `sal emit typed` imprime eso. `sal fmt` escribe en las firmas públicas el `borrow` o `take` que haya inferido el pase de ownership, para que no cambie en silencio.
 
 ## Ownership

@@ -326,23 +326,34 @@ fn check_expr(
             for st in &then_block.stmts {
                 check_stmt(st, &mut then_env, types, entries)?;
             }
-            let then_ty = if let Some(t) = &then_block.tail {
-                check_expr(t, &then_env, types, entries)?
+            if let Some(else_block) = else_block {
+                let then_ty = if let Some(t) = &then_block.tail {
+                    check_expr(t, &then_env, types, entries)?
+                } else {
+                    Type::Named {
+                        name: "Int".into(),
+                        args: vec![],
+                        span: *span,
+                    }
+                };
+                let mut else_env = env.clone();
+                for st in &else_block.stmts {
+                    check_stmt(st, &mut else_env, types, entries)?;
+                }
+                if let Some(t) = &else_block.tail {
+                    check_expr(t, &else_env, types, entries)?;
+                }
+                then_ty
             } else {
+                if let Some(t) = &then_block.tail {
+                    check_expr(t, &then_env, types, entries)?;
+                }
                 Type::Named {
-                    name: "Int".into(),
+                    name: "Unit".into(),
                     args: vec![],
                     span: *span,
                 }
-            };
-            let mut else_env = env.clone();
-            for st in &else_block.stmts {
-                check_stmt(st, &mut else_env, types, entries)?;
             }
-            if let Some(t) = &else_block.tail {
-                check_expr(t, &else_env, types, entries)?;
-            }
-            then_ty
         }
         Expr::Try { expr, .. } => check_expr(expr, env, types, entries)?,
     };
@@ -636,7 +647,7 @@ fn infer_call(
                 span,
             })
         }
-        "vec_new" | "image_new" | "map_new" => {
+        "vec_new" | "image_new" | "map_new" | "lex_src" => {
             for a in args {
                 check_expr(a, env, types, entries)?;
             }

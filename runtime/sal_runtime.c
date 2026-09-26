@@ -871,7 +871,7 @@ typedef struct {
     size_t cap;
 } IrBuf;
 
-static void ir_reserve(IrBuf *b, size_t extra) {
+static inline __attribute__((always_inline)) void ir_reserve(IrBuf *b, size_t extra) {
     size_t need = b->n + extra + 1;
     if (need <= b->cap) {
         return;
@@ -892,7 +892,7 @@ static void ir_reserve(IrBuf *b, size_t extra) {
     b->cap = cap;
 }
 
-static void ir_put(IrBuf *b, const char *s, size_t n) {
+static inline __attribute__((always_inline)) void ir_put(IrBuf *b, const char *s, size_t n) {
     ir_reserve(b, n);
     if (!b->p || b->n + n + 1 > b->cap) {
         return;
@@ -902,14 +902,14 @@ static void ir_put(IrBuf *b, const char *s, size_t n) {
     b->p[b->n] = 0;
 }
 
-static void ir_puts(IrBuf *b, const char *s) {
+static inline __attribute__((always_inline)) void ir_puts(IrBuf *b, const char *s) {
     if (!s) {
         s = "";
     }
     ir_put(b, s, strlen(s));
 }
 
-static void ir_putc(IrBuf *b, char c) {
+static inline __attribute__((always_inline)) void ir_putc(IrBuf *b, char c) {
     ir_put(b, &c, 1);
 }
 
@@ -960,23 +960,20 @@ static void ir_quote_esc(IrBuf *b, const char *s) {
     ir_putc(b, '"');
 }
 
-static void ir_emit_inst(IrBuf *b, SalVec *inst);
+static void ir_emit_inst(IrBuf *b, SalVec *inst, int nest);
 
-static void ir_if_piece(IrBuf *parent, SalVec *inst) {
-    IrBuf tmp = {0};
-    ir_emit_inst(&tmp, inst);
-    size_t i = 0;
-    size_t end = tmp.n;
-    if (tmp.p) {
-        while (i < end && tmp.p[i] == ' ') {
-            i++;
-        }
-        if (end > i && tmp.p[end - 1] == '\n') {
-            end--;
-        }
-        ir_put(parent, tmp.p + i, end - i);
+static void ir_head(IrBuf *b, int nest, const char *lit) {
+    if (!nest) {
+        ir_puts(b, "  ");
     }
-    sal_xfree(tmp.p);
+    ir_puts(b, lit);
+}
+
+static void ir_tail(IrBuf *b, int nest, const char *end) {
+    ir_puts(b, end);
+    if (!nest) {
+        ir_putc(b, '\n');
+    }
 }
 
 static void ir_if_body(IrBuf *b, SalVec *body) {
@@ -987,29 +984,29 @@ static void ir_if_body(IrBuf *b, SalVec *body) {
         if (i > 0) {
             ir_puts(b, ", ");
         }
-        ir_if_piece(b, ir_vec(body->data[i]));
+        ir_emit_inst(b, ir_vec(body->data[i]), 1);
     }
 }
 
-static void ir_emit_inst(IrBuf *b, SalVec *inst) {
+static void ir_emit_inst(IrBuf *b, SalVec *inst, int nest) {
     if (!inst || inst->len == 0) {
         return;
     }
     int64_t k = inst->data[0];
     if (k == 0) {
-        ir_puts(b, "  ConstInt {{ dest: ");
+        ir_head(b, nest, "ConstInt { dest: ");
         ir_quote(b, ir_cstr(ir_at(inst, 1)));
         ir_puts(b, ", value: ");
         ir_i64(b, ir_at(inst, 2));
-        ir_puts(b, " }}\n");
+        ir_tail(b, nest, " }");
     } else if (k == 1) {
-        ir_puts(b, "  ConstString {{ dest: ");
+        ir_head(b, nest, "ConstString { dest: ");
         ir_quote(b, ir_cstr(ir_at(inst, 1)));
         ir_puts(b, ", value: ");
         ir_quote(b, ir_cstr(ir_at(inst, 2)));
-        ir_puts(b, " }}\n");
+        ir_tail(b, nest, " }");
     } else if (k == 2) {
-        ir_puts(b, "  Binary {{ dest: ");
+        ir_head(b, nest, "Binary { dest: ");
         ir_quote(b, ir_cstr(ir_at(inst, 1)));
         ir_puts(b, ", op: ");
         ir_quote(b, ir_cstr(ir_at(inst, 2)));
@@ -1017,9 +1014,9 @@ static void ir_emit_inst(IrBuf *b, SalVec *inst) {
         ir_quote(b, ir_cstr(ir_at(inst, 3)));
         ir_puts(b, ", right: ");
         ir_quote(b, ir_cstr(ir_at(inst, 4)));
-        ir_puts(b, " }}\n");
+        ir_tail(b, nest, " }");
     } else if (k == 3) {
-        ir_puts(b, "  Call {{ dest: ");
+        ir_head(b, nest, "Call { dest: ");
         if (ir_at(inst, 4) == 1) {
             ir_puts(b, "Some(");
             ir_quote(b, ir_cstr(ir_at(inst, 1)));
@@ -1039,25 +1036,25 @@ static void ir_emit_inst(IrBuf *b, SalVec *inst) {
                 ir_quote_esc(b, ir_cstr(args->data[i]));
             }
         }
-        ir_puts(b, "] }}\n");
+        ir_tail(b, nest, "] }");
     } else if (k == 4) {
-        ir_puts(b, "  PlaceCopy {{ dest: ");
+        ir_head(b, nest, "PlaceCopy { dest: ");
         ir_quote(b, ir_cstr(ir_at(inst, 1)));
         ir_puts(b, ", from: ");
         ir_quote(b, ir_cstr(ir_at(inst, 2)));
         ir_puts(b, ", to_place: ");
         ir_quote(b, ir_cstr(ir_at(inst, 3)));
-        ir_puts(b, " }}\n");
+        ir_tail(b, nest, " }");
     } else if (k == 5) {
-        ir_puts(b, "  Return {{ value: ");
+        ir_head(b, nest, "Return { value: ");
         ir_quote(b, ir_cstr(ir_at(inst, 1)));
-        ir_puts(b, " }}\n");
+        ir_tail(b, nest, " }");
     } else if (k == 6) {
-        ir_puts(b, "  Drop {{ name: ");
+        ir_head(b, nest, "Drop { name: ");
         ir_quote(b, ir_cstr(ir_at(inst, 1)));
-        ir_puts(b, " }}\n");
+        ir_tail(b, nest, " }");
     } else if (k == 7) {
-        ir_puts(b, "  If {{ cond: ");
+        ir_head(b, nest, "If { cond: ");
         ir_quote(b, ir_cstr(ir_at(inst, 2)));
         ir_puts(b, ", then_body: [");
         ir_if_body(b, ir_vec(ir_at(inst, 3)));
@@ -1069,7 +1066,7 @@ static void ir_emit_inst(IrBuf *b, SalVec *inst) {
         ir_quote(b, ir_cstr(ir_at(inst, 6)));
         ir_puts(b, ", dest: ");
         ir_quote(b, ir_cstr(ir_at(inst, 1)));
-        ir_puts(b, " }}\n");
+        ir_tail(b, nest, " }");
     }
 }
 
@@ -1079,27 +1076,27 @@ static void ir_emit_op(IrBuf *b, SalVec *op) {
     }
     int64_t k = op->data[0];
     if (k == 0) {
-        ir_puts(b, "    Matmul {{ lhs: ");
+        ir_puts(b, "    Matmul { lhs: ");
         ir_quote(b, ir_cstr(ir_at(op, 1)));
         ir_puts(b, ", rhs: ");
         ir_quote(b, ir_cstr(ir_at(op, 2)));
         ir_puts(b, ", dest: ");
         ir_quote(b, ir_cstr(ir_at(op, 3)));
-        ir_puts(b, " }}\n");
+        ir_puts(b, " }\n");
     } else if (k == 1) {
-        ir_puts(b, "    MapEpilogue {{ op: ");
+        ir_puts(b, "    MapEpilogue { op: ");
         ir_quote(b, ir_cstr(ir_at(op, 1)));
         ir_puts(b, ", input: ");
         ir_quote(b, ir_cstr(ir_at(op, 2)));
         ir_puts(b, ", dest: ");
         ir_quote(b, ir_cstr(ir_at(op, 3)));
-        ir_puts(b, " }}  # fused epilogue, no intermediate buffer\n");
+        ir_puts(b, " }  # fused epilogue, no intermediate buffer\n");
     } else if (k == 2) {
-        ir_puts(b, "    Softmax {{ input: ");
+        ir_puts(b, "    Softmax { input: ");
         ir_quote(b, ir_cstr(ir_at(op, 1)));
         ir_puts(b, ", dest: ");
         ir_quote(b, ir_cstr(ir_at(op, 3)));
-        ir_puts(b, " }}\n");
+        ir_puts(b, " }\n");
     }
 }
 
@@ -1113,20 +1110,20 @@ static void ir_emit_region(IrBuf *b, SalVec *r) {
     ir_puts(b, ir_at(r, 2) == 1 ? "true" : "false");
     ir_puts(b, " peak_bytes=");
     if (ir_at(r, 3) == 1) {
-        ir_puts(b, "{{\"");
+        ir_puts(b, "{\"");
         ir_puts(b, ir_cstr(ir_at(r, 0)));
         ir_puts(b, "\": ");
         ir_i64(b, ir_at(r, 5));
-        ir_puts(b, "}}");
+        ir_puts(b, "}");
     } else {
-        ir_puts(b, "{{}}");
+        ir_puts(b, "{}");
     }
     if (ir_at(r, 4) == 1) {
-        ir_puts(b, " peak_symbolic={{\"");
+        ir_puts(b, " peak_symbolic={\"");
         ir_puts(b, ir_cstr(ir_at(r, 0)));
         ir_puts(b, "\": \"");
         ir_puts(b, ir_cstr(ir_at(r, 6)));
-        ir_puts(b, "\"}}");
+        ir_puts(b, "\"}");
     }
     ir_putc(b, '\n');
     SalVec *ops = ir_vec(ir_at(r, 1));
@@ -1158,7 +1155,7 @@ static void ir_emit_fn(IrBuf *b, SalVec *fn) {
     SalVec *insts = ir_vec(ir_at(fn, 2));
     if (insts) {
         for (size_t i = 0; i < insts->len; i++) {
-            ir_emit_inst(b, ir_vec(insts->data[i]));
+            ir_emit_inst(b, ir_vec(insts->data[i]), 0);
         }
     }
     SalVec *regions = ir_vec(ir_at(fn, 3));
@@ -1166,6 +1163,341 @@ static void ir_emit_fn(IrBuf *b, SalVec *fn) {
         for (size_t i = 0; i < regions->len; i++) {
             ir_emit_region(b, ir_vec(regions->data[i]));
         }
+    }
+}
+
+static void *lex_tok3(int64_t kind, int64_t text, int64_t ival) {
+    SalVec *v = (SalVec *)sal_xmalloc(sizeof(SalVec), "vec_new");
+    int64_t *d = (int64_t *)sal_xmalloc(3 * sizeof(int64_t), "vec_new");
+    if (!v || !d) {
+        return v;
+    }
+    d[0] = kind;
+    d[1] = text;
+    d[2] = ival;
+    v->data = d;
+    v->len = 3;
+    v->cap = 3;
+    return v;
+}
+
+static SalVec *g_lex_vecs;
+static int64_t *g_lex_ints;
+static size_t g_lex_nt;
+static size_t g_lex_cap;
+
+static void lex_slab_ensure(void) {
+    if (g_lex_vecs && g_lex_nt < g_lex_cap) {
+        return;
+    }
+    size_t ncap = 65536;
+    SalVec *vecs = (SalVec *)sal_xmalloc(ncap * sizeof(SalVec), "vec_new");
+    int64_t *ints = (int64_t *)sal_xmalloc(ncap * 3 * sizeof(int64_t), "vec_new");
+    if (!vecs || !ints) {
+        g_lex_vecs = NULL;
+        g_lex_cap = 0;
+        g_lex_nt = 0;
+        return;
+    }
+    g_lex_vecs = vecs;
+    g_lex_ints = ints;
+    g_lex_cap = ncap;
+    g_lex_nt = 0;
+}
+
+static void lex_push(SalVec *out, int64_t kind, int64_t text, int64_t ival) {
+    lex_slab_ensure();
+    if (!g_lex_vecs || g_lex_nt >= g_lex_cap) {
+        sal_vec_push(out, (int64_t)(uintptr_t)lex_tok3(kind, text, ival));
+        return;
+    }
+    size_t i = g_lex_nt++;
+    int64_t *d = g_lex_ints + i * 3;
+    d[0] = kind;
+    d[1] = text;
+    d[2] = ival;
+    g_lex_vecs[i].data = d;
+    g_lex_vecs[i].len = 3;
+    g_lex_vecs[i].cap = 3;
+    if (out && out->len < out->cap) {
+        out->data[out->len++] = (int64_t)(uintptr_t)&g_lex_vecs[i];
+        return;
+    }
+    sal_vec_push(out, (int64_t)(uintptr_t)&g_lex_vecs[i]);
+}
+
+static int64_t lex_kw(const char *s) {
+    if (strcmp(s, "fn") == 0) return 8;
+    if (strcmp(s, "on") == 0) return 9;
+    if (strcmp(s, "to") == 0) return 10;
+    if (strcmp(s, "if") == 0) return 30;
+    if (strcmp(s, "else") == 0) return 31;
+    if (strcmp(s, "while") == 0) return 32;
+    return 4;
+}
+
+static int64_t lex_digits(const char *s, int64_t i, int64_t end) {
+    int64_t acc = 0;
+    for (; i < end; i++) {
+        acc = acc * 10 + ((unsigned char)s[i] - 48);
+    }
+    return acc;
+}
+
+static char *lex_unescape(const char *s, size_t n) {
+    char *raw = (char *)sal_xmalloc(n + 1, "lex");
+    size_t w = 0;
+    for (size_t i = 0; i < n;) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '\\' && i + 1 < n) {
+            unsigned char e = (unsigned char)s[i + 1];
+            if (e == 'n') raw[w++] = '\n';
+            else if (e == 't') raw[w++] = '\t';
+            else if (e == 'r') raw[w++] = '\r';
+            else raw[w++] = (char)e;
+            i += 2;
+        } else {
+            raw[w++] = (char)c;
+            i++;
+        }
+    }
+    raw[w] = 0;
+    char *out = (char *)sal_xmalloc(w + 1, "lex");
+    size_t o = 0;
+    for (size_t i = 0; i < w;) {
+        if (raw[i] == '{' && i + 1 < w && raw[i + 1] == '{') {
+            out[o++] = '{';
+            i += 2;
+        } else if (raw[i] == '}' && i + 1 < w && raw[i + 1] == '}') {
+            out[o++] = '}';
+            i += 2;
+        } else {
+            out[o++] = raw[i++];
+        }
+    }
+    out[o] = 0;
+    sal_xfree(raw);
+    sal_str_remember(out, o, w + 1);
+    return out;
+}
+
+/* Scans that already know the length. sal_str_skip looks the length up again. */
+static inline int64_t lex_scan(const char *s, int64_t i, int64_t n, int kind) {
+    while (i < n) {
+        unsigned char c = (unsigned char)s[i];
+        int go = 0;
+        if (kind == 1) {
+            go = c == ' ';
+        } else if (kind == 2) {
+            go = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' ||
+                 (c >= '0' && c <= '9');
+        } else if (kind == 3) {
+            go = c >= '0' && c <= '9';
+        } else if (kind == 4) {
+            go = c != '\n';
+        } else if (kind == 8) {
+            go = c == ' ' || c == '\t' || c == '\r';
+        }
+        if (!go) {
+            break;
+        }
+        i++;
+    }
+    return i;
+}
+
+static inline int64_t lex_scan_str(const char *s, int64_t i, int64_t n) {
+    while (i < n) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"') {
+            return i;
+        }
+        if (c == '\\') {
+            i += 2;
+            if (i >= n) {
+                return i;
+            }
+            continue;
+        }
+        i++;
+    }
+    return i;
+}
+
+static char *lex_span(const char *s, int64_t start, int64_t end) {
+    size_t len = (size_t)(end - start);
+    char *out = (char *)sal_xmalloc(len + 1, "str_slice");
+    if (!out) {
+        return NULL;
+    }
+    memcpy(out, s + start, len);
+    out[len] = '\0';
+    /* Names are short. strlen is cheaper than a hash-table insert, and
+     * str_eq does not need the length. Long strings are remembered in
+     * lex_unescape. */
+    return out;
+}
+
+/* Same tokens as selfhost lex_go / lex_tok. Indent stack starts at 0. */
+void *sal_lex_src(const char *src) {
+    if (!src) {
+        src = "";
+    }
+    int64_t n = (int64_t)sal_cstr_len(src);
+    g_lex_vecs = NULL;
+    g_lex_ints = NULL;
+    g_lex_nt = 0;
+    g_lex_cap = 0;
+    SalVec *out = (SalVec *)sal_vec_new();
+    if (out) {
+        int64_t *slot = (int64_t *)sal_xmalloc(65536 * sizeof(int64_t), "vec_new");
+        if (slot) {
+            out->data = slot;
+            out->cap = 65536;
+            out->len = 0;
+        }
+    }
+    int64_t st[1024];
+    int sp = 1;
+    st[0] = 0;
+    int64_t i = 0;
+    int at_start = 1;
+    while (1) {
+        if (i >= n) {
+            while (sp > 0 && 0 < st[sp - 1]) {
+                sp--;
+                lex_push(out, 3, 0, 0);
+            }
+            lex_push(out, 0, 0, 0);
+            return out;
+        }
+        unsigned char c = (unsigned char)src[i];
+        if (c == '#') {
+            i = lex_scan(src, i + 1, n, 4);
+            continue;
+        }
+        if (at_start) {
+            int64_t j = lex_scan(src, i, n, 1);
+            int64_t spaces = j - i;
+            if (j < n && src[j] == '\t') {
+                spaces += 4;
+                j++;
+            }
+            if (j >= n) {
+                i = j;
+                continue;
+            }
+            unsigned char cj = (unsigned char)src[j];
+            if (cj == '\n') {
+                i = j + 1;
+                continue;
+            }
+            if (cj == '#') {
+                int64_t j2 = lex_scan(src, j + 1, n, 4);
+                if (j2 < n && src[j2] == '\n') {
+                    i = j2 + 1;
+                } else {
+                    i = j2;
+                }
+                continue;
+            }
+            int64_t top = st[sp - 1];
+            if (spaces > top) {
+                if (sp < 1024) {
+                    st[sp++] = spaces;
+                }
+                lex_push(out, 2, 0, 0);
+            } else {
+                while (sp > 0 && spaces < st[sp - 1]) {
+                    sp--;
+                    lex_push(out, 3, 0, 0);
+                }
+            }
+            i = j;
+            at_start = 0;
+            continue;
+        }
+        if (c == '\n') {
+            lex_push(out, 1, 0, 0);
+            i++;
+            at_start = 1;
+            continue;
+        }
+        {
+            int64_t j = lex_scan(src, i, n, 8);
+            if (j != i) {
+                i = j;
+                continue;
+            }
+        }
+        if (c == '-' && i + 1 < n && src[i + 1] == '>') {
+            lex_push(out, 11, 0, 0);
+            i += 2;
+            continue;
+        }
+        if (c == '(') { lex_push(out, 13, 0, 0); i++; continue; }
+        if (c == ')') { lex_push(out, 14, 0, 0); i++; continue; }
+        if (c == '[') { lex_push(out, 15, 0, 0); i++; continue; }
+        if (c == ']') { lex_push(out, 16, 0, 0); i++; continue; }
+        if (c == ',') { lex_push(out, 17, 0, 0); i++; continue; }
+        if (c == ':') { lex_push(out, 18, 0, 0); i++; continue; }
+        if (c == '=') {
+            if (i + 1 < n && src[i + 1] == '=') { lex_push(out, 24, 0, 0); i += 2; }
+            else { lex_push(out, 19, 0, 0); i++; }
+            continue;
+        }
+        if (c == '!') {
+            if (i + 1 < n && src[i + 1] == '=') { lex_push(out, 25, 0, 0); i += 2; }
+            else { lex_push(out, 12, 0, 0); i++; }
+            continue;
+        }
+        if (c == '<') {
+            if (i + 1 < n && src[i + 1] == '=') { lex_push(out, 27, 0, 0); i += 2; }
+            else { lex_push(out, 26, 0, 0); i++; }
+            continue;
+        }
+        if (c == '>') {
+            if (i + 1 < n && src[i + 1] == '=') { lex_push(out, 29, 0, 0); i += 2; }
+            else { lex_push(out, 28, 0, 0); i++; }
+            continue;
+        }
+        if (c == '+') { lex_push(out, 20, 0, 0); i++; continue; }
+        if (c == '*') { lex_push(out, 22, 0, 0); i++; continue; }
+        if (c == '/') { lex_push(out, 23, 0, 0); i++; continue; }
+        if (c == '"') {
+            int64_t end = lex_scan_str(src, i + 1, n);
+            int64_t stop = end > n ? n : end;
+            size_t len = stop > i + 1 ? (size_t)(stop - (i + 1)) : 0;
+            char *text = lex_unescape(src + i + 1, len);
+            lex_push(out, 7, (int64_t)(uintptr_t)text, 0);
+            i = end < n ? end + 1 : end;
+            continue;
+        }
+        if (c >= '0' && c <= '9') {
+            int64_t end = lex_scan(src, i, n, 3);
+            lex_push(out, 5, 0, lex_digits(src, i, end));
+            i = end;
+            continue;
+        }
+        if (c == '-') {
+            if (i + 1 < n && src[i + 1] >= '0' && src[i + 1] <= '9') {
+                int64_t end = lex_scan(src, i + 1, n, 3);
+                lex_push(out, 5, 0, 0 - lex_digits(src, i + 1, end));
+                i = end;
+            } else {
+                lex_push(out, 21, 0, 0);
+                i++;
+            }
+            continue;
+        }
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') {
+            int64_t end = lex_scan(src, i, n, 2);
+            char *text = lex_span(src, i, end);
+            lex_push(out, lex_kw(text), (int64_t)(uintptr_t)text, 0);
+            i = end;
+            continue;
+        }
+        i++;
     }
 }
 

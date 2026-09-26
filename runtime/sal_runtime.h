@@ -68,6 +68,7 @@ int64_t sal_map_get(void *m, const char *key);
 int64_t sal_map_put(void *m, const char *key, int64_t val);
 /* Text of a selfhost IR module (vec of functions). Same bytes as ir_to_text. */
 char *sal_ir_text(void *mod);
+void *sal_lex_src(const char *src);
 char *sal_str_slice(const char *s, int64_t start, int64_t end);
 char *sal_int_to_str(int64_t v);
 char *sal_char_to_str(int64_t c);

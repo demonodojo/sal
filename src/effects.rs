@@ -156,7 +156,9 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed) {
         } => {
             scan_expr(cond, used);
             scan_block(then_block, used);
-            scan_block(else_block, used);
+            if let Some(else_block) = else_block {
+                scan_block(else_block, used);
+            }
         }
         Expr::Try { expr, .. } => scan_expr(expr, used),
         _ => {}

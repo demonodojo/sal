@@ -211,7 +211,9 @@ void sal_instrument_shutdown(void) {
             strcmp(s, "concat") == 0 || strcmp(s, "strdup") == 0 ||
             strcmp(s, "str_slice") == 0 || strcmp(s, "read_file") == 0 ||
             strcmp(s, "tmp_path") == 0 || strcmp(s, "vec_new") == 0 ||
-            strcmp(s, "getenv") == 0);
+            strcmp(s, "getenv") == 0 || strcmp(s, "append") == 0 ||
+            strcmp(s, "ir") == 0 || strcmp(s, "map") == 0 ||
+            strcmp(s, "lex") == 0);
         if (!ephemeral) {
             break;
         }

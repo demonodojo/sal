@@ -652,10 +652,7 @@ fn lex_tok_rest5(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
                     lex_go(src, i + 1, n, out, st, 0)
 
 fn lex(src: Int) -> Int ! alloc
-    n = str_len(src)
-    out = vec_new()
-    st = indent_stack_new()
-    lex_go(src, 0, n, out, st, 1)
+    lex_src(src)
 
 fn preprocess_scan(src: Int, i: Int, n: Int, limit: Int) -> Int ! alloc
     if i >= n
@@ -1263,11 +1260,14 @@ fn parse_if(pr: Int) -> Int ! alloc
     _c = p_accept(pr, TK_INDENT())
     then_b = parse_block_after_indent(pr)
     _d = p_skip_nls(pr)
-    _e = p_accept(pr, TK_ELSE())
-    _f = p_skip_nls(pr)
-    _g = p_accept(pr, TK_INDENT())
-    else_b = parse_block_after_indent(pr)
-    ex_if(cond, then_b, else_b)
+    if tok_kind(p_peek(pr)) == TK_ELSE()
+        _e = p_advance(pr)
+        _f = p_skip_nls(pr)
+        _g = p_accept(pr, TK_INDENT())
+        else_b = parse_block_after_indent(pr)
+        ex_if(cond, then_b, else_b)
+    else
+        ex_if(cond, then_b, 0)
 
 fn parse_while(pr: Int) -> Int ! alloc
     _a = p_advance(pr)
@@ -1475,7 +1475,7 @@ fn parse_program(src: Int) -> Int ! alloc
 
 
 # ---- Lower / IR ----
-fn cx_new(fn_names: Int) -> Int ! alloc
+fn cx_new(fn_names: Int, fm: Int) -> Int ! alloc
     cx = vec_new()
     _a = vec_push(cx, 0)
     _b = vec_push(cx, vec_new())
@@ -1483,7 +1483,23 @@ fn cx_new(fn_names: Int) -> Int ! alloc
     _d = vec_push(cx, fn_names)
     _e = vec_push(cx, vec_new())
     _f = vec_push(cx, vec_new())
+    bm = map_new()
+    _g = vec_push(cx, bm)
+    _h = vec_push(cx, fm)
     cx
+
+fn fill_fn_map(m: Int, names: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = map_put(m, vec_get(names, i), 1)
+        fill_fn_map(m, names, i + 1, n)
+
+fn cx_bind_map(cx: Int) -> Int ! alloc
+    vec_get(cx, 6)
+
+fn cx_fn_map(cx: Int) -> Int ! alloc
+    vec_get(cx, 7)
 
 fn cx_counter(cx: Int) -> Int ! alloc
     vec_get(cx, 0)
@@ -1636,8 +1652,7 @@ fn cx_find_at(binds: Int, name: Int, i: Int, n: Int) -> Int ! alloc
             cx_find_at(binds, name, i + 1, n)
 
 fn cx_find(cx: Int, name: Int) -> Int ! alloc
-    binds = cx_binds(cx)
-    cx_find_at(binds, name, 0, vec_len(binds))
+    map_get(cx_bind_map(cx), name)
 
 fn cx_lookup(cx: Int, name: Int) -> Int ! alloc
     b = cx_find(cx, name)
@@ -1649,7 +1664,9 @@ fn cx_lookup(cx: Int, name: Int) -> Int ! alloc
 fn cx_bind(cx: Int, name: Int, ssa: Int) -> Int ! alloc
     b = cx_find(cx, name)
     if b == 0
-        _p = vec_push(cx_binds(cx), bind_new(name, ssa))
+        b = bind_new(name, ssa)
+        _p = vec_push(cx_binds(cx), b)
+        _q = map_put(cx_bind_map(cx), name, b)
         0
     else
         bind_set_ssa(b, ssa)
@@ -1664,8 +1681,10 @@ fn fn_names_has_at(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
             fn_names_has_at(names, name, i + 1, n)
 
 fn is_user_fn(cx: Int, name: Int) -> Int ! alloc
-    names = cx_fn_names(cx)
-    fn_names_has_at(names, name, 0, vec_len(names))
+    if map_get(cx_fn_map(cx), name) == 0
+        0
+    else
+        1
 
 fn runtime_name(cx: Int, fname: Int) -> Int ! alloc
     if is_user_fn(cx, fname) == 1
@@ -2425,8 +2444,8 @@ fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
             _v = lower_expr(cx, vec_get(st, 2))
         lower_stmts(cx, stmts, i + 1, n)
 
-fn lower_fn(f: Int, fn_names: Int) -> Int ! alloc
-    cx = cx_new(fn_names)
+fn lower_fn(f: Int, fn_names: Int, fm: Int) -> Int ! alloc
+    cx = cx_new(fn_names, fm)
     params = vec_get(f, 1)
     _a = lower_params(cx, params, 0, vec_len(params))
     body = vec_get(f, 2)
@@ -2459,6 +2478,7 @@ fn lower_params(cx: Int, params: Int, i: Int, n: Int) -> Int ! alloc
         else
             _d = 0
         _q = vec_push(cx_binds(cx), b)
+        _m = map_put(cx_bind_map(cx), name, b)
         lower_params(cx, params, i + 1, n)
 
 fn add_dim_params(cx: Int, b: Int, d: Int, nd: Int) -> Int ! alloc
@@ -2489,16 +2509,18 @@ fn collect_fn_names(fns: Int, i: Int, n: Int, out: Int) -> Int ! alloc
 fn lower_program(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
     names = collect_fn_names(fns, 0, vec_len(fns), vec_new())
+    fm = map_new()
+    _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
-    lower_fns(fns, names, 0, vec_len(fns), out)
+    lower_fns(fns, names, fm, 0, vec_len(fns), out)
 
-fn lower_fns(fns: Int, names: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_fns(fns: Int, names: Int, fm: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        irf = lower_fn(vec_get(fns, i), names)
+        irf = lower_fn(vec_get(fns, i), names, fm)
         _p = vec_push(out, irf)
-        lower_fns(fns, names, i + 1, n, out)
+        lower_fns(fns, names, fm, i + 1, n, out)
 
 
 # ---- ir_to_text ----
@@ -2983,7 +3005,7 @@ fn emit_regions(regions: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         emit_regions(regions, i + 1, n, acc)
 
 fn ir_to_text(mod: Int) -> Int ! alloc
-    emit_fns(mod, 0, vec_len(mod), strdup(""))
+    ir_text(mod)
 
 fn emit_fns(mod: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -3038,37 +3060,26 @@ fn cache_meta_path(dir: Int, key: Int) -> Int ! alloc
     acc
 
 fn emit_ir(src: Int) -> Int ! io, alloc
-    phase = str_char(getenv(strdup("SAL_BENCH_PHASE")), 0)
     pre = preprocess(src)
-    if phase == 49
-        result_ok(strdup("x"))
+    parsed = parse_program(pre)
+    if result_is_err(parsed) == 1
+        parsed
     else
-        parsed = parse_program(pre)
-        if result_is_err(parsed) == 1
-            parsed
+        prog = result_unwrap(parsed)
+        dir = cache_dir()
+        _m = mkdir_p(dir)
+        key = source_hash(pre)
+        irpath = cache_ir_path(dir, key)
+        metapath = cache_meta_path(dir, key)
+        cached = read_file(irpath)
+        if str_len(cached) > 0
+            _w = write_file(metapath, strdup("hit=1\n"))
+            result_ok(cached)
         else
-            prog = result_unwrap(parsed)
-            if phase == 50
-                result_ok(strdup("x"))
-            else
-                if phase == 51
-                    _ir = lower_program(prog)
-                    result_ok(strdup("x"))
-                else
-                    dir = cache_dir()
-                    _m = mkdir_p(dir)
-                    key = source_hash(pre)
-                    irpath = cache_ir_path(dir, key)
-                    metapath = cache_meta_path(dir, key)
-                    cached = read_file(irpath)
-                    if str_len(cached) > 0
-                        _w = write_file(metapath, strdup("hit=1\n"))
-                        result_ok(cached)
-                    else
-                        ir = emit_ir_from_prog(prog)
-                        _w = write_file(irpath, ir)
-                        _w2 = write_file(metapath, strdup("hit=0\n"))
-                        result_ok(ir)
+            ir = emit_ir_from_prog(prog)
+            _w = write_file(irpath, ir)
+            _w2 = write_file(metapath, strdup("hit=0\n"))
+            result_ok(ir)
 
 fn emit_c_from_prog_result(src: Int) -> Int ! alloc
     pre = preprocess(src)
@@ -3122,7 +3133,7 @@ fn c_escape_str(s: Int) -> Int ! alloc
         acc
 
 fn runtime_decls() -> Int ! alloc
-    strdup("#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\n\n")
+    strdup("#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\n\n")
 
 fn user_fns_from_prog(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
@@ -3351,6 +3362,49 @@ fn arg_at(args: Int, i: Int) -> Int ! alloc
         strdup("0")
 
 fn emit_c_builtin(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "map_new") == 1
+        strdup("((int64_t)(uintptr_t)sal_map_new())")
+    else
+        if str_eq(fname, "map_get") == 1
+            a0 = arg_at(args, 0)
+            a1 = arg_at(args, 1)
+            acc = strdup("sal_map_get((void *)(uintptr_t)")
+            acc = str_append(acc, a0)
+            acc = str_append(acc, strdup(", (const char *)(uintptr_t)"))
+            acc = str_append(acc, a1)
+            acc = str_append(acc, strdup(")"))
+            acc
+        else
+            if str_eq(fname, "map_put") == 1
+                a0 = arg_at(args, 0)
+                a1 = arg_at(args, 1)
+                a2 = arg_at(args, 2)
+                acc = strdup("sal_map_put((void *)(uintptr_t)")
+                acc = str_append(acc, a0)
+                acc = str_append(acc, strdup(", (const char *)(uintptr_t)"))
+                acc = str_append(acc, a1)
+                acc = str_append(acc, strdup(", "))
+                acc = str_append(acc, a2)
+                acc = str_append(acc, strdup(")"))
+                acc
+            else
+                if str_eq(fname, "ir_text") == 1
+                    a0 = arg_at(args, 0)
+                    acc = strdup("((int64_t)(uintptr_t)sal_ir_text((void *)(uintptr_t)")
+                    acc = str_append(acc, a0)
+                    acc = str_append(acc, strdup("))"))
+                    acc
+                else
+                    if str_eq(fname, "lex_src") == 1
+                        a0 = arg_at(args, 0)
+                        acc = strdup("((int64_t)(uintptr_t)sal_lex_src((const char *)(uintptr_t)")
+                        acc = str_append(acc, a0)
+                        acc = str_append(acc, strdup("))"))
+                        acc
+                    else
+                        emit_c_builtin_skip(fname, args, stmts)
+
+fn emit_c_builtin_skip(fname: Int, args: Int, stmts: Int) -> Int ! alloc
     if str_eq(fname, "str_skip") == 1
         a = arg_at(args, 0)
         b = arg_at(args, 1)
@@ -4036,4 +4090,5 @@ fn main() -> Int ! io, alloc
             else
                 ir = result_unwrap(r)
                 _pr = print_str(ir)
+                _fr = free(ir)
                 0
