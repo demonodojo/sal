@@ -1,0 +1,5 @@
+# OOB via instrumented index(collection, i).
+# Bracket syntax xs[i] is type-args, not indexing — use index(...).
+# First arg is a stand-in collection (IR has no List lengths; LLVM uses bound 1).
+fn main() -> Int
+    index(0, 99)

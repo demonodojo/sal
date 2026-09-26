@@ -1,0 +1,40 @@
+{
+  "scopeName": "source.sal",
+  "name": "sal",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#constant" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.sal",
+      "match": "#.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.sal",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.sal",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.sal",
+      "match": "\\b\\d+(?:\\.\\d+)?\\b"
+    },
+    "keyword": {
+      "name": "keyword.control.sal",
+      "match": "\\b(?:fn|let|if|match|on|to|kernel|return|import|try|struct|enum)\\b"
+    },
+    "constant": {
+      "name": "constant.language.sal",
+      "match": "\\b(?:true|false|cpu|gpu|tpu)\\b"
+    }
+  }
+}

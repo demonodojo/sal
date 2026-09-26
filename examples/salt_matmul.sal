@@ -1,0 +1,8 @@
+# CPU 2×2 matmul from .salt fixtures (same operands as cpu_matmul / matmul_test.c).
+# Test writes target/salt_matmul/{a,b}.salt before compile; product sum → exit 10.
+fn main() -> Int ! io, alloc
+    let a = load[Tensor[F32, 2, 2] on cpu]("target/salt_matmul/a.salt")
+    let b = load[Tensor[F32, 2, 2] on cpu]("target/salt_matmul/b.salt")
+    on cpu
+        matmul(a, b)
+    0

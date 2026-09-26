@@ -1,0 +1,16 @@
+# Corpus: efectos declarados en la firma.
+
+fn needs_io() -> Int ! io
+    print("fx")
+
+fn needs_alloc() -> Int ! alloc
+    0
+
+fn needs_device() -> Int ! gpu, tpu
+    0
+
+fn main() -> Int ! io, alloc, gpu, tpu
+    a = needs_io()
+    b = needs_alloc()
+    c = needs_device()
+    a + b + c

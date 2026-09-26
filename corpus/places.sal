@@ -1,0 +1,13 @@
+# Corpus: lugares cpu / gpu / tpu con `to` y bloques `on`.
+
+fn work(m: Tensor[F32, 2, 2] on p) -> Tensor[F32, 2, 2] on p
+    on p
+        relu(m)
+
+fn main() -> Int ! gpu, tpu
+    host = tensor[[1.0, 2.0], [3.0, 4.0]]
+    on_gpu = to gpu host
+    back_cpu = to cpu work(on_gpu)
+    on_tpu = to tpu back_cpu
+    done = to cpu work(on_tpu)
+    0

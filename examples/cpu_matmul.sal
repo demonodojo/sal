@@ -1,0 +1,8 @@
+# CPU 2×2 matmul smoke (same operands as tests/support/matmul_test.c).
+# Product of [[1,2],[3,4]] × I is [[1,2],[3,4]]; codegen returns the element sum (10).
+fn main() -> Int ! alloc
+    let a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    let b = tensor[[1.0, 0.0], [0.0, 1.0]]
+    on cpu
+        matmul(a, b)
+    0

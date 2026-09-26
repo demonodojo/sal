@@ -1,0 +1,37 @@
+# Una cabeza, dos posiciones, d=2. Pesos en examples/transformer/*.salt.
+# K es la identidad, así que Q @ K es Q @ K^T. Softmax sobre los 4 scores.
+# Cada matmul corre en el actor gpu. La suma de la salida es 3.
+
+fn main() -> Int ! io, alloc, gpu
+    let x: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/x.salt")
+    let wq: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/wq.salt")
+    let wk: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/wk.salt")
+    let wv: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/wv.salt")
+    let wo: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/wo.salt")
+    let w1: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/w1.salt")
+    let w2: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/w2.salt")
+    let q: Tensor[F32, 2, 2] on gpu = on gpu
+        matmul(x, wq)
+    let k: Tensor[F32, 2, 2] on gpu = on gpu
+        matmul(x, wk)
+    let v: Tensor[F32, 2, 2] on gpu = on gpu
+        matmul(x, wv)
+    let scores: Tensor[F32, 2, 2] on gpu = on gpu
+        matmul(q, k)
+    let probs: Tensor[F32, 2, 2] on gpu = softmax(scores)
+    let attn: Tensor[F32, 2, 2] on gpu = on gpu
+        matmul(probs, v)
+    let y: Tensor[F32, 2, 2] on gpu = on gpu
+        matmul(attn, wo)
+    let h: Tensor[F32, 2, 2] on gpu = on gpu
+        relu(matmul(y, w1))
+    let out: Tensor[F32, 2, 2] on gpu = on gpu
+        matmul(h, w2)
+    g = place_launches(1)
+    msg = strdup("sum=")
+    msg = str_append(msg, int_to_str(out))
+    msg = str_append(msg, strdup(" gpu="))
+    msg = str_append(msg, int_to_str(g))
+    msg = str_append(msg, strdup("\n"))
+    _p = print_str(msg)
+    0

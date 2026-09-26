@@ -1,0 +1,19 @@
+/target/
+
+# rustfmt
+**/*.rs.bk
+
+# Extensión de VS Code
+node_modules/
+*.vsix
+
+# Herramientas Python
+__pycache__/
+*.py[cod]
+
+# Local
+.env
+.env.*
+.DS_Store
+*.swp
+*~

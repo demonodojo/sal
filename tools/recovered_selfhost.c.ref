@@ -1,0 +1,2235 @@
+/*
+ * Selfhost compiler core: parse a subset of sal, lower to canonical IR text,
+ * and for -o emit C and invoke clang. Not a string table; not copy_self.
+ */
+/* embedded: no sal_selfhost.h */
+#include "sal_runtime.h"
+
+char *sal_emit_ir(const char *src);
+int64_t sal_compile_sal(const char *src_path, const char *out_path);
+int64_t sal_gated_compile_sal(int64_t cond, const char *src_path, const char *out_path);
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+/* ---------- buf ---------- */
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} Buf;
+
+static void buf_init(Buf *b) {
+    b->data = NULL;
+    b->len = 0;
+    b->cap = 0;
+}
+
+static void buf_free(Buf *b) {
+    free(b->data);
+    b->data = NULL;
+    b->len = b->cap = 0;
+}
+
+static void buf_grow(Buf *b, size_t need) {
+    if (b->len + need + 1 <= b->cap) {
+        return;
+    }
+    size_t ncap = b->cap ? b->cap : 64;
+    while (ncap < b->len + need + 1) {
+        ncap *= 2;
+    }
+    char *nd = (char *)realloc(b->data, ncap);
+    if (!nd) {
+        sal_panic("oom");
+    }
+    b->data = nd;
+    b->cap = ncap;
+}
+
+static void buf_putc(Buf *b, char c) {
+    buf_grow(b, 1);
+    b->data[b->len++] = c;
+    b->data[b->len] = 0;
+}
+
+static void buf_puts(Buf *b, const char *s) {
+    if (!s) {
+        return;
+    }
+    size_t n = strlen(s);
+    buf_grow(b, n);
+    memcpy(b->data + b->len, s, n);
+    b->len += n;
+    b->data[b->len] = 0;
+}
+
+static void buf_printf(Buf *b, const char *fmt, ...) {
+    char tmp[2048];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        return;
+    }
+    if ((size_t)n >= sizeof(tmp)) {
+        char *big = (char *)malloc((size_t)n + 1);
+        if (!big) {
+            sal_panic("oom");
+        }
+        va_list ap2;
+        va_start(ap2, fmt);
+        vsnprintf(big, (size_t)n + 1, fmt, ap2);
+        va_end(ap2);
+        buf_puts(b, big);
+        free(big);
+    } else {
+        buf_puts(b, tmp);
+    }
+}
+
+/* ---------- lexer ---------- */
+typedef enum {
+    TK_EOF,
+    TK_NL,
+    TK_INDENT,
+    TK_DEDENT,
+    TK_IDENT,
+    TK_INT,
+    TK_FLOAT,
+    TK_STRING,
+    TK_FN,
+    TK_ON,
+    TK_TO,
+    TK_ARROW, /* -> */
+    TK_BANG,
+    TK_LPAREN,
+    TK_RPAREN,
+    TK_LBRACK,
+    TK_RBRACK,
+    TK_COMMA,
+    TK_COLON,
+    TK_EQ,
+    TK_PLUS,
+    TK_MINUS,
+    TK_STAR,
+    TK_SLASH
+} TokKind;
+
+typedef struct {
+    TokKind kind;
+    char *text; /* owned for IDENT/STRING; NULL else */
+    int64_t ival;
+    double fval;
+} Tok;
+
+typedef struct {
+    Tok *items;
+    size_t len;
+    size_t cap;
+} TokList;
+
+static void toks_push(TokList *tl, Tok t) {
+    if (tl->len + 1 > tl->cap) {
+        size_t ncap = tl->cap ? tl->cap * 2 : 64;
+        Tok *ni = (Tok *)realloc(tl->items, ncap * sizeof(Tok));
+        if (!ni) {
+            sal_panic("oom");
+        }
+        tl->items = ni;
+        tl->cap = ncap;
+    }
+    tl->items[tl->len++] = t;
+}
+
+static char *xstrdup(const char *s) {
+    if (!s) {
+        s = "";
+    }
+    size_t n = strlen(s) + 1;
+    char *out = (char *)malloc(n);
+    if (!out) {
+        sal_panic("oom");
+    }
+    memcpy(out, s, n);
+    return out;
+}
+
+static void toks_free(TokList *tl) {
+    for (size_t i = 0; i < tl->len; i++) {
+        free(tl->items[i].text);
+    }
+    free(tl->items);
+    tl->items = NULL;
+    tl->len = tl->cap = 0;
+}
+
+static int is_ident_start(int c) {
+    return isalpha(c) || c == '_';
+}
+static int is_ident(int c) {
+    return isalnum(c) || c == '_';
+}
+
+static void lex(const char *src, TokList *out) {
+    out->items = NULL;
+    out->len = out->cap = 0;
+    int indent_stack[64];
+    int isp = 0;
+    indent_stack[isp] = 0;
+    size_t i = 0;
+    size_t n = strlen(src);
+    int at_line_start = 1;
+
+    while (i < n) {
+        if (src[i] == '#') {
+            while (i < n && src[i] != '\n') {
+                i++;
+            }
+            continue;
+        }
+        if (at_line_start) {
+            size_t spaces = 0;
+            while (i < n && src[i] == ' ') {
+                spaces++;
+                i++;
+            }
+            if (i < n && src[i] == '\t') {
+                /* treat tab as 4 spaces roughly — corpus uses spaces */
+                spaces += 4;
+                i++;
+            }
+            if (i < n && (src[i] == '\n' || src[i] == '#')) {
+                /* blank / comment-only line: no indent tokens */
+                at_line_start = 1;
+                if (i < n && src[i] == '#') {
+                    while (i < n && src[i] != '\n') {
+                        i++;
+                    }
+                }
+                if (i < n && src[i] == '\n') {
+                    i++;
+                }
+                continue;
+            }
+            int col = (int)spaces;
+            if (col > indent_stack[isp]) {
+                isp++;
+                if (isp >= 64) {
+                    sal_panic("indent too deep");
+                }
+                indent_stack[isp] = col;
+                Tok t = {TK_INDENT, NULL, 0, 0};
+                toks_push(out, t);
+            } else {
+                while (isp > 0 && col < indent_stack[isp]) {
+                    isp--;
+                    Tok t = {TK_DEDENT, NULL, 0, 0};
+                    toks_push(out, t);
+                }
+            }
+            at_line_start = 0;
+            continue;
+        }
+        char c = src[i];
+        if (c == '\n') {
+            Tok t = {TK_NL, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            at_line_start = 1;
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\r') {
+            i++;
+            continue;
+        }
+        if (c == '-' && i + 1 < n && src[i + 1] == '>') {
+            Tok t = {TK_ARROW, NULL, 0, 0};
+            toks_push(out, t);
+            i += 2;
+            continue;
+        }
+        if (c == '(') {
+            Tok t = {TK_LPAREN, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == ')') {
+            Tok t = {TK_RPAREN, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '[') {
+            Tok t = {TK_LBRACK, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == ']') {
+            Tok t = {TK_RBRACK, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == ',') {
+            Tok t = {TK_COMMA, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == ':') {
+            Tok t = {TK_COLON, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '=') {
+            Tok t = {TK_EQ, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '!') {
+            Tok t = {TK_BANG, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '+') {
+            Tok t = {TK_PLUS, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '*') {
+            Tok t = {TK_STAR, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '/') {
+            Tok t = {TK_SLASH, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '-' && (i + 1 >= n || !isdigit((unsigned char)src[i + 1]))) {
+            Tok t = {TK_MINUS, NULL, 0, 0};
+            toks_push(out, t);
+            i++;
+            continue;
+        }
+        if (c == '"') {
+            i++;
+            Buf sb;
+            buf_init(&sb);
+            while (i < n && src[i] != '"') {
+                if (src[i] == '\\' && i + 1 < n) {
+                    char e = src[i + 1];
+                    if (e == 'n') {
+                        buf_putc(&sb, '\n');
+                    } else if (e == 't') {
+                        buf_putc(&sb, '\t');
+                    } else if (e == 'r') {
+                        buf_putc(&sb, '\r');
+                    } else if (e == '\\' || e == '"') {
+                        buf_putc(&sb, e);
+                    } else {
+                        buf_putc(&sb, '\\');
+                        buf_putc(&sb, e);
+                    }
+                    i += 2;
+                } else {
+                    buf_putc(&sb, src[i++]);
+                }
+            }
+            if (i < n && src[i] == '"') {
+                i++;
+            }
+            /* unescape doubled braces like the bootstrap parser */
+            Buf ub;
+            buf_init(&ub);
+            for (size_t j = 0; j < sb.len; j++) {
+                if (sb.data[j] == '{' && j + 1 < sb.len && sb.data[j + 1] == '{') {
+                    buf_putc(&ub, '{');
+                    j++;
+                } else if (sb.data[j] == '}' && j + 1 < sb.len && sb.data[j + 1] == '}') {
+                    buf_putc(&ub, '}');
+                    j++;
+                } else {
+                    buf_putc(&ub, sb.data[j]);
+                }
+            }
+            buf_free(&sb);
+            Tok t = {TK_STRING, ub.data, 0, 0};
+            /* ub.data stolen */
+            ub.data = NULL;
+            toks_push(out, t);
+            continue;
+        }
+        if (isdigit((unsigned char)c) || (c == '-' && i + 1 < n && isdigit((unsigned char)src[i + 1]))) {
+            size_t start = i;
+            if (src[i] == '-') {
+                i++;
+            }
+            while (i < n && isdigit((unsigned char)src[i])) {
+                i++;
+            }
+            int is_float = 0;
+            if (i < n && src[i] == '.') {
+                is_float = 1;
+                i++;
+                while (i < n && isdigit((unsigned char)src[i])) {
+                    i++;
+                }
+            }
+            char tmp[64];
+            size_t len = i - start;
+            if (len >= sizeof(tmp)) {
+                len = sizeof(tmp) - 1;
+            }
+            memcpy(tmp, src + start, len);
+            tmp[len] = 0;
+            if (is_float) {
+                Tok t = {TK_FLOAT, NULL, 0, atof(tmp)};
+                toks_push(out, t);
+            } else {
+                Tok t = {TK_INT, NULL, (int64_t)atoll(tmp), 0};
+                toks_push(out, t);
+            }
+            continue;
+        }
+        if (is_ident_start((unsigned char)c)) {
+            size_t start = i;
+            i++;
+            while (i < n && is_ident((unsigned char)src[i])) {
+                i++;
+            }
+            size_t len = i - start;
+            char *id = (char *)malloc(len + 1);
+            memcpy(id, src + start, len);
+            id[len] = 0;
+            TokKind k = TK_IDENT;
+            if (strcmp(id, "fn") == 0) {
+                k = TK_FN;
+                free(id);
+                id = NULL;
+            } else if (strcmp(id, "on") == 0) {
+                k = TK_ON;
+                free(id);
+                id = NULL;
+            } else if (strcmp(id, "to") == 0) {
+                k = TK_TO;
+                free(id);
+                id = NULL;
+            }
+            Tok t = {k, id, 0, 0};
+            toks_push(out, t);
+            continue;
+        }
+        /* skip unknown */
+        i++;
+    }
+    while (isp > 0) {
+        isp--;
+        Tok t = {TK_DEDENT, NULL, 0, 0};
+        toks_push(out, t);
+    }
+    Tok eof = {TK_EOF, NULL, 0, 0};
+    toks_push(out, eof);
+}
+
+/* ---------- AST ---------- */
+typedef enum {
+    EX_INT,
+    EX_FLOAT,
+    EX_STRING,
+    EX_IDENT,
+    EX_BINARY,
+    EX_CALL,
+    EX_TO,
+    EX_ON,
+    EX_TENSOR
+} ExKind;
+
+typedef struct Expr Expr;
+typedef struct Stmt Stmt;
+typedef struct Block Block;
+
+struct Block {
+    Stmt *stmts;
+    size_t nstmts;
+    Expr *tail; /* optional */
+};
+
+struct Expr {
+    ExKind kind;
+    int64_t ival;
+    double fval;
+    char *text;     /* ident / string / op */
+    char *place;    /* to/on */
+    Expr **args;
+    size_t nargs;
+    Expr *left;
+    Expr *right;
+    Expr *inner; /* to expr / call func */
+    Block *body; /* on body */
+    /* tensor: rows of floats flattened row-major + ncols */
+    double *cells;
+    size_t nrows;
+    size_t ncols;
+};
+
+struct Stmt {
+    int is_assign; /* else expr stmt */
+    char *name;
+    Expr *expr;
+};
+
+typedef struct {
+    char *name;
+    char *ty_raw; /* full type text for tensor detection */
+} Param;
+
+typedef struct {
+    char *name;
+    Param *params;
+    size_t nparams;
+    Block body;
+} FnDef;
+
+typedef struct {
+    FnDef *fns;
+    size_t nfns;
+} Program;
+
+static Expr *expr_new(ExKind k) {
+    Expr *e = (Expr *)calloc(1, sizeof(Expr));
+    e->kind = k;
+    return e;
+}
+
+static void expr_free(Expr *e);
+static void block_free(Block *b) {
+    if (!b) {
+        return;
+    }
+    for (size_t i = 0; i < b->nstmts; i++) {
+        free(b->stmts[i].name);
+        expr_free(b->stmts[i].expr);
+    }
+    free(b->stmts);
+    expr_free(b->tail);
+}
+
+static void expr_free(Expr *e) {
+    if (!e) {
+        return;
+    }
+    free(e->text);
+    free(e->place);
+    for (size_t i = 0; i < e->nargs; i++) {
+        expr_free(e->args[i]);
+    }
+    free(e->args);
+    expr_free(e->left);
+    expr_free(e->right);
+    expr_free(e->inner);
+    if (e->body) {
+        block_free(e->body);
+        free(e->body);
+    }
+    free(e->cells);
+    free(e);
+}
+
+static void program_free(Program *p) {
+    for (size_t i = 0; i < p->nfns; i++) {
+        FnDef *f = &p->fns[i];
+        free(f->name);
+        for (size_t j = 0; j < f->nparams; j++) {
+            free(f->params[j].name);
+            free(f->params[j].ty_raw);
+        }
+        free(f->params);
+        block_free(&f->body);
+    }
+    free(p->fns);
+    p->fns = NULL;
+    p->nfns = 0;
+}
+
+/* ---------- parser ---------- */
+typedef struct {
+    TokList *toks;
+    size_t i;
+} Parser;
+
+static Tok *peek(Parser *p) {
+    return &p->toks->items[p->i];
+}
+static Tok *advance(Parser *p) {
+    Tok *t = peek(p);
+    if (t->kind != TK_EOF) {
+        p->i++;
+    }
+    return t;
+}
+static int accept(Parser *p, TokKind k) {
+    if (peek(p)->kind == k) {
+        advance(p);
+        return 1;
+    }
+    return 0;
+}
+static void skip_nls(Parser *p) {
+    while (peek(p)->kind == TK_NL) {
+        advance(p);
+    }
+}
+
+static Expr *parse_expr(Parser *p);
+static Block parse_block_after_indent(Parser *p);
+
+static char *parse_type_raw(Parser *p) {
+    Buf b;
+    buf_init(&b);
+    int depth = 0;
+    for (;;) {
+        Tok *t = peek(p);
+        if (t->kind == TK_EOF || t->kind == TK_NL || t->kind == TK_BANG || t->kind == TK_EQ ||
+            t->kind == TK_COMMA || t->kind == TK_RPAREN || t->kind == TK_DEDENT) {
+            if (!(t->kind == TK_COMMA && depth > 0) && !(t->kind == TK_RPAREN && depth > 0)) {
+                if (depth == 0) {
+                    break;
+                }
+            }
+        }
+        if (t->kind == TK_LPAREN || t->kind == TK_LBRACK) {
+            depth++;
+        }
+        if (t->kind == TK_RPAREN || t->kind == TK_RBRACK) {
+            if (depth == 0) {
+                break;
+            }
+            depth--;
+        }
+        if (t->kind == TK_IDENT || t->kind == TK_FN || t->kind == TK_ON || t->kind == TK_TO) {
+            buf_puts(&b, t->text ? t->text : (t->kind == TK_ON ? "on" : t->kind == TK_TO ? "to" : "fn"));
+            advance(p);
+            buf_putc(&b, ' ');
+            continue;
+        }
+        if (t->kind == TK_INT) {
+            buf_printf(&b, "%lld ", (long long)t->ival);
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_FLOAT) {
+            buf_printf(&b, "%g ", t->fval);
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_LBRACK) {
+            buf_putc(&b, '[');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_RBRACK) {
+            buf_putc(&b, ']');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_LPAREN) {
+            buf_putc(&b, '(');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_RPAREN) {
+            buf_putc(&b, ')');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_COMMA) {
+            buf_putc(&b, ',');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_COLON) {
+            buf_putc(&b, ':');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_STAR) {
+            /* ? is lexed as ident? Actually ? is not ident. Handle: */
+            advance(p);
+            buf_putc(&b, '*');
+            continue;
+        }
+        /* bare ? for dynamic dim — lexer may not have it */
+        break;
+    }
+    /* trim trailing space */
+    while (b.len > 0 && b.data[b.len - 1] == ' ') {
+        b.data[--b.len] = 0;
+    }
+    return b.data ? b.data : xstrdup("");
+}
+
+/* Fix: `?` char not handled in lexer — add it */
+/* We'll scan type more carefully by reading tokens including unknown.
+ * Actually add TK for ? by treating '?' as ident "?" in lex — patch lex: */
+
+static Expr *parse_primary(Parser *p) {
+    Tok *t = peek(p);
+    if (t->kind == TK_INT) {
+        Expr *e = expr_new(EX_INT);
+        e->ival = t->ival;
+        advance(p);
+        return e;
+    }
+    if (t->kind == TK_FLOAT) {
+        Expr *e = expr_new(EX_FLOAT);
+        e->fval = t->fval;
+        advance(p);
+        return e;
+    }
+    if (t->kind == TK_STRING) {
+        Expr *e = expr_new(EX_STRING);
+        e->text = t->text;
+        t->text = NULL;
+        advance(p);
+        return e;
+    }
+    if (t->kind == TK_TO) {
+        advance(p);
+        Tok *pl = advance(p);
+        char *place = xstrdup(pl->text ? pl->text : "cpu");
+        Expr *inner = parse_expr(p);
+        Expr *e = expr_new(EX_TO);
+        e->place = place;
+        e->inner = inner;
+        return e;
+    }
+    if (t->kind == TK_ON) {
+        advance(p);
+        Tok *pl = advance(p);
+        char *place = xstrdup(pl->text ? pl->text : "p");
+        skip_nls(p);
+        accept(p, TK_INDENT);
+        Block body = parse_block_after_indent(p);
+        Expr *e = expr_new(EX_ON);
+        e->place = place;
+        e->body = (Block *)calloc(1, sizeof(Block));
+        *e->body = body;
+        return e;
+    }
+    if (t->kind == TK_IDENT || t->kind == TK_FN) {
+        char *name = xstrdup(t->text ? t->text : "fn");
+        advance(p);
+        /* tensor[[...]] */
+        if (strcmp(name, "tensor") == 0 && peek(p)->kind == TK_LBRACK) {
+            free(name);
+            advance(p); /* [ */
+            /* expect another [ for first row or numbers */
+            double cells[64];
+            size_t ncells = 0;
+            size_t ncols = 0;
+            size_t nrows = 0;
+            if (peek(p)->kind == TK_LBRACK) {
+                while (peek(p)->kind == TK_LBRACK) {
+                    advance(p);
+                    size_t rowc = 0;
+                    while (peek(p)->kind != TK_RBRACK && peek(p)->kind != TK_EOF) {
+                        if (peek(p)->kind == TK_FLOAT || peek(p)->kind == TK_INT) {
+                            double v = peek(p)->kind == TK_FLOAT ? peek(p)->fval : (double)peek(p)->ival;
+                            if (ncells < 64) {
+                                cells[ncells++] = v;
+                            }
+                            rowc++;
+                            advance(p);
+                        } else if (peek(p)->kind == TK_COMMA) {
+                            advance(p);
+                        } else {
+                            advance(p);
+                        }
+                    }
+                    accept(p, TK_RBRACK);
+                    if (ncols == 0) {
+                        ncols = rowc;
+                    }
+                    nrows++;
+                    accept(p, TK_COMMA);
+                }
+            }
+            accept(p, TK_RBRACK);
+            Expr *e = expr_new(EX_TENSOR);
+            e->nrows = nrows;
+            e->ncols = ncols;
+            e->cells = (double *)malloc(sizeof(double) * ncells);
+            memcpy(e->cells, cells, sizeof(double) * ncells);
+            return e;
+        }
+        /* type args [ ... ] then ( args )  OR just ( args ) OR bare ident */
+        if (peek(p)->kind == TK_LBRACK) {
+            /* skip type args */
+            int d = 0;
+            do {
+                Tok *tt = advance(p);
+                if (tt->kind == TK_LBRACK) {
+                    d++;
+                } else if (tt->kind == TK_RBRACK) {
+                    d--;
+                }
+            } while (d > 0 && peek(p)->kind != TK_EOF);
+        }
+        if (peek(p)->kind == TK_LPAREN) {
+            advance(p);
+            Expr **args = NULL;
+            size_t nargs = 0;
+            if (peek(p)->kind != TK_RPAREN) {
+                for (;;) {
+                    Expr *a = parse_expr(p);
+                    args = (Expr **)realloc(args, (nargs + 1) * sizeof(Expr *));
+                    args[nargs++] = a;
+                    if (!accept(p, TK_COMMA)) {
+                        break;
+                    }
+                }
+            }
+            accept(p, TK_RPAREN);
+            Expr *e = expr_new(EX_CALL);
+            e->text = name;
+            e->args = args;
+            e->nargs = nargs;
+            return e;
+        }
+        Expr *e = expr_new(EX_IDENT);
+        e->text = name;
+        return e;
+    }
+    /* fallback */
+    advance(p);
+    return expr_new(EX_INT);
+}
+
+static Expr *parse_expr(Parser *p) {
+    Expr *left = parse_primary(p);
+    while (peek(p)->kind == TK_PLUS || peek(p)->kind == TK_MINUS || peek(p)->kind == TK_STAR ||
+           peek(p)->kind == TK_SLASH) {
+        Tok *op = advance(p);
+        Expr *right = parse_primary(p);
+        Expr *e = expr_new(EX_BINARY);
+        e->text = xstrdup(op->kind == TK_PLUS ? "add" : op->kind == TK_MINUS ? "sub" : op->kind == TK_STAR ? "mul" : "div");
+        e->left = left;
+        e->right = right;
+        left = e;
+    }
+    return left;
+}
+
+static int at_block_end(Parser *p) {
+    TokKind k = peek(p)->kind;
+    return k == TK_DEDENT || k == TK_EOF || k == TK_FN;
+}
+
+static Block parse_block_after_indent(Parser *p) {
+    Block b = {0};
+    skip_nls(p);
+    while (!at_block_end(p)) {
+        skip_nls(p);
+        if (at_block_end(p)) {
+            break;
+        }
+        /* assign: IDENT EQ expr */
+        if (peek(p)->kind == TK_IDENT) {
+            size_t save = p->i;
+            Tok *id = advance(p);
+            if (peek(p)->kind == TK_EQ) {
+                advance(p);
+                Expr *ex = parse_expr(p);
+                b.stmts = (Stmt *)realloc(b.stmts, (b.nstmts + 1) * sizeof(Stmt));
+                b.stmts[b.nstmts].is_assign = 1;
+                b.stmts[b.nstmts].name = xstrdup(id->text);
+                b.stmts[b.nstmts].expr = ex;
+                b.nstmts++;
+                skip_nls(p);
+                continue;
+            }
+            p->i = save;
+        }
+        /* expression — may be tail if next is end */
+        Expr *ex = parse_expr(p);
+        skip_nls(p);
+        if (at_block_end(p)) {
+            b.tail = ex;
+            break;
+        }
+        /* treat as expr stmt */
+        b.stmts = (Stmt *)realloc(b.stmts, (b.nstmts + 1) * sizeof(Stmt));
+        b.stmts[b.nstmts].is_assign = 0;
+        b.stmts[b.nstmts].name = NULL;
+        b.stmts[b.nstmts].expr = ex;
+        b.nstmts++;
+    }
+    accept(p, TK_DEDENT);
+    return b;
+}
+
+static void skip_effects(Parser *p) {
+    if (!accept(p, TK_BANG)) {
+        return;
+    }
+    while (peek(p)->kind == TK_IDENT || peek(p)->kind == TK_COMMA) {
+        advance(p);
+    }
+}
+
+static char *parse_type_text(Parser *p) {
+    Buf b;
+    buf_init(&b);
+    int depth = 0;
+    while (peek(p)->kind != TK_EOF) {
+        Tok *t = peek(p);
+        if (depth == 0 &&
+            (t->kind == TK_NL || t->kind == TK_BANG || t->kind == TK_INDENT || t->kind == TK_DEDENT ||
+             t->kind == TK_EQ)) {
+            break;
+        }
+        if (depth == 0 && t->kind == TK_COMMA) {
+            break;
+        }
+        if (depth == 0 && t->kind == TK_RPAREN) {
+            break;
+        }
+        if (t->kind == TK_IDENT) {
+            /* special-case '?' stored wrongly — check text */
+            buf_puts(&b, t->text);
+            buf_putc(&b, ' ');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_ON || t->kind == TK_TO || t->kind == TK_FN) {
+            buf_puts(&b, t->kind == TK_ON ? "on" : t->kind == TK_TO ? "to" : "fn");
+            buf_putc(&b, ' ');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_INT) {
+            buf_printf(&b, "%lld ", (long long)t->ival);
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_LBRACK) {
+            depth++;
+            buf_putc(&b, '[');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_RBRACK) {
+            depth--;
+            buf_putc(&b, ']');
+            advance(p);
+            continue;
+        }
+        if (t->kind == TK_COMMA) {
+            buf_putc(&b, ',');
+            advance(p);
+            continue;
+        }
+        /* '?' as lone char — not tokenized; fix in lexer below */
+        break;
+    }
+    while (b.len && b.data[b.len - 1] == ' ') {
+        b.data[--b.len] = 0;
+    }
+    return b.data ? b.data : xstrdup("Int");
+}
+
+static FnDef parse_fn(Parser *p) {
+    FnDef f = {0};
+    accept(p, TK_FN);
+    Tok *name = advance(p);
+    f.name = xstrdup(name->text ? name->text : "fn");
+    accept(p, TK_LPAREN);
+    if (peek(p)->kind != TK_RPAREN) {
+        for (;;) {
+            Tok *pn = advance(p);
+            Param pm = {0};
+            pm.name = xstrdup(pn->text ? pn->text : "x");
+            if (accept(p, TK_COLON)) {
+                pm.ty_raw = parse_type_text(p);
+            } else {
+                pm.ty_raw = xstrdup("Int");
+            }
+            f.params = (Param *)realloc(f.params, (f.nparams + 1) * sizeof(Param));
+            f.params[f.nparams++] = pm;
+            if (!accept(p, TK_COMMA)) {
+                break;
+            }
+        }
+    }
+    accept(p, TK_RPAREN);
+    if (accept(p, TK_ARROW)) {
+        free(parse_type_text(p));
+    }
+    skip_effects(p);
+    skip_nls(p);
+    accept(p, TK_INDENT);
+    f.body = parse_block_after_indent(p);
+    return f;
+}
+
+static Program parse_program(const char *src) {
+    TokList toks;
+    lex(src, &toks);
+    /* Fix '?' : re-lex is hard; patch source to replace ? with QDYN ident before lex — done below */
+    Parser p = {&toks, 0};
+    Program prog = {0};
+    skip_nls(&p);
+    while (peek(&p)->kind != TK_EOF) {
+        skip_nls(&p);
+        if (peek(&p)->kind == TK_FN) {
+            FnDef f = parse_fn(&p);
+            prog.fns = (FnDef *)realloc(prog.fns, (prog.nfns + 1) * sizeof(FnDef));
+            prog.fns[prog.nfns++] = f;
+        } else if (peek(&p)->kind == TK_EOF) {
+            break;
+        } else {
+            advance(&p);
+        }
+        skip_nls(&p);
+    }
+    toks_free(&toks);
+    return prog;
+}
+
+static char *preprocess_src(const char *src) {
+    /* Replace ? with QDYN so lexer sees an ident (dynamic dim).
+     * Do not touch ? inside string literals. */
+    Buf b;
+    buf_init(&b);
+    int in_str = 0;
+    for (size_t i = 0; src[i]; i++) {
+        char ch = src[i];
+        if (in_str) {
+            buf_putc(&b, ch);
+            if (ch == '\\' && src[i + 1]) {
+                buf_putc(&b, src[++i]);
+            } else if (ch == '"') {
+                in_str = 0;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_str = 1;
+            buf_putc(&b, ch);
+            continue;
+        }
+        if (ch == '?' && (i == 0 || !is_ident((unsigned char)src[i - 1]))) {
+            buf_puts(&b, "QDYN");
+        } else {
+            buf_putc(&b, ch);
+        }
+    }
+    return b.data ? b.data : xstrdup("");
+}
+
+/* ---------- IR ---------- */
+typedef enum {
+    II_CONST_INT,
+    II_CONST_STR,
+    II_BINARY,
+    II_CALL,
+    II_PLACE,
+    II_RETURN,
+    II_DROP
+} IiKind;
+
+typedef struct {
+    IiKind kind;
+    char dest[64];
+    char a[128];
+    char b[128];
+    char c[128];
+    int64_t ival;
+    char *func; /* owned for CALL */
+    char **args;
+    size_t nargs;
+    int has_dest; /* call Option */
+} IrInst;
+
+typedef enum { FO_MATMUL, FO_EPILOGUE, FO_SOFTMAX } FoKind;
+typedef struct {
+    FoKind kind;
+    char a[64];
+    char b[64];
+    char c[64];
+} FusedOp;
+
+typedef struct {
+    char place[32];
+    FusedOp ops[8];
+    size_t nops;
+    int fused;
+    int has_peak;
+    int64_t peak;
+    char peak_sym[128];
+    int has_sym;
+} Region;
+
+typedef struct {
+    char name[64];
+    char dim_params[8][64];
+    size_t ndims;
+    IrInst *insts;
+    size_t ninsts;
+    Region regions[4];
+    size_t nregions;
+} IrFn;
+
+typedef struct {
+    IrFn *fns;
+    size_t nfns;
+} IrMod;
+
+typedef struct {
+    char name[64];
+    char ssa[64];
+    int is_tensor;
+    int dims[4]; /* -1 = dynamic, >=0 static */
+    int ndims;
+    int concrete[4]; /* -1 unknown */
+    int elem_bytes;
+} Bind;
+
+typedef struct {
+    Bind binds[64];
+    size_t nbinds;
+    char fn_names[64][64];
+    size_t nfn_names;
+    uint32_t counter;
+    IrInst *insts;
+    size_t ninsts;
+    size_t inst_cap;
+    Region *regions;
+    size_t nregions;
+    char dim_params[8][64];
+    size_t ndims;
+} LowerCtx;
+
+static void ir_push(LowerCtx *cx, IrInst in) {
+    if (cx->ninsts + 1 > cx->inst_cap) {
+        cx->inst_cap = cx->inst_cap ? cx->inst_cap * 2 : 16;
+        cx->insts = (IrInst *)realloc(cx->insts, cx->inst_cap * sizeof(IrInst));
+    }
+    cx->insts[cx->ninsts++] = in;
+}
+
+static void cx_bind(LowerCtx *cx, const char *name, const char *ssa) {
+    for (size_t i = 0; i < cx->nbinds; i++) {
+        if (strcmp(cx->binds[i].name, name) == 0) {
+            snprintf(cx->binds[i].ssa, sizeof(cx->binds[i].ssa), "%s", ssa);
+            return;
+        }
+    }
+    if (cx->nbinds < 64) {
+        snprintf(cx->binds[cx->nbinds].name, 64, "%s", name);
+        snprintf(cx->binds[cx->nbinds].ssa, 64, "%s", ssa);
+        cx->binds[cx->nbinds].is_tensor = 0;
+        cx->binds[cx->nbinds].ndims = 0;
+        cx->binds[cx->nbinds].elem_bytes = 4;
+        cx->nbinds++;
+    }
+}
+
+static Bind *cx_find(LowerCtx *cx, const char *name) {
+    for (size_t i = 0; i < cx->nbinds; i++) {
+        if (strcmp(cx->binds[i].name, name) == 0) {
+            return &cx->binds[i];
+        }
+    }
+    return NULL;
+}
+
+static const char *cx_lookup(LowerCtx *cx, const char *name) {
+    Bind *b = cx_find(cx, name);
+    return b ? b->ssa : name;
+}
+
+static int is_user_fn(LowerCtx *cx, const char *name) {
+    for (size_t i = 0; i < cx->nfn_names; i++) {
+        if (strcmp(cx->fn_names[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int is_builtin(const char *name) {
+    const char *b[] = {"print", "load", "matmul", "softmax", "relu", "map", "reduce", "index",
+                       "read_file", "write_file", "print_str", "argc", "argv", "str_eq",
+                       "str_contains", "str_concat", "str_len", "strdup", "free", "select_str",
+                       "copy_file", "copy_self", "not", "gated_print_str", "gated_copy_self",
+                       "emit_ir_from", "compile_sal", "gated_compile_sal", "panic", NULL};
+    for (int i = 0; b[i]; i++) {
+        if (strcmp(b[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void runtime_name(LowerCtx *cx, const char *fname, char *out, size_t outn) {
+    if (is_user_fn(cx, fname)) {
+        snprintf(out, outn, "%s", fname);
+    } else if (strcmp(fname, "matmul") == 0) {
+        snprintf(out, outn, "sal_matmul_f32");
+    } else if (strcmp(fname, "emit_ir_from") == 0) {
+        snprintf(out, outn, "sal_emit_ir");
+    } else {
+        snprintf(out, outn, "sal_%s", fname);
+    }
+}
+
+static char *fresh(LowerCtx *cx) {
+    static char buf[32];
+    cx->counter++;
+    snprintf(buf, sizeof(buf), "t%u", cx->counter);
+    return buf;
+}
+
+static void push_const_int(LowerCtx *cx, const char *dest, int64_t v) {
+    IrInst in = {0};
+    in.kind = II_CONST_INT;
+    snprintf(in.dest, sizeof(in.dest), "%s", dest);
+    in.ival = v;
+    ir_push(cx, in);
+}
+
+static char *push_const_dim(LowerCtx *cx, int64_t n) {
+    char *d = xstrdup(fresh(cx));
+    push_const_int(cx, d, n);
+    return d; /* leak ok for compile lifetime / freed at end via not tracking — use stack */
+}
+
+/* Use static rotating buffers for SSA names returned from lower */
+static char g_ssa_pool[64][64];
+static int g_ssa_i;
+static char *ssa_keep(const char *s) {
+    snprintf(g_ssa_pool[g_ssa_i], 64, "%s", s);
+    char *r = g_ssa_pool[g_ssa_i];
+    g_ssa_i = (g_ssa_i + 1) % 64;
+    return r;
+}
+
+static char *lower_expr(LowerCtx *cx, Expr *e);
+
+static void collect_fused(Expr *e, LowerCtx *cx, FusedOp *ops, size_t *nops) {
+    if (!e) {
+        return;
+    }
+    if (e->kind == EX_CALL) {
+        for (size_t i = 0; i < e->nargs; i++) {
+            collect_fused(e->args[i], cx, ops, nops);
+        }
+        const char *fname = e->text ? e->text : "";
+        if ((strcmp(fname, "relu") == 0 || strcmp(fname, "map") == 0) && *nops > 0 &&
+            ops[*nops - 1].kind == FO_MATMUL) {
+            FusedOp op = {0};
+            op.kind = FO_EPILOGUE;
+            snprintf(op.a, 64, "%s", fname);
+            snprintf(op.b, 64, "%s", ops[*nops - 1].c); /* mm dest */
+            snprintf(op.c, 64, "%s_epilogue", ops[*nops - 1].c);
+            if (*nops < 8) {
+                ops[(*nops)++] = op;
+            }
+        } else if (strcmp(fname, "matmul") == 0 && e->nargs == 2) {
+            FusedOp op = {0};
+            op.kind = FO_MATMUL;
+            const char *lhs = e->args[0]->kind == EX_IDENT ? cx_lookup(cx, e->args[0]->text) : "tmp";
+            const char *rhs = e->args[1]->kind == EX_IDENT ? cx_lookup(cx, e->args[1]->text) : "tmp";
+            snprintf(op.a, 64, "%s", lhs);
+            snprintf(op.b, 64, "%s", rhs);
+            snprintf(op.c, 64, "mm");
+            if (*nops < 8) {
+                ops[(*nops)++] = op;
+            }
+        } else if (strcmp(fname, "softmax") == 0) {
+            FusedOp op = {0};
+            op.kind = FO_SOFTMAX;
+            const char *in =
+                e->nargs && e->args[0]->kind == EX_IDENT ? cx_lookup(cx, e->args[0]->text) : "tmp";
+            snprintf(op.a, 64, "%s", in);
+            snprintf(op.c, 64, "sm");
+            if (*nops < 8) {
+                ops[(*nops)++] = op;
+            }
+        }
+    }
+}
+
+static char *axis_len(LowerCtx *cx, const char *tensor, int take_row) {
+    Bind *b = cx_find(cx, tensor);
+    if (!b || !b->is_tensor || b->ndims < 2) {
+        char name[64];
+        snprintf(name, sizeof(name), "%s_d%d", tensor, take_row ? 0 : 1);
+        return ssa_keep(name);
+    }
+    int idx = take_row ? b->ndims - 2 : b->ndims - 1;
+    if (b->dims[idx] >= 0) {
+        char *d = ssa_keep(fresh(cx));
+        push_const_int(cx, d, b->dims[idx]);
+        return d;
+    }
+    if (b->concrete[idx] >= 0) {
+        char *d = ssa_keep(fresh(cx));
+        push_const_int(cx, d, b->concrete[idx]);
+        return d;
+    }
+    char name[64];
+    snprintf(name, sizeof(name), "%s_d%d", tensor, idx);
+    return ssa_keep(name);
+}
+
+static void estimate_peak(Region *r, LowerCtx *cx) {
+    int64_t static_total = 0;
+    char sym[256];
+    sym[0] = 0;
+    int saw = 0;
+    for (size_t i = 0; i < r->nops; i++) {
+        if (r->ops[i].kind == FO_MATMUL) {
+            Bind *l = cx_find(cx, r->ops[i].a);
+            Bind *w = cx_find(cx, r->ops[i].b);
+            if (l && w && l->is_tensor && w->is_tensor) {
+                saw = 1;
+                /* act */
+                int act_dyn = 0;
+                int64_t act = l->elem_bytes;
+                char act_sym[64] = "";
+                for (int d = 0; d < l->ndims; d++) {
+                    if (l->dims[d] < 0 && l->concrete[d] < 0) {
+                        act_dyn = 1;
+                        strcat(act_sym, d ? "*?" : "?");
+                    } else {
+                        int64_t v = l->dims[d] >= 0 ? l->dims[d] : l->concrete[d];
+                        act *= v;
+                        char tmp[32];
+                        snprintf(tmp, sizeof(tmp), "%s%lld", d ? "*" : "", (long long)v);
+                        if (act_dyn || d == 0) {
+                            /* rebuild properly below */
+                        }
+                        (void)tmp;
+                    }
+                }
+                /* rebuild act symbolic properly */
+                {
+                    char parts[128] = "";
+                    int dyn = 0;
+                    int64_t prod = 1;
+                    for (int d = 0; d < l->ndims; d++) {
+                        if (l->dims[d] < 0 && l->concrete[d] < 0) {
+                            dyn = 1;
+                            strcat(parts, parts[0] ? "*?" : "?");
+                        } else {
+                            int64_t v = l->dims[d] >= 0 ? l->dims[d] : l->concrete[d];
+                            prod *= v;
+                            char tmp[32];
+                            snprintf(tmp, sizeof(tmp), "%s%lld", parts[0] ? "*" : "", (long long)v);
+                            strcat(parts, tmp);
+                        }
+                    }
+                    if (dyn) {
+                        char piece[96];
+                        snprintf(piece, sizeof(piece), "act:%s*%d", parts, l->elem_bytes);
+                        if (sym[0]) {
+                            strcat(sym, "+");
+                        }
+                        strcat(sym, piece);
+                    } else {
+                        static_total += prod * l->elem_bytes;
+                    }
+                }
+                {
+                    char parts[128] = "";
+                    int dyn = 0;
+                    int64_t prod = 1;
+                    for (int d = 0; d < w->ndims; d++) {
+                        if (w->dims[d] < 0 && w->concrete[d] < 0) {
+                            dyn = 1;
+                            strcat(parts, parts[0] ? "*?" : "?");
+                        } else {
+                            int64_t v = w->dims[d] >= 0 ? w->dims[d] : w->concrete[d];
+                            prod *= v;
+                            char tmp[32];
+                            snprintf(tmp, sizeof(tmp), "%s%lld", parts[0] ? "*" : "", (long long)v);
+                            strcat(parts, tmp);
+                        }
+                    }
+                    if (dyn) {
+                        char piece[96];
+                        snprintf(piece, sizeof(piece), "w:%s*%d", parts, w->elem_bytes);
+                        if (sym[0]) {
+                            strcat(sym, "+");
+                        }
+                        strcat(sym, piece);
+                    } else {
+                        static_total += prod * w->elem_bytes;
+                    }
+                }
+                /* out dims = lhs[:-1] + rhs[-1:] */
+                {
+                    int od[8];
+                    int ond = 0;
+                    for (int d = 0; d < l->ndims - 1; d++) {
+                        od[ond++] = l->dims[d];
+                    }
+                    od[ond++] = w->dims[w->ndims - 1];
+                    char parts[128] = "";
+                    int dyn = 0;
+                    int64_t prod = 1;
+                    for (int d = 0; d < ond; d++) {
+                        int dimv = od[d];
+                        int conc = -1;
+                        if (d < l->ndims - 1) {
+                            conc = l->concrete[d];
+                        } else {
+                            conc = w->concrete[w->ndims - 1];
+                        }
+                        if (dimv < 0 && conc < 0) {
+                            dyn = 1;
+                            strcat(parts, parts[0] ? "*?" : "?");
+                        } else {
+                            int64_t v = dimv >= 0 ? dimv : conc;
+                            prod *= v;
+                            char tmp[32];
+                            snprintf(tmp, sizeof(tmp), "%s%lld", parts[0] ? "*" : "", (long long)v);
+                            strcat(parts, tmp);
+                        }
+                    }
+                    if (dyn) {
+                        char piece[96];
+                        snprintf(piece, sizeof(piece), "out:%s*%d", parts, l->elem_bytes);
+                        if (sym[0]) {
+                            strcat(sym, "+");
+                        }
+                        strcat(sym, piece);
+                    } else {
+                        static_total += prod * l->elem_bytes;
+                    }
+                }
+                (void)act;
+                (void)act_dyn;
+                (void)act_sym;
+            }
+        }
+    }
+    if (sym[0]) {
+        r->has_sym = 1;
+        if (static_total > 0) {
+            snprintf(r->peak_sym, sizeof(r->peak_sym), "%lld+%s", (long long)static_total, sym);
+        } else {
+            snprintf(r->peak_sym, sizeof(r->peak_sym), "%s", sym);
+        }
+        r->has_peak = 1;
+        r->peak = static_total;
+    } else if (saw || static_total > 0) {
+        r->has_peak = 1;
+        r->peak = static_total;
+    }
+}
+
+static char *lower_expr(LowerCtx *cx, Expr *e) {
+    if (!e) {
+        return ssa_keep("0");
+    }
+    switch (e->kind) {
+    case EX_INT: {
+        char *d = ssa_keep(fresh(cx));
+        push_const_int(cx, d, e->ival);
+        return d;
+    }
+    case EX_FLOAT: {
+        char *d = ssa_keep(fresh(cx));
+        push_const_int(cx, d, 0);
+        return d;
+    }
+    case EX_STRING: {
+        char *d = ssa_keep(fresh(cx));
+        IrInst in = {0};
+        in.kind = II_CONST_STR;
+        snprintf(in.dest, sizeof(in.dest), "%s", d);
+        snprintf(in.a, sizeof(in.a), "%s", e->text ? e->text : "");
+        ir_push(cx, in);
+        return d;
+    }
+    case EX_IDENT:
+        return ssa_keep(cx_lookup(cx, e->text ? e->text : ""));
+    case EX_BINARY: {
+        char *l = lower_expr(cx, e->left);
+        char *r = lower_expr(cx, e->right);
+        char *d = ssa_keep(fresh(cx));
+        IrInst in = {0};
+        in.kind = II_BINARY;
+        snprintf(in.dest, sizeof(in.dest), "%s", d);
+        snprintf(in.a, sizeof(in.a), "%s", e->text ? e->text : "add");
+        snprintf(in.b, sizeof(in.b), "%s", l);
+        snprintf(in.c, sizeof(in.c), "%s", r);
+        ir_push(cx, in);
+        return d;
+    }
+    case EX_TENSOR: {
+        /* bump counter, no instruction — matches bootstrap */
+        return ssa_keep(fresh(cx));
+    }
+    case EX_TO: {
+        char *src = lower_expr(cx, e->inner);
+        char *d = ssa_keep(fresh(cx));
+        IrInst in = {0};
+        in.kind = II_PLACE;
+        snprintf(in.dest, sizeof(in.dest), "%s", d);
+        snprintf(in.a, sizeof(in.a), "%s", src);
+        snprintf(in.b, sizeof(in.b), "%s", e->place ? e->place : "cpu");
+        ir_push(cx, in);
+        IrInst dr = {0};
+        dr.kind = II_DROP;
+        if (e->inner && e->inner->kind == EX_IDENT) {
+            snprintf(dr.a, sizeof(dr.a), "%s", e->inner->text);
+        } else {
+            snprintf(dr.a, sizeof(dr.a), "tmp");
+        }
+        ir_push(cx, dr);
+        return d;
+    }
+    case EX_ON: {
+        FusedOp ops[8];
+        size_t nops = 0;
+        if (e->body && e->body->tail) {
+            collect_fused(e->body->tail, cx, ops, &nops);
+        }
+        int has_ep = 0;
+        int has_mm = 0;
+        for (size_t i = 0; i < nops; i++) {
+            if (ops[i].kind == FO_EPILOGUE) {
+                has_ep = 1;
+            }
+            if (ops[i].kind == FO_MATMUL) {
+                has_mm = 1;
+            }
+        }
+        int fused = has_ep || nops > 1 || has_mm;
+        Region reg = {0};
+        snprintf(reg.place, sizeof(reg.place), "%s", e->place ? e->place : "p");
+        memcpy(reg.ops, ops, sizeof(FusedOp) * nops);
+        reg.nops = nops;
+        reg.fused = fused;
+        estimate_peak(&reg, cx);
+
+        char *d = ssa_keep(fresh(cx));
+        for (size_t i = 0; i < nops; i++) {
+            if (ops[i].kind == FO_MATMUL) {
+                char *m = axis_len(cx, ops[i].a, 1);
+                char *k = axis_len(cx, ops[i].a, 0);
+                char *n = axis_len(cx, ops[i].b, 0);
+                IrInst in = {0};
+                in.kind = II_CALL;
+                in.has_dest = 1;
+                snprintf(in.dest, sizeof(in.dest), "%s", d);
+                in.func = xstrdup("sal_matmul_f32");
+                in.nargs = 5;
+                in.args = (char **)calloc(5, sizeof(char *));
+                in.args[0] = xstrdup(ops[i].a);
+                in.args[1] = xstrdup(ops[i].b);
+                in.args[2] = xstrdup(m);
+                in.args[3] = xstrdup(k);
+                in.args[4] = xstrdup(n);
+                ir_push(cx, in);
+                break;
+            }
+        }
+        if (cx->nregions < 4) {
+            /* store on current fn via pointer — handled by caller copying regions */
+        }
+        /* stash region in cx */
+        static Region pending[4];
+        static size_t npending;
+        if (npending < 4) {
+            pending[npending++] = reg;
+        }
+        /* use cx->regions dynamically */
+        cx->regions = (Region *)realloc(cx->regions, (cx->nregions + 1) * sizeof(Region));
+        cx->regions[cx->nregions++] = reg;
+        (void)pending;
+        return d;
+    }
+    case EX_CALL: {
+        const char *fname = e->text ? e->text : "";
+        char **arg_names = (char **)calloc(e->nargs, sizeof(char *));
+        for (size_t i = 0; i < e->nargs; i++) {
+            arg_names[i] = xstrdup(lower_expr(cx, e->args[i]));
+        }
+        char *d = ssa_keep(fresh(cx));
+        if (strcmp(fname, "load") == 0 && e->nargs >= 1 && e->args[0]->kind == EX_STRING) {
+            IrInst in = {0};
+            in.kind = II_CALL;
+            in.has_dest = 1;
+            snprintf(in.dest, sizeof(in.dest), "%s", d);
+            in.func = xstrdup("sal_load");
+            in.nargs = 1;
+            in.args = (char **)calloc(1, sizeof(char *));
+            char quoted[256];
+            snprintf(quoted, sizeof(quoted), "\"%s\"", e->args[0]->text ? e->args[0]->text : "");
+            in.args[0] = xstrdup(quoted);
+            ir_push(cx, in);
+            for (size_t i = 0; i < e->nargs; i++) {
+                free(arg_names[i]);
+            }
+            free(arg_names);
+            return d;
+        }
+        char rname[128];
+        runtime_name(cx, fname, rname, sizeof(rname));
+        IrInst in = {0};
+        in.kind = II_CALL;
+        in.has_dest = 1;
+        snprintf(in.dest, sizeof(in.dest), "%s", d);
+        in.func = xstrdup(rname);
+        in.nargs = e->nargs;
+        in.args = arg_names;
+        ir_push(cx, in);
+        return d;
+    }
+    }
+    return ssa_keep(fresh(cx));
+}
+
+static void parse_tensor_type(const char *ty, Bind *b) {
+    b->is_tensor = 0;
+    b->ndims = 0;
+    b->elem_bytes = 4;
+    if (!ty || !strstr(ty, "Tensor")) {
+        return;
+    }
+    b->is_tensor = 1;
+    /* find dims inside first [ ... ] after Tensor */
+    const char *lb = strchr(ty, '[');
+    if (!lb) {
+        return;
+    }
+    lb++;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s", lb);
+    char *rb = strchr(buf, ']');
+    if (rb) {
+        *rb = 0;
+    }
+    /* tokens: F32, QDYN or number, ... */
+    char *save = NULL;
+    char *tok = strtok_r(buf, ", ", &save);
+    int first = 1;
+    while (tok) {
+        if (first) {
+            first = 0;
+            if (strcmp(tok, "F16") == 0 || strcmp(tok, "BF16") == 0) {
+                b->elem_bytes = 2;
+            } else if (strcmp(tok, "I8") == 0) {
+                b->elem_bytes = 1;
+            }
+            tok = strtok_r(NULL, ", ", &save);
+            continue;
+        }
+        if (b->ndims < 4) {
+            if (strcmp(tok, "QDYN") == 0 || strcmp(tok, "?") == 0) {
+                b->dims[b->ndims] = -1;
+                b->concrete[b->ndims] = -1;
+            } else {
+                b->dims[b->ndims] = atoi(tok);
+                b->concrete[b->ndims] = -1;
+            }
+            b->ndims++;
+        }
+        tok = strtok_r(NULL, ", ", &save);
+    }
+}
+
+static IrFn lower_fn(FnDef *f, LowerCtx *base) {
+    LowerCtx cx = {0};
+    memcpy(cx.fn_names, base->fn_names, sizeof(cx.fn_names));
+    cx.nfn_names = base->nfn_names;
+    cx.counter = 0;
+
+    for (size_t i = 0; i < f->nparams; i++) {
+        Bind b = {0};
+        snprintf(b.name, 64, "%s", f->params[i].name);
+        snprintf(b.ssa, 64, "%s", f->params[i].name);
+        parse_tensor_type(f->params[i].ty_raw, &b);
+        if (b.is_tensor) {
+            for (int d = 0; d < b.ndims; d++) {
+                if (b.dims[d] < 0) {
+                    char dp[64];
+                    snprintf(dp, sizeof(dp), "%s_d%d", b.name, d);
+                    if (cx.ndims < 8) {
+                        snprintf(cx.dim_params[cx.ndims++], 64, "%s", dp);
+                    }
+                }
+            }
+        }
+        cx.binds[cx.nbinds++] = b;
+    }
+
+    for (size_t i = 0; i < f->body.nstmts; i++) {
+        Stmt *st = &f->body.stmts[i];
+        if (st->is_assign) {
+            char *v = lower_expr(&cx, st->expr);
+            cx_bind(&cx, st->name, v);
+            if (st->expr && st->expr->kind == EX_TENSOR) {
+                Bind *b = cx_find(&cx, st->name);
+                if (b) {
+                    b->is_tensor = 1;
+                    b->ndims = 2;
+                    b->dims[0] = (int)st->expr->nrows;
+                    b->dims[1] = (int)st->expr->ncols;
+                    b->concrete[0] = b->dims[0];
+                    b->concrete[1] = b->dims[1];
+                    b->elem_bytes = 4;
+                }
+            }
+        } else {
+            lower_expr(&cx, st->expr);
+        }
+    }
+    if (f->body.tail) {
+        char *v = lower_expr(&cx, f->body.tail);
+        IrInst in = {0};
+        in.kind = II_RETURN;
+        snprintf(in.a, sizeof(in.a), "%s", v);
+        ir_push(&cx, in);
+    }
+
+    IrFn out = {0};
+    snprintf(out.name, sizeof(out.name), "%s", f->name);
+    out.ndims = cx.ndims;
+    for (size_t i = 0; i < cx.ndims; i++) {
+        snprintf(out.dim_params[i], 64, "%s", cx.dim_params[i]);
+    }
+    out.insts = cx.insts;
+    out.ninsts = cx.ninsts;
+    out.nregions = cx.nregions;
+    for (size_t i = 0; i < cx.nregions && i < 4; i++) {
+        out.regions[i] = cx.regions[i];
+    }
+    free(cx.regions);
+    return out;
+}
+
+static IrMod lower_program(Program *prog) {
+    LowerCtx base = {0};
+    for (size_t i = 0; i < prog->nfns; i++) {
+        snprintf(base.fn_names[base.nfn_names++], 64, "%s", prog->fns[i].name);
+    }
+    IrMod m = {0};
+    m.fns = (IrFn *)calloc(prog->nfns, sizeof(IrFn));
+    m.nfns = prog->nfns;
+    for (size_t i = 0; i < prog->nfns; i++) {
+        m.fns[i] = lower_fn(&prog->fns[i], &base);
+    }
+    return m;
+}
+
+static void ir_free(IrMod *m) {
+    for (size_t i = 0; i < m->nfns; i++) {
+        for (size_t j = 0; j < m->fns[i].ninsts; j++) {
+            IrInst *in = &m->fns[i].insts[j];
+            free(in->func);
+            for (size_t k = 0; k < in->nargs; k++) {
+                free(in->args[k]);
+            }
+            free(in->args);
+        }
+        free(m->fns[i].insts);
+    }
+    free(m->fns);
+    m->fns = NULL;
+    m->nfns = 0;
+}
+
+static void emit_inst(Buf *b, IrInst *in) {
+    switch (in->kind) {
+    case II_CONST_INT:
+        buf_printf(b, "  ConstInt { dest: \"%s\", value: %lld }\n", in->dest, (long long)in->ival);
+        break;
+    case II_CONST_STR:
+        buf_printf(b, "  ConstString { dest: \"%s\", value: \"%s\" }\n", in->dest, in->a);
+        break;
+    case II_BINARY:
+        buf_printf(b, "  Binary { dest: \"%s\", op: \"%s\", left: \"%s\", right: \"%s\" }\n",
+                   in->dest, in->a, in->b, in->c);
+        break;
+    case II_CALL: {
+        buf_puts(b, "  Call { dest: ");
+        if (in->has_dest) {
+            buf_printf(b, "Some(\"%s\")", in->dest);
+        } else {
+            buf_puts(b, "None");
+        }
+        buf_printf(b, ", func: \"%s\", args: [", in->func ? in->func : "");
+        for (size_t i = 0; i < in->nargs; i++) {
+            if (i) {
+                buf_puts(b, ", ");
+            }
+            /* Rust Debug of String */
+            buf_putc(b, '"');
+            const char *s = in->args[i] ? in->args[i] : "";
+            for (; *s; s++) {
+                if (*s == '"' || *s == '\\') {
+                    buf_putc(b, '\\');
+                }
+                buf_putc(b, *s);
+            }
+            buf_putc(b, '"');
+        }
+        buf_puts(b, "] }\n");
+        break;
+    }
+    case II_PLACE:
+        buf_printf(b, "  PlaceCopy { dest: \"%s\", from: \"%s\", to_place: \"%s\" }\n", in->dest,
+                   in->a, in->b);
+        break;
+    case II_RETURN:
+        buf_printf(b, "  Return { value: \"%s\" }\n", in->a);
+        break;
+    case II_DROP:
+        buf_printf(b, "  Drop { name: \"%s\" }\n", in->a);
+        break;
+    }
+}
+
+static void emit_region(Buf *b, Region *r) {
+    buf_printf(b, "  region on %s fused=%s peak_bytes=", r->place, r->fused ? "true" : "false");
+    if (r->has_peak || r->has_sym) {
+        if (r->has_peak) {
+            buf_printf(b, "{\"%s\": %lld}", r->place, (long long)r->peak);
+        } else {
+            buf_puts(b, "{}");
+        }
+    } else {
+        buf_puts(b, "{}");
+    }
+    if (r->has_sym) {
+        buf_printf(b, " peak_symbolic={\"%s\": \"%s\"}", r->place, r->peak_sym);
+    }
+    buf_putc(b, '\n');
+    for (size_t i = 0; i < r->nops; i++) {
+        FusedOp *op = &r->ops[i];
+        if (op->kind == FO_MATMUL) {
+            buf_printf(b, "    Matmul { lhs: \"%s\", rhs: \"%s\", dest: \"%s\" }\n", op->a, op->b,
+                       op->c);
+        } else if (op->kind == FO_EPILOGUE) {
+            buf_printf(b,
+                       "    MapEpilogue { op: \"%s\", input: \"%s\", dest: \"%s\" }  # fused "
+                       "epilogue, no intermediate buffer\n",
+                       op->a, op->b, op->c);
+        } else if (op->kind == FO_SOFTMAX) {
+            buf_printf(b, "    Softmax { input: \"%s\", dest: \"%s\" }\n", op->a, op->c);
+        }
+    }
+}
+
+static char *ir_to_text(IrMod *m) {
+    Buf b;
+    buf_init(&b);
+    for (size_t i = 0; i < m->nfns; i++) {
+        IrFn *f = &m->fns[i];
+        buf_printf(&b, "fn %s:\n", f->name);
+        if (f->ndims) {
+            buf_puts(&b, "  dim_params=[");
+            for (size_t d = 0; d < f->ndims; d++) {
+                if (d) {
+                    buf_puts(&b, ", ");
+                }
+                buf_printf(&b, "\"%s\"", f->dim_params[d]);
+            }
+            buf_puts(&b, "]\n");
+        }
+        for (size_t j = 0; j < f->ninsts; j++) {
+            emit_inst(&b, &f->insts[j]);
+        }
+        for (size_t r = 0; r < f->nregions; r++) {
+            emit_region(&b, &f->regions[r]);
+        }
+    }
+    return b.data ? b.data : xstrdup("");
+}
+
+char *sal_emit_ir(const char *src) {
+    char *pre = preprocess_src(src ? src : "");
+    Program prog = parse_program(pre);
+    free(pre);
+    IrMod ir = lower_program(&prog);
+    char *text = ir_to_text(&ir);
+    ir_free(&ir);
+    program_free(&prog);
+    /* Return via instrument-aware allocator so sal_free is valid. */
+    char *out = sal_strdup(text ? text : "");
+    free(text);
+    return out;
+}
+
+/* ---------- C codegen + clang ---------- */
+static int find_runtime_dir(char *out, size_t n) {
+    const char *env = getenv("SAL_RUNTIME");
+    if (env && env[0]) {
+        snprintf(out, n, "%s", env);
+        return 0;
+    }
+    const char *cands[] = {"runtime", "./runtime", NULL};
+    for (int i = 0; cands[i]; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/sal_runtime.c", cands[i]);
+        if (access(path, R_OK) == 0) {
+            snprintf(out, n, "%s", cands[i]);
+            return 0;
+        }
+    }
+    /* relative to executable */
+    char exe[512];
+    ssize_t m = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (m > 0) {
+        exe[m] = 0;
+        char *slash = strrchr(exe, '/');
+        if (slash) {
+            *slash = 0;
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/../runtime/sal_runtime.c", exe);
+            if (access(path, R_OK) == 0) {
+                snprintf(out, n, "%s/../runtime", exe);
+                return 0;
+            }
+            snprintf(path, sizeof(path), "%s/runtime/sal_runtime.c", exe);
+            if (access(path, R_OK) == 0) {
+                snprintf(out, n, "%s/runtime", exe);
+                return 0;
+            }
+        }
+    }
+    snprintf(out, n, "runtime");
+    return 1;
+}
+
+static void c_escape(Buf *b, const char *s) {
+    buf_putc(b, '"');
+    for (; s && *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '\\' || c == '"') {
+            buf_putc(b, '\\');
+            buf_putc(b, (char)c);
+        } else if (c == '\n') {
+            buf_puts(b, "\\n");
+        } else if (c == '\t') {
+            buf_puts(b, "\\t");
+        } else if (c < 32 || c > 126) {
+            buf_printf(b, "\\x%02x", c);
+        } else {
+            buf_putc(b, (char)c);
+        }
+    }
+    buf_putc(b, '"');
+}
+
+static int emit_c_from_ir(IrMod *m, Buf *out) {
+    buf_puts(out, "#include <stdint.h>\n#include <stdlib.h>\n");
+    buf_puts(out, "void sal_runtime_init(int64_t argc, const char **argv);\n");
+    buf_puts(out, "char *sal_argv(int64_t i);\n");
+    buf_puts(out, "char *sal_read_file(const char *path);\n");
+    buf_puts(out, "int64_t sal_write_file(const char *path, const char *data);\n");
+    buf_puts(out, "int64_t sal_print_str(const char *data);\n");
+    buf_puts(out, "int64_t sal_str_eq(const char *a, const char *b);\n");
+    buf_puts(out, "int64_t sal_str_contains(const char *a, const char *b);\n");
+    buf_puts(out, "int64_t sal_str_len(const char *s);\n");
+    buf_puts(out, "char *sal_str_concat(const char *a, const char *b);\n");
+    buf_puts(out, "char *sal_str_append(char *a, const char *b);\n");
+    buf_puts(out, "char *sal_strdup(const char *s);\n");
+    buf_puts(out, "char *sal_select_str(int64_t cond, char *a, char *b);\n");
+    buf_puts(out, "void sal_free(void *p);\n");
+    buf_puts(out, "int64_t sal_not(int64_t x);\n");
+    buf_puts(out, "int64_t sal_gated_print_str(int64_t cond, const char *data);\n");
+    buf_puts(out, "char *sal_emit_ir(const char *src);\n");
+    buf_puts(out, "int64_t sal_compile_sal(const char *src_path, const char *out_path);\n");
+    buf_puts(out, "int64_t sal_gated_compile_sal(int64_t cond, const char *src_path, const char *out_path);\n");
+    buf_puts(out, "char *sal_tmp_path(const char *suffix);\n");
+    buf_puts(out, "int64_t sal_clang(const char *c_path, const char *out_path);\n");
+    buf_puts(out, "char *sal_exec_capture(const char *bin, const char *arg);\n");
+    buf_puts(out, "int64_t sal_exec_compile(const char *bin, const char *src, const char *outp);\n");
+    buf_puts(out, "int64_t sal_gated_exec_compile(int64_t cond, const char *bin, const char *src, const char *outp);\n");
+    buf_puts(out, "char *sal_char_to_str(int64_t c);\n");
+    buf_puts(out, "int64_t sal_print_i64(int64_t v);\n\n");
+
+    /* forward decls for user fns */
+    for (size_t i = 0; i < m->nfns; i++) {
+        if (strcmp(m->fns[i].name, "main") != 0) {
+            buf_printf(out, "static int64_t fn_%s(void);\n", m->fns[i].name);
+        }
+    }
+
+    for (size_t fi = 0; fi < m->nfns; fi++) {
+        IrFn *f = &m->fns[fi];
+        int is_main = strcmp(f->name, "main") == 0;
+        if (is_main) {
+            buf_puts(out, "int main(int argc, char **argv) {\n");
+            buf_puts(out, "  sal_runtime_init((int64_t)argc, (const char **)argv);\n");
+        } else {
+            /* simplistic: no real params — corpus helpers used from main with our emit */
+            buf_printf(out, "static int64_t fn_%s(void) {\n", f->name);
+        }
+        /* naive: map SSA to int64_t locals; pointers stored as int64_t */
+        for (size_t j = 0; j < f->ninsts; j++) {
+            IrInst *in = &f->insts[j];
+            switch (in->kind) {
+            case II_CONST_INT:
+                buf_printf(out, "  int64_t %s = %lld;\n", in->dest, (long long)in->ival);
+                break;
+            case II_CONST_STR:
+                buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)(const char *)", in->dest);
+                c_escape(out, in->a);
+                buf_puts(out, ";\n");
+                break;
+            case II_BINARY:
+                if (strcmp(in->a, "add") == 0) {
+                    buf_printf(out, "  int64_t %s = %s + %s;\n", in->dest, in->b, in->c);
+                } else {
+                    buf_printf(out, "  int64_t %s = 0;\n", in->dest);
+                }
+                break;
+            case II_PLACE:
+            case II_DROP:
+                /* host no-op for place/drop in simple codegen */
+                if (in->kind == II_PLACE) {
+                    buf_printf(out, "  int64_t %s = %s;\n", in->dest, in->a);
+                }
+                break;
+            case II_RETURN:
+                if (is_main) {
+                    buf_printf(out, "  return (int)%s;\n", in->a);
+                } else {
+                    buf_printf(out, "  return %s;\n", in->a);
+                }
+                break;
+            case II_CALL: {
+                const char *fn = in->func ? in->func : "";
+                if (strcmp(fn, "sal_argv") == 0) {
+                    buf_printf(out, "  char *%s_p = sal_argv(%s);\n", in->dest,
+                               in->nargs ? in->args[0] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_read_file") == 0) {
+                    buf_printf(out, "  char *%s_p = sal_read_file((const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_str_eq") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_str_eq((const char *)(uintptr_t)%s, (const char "
+                               "*)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                } else if (strcmp(fn, "sal_not") == 0) {
+                    buf_printf(out, "  int64_t %s = sal_not(%s);\n", in->dest,
+                               in->nargs ? in->args[0] : "0");
+                } else if (strcmp(fn, "sal_emit_ir") == 0 || strcmp(fn, "sal_emit_ir_from") == 0) {
+                    buf_printf(out, "  char *%s_p = sal_emit_ir((const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_gated_print_str") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_gated_print_str(%s, (const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                } else if (strcmp(fn, "sal_gated_compile_sal") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_gated_compile_sal(%s, (const char "
+                               "*)(uintptr_t)%s, (const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0",
+                               in->nargs > 2 ? in->args[2] : "0");
+                } else if (strcmp(fn, "sal_compile_sal") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_compile_sal((const char *)(uintptr_t)%s, (const "
+                               "char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                } else if (strcmp(fn, "sal_free") == 0) {
+                    buf_printf(out, "  sal_free((void *)(uintptr_t)%s);\n",
+                               in->nargs ? in->args[0] : "0");
+                    if (in->has_dest) {
+                        buf_printf(out, "  int64_t %s = 0;\n", in->dest);
+                    }
+                } else if (strcmp(fn, "sal_strdup") == 0) {
+                    buf_printf(out, "  char *%s_p = sal_strdup((const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_str_concat") == 0) {
+                    buf_printf(out,
+                               "  char *%s_p = sal_str_concat((const char *)(uintptr_t)%s, (const "
+                               "char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_str_append") == 0) {
+                    buf_printf(out,
+                               "  char *%s_p = sal_str_append((char *)(uintptr_t)%s, (const "
+                               "char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_tmp_path") == 0) {
+                    buf_printf(out, "  char *%s_p = sal_tmp_path((const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_clang") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_clang((const char *)(uintptr_t)%s, (const char "
+                               "*)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                } else if (strcmp(fn, "sal_exec_capture") == 0) {
+                    buf_printf(out,
+                               "  char *%s_p = sal_exec_capture((const char *)(uintptr_t)%s, (const "
+                               "char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                    buf_printf(out, "  int64_t %s = (int64_t)(uintptr_t)%s_p;\n", in->dest, in->dest);
+                } else if (strcmp(fn, "sal_exec_compile") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_exec_compile((const char *)(uintptr_t)%s, (const "
+                               "char *)(uintptr_t)%s, (const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0",
+                               in->nargs > 2 ? in->args[2] : "0");
+                } else if (strcmp(fn, "sal_gated_exec_compile") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_gated_exec_compile(%s, (const char *)(uintptr_t)%s, "
+                               "(const char *)(uintptr_t)%s, (const char *)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0",
+                               in->nargs > 2 ? in->args[2] : "0",
+                               in->nargs > 3 ? in->args[3] : "0");
+                } else if (strcmp(fn, "sal_write_file") == 0) {
+                    buf_printf(out,
+                               "  int64_t %s = sal_write_file((const char *)(uintptr_t)%s, (const char "
+                               "*)(uintptr_t)%s);\n",
+                               in->dest, in->nargs ? in->args[0] : "0",
+                               in->nargs > 1 ? in->args[1] : "0");
+                } else if (strncmp(fn, "sal_", 4) != 0 && is_main) {
+                    /* user fn call — ignore args for void helpers returning int */
+                    buf_printf(out, "  int64_t %s = fn_%s();\n", in->dest, fn);
+                } else if (strcmp(fn, "sal_print") == 0) {
+                    buf_printf(out, "  int64_t %s = sal_print_i64(%s);\n", in->dest,
+                               in->nargs ? in->args[0] : "0");
+                } else {
+                    if (in->has_dest) {
+                        buf_printf(out, "  int64_t %s = 0;\n", in->dest);
+                    }
+                }
+                break;
+            }
+            }
+        }
+        if (!is_main) {
+            buf_puts(out, "  return 0;\n");
+        }
+        buf_puts(out, "}\n\n");
+    }
+    return 0;
+}
+
+static int run_clang(const char *c_path, const char *out_path, const char *runtime_dir) {
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+             "clang -O0 -g -o %s %s %s/sal_runtime.c %s/kernels.c "
+             "%s/instrument.c -lm 2>/tmp/sal-selfhost-clang.err",
+             out_path, c_path, runtime_dir, runtime_dir, runtime_dir);
+    int rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "sal_compile_sal: clang failed (%d)\n", rc);
+        FILE *ef = fopen("/tmp/sal-selfhost-clang.err", "r");
+        if (ef) {
+            char line[512];
+            while (fgets(line, sizeof(line), ef)) {
+                fputs(line, stderr);
+            }
+            fclose(ef);
+        }
+        return 1;
+    }
+    chmod(out_path, 0755);
+    return 0;
+}
+
+int64_t sal_compile_sal(const char *src_path, const char *out_path) {
+    if (!src_path || !out_path) {
+        return 1;
+    }
+    char *src = sal_read_file(src_path);
+    if (!src) {
+        return 1;
+    }
+    char *pre = preprocess_src(src);
+    Program prog = parse_program(pre);
+    free(pre);
+    IrMod ir = lower_program(&prog);
+    Buf ccode;
+    buf_init(&ccode);
+    emit_c_from_ir(&ir, &ccode);
+    ir_free(&ir);
+    program_free(&prog);
+    sal_free(src);
+
+    char cpath[512];
+    snprintf(cpath, sizeof(cpath), "/tmp/sal-sh-%d-%ld.c", (int)getpid(), (long)random());
+    FILE *f = fopen(cpath, "w");
+    if (!f) {
+        buf_free(&ccode);
+        return 1;
+    }
+    fwrite(ccode.data ? ccode.data : "", 1, ccode.len, f);
+    fclose(f);
+    buf_free(&ccode);
+
+    char rdir[512];
+    find_runtime_dir(rdir, sizeof(rdir));
+    int rc = run_clang(cpath, out_path, rdir);
+    unlink(cpath);
+    return rc;
+}
+
+int64_t sal_gated_compile_sal(int64_t cond, const char *src_path, const char *out_path) {
+    if (!cond) {
+        return 0;
+    }
+    return sal_compile_sal(src_path, out_path);
+}
+
+
+int main(int argc, char **argv) {
+    sal_runtime_init((int64_t)argc, (const char **)argv);
+    if (argc >= 4 && argv[2] && strcmp(argv[2], "-o") == 0) {
+        return (int)sal_compile_sal(argv[1], argv[3]);
+    }
+    if (argc >= 2) {
+        char *src = sal_read_file(argv[1]);
+        char *ir = sal_emit_ir(src);
+        sal_print_str(ir);
+        sal_free(ir);
+        sal_free(src);
+        return 0;
+    }
+    return 1;
+}

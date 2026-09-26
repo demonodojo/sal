@@ -1,0 +1,62 @@
+# Preludio sal — superficie que el parser de arranque acepta hoy.
+#
+# Items: `fn`, `import`, `struct`, `enum`.
+# Las primitivas de tensor (`matmul`, `softmax`, `map`, `reduce`, `reshape`,
+# `transpose`, `relu`, `load`, `print`) las resuelve el runtime del compilador.
+# Aquí se documentan firmas parseables; los cuerpos son stubs de identidad
+# o reenvío, no la implementación real.
+
+# --- Option / Result / List ---
+# List se materializa en el runtime (`list_new` / `list_push` / `list_len` / `list_get`).
+
+enum Option[T]
+    None
+    Some(T)
+
+enum Result[T, E]
+    Ok(T)
+    Err(E)
+
+fn list_new() -> List[Int] ! alloc
+    list_new()
+
+fn list_push(xs: List[Int], x: Int) -> List[Int]
+    list_push(xs, x)
+
+fn list_len(xs: List[Int]) -> Int
+    list_len(xs)
+
+fn list_get(xs: List[Int], i: Int) -> Int
+    list_get(xs, i)
+
+# --- Operaciones de tensor ---
+
+fn map(t: Tensor[F32, ?, 4] on p) -> Tensor[F32, ?, 4] on p
+    t
+
+fn reduce(t: Tensor[F32, ?, 4] on p) -> Tensor[F32, 4] on p
+    t
+
+fn matmul(a: Tensor[F32, ?, 4] on p, b: Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
+    a
+
+fn softmax(t: Tensor[F32, ?, 4] on p) -> Tensor[F32, ?, 4] on p
+    t
+
+fn reshape(t: Tensor[F32, 2, 2] on p) -> Tensor[F32, 4, 1] on p
+    t
+
+fn transpose(t: Tensor[F32, 2, 4] on p) -> Tensor[F32, 4, 2] on p
+    t
+
+fn relu(t: Tensor[F32, ?, 4] on p) -> Tensor[F32, ?, 4] on p
+    t
+
+# Forma deseada del plan: load[F32, 4, 4]("w.salt") — no parsea (dims no son tipos).
+# Forma aceptada hoy: load[Tensor[F32, 4, 4] on cpu](path)
+
+fn load_weights(path: String) -> Tensor[F32, 4, 4] on cpu ! io, alloc
+    load[Tensor[F32, 4, 4] on cpu](path)
+
+fn print_line(s: String) -> Int ! io
+    print(s)

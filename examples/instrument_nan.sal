@@ -1,0 +1,4 @@
+# NAN via load of a .salt whose payload is a single f32 NaN.
+fn main() -> Int ! io, alloc
+    let t = load[Tensor[F32, 1] on cpu]("examples/instrument_nan.salt")
+    0

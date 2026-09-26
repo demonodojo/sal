@@ -1,0 +1,10 @@
+# Corpus: movimientos — un String se consume al pasarlo (unique).
+# La semántica de E_MOVED aún es stub; el parseo fija la forma del programa.
+
+fn take(s: String) -> Int
+    0
+
+fn main() -> Int
+    s = "hello"
+    a = take(s)
+    a

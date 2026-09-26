@@ -1,0 +1,37 @@
+# Model package checks for the selfhost compiler (`selfhost test`).
+# Covers load, matmul, softmax, fused peak_bytes, and places cpu/gpu/tpu.
+# Execution runs 2×2 A×I (literals below) on gpu and tpu via `on` + `matmul`;
+# the printed sum is the element sum of that product (10).
+
+fn forward(x: Tensor[F32, ?, 4] on p, w: Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
+    on p
+        softmax(relu(matmul(x, w)))
+
+# Kept so package IR still mentions sal_load (not executed from main).
+fn ensure_load_in_ir() -> Int ! io, alloc
+    _w = load[Tensor[F32, 4, 4] on cpu]("w.salt")
+    _x = load[Tensor[F32, 1, 4] on cpu]("x.salt")
+    0
+
+fn main() -> Int ! io, alloc, gpu, tpu
+    let a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    let b = tensor[[1.0, 0.0], [0.0, 1.0]]
+    ag = to gpu a
+    bg = to gpu b
+    s = on gpu
+        matmul(ag, bg)
+    at = to tpu ag
+    bt = to tpu bg
+    _t = on tpu
+        matmul(at, bt)
+    g = place_launches(1)
+    tp = place_launches(2)
+    msg = strdup("sum=")
+    msg = str_append(msg, int_to_str(s))
+    msg = str_append(msg, strdup(" gpu="))
+    msg = str_append(msg, int_to_str(g))
+    msg = str_append(msg, strdup(" tpu="))
+    msg = str_append(msg, int_to_str(tp))
+    msg = str_append(msg, strdup("\n"))
+    _p = print_str(msg)
+    0

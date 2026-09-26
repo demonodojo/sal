@@ -1,0 +1,10 @@
+# Corpus: fuga pensada para --instrument (LEAK).
+# Sin sintaxis de heap explícita; un valor List[Int] con efecto alloc
+# que no se consume es el candidato a LEAK cuando el runtime lo implemente.
+
+fn alloc_buf() -> List[Int] ! alloc
+    buf
+
+fn main() -> Int ! alloc
+    xs = alloc_buf()
+    0

@@ -1,0 +1,370 @@
+# Lee un CSV (una columna, o x,y) y escribe una gráfica de línea en PNG.
+# cargo run -- build examples/plot_csv.sal
+# ./target/sal-out/a.out examples/series.csv /tmp/series.png
+
+fn chart_w() -> Int
+    480
+
+fn chart_h() -> Int
+    280
+
+fn is_digit(c: Int) -> Int
+    if c >= 48
+        if c <= 57
+            1
+        else
+            0
+    else
+        0
+
+fn is_letter(c: Int) -> Int
+    if c >= 65
+        if c <= 90
+            1
+        else
+            if c >= 97
+                if c <= 122
+                    1
+                else
+                    0
+            else
+                0
+    else
+        0
+
+fn cell(st: Int) -> Int ! alloc
+    vec_get(st, 0)
+
+fn set_cell(st: Int, v: Int) -> Int ! alloc
+    vec_set(st, 0, v)
+
+fn bump(st: Int) -> Int ! alloc
+    vec_set(st, 0, vec_get(st, 0) + 1)
+
+fn chars_of(text: String) -> Int ! alloc
+    cs = vec_new()
+    st = vec_new()
+    _p = vec_push(st, 0)
+    n = str_len(text)
+    while cell(st) < n
+        _c = vec_push(cs, str_char(text, cell(st)))
+        _b = bump(st)
+        0
+    cs
+
+fn skip_ws(cs: Int, st: Int) -> Int ! alloc
+    n = vec_len(cs)
+    done = vec_new()
+    _d = vec_push(done, 0)
+    while cell(done) == 0
+        if cell(st) >= n
+            _a = set_cell(done, 1)
+            0
+        else
+            c = vec_get(cs, cell(st))
+            if c == 32
+                _a = bump(st)
+                0
+            else
+                _a = set_cell(done, 1)
+                0
+    0
+
+fn skip_line(cs: Int, st: Int) -> Int ! alloc
+    n = vec_len(cs)
+    done = vec_new()
+    _d = vec_push(done, 0)
+    while cell(done) == 0
+        if cell(st) >= n
+            _a = set_cell(done, 1)
+            0
+        else
+            c = vec_get(cs, cell(st))
+            _a = bump(st)
+            if c == 10
+                _b = set_cell(done, 1)
+                0
+            else
+                0
+    0
+
+fn take_number(cs: Int, st: Int) -> Int ! alloc
+    n = vec_len(cs)
+    c0 = vec_get(cs, cell(st))
+    sign = if c0 == 45
+        _s = bump(st)
+        0 - 1
+    else
+        1
+    acc = vec_new()
+    _a = vec_push(acc, 0)
+    seen_dot = vec_new()
+    _b = vec_push(seen_dot, 0)
+    scale = vec_new()
+    _c = vec_push(scale, 1)
+    cont = vec_new()
+    _e = vec_push(cont, 1)
+    while cell(cont) == 1
+        if cell(st) >= n
+            _f = set_cell(cont, 0)
+            0
+        else
+            c = vec_get(cs, cell(st))
+            if is_digit(c) == 1
+                _g = bump(st)
+                dig = c - 48
+                if cell(seen_dot) == 0
+                    _h = set_cell(acc, cell(acc) * 10 + dig)
+                    0
+                else
+                    if cell(scale) < 1000
+                        _h = set_cell(acc, cell(acc) * 10 + dig)
+                        _i = set_cell(scale, cell(scale) * 10)
+                        0
+                    else
+                        0
+            else
+                if c == 46
+                    if cell(seen_dot) == 0
+                        _g = bump(st)
+                        _h = set_cell(seen_dot, 1)
+                        0
+                    else
+                        _f = set_cell(cont, 0)
+                        0
+                else
+                    _f = set_cell(cont, 0)
+                    0
+    v = cell(acc) * 1000 / cell(scale)
+    if sign < 0
+        0 - v
+    else
+        v
+
+fn parse_ys(text: String) -> Int ! alloc
+    cs = chars_of(text)
+    ys = vec_new()
+    st = vec_new()
+    _p = vec_push(st, 0)
+    n = vec_len(cs)
+    while cell(st) < n
+        _w = skip_ws(cs, st)
+        if cell(st) >= n
+            0
+        else
+            c = vec_get(cs, cell(st))
+            if c == 10
+                _a = bump(st)
+                0
+            else
+                if c == 13
+                    _a = bump(st)
+                    0
+                else
+                    if is_letter(c) == 1
+                        _a = skip_line(cs, st)
+                        0
+                    else
+                        if is_digit(c) == 1
+                            a = take_number(cs, st)
+                            _b = skip_ws(cs, st)
+                            if cell(st) < n
+                                comma = vec_get(cs, cell(st))
+                                if comma == 44
+                                    _c = bump(st)
+                                    _d = skip_ws(cs, st)
+                                    b = take_number(cs, st)
+                                    _e = vec_push(ys, b)
+                                    0
+                                else
+                                    _e = vec_push(ys, a)
+                                    0
+                            else
+                                _e = vec_push(ys, a)
+                                0
+                            _f = skip_line(cs, st)
+                            0
+                        else
+                            if c == 45
+                                a = take_number(cs, st)
+                                _b = skip_ws(cs, st)
+                                if cell(st) < n
+                                    comma = vec_get(cs, cell(st))
+                                    if comma == 44
+                                        _c = bump(st)
+                                        _d = skip_ws(cs, st)
+                                        b = take_number(cs, st)
+                                        _e = vec_push(ys, b)
+                                        0
+                                    else
+                                        _e = vec_push(ys, a)
+                                        0
+                                else
+                                    _e = vec_push(ys, a)
+                                    0
+                                _f = skip_line(cs, st)
+                                0
+                            else
+                                _a = bump(st)
+                                0
+    ys
+
+fn plot_px(buf: Int, w: Int, h: Int, x: Int, y: Int, r: Int, g: Int, b: Int) -> Int ! alloc
+    if x < 0
+        0
+    else
+        if y < 0
+            0
+        else
+            if x >= w
+                0
+            else
+                if y >= h
+                    0
+                else
+                    i = (y * w + x) * 3
+                    _a = vec_set(buf, i, r)
+                    _c = vec_set(buf, i + 1, g)
+                    _e = vec_set(buf, i + 2, b)
+                    0
+
+fn step_line(st: Int, err: Int, steps: Int, adx: Int, ady: Int, sx: Int, sy: Int) -> Int ! alloc
+    e2 = cell(err) * 2
+    if e2 > 0 - ady
+        _a = set_cell(err, cell(err) - ady)
+        _b = vec_set(st, 0, vec_get(st, 0) + sx)
+        0
+    else
+        0
+    if e2 < adx
+        _c = set_cell(err, cell(err) + adx)
+        _d = vec_set(st, 1, vec_get(st, 1) + sy)
+        0
+    else
+        0
+    _e = set_cell(steps, cell(steps) + 1)
+    0
+
+fn draw_line(buf: Int, w: Int, h: Int, x0: Int, y0: Int, x1: Int, y1: Int, r: Int, g: Int, b: Int) -> Int ! alloc
+    st = vec_new()
+    _x = vec_push(st, x0)
+    _y = vec_push(st, y0)
+    dx = x1 - x0
+    dy = y1 - y0
+    adx = if dx < 0
+        0 - dx
+    else
+        dx
+    ady = if dy < 0
+        0 - dy
+    else
+        dy
+    sx = if dx < 0
+        0 - 1
+    else
+        1
+    sy = if dy < 0
+        0 - 1
+    else
+        1
+    err = vec_new()
+    _e = vec_push(err, adx - ady)
+    steps = vec_new()
+    _s = vec_push(steps, 0)
+    limit = adx + ady + 1
+    while cell(steps) < limit
+        _p = plot_px(buf, w, h, vec_get(st, 0), vec_get(st, 1), r, g, b)
+        if vec_get(st, 0) == x1
+            if vec_get(st, 1) == y1
+                _z = set_cell(steps, limit)
+                0
+            else
+                step_line(st, err, steps, adx, ady, sx, sy)
+        else
+            step_line(st, err, steps, adx, ady, sx, sy)
+    0
+
+fn map_x(i: Int, n: Int) -> Int
+    40 + i * 400 / (n - 1)
+
+fn map_y(v: Int, lo: Int, hi: Int) -> Int
+    span = hi - lo
+    if span == 0
+        140
+    else
+        240 - (v - lo) * 200 / span
+
+fn bounds(ys: Int) -> Int ! alloc
+    b = vec_new()
+    _a = vec_push(b, vec_get(ys, 0))
+    _c = vec_push(b, vec_get(ys, 0))
+    st = vec_new()
+    _d = vec_push(st, 1)
+    n = vec_len(ys)
+    while cell(st) < n
+        v = vec_get(ys, cell(st))
+        if v < vec_get(b, 0)
+            _e = vec_set(b, 0, v)
+            0
+        else
+            0
+        if v > vec_get(b, 1)
+            _f = vec_set(b, 1, v)
+            0
+        else
+            0
+        _g = bump(st)
+        0
+    b
+
+fn plot(path: String, ys: Int) -> Int ! io, alloc
+    n = vec_len(ys)
+    b = bounds(ys)
+    lo = vec_get(b, 0)
+    hi = vec_get(b, 1)
+    w = chart_w()
+    h = chart_h()
+    buf = image_new(w, h)
+    _ax = draw_line(buf, w, h, 40, 40, 40, 240, 70, 70, 80)
+    _ay = draw_line(buf, w, h, 40, 240, 440, 240, 70, 70, 80)
+    st = vec_new()
+    _i = vec_push(st, 0)
+    while cell(st) < n - 1
+        i = cell(st)
+        x0 = map_x(i, n)
+        y0 = map_y(vec_get(ys, i), lo, hi)
+        x1 = map_x(i + 1, n)
+        y1 = map_y(vec_get(ys, i + 1), lo, hi)
+        _ln = draw_line(buf, w, h, x0, y0, x1, y1, 32, 96, 216)
+        _n = bump(st)
+        0
+    write_png(path, w, h, buf)
+
+fn go(src: String, dst: String) -> Int ! io, alloc
+    text = read_file(src)
+    ys = parse_ys(text)
+    n = vec_len(ys)
+    if n < 2
+        _e = eprint_str(strdup("csv needs at least two numbers\n"))
+        1
+    else
+        rc = plot(dst, ys)
+        if rc == 0
+            _p = print_str(strdup("wrote png\n"))
+            0
+        else
+            _e = eprint_str(strdup("failed to write png\n"))
+            1
+
+fn main() -> Int ! io, alloc
+    src = argv(1)
+    dst = argv(2)
+    if str_len(src) == 0
+        _e = eprint_str(strdup("usage: plot_csv <in.csv> <out.png>\n"))
+        1
+    else
+        if str_len(dst) == 0
+            _e = eprint_str(strdup("usage: plot_csv <in.csv> <out.png>\n"))
+            1
+        else
+            go(src, dst)

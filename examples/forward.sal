@@ -1,0 +1,5 @@
+fn forward(x: Tensor[F32, ?, 4] on p, w: Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
+    on p
+        relu(matmul(x, w))
+fn main() -> Int ! gpu
+    0

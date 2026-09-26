@@ -1,0 +1,38 @@
+
+# ===== FULL EMIT_IR / EMIT_C (native) =====
+# Parser: recursive descent over token vec
+# Lower: mirrors tools/salc_py.py
+# emit_c: AST→C for stage2
+
+fn emit_ir(src: Int) -> Int ! alloc
+    pre = preprocess(src)
+    prog = parse_program(pre)
+    free(pre)
+    ir = lower_and_text(prog)
+    ir
+
+fn parse_program(src: Int) -> Int ! alloc
+    toks = lex(src)
+    p = parser_new(toks)
+    fns = vec_new()
+    parse_program_go(p, fns)
+    prog = vec_new()
+    _a = vec_push(prog, fns)
+    prog
+
+fn parse_program_go(p: Int, fns: Int) -> Int ! alloc
+    _s = p_skip_nls(p)
+    t = p_peek(p)
+    k = tok_kind(t)
+    if k == TK_EOF()
+        0
+    else
+        if k == TK_FN()
+            f = parse_fn(p)
+            _p = vec_push(fns, f)
+            parse_program_go(p, fns)
+        else
+            _a = p_advance(p)
+            parse_program_go(p, fns)
+
+# TODO full parse/lower

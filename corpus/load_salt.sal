@@ -1,0 +1,13 @@
+# Corpus: load de contenedor .salt.
+# Sintaxis del plan `load[F32, 4, 4]("w.salt")` no parsea (enteros no son tipos).
+# Forma aceptada: type args tipados Tensor[…] on cpu.
+
+fn forward(x: Tensor[F32, ?, 4] on p, w: Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
+    on p
+        relu(matmul(x, w))
+
+fn main() -> Int ! io, alloc, gpu
+    w = load[Tensor[F32, 4, 4] on cpu]("w.salt")
+    x = load[Tensor[F32, 1, 4] on cpu]("x.salt")
+    y = to cpu forward(to gpu x, to gpu w)
+    0

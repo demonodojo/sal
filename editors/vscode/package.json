@@ -1,0 +1,87 @@
+{
+  "name": "sal",
+  "displayName": "sal",
+  "description": "Editar programas sal: resaltado, diagnósticos y formato vía la CLI sal.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "sal",
+  "icon": "icons/sal.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:sal"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "tsc -p . && node --test out/test/sal.test.js",
+    "watch": "tsc -p . --watch"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "sal",
+        "aliases": [
+          "sal",
+          "SAL"
+        ],
+        "extensions": [
+          ".sal"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/sal.svg",
+          "dark": "./icons/sal.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sal",
+        "scopeName": "source.sal",
+        "path": "./syntaxes/sal.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "sal",
+      "properties": {
+        "sal.compilerPath": {
+          "type": "string",
+          "default": "sal",
+          "description": "Ruta del binario sal. Por defecto se busca sal en el PATH."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "sal.check",
+        "title": "SAL: Check"
+      },
+      {
+        "command": "sal.format",
+        "title": "SAL: Format"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "sal.check",
+          "when": "editorLangId == sal"
+        },
+        {
+          "command": "sal.format",
+          "when": "editorLangId == sal"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.8.0"
+  }
+}
