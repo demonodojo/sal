@@ -61,29 +61,22 @@ fn emit_inst(inst: Int) -> Int ! alloc
     k = vec_get(inst, 0)
     if k == II_CI()
         emit_ci(inst)
+    elsif k == II_CS()
+        emit_cs(inst)
+    elsif k == II_BIN()
+        emit_bin(inst)
+    elsif k == II_CALL()
+        emit_call(inst)
+    elsif k == II_PLACE()
+        emit_place(inst)
+    elsif k == II_RET()
+        emit_ret(inst)
+    elsif k == II_DROP()
+        emit_drop(inst)
+    elsif k == II_IF()
+        emit_if_inst(inst)
     else
-        if k == II_CS()
-            emit_cs(inst)
-        else
-            if k == II_BIN()
-                emit_bin(inst)
-            else
-                if k == II_CALL()
-                    emit_call(inst)
-                else
-                    if k == II_PLACE()
-                        emit_place(inst)
-                    else
-                        if k == II_RET()
-                            emit_ret(inst)
-                        else
-                            if k == II_DROP()
-                                emit_drop(inst)
-                            else
-                                if k == II_IF()
-                                    emit_if_inst(inst)
-                                else
-                                    strdup("")
+        d""
 
 fn emit_ci(inst: Int) -> Int ! alloc
     q = qquote()

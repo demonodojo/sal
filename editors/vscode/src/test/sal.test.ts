@@ -202,6 +202,25 @@ test("standard sin JSON sigue subrayando y no ofrece reemplazo", async () => {
   assert.equal(outcome.diagnostics[0].range.startCharacter, 4);
 });
 
+test("un standard que no arranca deja el error en el primer renglón", async () => {
+  const outcome = await checkStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    text: "fn main() -> Int\n    0\n",
+    run: async () => ({
+      stdout: "",
+      stderr: "error[E_INTERNAL]: linker command failed\nclang: error: linker command failed\n",
+      exitCode: 1,
+      notFound: false,
+    }),
+  });
+  assert.equal(outcome.diagnostics.length, 1);
+  assert.equal(outcome.diagnostics[0].code, "standard");
+  assert.equal(outcome.diagnostics[0].message, "error[E_INTERNAL]: linker command failed");
+  assert.equal(outcome.diagnostics[0].fix, null);
+});
+
 test("standard ausente no inventa un aviso", async () => {
   const outcome = await checkStyle({
     command: "standard",

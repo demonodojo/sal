@@ -292,10 +292,11 @@ export async function checkStyle(input: {
           fix: null,
           range: lineColToRange(input.text, diag.line, diag.col),
         }));
-  if (diagnostics.length === 0 && result.exitCode === 2) {
+  if (diagnostics.length === 0 && result.exitCode !== 0 && result.exitCode !== null) {
+    const raw = result.stderr.trim();
     diagnostics.push({
       code: "standard",
-      message: result.stderr.trim() || "lex error",
+      message: raw.split("\n")[0] || "standard failed",
       hint: null,
       severity: "warning" as const,
       fix: null,
