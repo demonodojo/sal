@@ -5,7 +5,11 @@ use crate::span::Span;
 
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
     let tokens = crate::lexer::lex(source)?;
-    let mut p = Parser { tokens, pos: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        group: 0,
+    };
     let mut items = Vec::new();
     p.skip_layout();
     while !p.at(TokenKind::Eof) {
@@ -22,6 +26,8 @@ pub fn parse(source: &str) -> Result<Program, Diagnostic> {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Depth of `(` and `[`. Inside it, newlines are not statement breaks.
+    group: i32,
 }
 
 impl Parser {
@@ -91,16 +97,22 @@ impl Parser {
             return Ok(Vec::new());
         }
         self.bump();
+        self.enter_group();
         let mut params = Vec::new();
+        self.skip_group_newlines();
         while !self.at(TokenKind::RBracket) {
             params.push(self.parse_ident()?);
+            self.skip_group_newlines();
             if self.at(TokenKind::Comma) {
                 self.bump();
+                self.skip_group_newlines();
             } else {
                 break;
             }
         }
+        self.skip_group_newlines();
         self.expect(TokenKind::RBracket, "expected ] after type parameters")?;
+        self.leave_group();
         Ok(params)
     }
 
@@ -147,17 +159,23 @@ impl Parser {
             let mut fields = Vec::new();
             if self.at(TokenKind::LParen) {
                 self.bump();
+                self.enter_group();
+                self.skip_group_newlines();
                 if !self.at(TokenKind::RParen) {
                     loop {
                         fields.push(self.parse_type()?);
+                        self.skip_group_newlines();
                         if self.at(TokenKind::Comma) {
                             self.bump();
+                            self.skip_group_newlines();
                         } else {
                             break;
                         }
                     }
                 }
+                self.skip_group_newlines();
                 self.expect(TokenKind::RParen, "expected ) after variant fields")?;
+                self.leave_group();
             }
             variants.push(EnumVariant {
                 name: vname,
@@ -297,13 +315,19 @@ impl Parser {
             let mut args = Vec::new();
             if self.at(TokenKind::LBracket) {
                 self.bump();
+                self.enter_group();
+                self.skip_group_newlines();
                 while !self.at(TokenKind::RBracket) {
                     args.push(self.parse_type()?);
+                    self.skip_group_newlines();
                     if self.at(TokenKind::Comma) {
                         self.bump();
+                        self.skip_group_newlines();
                     }
                 }
+                self.skip_group_newlines();
                 self.expect(TokenKind::RBracket, "expected ]")?;
+                self.leave_group();
             }
             return Ok(Type::Named {
                 name,
@@ -316,6 +340,8 @@ impl Parser {
 
     fn parse_tensor_type(&mut self, span: Span) -> Result<Type, Diagnostic> {
         self.expect(TokenKind::LBracket, "expected [ after Tensor")?;
+        self.enter_group();
+        self.skip_group_newlines();
         let elem = match self.parse_ident()?.as_str() {
             "F32" => TensorElem::F32,
             "F16" => TensorElem::F16,
@@ -332,8 +358,10 @@ impl Parser {
         let mut dims = Vec::new();
         if self.at(TokenKind::Comma) {
             self.bump();
+            self.skip_group_newlines();
         }
         loop {
+            self.skip_group_newlines();
             if self.at(TokenKind::RBracket) {
                 break;
             }
@@ -351,11 +379,14 @@ impl Parser {
                     self.peek().span,
                 ));
             }
+            self.skip_group_newlines();
             if self.at(TokenKind::Comma) {
                 self.bump();
             }
         }
+        self.skip_group_newlines();
         self.expect(TokenKind::RBracket, "expected ]")?;
+        self.leave_group();
         self.expect(TokenKind::On, "expected `on` in tensor type")?;
         let place = self.parse_place()?;
         Ok(Type::Tensor {
@@ -495,6 +526,23 @@ impl Parser {
         }
     }
 
+    /// Inside `(…)` or `[…]`, newlines separate tokens of the same expression.
+    fn skip_group_newlines(&mut self) {
+        if self.group > 0 {
+            self.skip_newlines();
+        }
+    }
+
+    fn enter_group(&mut self) {
+        self.group += 1;
+    }
+
+    fn leave_group(&mut self) {
+        if self.group > 0 {
+            self.group -= 1;
+        }
+    }
+
     /// Skip newlines and indent tokens inside flat lists (params, etc.).
     fn skip_soft_layout(&mut self) {
         while matches!(
@@ -511,6 +559,7 @@ impl Parser {
     }
 
     fn parse_try(&mut self) -> Result<Expr, Diagnostic> {
+        self.skip_group_newlines();
         if self.at(TokenKind::Try) {
             let sp = self.bump().span;
             let expr = self.parse_expr()?;
@@ -526,6 +575,7 @@ impl Parser {
     /// `lambda → cmp "=>" expr | cmp`. El cuerpo es un `expr`, así que admite `try`.
     fn parse_lambda(&mut self) -> Result<Expr, Diagnostic> {
         let left = self.parse_cmp()?;
+        self.skip_group_newlines();
         if self.at(TokenKind::FatArrow) {
             let arrow = self.bump().span;
             let start = left.span();
@@ -554,6 +604,7 @@ impl Parser {
     fn parse_cmp(&mut self) -> Result<Expr, Diagnostic> {
         let mut left = self.parse_add()?;
         loop {
+            self.skip_group_newlines();
             let op = match self.peek().kind {
                 TokenKind::EqEq => BinOp::Eq,
                 TokenKind::Ne => BinOp::Ne,
@@ -579,6 +630,7 @@ impl Parser {
     fn parse_add(&mut self) -> Result<Expr, Diagnostic> {
         let mut left = self.parse_mul()?;
         loop {
+            self.skip_group_newlines();
             let op = match self.peek().kind {
                 TokenKind::Plus => BinOp::Add,
                 TokenKind::Minus => BinOp::Sub,
@@ -600,6 +652,7 @@ impl Parser {
     fn parse_mul(&mut self) -> Result<Expr, Diagnostic> {
         let mut left = self.parse_unary()?;
         loop {
+            self.skip_group_newlines();
             let op = match self.peek().kind {
                 TokenKind::Star => BinOp::Mul,
                 TokenKind::Slash => BinOp::Div,
@@ -618,6 +671,7 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
+        self.skip_group_newlines();
         match self.peek().kind {
             TokenKind::Minus => {
                 let sp = self.bump().span;
@@ -644,30 +698,43 @@ impl Parser {
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut e = self.parse_primary()?;
         loop {
+            self.skip_group_newlines();
             match self.peek().kind {
                 TokenKind::LBracket => {
                     let sp = self.bump().span;
+                    self.enter_group();
+                    self.skip_group_newlines();
                     let mut type_args = Vec::new();
                     while !self.at(TokenKind::RBracket) {
                         type_args.push(self.parse_type_arg()?);
+                        self.skip_group_newlines();
                         if self.at(TokenKind::Comma) {
                             self.bump();
+                            self.skip_group_newlines();
                         }
                     }
+                    self.skip_group_newlines();
                     self.expect(TokenKind::RBracket, "expected ]")?;
+                    self.leave_group();
                     self.expect(TokenKind::LParen, "expected ( after type arguments")?;
+                    self.enter_group();
+                    self.skip_group_newlines();
                     let mut args = Vec::new();
                     if !self.at(TokenKind::RParen) {
                         loop {
                             args.push(self.parse_expr()?);
+                            self.skip_group_newlines();
                             if self.at(TokenKind::Comma) {
                                 self.bump();
+                                self.skip_group_newlines();
                             } else {
                                 break;
                             }
                         }
                     }
+                    self.skip_group_newlines();
                     self.expect(TokenKind::RParen, "expected )")?;
+                    self.leave_group();
                     e = Expr::Call {
                         func: Box::new(e),
                         type_args,
@@ -677,18 +744,24 @@ impl Parser {
                 }
                 TokenKind::LParen => {
                     let sp = self.bump().span;
+                    self.enter_group();
+                    self.skip_group_newlines();
                     let mut args = Vec::new();
                     if !self.at(TokenKind::RParen) {
                         loop {
                             args.push(self.parse_expr()?);
+                            self.skip_group_newlines();
                             if self.at(TokenKind::Comma) {
                                 self.bump();
+                                self.skip_group_newlines();
                             } else {
                                 break;
                             }
                         }
                     }
+                    self.skip_group_newlines();
                     self.expect(TokenKind::RParen, "expected )")?;
+                    self.leave_group();
                     e = Expr::Call {
                         func: Box::new(e),
                         type_args: Vec::new(),
@@ -771,8 +844,11 @@ impl Parser {
             TokenKind::If => self.parse_if(),
             TokenKind::LParen => {
                 self.bump();
+                self.enter_group();
                 let e = self.parse_expr()?;
+                self.skip_group_newlines();
                 self.expect(TokenKind::RParen, "expected )")?;
+                self.leave_group();
                 Ok(e)
             }
             _ => Err(Diagnostic::new(
@@ -785,23 +861,41 @@ impl Parser {
 
     fn parse_tensor_lit(&mut self, span: Span) -> Result<Expr, Diagnostic> {
         self.expect(TokenKind::LBracket, "expected [")?;
+        self.enter_group();
         let mut rows = Vec::new();
-        while !self.at(TokenKind::RBracket) {
+        loop {
+            self.skip_group_newlines();
+            if self.at(TokenKind::RBracket) {
+                break;
+            }
             self.expect(TokenKind::LBracket, "expected [ for row")?;
+            self.enter_group();
             let mut row = Vec::new();
-            while !self.at(TokenKind::RBracket) {
+            loop {
+                self.skip_group_newlines();
+                if self.at(TokenKind::RBracket) {
+                    break;
+                }
                 row.push(self.parse_expr()?);
+                self.skip_group_newlines();
                 if self.at(TokenKind::Comma) {
                     self.bump();
+                } else {
+                    break;
                 }
             }
+            self.skip_group_newlines();
             self.expect(TokenKind::RBracket, "expected ]")?;
+            self.leave_group();
             rows.push(row);
+            self.skip_group_newlines();
             if self.at(TokenKind::Comma) {
                 self.bump();
             }
         }
+        self.skip_group_newlines();
         self.expect(TokenKind::RBracket, "expected ]")?;
+        self.leave_group();
         Ok(Expr::TensorLit { rows, span })
     }
 

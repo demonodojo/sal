@@ -34,7 +34,9 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | CLI, módulos, caché | `src/main.rs`, `src/compile.rs`, `src/incremental.rs` | `tests/toolchain.rs`, `tests/run_hello.rs` |
 | Linter `standard` (wrapper + tests) | `src/bin/standard.rs`, `standard/*.sal` | `tests/standard.rs` (`--test-threads=1`) |
 
-La extensión de VS Code solo llama a `sal check --error-format json` y `sal fmt`. No reimplementa pases. El linter de estilo vive en `standard/` (sal); detalle en [sal-standard](../sal-standard/SKILL.md).
+La extensión de VS Code llama a `sal check --error-format json`, a `sal fmt` y a `standard check` / `standard fix`. No reimplementa pases. El linter de estilo vive en `standard/` (sal). Las buenas prácticas de fuente se aplican con él, y si falta una regla que va a repetirse se le añade ahí; detalle en [sal-standard](../sal-standard/SKILL.md).
+
+Añadir algo al lenguaje exige tests de ese comportamiento en el mismo cambio, en el fichero de la tabla. El test ejecuta la construcción nueva y comprueba el resultado (árbol, diagnóstico con el `E_*` exacto, tipo, IR o ejecución). Un test que solo sigue pasando con el código viejo no cuenta.
 
 ## Parser
 

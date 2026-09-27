@@ -61,10 +61,10 @@ fn run_model_package_tests() -> Int ! io, alloc
                 if str_contains(out, d"sum=10") == 0
                     _e = eprint_str(d"Err(model package missing sum=10)\n")
                     1
-                elsif str_contains(out, d"gpu=1")
+                elsif str_contains(out, d"gpu=1") == 0
                     _e = eprint_str(d"Err(model package missing gpu=1)\n")
                     1
-                elsif str_contains(out, d"tpu=1")
+                elsif str_contains(out, d"tpu=1") == 0
                     _e = eprint_str(d"Err(model package missing tpu=1)\n")
                     1
                 else
@@ -81,10 +81,10 @@ fn run_model_package_tests() -> Int ! io, alloc
                     if str_contains(out, d"sum=10") == 0
                         _e = eprint_str(d"Err(model package missing sum=10)\n")
                         1
-                    elsif str_contains(out, d"gpu=1")
+                    elsif str_contains(out, d"gpu=1") == 0
                         _e = eprint_str(d"Err(model package missing gpu=1)\n")
                         1
-                    elsif str_contains(out, d"tpu=1")
+                    elsif str_contains(out, d"tpu=1") == 0
                         _e = eprint_str(d"Err(model package missing tpu=1)\n")
                         1
                     else

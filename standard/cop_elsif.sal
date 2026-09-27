@@ -165,7 +165,7 @@ fn cond_text_from_if(src: Int, toks: Int, n: Int, if_i: Int) -> Int ! alloc
         strdup("")
     else
         start = tok_start(vec_get(toks, if_i + 1))
-        end = tok_end(vec_get(toks, j2 - 1))
+        end = tok_start(vec_get(toks, j2))
         str_slice(src, start, end)
 
 fn find_line_start(src: Int, i: Int) -> Int ! alloc

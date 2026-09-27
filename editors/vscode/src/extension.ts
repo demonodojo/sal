@@ -9,14 +9,21 @@ import { materializeSource } from "./materialize";
 import { spawnProcess } from "./process";
 import {
   checkFile,
+  checkStyle,
+  fixStyle,
   formatFile,
   MISSING_COMPILER_MESSAGE,
+  MISSING_STANDARD_MESSAGE,
+  styleFixEdits,
+  type MappedDiagnostic,
 } from "./protocol";
 
 const diagnostics = vscode.languages.createDiagnosticCollection("sal");
+const styleFixes = new Map<string, ReturnType<typeof styleFixEdits>>();
 const pending = new Map<string, ReturnType<typeof setTimeout>>();
 const generation = new Map<string, number>();
-let warnedMissing = false;
+let warnedMissingCompiler = false;
+let warnedMissingStandard = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(diagnostics);
@@ -25,6 +32,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerDocumentFormattingEditProvider("sal", {
       provideDocumentFormattingEdits: (document) => formatDocument(document),
     }),
+  );
+
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      "sal",
+      { provideCodeActions: (document, _range, context) => standardQuickFixes(document, context) },
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] },
+    ),
   );
 
   context.subscriptions.push(
@@ -46,6 +61,14 @@ export function activate(context: vscode.ExtensionContext): void {
       const editor = vscode.window.activeTextEditor;
       if (!editor || editor.document.languageId !== "sal") return;
       return vscode.commands.executeCommand("editor.action.formatDocument");
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("sal.standardFix", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== "sal") return;
+      return applyStandardFix(editor.document);
     }),
   );
 
@@ -77,6 +100,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidCloseTextDocument((document) => {
       diagnostics.delete(document.uri);
+      styleFixes.delete(document.uri.toString());
       const key = document.uri.toString();
       const previous = pending.get(key);
       if (previous) clearTimeout(previous);
@@ -106,7 +130,7 @@ async function formatDocument(
       run: spawnProcess,
     });
     if (outcome.missingCompiler) {
-      warnMissing();
+      warnMissingCompiler();
       return [];
     }
     if (outcome.text == null) return [];
@@ -126,24 +150,26 @@ async function refresh(document: vscode.TextDocument): Promise<void> {
   generation.set(key, gen);
   const held = await holdSource(document);
   try {
-    const outcome = await checkFile({
-      command: compilerPath(),
+    const shared = {
       filePath: held.path,
       cwd: cwdFor(document),
       text: document.getText(),
       run: spawnProcess,
-    });
+    };
+    const [compiler, style] = await Promise.all([
+      checkFile({ command: compilerPath(), ...shared }),
+      checkStyle({ command: standardPath(), ...shared }),
+    ]);
     if (generation.get(key) !== gen) return;
-    if (outcome.missingCompiler) {
-      warnMissing();
-      diagnostics.set(document.uri, []);
-      return;
-    }
-    warnedMissing = false;
-    diagnostics.set(
-      document.uri,
-      outcome.diagnostics.map((diag) => toVscodeDiagnostic(document, diag)),
-    );
+    if (compiler.missingCompiler) warnMissingCompiler();
+    else warnedMissingCompiler = false;
+    if (style.missingCompiler) warnMissingStandard();
+    else warnedMissingStandard = false;
+    diagnostics.set(document.uri, [
+      ...compiler.diagnostics.map((diag) => toVscodeDiagnostic(document, diag)),
+      ...style.diagnostics.map((diag) => toVscodeDiagnostic(document, diag)),
+    ]);
+    styleFixes.set(key, styleFixEdits(style.diagnostics));
   } finally {
     await held.cleanup();
   }
@@ -151,17 +177,7 @@ async function refresh(document: vscode.TextDocument): Promise<void> {
 
 function toVscodeDiagnostic(
   document: vscode.TextDocument,
-  diag: {
-    code: string;
-    message: string;
-    hint: string | null;
-    range: {
-      startLine: number;
-      startCharacter: number;
-      endLine: number;
-      endCharacter: number;
-    };
-  },
+  diag: MappedDiagnostic,
 ): vscode.Diagnostic {
   const range = new vscode.Range(
     diag.range.startLine,
@@ -169,9 +185,13 @@ function toVscodeDiagnostic(
     diag.range.endLine,
     diag.range.endCharacter,
   );
-  const item = new vscode.Diagnostic(range, diag.message, vscode.DiagnosticSeverity.Error);
+  const severity =
+    diag.severity === "warning"
+      ? vscode.DiagnosticSeverity.Warning
+      : vscode.DiagnosticSeverity.Error;
+  const item = new vscode.Diagnostic(range, diag.message, severity);
   item.code = diag.code;
-  item.source = "sal";
+  item.source = diag.severity === "warning" ? "standard" : "sal";
   if (diag.hint) {
     item.relatedInformation = [
       new vscode.DiagnosticRelatedInformation(
@@ -181,6 +201,68 @@ function toVscodeDiagnostic(
     ];
   }
   return item;
+}
+
+function standardQuickFixes(
+  document: vscode.TextDocument,
+  context: vscode.CodeActionContext,
+): vscode.CodeAction[] {
+  const edits = styleFixes.get(document.uri.toString()) ?? [];
+  const actions: vscode.CodeAction[] = [];
+  for (const diag of context.diagnostics) {
+    if (diag.source !== "standard") continue;
+    const hit = edits.find(
+      (edit) =>
+        edit.title === diag.message &&
+        edit.range.startLine === diag.range.start.line &&
+        edit.range.startCharacter === diag.range.start.character &&
+        edit.range.endLine === diag.range.end.line &&
+        edit.range.endCharacter === diag.range.end.character,
+    );
+    if (!hit) continue;
+    const action = new vscode.CodeAction(hit.title, vscode.CodeActionKind.QuickFix);
+    action.diagnostics = [diag];
+    action.isPreferred = true;
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, diag.range, hit.replacement);
+    action.edit = edit;
+    actions.push(action);
+  }
+  return actions;
+}
+
+async function applyStandardFix(document: vscode.TextDocument): Promise<void> {
+  const savedPath = document.uri.scheme === "file" ? document.uri.fsPath : null;
+  const directory = savedPath ? path.dirname(savedPath) : cwdFor(document);
+  const held = await materializeSource({
+    directory,
+    savedPath,
+    dirty: true,
+    text: document.getText(),
+  });
+  try {
+    const outcome = await fixStyle({
+      command: standardPath(),
+      filePath: held.path,
+      cwd: cwdFor(document),
+      run: spawnProcess,
+      readText: async (filePath) => readFileSync(filePath, "utf8"),
+    });
+    if (outcome.missingStandard) {
+      warnMissingStandard();
+      return;
+    }
+    if (outcome.text == null || outcome.text === document.getText()) return;
+    const edit = new vscode.WorkspaceEdit();
+    const full = new vscode.Range(
+      document.positionAt(0),
+      document.positionAt(document.getText().length),
+    );
+    edit.replace(document.uri, full, outcome.text);
+    await vscode.workspace.applyEdit(edit);
+  } finally {
+    await held.cleanup();
+  }
 }
 
 async function holdSource(document: vscode.TextDocument): Promise<{
@@ -270,8 +352,20 @@ function compilerPath(): string {
   return "sal";
 }
 
-function warnMissing(): void {
-  if (warnedMissing) return;
-  warnedMissing = true;
+function standardPath(): string {
+  const configured = vscode.workspace.getConfiguration("sal").get<string>("standardPath");
+  if (configured && configured.trim() !== "") return configured;
+  return "standard";
+}
+
+function warnMissingCompiler(): void {
+  if (warnedMissingCompiler) return;
+  warnedMissingCompiler = true;
   void vscode.window.showWarningMessage(MISSING_COMPILER_MESSAGE);
+}
+
+function warnMissingStandard(): void {
+  if (warnedMissingStandard) return;
+  warnedMissingStandard = true;
+  void vscode.window.showWarningMessage(MISSING_STANDARD_MESSAGE);
 }

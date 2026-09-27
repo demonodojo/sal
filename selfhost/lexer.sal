@@ -195,8 +195,27 @@ fn kw_kind(text: Int) -> Int ! alloc
 
 fn indent_stack_new() -> Int ! alloc
     v = vec_new()
+    _d = vec_push(v, 0 - 2)
     _p = vec_push(v, 0)
     v
+
+fn group_depth(st: Int) -> Int ! alloc
+    v = vec_get(st, 0)
+    0 - v - 2
+
+fn group_set(st: Int, d: Int) -> Int ! alloc
+    _p = vec_set(st, 0, 0 - d - 2)
+    0
+
+fn group_enter(st: Int) -> Int ! alloc
+    group_set(st, group_depth(st) + 1)
+
+fn group_leave(st: Int) -> Int ! alloc
+    d = group_depth(st)
+    if d > 0
+        group_set(st, d - 1)
+    else
+        0
 
 fn indent_top_at(st: Int, i: Int) -> Int ! alloc
     if i < 0
@@ -419,7 +438,10 @@ fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int ! a
                 if c == 10
                     t = tok_new(TK_NL(), 0, 0)
                     _p = vec_push(out, t)
-                    lex_go(src, i + 1, n, out, st, 1)
+                    if group_depth(st) > 0
+                        lex_go(src, i + 1, n, out, st, 0)
+                    else
+                        lex_go(src, i + 1, n, out, st, 1)
                 else
                     j = str_skip(src, i, 8, 0)
                     if j == i
@@ -447,21 +469,25 @@ fn lex_tok_rest(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! al
     if c == 40
         t = tok_new(TK_LPAREN(), 0, 0)
         _p = vec_push(out, t)
+        _g = group_enter(st)
         lex_go(src, i + 1, n, out, st, 0)
     else
         if c == 41
             t = tok_new(TK_RPAREN(), 0, 0)
             _p = vec_push(out, t)
+            _g = group_leave(st)
             lex_go(src, i + 1, n, out, st, 0)
         else
             if c == 91
                 t = tok_new(TK_LBRACK(), 0, 0)
                 _p = vec_push(out, t)
+                _g = group_enter(st)
                 lex_go(src, i + 1, n, out, st, 0)
             else
                 if c == 93
                     t = tok_new(TK_RBRACK(), 0, 0)
                     _p = vec_push(out, t)
+                    _g = group_leave(st)
                     lex_go(src, i + 1, n, out, st, 0)
                 else
                     lex_tok_rest2(src, i, n, out, st, c)

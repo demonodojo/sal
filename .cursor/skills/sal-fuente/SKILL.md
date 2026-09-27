@@ -4,7 +4,8 @@ description: >-
   Escribe y revisa programas sal canónicos: indentación, funciones, efectos,
   lugares cpu/gpu/tpu, tensores, sal fmt y el linter standard. Usar al crear o
   editar ficheros .sal, ejemplos, el preludio, el corpus, standard/ o código
-  del autohospedaje.
+  del autohospedaje. El estilo se aplica con standard; si falta una práctica
+  que va a repetirse, se amplía el linter.
 ---
 
 # Programas sal
@@ -85,6 +86,6 @@ Las primitivas `matmul`, `softmax`, `map`, `reduce`, `reshape`, `transpose`, `re
 | `sal fmt` | Sangría, forma canónica del AST, idempotencia sintáctica |
 | `standard` | Convenciones de texto: `d"…"` en lugar de `strdup("…")`, `+` en lugar de `str_concat` / `str_append`, `"…"` (no `d"…"`) en operandos de `+`, `elsif` donde aplique la regla |
 
-Orden habitual al cerrar un fichero `.sal`: `sal fmt` (stdout o editor), luego `standard check`; si hay avisos aceptables, `standard fix` y revisar el diff.
+Orden habitual al cerrar un fichero `.sal`: `sal fmt` (stdout o editor), luego `standard check`; si hay avisos de una práctica ya cubierta, `standard fix` y revisar el diff.
 
-Después de editar fuente, comprobar que un segundo `fmt` no cambia nada y que `standard check` no reporta infracciones en los ficheros tocados. Ver [sal-verificar](../sal-verificar/SKILL.md) y [sal-standard](../sal-standard/SKILL.md).
+El estilo se aplica con `standard`. Después de editar fuente, un segundo `fmt` no cambia nada y `standard check` no reporta infracciones en los ficheros tocados. Si el cambio sigue una práctica que ninguna regla cubre y va a repetirse, se amplía `standard` en ese mismo cambio. Ver [sal-verificar](../sal-verificar/SKILL.md) y [sal-standard](../sal-standard/SKILL.md).

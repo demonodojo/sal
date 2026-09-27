@@ -140,3 +140,43 @@ fn main() -> Int
     let out = Command::new(bin).output().expect("run");
     assert_eq!(out.status.code(), Some(3));
 }
+
+#[test]
+fn grouped_newlines_run_as_one_expression() {
+    let src = r#"
+fn id(x: Int) -> Int
+    x
+
+fn main() -> Int ! alloc
+    n = (
+        1
+        + 2
+
+        + 3
+    )
+    s = (
+        "ab" +
+        "cd" +
+        "ef"
+    )
+    id(
+        n
+    ) + str_len(s)
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile grouped newlines");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(12),
+        "1+2+3 and len(\"abcdef\") must sum to 12; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

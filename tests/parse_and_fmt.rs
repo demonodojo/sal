@@ -26,3 +26,16 @@ fn ast_json_roundtrip() {
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }
+
+#[test]
+fn fmt_grouped_newlines_match_one_line() {
+    let multi = "fn f() -> Int\n    (\n        1\n        + 2\n        + 3\n    )\n";
+    let one = "fn f() -> Int\n    1 + 2 + 3\n";
+    let pm = parse(multi).expect("parse multiline");
+    let po = parse(one).expect("parse one line");
+    let fm = format_program(&pm);
+    let fo = format_program(&po);
+    assert_eq!(fm, fo);
+    let f2 = format_program(&parse(&fm).expect("reparse"));
+    assert_eq!(fm, f2);
+}

@@ -9,6 +9,7 @@ fn parser_new(toks: Int) -> Int ! alloc
     _b = vec_push(pr, 0)
     _c = vec_push(pr, 0)
     _d = vec_push(pr, 0)
+    _e = vec_push(pr, 0)
     pr
 
 fn p_set_err(pr: Int, msg: Int) -> Int ! alloc
@@ -49,6 +50,29 @@ fn p_advance(pr: Int) -> Int ! alloc
 fn p_skip_nls(pr: Int) -> Int ! alloc
     if tok_kind(p_peek(pr)) == TK_NL()
         _a = p_advance(pr)
+        p_skip_nls(pr)
+    else
+        0
+
+fn p_group(pr: Int) -> Int ! alloc
+    vec_get(pr, 4)
+
+fn p_set_group(pr: Int, d: Int) -> Int ! alloc
+    _s = vec_set(pr, 4, d)
+    0
+
+fn p_enter_group(pr: Int) -> Int ! alloc
+    p_set_group(pr, p_group(pr) + 1)
+
+fn p_leave_group(pr: Int) -> Int ! alloc
+    d = p_group(pr)
+    if d > 0
+        p_set_group(pr, d - 1)
+    else
+        0
+
+fn p_skip_group_nls(pr: Int) -> Int ! alloc
+    if p_group(pr) > 0
         p_skip_nls(pr)
     else
         0
@@ -113,68 +137,72 @@ fn parse_type_text_go(pr: Int, depth: Int, acc: Int) -> Int ! alloc
             parse_type_text_cont(pr, depth, acc, t, k)
 
 fn parse_type_text_cont(pr: Int, depth: Int, acc: Int, t: Int, k: Int) -> Int ! alloc
-    if k == TK_IDENT()
-        tx = tok_text(t)
+    if k == TK_NL()
         _a = p_advance(pr)
-        acc2 = str_append(acc, tx)
-        sp = strdup(" ")
-        acc3 = str_append(acc2, sp)
-        free(sp)
-        parse_type_text_go(pr, depth, acc3)
+        parse_type_text_go(pr, depth, acc)
     else
-        if k == TK_ON()
+        if k == TK_IDENT()
+            tx = tok_text(t)
             _a = p_advance(pr)
-            piece = strdup("on ")
-            acc2 = str_append(acc, piece)
-            free(piece)
-            parse_type_text_go(pr, depth, acc2)
+            acc2 = str_append(acc, tx)
+            sp = strdup(" ")
+            acc3 = str_append(acc2, sp)
+            free(sp)
+            parse_type_text_go(pr, depth, acc3)
         else
-            if k == TK_TO()
+            if k == TK_ON()
                 _a = p_advance(pr)
-                piece = strdup("to ")
+                piece = strdup("on ")
                 acc2 = str_append(acc, piece)
                 free(piece)
                 parse_type_text_go(pr, depth, acc2)
             else
-                if k == TK_FN()
+                if k == TK_TO()
                     _a = p_advance(pr)
-                    piece = strdup("fn ")
+                    piece = strdup("to ")
                     acc2 = str_append(acc, piece)
                     free(piece)
                     parse_type_text_go(pr, depth, acc2)
                 else
-                    if k == TK_INT()
+                    if k == TK_FN()
                         _a = p_advance(pr)
-                        vs = int_to_str(tok_ival(t))
-                        acc2 = str_append(acc, vs)
-                        free(vs)
-                        sp = strdup(" ")
-                        acc3 = str_append(acc2, sp)
-                        free(sp)
-                        parse_type_text_go(pr, depth, acc3)
+                        piece = strdup("fn ")
+                        acc2 = str_append(acc, piece)
+                        free(piece)
+                        parse_type_text_go(pr, depth, acc2)
                     else
-                        if k == TK_LBRACK()
+                        if k == TK_INT()
                             _a = p_advance(pr)
-                            piece = strdup("[")
-                            acc2 = str_append(acc, piece)
-                            free(piece)
-                            parse_type_text_go(pr, depth + 1, acc2)
+                            vs = int_to_str(tok_ival(t))
+                            acc2 = str_append(acc, vs)
+                            free(vs)
+                            sp = strdup(" ")
+                            acc3 = str_append(acc2, sp)
+                            free(sp)
+                            parse_type_text_go(pr, depth, acc3)
                         else
-                            if k == TK_RBRACK()
+                            if k == TK_LBRACK()
                                 _a = p_advance(pr)
-                                piece = strdup("]")
+                                piece = strdup("[")
                                 acc2 = str_append(acc, piece)
                                 free(piece)
-                                parse_type_text_go(pr, depth - 1, acc2)
+                                parse_type_text_go(pr, depth + 1, acc2)
                             else
-                                if k == TK_COMMA()
+                                if k == TK_RBRACK()
                                     _a = p_advance(pr)
-                                    piece = strdup(",")
+                                    piece = strdup("]")
                                     acc2 = str_append(acc, piece)
                                     free(piece)
-                                    parse_type_text_go(pr, depth, acc2)
+                                    parse_type_text_go(pr, depth - 1, acc2)
                                 else
-                                    acc
+                                    if k == TK_COMMA()
+                                        _a = p_advance(pr)
+                                        piece = strdup(",")
+                                        acc2 = str_append(acc, piece)
+                                        free(piece)
+                                        parse_type_text_go(pr, depth, acc2)
+                                    else
+                                        acc
 
 fn parse_type_text(pr: Int) -> Int ! alloc
     acc = strdup("")
@@ -259,6 +287,7 @@ fn parse_binary(pr: Int, min_prec: Int) -> Int ! alloc
     parse_binary_loop(pr, min_prec, left)
 
 fn parse_binary_loop(pr: Int, min_prec: Int, left: Int) -> Int ! alloc
+    _s = p_skip_group_nls(pr)
     t = p_peek(pr)
     k = tok_kind(t)
     prec = binop_prec(k)
@@ -275,15 +304,18 @@ fn parse_binary_loop(pr: Int, min_prec: Int, left: Int) -> Int ! alloc
             parse_binary_loop(pr, min_prec, nleft)
 
 fn parse_arg_list(pr: Int, args: Int) -> Int ! alloc
+    _s = p_skip_group_nls(pr)
     if tok_kind(p_peek(pr)) == TK_RPAREN()
         _a = p_accept(pr, TK_RPAREN())
         args
     else
         e = parse_expr(pr)
         _b = vec_push(args, e)
+        _t = p_skip_group_nls(pr)
         if p_accept(pr, TK_COMMA()) == 1
             parse_arg_list(pr, args)
         else
+            _u = p_skip_group_nls(pr)
             _c = p_accept(pr, TK_RPAREN())
             args
 
@@ -309,10 +341,14 @@ fn skip_brackets_depth(depth: Int, k: Int) -> Int ! alloc
             depth
 
 fn parse_tensor_rows(pr: Int, nrows: Int, ncols: Int) -> Int ! alloc
+    _s = p_skip_group_nls(pr)
     if tok_kind(p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
+        _e = p_enter_group(pr)
         rowc = parse_tensor_cells(pr, 0)
         _b = p_accept(pr, TK_RBRACK())
+        _l = p_leave_group(pr)
+        _n = p_skip_group_nls(pr)
         _c = p_accept(pr, TK_COMMA())
         nc = ncols
         if ncols == 0
@@ -324,6 +360,7 @@ fn parse_tensor_rows(pr: Int, nrows: Int, ncols: Int) -> Int ! alloc
         ex_tensor(nrows, ncols)
 
 fn parse_tensor_cells(pr: Int, rowc: Int) -> Int ! alloc
+    _s = p_skip_group_nls(pr)
     k = tok_kind(p_peek(pr))
     if k == TK_RBRACK()
         rowc
@@ -353,6 +390,7 @@ fn or_place(place: Int, fallback: Int) -> Int ! alloc
         place
 
 fn parse_primary(pr: Int) -> Int ! alloc
+    _s = p_skip_group_nls(pr)
     t = p_peek(pr)
     k = tok_kind(t)
     if k == TK_INT()
@@ -404,8 +442,11 @@ fn parse_primary(pr: Int) -> Int ! alloc
                                         else
                                             if k == TK_LPAREN()
                                                 _a = p_advance(pr)
+                                                _g = p_enter_group(pr)
                                                 e = parse_expr(pr)
+                                                _n = p_skip_group_nls(pr)
                                                 _b = p_accept(pr, TK_RPAREN())
+                                                _h = p_leave_group(pr)
                                                 e
                                             else
                                                 _a = p_advance(pr)
@@ -464,12 +505,17 @@ fn parse_ident_primary(pr: Int) -> Int ! alloc
     if str_eq(name, "tensor") == 1
         if tok_kind(p_peek(pr)) == TK_LBRACK()
             _a = p_advance(pr)
+            _g = p_enter_group(pr)
+            _n = p_skip_group_nls(pr)
             if tok_kind(p_peek(pr)) == TK_LBRACK()
                 te = parse_tensor_rows(pr, 0, 0)
+                _n = p_skip_group_nls(pr)
                 _b = p_accept(pr, TK_RBRACK())
+                _h = p_leave_group(pr)
                 te
             else
                 _b = p_accept(pr, TK_RBRACK())
+                _h = p_leave_group(pr)
                 ex_tensor(0, 0)
         else
             parse_ident_or_call(pr, name)
@@ -483,8 +529,10 @@ fn parse_ident_or_call(pr: Int, name: Int) -> Int ! alloc
     else
         if tok_kind(p_peek(pr)) == TK_LPAREN()
             _a = p_advance(pr)
+            _g = p_enter_group(pr)
             args = vec_new()
             args2 = parse_arg_list(pr, args)
+            _h = p_leave_group(pr)
             ex_call(name, args2)
         else
             ex_ident(name)
@@ -559,6 +607,7 @@ fn parse_param_ty(pr: Int) -> Int ! alloc
         strdup("Int")
 
 fn parse_params(pr: Int, params: Int) -> Int ! alloc
+    _s = p_skip_nls(pr)
     if tok_kind(p_peek(pr)) == TK_RPAREN()
         params
     else
@@ -569,6 +618,7 @@ fn parse_params(pr: Int, params: Int) -> Int ! alloc
         if p_accept(pr, TK_COMMA()) == 1
             parse_params(pr, params)
         else
+            _t = p_skip_nls(pr)
             params
 
 fn parse_fn(pr: Int) -> Int ! alloc
@@ -580,6 +630,7 @@ fn parse_fn(pr: Int) -> Int ! alloc
         _b = p_accept(pr, TK_LPAREN())
         params = vec_new()
         params = parse_params(pr, params)
+        _n = p_skip_nls(pr)
         _c = p_accept(pr, TK_RPAREN())
         if p_accept(pr, TK_ARROW()) == 1
             _d = parse_type_text(pr)

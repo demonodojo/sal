@@ -39,10 +39,9 @@ fn cache_meta_path(dir: Int, key: Int) -> Int ! alloc
     acc = str_append(acc, strdup(".meta"))
     acc
 
-fn cache_key_for_graph_path(pre: Int, source_path: Int) -> Int ! io, alloc
-    base = source_hash(pre)
+fn cache_key_for_graph_path(src: Int, source_path: Int) -> Int ! io, alloc
+    base = source_hash(src)
     p = realpath(source_path)
-    src = read_file(p)
     h = str_hash(src, str_hash(p, 5381))
     piece = int_to_str(h)
     acc = str_concat(base, strdup(":"))

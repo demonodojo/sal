@@ -81,6 +81,23 @@ fn standard_check_reports_dupstring() {
 }
 
 #[test]
+fn standard_check_json_includes_fix() {
+    let path = root()
+        .join("standard/fixtures/dupstring_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path, "--error-format", "json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    let line = err.lines().next().expect("json line");
+    let value: serde_json::Value = serde_json::from_str(line).expect("json");
+    assert_eq!(value["code"], "Style/DupString");
+    assert_eq!(value["fix"], "d\"hi\"");
+    assert!(value["span"]["start"].is_number());
+    assert!(value["span"]["end"].as_u64().unwrap() > value["span"]["start"].as_u64().unwrap());
+}
+
+#[test]
 fn standard_check_clean_on_skip_fixture() {
     let path = root()
         .join("standard/fixtures/dupstring_skip_in.sal")
@@ -111,6 +128,14 @@ fn standard_fix_elsif() {
     let (_dir, got, out) = fix_in_temp(&input);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(got, read_fixture("elsif_out.sal"));
+}
+
+#[test]
+fn standard_fix_elsif_keeps_comparison() {
+    let input = read_fixture("elsif_cmp_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("elsif_cmp_out.sal"));
 }
 
 #[test]

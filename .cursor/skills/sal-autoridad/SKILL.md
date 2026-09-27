@@ -46,6 +46,8 @@ Tocar en el mismo cambio, y solo eso que el cambio exige:
 1. La producción o la regla en `SPEC.md`.
 2. El subplan del pase que la implementa.
 3. El pase dueño (ver [sal-compilador](../sal-compilador/SKILL.md)).
-4. Un test que falle con el código exacto o con el árbol exacto.
+4. Tests que comprueben el funcionamiento de lo añadido, en el mismo cambio. Sin ellos el cambio no está cerrado.
+
+Cada construcción nueva (producción, token, tipo, efecto, lugar o bajada) lleva tests que la ejercitan y fallan si no hace lo que la SPEC dice. Un diagnóstico nuevo se afirma con su código `E_*` exacto. Un programa válido se afirma con el árbol exacto, el tipo, la IR o la ejecución, según el pase dueño. Si la superficie está en los dos compiladores, el test del arranque no sustituye al del escrito en sal: hay que cubrir los dos. Ver [sal-verificar](../sal-verificar/SKILL.md) y [sal-autohospedaje](../sal-autohospedaje/SKILL.md).
 
 No inventar un código `E_*` ni un evento de instrumentación que no esté en la lista cerrada.

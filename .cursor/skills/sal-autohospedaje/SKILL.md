@@ -40,4 +40,6 @@ Stage1 sale de compilar `selfhost/` con el arranque. Stage2 sale de compilar `se
 
 `tests/selfhost_ir.rs` compara las tres IR y falla si una difiere. No marcar el criterio como cumplido con un stub.
 
-Limpieza de estilo en `selfhost/` (`standard check` / `fix`) no sustituye ese test; ver [sal-standard](../sal-standard/SKILL.md).
+Cada ampliación del lenguaje que este compilador implementa lleva tests de ese funcionamiento en el mismo cambio. El corpus o un test del pase tiene que ejercitar la construcción nueva; coincidir la IR de programas que no la usan no cuenta como prueba.
+
+`selfhost/` también pasa por `standard check` / `fix`. Esa limpieza no sustituye el test de IR. Si una práctica del compilador escrito en sal se repite y `standard` no la cubre, se amplía el linter en el mismo cambio; ver [sal-standard](../sal-standard/SKILL.md).

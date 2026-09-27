@@ -230,6 +230,49 @@ fn emit_ir_parses_unknown_literal_seven() {
 }
 
 #[test]
+fn grouped_newlines_match_bootstrap_ir() {
+    let prog = write_temp_sal(
+        "fn add(a: Int, b: Int) -> Int\n    a + b\n\nfn main() -> Int\n    add(\n        (\n            1\n            + 2\n        ),\n        4\n    )\n",
+    );
+    let boot = bootstrap_ir(&prog);
+    let stage1 = compile_selfhost(false);
+    let ir1 = run_emit_ir(&stage1, &prog);
+    assert_eq!(boot, ir1, "bootstrap vs stage1 for a call split inside parentheses");
+    let stage2 = compile_stage2(&stage1);
+    let ir2 = run_emit_ir(&stage2, &prog);
+    assert_eq!(boot, ir2, "bootstrap vs stage2 for a call split inside parentheses");
+
+    let bin = PathBuf::from(format!(
+        "/tmp/sal-grouped-bin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let status = Command::new(&stage1)
+        .arg(&prog)
+        .arg("-o")
+        .arg(&bin)
+        .current_dir(root())
+        .output()
+        .expect("stage1 -o grouped");
+    assert_eq!(
+        status.status.code(),
+        Some(0),
+        "stage1 failed to compile grouped newlines: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let run = Command::new(&bin).output().expect("run grouped bin");
+    assert_eq!(
+        run.status.code(),
+        Some(7),
+        "add((1 + 2), 4) split across lines must exit 7; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
 fn stage1_minus_o_compiles_not_copies() {
     let stage1 = compile_selfhost(false);
 

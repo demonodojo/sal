@@ -823,7 +823,7 @@ fn lower_expr(
                     instructions.push(IrInst::Call {
                         dest: Some(dest.clone()),
                         func: "sal_load".into(),
-                        args: vec![format!("\"{value}\"")],
+                        args: vec![format!("\"{value}\""), "cpu".into()],
                     });
                     return dest;
                 }

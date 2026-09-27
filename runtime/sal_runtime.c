@@ -1374,6 +1374,7 @@ void *sal_lex_src(const char *src) {
     st[0] = 0;
     int64_t i = 0;
     int at_start = 1;
+    int group = 0;
     while (1) {
         if (i >= n) {
             while (sp > 0 && 0 < st[sp - 1]) {
@@ -1432,7 +1433,8 @@ void *sal_lex_src(const char *src) {
         if (c == '\n') {
             lex_push(out, 1, 0, 0);
             i++;
-            at_start = 1;
+            /* Inside `(…)` or `[…]` a newline does not open or close a block. */
+            at_start = group > 0 ? 0 : 1;
             continue;
         }
         {
@@ -1447,10 +1449,10 @@ void *sal_lex_src(const char *src) {
             i += 2;
             continue;
         }
-        if (c == '(') { lex_push(out, 13, 0, 0); i++; continue; }
-        if (c == ')') { lex_push(out, 14, 0, 0); i++; continue; }
-        if (c == '[') { lex_push(out, 15, 0, 0); i++; continue; }
-        if (c == ']') { lex_push(out, 16, 0, 0); i++; continue; }
+        if (c == '(') { lex_push(out, 13, 0, 0); group++; i++; continue; }
+        if (c == ')') { lex_push(out, 14, 0, 0); if (group > 0) group--; i++; continue; }
+        if (c == '[') { lex_push(out, 15, 0, 0); group++; i++; continue; }
+        if (c == ']') { lex_push(out, 16, 0, 0); if (group > 0) group--; i++; continue; }
         if (c == ',') { lex_push(out, 17, 0, 0); i++; continue; }
         if (c == ':') { lex_push(out, 18, 0, 0); i++; continue; }
         if (c == '=') {

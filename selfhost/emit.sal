@@ -466,20 +466,25 @@ fn emit_ir_from_prog_with_extra(prog: Int, extra: Int) -> Int ! alloc
     ir = lower_program_with_callables(prog, extra)
     ir_to_text(ir)
 
-fn emit_ir_from_graph(order_in: Int, source_path: Int) -> Int ! io, alloc
-    proot = project_root()
-    chk = check_all_modules(order_in, proot)
-    if result_is_err(chk) == 1
-        chk
+fn dep_fn_names(order: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
     else
-        root_m = graph_root_mod(order_in)
-        cstep = callable_fn_names(root_m, order_in, proot)
-        if result_is_err(cstep) == 1
-            cstep
-        else
-            extra = result_unwrap(cstep)
-            root_prog = graph_root_prog(order_in)
-            result_ok(emit_ir_from_prog_with_extra(root_prog, extra))
+        m = vec_get(order, i)
+        out2 = append_fn_names_from_prog(mod_prog(m), out)
+        dep_fn_names(order, i + 1, n, out2)
+
+fn emit_ir_from_graph(order_in: Int, source_path: Int) -> Int ! alloc
+    _p = source_path
+    order = module_order_vec(order_in)
+    n = vec_len(order)
+    extra = vec_new()
+    if n > 1
+        extra = dep_fn_names(order, 0, n - 1, extra)
+    else
+        extra = extra
+    root_prog = graph_root_prog(order_in)
+    result_ok(emit_ir_from_prog_with_extra(root_prog, extra))
 
 fn emit_ir_from_path(source_path: Int) -> Int ! io, alloc
     proot = project_root()
@@ -489,7 +494,7 @@ fn emit_ir_from_path(source_path: Int) -> Int ! io, alloc
     else
         emit_ir_from_graph(result_payload(g), source_path)
 
-fn emit_ir_for_file(source_path: Int, src: Int) -> Int ! io, alloc
+fn emit_ir_single_file(src: Int) -> Int ! io, alloc
     pre = preprocess(src)
     parsed = parse_program(pre)
     if result_is_err(parsed) == 1
@@ -498,54 +503,51 @@ fn emit_ir_for_file(source_path: Int, src: Int) -> Int ! io, alloc
         prog = result_unwrap(parsed)
         dir = cache_dir()
         _m = mkdir_p(dir)
-        if str_len(source_path) == 0
-            key = source_hash(pre)
-            irpath = cache_ir_path(dir, key)
-            metapath = cache_meta_path(dir, key)
-            cached = read_file(irpath)
-            if str_len(cached) > 0
-                _w = write_file(metapath, strdup("hit=1\n"))
-                result_ok(cached)
-            else
-                ir0 = emit_ir_from_prog(prog)
-                _w0 = write_file(irpath, ir0)
-                _w1 = write_file(metapath, strdup("hit=0\n"))
-                result_ok(ir0)
+        key = source_hash(pre)
+        irpath = cache_ir_path(dir, key)
+        metapath = cache_meta_path(dir, key)
+        cached = read_file(irpath)
+        if str_len(cached) > 0
+            _w = write_file(metapath, strdup("hit=1\n"))
+            result_ok(cached)
         else
-            if vec_len(prog_imports(prog)) == 0
-                key = source_hash(pre)
-                irpath = cache_ir_path(dir, key)
-                metapath = cache_meta_path(dir, key)
-                cached = read_file(irpath)
-                if str_len(cached) > 0
-                    _w = write_file(metapath, strdup("hit=1\n"))
-                    result_ok(cached)
-                else
-                    ir0 = emit_ir_from_prog(prog)
-                    _w0 = write_file(irpath, ir0)
-                    _w1 = write_file(metapath, strdup("hit=0\n"))
-                    result_ok(ir0)
+            ir0 = emit_ir_from_prog(prog)
+            _w0 = write_file(irpath, ir0)
+            _w1 = write_file(metapath, strdup("hit=0\n"))
+            result_ok(ir0)
+
+fn emit_ir_imported_file(source_path: Int, src: Int) -> Int ! io, alloc
+    dir = cache_dir()
+    _m = mkdir_p(dir)
+    g = resolve_module_graph(source_path, project_root())
+    if result_is_err(g) == 1
+        g
+    else
+        key = cache_key_for_graph_path(src, source_path)
+        irpath = cache_ir_path(dir, key)
+        metapath = cache_meta_path(dir, key)
+        cached = read_file(irpath)
+        if str_len(cached) > 0
+            _w = write_file(metapath, strdup("hit=1\n"))
+            result_ok(cached)
+        else
+            ir1 = emit_ir_from_graph(g, source_path)
+            if result_is_err(ir1) == 1
+                ir1
             else
-                g = resolve_module_graph(source_path, project_root())
-                if result_is_err(g) == 1
-                    g
-                else
-                    key = cache_key_for_graph_path(pre, source_path)
-                    irpath = cache_ir_path(dir, key)
-                    metapath = cache_meta_path(dir, key)
-                    cached = read_file(irpath)
-                    if str_len(cached) > 0
-                        _w = write_file(metapath, strdup("hit=1\n"))
-                        result_ok(cached)
-                    else
-                        ir1 = emit_ir_from_graph(g, source_path)
-                        if result_is_err(ir1) == 1
-                            ir1
-                        else
-                            body = result_unwrap(ir1)
-                            _w2 = write_file(irpath, body)
-                            _w3 = write_file(metapath, strdup("hit=0\n"))
-                            result_ok(body)
+                body = result_unwrap(ir1)
+                _w2 = write_file(irpath, body)
+                _w3 = write_file(metapath, strdup("hit=0\n"))
+                result_ok(body)
+
+fn emit_ir_for_file(source_path: Int, src: Int) -> Int ! io, alloc
+    if str_len(source_path) > 0
+        if str_contains(src, strdup("import")) == 1
+            emit_ir_imported_file(source_path, src)
+        else
+            emit_ir_single_file(src)
+    else
+        emit_ir_single_file(src)
 
 fn emit_ir(src: Int) -> Int ! io, alloc
     emit_ir_for_file(strdup(""), src)

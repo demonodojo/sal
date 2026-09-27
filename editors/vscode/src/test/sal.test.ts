@@ -18,7 +18,10 @@ import {
 import { materializeSource } from "../materialize";
 import {
   checkFile,
+  checkStyle,
+  fixStyle,
   formatFile,
+  styleFixEdits,
   type ProcessResult,
   type ProcessRunner,
   spanToRange,
@@ -136,6 +139,131 @@ test("un binario ausente no inventa un código E_*", async () => {
   assert.deepEqual(outcome.diagnostics, []);
 });
 
+test("standard check ofrece el reemplazo del quick fix", async () => {
+  const source = "fn main() -> String ! alloc\n    strdup(\"hi\")\n";
+  const calls: string[][] = [];
+  const outcome = await checkStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    text: source,
+    run: async (command, args) => {
+      calls.push([command, ...args]);
+      return {
+        stdout: "",
+        stderr:
+          JSON.stringify({
+            code: "Style/DupString",
+            message: "use d\"…\" instead of strdup(\"…\")",
+            span: { start: source.indexOf("strdup"), end: source.indexOf("strdup") + "strdup(\"hi\")".length, line: 2, col: 5 },
+            fix: "d\"hi\"",
+          }) + "\n",
+        exitCode: 1,
+        notFound: false,
+      };
+    },
+  });
+  assert.equal(outcome.missingCompiler, false);
+  assert.equal(outcome.diagnostics.length, 1);
+  const diag = outcome.diagnostics[0];
+  assert.equal(diag.code, "Style/DupString");
+  assert.equal(diag.severity, "warning");
+  assert.equal(diag.fix, "d\"hi\"");
+  const start = source.indexOf("strdup");
+  const end = start + "strdup(\"hi\")".length;
+  assert.deepEqual(
+    diag.range,
+    spanToRange(source, { start, end, line: 2, col: 5 }),
+  );
+  const edits = styleFixEdits(outcome.diagnostics);
+  assert.equal(edits.length, 1);
+  assert.equal(edits[0].replacement, "d\"hi\"");
+  assert.equal(edits[0].title, diag.message);
+  assert.deepEqual(calls, [["standard", "check", "/tmp/main.sal", "--error-format", "json"]]);
+});
+
+test("standard sin JSON sigue subrayando y no ofrece reemplazo", async () => {
+  const source = "fn main() -> Int ! alloc\n    strdup(\"a\")\n";
+  const outcome = await checkStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    text: source,
+    run: async () => ({
+      stdout: "",
+      stderr: "/tmp/main.sal:2:5: Style/DupString: use d\"…\"\n",
+      exitCode: 1,
+      notFound: false,
+    }),
+  });
+  assert.equal(outcome.diagnostics.length, 1);
+  assert.equal(outcome.diagnostics[0].fix, null);
+  assert.equal(styleFixEdits(outcome.diagnostics).length, 0);
+  assert.equal(outcome.diagnostics[0].range.startCharacter, 4);
+});
+
+test("standard ausente no inventa un aviso", async () => {
+  const outcome = await checkStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    text,
+    run: async () => ({
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      notFound: true,
+    }),
+  });
+  assert.equal(outcome.missingCompiler, true);
+  assert.deepEqual(outcome.diagnostics, []);
+});
+
+test("standard fix devuelve el texto reescrito si sale 0 o 1", async () => {
+  const fixed = "fn main() -> Int ! alloc\n    d\"a\"\n";
+  const ok = await fixStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    run: async (_command, args) => {
+      assert.deepEqual(args, ["fix", "/tmp/main.sal"]);
+      return { stdout: "", stderr: "", exitCode: 0, notFound: false };
+    },
+    readText: async () => fixed,
+  });
+  assert.equal(ok.missingStandard, false);
+  assert.equal(ok.text, fixed);
+
+  const remaining = await fixStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    run: async () => ({
+      stdout: "",
+      stderr: "/tmp/main.sal:1:1: Style/Elsif: ambiguous\n",
+      exitCode: 1,
+      notFound: false,
+    }),
+    readText: async () => fixed,
+  });
+  assert.equal(remaining.text, fixed);
+
+  const lex = await fixStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    run: async () => ({
+      stdout: "",
+      stderr: "lex error\n",
+      exitCode: 2,
+      notFound: false,
+    }),
+    readText: async () => "no debe leerse",
+  });
+  assert.equal(lex.text, null);
+  assert.equal(lex.missingStandard, false);
+});
+
 test("el temporal del buffer sucio se borra", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "sal-editor-"));
   const held = await materializeSource({
@@ -162,6 +290,12 @@ test("los .sal usan el icono de sal", async () => {
   assert.equal(language.icon.light, "./icons/sal.svg");
   assert.equal(language.icon.dark, "./icons/sal.svg");
   assert.equal(manifest.icon, "icons/sal.png");
+  const contributes = manifest.contributes as unknown as {
+    commands: { command: string }[];
+    configuration: { properties: Record<string, { default: string }> };
+  };
+  assert.ok(contributes.commands.some((cmd) => cmd.command === "sal.standardFix"));
+  assert.equal(contributes.configuration.properties["sal.standardPath"].default, "standard");
   const svg = await readFile(path.join(extensionRoot, "icons", "sal.svg"), "utf8");
   assert.match(svg, /<svg/);
   const png = await stat(path.join(extensionRoot, "icons", "sal.png"));

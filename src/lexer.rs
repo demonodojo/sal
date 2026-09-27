@@ -72,6 +72,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut line = 1u32;
     let mut col = 1u32;
     let mut indent_stack = vec![0usize];
+    let mut group: i32 = 0;
 
     while i < bytes.len() {
         // Skip comment
@@ -122,6 +123,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     col,
                 },
             });
+            // Inside `(…)` or `[…]` a newline does not open or close a block.
+            if group > 0 {
+                continue;
+            }
             // Measure indent on next line
             let mut j = i;
             while j < bytes.len() && bytes[j] == b' ' {
@@ -219,10 +224,26 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             b'!' => TokenKind::Bang,
             b',' => TokenKind::Comma,
             b':' => TokenKind::Colon,
-            b'(' => TokenKind::LParen,
-            b')' => TokenKind::RParen,
-            b'[' => TokenKind::LBracket,
-            b']' => TokenKind::RBracket,
+            b'(' => {
+                group += 1;
+                TokenKind::LParen
+            }
+            b')' => {
+                if group > 0 {
+                    group -= 1;
+                }
+                TokenKind::RParen
+            }
+            b'[' => {
+                group += 1;
+                TokenKind::LBracket
+            }
+            b']' => {
+                if group > 0 {
+                    group -= 1;
+                }
+                TokenKind::RBracket
+            }
             b'?' => TokenKind::Question,
             b'.' => TokenKind::Dot,
             b'=' => TokenKind::Eq,

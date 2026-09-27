@@ -669,3 +669,69 @@ fn tab_at_and_parallel_are_parse_errors() {
     assert_eq!(parse("fn f() -> Int\n    @frozen x = 1\n").unwrap_err().code.as_str(), "E_PARSE");
     assert_eq!(parse("parallel\n    1\n").unwrap_err().code.as_str(), "E_PARSE");
 }
+
+#[test]
+fn paren_group_keeps_one_left_assoc_expr() {
+    let src = "\
+fn f() -> Int
+    (
+        1
+        + 2
+        + 3
+    )
+";
+    match tail_of(src) {
+        Expr::Binary { op: BinOp::Add, left, right, .. } => {
+            assert!(matches!(right.as_ref(), Expr::Int { value: 3, .. }));
+            match left.as_ref() {
+                Expr::Binary { op: BinOp::Add, left, right, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::Int { value: 1, .. }));
+                    assert!(matches!(right.as_ref(), Expr::Int { value: 2, .. }));
+                }
+                other => panic!("expected left-assoc add, got {other:?}"),
+            }
+        }
+        other => panic!("expected add, got {other:?}"),
+    }
+    assert_fmt_idempotent(src);
+}
+
+#[test]
+fn paren_group_allows_operator_at_end_of_line() {
+    match tail_of("fn f() -> String ! alloc\n    (\n        \"a\" +\n        \"b\" +\n        \"c\"\n    )\n") {
+        Expr::Binary { op: BinOp::Add, left, right, .. } => {
+            assert!(matches!(right.as_ref(), Expr::String { value, .. } if value == "c"));
+            assert!(matches!(
+                left.as_ref(),
+                Expr::Binary { op: BinOp::Add, .. }
+            ));
+        }
+        other => panic!("expected string add, got {other:?}"),
+    }
+}
+
+#[test]
+fn newline_outside_parens_ends_the_statement() {
+    let err = parse("fn f() -> Int\n    1\n    + 2\n").unwrap_err();
+    assert_eq!(err.code.as_str(), "E_PARSE");
+}
+
+#[test]
+fn call_and_brackets_may_break_across_lines() {
+    match tail_of("fn f() -> Int\n    g(\n        1,\n        2\n    )\n") {
+        Expr::Call { args, .. } => assert_eq!(args.len(), 2),
+        other => panic!("expected call, got {other:?}"),
+    }
+    let p = assert_parse("fn f() -> Int\n    t = tensor[\n        [1.0, 2.0],\n        [3.0, 4.0]\n    ]\n    0\n");
+    let Item::Fn(f) = &p.items[0] else { panic!("expected fn") };
+    match &f.body.stmts[0] {
+        Stmt::Assign { value, .. } => match value {
+            Expr::TensorLit { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].len(), 2);
+            }
+            other => panic!("expected tensor, got {other:?}"),
+        },
+        other => panic!("expected assign, got {other:?}"),
+    }
+}

@@ -69,6 +69,87 @@ fn format_off(path: Int, src: Int, o: Int) -> Int ! alloc
     acc = str_append(acc, strdup(": "))
     str_append(acc, off_msg(o))
 
+fn json_escape(s: Int) -> Int ! alloc
+    json_escape_go(s, 0, str_len(s), strdup(""))
+
+fn json_escape_go(s: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        piece = json_escape_byte(str_char(s, i))
+        acc2 = str_append(acc, piece)
+        json_escape_go(s, i + 1, n, acc2)
+
+fn json_escape_byte(c: Int) -> Int ! alloc
+    if c == 34
+        strdup("\\\"")
+    elsif c == 92
+        strdup("\\\\")
+    elsif c == 10
+        strdup("\\n")
+    elsif c == 13
+        strdup("\\r")
+    elsif c == 9
+        strdup("\\t")
+    elsif c < 32
+        json_u(c)
+    else
+        char_to_str(c)
+
+fn hex_digit(n: Int) -> Int ! alloc
+    if n < 10
+        char_to_str(48 + n)
+    else
+        char_to_str(87 + n)
+
+fn json_u(c: Int) -> Int ! alloc
+    hi = c / 16
+    lo = c - hi * 16
+    acc = strdup("\\u00")
+    acc2 = str_append(acc, hex_digit(hi))
+    str_append(acc2, hex_digit(lo))
+
+fn json_fix(fix: Int) -> Int ! alloc
+    if fix == 0
+        strdup("null")
+    else
+        acc = strdup("\"")
+        acc2 = str_append(acc, json_escape(fix))
+        str_append(acc2, strdup("\""))
+
+fn format_off_json(src: Int, o: Int) -> Int ! alloc
+    start = off_start(o)
+    endb = off_end(o)
+    lc = byte_line_col(src, start, 0, 1, 1)
+    acc = strdup("{{\"code\":\"")
+    acc = str_append(acc, json_escape(off_code(o)))
+    acc = str_append(acc, strdup("\",\"message\":\""))
+    acc = str_append(acc, json_escape(off_msg(o)))
+    acc = str_append(acc, strdup("\",\"span\":{{\"start\":"))
+    acc = str_append(acc, int_to_str(start))
+    acc = str_append(acc, strdup(",\"end\":"))
+    acc = str_append(acc, int_to_str(endb))
+    acc = str_append(acc, strdup(",\"line\":"))
+    acc = str_append(acc, int_to_str(lc_line(lc)))
+    acc = str_append(acc, strdup(",\"col\":"))
+    acc = str_append(acc, int_to_str(lc_col(lc)))
+    acc = str_append(acc, strdup("}},\"fix\":"))
+    acc = str_append(acc, json_fix(off_fix(o)))
+    str_append(acc, strdup("}}"))
+
+fn print_offs_json(src: Int, offs: Int) -> Int ! io, alloc
+    print_offs_json_go(src, offs, 0, vec_len(offs))
+
+fn print_offs_json_go(src: Int, offs: Int, i: Int, n: Int) -> Int ! io, alloc
+    if i >= n
+        0
+    else
+        o = vec_get(offs, i)
+        line = format_off_json(src, o)
+        msg = str_concat(line, strdup("\n"))
+        _e = eprint_str(msg)
+        print_offs_json_go(src, offs, i + 1, n)
+
 fn print_offs(path: Int, src: Int, offs: Int) -> Int ! io, alloc
     print_offs_go(path, src, offs, 0, vec_len(offs))
 
@@ -108,7 +189,7 @@ fn fix_to_point(src: Int, pass: Int, max_pass: Int) -> Int ! alloc
                 else
                     fix_to_point(next, pass + 1, max_pass)
 
-fn run_check(path: Int, src: Int) -> Int ! io, alloc
+fn run_check(path: Int, src: Int, as_json: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
     if cops_pack_status(pack) != LEX_OK()
         _e = eprint_str(strdup("lex error\n"))
@@ -118,9 +199,23 @@ fn run_check(path: Int, src: Int) -> Int ! io, alloc
         n = count_offs(offs)
         if n == 0
             0
+        elsif as_json == 1
+            _p = print_offs_json(src, offs)
+            1
         else
             _p = print_offs(path, src, offs)
             1
+
+fn wants_json() -> Int ! alloc
+    flag = argv(3)
+    val = argv(4)
+    if str_eq(flag, "--error-format") == 1
+        if str_eq(val, "json") == 1
+            1
+        else
+            0
+    else
+        0
 
 fn run_fix(path: Int, src: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
@@ -147,10 +242,9 @@ fn main() -> Int ! io, alloc
     path = argv(2)
     src = read_file(path)
     if str_eq(cmd, "check") == 1
-        run_check(path, src)
+        run_check(path, src, wants_json())
+    elsif str_eq(cmd, "fix") == 1
+        run_fix(path, src)
     else
-        if str_eq(cmd, "fix") == 1
-            run_fix(path, src)
-        else
-            _e = eprint_str(strdup("usage: check|fix FILE\n"))
-            2
+        _e = eprint_str(strdup("usage: check|fix FILE\n"))
+        2

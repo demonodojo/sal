@@ -2,9 +2,10 @@
 name: sal-verificar
 description: >-
   Verifica cambios de sal con cargo test y la CLI sal (check, fmt, emit, build,
-  run) y el linter standard (check, fix). Usar al terminar un cambio del
-  compilador, del runtime, de un programa .sal, de standard/, de la extensión o
-  del autohospedaje, antes de dar la tarea por hecha.
+  run) y el linter standard (check, fix, y reglas nuevas cuando haga falta).
+  Usar al terminar un cambio del compilador, del runtime, de un programa .sal,
+  de standard/, de la extensión o del autohospedaje, antes de dar la tarea por
+  hecha.
 ---
 
 # Verificar un cambio
@@ -50,8 +51,8 @@ cargo run --bin standard -- fix path/to/file.sal
 
 ## Hecho
 
-El test del pase pasa y, si el cambio es de superficie, `fmt` es idempotente sobre un ejemplo que use la construcción nueva.
+El test del pase pasa y cubre lo añadido al lenguaje: el caso nuevo se ejecuta y el resultado es el que la SPEC fija. Si el cambio es de superficie, `fmt` es idempotente sobre un ejemplo que use la construcción nueva. Si los dos compiladores la implementan, pasan el test del arranque y `cargo test --test selfhost_ir` cuando el espejo en `selfhost/` puede cambiar la IR; un test solo del bootstrap no cierra el cambio.
 
-Si el cambio toca estilo acordado del repo (`d"…"`, `+` en cadenas, `elsif`), `standard check` debe quedar limpio en los ficheros editados (o aplicar `standard fix` y revisar el diff).
+Todo `.sal` editado pasa por `standard check`. Las prácticas ya cubiertas se corrigen con `standard fix` y se revisa el diff; `check` queda limpio en esos ficheros. Si el diff introduce una práctica que va a repetirse y ninguna regla la cubre, el cambio le añade esa capacidad a `standard` (cop, fixtures y test en `tests/standard.rs`). Ver [sal-standard](../sal-standard/SKILL.md).
 
 Superficie `if` / `elsif` / `else`: `tests/frontend.rs` (`if_without_else_*`, `if_else_binds_to_inner_if`, `elsif_chain_is_flat`, `fmt_if_without_else_is_idempotent`, `fmt_elsif_is_idempotent`) y `tests/semantics.rs` (`if_without_else_as_stmt_ok_for_int_return`, `if_without_else_as_tail_rejects_non_unit_return`, `elsif_without_else_is_unit`, `elsif_with_else_has_then_type`, `elsif_without_else_as_stmt_ok`). Tras tocar `parse_if` en Rust o en `selfhost/`, incluir `cargo test --test selfhost_ir` si puede afectar la IR del corpus.

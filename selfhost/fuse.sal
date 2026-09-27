@@ -478,6 +478,7 @@ fn lower_call(cx: Int, e: Int) -> Int ! alloc
                 q3 = str_append(q2, qe)
                 argv = vec_new()
                 _a = vec_push(argv, q3)
+                _pl = vec_push(argv, strdup("cpu"))
                 fnm = strdup("sal_load")
                 _p = ir_push(cx, ir_call(d, fnm, argv, 1))
                 d

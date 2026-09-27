@@ -1,7 +1,7 @@
 {
   "name": "sal",
   "displayName": "sal",
-  "description": "Editar programas sal: resaltado, diagnósticos, formato e ir a la definición de funciones.",
+  "description": "Editar programas sal: resaltado, diagnósticos del compilador y de standard, formato e ir a la definición de funciones.",
   "version": "0.1.0",
   "private": true,
   "publisher": "sal",
@@ -53,6 +53,11 @@
           "type": "string",
           "default": "sal",
           "description": "Ruta del binario sal. Por defecto se busca sal en el PATH."
+        },
+        "sal.standardPath": {
+          "type": "string",
+          "default": "standard",
+          "description": "Ruta del binario standard. Por defecto se busca standard en el PATH."
         }
       }
     },
@@ -64,6 +69,10 @@
       {
         "command": "sal.format",
         "title": "SAL: Format"
+      },
+      {
+        "command": "sal.standardFix",
+        "title": "SAL: Standard Fix"
       }
     ],
     "menus": {
@@ -74,6 +83,10 @@
         },
         {
           "command": "sal.format",
+          "when": "editorLangId == sal"
+        },
+        {
+          "command": "sal.standardFix",
           "when": "editorLangId == sal"
         }
       ]
