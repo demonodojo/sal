@@ -108,6 +108,9 @@ fn TK_IMPORT() -> Int
 fn TK_DOT() -> Int
     34
 
+fn TK_DSTRING() -> Int
+    36
+
 fn is_digit(c: Int) -> Int
     if c < 48
         0
@@ -561,23 +564,26 @@ fn lex_tok_rest4(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
                 else
                     lex_tok_rest5(src, i, n, out, st, c)
 
+fn lex_quoted(src: Int, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int ! alloc
+    raw = strdup("")
+    raw2 = read_string_chars(src, i + 1, n, raw)
+    end = string_end(src, i + 1, n)
+    nraw = str_len(raw2)
+    empty = strdup("")
+    un = unescape_braces(raw2, 0, nraw, empty)
+    free(raw2)
+    t = tok_new(kind, un, 0)
+    _p = vec_push(out, t)
+    j = end
+    if end < n
+        j = end + 1
+    else
+        j = end
+    lex_go(src, j, n, out, st, 0)
+
 fn lex_tok_rest5(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
     if c == 34
-        raw = strdup("")
-        raw2 = read_string_chars(src, i + 1, n, raw)
-        end = string_end(src, i + 1, n)
-        nraw = str_len(raw2)
-        empty = strdup("")
-        un = unescape_braces(raw2, 0, nraw, empty)
-        free(raw2)
-        t = tok_new(TK_STRING(), un, 0)
-        _p = vec_push(out, t)
-        j = end + 1
-        if end < n
-            j = end + 1
-        else
-            j = end
-        lex_go(src, j, n, out, st, 0)
+        lex_quoted(src, i, n, out, st, TK_STRING())
     else
         if is_digit(c) == 1
             end = read_digits(src, i, n)
@@ -612,10 +618,26 @@ fn lex_tok_rest5(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
                     if is_ident_start(c) == 1
                         end = read_ident(src, i, n)
                         text = str_slice(src, i, end)
-                        kind = kw_kind(text)
-                        t = tok_new(kind, text, 0)
-                        _p = vec_push(out, t)
-                        lex_go(src, end, n, out, st, 0)
+                        if str_eq(text, "d") == 1
+                            if end < n
+                                if str_char(src, end) == 34
+                                    free(text)
+                                    lex_quoted(src, end, n, out, st, TK_DSTRING())
+                                else
+                                    kind = kw_kind(text)
+                                    t = tok_new(kind, text, 0)
+                                    _p = vec_push(out, t)
+                                    lex_go(src, end, n, out, st, 0)
+                            else
+                                kind = kw_kind(text)
+                                t = tok_new(kind, text, 0)
+                                _p = vec_push(out, t)
+                                lex_go(src, end, n, out, st, 0)
+                        else
+                            kind = kw_kind(text)
+                            t = tok_new(kind, text, 0)
+                            _p = vec_push(out, t)
+                            lex_go(src, end, n, out, st, 0)
                     else
                         lex_go(src, i + 1, n, out, st, 0)
 

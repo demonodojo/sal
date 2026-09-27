@@ -855,7 +855,24 @@ fn emit_c_expr(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
                                     else
                                         strdup("0")
 
+fn emit_c_str_add(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    l = emit_c_expr(vec_get(e, 2), user, stmts, tc)
+    r = emit_c_expr(vec_get(e, 3), user, stmts, tc)
+    args = vec_new()
+    _a = vec_push(args, l)
+    _b = vec_push(args, r)
+    if binary_add_uses_append(e) == 1
+        emit_c_builtin2(strdup("str_append"), args, stmts)
+    else
+        emit_c_builtin2(strdup("str_concat"), args, stmts)
+
 fn emit_c_binary(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    if binary_add_is_string_concat(e) == 1
+        emit_c_str_add(e, user, stmts, tc)
+    else
+        emit_c_binary_num(e, user, stmts, tc)
+
+fn emit_c_binary_num(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
     l = emit_c_expr(vec_get(e, 2), user, stmts, tc)
     r = emit_c_expr(vec_get(e, 3), user, stmts, tc)
     op = cmap_op(vec_get(e, 1))

@@ -320,6 +320,23 @@ fn peak_out_fill(od: Int, oc: Int, ld: Int, lc: Int, d: Int, n: Int) -> Int ! al
         _b = vec_push(oc, cv)
         peak_out_fill(od, oc, ld, lc, d + 1, n)
 
+fn str_add_name(e: Int) -> Int ! alloc
+    if binary_add_uses_append(e) == 1
+        strdup("sal_str_append")
+    else
+        strdup("sal_str_concat")
+
+fn lower_str_add(cx: Int, e: Int) -> Int ! alloc
+    l = lower_expr(cx, vec_get(e, 2))
+    r = lower_expr(cx, vec_get(e, 3))
+    d = fresh(cx)
+    args = vec_new()
+    _a = vec_push(args, l)
+    _b = vec_push(args, r)
+    fnm = str_add_name(e)
+    _p = ir_push(cx, ir_call(d, fnm, args, 1))
+    d
+
 fn lower_expr(cx: Int, e: Int) -> Int ! alloc
     if e == 0
         strdup("0")
@@ -344,11 +361,14 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
                         cx_lookup(cx, vec_get(e, 1))
                     else
                         if k == EX_BINARY()
-                            l = lower_expr(cx, vec_get(e, 2))
-                            r = lower_expr(cx, vec_get(e, 3))
-                            d = fresh(cx)
-                            _p = ir_push(cx, ir_bin(d, vec_get(e, 1), l, r))
-                            d
+                            if binary_add_is_string_concat(e) == 1
+                                lower_str_add(cx, e)
+                            else
+                                l = lower_expr(cx, vec_get(e, 2))
+                                r = lower_expr(cx, vec_get(e, 3))
+                                d = fresh(cx)
+                                _p = ir_push(cx, ir_bin(d, vec_get(e, 1), l, r))
+                                d
                         else
                             if k == EX_TENSOR()
                                 fresh(cx)

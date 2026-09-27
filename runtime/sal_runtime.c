@@ -1514,6 +1514,16 @@ void *sal_lex_src(const char *src) {
         }
         if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') {
             int64_t end = lex_scan(src, i, n, 2);
+            /* TK_DSTRING (36): identifier d immediately followed by a quote. */
+            if (end == i + 1 && src[i] == 'd' && end < n && src[end] == '"') {
+                int64_t send = lex_scan_str(src, end + 1, n);
+                int64_t stop = send > n ? n : send;
+                size_t len = stop > end + 1 ? (size_t)(stop - (end + 1)) : 0;
+                char *text = lex_unescape(src + end + 1, len);
+                lex_push(out, 36, (int64_t)(uintptr_t)text, 0);
+                i = send < n ? send + 1 : send;
+                continue;
+            }
             char *text = lex_span(src, i, end);
             lex_push(out, lex_kw(text), (int64_t)(uintptr_t)text, 0);
             i = end;
