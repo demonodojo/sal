@@ -1,6 +1,0 @@
-{
-  "key": "f7142a339cfafc56b3b9d02e9621b270fe38224870cc3daeff4e05b5c6fef707",
-  "llvm_writes": 1,
-  "ll_path": "/home/jmdiez/Trabajo/demonodojo/sal/tests/import_graph/target/incremental/f7142a339cfafc56b3b9d02e9621b270fe38224870cc3daeff4e05b5c6fef707/module.ll",
-  "obj_path": "/home/jmdiez/Trabajo/demonodojo/sal/tests/import_graph/target/incremental/f7142a339cfafc56b3b9d02e9621b270fe38224870cc3daeff4e05b5c6fef707/module.o"
-}
