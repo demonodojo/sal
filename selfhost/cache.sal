@@ -1,5 +1,3 @@
-# Incremental cache for emitted IR.
-
 fn hash_go(src: Int, i: Int, n: Int, h: Int) -> Int ! alloc
     if i >= n
         h
@@ -19,7 +17,7 @@ fn source_hash(src: Int) -> Int ! io, alloc
     int_to_str(h)
 
 fn cache_dir() -> Int ! io, alloc
-    e = getenv(strdup("SAL_SELFHOST_CACHE"))
+    e = getenv(d"SAL_SELFHOST_CACHE")
     if str_len(e) == 0
         strdup("target/selfhost-cache")
     else

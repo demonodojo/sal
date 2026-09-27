@@ -21,6 +21,7 @@ import {
   checkStyle,
   fixStyle,
   formatFile,
+  resolveBinaryPath,
   styleFixEdits,
   type ProcessResult,
   type ProcessRunner,
@@ -221,6 +222,16 @@ test("un standard que no arranca deja el error en el primer renglón", async () 
   assert.equal(outcome.diagnostics[0].fix, null);
 });
 
+test("resolveBinaryPath prefiere target/debug del workspace", () => {
+  const repo = path.join(extensionRoot, "..", "..");
+  const sal = resolveBinaryPath(undefined, "sal", repo);
+  const standard = resolveBinaryPath(undefined, "standard", repo);
+  assert.equal(sal, path.join(repo, "target", "debug", "sal"));
+  assert.equal(standard, path.join(repo, "target", "debug", "standard"));
+  assert.equal(resolveBinaryPath("/opt/sal", "sal", repo), "/opt/sal");
+  assert.equal(resolveBinaryPath(undefined, "sal", "/tmp/nowhere"), "sal");
+});
+
 test("standard ausente no inventa un aviso", async () => {
   const outcome = await checkStyle({
     command: "standard",
@@ -314,7 +325,8 @@ test("los .sal usan el icono de sal", async () => {
     configuration: { properties: Record<string, { default: string }> };
   };
   assert.ok(contributes.commands.some((cmd) => cmd.command === "sal.standardFix"));
-  assert.equal(contributes.configuration.properties["sal.standardPath"].default, "standard");
+  assert.equal(contributes.configuration.properties["sal.standardPath"].default, "");
+  assert.equal(contributes.configuration.properties["sal.compilerPath"].default, "");
   const svg = await readFile(path.join(extensionRoot, "icons", "sal.svg"), "utf8");
   assert.match(svg, /<svg/);
   const png = await stat(path.join(extensionRoot, "icons", "sal.png"));

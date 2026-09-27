@@ -4,8 +4,8 @@ Extensión para editar `.sal`. El compilador sigue siendo quien acepta o rechaza
 
 ## Requisitos
 
-- El binario `sal` en el `PATH`, o la ruta en `sal.compilerPath`.
-- El binario `standard` en el `PATH`, o la ruta en `sal.standardPath`. Sin él, los `E_*` siguen apareciendo y la extensión avisa una vez.
+- Binarios del repo: `cargo build --bin sal --bin standard` en la raíz del proyecto.
+- La extensión usa por defecto `target/debug/sal` y `target/debug/standard` del workspace abierto (así no pisa un `standard` viejo del PATH). Opcional: `sal.compilerPath` y `sal.standardPath`.
 
 ## Qué hace
 

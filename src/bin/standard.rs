@@ -68,11 +68,6 @@ fn find_project_root() -> Option<PathBuf> {
         }
     }
 
-    let baked = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if baked.join("standard/main.sal").is_file() {
-        return Some(baked);
-    }
-
     let mut dir = env::current_dir().ok()?;
     loop {
         if dir.join("standard/main.sal").is_file() {
@@ -82,5 +77,11 @@ fn find_project_root() -> Option<PathBuf> {
             break;
         }
     }
+
+    let baked = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if baked.join("standard/main.sal").is_file() {
+        return Some(baked);
+    }
+
     None
 }

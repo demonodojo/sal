@@ -35,6 +35,9 @@ export interface StyleFixEdit {
   replacement: string;
 }
 
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 export interface ProcessResult {
   stdout: string;
   stderr: string;
@@ -63,6 +66,24 @@ export const MISSING_COMPILER_MESSAGE =
 
 export const MISSING_STANDARD_MESSAGE =
   "No se encuentra el binario standard. Configura sal.standardPath.";
+
+/** Prefer an explicit setting, then `target/debug/<name>` in the workspace, then PATH. */
+export function resolveBinaryPath(
+  configured: string | undefined,
+  defaultName: "sal" | "standard",
+  workspaceFolder: string | undefined,
+): string {
+  if (configured && configured.trim() !== "") {
+    return configured.trim();
+  }
+  if (workspaceFolder) {
+    const local = path.join(workspaceFolder, "target", "debug", defaultName);
+    if (existsSync(local)) {
+      return local;
+    }
+  }
+  return defaultName;
+}
 
 export function checkArgs(filePath: string): string[] {
   return ["check", filePath, "--error-format", "json"];

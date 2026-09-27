@@ -51,13 +51,13 @@
       "properties": {
         "sal.compilerPath": {
           "type": "string",
-          "default": "sal",
-          "description": "Ruta del binario sal. Por defecto se busca sal en el PATH."
+          "default": "",
+          "description": "Ruta del binario sal. Vacio: target/debug/sal del workspace; luego PATH."
         },
         "sal.standardPath": {
           "type": "string",
-          "default": "standard",
-          "description": "Ruta del binario standard. Por defecto se busca standard en el PATH."
+          "default": "",
+          "description": "Ruta del binario standard. Vacio: target/debug/standard del workspace; luego PATH."
         }
       }
     },

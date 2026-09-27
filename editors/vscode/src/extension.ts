@@ -14,6 +14,7 @@ import {
   formatFile,
   MISSING_COMPILER_MESSAGE,
   MISSING_STANDARD_MESSAGE,
+  resolveBinaryPath,
   styleFixEdits,
   type MappedDiagnostic,
 } from "./protocol";
@@ -123,8 +124,9 @@ async function formatDocument(
 ): Promise<vscode.TextEdit[]> {
   const held = await holdSource(document);
   try {
+    const ws = workspaceFolderFor(document);
     const outcome = await formatFile({
-      command: compilerPath(),
+      command: toolchainPath("compilerPath", "sal", ws),
       filePath: held.path,
       cwd: cwdFor(document),
       run: spawnProcess,
@@ -150,6 +152,7 @@ async function refresh(document: vscode.TextDocument): Promise<void> {
   generation.set(key, gen);
   const held = await holdSource(document);
   try {
+    const ws = workspaceFolderFor(document);
     const shared = {
       filePath: held.path,
       cwd: cwdFor(document),
@@ -157,8 +160,8 @@ async function refresh(document: vscode.TextDocument): Promise<void> {
       run: spawnProcess,
     };
     const [compiler, style] = await Promise.all([
-      checkFile({ command: compilerPath(), ...shared }),
-      checkStyle({ command: standardPath(), ...shared }),
+      checkFile({ command: toolchainPath("compilerPath", "sal", ws), ...shared }),
+      checkStyle({ command: toolchainPath("standardPath", "standard", ws), ...shared }),
     ]);
     if (generation.get(key) !== gen) return;
     if (compiler.missingCompiler) warnMissingCompiler();
@@ -242,7 +245,7 @@ async function applyStandardFix(document: vscode.TextDocument): Promise<void> {
   });
   try {
     const outcome = await fixStyle({
-      command: standardPath(),
+      command: toolchainPath("standardPath", "standard", workspaceFolderFor(document)),
       filePath: held.path,
       cwd: cwdFor(document),
       run: spawnProcess,
@@ -346,16 +349,17 @@ function readSalText(filePath: string): string | null {
   }
 }
 
-function compilerPath(): string {
-  const configured = vscode.workspace.getConfiguration("sal").get<string>("compilerPath");
-  if (configured && configured.trim() !== "") return configured;
-  return "sal";
+function workspaceFolderFor(document: vscode.TextDocument): string | undefined {
+  return vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
 }
 
-function standardPath(): string {
-  const configured = vscode.workspace.getConfiguration("sal").get<string>("standardPath");
-  if (configured && configured.trim() !== "") return configured;
-  return "standard";
+function toolchainPath(
+  setting: "compilerPath" | "standardPath",
+  defaultName: "sal" | "standard",
+  workspaceFolder: string | undefined,
+): string {
+  const configured = vscode.workspace.getConfiguration("sal").get<string>(setting);
+  return resolveBinaryPath(configured, defaultName, workspaceFolder);
 }
 
 function warnMissingCompiler(): void {
