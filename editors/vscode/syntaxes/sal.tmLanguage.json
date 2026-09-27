@@ -3,38 +3,70 @@
   "name": "sal",
   "patterns": [
     { "include": "#comment" },
+    { "include": "#dstring" },
     { "include": "#string" },
     { "include": "#number" },
+    { "include": "#function-def" },
+    { "include": "#tensor" },
     { "include": "#keyword" },
-    { "include": "#constant" }
+    { "include": "#constant" },
+    { "include": "#type" }
   ],
   "repository": {
     "comment": {
       "name": "comment.line.number-sign.sal",
       "match": "#.*$"
     },
+    "string-content": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.sal",
+          "match": "\\\\.|\\{\\{|\\}\\}"
+        },
+        {
+          "name": "meta.interpolation.sal",
+          "match": "\\{[A-Za-z_][A-Za-z0-9_]*\\}"
+        }
+      ]
+    },
     "string": {
       "name": "string.quoted.double.sal",
       "begin": "\"",
       "end": "\"",
-      "patterns": [
-        {
-          "name": "constant.character.escape.sal",
-          "match": "\\\\."
-        }
-      ]
+      "patterns": [{ "include": "#string-content" }]
+    },
+    "dstring": {
+      "name": "string.quoted.double.sal",
+      "begin": "\\bd\"",
+      "end": "\"",
+      "patterns": [{ "include": "#string-content" }]
     },
     "number": {
       "name": "constant.numeric.sal",
       "match": "\\b\\d+(?:\\.\\d+)?\\b"
     },
+    "function-def": {
+      "match": "^(fn)[ \\t]+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.sal" },
+        "2": { "name": "entity.name.function.sal" }
+      }
+    },
+    "tensor": {
+      "name": "keyword.control.sal",
+      "match": "\\btensor(?=\\s*\\[)"
+    },
     "keyword": {
       "name": "keyword.control.sal",
-      "match": "\\b(?:fn|let|if|match|on|to|kernel|return|import|try|struct|enum)\\b"
+      "match": "\\b(?:fn|let|if|elsif|else|match|on|to|kernel|return|import|try|while|struct|enum|parallel)\\b"
     },
     "constant": {
       "name": "constant.language.sal",
       "match": "\\b(?:true|false|cpu|gpu|tpu)\\b"
+    },
+    "type": {
+      "name": "support.type.sal",
+      "match": "\\b(?:Tensor|List|Dict|Int|Float|Bool|String|Unit|BF16|F16|F32|I8)\\b"
     }
   }
 }

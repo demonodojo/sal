@@ -1,0 +1,3 @@
+fn main() -> String ! alloc
+    # keep this comment
+    strdup("x")

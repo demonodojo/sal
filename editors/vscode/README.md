@@ -9,10 +9,11 @@ Extensión para editar `.sal`. El compilador sigue siendo quien acepta o rechaza
 ## Qué hace
 
 - Asocia los ficheros `.sal` y muestra el icono de sal en el explorador.
-- Colorea las palabras del lexer, los comentarios `#` y los literales.
-- Al pulsar Enter después de `fn`, `if`, `match`, `on`, `struct`, `enum`, o de una rama que termina en `=>`, sube un nivel de sangría.
+- Colorea las palabras del lexer (`elsif`, `else`, `while`, `parallel` incluidas), los tipos (`Tensor`, `F32`, `List`, …), los comentarios `#`, las cadenas, `d"…"`, la interpolación `{nombre}` y el literal `tensor[…]`.
+- Al pulsar Enter después de `fn`, `if`, `elsif`, `else`, `while`, `match`, `on`, `struct`, `enum`, o de una rama que termina en `=>`, sube un nivel de sangría.
 - `SAL: Check` ejecuta `sal check --error-format json` y subraya cada `E_*` en su span.
 - Format Document y `SAL: Format` aplican la salida de `sal fmt` solo si el proceso termina bien.
+- Ir a la definición: con el cursor sobre el nombre de una función, Ctrl+clic (Cmd+clic en macOS) o F12 abre el `fn` donde está definida. Busca en el fichero actual y, si no está, en los módulos de `import` (también a través de otros imports y de los `path` de `[dependencies]` en `Sal.toml`).
 
 ## Probarla
 

@@ -14,9 +14,10 @@ Extensión en [editors/vscode/](../../editors/vscode/) que asocia `.sal`, colore
 - `sal fmt` imprime la fuente canónica por stdout. El buffer solo cambia si el proceso sale 0.
 - Binario en `sal.compilerPath` (por defecto `sal` en el `PATH`).
 - Buffer sin guardar: copia temporal en el mismo directorio, borrada al terminar, para no romper `import`.
+- Ir a la definición de un nombre de función (Ctrl+clic, Cmd+clic o F12) busca el `fn` en el fichero y, si no está, sigue los `import` como el compilador: directorio del fuente, raíz del proyecto y `path` de `[dependencies]` en `Sal.toml`, en transitivo. No reimplementa el parser: reconoce líneas `fn` e `import`.
 
 ## Tests
-Doble del proceso `sal` (sin invocar el compilador real ni la red): un `E_PARSE` cae en el span; el formateador no sustituye el buffer si el proceso no sale 0.
+Doble del proceso `sal` (sin invocar el compilador real ni la red): un `E_PARSE` cae en el span; el formateador no sustituye el buffer si el proceso no sale 0. La definición se prueba con un sistema de ficheros en memoria.
 
 ## Fuera de este subplan
-Servidor de lenguaje propio, hover de tipos, ir a la definición, autocompletado semántico, depurador. No se modifica `src/**` ni `runtime/**`.
+Servidor de lenguaje propio, hover de tipos, autocompletado semántico, depurador. No se modifica `src/**` ni `runtime/**`.

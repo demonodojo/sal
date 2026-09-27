@@ -1,0 +1,64 @@
+import lexer
+import patch
+import util
+
+fn CODE_DUP() -> Int ! alloc
+    strdup("Style/DupString")
+
+fn cop_dupstring(src: Int, toks: Int) -> Int ! alloc
+    offs = vec_new()
+    n = vec_len(toks)
+    cop_dup_go(src, toks, offs, 0, n)
+
+fn cop_dup_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        offs
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) == TK_IDENT()
+            name = tok_text(src, t)
+            if str_eq(name, "strdup") == 1
+                j = skip_nl(toks, n, i + 1)
+                if j < n
+                    t2 = vec_get(toks, j)
+                    if tok_kind(t2) == TK_LPAREN()
+                        j2 = skip_nl(toks, n, j + 1)
+                        if j2 < n
+                            t3 = vec_get(toks, j2)
+                            if tok_kind(t3) == TK_STRING()
+                                j3 = skip_nl(toks, n, j2 + 1)
+                                if j3 < n
+                                    t4 = vec_get(toks, j3)
+                                    if tok_kind(t4) == TK_RPAREN()
+                                        start = tok_start(t)
+                                        end = tok_end(t4)
+                                        lit = str_slice(src, tok_start(t3), tok_end(t3))
+                                        fix = str_concat(strdup("d"), lit)
+                                        msg = strdup("use d\"…\" instead of strdup(\"…\")")
+                                        o = off_new(CODE_DUP(), msg, start, end, fix)
+                                        _p = vec_push(offs, o)
+                                        free(name)
+                                        cop_dup_go(src, toks, offs, j3 + 1, n)
+                                    else
+                                        free(name)
+                                        cop_dup_go(src, toks, offs, i + 1, n)
+                                else
+                                    free(name)
+                                    cop_dup_go(src, toks, offs, i + 1, n)
+                            else
+                                free(name)
+                                cop_dup_go(src, toks, offs, i + 1, n)
+                        else
+                            free(name)
+                            cop_dup_go(src, toks, offs, i + 1, n)
+                    else
+                        free(name)
+                        cop_dup_go(src, toks, offs, i + 1, n)
+                else
+                    free(name)
+                    cop_dup_go(src, toks, offs, i + 1, n)
+            else
+                free(name)
+                cop_dup_go(src, toks, offs, i + 1, n)
+        else
+            cop_dup_go(src, toks, offs, i + 1, n)

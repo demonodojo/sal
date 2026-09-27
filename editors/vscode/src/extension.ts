@@ -1,8 +1,10 @@
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
 import * as vscode from "vscode";
 
+import { definitionsOf, dependencySearchBases, identifierAt } from "./definitions";
 import { materializeSource } from "./materialize";
 import { spawnProcess } from "./process";
 import {
@@ -22,6 +24,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.languages.registerDocumentFormattingEditProvider("sal", {
       provideDocumentFormattingEdits: (document) => formatDocument(document),
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.languages.registerDefinitionProvider("sal", {
+      provideDefinition: (document, position) => definitionAt(document, position),
     }),
   );
 
@@ -194,6 +202,66 @@ function cwdFor(document: vscode.TextDocument): string {
   if (folder) return folder.uri.fsPath;
   if (document.uri.scheme === "file") return path.dirname(document.uri.fsPath);
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.tmpdir();
+}
+
+function definitionAt(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+): vscode.Location[] | null {
+  if (document.uri.scheme !== "file") return null;
+  const text = document.getText();
+  const ident = identifierAt(text, position.line, position.character);
+  if (!ident) return null;
+  const projectRoot = cwdFor(document);
+  let manifest: string | null = null;
+  try {
+    manifest = readFileSync(path.join(projectRoot, "Sal.toml"), "utf8");
+  } catch {
+    manifest = null;
+  }
+  const defs = definitionsOf({
+    name: ident.name,
+    sourceFile: document.uri.fsPath,
+    sourceText: text,
+    projectRoot,
+    dependencyBases: dependencySearchBases(projectRoot, manifest),
+    files: {
+      isFile: (filePath) => {
+        try {
+          return statSync(filePath).isFile();
+        } catch {
+          return false;
+        }
+      },
+      read: (filePath) => readSalText(filePath),
+    },
+  });
+  if (defs.length === 0) return null;
+  const here = path.resolve(document.uri.fsPath);
+  return defs.map((def) => {
+    const uri =
+      path.resolve(def.filePath) === here ? document.uri : vscode.Uri.file(def.filePath);
+    const start = new vscode.Position(def.location.line, def.location.character);
+    const end = new vscode.Position(
+      def.location.line,
+      def.location.character + def.location.length,
+    );
+    return new vscode.Location(uri, new vscode.Range(start, end));
+  });
+}
+
+function readSalText(filePath: string): string | null {
+  const target = path.resolve(filePath);
+  const open = vscode.workspace.textDocuments.find(
+    (document) =>
+      document.uri.scheme === "file" && path.resolve(document.uri.fsPath) === target,
+  );
+  if (open) return open.getText();
+  try {
+    return readFileSync(target, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 function compilerPath(): string {

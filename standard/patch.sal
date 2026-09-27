@@ -1,0 +1,80 @@
+# Offense records and source patching.
+
+fn off_new(code: Int, msg: Int, start: Int, end: Int, fix: Int) -> Int ! alloc
+    o = vec_new()
+    _a = vec_push(o, code)
+    _b = vec_push(o, msg)
+    _c = vec_push(o, start)
+    _d = vec_push(o, end)
+    _e = vec_push(o, fix)
+    o
+
+fn off_code(o: Int) -> Int ! alloc
+    vec_get(o, 0)
+
+fn off_msg(o: Int) -> Int ! alloc
+    vec_get(o, 1)
+
+fn off_start(o: Int) -> Int ! alloc
+    vec_get(o, 2)
+
+fn off_end(o: Int) -> Int ! alloc
+    vec_get(o, 3)
+
+fn off_fix(o: Int) -> Int ! alloc
+    vec_get(o, 4)
+
+fn off_has_fix(o: Int) -> Int ! alloc
+    f = off_fix(o)
+    if f == 0
+        0
+    else
+        1
+
+fn patch_one(src: Int, start: Int, end: Int, repl: Int) -> Int ! alloc
+    left = str_slice(src, 0, start)
+    right = str_slice(src, end, str_len(src))
+    mid = repl
+    acc = str_concat(left, mid)
+    str_concat(acc, right)
+
+fn pick_best_fix(offs: Int) -> Int ! alloc
+    n = vec_len(offs)
+    pick_best_go(offs, 0, n, 0 - 1, 0, 0)
+
+fn pick_best_go(offs: Int, i: Int, n: Int, best: Int, best_len: Int, best_start: Int) -> Int ! alloc
+    if i >= n
+        best
+    else
+        o = vec_get(offs, i)
+        if off_has_fix(o) == 0
+            pick_best_go(offs, i + 1, n, best, best_len, best_start)
+        else
+            s0 = off_start(o)
+            s1 = off_end(o)
+            ln = s1 - s0
+            if best < 0
+                pick_best_go(offs, i + 1, n, i, ln, s0)
+            else
+                if ln < best_len
+                    pick_best_go(offs, i + 1, n, i, ln, s0)
+                else
+                    if ln == best_len
+                        if s0 > best_start
+                            pick_best_go(offs, i + 1, n, i, ln, s0)
+                        else
+                            pick_best_go(offs, i + 1, n, best, best_len, best_start)
+                    else
+                        pick_best_go(offs, i + 1, n, best, best_len, best_start)
+
+fn merge_off_lists(a: Int, b: Int) -> Int ! alloc
+    i = 0
+    n = vec_len(b)
+    merge_off_go(a, b, i, n)
+
+fn merge_off_go(a: Int, b: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        a
+    else
+        _p = vec_push(a, vec_get(b, i))
+        merge_off_go(a, b, i + 1, n)

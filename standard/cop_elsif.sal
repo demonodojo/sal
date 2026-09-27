@@ -1,0 +1,254 @@
+import lexer
+import patch
+import util
+
+fn CODE_ELSIF() -> Int ! alloc
+    strdup("Style/Elsif")
+
+fn skip_to_indent(toks: Int, n: Int, i: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) == TK_INDENT()
+            i
+        else
+            skip_to_indent(toks, n, i + 1)
+
+fn consume_suite(toks: Int, n: Int, i: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) != TK_INDENT()
+            i
+        else
+            consume_suite_go(toks, n, i, 0)
+
+fn consume_suite_go(toks: Int, n: Int, i: Int, depth: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        t = vec_get(toks, i)
+        k = tok_kind(t)
+        if k == TK_INDENT()
+            consume_suite_go(toks, n, i + 1, depth + 1)
+        else
+            if k == TK_DEDENT()
+                d2 = depth - 1
+                if d2 == 0
+                    i + 1
+                else
+                    consume_suite_go(toks, n, i + 1, d2)
+            else
+                consume_suite_go(toks, n, i + 1, depth)
+
+fn consume_elsif_list(toks: Int, n: Int, i: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) == TK_ELSIF()
+            j = skip_to_indent(toks, n, i + 1)
+            j2 = consume_suite(toks, n, j)
+            consume_elsif_list(toks, n, j2)
+        else
+            i
+
+fn consume_if(toks: Int, n: Int, if_i: Int) -> Int ! alloc
+    j = skip_to_indent(toks, n, if_i + 1)
+    j2 = consume_suite(toks, n, j)
+    j3 = consume_elsif_list(toks, n, j2)
+    if j3 >= n
+        j3
+    else
+        t = vec_get(toks, j3)
+        if tok_kind(t) == TK_ELSE()
+            j4 = skip_nl(toks, n, j3 + 1)
+            j5 = consume_suite(toks, n, j4)
+            j5
+        else
+            j3
+
+fn only_nl_between(toks: Int, n: Int, a: Int, b: Int) -> Int ! alloc
+    if a >= b
+        1
+    else
+        t = vec_get(toks, a)
+        k = tok_kind(t)
+        if k == TK_NL()
+            only_nl_between(toks, n, a + 1, b)
+        else
+            if k == TK_INDENT()
+                if a + 1 == b
+                    1
+                else
+                    0
+            else
+                0
+
+fn find_first_nl(s: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        n
+    else
+        if str_char(s, i) == 10
+            i
+        else
+            find_first_nl(s, i + 1, n)
+
+fn drop_first_line(s: Int) -> Int ! alloc
+    n = str_len(s)
+    nl = find_first_nl(s, 0, n)
+    if nl >= n
+        strdup("")
+    else
+        str_slice(s, nl + 1, n)
+
+fn unindent_line(s: Int, spaces: Int) -> Int ! alloc
+    n = str_len(s)
+    if n < spaces
+        s
+    else
+        ok = 1
+        ok = count_spaces_match(s, 0, spaces, ok)
+        if ok == 1
+            str_slice(s, spaces, n)
+        else
+            s
+
+fn count_spaces_match(s: Int, i: Int, left: Int, ok: Int) -> Int ! alloc
+    if ok == 0
+        0
+    else
+        if left == 0
+            1
+        else
+            if str_char(s, i) == 32
+                count_spaces_match(s, i + 1, left - 1, 1)
+            else
+                0
+
+fn unindent_text(s: Int, spaces: Int) -> Int ! alloc
+    unindent_go(s, 0, str_len(s), spaces, strdup(""))
+
+fn unindent_go(s: Int, i: Int, n: Int, spaces: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        nl = find_first_nl(s, i, n)
+        if nl >= n
+            line = str_slice(s, i, n)
+            line2 = unindent_line(line, spaces)
+            str_append(acc, line2)
+        else
+            line = str_slice(s, i, nl + 1)
+            body = str_slice(s, i, nl)
+            body2 = unindent_line(body, spaces)
+            piece = str_concat(body2, strdup("\n"))
+            acc2 = str_append(acc, piece)
+            unindent_go(s, nl + 1, n, spaces, acc2)
+
+fn trim_nl_suffix(toks: Int, j: Int) -> Int ! alloc
+    if j <= 0
+        0
+    else
+        t = vec_get(toks, j - 1)
+        if tok_kind(t) == TK_NL()
+            trim_nl_suffix(toks, j - 1)
+        else
+            j
+
+fn cond_text_from_if(src: Int, toks: Int, n: Int, if_i: Int) -> Int ! alloc
+    j = skip_to_indent(toks, n, if_i + 1)
+    j2 = trim_nl_suffix(toks, j)
+    if j2 <= if_i + 1
+        strdup("")
+    else
+        start = tok_start(vec_get(toks, if_i + 1))
+        end = tok_end(vec_get(toks, j2 - 1))
+        str_slice(src, start, end)
+
+fn find_line_start(src: Int, i: Int) -> Int ! alloc
+    if i < 0
+        0
+    else
+        c = str_char(src, i)
+        if c == 10
+            i + 1
+        else
+            find_line_start(src, i - 1)
+
+fn line_leading(src: Int, pos: Int) -> Int ! alloc
+    ls = find_line_start(src, pos - 1)
+    str_slice(src, ls, pos)
+
+fn slice_has_comment(src: Int, start: Int, end: Int) -> Int ! alloc
+    piece = str_slice(src, start, end)
+    if str_contains(piece, strdup("#")) == 1
+        1
+    else
+        0
+
+fn build_elsif_fix(src: Int, toks: Int, else_i: Int, if_i: Int, if_end: Int) -> Int ! alloc
+    else_tok = vec_get(toks, else_i)
+    if_tok = vec_get(toks, if_i)
+    else_start = tok_start(else_tok)
+    if_start = tok_start(if_tok)
+    if_end_byte = tok_end(vec_get(toks, if_end - 1))
+    cond = cond_text_from_if(src, toks, vec_len(toks), if_i)
+    inner = str_slice(src, if_start, if_end_byte)
+    rest = drop_first_line(inner)
+    body = unindent_text(rest, 4)
+    lead = line_leading(src, else_start)
+    head = str_concat(lead, str_concat(strdup("elsif "), cond))
+    mid = str_concat(head, strdup("\n"))
+    str_concat(mid, body)
+
+fn cop_elsif(src: Int, toks: Int) -> Int ! alloc
+    offs = vec_new()
+    n = vec_len(toks)
+    cop_elsif_go(src, toks, offs, 0, n)
+
+fn cop_elsif_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        offs
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) == TK_ELSE()
+            j = skip_nl(toks, n, i + 1)
+            if j < n
+                t2 = vec_get(toks, j)
+                if tok_kind(t2) == TK_INDENT()
+                    j2 = skip_nl(toks, n, j + 1)
+                    if j2 < n
+                        t3 = vec_get(toks, j2)
+                        if tok_kind(t3) == TK_IF()
+                            ok_gap = only_nl_between(toks, n, j + 1, j2)
+                            if ok_gap == 1
+                                if_end = consume_if(toks, n, j2)
+                                else_start = tok_start(t)
+                                if_start = tok_start(t3)
+                                patch_start = find_line_start(src, else_start - 1)
+                                if slice_has_comment(src, tok_end(t), if_start) == 1
+                                    msg = strdup("else/if could be elsif; comment in between blocks auto-fix")
+                                    o = off_new(CODE_ELSIF(), msg, patch_start, tok_end(vec_get(toks, if_end - 1)), 0)
+                                    _p = vec_push(offs, o)
+                                    cop_elsif_go(src, toks, offs, if_end, n)
+                                else
+                                    fix = build_elsif_fix(src, toks, i, j2, if_end)
+                                    msg = strdup("use elsif instead of else/if")
+                                    o = off_new(CODE_ELSIF(), msg, patch_start, tok_end(vec_get(toks, if_end - 1)), fix)
+                                    _p = vec_push(offs, o)
+                                    cop_elsif_go(src, toks, offs, if_end, n)
+                            else
+                                cop_elsif_go(src, toks, offs, i + 1, n)
+                        else
+                            cop_elsif_go(src, toks, offs, i + 1, n)
+                    else
+                        cop_elsif_go(src, toks, offs, i + 1, n)
+                else
+                    cop_elsif_go(src, toks, offs, i + 1, n)
+            else
+                cop_elsif_go(src, toks, offs, i + 1, n)
+        else
+            cop_elsif_go(src, toks, offs, i + 1, n)

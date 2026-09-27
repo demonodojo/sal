@@ -13,7 +13,7 @@ Lenguaje de sistemas con ownership inferido, CPU/GPU/TPU en el tipo, y compilado
 cargo build --release
 ```
 
-El binario queda en `target/release/sal`.
+El binario queda en `target/release/sal`. El linter de estilo (`standard/`, escrito en sal) queda en `target/release/standard`.
 
 ## Uso
 
@@ -24,6 +24,9 @@ sal run examples/hello.sal
 sal fmt examples/hello.sal
 sal emit ast examples/hello.sal
 sal emit ir examples/forward.sal
+
+standard check examples/hello.sal
+standard fix examples/hello.sal
 ```
 
 Flags: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `--instrument-out FILE`.

@@ -8,6 +8,10 @@ description = "Bootstrap compiler for the sal language"
 name = "sal"
 path = "src/main.rs"
 
+[[bin]]
+name = "standard"
+path = "src/bin/standard.rs"
+
 [lib]
 name = "sal_compiler"
 path = "src/lib.rs"

@@ -1,0 +1,150 @@
+import lexer
+import patch
+import cop_dupstring
+import cop_elsif
+
+fn run_lex(src: Int) -> Int ! alloc
+    lex(src)
+
+fn run_all_cops(src: Int) -> Int ! alloc
+    lr = run_lex(src)
+    st = lex_result_status(lr)
+    if st != LEX_OK()
+        pack = vec_new()
+        _s = vec_push(pack, st)
+        _o = vec_push(pack, vec_new())
+        pack
+    else
+        toks = lex_result_tokens(lr)
+        a = cop_dupstring(src, toks)
+        b = cop_elsif(src, toks)
+        offs = merge_off_lists(a, b)
+        pack = vec_new()
+        _s = vec_push(pack, LEX_OK())
+        _o = vec_push(pack, offs)
+        pack
+
+fn cops_pack_status(p: Int) -> Int ! alloc
+    vec_get(p, 0)
+
+fn cops_pack_offs(p: Int) -> Int ! alloc
+    vec_get(p, 1)
+
+fn byte_line_col(src: Int, pos: Int, i: Int, line: Int, col: Int) -> Int ! alloc
+    if i >= pos
+        pack = vec_new()
+        _a = vec_push(pack, line)
+        _b = vec_push(pack, col)
+        pack
+    else
+        c = str_char(src, i)
+        if c == 10
+            byte_line_col(src, pos, i + 1, line + 1, 1)
+        else
+            byte_line_col(src, pos, i + 1, line, col + 1)
+
+fn lc_line(p: Int) -> Int ! alloc
+    vec_get(p, 0)
+
+fn lc_col(p: Int) -> Int ! alloc
+    vec_get(p, 1)
+
+fn format_off(path: Int, src: Int, o: Int) -> Int ! alloc
+    start = off_start(o)
+    lc = byte_line_col(src, start, 0, 1, 1)
+    ln = int_to_str(lc_line(lc))
+    cl = int_to_str(lc_col(lc))
+    acc = str_concat(path, strdup(":"))
+    acc = str_append(acc, ln)
+    acc = str_append(acc, strdup(":"))
+    acc = str_append(acc, cl)
+    acc = str_append(acc, strdup(": "))
+    acc = str_append(acc, off_code(o))
+    acc = str_append(acc, strdup(": "))
+    str_append(acc, off_msg(o))
+
+fn print_offs(path: Int, src: Int, offs: Int) -> Int ! io, alloc
+    print_offs_go(path, src, offs, 0, vec_len(offs))
+
+fn print_offs_go(path: Int, src: Int, offs: Int, i: Int, n: Int) -> Int ! io, alloc
+    if i >= n
+        0
+    else
+        o = vec_get(offs, i)
+        line = format_off(path, src, o)
+        msg = str_concat(line, strdup("\n"))
+        _e = eprint_str(msg)
+        print_offs_go(path, src, offs, i + 1, n)
+
+fn count_offs(offs: Int) -> Int ! alloc
+    vec_len(offs)
+
+fn fix_to_point(src: Int, pass: Int, max_pass: Int) -> Int ! alloc
+    if pass >= max_pass
+        src
+    else
+        pack = run_all_cops(src)
+        if cops_pack_status(pack) != LEX_OK()
+            src
+        else
+            offs = cops_pack_offs(pack)
+            best = pick_best_fix(offs)
+            if best < 0
+                src
+            else
+                o = vec_get(offs, best)
+                s0 = off_start(o)
+                s1 = off_end(o)
+                fix = off_fix(o)
+                next = patch_one(src, s0, s1, fix)
+                if str_eq(src, next) == 1
+                    src
+                else
+                    fix_to_point(next, pass + 1, max_pass)
+
+fn run_check(path: Int, src: Int) -> Int ! io, alloc
+    pack = run_all_cops(src)
+    if cops_pack_status(pack) != LEX_OK()
+        _e = eprint_str(strdup("lex error\n"))
+        2
+    else
+        offs = cops_pack_offs(pack)
+        n = count_offs(offs)
+        if n == 0
+            0
+        else
+            _p = print_offs(path, src, offs)
+            1
+
+fn run_fix(path: Int, src: Int) -> Int ! io, alloc
+    pack = run_all_cops(src)
+    if cops_pack_status(pack) != LEX_OK()
+        _e = eprint_str(strdup("lex error\n"))
+        2
+    else
+        fixed = fix_to_point(src, 0, 16)
+        _pr = print_str(fixed)
+        pack2 = run_all_cops(fixed)
+        if cops_pack_status(pack2) != LEX_OK()
+            2
+        else
+            offs2 = cops_pack_offs(pack2)
+            n = count_offs(offs2)
+            if n == 0
+                0
+            else
+                _p = print_offs(path, fixed, offs2)
+                1
+
+fn main() -> Int ! io, alloc
+    cmd = argv(1)
+    path = argv(2)
+    src = read_file(path)
+    if str_eq(cmd, "check") == 1
+        run_check(path, src)
+    else
+        if str_eq(cmd, "fix") == 1
+            run_fix(path, src)
+        else
+            _e = eprint_str(strdup("usage: check|fix FILE\n"))
+            2

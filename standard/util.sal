@@ -1,0 +1,11 @@
+import lexer
+
+fn skip_nl(toks: Int, n: Int, i: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) == TK_NL()
+            skip_nl(toks, n, i + 1)
+        else
+            i

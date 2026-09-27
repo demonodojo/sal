@@ -1,0 +1,314 @@
+# Lexer for standard: tokens carry byte spans into the original source.
+
+fn TK_EOF() -> Int
+    0
+
+fn TK_NL() -> Int
+    1
+
+fn TK_INDENT() -> Int
+    2
+
+fn TK_DEDENT() -> Int
+    3
+
+fn TK_IDENT() -> Int
+    4
+
+fn TK_STRING() -> Int
+    5
+
+fn TK_DSTRING() -> Int
+    6
+
+fn TK_LPAREN() -> Int
+    7
+
+fn TK_RPAREN() -> Int
+    8
+
+fn TK_IF() -> Int
+    9
+
+fn TK_ELSIF() -> Int
+    10
+
+fn TK_ELSE() -> Int
+    11
+
+fn LEX_OK() -> Int
+    0
+
+fn LEX_ERR_TAB() -> Int
+    2
+
+fn LEX_ERR_STRING() -> Int
+    2
+
+fn tok_new(kind: Int, start: Int, end: Int) -> Int ! alloc
+    v = vec_new()
+    _a = vec_push(v, kind)
+    _b = vec_push(v, start)
+    _c = vec_push(v, end)
+    v
+
+fn tok_kind(t: Int) -> Int ! alloc
+    vec_get(t, 0)
+
+fn tok_start(t: Int) -> Int ! alloc
+    vec_get(t, 1)
+
+fn tok_end(t: Int) -> Int ! alloc
+    vec_get(t, 2)
+
+fn tok_text(src: Int, t: Int) -> Int ! alloc
+    str_slice(src, tok_start(t), tok_end(t))
+
+fn kw_kind(text: Int) -> Int ! alloc
+    if str_eq(text, "if") == 1
+        TK_IF()
+    else
+        if str_eq(text, "elsif") == 1
+            TK_ELSIF()
+        else
+            if str_eq(text, "else") == 1
+                TK_ELSE()
+            else
+                TK_IDENT()
+
+fn indent_stack_new() -> Int ! alloc
+    v = vec_new()
+    _p = vec_push(v, 0)
+    v
+
+fn indent_top_at(st: Int, i: Int) -> Int ! alloc
+    if i < 0
+        0
+    else
+        v = vec_get(st, i)
+        if v < 0
+            indent_top_at(st, i - 1)
+        else
+            v
+
+fn indent_top(st: Int) -> Int ! alloc
+    n = vec_len(st)
+    indent_top_at(st, n - 1)
+
+fn indent_push(st: Int, col: Int) -> Int ! alloc
+    _p = vec_push(st, col)
+    st
+
+fn indent_tombstone_at(st: Int, i: Int) -> Int ! alloc
+    if i < 0
+        0
+    else
+        v = vec_get(st, i)
+        if v < 0
+            indent_tombstone_at(st, i - 1)
+        else
+            _p = vec_set(st, i, 0 - 1)
+            0
+
+fn indent_pop(st: Int) -> Int ! alloc
+    n = vec_len(st)
+    _t = indent_tombstone_at(st, n - 1)
+    st
+
+fn skip_line_comment(src: Int, i: Int, n: Int) -> Int ! alloc
+    _n = n
+    str_skip(src, i, 4, 0)
+
+fn count_spaces_or_tab(src: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        c = str_char(src, i)
+        if c == 32
+            1 + count_spaces_or_tab(src, i + 1, n)
+        else
+            if c == 9
+                0 - 1
+            else
+                0
+
+fn string_close_end(src: Int, open_quote: Int, n: Int) -> Int ! alloc
+    end = str_skip(src, open_quote + 1, 7, 0)
+    if end >= n
+        0 - 1
+    else
+        if str_char(src, end) == 34
+            end + 1
+        else
+            0 - 1
+
+fn dedent_to_col(out: Int, st: Int, col: Int, pos: Int) -> Int ! alloc
+    top = indent_top(st)
+    if col < top
+        _t = indent_pop(st)
+        t = tok_new(TK_DEDENT(), pos, pos)
+        _q = vec_push(out, t)
+        dedent_to_col(out, st, col, pos)
+    else
+        0
+
+fn lex_fail(err: Int) -> Int ! alloc
+    _s = vec_set(err, 0, 1)
+    0
+
+fn lex_emit_string(src: Int, i: Int, n: Int, out: Int, st: Int, kind: Int, err: Int) -> Int ! alloc
+    if kind == TK_DSTRING()
+        end = string_close_end(src, i + 1, n)
+        if end < 0
+            lex_fail(err)
+        else
+            t = tok_new(kind, i, end)
+            _p = vec_push(out, t)
+            lex_go(src, end, n, out, st, 0, err)
+    else
+        end = string_close_end(src, i, n)
+        if end < 0
+            lex_fail(err)
+        else
+            t = tok_new(kind, i, end)
+            _p = vec_push(out, t)
+            lex_go(src, end, n, out, st, 0, err)
+
+fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int, err: Int) -> Int ! alloc
+    if vec_get(err, 0) == 1
+        0
+    else
+        if i >= n
+            _d = dedent_to_col(out, st, 0, i)
+            t = tok_new(TK_EOF(), i, i)
+            _p = vec_push(out, t)
+            0
+        else
+            c = str_char(src, i)
+            if c == 35
+                j = skip_line_comment(src, i + 1, n)
+                lex_go(src, j, n, out, st, at_start, err)
+            else
+                if at_start == 1
+                    sp = count_spaces_or_tab(src, i, n)
+                    if sp < 0
+                        lex_fail(err)
+                    else
+                        j = i + sp
+                        if j >= n
+                            lex_go(src, j, n, out, st, 1, err)
+                        else
+                            cj = str_char(src, j)
+                            if cj == 10
+                                lex_go(src, j + 1, n, out, st, 1, err)
+                            else
+                                if cj == 35
+                                    j2 = skip_line_comment(src, j + 1, n)
+                                    lex_go(src, j2, n, out, st, 1, err)
+                                else
+                                    top = indent_top(st)
+                                    if sp > top
+                                        _p = indent_push(st, sp)
+                                        t = tok_new(TK_INDENT(), i, j)
+                                        _q = vec_push(out, t)
+                                        lex_go(src, j, n, out, st, 0, err)
+                                    else
+                                        _d = dedent_to_col(out, st, sp, i)
+                                        lex_go(src, j, n, out, st, 0, err)
+                else
+                    if c == 10
+                        t = tok_new(TK_NL(), i, i + 1)
+                        _p = vec_push(out, t)
+                        lex_go(src, i + 1, n, out, st, 1, err)
+                    else
+                        if c == 9
+                            lex_fail(err)
+                        else
+                            if c == 34
+                                lex_emit_string(src, i, n, out, st, TK_STRING(), err)
+                            else
+                                if c == 40
+                                    t = tok_new(TK_LPAREN(), i, i + 1)
+                                    _p = vec_push(out, t)
+                                    lex_go(src, i + 1, n, out, st, 0, err)
+                                else
+                                    if c == 41
+                                        t = tok_new(TK_RPAREN(), i, i + 1)
+                                        _p = vec_push(out, t)
+                                        lex_go(src, i + 1, n, out, st, 0, err)
+                                    else
+                                        if is_ident_start(c) == 1
+                                            end = str_skip(src, i, 2, 0)
+                                            text = str_slice(src, i, end)
+                                            if str_eq(text, "d") == 1
+                                                if end < n
+                                                    if str_char(src, end) == 34
+                                                        free(text)
+                                                        lex_emit_string(src, end - 1, n, out, st, TK_DSTRING(), err)
+                                                    else
+                                                        kind = kw_kind(text)
+                                                        t = tok_new(kind, i, end)
+                                                        _p = vec_push(out, t)
+                                                        free(text)
+                                                        lex_go(src, end, n, out, st, 0, err)
+                                                else
+                                                    kind = kw_kind(text)
+                                                    t = tok_new(kind, i, end)
+                                                    _p = vec_push(out, t)
+                                                    free(text)
+                                                    lex_go(src, end, n, out, st, 0, err)
+                                            else
+                                                kind = kw_kind(text)
+                                                t = tok_new(kind, i, end)
+                                                _p = vec_push(out, t)
+                                                free(text)
+                                                lex_go(src, end, n, out, st, 0, err)
+                                        else
+                                            j = str_skip(src, i, 8, 0)
+                                            if j == i
+                                                lex_go(src, i + 1, n, out, st, 0, err)
+                                            else
+                                                lex_go(src, j, n, out, st, 0, err)
+            0
+
+fn is_ident_start(c: Int) -> Int
+    if c >= 65
+        if c <= 90
+            1
+        else
+            if c >= 97
+                if c <= 122
+                    1
+                else
+                    0
+            else
+                0
+    else
+        if c == 95
+            1
+        else
+            0
+
+fn lex_result_new(status: Int, toks: Int) -> Int ! alloc
+    r = vec_new()
+    _a = vec_push(r, status)
+    _b = vec_push(r, toks)
+    r
+
+fn lex_result_status(r: Int) -> Int ! alloc
+    vec_get(r, 0)
+
+fn lex_result_tokens(r: Int) -> Int ! alloc
+    vec_get(r, 1)
+
+fn lex(src: Int) -> Int ! alloc
+    out = vec_new()
+    st = indent_stack_new()
+    err = vec_new()
+    _z = vec_push(err, 0)
+    n = str_len(src)
+    _g = lex_go(src, 0, n, out, st, 1, err)
+    if vec_get(err, 0) == 1
+        lex_result_new(LEX_ERR_TAB(), vec_new())
+    else
+        lex_result_new(LEX_OK(), out)

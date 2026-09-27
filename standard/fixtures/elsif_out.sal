@@ -1,0 +1,7 @@
+fn main() -> Int
+    if a
+        1
+    elsif b
+        2
+    else
+        3
