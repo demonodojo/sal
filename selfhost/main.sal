@@ -109,6 +109,8 @@ fn TK_GE() -> Int
     29
 fn TK_IF() -> Int
     30
+fn TK_ELSIF() -> Int
+    35
 fn TK_ELSE() -> Int
     31
 fn TK_WHILE() -> Int
@@ -233,16 +235,19 @@ fn kw_kind(text: Int) -> Int ! alloc
                 if str_eq(text, "if") == 1
                     TK_IF()
                 else
-                    if str_eq(text, "else") == 1
-                        TK_ELSE()
+                    if str_eq(text, "elsif") == 1
+                        TK_ELSIF()
                     else
-                        if str_eq(text, "while") == 1
-                            TK_WHILE()
+                        if str_eq(text, "else") == 1
+                            TK_ELSE()
                         else
-                            if str_eq(text, "import") == 1
-                                TK_IMPORT()
+                            if str_eq(text, "while") == 1
+                                TK_WHILE()
                             else
-                                TK_IDENT()
+                                if str_eq(text, "import") == 1
+                                    TK_IMPORT()
+                                else
+                                    TK_IDENT()
 
 
 fn indent_stack_new() -> Int ! alloc
@@ -860,12 +865,13 @@ fn ex_tensor(nrows: Int, ncols: Int) -> Int ! alloc
     _c = vec_push(e, ncols)
     e
 
-fn ex_if(cond: Int, then_b: Int, else_b: Int) -> Int ! alloc
+fn ex_if(cond: Int, then_b: Int, else_b: Int, arms: Int) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_IF())
     _b = vec_push(e, cond)
     _c = vec_push(e, then_b)
     _d = vec_push(e, else_b)
+    _e = vec_push(e, arms)
     e
 
 fn ex_while(cond: Int, body: Int) -> Int ! alloc
@@ -953,7 +959,10 @@ fn at_block_end(pr: Int) -> Int ! alloc
                 if k == TK_ELSE()
                     1
                 else
-                    0
+                    if k == TK_ELSIF()
+                        1
+                    else
+                        0
 
 
 
@@ -1282,6 +1291,22 @@ fn parse_primary(pr: Int) -> Int ! alloc
                                             _a = p_advance(pr)
                                             ex_int(0)
 
+fn parse_elsif_arms(pr: Int, arms: Int) -> Int ! alloc
+    if tok_kind(p_peek(pr)) == TK_ELSIF()
+        _a = p_advance(pr)
+        cond = parse_expr(pr)
+        _b = p_skip_nls(pr)
+        _c = p_accept(pr, TK_INDENT())
+        body = parse_block_after_indent(pr)
+        _d = p_skip_nls(pr)
+        arm = vec_new()
+        _e = vec_push(arm, cond)
+        _f = vec_push(arm, body)
+        _g = vec_push(arms, arm)
+        parse_elsif_arms(pr, arms)
+    else
+        arms
+
 fn parse_if(pr: Int) -> Int ! alloc
     _a = p_advance(pr)
     cond = parse_expr(pr)
@@ -1289,14 +1314,15 @@ fn parse_if(pr: Int) -> Int ! alloc
     _c = p_accept(pr, TK_INDENT())
     then_b = parse_block_after_indent(pr)
     _d = p_skip_nls(pr)
+    arms = parse_elsif_arms(pr, vec_new())
     if tok_kind(p_peek(pr)) == TK_ELSE()
         _e = p_advance(pr)
         _f = p_skip_nls(pr)
         _g = p_accept(pr, TK_INDENT())
         else_b = parse_block_after_indent(pr)
-        ex_if(cond, then_b, else_b)
+        ex_if(cond, then_b, else_b, arms)
     else
-        ex_if(cond, then_b, 0)
+        ex_if(cond, then_b, 0, arms)
 
 fn parse_while(pr: Int) -> Int ! alloc
     _a = p_advance(pr)
@@ -2991,6 +3017,23 @@ fn lower_call_normal(cx: Int, e: Int) -> Int ! alloc
     _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
     d
 
+fn else_block_for_elsifs(else_b: Int, arms: Int) -> Int ! alloc
+    n = vec_len(arms)
+    if n == 0
+        else_b
+    else
+        else_block_for_elsifs_go(else_b, arms, n - 1)
+
+fn else_block_for_elsifs_go(else_b: Int, arms: Int, i: Int) -> Int ! alloc
+    arm = vec_get(arms, i)
+    nested = ex_if(vec_get(arm, 0), vec_get(arm, 1), else_b, vec_new())
+    blk = block_new()
+    _t = block_set_tail(blk, nested)
+    if i == 0
+        blk
+    else
+        else_block_for_elsifs_go(blk, arms, i - 1)
+
 fn lower_if(cx: Int, e: Int) -> Int ! alloc
     c = lower_expr(cx, vec_get(e, 1))
     saved = cx_insts(cx)
@@ -3001,7 +3044,7 @@ fn lower_if(cx: Int, e: Int) -> Int ! alloc
     then_body = cx_insts(cx)
     _b = cx_set_insts(cx, vec_new())
     # restore binds shallowly - binds mutated in place; for corpus if rare
-    else_b = vec_get(e, 3)
+    else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
     else_val = lower_block_value(cx, else_b)
     else_body = cx_insts(cx)
     _c = cx_set_insts(cx, saved)
@@ -3925,6 +3968,7 @@ fn collect_assigns_expr(e: Int, names: Int) -> Int ! alloc
         if k == EX_IF()
             _a = collect_assigns_expr(vec_get(e, 1), names)
             _b = collect_assigns_block(vec_get(e, 2), names)
+            _c = collect_assigns_arms(vec_get(e, 4), 0, vec_len(vec_get(e, 4)), names)
             collect_assigns_block(vec_get(e, 3), names)
         else
             if k == EX_WHILE()
@@ -3946,6 +3990,15 @@ fn collect_assigns_expr(e: Int, names: Int) -> Int ! alloc
                                 collect_assigns_block(vec_get(e, 2), names)
                             else
                                 0
+
+fn collect_assigns_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = collect_assigns_expr(vec_get(arm, 0), names)
+        _b = collect_assigns_block(vec_get(arm, 1), names)
+        collect_assigns_arms(arms, i + 1, n, names)
 
 fn collect_assigns_args(args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
     if i >= n
@@ -4562,7 +4615,8 @@ fn emit_c_if(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
     _r = vec_push(stmts, line3)
     _s = vec_push(stmts, strdup("  }} else {{\n"))
     else_stmts = vec_new()
-    else_val = emit_c_block(vec_get(e, 3), user, else_stmts, tc)
+    else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
+    else_val = emit_c_block(else_b, user, else_stmts, tc)
     _b = append_stmts(stmts, else_stmts)
     line4 = strdup("    ")
     line4 = str_append(line4, tname)
