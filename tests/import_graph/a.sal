@@ -1,0 +1,4 @@
+import b
+
+fn main() -> Int
+    helper()

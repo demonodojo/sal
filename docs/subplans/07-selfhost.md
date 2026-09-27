@@ -10,7 +10,7 @@ El compilador de arranque en Rust, ya capaz de llevar un programa sal a un binar
 
 ## Qué se hospeda
 
-`selfhost/` es el mismo compilador, no un dialecto reducido ni un programa que devuelve 0. Lee fuente, construye el AST de la gramática recursiva por la izquierda, tipa, posee, baja a la misma IR y escribe el objeto. Usa `Result`, efectos `io` y `alloc`, y la caché por módulo. El parser de sal reconoce las mismas producciones que `src/parser.rs`: listas y operadores crecen por la izquierda; `1 - 2 - 3` tiene el mismo árbol en las dos implementaciones.
+`selfhost/` es el mismo compilador, no un dialecto reducido ni un programa que devuelve 0. Lee fuente, construye el AST de la gramática recursiva por la izquierda, tipa, posee, baja a la misma IR y escribe el objeto. Usa `Result`, efectos `io` y `alloc`, y la caché por módulo. El parser de sal reconoce las mismas producciones que `src/parser.rs`: listas y operadores crecen por la izquierda; `1 - 2 - 3` tiene el mismo árbol en las dos implementaciones. `d"…"` (`DSTRING`) se parsea como la misma llamada `strdup("…")` que en el arranque.
 
 Los pases viven en módulos de `selfhost/` con los mismos cortes que el arranque: lexer, parser, tipos, ownership, efectos, lugares, IR, fusión, emisión. Las primitivas de tensor no se reimplementan en sal: se llaman, y el runtime del arranque las resuelve, igual que en cualquier otro programa.
 

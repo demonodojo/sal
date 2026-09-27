@@ -36,7 +36,9 @@ Flags de `build` y `run`: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `
 
 Un fichero, un módulo. `import` sigue la gramática: `IDENT` separado por `.`, o un `STRING` con ruta. La ruta se resuelve desde el directorio del fichero que importa y desde los `path` de `Sal.toml`. Dependencias locales por path. Sin registro en red, sin macros.
 
-El grafo de imports es el de reachability del módulo raíz. Un ciclo es `E_PARSE` o `E_TYPE` con el span del `import`; no se sigue recursivamente sin límite.
+El grafo de imports es el de reachability del módulo raíz. Un ciclo es `E_TYPE` con el span del `import`; no se sigue recursivamente sin límite. Ruta que no resuelve o choque de nombre entre módulos: `E_TYPE` en ese span.
+
+`sal build` del fichero raíz compila cada módulo alcanzado a su `.o` (caché por módulo) y enlaza todos esos objetos con el runtime en un solo binario.
 
 ## Caché
 

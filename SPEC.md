@@ -14,7 +14,7 @@ El lexer parte el fuente en terminales e inserta `NEWLINE`, `INDENT` y `DEDENT`.
 
 ## Gramática
 
-Los no terminales van en minúsculas. `ε` es la producción vacía. `IDENT`, `INT`, `FLOAT` y `STRING` son terminales del lexer. Lo demás entre comillas es terminal.
+Los no terminales van en minúsculas. `ε` es la producción vacía. `IDENT`, `INT`, `FLOAT`, `STRING` y `DSTRING` son terminales del lexer. Lo demás entre comillas es terminal.
 
 ### Programa
 
@@ -123,6 +123,7 @@ primary      → INT
              | "true"
              | "false"
              | STRING
+             | DSTRING
              | IDENT
              | "(" expr ")"
              | tensor_lit
@@ -150,14 +151,16 @@ pattern      → "_"
 pattern_list → pattern_list "," pattern
              | pattern
              | ε
-if_expr      → "if" expr suite ("else" suite | ε)
+if_expr      → "if" expr suite elsif_list ("else" suite | ε)
+elsif_list   → elsif_list "elsif" expr suite
+             | ε
 ```
 
 El parámetro a la izquierda de `=>` en `lambda` es un `IDENT`. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda.
 
 `load[F32, 4, 4]("w.salt")` es un `postfix`: argumentos de tipo (`F32`, `4`, `4`) y luego la llamada. `4` y `?` son `type_arg`, no un tipo con el número por nombre.
 
-Sin `else`, el `if` vale `Unit`; la suite then se ejecuta pero no es el valor del `if`. Con `else`, el valor es el de la rama then. `to gpu x + 1` es `(to gpu x) + 1`. `try x + 1` es `try (x + 1)`. `x => x * 2` es `x => (x * 2)`.
+`elsif` va al mismo nivel que el `if` que acaba de cerrar su suite, y la lista crece por la izquierda. Sin `else`, el `if` vale `Unit` aunque haya `elsif`; las suites se ejecutan pero no son el valor. Con `else`, el valor es el de la rama then. El `else` y cada `elsif` se asocian al `if` interno que acaba de cerrar su suite. `to gpu x + 1` es `(to gpu x) + 1`. `try x + 1` es `try (x + 1)`. `x => x * 2` es `x => (x * 2)`.
 
 ### Tipos
 
@@ -180,6 +183,10 @@ place        → "cpu" | "gpu" | "tpu" | IDENT
 ### Cadenas
 
 `STRING` admite `{IDENT}`. `{{` y `}}` son una llave literal. Cualquier otra cosa entre llaves es `E_PARSE`.
+
+`DSTRING` es el identificador `d` inmediatamente seguido de `STRING`, sin espacio entre ambos. Es azúcar de `strdup` aplicado a esa cadena: el árbol es una llamada a `Ident("strdup")` con un argumento `STRING`, no un literal. Misma interpolación y escapes que `STRING`. Un `d` suelto o seguido de espacio sigue siendo `IDENT`.
+
+En `add`, si ambos operandos son `String`, `+` concatena con efecto `alloc`. La cadena asocia a la izquierda. El operador **no** muta in-place el buffer de una variable existente: si el operando izquierdo es un `IDENT`, la bajada es siempre `str_concat` (copia). Solo los pasos intermedios de la misma expresión —cuando el hijo izquierdo del AST es otro `+` de cadenas— bajan a `str_append` sobre ese acumulador temporal. El **primer** `+` de la cadena es `str_concat`; los **siguientes** (sobre el acumulador) son `str_append`. `-` en cadenas no está definido; los demás operadores binarios siguen siendo numéricos.
 
 ### Derivación de `1 - 2 - 3`
 
@@ -212,12 +219,23 @@ parallel_expr → "parallel" suite
 | `Int` | i64 |
 | `Float` | f64 (no elemento de tensor) |
 | `Bool`, `String`, `Unit` | |
-| `List[T]` | heap, límites comprobados |
+| `List[T]` | heap, límites comprobados; `T` ∈ Int, Float, Bool, String |
+| `Dict[K, V]` | heap; `K` ∈ Int, String; `V` ∈ Int, Float, Bool (copy) |
 | `Tensor[Elem, dims…] on lugar` | `Elem` ∈ F32, F16, BF16, I8; `?` eje dinámico |
 | structs, enums | |
 | genéricos | monomorfización |
 
 Lugar: `cpu`, `gpu`, `tpu` o parámetro `p`.
+
+## Módulos
+
+Un fichero es un módulo. `import path` enlaza las firmas de los módulos alcanzables: `fn`, `struct` y `enum` del importado entran en el entorno del que importa, en transitivo. No se copia el cuerpo al AST del raíz. El preludio no se inyecta; hace falta `import "std/prelude.sal"` (o la ruta resuelta equivalente) para `Option`, `Result` y las primitivas documentadas allí.
+
+La ruta se resuelve desde el directorio del fichero que importa, desde la raíz del proyecto y desde los `path` de `[dependencies]` en `Sal.toml`. Acepta `IDENT` con `.`, o `STRING`; si falta `.sal`, se prueba añadiéndolo.
+
+Ruta inexistente, choque de nombre entre importados o con items locales, o ciclo en el grafo de imports: `E_TYPE` en el span del `import`.
+
+`sal build` del módulo raíz compila cada módulo alcanzado a su objeto y enlaza esos objetos con el runtime.
 
 ## Memoria
 

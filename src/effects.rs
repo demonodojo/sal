@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
+use crate::string_expr::binary_add_is_string_concat;
 
 pub fn check_effects(prog: &Program) -> DiagResult<()> {
     for item in &prog.items {
@@ -92,18 +93,19 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed) {
         Expr::Call { func, args, .. } => {
             if let Expr::Ident { name, .. } = func.as_ref() {
                 match name.as_str() {
-                    "load" | "read_file" => {
+                    "load" | "read_file" | "path_readable" => {
                         used.io = true;
                         used.alloc = true;
                     }
                     "write_file" | "write_png" | "print_str" | "eprint_str" | "copy_file" | "copy_self"
-                    | "gated_print_str" | "gated_copy_self" | "clang" | "exec_compile"
-                    | "gated_exec_compile" | "mkdir_p" => {
+                    | "gated_print_str" | "gated_copy_self" | "clang" | "clang_obj" | "link_objs"
+                    | "exec_compile" | "gated_exec_compile" | "mkdir_p" => {
                         used.io = true;
                     }
                     "str_concat" | "str_append" | "strdup" | "select_str" | "argv" | "str_slice"
-                    | "int_to_str" | "char_to_str" | "vec_new" | "image_new" | "list_new" | "tmp_path"
-                    | "exec_capture" | "getenv" => {
+                    | "int_to_str" | "char_to_str" | "vec_new" | "image_new" | "list_new" | "dict_new"
+                    | "tmp_path"
+                    | "exec_capture" | "getenv" | "realpath" => {
                         used.alloc = true;
                     }
                     "panic" => used.panic = true,
@@ -130,6 +132,9 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed) {
         Expr::Binary { left, right, .. } => {
             scan_expr(left, used);
             scan_expr(right, used);
+            if binary_add_is_string_concat(e) {
+                used.alloc = true;
+            }
         }
         Expr::Unary { expr, .. } => scan_expr(expr, used),
         Expr::Block(b) => scan_block(b, used),
@@ -151,11 +156,16 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed) {
         Expr::If {
             cond,
             then_block,
+            elsifs,
             else_block,
             ..
         } => {
             scan_expr(cond, used);
             scan_block(then_block, used);
+            for arm in elsifs {
+                scan_expr(&arm.cond, used);
+                scan_block(&arm.body, used);
+            }
             if let Some(else_block) = else_block {
                 scan_block(else_block, used);
             }

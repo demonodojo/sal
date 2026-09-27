@@ -273,12 +273,18 @@ fn format_expr(e: &Expr, indent: usize) -> String {
         Expr::If {
             cond,
             then_block,
+            elsifs,
             else_block,
             ..
         } => {
             let pad = "    ".repeat(indent);
             let mut s = format!("if {}\n", format_expr(cond, indent));
             s.push_str(&format_block(then_block, indent + 1));
+            for arm in elsifs {
+                s.push_str(&pad);
+                s.push_str(&format!("elsif {}\n", format_expr(&arm.cond, indent)));
+                s.push_str(&format_block(&arm.body, indent + 1));
+            }
             if let Some(else_block) = else_block {
                 s.push_str(&pad);
                 s.push_str("else\n");

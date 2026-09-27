@@ -7,9 +7,12 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
     String(String),
+    /// `d"…"` — azúcar de `strdup("…")`; el parser desazucara a `Call`.
+    DupString(String),
     Fn,
     Let,
     If,
+    Elsif,
     Else,
     Match,
     On,
@@ -230,46 +233,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             b'<' => TokenKind::Lt,
             b'>' => TokenKind::Gt,
             b'"' => {
-                i += 1;
-                col += 1;
-                let str_start = i;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                        i += 2;
-                        col += 2;
-                    } else {
-                        if bytes[i] == b'\n' {
-                            return Err(Diagnostic::new(
-                                ErrorCode::EParse,
-                                "unclosed string",
-                                Span {
-                                    start: start as u32,
-                                    end: i as u32,
-                                    line: start_line,
-                                    col: start_col,
-                                },
-                            ));
-                        }
-                        i += 1;
-                        col += 1;
-                    }
-                }
-                if i >= bytes.len() {
-                    return Err(Diagnostic::new(
-                        ErrorCode::EParse,
-                        "unclosed string",
-                        Span {
-                            start: start as u32,
-                            end: i as u32,
-                            line: start_line,
-                            col: start_col,
-                        },
-                    ));
-                }
-                let s = source[str_start..i].to_string();
-                let s = unescape_string(&s);
-                i += 1;
-                col += 1;
+                let s = read_quoted_string(
+                    bytes,
+                    source,
+                    &mut i,
+                    &mut col,
+                    start,
+                    start_line,
+                    start_col,
+                )?;
                 TokenKind::String(s)
             }
             _ if ch.is_ascii_digit() => {
@@ -290,6 +262,27 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     col += 1;
                 }
                 let txt = &source[start..i];
+                if txt == "d" && i < bytes.len() && bytes[i] == b'"' {
+                    let s = read_quoted_string(
+                        bytes,
+                        source,
+                        &mut i,
+                        &mut col,
+                        start,
+                        start_line,
+                        start_col,
+                    )?;
+                    tokens.push(Token {
+                        kind: TokenKind::DupString(s),
+                        span: Span {
+                            start: start as u32,
+                            end: i as u32,
+                            line: start_line,
+                            col: start_col,
+                        },
+                    });
+                    continue;
+                }
                 TokenKind::Ident(txt.to_string())
             }
             _ => {
@@ -306,12 +299,16 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             }
         };
 
-        if !matches!(single, TokenKind::String(_) | TokenKind::Int(_) | TokenKind::Float(_)) {
+        if !matches!(
+            single,
+            TokenKind::String(_) | TokenKind::DupString(_) | TokenKind::Int(_) | TokenKind::Float(_)
+        ) {
             if let TokenKind::Ident(ref name) = single {
                 let kw = match name.as_str() {
                     "fn" => TokenKind::Fn,
                     "let" => TokenKind::Let,
                     "if" => TokenKind::If,
+                    "elsif" => TokenKind::Elsif,
                     "else" => TokenKind::Else,
                     "match" => TokenKind::Match,
                     "on" => TokenKind::On,
@@ -394,6 +391,58 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         },
     });
     Ok(tokens)
+}
+
+fn read_quoted_string(
+    bytes: &[u8],
+    source: &str,
+    i: &mut usize,
+    col: &mut u32,
+    err_start: usize,
+    start_line: u32,
+    start_col: u32,
+) -> Result<String, Diagnostic> {
+    *i += 1;
+    *col += 1;
+    let str_start = *i;
+    while *i < bytes.len() && bytes[*i] != b'"' {
+        if bytes[*i] == b'\\' && *i + 1 < bytes.len() {
+            *i += 2;
+            *col += 2;
+        } else {
+            if bytes[*i] == b'\n' {
+                return Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    "unclosed string",
+                    Span {
+                        start: err_start as u32,
+                        end: *i as u32,
+                        line: start_line,
+                        col: start_col,
+                    },
+                ));
+            }
+            *i += 1;
+            *col += 1;
+        }
+    }
+    if *i >= bytes.len() {
+        return Err(Diagnostic::new(
+            ErrorCode::EParse,
+            "unclosed string",
+            Span {
+                start: err_start as u32,
+                end: *i as u32,
+                line: start_line,
+                col: start_col,
+            },
+        ));
+    }
+    let s = source[str_start..*i].to_string();
+    let s = unescape_string(&s);
+    *i += 1;
+    *col += 1;
+    Ok(s)
 }
 
 fn unescape_string(s: &str) -> String {

@@ -28,6 +28,18 @@ fn result_is_err(r: Int) -> Int ! alloc
 fn result_unwrap(r: Int) -> Int ! alloc
     vec_get(r, 1)
 
+fn result_payload(r: Int) -> Int ! alloc
+    vec_get(r, 1)
+
+fn module_order_vec(x: Int) -> Int ! alloc
+    if vec_len(x) == 2
+        if vec_get(x, 0) == 0
+            vec_get(x, 1)
+        else
+            x
+    else
+        x
+
 fn result_format_err(r: Int) -> Int ! alloc
     msg = result_unwrap(r)
     acc = strdup("Err(")
@@ -101,6 +113,10 @@ fn TK_ELSE() -> Int
     31
 fn TK_WHILE() -> Int
     32
+fn TK_IMPORT() -> Int
+    33
+fn TK_DOT() -> Int
+    34
 
 fn EX_INT() -> Int
     0
@@ -223,7 +239,10 @@ fn kw_kind(text: Int) -> Int ! alloc
                         if str_eq(text, "while") == 1
                             TK_WHILE()
                         else
-                            TK_IDENT()
+                            if str_eq(text, "import") == 1
+                                TK_IMPORT()
+                            else
+                                TK_IDENT()
 
 
 fn indent_stack_new() -> Int ! alloc
@@ -641,15 +660,20 @@ fn lex_tok_rest5(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
                     _p = vec_push(out, t)
                     lex_go(src, i + 1, n, out, st, 0)
             else
-                if is_ident_start(c) == 1
-                    end = read_ident(src, i, n)
-                    text = str_slice(src, i, end)
-                    kind = kw_kind(text)
-                    t = tok_new(kind, text, 0)
+                if c == 46
+                    t = tok_new(TK_DOT(), 0, 0)
                     _p = vec_push(out, t)
-                    lex_go(src, end, n, out, st, 0)
-                else
                     lex_go(src, i + 1, n, out, st, 0)
+                else
+                    if is_ident_start(c) == 1
+                        end = read_ident(src, i, n)
+                        text = str_slice(src, i, end)
+                        kind = kw_kind(text)
+                        t = tok_new(kind, text, 0)
+                        _p = vec_push(out, t)
+                        lex_go(src, end, n, out, st, 0)
+                    else
+                        lex_go(src, i + 1, n, out, st, 0)
 
 fn lex(src: Int) -> Int ! alloc
     lex_src(src)
@@ -897,11 +921,16 @@ fn fndef_new(name: Int, params: Int, body: Int) -> Int ! alloc
 fn prog_new() -> Int ! alloc
     pr = vec_new()
     fns = vec_new()
+    imps = vec_new()
     _a = vec_push(pr, fns)
+    _b = vec_push(pr, imps)
     pr
 
 fn prog_fns(pr: Int) -> Int ! alloc
     vec_get(pr, 0)
+
+fn prog_imports(pr: Int) -> Int ! alloc
+    vec_get(pr, 1)
 
 fn p_accept(pr: Int, k: Int) -> Int ! alloc
     if tok_kind(p_peek(pr)) == k
@@ -1420,19 +1449,55 @@ fn parse_fn(pr: Int) -> Int ! alloc
         _e = p_set_err(pr, strdup("parse error: expected function name"))
         fndef_new(strdup("_bad"), vec_new(), block_new())
 
+fn parse_import_path_dots(pr: Int, path: Int) -> Int ! alloc
+    if tok_kind(p_peek(pr)) == TK_DOT()
+        _d = p_advance(pr)
+        if tok_kind(p_peek(pr)) == TK_IDENT()
+            t = p_peek(pr)
+            _t = p_advance(pr)
+            seg = tok_text(t)
+            npath = str_concat(str_concat(path, strdup(".")), seg)
+            parse_import_path_dots(pr, npath)
+        else
+            path
+    else
+        path
+
+fn parse_import_path(pr: Int) -> Int ! alloc
+    t = p_peek(pr)
+    k = tok_kind(t)
+    if k == TK_STRING()
+        name = tok_text(t)
+        _a = p_advance(pr)
+        name
+    else
+        if k == TK_IDENT()
+            path = tok_text(t)
+            _b = p_advance(pr)
+            parse_import_path_dots(pr, path)
+        else
+            _e = p_set_err(pr, strdup("parse error: expected identifier"))
+            strdup("")
+
 fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
     _a = p_skip_nls(pr)
     k = tok_kind(p_peek(pr))
     if k == TK_EOF()
         prog
     else
-        if k == TK_FN()
-            f = parse_fn(pr)
-            _b = vec_push(prog_fns(prog), f)
+        if k == TK_IMPORT()
+            _i = p_advance(pr)
+            path = parse_import_path(pr)
+            _b = vec_push(prog_imports(prog), path)
             parse_program_go(pr, prog)
         else
-            _c = p_advance(pr)
-            parse_program_go(pr, prog)
+            if k == TK_FN()
+                f = parse_fn(pr)
+                _c = vec_push(prog_fns(prog), f)
+                parse_program_go(pr, prog)
+            else
+                _d = p_advance(pr)
+                parse_program_go(pr, prog)
 
 fn toks_has_code(toks: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1472,6 +1537,560 @@ fn parse_program(src: Int) -> Int ! alloc
                     result_err(strdup("parse error: no functions"))
         else
             result_ok(prog)
+
+
+# ---- Modules ----
+fn project_root() -> Int ! io, alloc
+    r = getenv(strdup("SAL_PROJECT_ROOT"))
+    if str_len(r) == 0
+        strdup(".")
+    else
+        r
+
+fn parent_dir(path: Int) -> Int ! alloc
+    n = str_len(path)
+    if n == 0
+        strdup(".")
+    else
+        parent_dir_go(path, n - 1)
+
+fn parent_dir_go(path: Int, i: Int) -> Int ! alloc
+    if i < 0
+        strdup(".")
+    else
+        if str_char(path, i) == 47
+            if i == 0
+                strdup("/")
+            else
+                str_slice(path, 0, i)
+        else
+            parent_dir_go(path, i - 1)
+
+fn path_join(base: Int, rel: Int) -> Int ! alloc
+    if str_len(base) == 0
+        rel
+    else
+        if str_char(base, str_len(base) - 1) == 47
+            str_concat(base, rel)
+        else
+            str_concat(str_concat(base, strdup("/")), rel)
+
+fn ends_with_sal(s: Int) -> Int ! alloc
+    n = str_len(s)
+    if n < 4
+        0
+    else
+        tail = str_slice(s, n - 4, n)
+        if str_eq(tail, strdup(".sal")) == 1
+            1
+        else
+            0
+
+fn try_candidate(base: Int, imp: Int) -> Int ! io, alloc
+    p1 = path_join(base, imp)
+    if path_readable(p1) == 1
+        p1
+    else
+        if ends_with_sal(imp) == 1
+            free(p1)
+            strdup("")
+        else
+            imp2 = str_concat(imp, strdup(".sal"))
+            p2 = path_join(base, imp2)
+            if path_readable(p2) == 1
+                free(p1)
+                p2
+            else
+                free(p1)
+                free(p2)
+                strdup("")
+
+fn dep_line_in_deps(line: Int, in_deps: Int) -> Int ! alloc
+    if str_contains(line, strdup("[dependencies]")) == 1
+        1
+    else
+        if str_contains(line, strdup("[")) == 1
+            0
+        else
+            in_deps
+
+fn dep_line_push_path(line: Int, in_deps: Int, proot: Int, out: Int) -> Int ! alloc
+    if in_deps == 0
+        out
+    else
+        needle = strdup("path = \"")
+        if str_contains(line, needle) == 0
+            out
+        else
+            dep_extract_path(line, proot, out)
+
+fn read_until_quote(line: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        c = str_char(line, i)
+        if c == 34
+            acc
+        else
+            acc2 = str_concat(acc, char_to_str(c))
+            read_until_quote(line, i + 1, n, acc2)
+
+fn dep_extract_path(line: Int, proot: Int, out: Int) -> Int ! alloc
+    needle = strdup("path = \"")
+    pos = find_substr(line, needle, 0)
+    if pos < 0
+        out
+    else
+        start = pos + str_len(needle)
+        rel = read_until_quote(line, start, str_len(line), strdup(""))
+        if str_len(rel) == 0
+            out
+        else
+            base = path_join(proot, rel)
+            _p = vec_push(out, base)
+            out
+
+fn substr_eq_at(hay: Int, hi: Int, needle: Int, ni: Int, rem: Int) -> Int ! alloc
+    if rem <= 0
+        1
+    else
+        if str_char(hay, hi) != str_char(needle, ni)
+            0
+        else
+            substr_eq_at(hay, hi + 1, needle, ni + 1, rem - 1)
+
+fn find_substr(hay: Int, needle: Int, i: Int) -> Int ! alloc
+    nh = str_len(needle)
+    n = str_len(hay)
+    if nh == 0
+        i
+    else
+        if i + nh > n
+            0 - 1
+        else
+            if substr_eq_at(hay, i, needle, 0, nh) == 1
+                i
+            else
+                find_substr(hay, needle, i + 1)
+
+fn dep_bases_scan(raw: Int, i: Int, n: Int, in_deps: Int, proot: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        j = find_nl(raw, i, n)
+        line = str_slice(raw, i, j)
+        nd = dep_line_in_deps(line, in_deps)
+        out2 = dep_line_push_path(line, nd, proot, out)
+        dep_bases_scan(raw, j + 1, n, nd, proot, out2)
+
+fn find_nl(s: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        n
+    else
+        if str_char(s, i) == 10
+            i
+        else
+            find_nl(s, i + 1, n)
+
+fn dependency_search_bases(proot: Int) -> Int ! io, alloc
+    manifest = path_join(proot, strdup("Sal.toml"))
+    raw = read_file(manifest)
+    out = vec_new()
+    dep_bases_scan(raw, 0, str_len(raw), 0, proot, out)
+
+fn resolve_import_path_with_manifest(imp: Int, source_file: Int, proot: Int) -> Int ! io, alloc
+    dir = parent_dir(source_file)
+    hit = try_candidate(dir, imp)
+    if str_len(hit) > 0
+        hit
+    else
+        free(hit)
+        hit2 = try_candidate(proot, imp)
+        if str_len(hit2) > 0
+            hit2
+        else
+            free(hit2)
+            bases = dependency_search_bases(proot)
+            resolve_import_path_deps(imp, proot, bases, 0, vec_len(bases))
+
+fn resolve_import_path_deps(imp: Int, proot: Int, bases: Int, i: Int, n: Int) -> Int ! io, alloc
+    if i >= n
+        strdup("")
+    else
+        base = vec_get(bases, i)
+        hit = try_candidate(base, imp)
+        if str_len(hit) > 0
+            hit
+        else
+            free(hit)
+            hit3 = resolve_import_path_dep_split(imp, base)
+            if str_len(hit3) > 0
+                hit3
+            else
+                resolve_import_path_deps(imp, proot, bases, i + 1, n)
+
+fn basename_path(p: Int) -> Int ! alloc
+    n = str_len(p)
+    if n == 0
+        strdup("")
+    else
+        basename_go(p, n - 1)
+
+fn basename_go(p: Int, i: Int) -> Int ! alloc
+    if i < 0
+        p
+    else
+        if str_char(p, i) == 47
+            str_slice(p, i + 1, str_len(p))
+        else
+            basename_go(p, i - 1)
+
+fn resolve_import_path_dep_split(imp: Int, base: Int) -> Int ! io, alloc
+    slash = find_char(imp, 47, 0, str_len(imp))
+    if slash < 0
+        strdup("")
+    else
+        dep = str_slice(imp, 0, slash)
+        rest = str_slice(imp, slash + 1, str_len(imp))
+        bname = basename_path(base)
+        if str_eq(bname, dep) == 1
+            try_candidate(base, rest)
+        else
+            strdup("")
+
+fn path_key(p: Int) -> Int ! io, alloc
+    realpath(p)
+
+fn mod_new(key: Int, path: Int, prog: Int) -> Int ! alloc
+    m = vec_new()
+    _a = vec_push(m, key)
+    _b = vec_push(m, path)
+    _c = vec_push(m, prog)
+    m
+
+fn mod_key(m: Int) -> Int ! alloc
+    vec_get(m, 0)
+
+fn mod_path(m: Int) -> Int ! alloc
+    vec_get(m, 1)
+
+fn mod_prog(m: Int) -> Int ! alloc
+    vec_get(m, 2)
+
+fn vec_has_str(v: Int, s: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        if str_eq(vec_get(v, i), s) == 1
+            1
+        else
+            vec_has_str(v, s, i + 1, n)
+
+fn stack_has_key(stack: Int, sp: Int, key: Int, i: Int) -> Int ! alloc
+    if i >= sp
+        0
+    else
+        if str_eq(vec_get(stack, i), key) == 1
+            1
+        else
+            stack_has_key(stack, sp, key, i + 1)
+
+fn load_imports_of(prog: Int, source_file: Int, proot: Int, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+    load_imports_of_go(prog_imports(prog), 0, vec_len(prog_imports(prog)), source_file, proot, order, visited, stack, sp)
+
+fn load_imports_of_go(imps: Int, i: Int, n: Int, source_file: Int, proot: Int, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+    if i >= n
+        result_ok(0)
+    else
+        imp = vec_get(imps, i)
+        dep = resolve_import_path_with_manifest(imp, source_file, proot)
+        if str_len(dep) == 0
+            result_err(str_concat(strdup("import not found: "), imp))
+        else
+            step = load_module_recursive(dep, proot, order, visited, stack, sp)
+            if result_is_err(step) == 1
+                step
+            else
+                load_imports_of_go(imps, i + 1, n, source_file, proot, order, visited, stack, sp)
+
+fn load_module_recursive(path: Int, proot: Int, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+    key = path_key(path)
+    if stack_has_key(stack, sp, key, 0) == 1
+        result_err(strdup("import cycle"))
+    else
+        if vec_has_str(visited, key, 0, vec_len(visited)) == 1
+            result_ok(0)
+        else
+            if path_readable(path) == 0
+                result_err(str_concat(strdup("import not found: "), path))
+            else
+                src = read_file(path)
+                pre = preprocess(src)
+                parsed = parse_program(pre)
+                if result_is_err(parsed) == 1
+                    parsed
+                else
+                    prog = result_unwrap(parsed)
+                    _ps = vec_push(stack, key)
+                    step = load_imports_of(prog, path, proot, order, visited, stack, sp + 1)
+                    if result_is_err(step) == 1
+                        step
+                    else
+                        _v = vec_push(visited, key)
+                        ent = mod_new(key, path, prog)
+                        _o = vec_push(order, ent)
+                        result_ok(0)
+
+fn module_graph_finish(step: Int, order: Int) -> Int ! alloc
+    if result_is_err(step) == 1
+        step
+    else
+        if vec_len(order) == 0
+            result_err(strdup("empty module graph"))
+        else
+            result_ok(order)
+
+fn resolve_module_graph(root_path: Int, proot: Int) -> Int ! io, alloc
+    visited = vec_new()
+    stack = vec_new()
+    order = vec_new()
+    step = load_module_recursive(root_path, proot, order, visited, stack, 0)
+    module_graph_finish(step, order)
+
+fn graph_root_mod(graph: Int) -> Int ! alloc
+    vec_get(module_order_vec(graph), vec_len(module_order_vec(graph)) - 1)
+
+fn graph_root_prog(graph: Int) -> Int ! alloc
+    mod_prog(graph_root_mod(graph))
+
+fn graph_root_key(graph: Int) -> Int ! alloc
+    mod_key(graph_root_mod(graph))
+
+fn graph_find_by_key(graph: Int, key: Int, i: Int, n: Int) -> Int ! alloc
+    graph_find_by_key_go(module_order_vec(graph), key, i, n)
+
+fn graph_find_by_key_go(order: Int, key: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        m = vec_get(order, i)
+        if str_eq(mod_key(m), key) == 1
+            m
+        else
+            graph_find_by_key_go(order, key, i + 1, n)
+
+fn append_fn_names_from_prog(prog: Int, out: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    append_fn_names_from_fns(fns, 0, vec_len(fns), out)
+
+fn append_fn_names_from_fns(fns: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        f = vec_get(fns, i)
+        _p = vec_push(out, vec_get(f, 0))
+        append_fn_names_from_fns(fns, i + 1, n, out)
+
+fn exports_names_for_module(m: Int) -> Int ! alloc
+    append_fn_names_from_prog(mod_prog(m), vec_new())
+
+fn names_vec_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    vec_has_str(names, name, i, n)
+
+fn merge_exports_names(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(dst)
+    else
+        nm = vec_get(src, i)
+        if names_vec_has(dst, nm, 0, vec_len(dst)) == 1
+            result_err(str_concat(str_concat(strdup("name `"), nm), strdup("` defined in more than one imported module")))
+        else
+            _p = vec_push(dst, nm)
+            merge_exports_names(dst, src, i + 1, n)
+
+fn walk_imports_collect(m: Int, graph: Int, proot: Int, visited: Int, out: Int) -> Int ! io, alloc
+    walk_imports_collect_go(prog_imports(mod_prog(m)), 0, vec_len(prog_imports(mod_prog(m))), m, graph, proot, visited, out)
+
+fn walk_imports_collect_go(imps: Int, i: Int, n: Int, m: Int, graph: Int, proot: Int, visited: Int, out: Int) -> Int ! io, alloc
+    if i >= n
+        result_ok(out)
+    else
+        imp = vec_get(imps, i)
+        dep_path = resolve_import_path_with_manifest(imp, mod_path(m), proot)
+        if str_len(dep_path) == 0
+            result_err(str_concat(strdup("import not found: "), imp))
+        else
+            key = path_key(dep_path)
+            if vec_has_str(visited, key, 0, vec_len(visited)) == 1
+                walk_imports_collect_go(imps, i + 1, n, m, graph, proot, visited, out)
+            else
+                _v = vec_push(visited, key)
+                dep_m = graph_find_by_key(graph, key, 0, vec_len(graph))
+                if dep_m == 0
+                    walk_imports_collect_go(imps, i + 1, n, m, graph, proot, visited, out)
+                else
+                    step = walk_imports_collect(dep_m, graph, proot, visited, out)
+                    if result_is_err(step) == 1
+                        step
+                    else
+                        out2 = result_unwrap(step)
+                        _p = vec_push(out2, dep_m)
+                        walk_imports_collect_go(imps, i + 1, n, m, graph, proot, visited, out2)
+
+fn transitive_import_modules(m: Int, graph: Int, proot: Int) -> Int ! io, alloc
+    visited = vec_new()
+    out = vec_new()
+    step = walk_imports_collect(m, graph, proot, visited, out)
+    step
+
+fn check_module_names(m: Int, graph: Int, proot: Int) -> Int ! io, alloc
+    step = transitive_import_modules(m, graph, proot)
+    if result_is_err(step) == 1
+        step
+    else
+        deps = result_unwrap(step)
+        env = vec_new()
+        env_step = merge_deps_exports(env, deps, 0, vec_len(deps))
+        if result_is_err(env_step) == 1
+            env_step
+        else
+            env2 = result_unwrap(env_step)
+            check_local_names(mod_prog(m), env2)
+
+fn merge_deps_exports(env: Int, deps: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(env)
+    else
+        dep_m = vec_get(deps, i)
+        src = exports_names_for_module(dep_m)
+        step = merge_exports_names(env, src, 0, vec_len(src))
+        if result_is_err(step) == 1
+            step
+        else
+            env2 = result_unwrap(step)
+            merge_deps_exports(env2, deps, i + 1, n)
+
+fn check_local_names(prog: Int, env: Int) -> Int ! alloc
+    check_local_names_go(prog_fns(prog), 0, vec_len(prog_fns(prog)), env)
+
+fn check_local_names_go(fns: Int, i: Int, n: Int, env: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        f = vec_get(fns, i)
+        nm = vec_get(f, 0)
+        if names_vec_has(env, nm, 0, vec_len(env)) == 1
+            result_err(str_concat(str_concat(strdup("name `"), nm), strdup("` already defined in an imported module")))
+        else
+            _p = vec_push(env, nm)
+            check_local_names_go(fns, i + 1, n, env)
+
+fn callable_fn_names(m: Int, graph: Int, proot: Int) -> Int ! io, alloc
+    step = transitive_import_modules(m, graph, proot)
+    if result_is_err(step) == 1
+        step
+    else
+        deps = result_unwrap(step)
+        out = vec_new()
+        out = callable_deps_names(deps, 0, vec_len(deps), out)
+        out = append_fn_names_from_prog(mod_prog(m), out)
+        result_ok(out)
+
+fn callable_deps_names(deps: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        dep_m = vec_get(deps, i)
+        out2 = append_fn_names_from_prog(mod_prog(dep_m), out)
+        callable_deps_names(deps, i + 1, n, out2)
+
+fn fn_def_param_count(f: Int) -> Int ! alloc
+    vec_len(vec_get(f, 1))
+
+fn find_fn_named_in_prog(prog: Int, name: Int) -> Int ! alloc
+    find_fn_named_in_fns(prog_fns(prog), name, 0, vec_len(prog_fns(prog)))
+
+fn find_fn_named_in_fns(fns: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        if str_eq(vec_get(f, 0), name) == 1
+            f
+        else
+            find_fn_named_in_fns(fns, name, i + 1, n)
+
+fn find_fn_in_graph(graph: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    find_fn_in_graph_go(module_order_vec(graph), name, i, n)
+
+fn find_fn_in_graph_go(order: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        m = vec_get(order, i)
+        f = find_fn_named_in_prog(mod_prog(m), name)
+        if f == 0
+            find_fn_in_graph_go(order, name, i + 1, n)
+        else
+            f
+
+fn is_local_fn_name(prog: Int, name: Int) -> Int ! alloc
+    if find_fn_named_in_prog(prog, name) == 0
+        0
+    else
+        1
+
+fn extern_fn_arity(m: Int, graph: Int, callables: Int) -> Int ! alloc
+    prog = mod_prog(m)
+    extern_fn_arity_go(callables, 0, vec_len(callables), prog, graph, vec_new())
+
+fn extern_fn_arity_go(callables: Int, i: Int, n: Int, prog: Int, graph: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        nm = vec_get(callables, i)
+        if is_local_fn_name(prog, nm) == 1
+            extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
+        else
+            f = find_fn_in_graph(graph, nm, 0, vec_len(module_order_vec(graph)))
+            if f == 0
+                extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
+            else
+                pair = vec_new()
+                _a = vec_push(pair, nm)
+                _b = vec_push(pair, fn_def_param_count(f))
+                _p = vec_push(out, pair)
+                extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
+
+fn check_all_modules(graph: Int, proot: Int) -> Int ! io, alloc
+    check_all_modules_order(module_order_vec(graph), 0, vec_len(module_order_vec(graph)), proot)
+
+fn check_all_modules_order(order: Int, i: Int, n: Int, proot: Int) -> Int ! io, alloc
+    if i >= n
+        result_ok(0)
+    else
+        m = vec_get(order, i)
+        step = check_module_names(m, order, proot)
+        if result_is_err(step) == 1
+            step
+        else
+            check_all_modules_order(order, i + 1, n, proot)
+
+fn graph_source_digest(graph: Int) -> Int ! io, alloc
+    graph_source_digest_go(graph, 0, vec_len(graph), strdup(""))
+
+fn graph_source_digest_go(graph: Int, i: Int, n: Int, acc: Int) -> Int ! io, alloc
+    if i >= n
+        acc
+    else
+        m = vec_get(graph, i)
+        p = mod_path(m)
+        src = read_file(p)
+        h = str_hash(src, str_hash(p, 5381))
+        piece = int_to_str(h)
+        acc = str_append(acc, piece)
+        acc = str_append(acc, strdup(":"))
+        graph_source_digest_go(graph, i + 1, n, acc)
 
 
 # ---- Lower / IR ----
@@ -2506,9 +3125,27 @@ fn collect_fn_names(fns: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         _p = vec_push(out, vec_get(f, 0))
         collect_fn_names(fns, i + 1, n, out)
 
+fn merge_callable_names_go(extra: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        names
+    else
+        nm = vec_get(extra, i)
+        if fn_names_has_at(names, nm, 0, vec_len(names)) == 1
+            merge_callable_names_go(extra, i + 1, n, names)
+        else
+            _p = vec_push(names, nm)
+            merge_callable_names_go(extra, i + 1, n, names)
+
+fn merge_callable_names(extra: Int, names: Int) -> Int ! alloc
+    merge_callable_names_go(extra, 0, vec_len(extra), names)
+
 fn lower_program(prog: Int) -> Int ! alloc
+    lower_program_with_callables(prog, vec_new())
+
+fn lower_program_with_callables(prog: Int, extra: Int) -> Int ! alloc
     fns = prog_fns(prog)
     names = collect_fn_names(fns, 0, vec_len(fns), vec_new())
+    names = merge_callable_names(extra, names)
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
@@ -3017,8 +3654,34 @@ fn emit_fns(mod: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         emit_fns(mod, i + 1, n, acc)
 
 fn emit_ir_from_prog(prog: Int) -> Int ! alloc
-    ir = lower_program(prog)
+    emit_ir_from_prog_with_extra(prog, vec_new())
+
+fn emit_ir_from_prog_with_extra(prog: Int, extra: Int) -> Int ! alloc
+    ir = lower_program_with_callables(prog, extra)
     ir_to_text(ir)
+
+fn emit_ir_from_graph(order_in: Int, source_path: Int) -> Int ! io, alloc
+    proot = project_root()
+    chk = check_all_modules(order_in, proot)
+    if result_is_err(chk) == 1
+        chk
+    else
+        root_m = graph_root_mod(order_in)
+        cstep = callable_fn_names(root_m, order_in, proot)
+        if result_is_err(cstep) == 1
+            cstep
+        else
+            extra = result_unwrap(cstep)
+            root_prog = graph_root_prog(order_in)
+            result_ok(emit_ir_from_prog_with_extra(root_prog, extra))
+
+fn emit_ir_from_path(source_path: Int) -> Int ! io, alloc
+    proot = project_root()
+    g = resolve_module_graph(source_path, proot)
+    if result_is_err(g) == 1
+        g
+    else
+        emit_ir_from_graph(result_payload(g), source_path)
 
 fn hash_go(src: Int, i: Int, n: Int, h: Int) -> Int ! alloc
     if i >= n
@@ -3059,7 +3722,16 @@ fn cache_meta_path(dir: Int, key: Int) -> Int ! alloc
     acc = str_append(acc, strdup(".meta"))
     acc
 
-fn emit_ir(src: Int) -> Int ! io, alloc
+fn cache_key_for_graph_path(pre: Int, source_path: Int) -> Int ! io, alloc
+    base = source_hash(pre)
+    p = realpath(source_path)
+    src = read_file(p)
+    h = str_hash(src, str_hash(p, 5381))
+    piece = int_to_str(h)
+    acc = str_concat(base, strdup(":"))
+    str_append(acc, piece)
+
+fn emit_ir_for_file(source_path: Int, src: Int) -> Int ! io, alloc
     pre = preprocess(src)
     parsed = parse_program(pre)
     if result_is_err(parsed) == 1
@@ -3068,18 +3740,57 @@ fn emit_ir(src: Int) -> Int ! io, alloc
         prog = result_unwrap(parsed)
         dir = cache_dir()
         _m = mkdir_p(dir)
-        key = source_hash(pre)
-        irpath = cache_ir_path(dir, key)
-        metapath = cache_meta_path(dir, key)
-        cached = read_file(irpath)
-        if str_len(cached) > 0
-            _w = write_file(metapath, strdup("hit=1\n"))
-            result_ok(cached)
+        if str_len(source_path) == 0
+            key = source_hash(pre)
+            irpath = cache_ir_path(dir, key)
+            metapath = cache_meta_path(dir, key)
+            cached = read_file(irpath)
+            if str_len(cached) > 0
+                _w = write_file(metapath, strdup("hit=1\n"))
+                result_ok(cached)
+            else
+                ir0 = emit_ir_from_prog(prog)
+                _w0 = write_file(irpath, ir0)
+                _w1 = write_file(metapath, strdup("hit=0\n"))
+                result_ok(ir0)
         else
-            ir = emit_ir_from_prog(prog)
-            _w = write_file(irpath, ir)
-            _w2 = write_file(metapath, strdup("hit=0\n"))
-            result_ok(ir)
+            if vec_len(prog_imports(prog)) == 0
+                key = source_hash(pre)
+                irpath = cache_ir_path(dir, key)
+                metapath = cache_meta_path(dir, key)
+                cached = read_file(irpath)
+                if str_len(cached) > 0
+                    _w = write_file(metapath, strdup("hit=1\n"))
+                    result_ok(cached)
+                else
+                    ir0 = emit_ir_from_prog(prog)
+                    _w0 = write_file(irpath, ir0)
+                    _w1 = write_file(metapath, strdup("hit=0\n"))
+                    result_ok(ir0)
+            else
+                g = resolve_module_graph(source_path, project_root())
+                if result_is_err(g) == 1
+                    g
+                else
+                    key = cache_key_for_graph_path(pre, source_path)
+                    irpath = cache_ir_path(dir, key)
+                    metapath = cache_meta_path(dir, key)
+                    cached = read_file(irpath)
+                    if str_len(cached) > 0
+                        _w = write_file(metapath, strdup("hit=1\n"))
+                        result_ok(cached)
+                    else
+                        ir1 = emit_ir_from_graph(g, source_path)
+                        if result_is_err(ir1) == 1
+                            ir1
+                        else
+                            body = result_unwrap(ir1)
+                            _w2 = write_file(irpath, body)
+                            _w3 = write_file(metapath, strdup("hit=0\n"))
+                            result_ok(body)
+
+fn emit_ir(src: Int) -> Int ! io, alloc
+    emit_ir_for_file(strdup(""), src)
 
 fn emit_c_from_prog_result(src: Int) -> Int ! alloc
     pre = preprocess(src)
@@ -3089,6 +3800,40 @@ fn emit_c_from_prog_result(src: Int) -> Int ! alloc
     else
         prog = result_unwrap(parsed)
         result_ok(emit_c_from_ast(prog))
+
+fn emit_c_for_file(source_path: Int, src: Int, out_path: Int) -> Int ! io, alloc
+    pre = preprocess(src)
+    parsed = parse_program(pre)
+    if result_is_err(parsed) == 1
+        parsed
+    else
+        prog = result_unwrap(parsed)
+        if str_len(source_path) == 0
+            result_ok(emit_c_from_ast(prog))
+        else
+            if vec_len(prog_imports(prog)) == 0
+                ccode = emit_c_from_ast(prog)
+                cpath = tmp_path("out.c")
+                _w = write_file(cpath, ccode)
+                if clang(cpath, out_path) == 0
+                    result_ok(strdup(""))
+                else
+                    result_err(strdup("clang failed"))
+            else
+                emit_c_from_path(source_path, out_path)
+
+fn emit_c_from_path(source_path: Int, out_path: Int) -> Int ! io, alloc
+    proot = project_root()
+    g = resolve_module_graph(source_path, proot)
+    if result_is_err(g) == 1
+        g
+    else
+        chk = check_all_modules(g, proot)
+        if result_is_err(chk) == 1
+            chk
+        else
+            root_key = graph_root_key(g)
+            emit_c_compile_graph(g, root_key, out_path, proot)
 
 
 # ---- emit_c (AST → C) ----
@@ -3133,7 +3878,7 @@ fn c_escape_str(s: Int) -> Int ! alloc
         acc
 
 fn runtime_decls() -> Int ! alloc
-    strdup("#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\n\n")
+    strdup("#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\n\n")
 
 fn user_fns_from_prog(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
@@ -3533,7 +4278,41 @@ fn emit_c_builtin2(fname: Int, args: Int, stmts: Int) -> Int ! alloc
                         acc = str_append(acc, strdup(")"))
                         acc
                     else
-                        emit_c_builtin3(fname, args, stmts)
+                        if str_eq(fname, "clang_obj") == 1
+                            a = arg_at(args, 0)
+                            b = arg_at(args, 1)
+                            acc = strdup("sal_clang_obj((const char*)(uintptr_t)")
+                            acc = str_append(acc, a)
+                            acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+                            acc = str_append(acc, b)
+                            acc = str_append(acc, strdup(")"))
+                            acc
+                        else
+                            if str_eq(fname, "link_objs") == 1
+                                a = arg_at(args, 0)
+                                b = arg_at(args, 1)
+                                acc = strdup("sal_link_objs((const char*)(uintptr_t)")
+                                acc = str_append(acc, a)
+                                acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+                                acc = str_append(acc, b)
+                                acc = str_append(acc, strdup(")"))
+                                acc
+                            else
+                                if str_eq(fname, "realpath") == 1
+                                    a = arg_at(args, 0)
+                                    acc = strdup("((int64_t)(uintptr_t)sal_realpath((const char*)(uintptr_t)")
+                                    acc = str_append(acc, a)
+                                    acc = str_append(acc, strdup("))"))
+                                    acc
+                                else
+                                    if str_eq(fname, "path_readable") == 1
+                                        a = arg_at(args, 0)
+                                        acc = strdup("sal_path_readable((const char*)(uintptr_t)")
+                                        acc = str_append(acc, a)
+                                        acc = str_append(acc, strdup(")"))
+                                        acc
+                                    else
+                                        emit_c_builtin3(fname, args, stmts)
 
 fn emit_c_builtin3(fname: Int, args: Int, stmts: Int) -> Int ! alloc
     if str_eq(fname, "gated_print_str") == 1
@@ -3853,21 +4632,58 @@ fn emit_params_c(params: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         acc = str_append(acc, vec_get(vec_get(params, i), 0))
         emit_params_c(params, i + 1, n, acc)
 
-fn emit_c_fn_header(f: Int) -> Int ! alloc
-    name = vec_get(f, 0)
-    params = vec_get(f, 1)
-    if str_eq(name, "main") == 1
-        acc = strdup("int main(int argc, char **argv) {{\n")
-        acc = str_append(acc, strdup("  sal_runtime_init((int64_t)argc, (const char **)argv);\n"))
+fn emit_extern_params(n: Int, i: Int, acc: Int) -> Int ! alloc
+    if i >= n
         acc
     else
-        m = mangled(name)
-        acc = strdup("static int64_t ")
-        acc = str_append(acc, m)
-        acc = str_append(acc, strdup("("))
-        acc = emit_params_c(params, 0, vec_len(params), acc)
-        acc = str_append(acc, strdup(") {{\n"))
+        acc2 = select_str(i > 0, str_append(acc, strdup(", ")), acc)
+        acc3 = str_append(acc2, strdup("int64_t p"))
+        acc4 = str_append(acc3, int_to_str(i))
+        emit_extern_params(n, i + 1, acc4)
+
+fn emit_extern_decl(pair: Int) -> Int ! alloc
+    name = vec_get(pair, 0)
+    nparams = vec_get(pair, 1)
+    m = mangled(name)
+    acc = str_append(strdup("extern int64_t "), m)
+    acc = str_append(acc, strdup("("))
+    if nparams == 0
+        acc = str_append(acc, strdup("void"))
+    else
+        acc = emit_extern_params(nparams, 0, acc)
+    str_append(acc, strdup(");\n"))
+
+fn emit_extern_decls(externs: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
         acc
+    else
+        piece = emit_extern_decl(vec_get(externs, i))
+        acc = str_append(acc, piece)
+        emit_extern_decls(externs, i + 1, n, acc)
+
+fn emit_c_fn_header(f: Int, linkable: Int, allow_main: Int) -> Int ! alloc
+    name = vec_get(f, 0)
+    params = vec_get(f, 1)
+    if allow_main == 0
+        if str_eq(name, "main") == 1
+            strdup("")
+        else
+            emit_c_fn_header_body(name, params, linkable)
+    else
+        if str_eq(name, "main") == 1
+            acc = strdup("int main(int argc, char **argv) {{\n")
+            acc = str_append(acc, strdup("  sal_runtime_init((int64_t)argc, (const char **)argv);\n"))
+            acc
+        else
+            emit_c_fn_header_body(name, params, linkable)
+
+fn emit_c_fn_header_body(name: Int, params: Int, linkable: Int) -> Int ! alloc
+    m = mangled(name)
+    pref = select_str(linkable, strdup("int64_t "), strdup("static int64_t "))
+    acc = str_append(pref, m)
+    acc = str_append(acc, strdup("("))
+    acc = emit_params_c(params, 0, vec_len(params), acc)
+    str_append(acc, strdup(") {{\n"))
 
 fn emit_c_fn_footer(is_main: Int, val: Int) -> Int ! alloc
     if is_main == 1
@@ -3901,11 +4717,19 @@ fn emit_decl_names_filtered(names: Int, i: Int, n: Int, skip: Int, acc: Int) -> 
             acc = str_append(acc, strdup(" = 0;\n"))
             emit_decl_names_filtered(names, i + 1, n, skip, acc)
 
-fn emit_c_fn(f: Int, user: Int) -> Int ! alloc
+fn emit_c_fn(f: Int, user: Int, linkable: Int, allow_main: Int) -> Int ! alloc
     name = vec_get(f, 0)
     body = vec_get(f, 2)
     is_main = str_eq(name, "main")
-    acc = emit_c_fn_header(f)
+    acc = emit_c_fn_header(f, linkable, allow_main)
+    if str_len(acc) == 0
+        strdup("")
+    else
+        emit_c_fn_body(f, user, is_main, acc)
+
+fn emit_c_fn_body(f: Int, user: Int, is_main: Int, acc: Int) -> Int ! alloc
+    name = vec_get(f, 0)
+    body = vec_get(f, 2)
     names = vec_new()
     _c = collect_assigns_block(body, names)
     skip = param_names(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), vec_new())
@@ -3924,23 +4748,39 @@ fn emit_forward_params(params: Int) -> Int ! alloc
     else
         emit_params_c(params, 0, vec_len(params), strdup(""))
 
-fn emit_forward_decls(fns: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
-    if i >= n
-        acc
-    else
-        f = vec_get(fns, i)
+fn emit_forward_decls(fns: Int, i: Int, n: Int, acc: Int, allow_main: Int, linkable: Int) -> Int ! alloc
+    idx = i
+    out = acc
+    while idx < n
+        f = vec_get(fns, idx)
         name = vec_get(f, 0)
-        if str_eq(name, "main") == 1
-            emit_forward_decls(fns, i + 1, n, acc)
+        skip_main = 0
+        if allow_main == 0
+            if str_eq(name, "main") == 1
+                skip_main = 1
+            else
+                skip_main = 0
         else
-            m = mangled(name)
-            acc = str_append(acc, strdup("static int64_t "))
-            acc = str_append(acc, m)
-            acc = str_append(acc, strdup("("))
-            ps = emit_forward_params(vec_get(f, 1))
-            acc = str_append(acc, ps)
-            acc = str_append(acc, strdup(");\n"))
-            emit_forward_decls(fns, i + 1, n, acc)
+            if str_eq(name, "main") == 1
+                skip_main = 1
+            else
+                skip_main = 0
+        if skip_main == 0
+            out = emit_forward_one(f, out, linkable)
+        else
+            out = out
+        idx = idx + 1
+    out
+
+fn emit_forward_one(f: Int, acc: Int, linkable: Int) -> Int ! alloc
+    m = mangled(vec_get(f, 0))
+    pref = select_str(linkable, strdup("int64_t "), strdup("static int64_t "))
+    acc = str_append(acc, pref)
+    acc = str_append(acc, m)
+    acc = str_append(acc, strdup("("))
+    ps = emit_forward_params(vec_get(f, 1))
+    acc = str_append(acc, ps)
+    str_append(acc, strdup(");\n"))
 
 fn append_stmt_strings(acc: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -3949,23 +4789,68 @@ fn append_stmt_strings(acc: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
         acc = str_append(acc, vec_get(stmts, i))
         append_stmt_strings(acc, stmts, i + 1, n)
 
-fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: Int) -> Int ! alloc
-    if i >= n
-        acc
-    else
-        piece = emit_c_fn(vec_get(fns, i), user)
-        acc = str_append(acc, piece)
-        # free(piece)
-        emit_c_fns(fns, i + 1, n, user, acc)
+fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: Int, allow_main: Int, linkable: Int) -> Int ! alloc
+    idx = i
+    out = acc
+    while idx < n
+        piece = emit_c_fn(vec_get(fns, idx), user, linkable, allow_main)
+        if str_len(piece) > 0
+            out = str_append(out, piece)
+        else
+            out = out
+        idx = idx + 1
+    out
+
+fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: Int, linkable: Int) -> Int ! alloc
+    acc = runtime_decls()
+    acc = str_append(acc, strdup("#include <stdint.h>\n"))
+    acc = emit_extern_decls(externs, 0, vec_len(externs), acc)
+    fns = prog_fns(prog)
+    acc = emit_forward_decls(fns, 0, vec_len(fns), acc, allow_main, linkable)
+    acc = str_append(acc, strdup("\n"))
+    emit_c_fns(fns, 0, vec_len(fns), callables, acc, allow_main, linkable)
 
 fn emit_c_from_ast(prog: Int) -> Int ! alloc
     user = user_fns_from_prog(prog)
-    acc = runtime_decls()
-    acc = str_append(acc, strdup("#include <stdint.h>\n"))
-    fns = prog_fns(prog)
-    acc = emit_forward_decls(fns, 0, vec_len(fns), acc)
-    acc = str_append(acc, strdup("\n"))
-    emit_c_fns(fns, 0, vec_len(fns), user, acc)
+    emit_c_from_ast_module(prog, user, vec_new(), 1, 0)
+
+fn call_link_objs(obj_list: Int, out_path: Int) -> Int ! io, alloc
+    link_objs(obj_list, out_path)
+
+fn call_clang_obj(c_path: Int, o_path: Int) -> Int ! io, alloc
+    clang_obj(c_path, o_path)
+
+fn emit_c_compile_graph_go(graph: Int, i: Int, n: Int, root_key: Int, proot: Int, out_path: Int, obj_list: Int) -> Int ! io, alloc
+    if i >= n
+        lrc = call_link_objs(obj_list, out_path)
+        if lrc == 0
+            result_ok(strdup(""))
+        else
+            result_err(strdup("link failed"))
+    else
+        m = vec_get(graph, i)
+        is_root = str_eq(mod_key(m), root_key)
+        allow_main = is_root
+        cstep = callable_fn_names(m, graph, proot)
+        if result_is_err(cstep) == 1
+            cstep
+        else
+            callables = result_unwrap(cstep)
+            externs = extern_fn_arity(m, graph, callables)
+            ccode = emit_c_from_ast_module(mod_prog(m), callables, externs, allow_main, 1)
+            suf = str_concat(strdup("m"), int_to_str(i))
+            cpath = tmp_path(str_concat(suf, strdup(".c")))
+            opath = tmp_path(str_concat(suf, strdup(".o")))
+            _w = write_file(cpath, ccode)
+            if call_clang_obj(cpath, opath) != 0
+                result_err(strdup("clang_obj failed"))
+            else
+                prefix = select_str(str_len(obj_list), str_append(obj_list, strdup(" ")), obj_list)
+                objs2 = str_append(prefix, opath)
+                emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2)
+
+fn emit_c_compile_graph(graph_in: Int, root_key: Int, out_path: Int, proot: Int) -> Int ! io, alloc
+    emit_c_compile_graph_go(module_order_vec(graph_in), 0, vec_len(module_order_vec(graph_in)), root_key, proot, out_path, strdup(""))
 
 fn emit_c(src: Int) -> Int ! alloc
     emit_c_from_prog_result(src)
@@ -4073,17 +4958,14 @@ fn main() -> Int ! io, alloc
         do_o = str_eq(flag, "-o")
         src = read_file(path)
         if do_o == 1
-            r = emit_c(src)
+            r = emit_c_for_file(path, src, out)
             if result_is_err(r) == 1
                 _e = eprint_str(result_format_err(r))
                 1
             else
-                ccode = result_unwrap(r)
-                cpath = tmp_path("out.c")
-                _w = write_file(cpath, ccode)
-                clang(cpath, out)
+                0
         else
-            r = emit_ir(src)
+            r = emit_ir_for_file(path, src)
             if result_is_err(r) == 1
                 _e = eprint_str(result_format_err(r))
                 1

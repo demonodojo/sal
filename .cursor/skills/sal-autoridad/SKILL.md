@@ -24,7 +24,7 @@ Recursiva por la izquierda en listas, operadores binarios y postfijos. Esa recur
 - Igual `(a * b) * c`, `(a == b) == c`, `(a.b).c`, `(f(x))(y)`.
 - Prefijos (`try`, `-`, `!`, `to`) y la lambda asocian a la derecha: `x => y => z` es `x => (y => z)`.
 - `load[F32, 4, 4]("w.salt")` es `postfix` con `type_arg` (tipo, `INT` o `?`). `4` no es un tipo de nombre `"4"`.
-- `if_expr` → `"if" expr suite ("else" suite | ε)`. Sin `else`, tipo `Unit`; con `else`, el tipo es el de la rama then. El `else` se asocia al `if` interno que acaba de cerrar su suite. Dentro de `match`, `=>` es un brazo, no una lambda.
+- `if_expr` → `"if" expr suite elsif_list ("else" suite | ε)`, con `elsif_list` recursiva por la izquierda. Sin `else`, tipo `Unit` aunque haya `elsif`; con `else`, el tipo es el de la rama then. `elsif` y `else` se asocian al `if` interno que acaba de cerrar su suite. Dentro de `match`, `=>` es un brazo, no una lambda.
 - Sangría con espacios. Un tabulador es `E_PARSE`. `#` no tiene producción.
 
 Una reescritura recursiva por la derecha de `add`, `mul`, `cmp` o `postfix` no es esta gramática.

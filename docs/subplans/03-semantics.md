@@ -34,11 +34,15 @@ El resto, en el mismo lugar y el mismo elemento:
 
 Dos tensores del mismo elemento y la misma forma unifican eje a eje. `?` unifica con un estático y sigue siendo `?` en la firma; el estático no se filtra hacia el tipo público. Dentro de una función, un literal puede concretar el `?` para calcular tamaños, sin cambiar la firma.
 
-`List[T]` es heap. El índice es `Int`. Structs y enums se tipan por los `Item` del módulo y del preludio. `Option` y `Result` salen del preludio, no de un caso especial con otro nombre. `try` exige un `Result` y el error tiene que coincidir con el de la función que lo envuelve. Un `match` cubre las variantes del enum; si falta una y no hay `_`, `E_TYPE`.
+`List[T]` es heap. El índice es `Int`. En el arranque, `T` es `Int`, `Float`, `Bool` o `String`. `list_get` copia el elemento (`String` devuelve una copia nueva; el de la lista sigue siendo del dueño).
+
+`Dict[K, V]` es heap. `K` es `Int` o `String`. `V` es `Int`, `Float` o `Bool`. Valores no copy en `V` son `E_TYPE`. Primitivas: `dict_new`, `dict_put`, `dict_get` → `Option[V]` (exige `Option` en el entorno, normalmente vía preludio importado).
+
+Structs y enums se tipan por los `Item` del módulo actual y por los de cada módulo importado, en transitivo. `import` no copia cuerpos: el pase de inferencia construye un entorno con `fn`/`struct`/`enum` de todos los ficheros alcanzables. Ruta inexistente, choque de nombre o ciclo: `E_TYPE` en el span del `import`. El preludio no se inyecta; `Option` y `Result` salen de importar `std/prelude.sal`, no de un caso especial con otro nombre. `try` exige un `Result` y el error tiene que coincidir con el de la función que lo envuelve. Un `match` cubre las variantes del enum; si falta una y no hay `_`, `E_TYPE`.
 
 La lambda de una sentencia se tipa al usarla. `x => e` no es un valor de primera clase que se guarde: si se liga a un `let` o se devuelve, `E_TYPE` en este arranque. El parámetro no lleva tipo escrito; sale del callback (`map`).
 
-Un `if` sin `else` tiene tipo `Unit`; la rama then se comprueba igual. Un `if` con `else` tiene el tipo de la rama then.
+Un `if` sin `else` tiene tipo `Unit`, aunque tenga `elsif`; la rama then y cada `elsif` se comprueban igual. Un `if` con `else` tiene el tipo de la rama then. Las ramas `elsif` se comprueban como el `else`.
 
 Cada expresión del AST tipado guarda su tipo, su lugar y el span. `sal emit typed` imprime eso. `sal fmt` escribe en las firmas públicas el `borrow` o `take` que haya inferido el pase de ownership, para que no cambie en silencio.
 

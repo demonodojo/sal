@@ -7,12 +7,14 @@ pub mod fmt;
 pub mod fuse;
 pub mod incremental;
 pub mod infer;
+pub mod modules;
 pub mod ir;
 pub mod lexer;
 pub mod llvm;
 pub mod ownership;
 pub mod parser;
 pub mod span;
+pub mod string_expr;
 pub mod typed;
 
 pub use compile::{

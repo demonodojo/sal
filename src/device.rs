@@ -232,6 +232,7 @@ fn check_expr_devices(
         Expr::If {
             cond,
             then_block,
+            elsifs,
             else_block,
             span,
             ..
@@ -239,6 +240,11 @@ fn check_expr_devices(
             check_expr_devices(cond, env, expected.clone())?;
             let mut then_env = env.clone();
             check_block_devices(then_block, &mut then_env, expected.clone())?;
+            for arm in elsifs {
+                let mut arm_env = env.clone();
+                check_expr_devices(&arm.cond, &arm_env, expected.clone())?;
+                check_block_devices(&arm.body, &mut arm_env, expected.clone())?;
+            }
             if let Some(else_block) = else_block {
                 let mut else_env = env.clone();
                 check_block_devices(else_block, &mut else_env, expected)?;

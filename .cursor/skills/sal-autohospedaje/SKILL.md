@@ -12,7 +12,7 @@ description: >-
 
 ## Cortes
 
-Los módulos de `selfhost/` siguen los cortes del arranque: lexer, parser, tipos, ownership, efectos, lugares, IR, fusión, emisión. `1 - 2 - 3` tiene el mismo árbol que en `src/parser.rs`. En el parser, `parse_if` coincide con `src/parser.rs`: `else` solo si `p_peek` es `TK_ELSE()`; si no, `ex_if(..., else_b = 0)` y el resto del pipeline ya trata el bloque `0` como vacío.
+Los módulos de `selfhost/` siguen los cortes del arranque: lexer, parser, tipos, ownership, efectos, lugares, IR, fusión, emisión. `1 - 2 - 3` tiene el mismo árbol que en `src/parser.rs`. En el parser, `parse_if` coincide con `src/parser.rs`: acumula `elsif` con `parse_elsif_arms` mientras `p_peek` sea `TK_ELSIF()`, y `else` solo si después es `TK_ELSE()`; si no, `ex_if(..., else_b = 0, arms)` y el resto del pipeline ya trata el bloque `0` como vacío. La bajada anida cada `elsif` como un `if` en la rama else.
 
 Las primitivas de tensor no se reimplementan en sal. Se llaman y el runtime del arranque las resuelve.
 

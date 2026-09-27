@@ -145,7 +145,6 @@ pub enum Stmt {
         span: Span,
     },
     /// `while cond` newline indent body. The condition is evaluated each iteration.
-    /// Values mutated across iterations live in a `vec` (`vec_get` / `vec_set`).
     While {
         cond: Expr,
         body: Block,
@@ -231,6 +230,9 @@ pub enum Expr {
     If {
         cond: Box<Expr>,
         then_block: Block,
+        /// Ramas `elsif`, en orden, al mismo nivel que este `if`.
+        #[serde(default)]
+        elsifs: Vec<Elsif>,
         #[serde(default)]
         else_block: Option<Block>,
         span: Span,
@@ -267,6 +269,14 @@ pub enum BinOp {
 pub enum UnOp {
     Neg,
     Not,
+}
+
+/// Una rama `elsif cond` seguida de su suite.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Elsif {
+    pub cond: Expr,
+    pub body: Block,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

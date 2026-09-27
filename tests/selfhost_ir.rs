@@ -67,11 +67,16 @@ fn compile_selfhost(instrument: bool) -> PathBuf {
 }
 
 fn run_emit_ir(bin: &Path, input: &Path) -> String {
-    let cache = unique_cache_dir("emit");
+    run_emit_ir_in(bin, input, &root(), "emit")
+}
+
+fn run_emit_ir_in(bin: &Path, input: &Path, project: &Path, cache_tag: &str) -> String {
+    let cache = unique_cache_dir(cache_tag);
     let out = Command::new(bin)
         .arg(input)
         .env("SAL_SELFHOST_CACHE", &cache)
-        .current_dir(root())
+        .env("SAL_PROJECT_ROOT", project)
+        .current_dir(project)
         .output()
         .expect("run selfhost");
     assert_eq!(
@@ -286,6 +291,69 @@ fn stage1_minus_o_compiles_not_copies() {
     assert_ne!(stage1_bytes, hello_bytes, "hello bin must not be copy of stage1");
     assert_ne!(stage1_bytes, seven_bytes, "seven bin must not be copy of stage1");
     assert_ne!(hello_bytes, seven_bytes, "hello and seven bins must differ");
+}
+
+#[test]
+fn selfhost_import_two_modules_run() {
+    let project = root().join("tests/import_graph");
+    let a_path = project.join("a.sal");
+
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: project.clone(),
+        skip_link: true,
+    };
+    let boot_ir = {
+        let _guard = LINK_LOCK.lock().expect("link lock");
+        compile_file(&a_path, &opts)
+            .expect("bootstrap compile import graph")
+            .ir_text
+    };
+
+    let stage1 = compile_selfhost(false);
+    let ir1 = run_emit_ir_in(&stage1, &a_path, &project, "import-ir-s1");
+    assert_eq!(
+        boot_ir, ir1,
+        "bootstrap vs stage1 IR for import graph"
+    );
+
+    let bin = PathBuf::from(format!(
+        "/tmp/sal-import-bin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let status = Command::new(&stage1)
+        .arg(&a_path)
+        .arg("-o")
+        .arg(&bin)
+        .env("SAL_PROJECT_ROOT", &project)
+        .current_dir(root())
+        .output()
+        .expect("stage1 -o import graph");
+    assert_eq!(
+        status.status.code(),
+        Some(0),
+        "stage1 -o import failed: stderr={}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let run = Command::new(&bin).output().expect("run import bin");
+    assert_eq!(
+        run.status.code(),
+        Some(42),
+        "import graph must return helper(): stderr={} stdout={}",
+        String::from_utf8_lossy(&run.stderr),
+        String::from_utf8_lossy(&run.stdout)
+    );
+
+    let stage2 = compile_stage2(&stage1);
+    let ir2 = run_emit_ir_in(&stage2, &a_path, &project, "import-ir-s2");
+    assert_eq!(boot_ir, ir2, "bootstrap vs stage2 IR for import graph");
+    assert_eq!(ir1, ir2, "stage1 vs stage2 IR for import graph");
 }
 
 #[test]

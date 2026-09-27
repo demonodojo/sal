@@ -4,7 +4,8 @@
 #
 # ir — emitir IR. Los dos producen el texto que compara tests/selfhost_ir.rs.
 #   rust:     sal emit ir ARCHIVO
-#             parse + bajar + fusionar. Este subcomando no usa la caché incremental.
+#             resuelve el grafo de módulos, baja la raíz y fusiona.
+#             Este subcomando no usa la caché incremental.
 #   sal frío: stage1 ARCHIVO con SAL_SELFHOST_CACHE nuevo en cada repetición.
 #   sal caché: la misma caché tras un calentamiento (acierto; no recompila).
 #

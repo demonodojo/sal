@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::ast::{Item, Program};
 use crate::infer::infer_program;
+use crate::modules::{resolve_import_path_with_manifest, resolve_module_graph};
 use crate::parser::parse;
 use crate::typed::TypedProgram;
 
@@ -94,7 +95,7 @@ pub fn import_graph_digest(
     let mut hasher = Sha256::new();
     for path in &ordered {
         hasher.update(path.to_string_lossy().as_bytes());
-        match typed_ast_for_file(path) {
+        match typed_ast_for_file(path, project_root) {
             Some(typed) => {
                 hasher.update(serde_json::to_string(&typed).unwrap_or_default());
             }
@@ -119,7 +120,9 @@ fn collect_import_paths(
         let Item::Import(imp) = item else {
             continue;
         };
-        let Some(path) = resolve_import_path(&imp.path, source_file, project_root) else {
+        let Some(path) =
+            resolve_import_path_with_manifest(&imp.path, source_file, project_root)
+        else {
             continue;
         };
         let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -137,12 +140,26 @@ fn collect_import_paths(
     }
 }
 
-fn typed_ast_for_file(path: &Path) -> Option<TypedProgram> {
+fn typed_ast_for_file(path: &Path, project_root: &Path) -> Option<TypedProgram> {
     let src = fs::read_to_string(path).ok()?;
     let prog = parse(&src).ok()?;
-    let entries = match infer_program(&prog) {
-        Ok(out) => out.expr_types_by_fn,
-        Err(_) => Vec::new(),
+    let entries = if let Ok(graph) = resolve_module_graph(path, project_root) {
+        if let Some(m) = graph.order.iter().find(|m| m.path == path) {
+            match crate::modules::infer_module(m, &graph) {
+                Ok(out) => out.expr_types_by_fn,
+                Err(_) => Vec::new(),
+            }
+        } else {
+            match infer_program(&prog) {
+                Ok(out) => out.expr_types_by_fn,
+                Err(_) => Vec::new(),
+            }
+        }
+    } else {
+        match infer_program(&prog) {
+            Ok(out) => out.expr_types_by_fn,
+            Err(_) => Vec::new(),
+        }
     };
     Some(TypedProgram::from_program(prog, entries))
 }

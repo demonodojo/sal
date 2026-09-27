@@ -47,7 +47,7 @@ Además de `fn` e `import`:
 - `on lugar` y `on lugar kernel`.
 - `to lugar expr`.
 - `tensor[[…], […]]`.
-- `try`, `if` con `else` opcional y `let` con tipo opcional.
+- `try`, `if` con `elsif` y `else` opcionales, y `let` con tipo opcional.
 - Tipos `Tensor[Elem, dims…] on lugar`, con `?` en un eje.
 
 ## Códigos

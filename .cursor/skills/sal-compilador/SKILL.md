@@ -40,7 +40,7 @@ Cada producción recursiva por la izquierda es un bucle que crece el hijo izquie
 
 `sal fmt` imprime el mismo árbol que el compilador acepta y es idempotente: formatear dos veces da el mismo texto. El esquema JSON del AST es el de ida y vuelta (`schema_version` vigente); un campo nuevo entra en el mismo cambio que el nodo del AST.
 
-`if`: la SPEC permite omitir `else`. En el AST, `Expr::If.else_block` es `Option<Block>` (`None` sin `else`). `parse_if` solo consume `else` si el siguiente token lo es; el `else` se asocia al `if` interno que acaba de cerrar su suite. Sin `else`, inferencia da `Unit`; la bajada a IR usa la misma rama vacía (valor `0`) que un bloque sin cola. El espejo en sal está en `selfhost/main.sal` (`parse_if`, `else_b = 0`).
+`if`: la SPEC permite `elsif` y omitir `else`. En el AST, `Expr::If.elsifs` es la lista de ramas y `else_block` es `Option<Block>` (`None` sin `else`). `parse_if` acumula `elsif` en un bucle y solo consume `else` si el siguiente token lo es; ambos se asocian al `if` interno que acaba de cerrar su suite. Sin `else`, inferencia da `Unit`; la bajada a IR anida cada `elsif` como un `if` en la rama else, y la rama vacía sigue siendo el valor `0`. El espejo en sal está en `selfhost/parser.sal` (`parse_if`, `parse_elsif_arms`, `else_b = 0`).
 
 ## Semántica que no se relaja
 

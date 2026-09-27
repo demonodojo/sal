@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 #include "sal_runtime.h"
 
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/stat.h>
@@ -275,6 +277,13 @@ void sal_free(void *p) {
         sal_str_forget(p);
         sal_xfree(p);
     }
+}
+
+int64_t sal_path_readable(const char *path) {
+    if (!path || !path[0]) {
+        return 0;
+    }
+    return access(path, R_OK) == 0 ? 1 : 0;
 }
 
 char *sal_read_file(const char *path) {
@@ -1233,6 +1242,9 @@ static int64_t lex_kw(const char *s) {
     if (strcmp(s, "if") == 0) return 30;
     if (strcmp(s, "else") == 0) return 31;
     if (strcmp(s, "while") == 0) return 32;
+    if (strcmp(s, "import") == 0) return 33;
+    /* 34 is TK_DOT in selfhost. elsif stays a distinct kind. */
+    if (strcmp(s, "elsif") == 0) return 35;
     return 4;
 }
 
@@ -1464,6 +1476,16 @@ void *sal_lex_src(const char *src) {
         if (c == '+') { lex_push(out, 20, 0, 0); i++; continue; }
         if (c == '*') { lex_push(out, 22, 0, 0); i++; continue; }
         if (c == '/') { lex_push(out, 23, 0, 0); i++; continue; }
+        if (c == '.') {
+            /* 1.0 stays a numeric sequence; import paths use TK_DOT (34). */
+            int frac = i > 0 && src[i - 1] >= '0' && src[i - 1] <= '9' && i + 1 < n &&
+                       src[i + 1] >= '0' && src[i + 1] <= '9';
+            if (!frac) {
+                lex_push(out, 34, 0, 0);
+            }
+            i++;
+            continue;
+        }
         if (c == '"') {
             int64_t end = lex_scan_str(src, i + 1, n);
             int64_t stop = end > n ? n : end;
@@ -1714,30 +1736,111 @@ int64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb) {
     return rc;
 }
 
+typedef struct {
+    int32_t elem_kind;
+    SalVec vec;
+} SalList;
+
 void *sal_list_new(void) {
-    return sal_vec_new();
+    return sal_list_new_typed(0);
+}
+
+void *sal_list_new_typed(int64_t elem_kind) {
+    SalList *l = (SalList *)sal_xmalloc(sizeof(SalList), "list_new");
+    if (!l) {
+        return NULL;
+    }
+    l->elem_kind = (int32_t)elem_kind;
+    l->vec.data = NULL;
+    l->vec.len = 0;
+    l->vec.cap = 0;
+    return l;
 }
 
 void *sal_list_push(void *vp, int64_t x) {
-    if (sal_vec_push(vp, x) != 0) {
+    SalList *l = (SalList *)vp;
+    if (!l) {
         return NULL;
     }
-    return vp;
+    if (sal_vec_push(&l->vec, x) != 0) {
+        return NULL;
+    }
+    return l;
 }
 
 int64_t sal_list_len(void *vp) {
-    return sal_vec_len(vp);
+    SalList *l = (SalList *)vp;
+    return l ? (int64_t)l->vec.len : 0;
 }
 
 int64_t sal_list_get(void *vp, int64_t i) {
-    /* List bounds checks are memory safety, not an --instrument cost. */
-    SalVec *v = (SalVec *)vp;
-    int64_t len = v ? (int64_t)v->len : 0;
+    return sal_list_get_typed(vp, i);
+}
+
+int64_t sal_list_get_typed(void *vp, int64_t i) {
+    SalList *l = (SalList *)vp;
+    int64_t len = l ? (int64_t)l->vec.len : 0;
+#ifdef SAL_INSTRUMENT
     sal_instrument_check_index(i, len, "list_get");
-    if (!v || i < 0 || (size_t)i >= (size_t)len) {
+#endif
+    if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_get: out of bounds");
     }
-    return v->data[i];
+    int64_t raw = l->vec.data[i];
+    if (l->elem_kind == 3) {
+        const char *s = (const char *)(uintptr_t)raw;
+        char *copy = sal_strdup(s ? s : "");
+        return (int64_t)(uintptr_t)copy;
+    }
+    return raw;
+}
+
+typedef struct {
+    int32_t key_kind;
+    int32_t val_kind;
+    SalMap map;
+} SalDict;
+
+void *sal_dict_new(int64_t key_kind, int64_t val_kind) {
+    SalDict *d = (SalDict *)sal_xmalloc(sizeof(SalDict), "dict_new");
+    if (!d) {
+        return NULL;
+    }
+    d->key_kind = (int32_t)key_kind;
+    d->val_kind = (int32_t)val_kind;
+    d->map.slots = NULL;
+    d->map.nslots = 0;
+    d->map.fill = 0;
+    sal_map_rehash(&d->map, 16);
+    return d;
+}
+
+void *sal_dict_put(void *dp, const char *key, int64_t val) {
+    SalDict *d = (SalDict *)dp;
+    if (!d || !key) {
+        return dp;
+    }
+    (void)sal_map_put(&d->map, key, val);
+    return d;
+}
+
+int64_t sal_dict_get(void *dp, const char *key) {
+    SalDict *d = (SalDict *)dp;
+    if (!d || !key || !d->map.nslots) {
+        return -1;
+    }
+    size_t mask = d->map.nslots - 1;
+    size_t i = sal_map_hash(key) & mask;
+    for (size_t step = 0; step < d->map.nslots; step++) {
+        if (!d->map.slots[i].key) {
+            return -1;
+        }
+        if (strcmp(d->map.slots[i].key, key) == 0) {
+            return d->map.slots[i].val;
+        }
+        i = (i + 1) & mask;
+    }
+    return -1;
 }
 
 static int find_runtime_dir(char *out, size_t n) {
@@ -1803,6 +1906,70 @@ int64_t sal_clang(const char *c_path, const char *out_path) {
             }
             fclose(ef);
         }
+        return 1;
+    }
+#if defined(__linux__) || defined(__APPLE__)
+    chmod_dst_exec(out_path);
+#endif
+    return 0;
+}
+
+char *sal_realpath(const char *p) {
+    if (!p || !p[0]) {
+        return sal_strdup("");
+    }
+    char resolved[PATH_MAX];
+    if (realpath(p, resolved)) {
+        return sal_strdup(resolved);
+    }
+    return sal_strdup(p);
+}
+
+static void sal_clang_report_err(const char *tag, int rc) {
+    fprintf(stderr, "%s: clang failed (%d)\n", tag, rc);
+    FILE *ef = fopen("/tmp/sal-selfhost-clang.err", "r");
+    if (ef) {
+        char line[512];
+        while (fgets(line, sizeof(line), ef)) {
+            fputs(line, stderr);
+        }
+        fclose(ef);
+    }
+}
+
+int64_t sal_clang_obj(const char *c_path, const char *obj_path) {
+    if (!c_path || !obj_path) {
+        return 1;
+    }
+    char rdir[512];
+    find_runtime_dir(rdir, sizeof(rdir));
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+             "clang -O0 -g -I%s -c %s -o %s 2>/tmp/sal-selfhost-clang.err", rdir, c_path,
+             obj_path);
+    int rc = system(cmd);
+    if (rc != 0) {
+        sal_clang_report_err("sal_clang_obj", rc);
+        return 1;
+    }
+    return 0;
+}
+
+int64_t sal_link_objs(const char *objs, const char *out_path) {
+    if (!out_path) {
+        return 1;
+    }
+    char rdir[512];
+    find_runtime_dir(rdir, sizeof(rdir));
+    char cmd[8192];
+    const char *olist = objs ? objs : "";
+    snprintf(cmd, sizeof(cmd),
+             "clang -O0 -g %s %s/sal_runtime.c %s/kernels.c %s/instrument.c -o %s -lm "
+             "2>/tmp/sal-selfhost-clang.err",
+             olist, rdir, rdir, rdir, out_path);
+    int rc = system(cmd);
+    if (rc != 0) {
+        sal_clang_report_err("sal_link_objs", rc);
         return 1;
     }
 #if defined(__linux__) || defined(__APPLE__)

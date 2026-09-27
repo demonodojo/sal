@@ -29,6 +29,15 @@ fn list_len(xs: List[Int]) -> Int
 fn list_get(xs: List[Int], i: Int) -> Int
     list_get(xs, i)
 
+fn dict_new() -> Dict[String, Int] ! alloc
+    dict_new()
+
+fn dict_put(d: Dict[String, Int], k: String, v: Int) -> Dict[String, Int]
+    dict_put(d, k, v)
+
+fn dict_get(d: Dict[String, Int], k: String) -> Option[Int]
+    dict_get(d, k)
+
 # --- Operaciones de tensor ---
 
 fn map(t: Tensor[F32, ?, 4] on p) -> Tensor[F32, ?, 4] on p

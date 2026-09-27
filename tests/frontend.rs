@@ -441,6 +441,42 @@ fn if_else_binds_to_inner_if() {
 }
 
 #[test]
+fn elsif_chain_is_flat() {
+    match tail_of(
+        "fn f() -> Int\n    if 0\n        1\n    elsif 0\n        2\n    elsif 1\n        3\n    else\n        4\n",
+    ) {
+        Expr::If {
+            elsifs,
+            else_block,
+            then_block,
+            ..
+        } => {
+            assert_eq!(elsifs.len(), 2);
+            assert!(matches!(
+                then_block.tail.as_deref(),
+                Some(Expr::Int { value: 1, .. })
+            ));
+            assert!(matches!(
+                elsifs[0].body.tail.as_deref(),
+                Some(Expr::Int { value: 2, .. })
+            ));
+            assert!(matches!(
+                elsifs[1].body.tail.as_deref(),
+                Some(Expr::Int { value: 3, .. })
+            ));
+            let Some(else_block) = else_block else {
+                panic!("expected else");
+            };
+            assert!(matches!(
+                else_block.tail.as_deref(),
+                Some(Expr::Int { value: 4, .. })
+            ));
+        }
+        other => panic!("expected if, got {other:?}"),
+    }
+}
+
+#[test]
 fn fmt_if_without_else_is_idempotent() {
     use sal_compiler::fmt::format_program;
     let src = "fn main() -> Int\n    if true\n        1\n    0\n";
@@ -450,6 +486,181 @@ fn fmt_if_without_else_is_idempotent() {
     let p2 = parse(&f1).expect("re-parse");
     let f2 = format_program(&p2);
     assert_eq!(f1, f2);
+}
+
+#[test]
+fn fmt_elsif_is_idempotent() {
+    use sal_compiler::fmt::format_program;
+    let src = "fn f() -> Int\n    if 0\n        1\n    elsif 0\n        2\n    else\n        3\n";
+    let p1 = parse(src).expect("parse");
+    let f1 = format_program(&p1);
+    assert!(f1.contains("    if 0\n"));
+    assert!(f1.contains("    elsif 0\n"));
+    assert!(f1.contains("    else\n"));
+    let p2 = parse(&f1).expect("re-parse");
+    let f2 = format_program(&p2);
+    assert_eq!(f1, f2);
+}
+
+#[test]
+fn dstring_desugars_to_strdup_call() {
+    let dup = assert_parse(
+        "\
+fn main() -> String ! alloc
+    d\"cadena\"
+",
+    );
+    let plain = assert_parse(
+        "\
+fn main() -> String ! alloc
+    strdup(\"cadena\")
+",
+    );
+    let tail_dup = fn_tail_expr(&dup);
+    let tail_plain = fn_tail_expr(&plain);
+    assert!(same_strdup_string_call(tail_dup, tail_plain));
+}
+
+#[test]
+fn dstring_interpolation_parts() {
+    let src = "\
+fn greet(name: String) -> String ! alloc
+    d\"Hello, {name}\"
+";
+    let p = assert_parse(src);
+    let Item::Fn(f) = &p.items[0] else { panic!() };
+    let Some(Expr::Call { args, .. }) = f.body.tail.as_deref() else {
+        panic!("expected strdup call");
+    };
+    let Some(Expr::String { value, parts, .. }) = args.first() else {
+        panic!("expected string arg");
+    };
+    assert_eq!(value, "Hello, {name}");
+    assert_eq!(
+        parts,
+        &vec![
+            StringPart::Lit("Hello, ".into()),
+            StringPart::Interp("name".into())
+        ]
+    );
+}
+
+#[test]
+fn d_ident_not_dstring_without_quote() {
+    let p = assert_parse(
+        "\
+fn main() -> Int
+    let d = 1
+    d
+",
+    );
+    let Item::Fn(f) = &p.items[0] else { panic!() };
+    assert!(matches!(
+        &f.body.stmts[0],
+        Stmt::Let { name, .. } if name == "d"
+    ));
+    assert!(matches!(
+        f.body.tail.as_deref(),
+        Some(Expr::Ident { name, .. }) if name == "d"
+    ));
+    let p2 = assert_parse(
+        "\
+fn main() -> Int
+    d(1)
+",
+    );
+    let Item::Fn(f2) = &p2.items[0] else { panic!() };
+    let Some(Expr::Call { func, .. }) = f2.body.tail.as_deref() else {
+        panic!("expected call");
+    };
+    assert!(matches!(func.as_ref(), Expr::Ident { name, .. } if name == "d"));
+}
+
+#[test]
+fn string_plus_parses_as_left_assoc_add() {
+    let src = "\
+fn main() -> String ! alloc
+    d\"a\" + d\"b\" + d\"c\"
+";
+    let p = assert_parse(src);
+    let tail = fn_tail_expr(&p);
+    let Expr::Binary {
+        op: BinOp::Add,
+        left,
+        right,
+        ..
+    } = tail
+    else {
+        panic!("expected +");
+    };
+    assert!(matches!(right.as_ref(), Expr::Call { .. } | Expr::String { .. }));
+    let Expr::Binary {
+        op: BinOp::Add,
+        left: inner_left,
+        right: inner_right,
+        ..
+    } = left.as_ref()
+    else {
+        panic!("expected left-assoc +");
+    };
+    assert!(matches!(inner_left.as_ref(), Expr::Call { .. }));
+    assert!(matches!(inner_right.as_ref(), Expr::Call { .. }));
+}
+
+#[test]
+fn fmt_dstring_to_strdup() {
+    assert_fmt_idempotent(
+        "\
+fn main() -> String ! alloc
+    d\"cadena\"
+",
+    );
+    let p = assert_parse(
+        "\
+fn main() -> String ! alloc
+    d\"cadena\"
+",
+    );
+    let f = format_program(&p);
+    assert!(f.contains("strdup(\"cadena\")"), "fmt output: {f}");
+}
+
+fn fn_tail_expr(p: &sal_compiler::ast::Program) -> &Expr {
+    let Item::Fn(f) = &p.items[0] else { panic!("expected fn") };
+    f.body.tail.as_deref().expect("expected tail expr")
+}
+
+fn same_strdup_string_call(a: &Expr, b: &Expr) -> bool {
+    let (Expr::Call { func: fa, type_args: ta, args: aa, .. }, Expr::Call {
+        func: fb,
+        type_args: tb,
+        args: ab,
+        ..
+    }) = (a, b)
+    else {
+        return false;
+    };
+    matches!(fa.as_ref(), Expr::Ident { name, .. } if name == "strdup")
+        && matches!(fb.as_ref(), Expr::Ident { name, .. } if name == "strdup")
+        && ta.is_empty()
+        && tb.is_empty()
+        && aa.len() == 1
+        && ab.len() == 1
+        && matches!(
+            (&aa[0], &ab[0]),
+            (
+                Expr::String {
+                    value: va,
+                    parts: pa,
+                    ..
+                },
+                Expr::String {
+                    value: vb,
+                    parts: pb,
+                    ..
+                }
+            ) if va == vb && pa == pb
+        )
 }
 
 #[test]

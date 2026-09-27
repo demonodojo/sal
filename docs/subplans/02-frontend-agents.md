@@ -23,8 +23,9 @@ El lexer no conoce la gramática de expresiones. Emite tokens e inserta layout:
 3. La sangría se mide en espacios. Si la columna sube, un `INDENT`. Si baja, tantos `DEDENT` como niveles desapilados. Si no coincide con un nivel abierto, `E_PARSE`.
 4. Un tabulador es `E_PARSE`.
 5. `->` es `Arrow`, `=>` es `FatArrow`, `==` `!=` `<=` `>=` son un token cada uno.
-6. Las palabras clave son las de la SPEC (`fn`, `let`, `if`, `else`, `match`, `on`, `to`, `kernel`, `return`, `import`, `try`, `struct`, `enum`, `cpu`, `gpu`, `tpu`, `true`, `false`). `borrow`, `take`, `io`, `alloc` y `panic` son `IDENT` que el parser reconoce en su sitio. `F32`, `F16`, `BF16` e `I8` también.
+6. Las palabras clave son las de la SPEC (`fn`, `let`, `if`, `elsif`, `else`, `match`, `on`, `to`, `kernel`, `return`, `import`, `try`, `struct`, `enum`, `cpu`, `gpu`, `tpu`, `true`, `false`). `borrow`, `take`, `io`, `alloc` y `panic` son `IDENT` que el parser reconoce en su sitio. `F32`, `F16`, `BF16` e `I8` también.
 7. `STRING` guarda el texto y, si hay `{IDENT}`, las partes `Lit` e `Interp`. `{{` y `}}` son escape. Otra interpolación es `E_PARSE`.
+8. Si un `IDENT` es exactamente `d` y el siguiente carácter es `"`, el lexer emite un solo token `DupString` (gramática `DSTRING`) con el contenido de la cadena; el span va desde la `d` hasta la comilla de cierre. El parser lo desazucará a `Call { func: Ident("strdup"), args: [String …] }`.
 
 Al final del fichero se cierran los `DEDENT` pendientes y se emite `EOF`.
 
@@ -60,6 +61,8 @@ parse_postfix():
 `parse_unary` es recursivo por la derecha: menos, `!` y `to lugar` llaman otra vez a `parse_unary`. `parse_expr` reconoce `try` y vuelve a llamarse. `parse_lambda` parsea un `cmp`; si viene `=>` y la izquierda es un `IDENT`, el cuerpo es un `expr` completo (puede llevar otro `try` o otra lambda).
 
 Los `=>` de un `match` no pasan por `parse_lambda`. Se leen en `arm`, con el parser ya dentro del `match`.
+
+`if_expr` lee la condición, la suite, y luego la lista `elsif` en un bucle (cada `"elsif" expr suite` se añade al final). Después, si el token es `else`, una suite más. `elsif` y `else` quedan al nivel del `if` que acaba de cerrar su suite. En el AST, `Expr::If.elsifs` es esa lista y `else_block` sigue siendo `Option<Block>` (`None` sin `else`).
 
 Listas (`item_list`, `param_list`, `arg_list`, `field_list`, `arm_list`, `row_list`, `dims`): un elemento y, mientras haya separador, otro elemento a la derecha. El árbol de lista crece por la izquierda, igual que la producción `xs → xs "," x | x`.
 

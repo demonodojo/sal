@@ -56,7 +56,7 @@ Sobre las instrucciones de un solo `on`, en orden:
 
 El programa sal no importa este runtime. Clang lo enlaza porque el compilador lo pide.
 
-Heaps distintos para `cpu`, `gpu` y `tpu`, aunque la máquina no tenga GPU ni TPU: `sal run` ejecuta el bloque en el heap de ese actor. Hace falta reserva y liberación por lugar, `String`, `List` con índice comprobado, `Tensor` con elemento y forma, `print` y `panic`.
+Heaps distintos para `cpu`, `gpu` y `tpu`, aunque la máquina no tenga GPU ni TPU: `sal run` ejecuta el bloque en el heap de ese actor. Hace falta reserva y liberación por lugar, `String`, `List[T]` con índice comprobado (`T` ∈ Int, Float, Bool, String), `Dict[K, V]` (`sal_dict_*`, distinto de `sal_map_*` del autohospedaje), `Tensor` con elemento y forma, `print` y `panic`.
 
 `load` lee un `.salt`: magic `SALT`, versión u16, elem u8, rank u8, dims u64 little-endian, payload little-endian. El tensor resultante está en `cpu`. El `to` posterior es el único traslado. Si la reserva del dispositivo falla, el proceso termina con `E_OOM`: lugar, bytes pedidos y span de la región, en el JSON de diagnósticos.
 

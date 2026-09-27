@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::span::Span;
+use crate::string_expr::is_string_type;
 use crate::typed::ExprTypeEntry;
 
 pub struct InferOutput {
@@ -10,12 +11,13 @@ pub struct InferOutput {
 }
 
 #[derive(Default, Clone)]
-struct TypeEnv {
-    structs: HashMap<String, StructDef>,
-    enums: HashMap<String, EnumDef>,
+pub struct TypeEnv {
+    pub structs: HashMap<String, StructDef>,
+    pub enums: HashMap<String, EnumDef>,
     /// Declared function signatures (name → params + return), for user calls.
-    fns: HashMap<String, (Vec<Type>, Type)>,
+    pub fns: HashMap<String, (Vec<Type>, Type)>,
 }
+
 
 pub fn infer_program(prog: &Program) -> DiagResult<InferOutput> {
     let mut types = TypeEnv::default();
@@ -34,10 +36,14 @@ pub fn infer_program(prog: &Program) -> DiagResult<InferOutput> {
             _ => {}
         }
     }
+    infer_program_with_env(prog, &types)
+}
+
+pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<InferOutput> {
     let mut out = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            let entries = infer_fn(f, &types)?;
+            let entries = infer_fn(f, types)?;
             out.push((f.clone(), entries));
         }
     }
@@ -201,21 +207,37 @@ fn check_expr(
             )]
         })?,
         Expr::Binary {
-            op: _,
+            op,
             left,
             right,
             span,
         } => {
             let lt = check_expr(left, env, types, entries)?;
             let rt = check_expr(right, env, types, entries)?;
-            if !is_numeric(&lt) || !is_numeric(&rt) {
-                return Err(vec![Diagnostic::new(
-                    ErrorCode::EType,
-                    "numeric operation requires Int or Float",
-                    *span,
-                )]);
+            match op {
+                BinOp::Add if is_string_type(&lt) && is_string_type(&rt) => Type::Named {
+                    name: "String".into(),
+                    args: vec![],
+                    span: *span,
+                },
+                BinOp::Add if is_string_type(&lt) || is_string_type(&rt) => {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "string concatenation requires two String values",
+                        *span,
+                    )]);
+                }
+                _ => {
+                    if !is_numeric(&lt) || !is_numeric(&rt) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            "numeric operation requires Int or Float",
+                            *span,
+                        )]);
+                    }
+                    lt
+                }
             }
-            lt
         }
         Expr::Unary { expr, .. } => check_expr(expr, env, types, entries)?,
         Expr::Call {
@@ -318,6 +340,7 @@ fn check_expr(
         Expr::If {
             cond,
             then_block,
+            elsifs,
             else_block,
             span,
         } => {
@@ -325,6 +348,16 @@ fn check_expr(
             let mut then_env = env.clone();
             for st in &then_block.stmts {
                 check_stmt(st, &mut then_env, types, entries)?;
+            }
+            for arm in elsifs {
+                check_expr(&arm.cond, env, types, entries)?;
+                let mut arm_env = env.clone();
+                for st in &arm.body.stmts {
+                    check_stmt(st, &mut arm_env, types, entries)?;
+                }
+                if let Some(t) = &arm.body.tail {
+                    check_expr(t, &arm_env, types, entries)?;
+                }
             }
             if let Some(else_block) = else_block {
                 let then_ty = if let Some(t) = &then_block.tail {
@@ -358,8 +391,8 @@ fn check_expr(
         Expr::Try { expr, .. } => check_expr(expr, env, types, entries)?,
     };
     entries.push(ExprTypeEntry {
-        span_start: ty.span().start,
-        span_end: ty.span().end,
+        span_start: e.span().start,
+        span_end: e.span().end,
         ty: ty.clone(),
     });
     Ok(ty)
@@ -622,8 +655,8 @@ fn infer_call(
         "map" | "reduce" => infer_map_like(args, env, types, entries, span),
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
-        | "gated_copy_self" | "write_file" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
-        | "vec_len" | "vec_free" | "list_len" | "list_get" | "clang" | "exec_compile"
+        | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
+        | "vec_len" | "vec_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
             for a in args {
@@ -637,7 +670,7 @@ fn infer_call(
         }
         "argv" | "read_file" | "str_concat" | "str_append" | "str_slice" | "int_to_str"
         | "char_to_str" | "strdup" | "select_str" | "tmp_path" | "exec_capture" | "getenv"
-        | "ir_text" => {
+        | "realpath" | "ir_text" => {
             for a in args {
                 check_expr(a, env, types, entries)?;
             }
@@ -661,30 +694,30 @@ fn infer_call(
             for a in args {
                 check_expr(a, env, types, entries)?;
             }
-            Ok(Type::Named {
-                name: "List".into(),
-                args: vec![Type::Named {
+            Ok(list_type(
+                Type::Named {
                     name: "Int".into(),
                     args: vec![],
                     span,
-                }],
+                },
                 span,
-            })
+            ))
         }
-        "list_push" => {
-            for a in args {
+        "list_push" => infer_list_push(args, env, types, entries, span),
+        "list_get" => infer_list_get(args, env, types, entries, span),
+        "list_len" => {
+            if let Some(a) = args.first() {
                 check_expr(a, env, types, entries)?;
             }
             Ok(Type::Named {
-                name: "List".into(),
-                args: vec![Type::Named {
-                    name: "Int".into(),
-                    args: vec![],
-                    span,
-                }],
+                name: "Int".into(),
+                args: vec![],
                 span,
             })
         }
+        "dict_new" => infer_dict_new(type_args, span),
+        "dict_put" => infer_dict_put(args, env, types, entries, span),
+        "dict_get" => infer_dict_get(args, env, types, entries, span),
         _ => {
             for a in args {
                 check_expr(a, env, types, entries)?;
@@ -930,16 +963,309 @@ fn is_numeric(t: &Type) -> bool {
 fn types_compatible(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Tensor { .. }, Type::Tensor { .. }) => true,
-        _ => {
-            let na = type_name(a);
-            let nb = type_name(b);
-            // Int and String are both i64 pointer/value carriers in the selfhost ABI.
-            if (na == "Int" && nb == "String") || (na == "String" && nb == "Int") {
+        (
+            Type::Named {
+                name: na,
+                args: aa,
+                ..
+            },
+            Type::Named {
+                name: nb,
+                args: ab,
+                ..
+            },
+        ) => {
+            if na == "Unknown" || nb == "Unknown" {
                 return true;
             }
-            na == nb || na == "Unknown" || nb == "Unknown"
+            if na != nb {
+                if (na == "Int" && nb == "String") || (na == "String" && nb == "Int") {
+                    return true;
+                }
+                return false;
+            }
+            if aa.len() != ab.len() {
+                return aa.is_empty() || ab.is_empty();
+            }
+            aa.iter()
+                .zip(ab.iter())
+                .all(|(x, y)| types_compatible(x, y))
+        }
+        _ => type_name(a) == type_name(b) || type_name(a) == "Unknown" || type_name(b) == "Unknown",
+    }
+}
+
+fn list_type(elem: Type, span: Span) -> Type {
+    Type::Named {
+        name: "List".into(),
+        args: vec![elem],
+        span,
+    }
+}
+
+fn list_elem(ty: &Type) -> Option<Type> {
+    match ty {
+        Type::Named { name, args, span } if name == "List" => {
+            if args.len() == 1 {
+                Some(args[0].clone())
+            } else {
+                Some(Type::Named {
+                    name: "Int".into(),
+                    args: vec![],
+                    span: *span,
+                })
+            }
+        }
+        _ => None,
+    }
+}
+
+fn dict_kv(ty: &Type) -> Option<(Type, Type)> {
+    match ty {
+        Type::Named { name, args, span } if name == "Dict" && args.len() == 2 => {
+            Some((args[0].clone(), args[1].clone()))
+        }
+        Type::Named { name, span, .. } if name == "Dict" => Some((
+            Type::Named {
+                name: "String".into(),
+                args: vec![],
+                span: *span,
+            },
+            Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span: *span,
+            },
+        )),
+        _ => None,
+    }
+}
+
+fn is_copy_val_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Named { name, .. } if name == "Int" || name == "Float" || name == "Bool"
+    )
+}
+
+fn is_dict_key_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Named { name, .. } if name == "Int" || name == "String"
+    )
+}
+
+fn option_type(inner: Type, span: Span) -> Type {
+    Type::Named {
+        name: "Option".into(),
+        args: vec![inner],
+        span,
+    }
+}
+
+fn infer_list_push(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let xs_ty = if let Some(a) = args.first() {
+        check_expr(a, env, types, entries)?
+    } else {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "list_push expects a list and an element",
+            span,
+        )]);
+    };
+    let elem = list_elem(&xs_ty).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "list_push expects a List",
+            span,
+        )]
+    })?;
+    if let Some(x) = args.get(1) {
+        let xty = check_expr(x, env, types, entries)?;
+        if !types_compatible(&xty, &elem) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!(
+                    "list element type mismatch: expected {}, found {}",
+                    type_name(&elem),
+                    type_name(&xty)
+                ),
+                x.span(),
+            )]);
         }
     }
+    Ok(xs_ty)
+}
+
+fn infer_list_get(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if let Some(a) = args.first() {
+        let xs_ty = check_expr(a, env, types, entries)?;
+        if let Some(elem) = list_elem(&xs_ty) {
+            if args.get(1).is_some() {
+                check_expr(&args[1], env, types, entries)?;
+            }
+            return Ok(elem);
+        }
+    }
+    Err(vec![Diagnostic::new(
+        ErrorCode::EType,
+        "list_get expects a List",
+        span,
+    )])
+}
+
+fn infer_dict_new(type_args: &[TypeArg], span: Span) -> DiagResult<Type> {
+    if type_args.len() >= 2 {
+        let k = match &type_args[0] {
+            TypeArg::Type(t) => t.clone(),
+            TypeArg::Dim(_) => {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "Dict key type must be Int or String",
+                    span,
+                )])
+            }
+        };
+        let v = match &type_args[1] {
+            TypeArg::Type(t) => t.clone(),
+            TypeArg::Dim(_) => {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "Dict value type must be copy",
+                    span,
+                )])
+            }
+        };
+        if !is_dict_key_type(&k) || !is_copy_val_type(&v) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "Dict[K, V]: K is Int or String; V is Int, Float or Bool",
+                span,
+            )]);
+        }
+        return Ok(Type::Named {
+            name: "Dict".into(),
+            args: vec![k, v],
+            span,
+        });
+    }
+    Ok(Type::Named {
+        name: "Dict".into(),
+        args: vec![
+            Type::Named {
+                name: "String".into(),
+                args: vec![],
+                span,
+            },
+            Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            },
+        ],
+        span,
+    })
+}
+
+fn infer_dict_put(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let dty = if let Some(a) = args.first() {
+        check_expr(a, env, types, entries)?
+    } else {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "dict_put expects dict, key and value",
+            span,
+        )]);
+    };
+    let (kty, vty) = dict_kv(&dty).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "dict_put expects a Dict",
+            span,
+        )]
+    })?;
+    if let Some(key) = args.get(1) {
+        let kt = check_expr(key, env, types, entries)?;
+        if !types_compatible(&kt, &kty) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "dict key type mismatch",
+                key.span(),
+            )]);
+        }
+    }
+    if let Some(val) = args.get(2) {
+        let vt = check_expr(val, env, types, entries)?;
+        if !types_compatible(&vt, &vty) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "dict value type mismatch",
+                val.span(),
+            )]);
+        }
+    }
+    Ok(dty)
+}
+
+fn infer_dict_get(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if !types.enums.contains_key("Option") {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "dict_get requires Option (import std/prelude.sal or define Option)",
+            span,
+        )]);
+    }
+    let dty = if let Some(a) = args.first() {
+        check_expr(a, env, types, entries)?
+    } else {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "dict_get expects dict and key",
+            span,
+        )]);
+    };
+    let (kty, vty) = dict_kv(&dty).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "dict_get expects a Dict",
+            span,
+        )]
+    })?;
+    if let Some(key) = args.get(1) {
+        let kt = check_expr(key, env, types, entries)?;
+        if !types_compatible(&kt, &kty) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "dict key type mismatch",
+                key.span(),
+            )]);
+        }
+    }
+    Ok(option_type(vty, span))
 }
 
 pub fn type_name(t: &Type) -> String {

@@ -1,8 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::ast::*;
+use crate::string_expr::{binary_add_is_string_concat, binary_add_uses_append};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IrModule {
@@ -43,6 +44,7 @@ pub enum IrInst {
     Return { value: String },
     Drop { name: String },
     /// Structured if: then/else are nested instruction lists; `dest` is the phi result.
+    /// `carried` are assignments visible after the if.
     If {
         cond: String,
         then_body: Vec<IrInst>,
@@ -50,13 +52,33 @@ pub enum IrInst {
         then_val: String,
         else_val: String,
         dest: String,
+        #[serde(default)]
+        carried: Vec<IfCarry>,
     },
-    /// Condition instructions run on every iteration. Loop-carried state is a vec.
+    /// Condition instructions run on every iteration. `carried` are the phi values.
     While {
         cond_insts: Vec<IrInst>,
         cond: String,
         body: Vec<IrInst>,
+        #[serde(default)]
+        carried: Vec<WhileCarry>,
     },
+}
+
+/// Assignment merged at the join of an `if`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IfCarry {
+    pub dest: String,
+    pub then_val: String,
+    pub else_val: String,
+}
+
+/// Assignment fed back into the next `while` iteration and visible after the loop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WhileCarry {
+    pub dest: String,
+    pub incoming: String,
+    pub updated: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -97,6 +119,14 @@ pub fn lower_program(prog: &Program) -> IrModule {
             _ => None,
         })
         .collect();
+    lower_program_with_callables(prog, &fn_names)
+}
+
+pub fn lower_program_with_callables(
+    prog: &Program,
+    callable_fns: &HashMap<String, ()>,
+) -> IrModule {
+    let fn_names = callable_fns;
     let mut functions = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
@@ -169,6 +199,112 @@ fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>) -> IrFunction {
         instructions,
         regions,
         dim_params,
+    }
+}
+
+fn merge_if_carries(
+    parent: &HashMap<String, String>,
+    then_env: &HashMap<String, String>,
+    else_env: &HashMap<String, String>,
+    counter: &mut u32,
+    env: &mut HashMap<String, String>,
+    tensors: &mut HashMap<String, TensorInfo>,
+) -> Vec<IfCarry> {
+    let mut names: Vec<String> = parent.keys().cloned().collect();
+    names.sort();
+    let mut carried = Vec::new();
+    for name in names {
+        let base = &parent[&name];
+        let t = then_env.get(&name).unwrap_or(base);
+        let e = else_env.get(&name).unwrap_or(base);
+        if t == base && e == base {
+            continue;
+        }
+        if t == e {
+            env.insert(name, t.clone());
+            continue;
+        }
+        *counter += 1;
+        let dest = format!("t{counter}");
+        if let Some(info) = tensors
+            .get(t)
+            .cloned()
+            .or_else(|| tensors.get(e).cloned())
+        {
+            tensors.insert(dest.clone(), info);
+        }
+        env.insert(name, dest.clone());
+        carried.push(IfCarry {
+            dest,
+            then_val: t.clone(),
+            else_val: e.clone(),
+        });
+    }
+    carried
+}
+
+fn collect_assigned_block(body: &Block, names: &mut HashSet<String>) {
+    for st in &body.stmts {
+        collect_assigned_stmt(st, names);
+    }
+    if let Some(tail) = &body.tail {
+        collect_assigned_expr(tail, names);
+    }
+}
+
+fn collect_assigned_stmt(st: &Stmt, names: &mut HashSet<String>) {
+    match st {
+        Stmt::Assign { target, value, .. } => {
+            if let Expr::Ident { name, .. } = target {
+                names.insert(name.clone());
+            }
+            collect_assigned_expr(value, names);
+        }
+        Stmt::Let { init, .. } => collect_assigned_expr(init, names),
+        Stmt::Expr(e) => collect_assigned_expr(e, names),
+        Stmt::Return { value: Some(e), .. } => collect_assigned_expr(e, names),
+        Stmt::Return { value: None, .. } => {}
+        Stmt::While { cond, body, .. } => {
+            collect_assigned_expr(cond, names);
+            collect_assigned_block(body, names);
+        }
+    }
+}
+
+fn collect_assigned_expr(e: &Expr, names: &mut HashSet<String>) {
+    match e {
+        Expr::If {
+            cond,
+            then_block,
+            elsifs,
+            else_block,
+            ..
+        } => {
+            collect_assigned_expr(cond, names);
+            collect_assigned_block(then_block, names);
+            for arm in elsifs {
+                collect_assigned_expr(&arm.cond, names);
+                collect_assigned_block(&arm.body, names);
+            }
+            if let Some(b) = else_block {
+                collect_assigned_block(b, names);
+            }
+        }
+        Expr::On { body, .. } | Expr::Block(body) => collect_assigned_block(body, names),
+        Expr::Call { func, args, .. } => {
+            collect_assigned_expr(func, names);
+            for a in args {
+                collect_assigned_expr(a, names);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_assigned_expr(left, names);
+            collect_assigned_expr(right, names);
+        }
+        Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => {
+            collect_assigned_expr(expr, names);
+        }
+        _ => {}
     }
 }
 
@@ -252,11 +388,30 @@ fn lower_stmt(
             }
         }
         Stmt::While { cond, body, .. } => {
+            let mut assigned = HashSet::new();
+            collect_assigned_block(body, &mut assigned);
+            let mut names: Vec<String> = assigned
+                .into_iter()
+                .filter(|n| env.contains_key(n))
+                .collect();
+            names.sort();
+
+            let mut loop_env = env.clone();
+            let mut specs = Vec::new();
+            for name in names {
+                let incoming = env[&name].clone();
+                *counter += 1;
+                let dest = format!("t{counter}");
+                loop_env.insert(name.clone(), dest.clone());
+                specs.push((name, incoming, dest));
+            }
+
             let mut cond_insts = Vec::new();
+            let mut cond_env = loop_env.clone();
             let c = lower_expr(
                 cond,
                 &mut cond_insts,
-                env,
+                &mut cond_env,
                 counter,
                 regions,
                 tensors,
@@ -264,7 +419,7 @@ fn lower_stmt(
                 fn_names,
             );
             let mut body_insts = Vec::new();
-            let mut body_env = env.clone();
+            let mut body_env = loop_env;
             for st in &body.stmts {
                 lower_stmt(
                     st,
@@ -289,10 +444,33 @@ fn lower_stmt(
                     fn_names,
                 );
             }
+            let mut carried = Vec::new();
+            for (name, incoming, dest) in specs {
+                let updated = body_env.get(&name).cloned().unwrap_or_else(|| incoming.clone());
+                let updated = if updated == dest {
+                    incoming.clone()
+                } else {
+                    updated
+                };
+                if let Some(info) = tensors
+                    .get(&updated)
+                    .cloned()
+                    .or_else(|| tensors.get(&incoming).cloned())
+                {
+                    tensors.insert(dest.clone(), info);
+                }
+                env.insert(name, dest.clone());
+                carried.push(WhileCarry {
+                    dest,
+                    incoming,
+                    updated,
+                });
+            }
             instructions.push(IrInst::While {
                 cond_insts,
                 cond: c,
                 body: body_insts,
+                carried,
             });
         }
     }
@@ -399,6 +577,29 @@ fn tensor_lit_shape(e: &Expr) -> Option<(u64, u64)> {
     Some((nrows, ncols))
 }
 
+/// Cada `elsif` baja como un `if` anidado en la rama else, en el mismo orden.
+fn else_block_for_elsifs(else_block: Option<Block>, elsifs: &[Elsif]) -> Option<Block> {
+    if elsifs.is_empty() {
+        return else_block;
+    }
+    let mut else_b = else_block;
+    for arm in elsifs.iter().rev() {
+        let nested = Expr::If {
+            cond: Box::new(arm.cond.clone()),
+            then_block: arm.body.clone(),
+            elsifs: Vec::new(),
+            else_block: else_b,
+            span: arm.span,
+        };
+        else_b = Some(Block {
+            stmts: Vec::new(),
+            tail: Some(Box::new(nested)),
+            span: arm.span,
+        });
+    }
+    else_b
+}
+
 fn lower_expr_simple(
     e: &Expr,
     instructions: &mut Vec<IrInst>,
@@ -421,7 +622,10 @@ fn lower_expr_simple(
 
 fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     // List ops always hit the runtime; prelude bodies are signatures only.
-    if matches!(fname, "list_new" | "list_push" | "list_len" | "list_get") {
+    if matches!(
+        fname,
+        "list_new" | "list_push" | "list_len" | "list_get" | "dict_new" | "dict_put" | "dict_get"
+    ) {
         return format!("sal_{fname}");
     }
     if fn_names.contains_key(fname) {
@@ -450,6 +654,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "index"
             | "read_file"
             | "write_file"
+            | "path_readable"
             | "write_png"
             | "image_new"
             | "print_str"
@@ -492,7 +697,13 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "list_push"
             | "list_len"
             | "list_get"
+            | "dict_new"
+            | "dict_put"
+            | "dict_get"
             | "clang"
+            | "clang_obj"
+            | "link_objs"
+            | "realpath"
             | "tmp_path"
             | "exec_capture"
             | "exec_compile"
@@ -542,12 +753,28 @@ fn lower_expr(
         }
         Expr::Ident { name, .. } => env.get(name).cloned().unwrap_or_else(|| name.clone()),
         Expr::Binary {
-            op, left, right, ..
+            op,
+            left,
+            right,
+            ..
         } => {
             let l = lower_expr_simple(left, instructions, env, counter, tensors, fn_names);
             let r = lower_expr_simple(right, instructions, env, counter, tensors, fn_names);
             *counter += 1;
             let dest = format!("t{counter}");
+            if *op == BinOp::Add && binary_add_is_string_concat(e) {
+                let func = if binary_add_uses_append(e) {
+                    "sal_str_append"
+                } else {
+                    "sal_str_concat"
+                };
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: func.into(),
+                    args: vec![l, r],
+                });
+                return dest;
+            }
             let op_s = match op {
                 BinOp::Add => "add",
                 BinOp::Sub => "sub",
@@ -683,9 +910,11 @@ fn lower_expr(
         Expr::If {
             cond,
             then_block,
+            elsifs,
             else_block,
             ..
         } => {
+            let else_block = else_block_for_elsifs(else_block.clone(), elsifs);
             let c = lower_expr_simple(cond, instructions, env, counter, tensors, fn_names);
             let mut then_body = Vec::new();
             let mut else_body = Vec::new();
@@ -767,6 +996,8 @@ fn lower_expr(
             };
             *counter += 1;
             let dest = format!("t{counter}");
+            let parent_env = env.clone();
+            let carried = merge_if_carries(&parent_env, &then_env, &else_env, counter, env, tensors);
             instructions.push(IrInst::If {
                 cond: c,
                 then_body,
@@ -774,6 +1005,7 @@ fn lower_expr(
                 then_val,
                 else_val,
                 dest: dest.clone(),
+                carried,
             });
             dest
         }

@@ -292,3 +292,30 @@ fn import_change_invalidates_importer_cache() {
     // Stale object under key1 must not be the lookup target after B changed.
     assert!(!is_cache_hit(&cache_path(&project, &key1), &key2));
 }
+
+#[test]
+fn import_two_modules_run() {
+    let tmp = isolated_root();
+    let project = tmp.path().to_path_buf();
+    let b_path = project.join("b.sal");
+    let a_path = project.join("a.sal");
+    fs::write(&b_path, "fn helper() -> Int\n    42\n").expect("write b");
+    fs::write(
+        &a_path,
+        "import \"./b.sal\"\n\nfn main() -> Int\n    helper()\n",
+    )
+    .expect("write a");
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: project,
+        skip_link: false,
+    };
+    let art = compile_file(&a_path, &opts).expect("compile import graph");
+    let bin = art.binary.expect("binary");
+    let out = std::process::Command::new(&bin)
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(42));
+}

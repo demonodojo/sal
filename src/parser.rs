@@ -738,17 +738,18 @@ impl Parser {
             }
             TokenKind::String(s) => {
                 let sp = self.bump().span;
-                let parts = split_interpolation(&s, sp)?;
-                // `{{` / `}}` are brace escapes. When there is no real interpolation,
-                // fold them into the string value (IR blobs use Debug-like `{ … }`).
-                let value = if parts.is_empty() {
-                    unescape_doubled_braces(&s)
-                } else {
-                    s
-                };
-                Ok(Expr::String {
-                    value,
-                    parts,
+                string_literal_expr(s, sp)
+            }
+            TokenKind::DupString(s) => {
+                let sp = self.bump().span;
+                let arg = string_literal_expr(s, sp)?;
+                Ok(Expr::Call {
+                    func: Box::new(Expr::Ident {
+                        name: "strdup".into(),
+                        span: sp,
+                    }),
+                    type_args: Vec::new(),
+                    args: vec![arg],
                     span: sp,
                 })
             }
@@ -863,31 +864,51 @@ impl Parser {
         })
     }
 
-    fn parse_if(&mut self) -> Result<Expr, Diagnostic> {
-        let sp = self.bump().span;
-        let cond = self.parse_expr()?;
-        self.expect(TokenKind::Newline, "expected newline after if condition")?;
-        self.expect(TokenKind::Indent, "expected indented if body")?;
-        let then_block = self.parse_block_inner()?;
+    fn parse_indented_body(&mut self, after_nl: &str, after_indent: &str) -> Result<Block, Diagnostic> {
+        self.expect(TokenKind::Newline, after_nl)?;
+        self.expect(TokenKind::Indent, after_indent)?;
+        let block = self.parse_block_inner()?;
         if self.at(TokenKind::Dedent) {
             self.bump();
         }
         self.skip_newlines();
+        Ok(block)
+    }
+
+    fn parse_if(&mut self) -> Result<Expr, Diagnostic> {
+        let sp = self.bump().span;
+        let cond = self.parse_expr()?;
+        let then_block = self.parse_indented_body(
+            "expected newline after if condition",
+            "expected indented if body",
+        )?;
+        let mut elsifs = Vec::new();
+        while self.at(TokenKind::Elsif) {
+            let arm_sp = self.bump().span;
+            let arm_cond = self.parse_expr()?;
+            let body = self.parse_indented_body(
+                "expected newline after elsif condition",
+                "expected indented elsif body",
+            )?;
+            elsifs.push(Elsif {
+                cond: arm_cond,
+                body,
+                span: arm_sp,
+            });
+        }
         let else_block = if self.at(TokenKind::Else) {
             self.bump();
-            self.expect(TokenKind::Newline, "expected newline after else")?;
-            self.expect(TokenKind::Indent, "expected indented else body")?;
-            let else_block = self.parse_block_inner()?;
-            if self.at(TokenKind::Dedent) {
-                self.bump();
-            }
-            Some(else_block)
+            Some(self.parse_indented_body(
+                "expected newline after else",
+                "expected indented else body",
+            )?)
         } else {
             None
         };
         Ok(Expr::If {
             cond: Box::new(cond),
             then_block,
+            elsifs,
             else_block,
             span: sp,
         })
@@ -977,6 +998,22 @@ impl Parser {
 
 fn is_lvalue(e: &Expr) -> bool {
     matches!(e, Expr::Ident { .. } | Expr::Field { .. })
+}
+
+fn string_literal_expr(s: String, sp: Span) -> Result<Expr, Diagnostic> {
+    let parts = split_interpolation(&s, sp)?;
+    // `{{` / `}}` are brace escapes. When there is no real interpolation,
+    // fold them into the string value (IR blobs use Debug-like `{ … }`).
+    let value = if parts.is_empty() {
+        unescape_doubled_braces(&s)
+    } else {
+        s
+    };
+    Ok(Expr::String {
+        value,
+        parts,
+        span: sp,
+    })
 }
 
 fn unescape_doubled_braces(s: &str) -> String {
@@ -1079,6 +1116,7 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         (Fn, Fn)
         | (Let, Let)
         | (If, If)
+        | (Elsif, Elsif)
         | (Else, Else)
         | (Match, Match)
         | (On, On)

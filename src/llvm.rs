@@ -5,6 +5,10 @@ use crate::ir::{FusedOp, IrFunction, IrInst, IrModule};
 
 pub struct LlvmOptions {
     pub instrument: bool,
+    /// Imported user functions defined in other `.o` files (name → param count).
+    pub extern_user_fns: HashMap<String, usize>,
+    /// When false, do not synthesize `@main` if the module has no `main` (dependency `.o`).
+    pub emit_entry_main: bool,
 }
 
 /// Static host tensor materialised from a `tensor[[…]]` literal (or param shape).
@@ -187,6 +191,15 @@ pub fn emit_llvm_with_tensors(
     opts: &LlvmOptions,
     tensors: &HashMap<String, HostTensor>,
 ) -> String {
+    emit_llvm_with_externs(m, opts, tensors, &opts.extern_user_fns)
+}
+
+pub fn emit_llvm_with_externs(
+    m: &IrModule,
+    opts: &LlvmOptions,
+    tensors: &HashMap<String, HostTensor>,
+    extern_user_fns: &HashMap<String, usize>,
+) -> String {
     let mut s = String::new();
     s.push_str("target triple = \"x86_64-unknown-linux-gnu\"\n\n");
     if opts.instrument {
@@ -207,6 +220,7 @@ pub fn emit_llvm_with_tensors(
     s.push_str("declare i64 @sal_argc()\n");
     s.push_str("declare ptr @sal_argv(i64)\n");
     s.push_str("declare ptr @sal_read_file(ptr)\n");
+    s.push_str("declare i64 @sal_path_readable(ptr)\n");
     s.push_str("declare i64 @sal_write_file(ptr, ptr)\n");
     s.push_str("declare i64 @sal_write_png(ptr, i64, i64, ptr)\n");
     s.push_str("declare ptr @sal_image_new(i64, i64)\n");
@@ -249,6 +263,9 @@ pub fn emit_llvm_with_tensors(
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
     s.push_str("declare i64 @sal_clang(ptr, ptr)\n");
+    s.push_str("declare ptr @sal_realpath(ptr)\n");
+    s.push_str("declare i64 @sal_clang_obj(ptr, ptr)\n");
+    s.push_str("declare i64 @sal_link_objs(ptr, ptr)\n");
     s.push_str("declare ptr @sal_tmp_path(ptr)\n");
     s.push_str("declare ptr @sal_exec_capture(ptr, ptr)\n");
     s.push_str("declare i64 @sal_exec_compile(ptr, ptr, ptr)\n");
@@ -260,7 +277,23 @@ pub fn emit_llvm_with_tensors(
     s.push_str("declare void @sal_instrument_free(ptr)\n");
     s.push_str("declare void @sal_instrument_check_f32(ptr, i64, ptr)\n");
     s.push_str("declare void @sal_instrument_check_ptr(ptr, i64, i32, ptr)\n");
-    s.push_str("declare void @sal_instrument_check_index(i64, i64, ptr)\n\n");
+    s.push_str("declare void @sal_instrument_check_index(i64, i64, ptr)\n");
+    s.push_str("declare ptr @sal_dict_new(i64, i64)\n");
+    s.push_str("declare ptr @sal_dict_put(ptr, ptr, i64)\n");
+    s.push_str("declare i64 @sal_dict_get(ptr, ptr)\n\n");
+
+    for (name, nparams) in extern_user_fns {
+        let params: Vec<String> = (0..*nparams).map(|i| format!("i64 %arg{i}")).collect();
+        let ps = if params.is_empty() {
+            String::new()
+        } else {
+            params.join(", ")
+        };
+        s.push_str(&format!("declare i64 @{name}({ps})\n"));
+    }
+    if !extern_user_fns.is_empty() {
+        s.push('\n');
+    }
 
     s.push_str("@.site.alloc = private unnamed_addr constant [6 x i8] c\"alloc\\00\"\n");
     s.push_str("@.site.matmul = private unnamed_addr constant [7 x i8] c\"matmul\\00\"\n");
@@ -305,8 +338,21 @@ pub fn emit_llvm_with_tensors(
         s.push('\n');
     }
 
-    let user_fns: HashMap<String, &IrFunction> =
+    let mut owned_extern: Vec<IrFunction> = Vec::new();
+    for (name, nparams) in extern_user_fns {
+        owned_extern.push(IrFunction {
+            name: name.clone(),
+            params: (0..*nparams).map(|i| format!("arg{i}")).collect(),
+            instructions: Vec::new(),
+            regions: Vec::new(),
+            dim_params: Vec::new(),
+        });
+    }
+    let mut user_fns: HashMap<String, &IrFunction> =
         m.functions.iter().map(|f| (f.name.clone(), f)).collect();
+    for ef in &owned_extern {
+        user_fns.insert(ef.name.clone(), ef);
+    }
 
     for f in &m.functions {
         if f.name == "main" {
@@ -322,7 +368,7 @@ pub fn emit_llvm_with_tensors(
         }
     }
 
-    if !m.functions.iter().any(|f| f.name == "main") {
+    if opts.emit_entry_main && !m.functions.iter().any(|f| f.name == "main") {
         s.push_str("define i64 @main(i64 %argc, ptr %argv) {\n");
         s.push_str("  call void @sal_runtime_init(i64 %argc, ptr %argv)\n");
         s.push_str("  ret i64 0\n}\n");
@@ -1289,9 +1335,7 @@ fn emit_runtime_or_user_call(
     tail: bool,
 ) {
     let ptr_arg = |a: &str, s: &mut String, tmp: &mut u32| -> String {
-        if let Some(g) = str_globals.get(a) {
-            return format!("{g}");
-        }
+        // Only quoted IR args name string literals; bare names are i64 temps/params.
         if a.starts_with('"') {
             let raw = a.trim_matches('"');
             if let Some(g) = str_globals.get(raw) {
@@ -1374,6 +1418,12 @@ fn emit_runtime_or_user_call(
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d}_p = call ptr @sal_read_file(ptr {p})\n"));
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_path_readable" => {
+            let p = args.first().map(|a| ptr_arg(a, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_path_readable(ptr {p})\n"));
             }
         }
         "sal_image_new" => {
@@ -1683,6 +1733,34 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = call i64 @sal_list_get(ptr {a}, i64 {b})\n"));
             }
         }
+        "sal_dict_new" => {
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d}_p = call ptr @sal_dict_new(i64 1, i64 0)\n"
+                ));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_dict_put" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let k = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let v = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d}_p = call ptr @sal_dict_put(ptr {a}, ptr {k}, i64 {v})\n"
+                ));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            } else {
+                s.push_str(&format!("  call ptr @sal_dict_put(ptr {a}, ptr {k}, i64 {v})\n"));
+            }
+        }
+        "sal_dict_get" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let k = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_dict_get(ptr {a}, ptr {k})\n"));
+            }
+        }
         "sal_clang" => {
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
@@ -1690,6 +1768,31 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = call i64 @sal_clang(ptr {a}, ptr {b})\n"));
             } else {
                 s.push_str(&format!("  call i64 @sal_clang(ptr {a}, ptr {b})\n"));
+            }
+        }
+        "sal_realpath" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_realpath(ptr {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_clang_obj" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_clang_obj(ptr {a}, ptr {b})\n"));
+            } else {
+                s.push_str(&format!("  call i64 @sal_clang_obj(ptr {a}, ptr {b})\n"));
+            }
+        }
+        "sal_link_objs" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_link_objs(ptr {a}, ptr {b})\n"));
+            } else {
+                s.push_str(&format!("  call i64 @sal_link_objs(ptr {a}, ptr {b})\n"));
             }
         }
         "sal_tmp_path" => {
@@ -1895,6 +1998,7 @@ fn emit_inst_list(
                 then_val,
                 else_val,
                 dest,
+                carried,
             } => {
                 *label_id += 1;
                 let id = *label_id;
@@ -1950,6 +2054,26 @@ fn emit_inst_list(
                 s.push_str(&format!(
                     "  %{dest} = phi i64 [ {tv}, %{then_block} ], [ {ev}, %{else_block} ]\n"
                 ));
+                for carry in carried {
+                    let ct = if then_consts.contains_key(&carry.then_val)
+                        || carry.then_val.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(&carry.then_val, &then_consts)
+                    } else {
+                        format!("%{}", carry.then_val)
+                    };
+                    let ce = if else_consts.contains_key(&carry.else_val)
+                        || carry.else_val.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(&carry.else_val, &else_consts)
+                    } else {
+                        format!("%{}", carry.else_val)
+                    };
+                    s.push_str(&format!(
+                        "  %{} = phi i64 [ {ct}, %{then_block} ], [ {ce}, %{else_block} ]\n",
+                        carry.dest
+                    ));
+                }
                 *cur_block = join_l;
             }
             IrInst::Drop { .. } | IrInst::PlaceCopy { .. } => {}
@@ -1957,14 +2081,25 @@ fn emit_inst_list(
                 cond_insts,
                 cond,
                 body,
+                carried,
             } => {
                 *label_id += 1;
                 let id = *label_id;
                 let head = format!("wh{id}");
                 let body_l = format!("wb{id}");
+                let latch = format!("wl{id}");
                 let end_l = format!("we{id}");
+                let pred = cur_block.clone();
                 s.push_str(&format!("  br label %{head}\n"));
                 s.push_str(&format!("{head}:\n"));
+                for carry in carried {
+                    let inc = i64_operand(&carry.incoming, &HashMap::new());
+                    let upd = i64_operand(&carry.updated, &HashMap::new());
+                    s.push_str(&format!(
+                        "  %{} = phi i64 [ {inc}, %{pred} ], [ {upd}, %{latch} ]\n",
+                        carry.dest
+                    ));
+                }
                 let mut head_block = head.clone();
                 emit_inst_list(
                     cond_insts,
@@ -1992,6 +2127,8 @@ fn emit_inst_list(
                     tmp,
                     &mut body_block,
                 );
+                s.push_str(&format!("  br label %{latch}\n"));
+                s.push_str(&format!("{latch}:\n"));
                 s.push_str(&format!("  br label %{head}\n"));
                 s.push_str(&format!("{end_l}:\n"));
                 *cur_block = end_l;
@@ -2069,6 +2206,7 @@ fn emit_value_as_return(
         then_val,
         else_val,
         dest,
+        carried: _,
     }) = body.last()
     {
         if dest == val {

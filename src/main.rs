@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
@@ -9,7 +10,8 @@ use sal_compiler::diag::Diagnostic;
 use sal_compiler::fmt::format_program;
 use sal_compiler::fuse::fuse_module;
 use sal_compiler::infer::infer_program;
-use sal_compiler::ir::{ir_to_text, lower_program};
+use sal_compiler::ir::{ir_to_text, lower_program, lower_program_with_callables};
+use sal_compiler::modules::{callable_fn_names, resolve_module_graph};
 use sal_compiler::llvm::{collect_host_tensors, emit_llvm_with_tensors, LlvmOptions};
 use sal_compiler::parser::parse;
 use sal_compiler::typed::TypedProgram;
@@ -145,6 +147,21 @@ fn main() {
             print!("{}", format_program(&prog));
         }
         Commands::Emit { kind, file } => {
+            if kind == "ir" {
+                let graph = match resolve_module_graph(&file, &root) {
+                    Ok(g) => g,
+                    Err(diags) => {
+                        print_diags(&diags, "human");
+                        std::process::exit(1);
+                    }
+                };
+                let root_mod = graph.order.last().expect("empty module graph");
+                let callables = callable_fn_names(root_mod, &graph);
+                let mut ir = lower_program_with_callables(&root_mod.program, &callables);
+                fuse_module(&mut ir);
+                print!("{}", ir_to_text(&ir));
+                return;
+            }
             let src = std::fs::read_to_string(&file).expect("read");
             let prog = parse(&src).expect("parse");
             match kind.as_str() {
@@ -154,11 +171,6 @@ fn main() {
                     let typed = TypedProgram::from_program(prog, infer.expr_types_by_fn);
                     println!("{}", serde_json::to_string_pretty(&typed).expect("json"));
                 }
-                "ir" => {
-                    let mut ir = lower_program(&prog);
-                    fuse_module(&mut ir);
-                    print!("{}", ir_to_text(&ir));
-                }
                 "llvm" => {
                     let mut ir = lower_program(&prog);
                     fuse_module(&mut ir);
@@ -167,7 +179,11 @@ fn main() {
                         "{}",
                         emit_llvm_with_tensors(
                             &ir,
-                            &LlvmOptions { instrument: false },
+                            &LlvmOptions {
+                                instrument: false,
+                                extern_user_fns: HashMap::new(),
+                                emit_entry_main: true,
+                            },
                             &tensors
                         )
                     );

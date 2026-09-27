@@ -46,4 +46,4 @@ cargo run -- run examples/hello.sal
 
 El test del pase pasa y, si el cambio es de superficie, `fmt` es idempotente sobre un ejemplo que use la construcción nueva.
 
-Superficie `if` / `else`: `tests/frontend.rs` (`if_without_else_*`, `if_else_binds_to_inner_if`, `fmt_if_without_else_is_idempotent`) y `tests/semantics.rs` (`if_without_else_as_stmt_ok_for_int_return`, `if_without_else_as_tail_rejects_non_unit_return`). Tras tocar `parse_if` en Rust o en `selfhost/`, incluir `cargo test --test selfhost_ir` si puede afectar la IR del corpus.
+Superficie `if` / `elsif` / `else`: `tests/frontend.rs` (`if_without_else_*`, `if_else_binds_to_inner_if`, `elsif_chain_is_flat`, `fmt_if_without_else_is_idempotent`, `fmt_elsif_is_idempotent`) y `tests/semantics.rs` (`if_without_else_as_stmt_ok_for_int_return`, `if_without_else_as_tail_rejects_non_unit_return`, `elsif_without_else_is_unit`, `elsif_with_else_has_then_type`, `elsif_without_else_as_stmt_ok`). Tras tocar `parse_if` en Rust o en `selfhost/`, incluir `cargo test --test selfhost_ir` si puede afectar la IR del corpus.

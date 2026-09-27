@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
+use crate::string_expr::is_string_type;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::span::Span;
 
@@ -233,10 +234,22 @@ fn track_expr(
             body,
             span,
         } => use_lambda(lp, body, env, moved, params, taken, used, *span),
-        Expr::Binary { left, right, span, .. } => {
-            track_expr(left, env, moved, params, taken, used)?;
-            track_expr(right, env, moved, params, taken, used)?;
-            Ok(named("Int", *span))
+        Expr::Binary {
+            op,
+            left,
+            right,
+            span,
+            ..
+        } => {
+            let lt = track_expr(left, env, moved, params, taken, used)?;
+            let rt = track_expr(right, env, moved, params, taken, used)?;
+            if *op == BinOp::Add && is_string_type(&lt) && is_string_type(&rt) {
+                consume_if_unique(left, &lt, moved, params, taken);
+                consume_if_unique(right, &rt, moved, params, taken);
+                Ok(named("String", *span))
+            } else {
+                Ok(named("Int", *span))
+            }
         }
         Expr::Unary { expr, .. } => track_expr(expr, env, moved, params, taken, used),
         Expr::Block(b) => {
@@ -285,6 +298,7 @@ fn track_expr(
         Expr::If {
             cond,
             then_block,
+            elsifs,
             else_block,
             span,
             ..
@@ -296,6 +310,16 @@ fn track_expr(
             }
             if let Some(t) = &then_block.tail {
                 track_expr(t, &then_env, moved, params, taken, used)?;
+            }
+            for arm in elsifs {
+                track_expr(&arm.cond, env, moved, params, taken, used)?;
+                let mut arm_env = env.clone();
+                for st in &arm.body.stmts {
+                    track_stmt(st, &mut arm_env, moved, params, taken, used)?;
+                }
+                if let Some(t) = &arm.body.tail {
+                    track_expr(t, &arm_env, moved, params, taken, used)?;
+                }
             }
             if let Some(else_block) = else_block {
                 let mut else_env = env.clone();
@@ -426,6 +450,8 @@ fn is_borrow_fn(name: &str) -> bool {
             | "argc"
             | "write_file"
             | "clang"
+            | "clang_obj"
+            | "link_objs"
             | "gated_print_str"
             | "vec_push"
             | "vec_get"

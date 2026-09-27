@@ -4,8 +4,10 @@ use sal_compiler::diag::ErrorCode;
 use sal_compiler::effects::check_effects;
 use sal_compiler::fmt::format_program;
 use sal_compiler::infer::infer_program;
+use sal_compiler::modules::{check_module_semantics, resolve_module_graph};
 use sal_compiler::ownership::{check_ownership, infer_param_modes};
 use sal_compiler::parser::parse;
+use std::fs;
 
 fn expect_code(src: &str, code: ErrorCode) {
     let err = run_semantics(src).expect_err(&format!("expected {code:?} for:\n{src}"));
@@ -63,6 +65,49 @@ fn main() -> Int
         1
 "#,
         ErrorCode::EType,
+    );
+}
+
+#[test]
+fn elsif_without_else_is_unit() {
+    expect_code(
+        r#"
+fn main() -> Int
+    if true
+        1
+    elsif false
+        2
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn elsif_with_else_has_then_type() {
+    expect_ok(
+        r#"
+fn main() -> Int
+    if true
+        1
+    elsif false
+        2
+    else
+        3
+"#,
+    );
+}
+
+#[test]
+fn elsif_without_else_as_stmt_ok() {
+    expect_ok(
+        r#"
+fn main() -> Int
+    if true
+        x = 1
+    elsif false
+        x = 2
+    0
+"#,
     );
 }
 
@@ -141,6 +186,59 @@ fn main() -> Int
     0
 "#,
         ErrorCode::EEffect,
+    );
+}
+
+#[test]
+fn dstring_requires_alloc_effect() {
+    expect_code(
+        r#"
+fn main() -> String
+    d"a"
+"#,
+        ErrorCode::EEffect,
+    );
+}
+
+#[test]
+fn dstring_ok_with_alloc() {
+    expect_ok(
+        r#"
+fn main() -> String ! alloc
+    d"a"
+"#,
+    );
+}
+
+#[test]
+fn string_plus_concat_requires_alloc() {
+    expect_code(
+        r#"
+fn main() -> String
+    d"x" + d"y"
+"#,
+        ErrorCode::EEffect,
+    );
+}
+
+#[test]
+fn string_plus_concat_ok() {
+    expect_ok(
+        r#"
+fn main() -> String ! alloc
+    d"sum=" + int_to_str(10) + d"\n"
+"#,
+    );
+}
+
+#[test]
+fn string_plus_mixed_type_rejects() {
+    expect_code(
+        r#"
+fn main() -> String ! alloc
+    1 + d"x"
+"#,
+        ErrorCode::EType,
     );
 }
 
@@ -442,4 +540,81 @@ fn add1(n: Int) -> Int
     assert!(f1.contains("s: String take"));
     assert!(f1.contains("borrow"));
     assert!(f1.contains("n: Int)"));
+}
+
+#[test]
+fn list_string_elem_typechecks() {
+    expect_ok(
+        r#"
+fn main() -> Int ! alloc
+    xs = list_new()
+    xs = list_push(xs, 1)
+    list_get(xs, 0)
+"#,
+    );
+}
+
+#[test]
+fn dict_string_int_typechecks() {
+    expect_ok(
+        r#"
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = dict_new()
+    d = dict_put(d, "a", 1)
+    d = dict_put(d, "b", 2)
+    0
+"#,
+    );
+}
+
+#[test]
+fn import_missing_path_is_etype() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = tmp.path().join("a.sal");
+    fs::write(
+        &a,
+        "import \"./missing.sal\"\n\nfn main() -> Int\n    0\n",
+    )
+    .expect("write");
+    match resolve_module_graph(&a, tmp.path()) {
+        Err(err) => assert!(err.iter().any(|d| d.code == ErrorCode::EType)),
+        Ok(_) => panic!("expected missing import to fail"),
+    }
+}
+
+#[test]
+fn import_cycle_is_etype() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = tmp.path().join("a.sal");
+    let b = tmp.path().join("b.sal");
+    fs::write(&b, "import \"./a.sal\"\n\nfn helper() -> Int\n    1\n").expect("write");
+    fs::write(
+        &a,
+        "import \"./b.sal\"\n\nfn main() -> Int\n    helper()\n",
+    )
+    .expect("write");
+    match resolve_module_graph(&a, tmp.path()) {
+        Err(err) => assert!(err.iter().any(|d| d.code == ErrorCode::EType)),
+        Ok(_) => panic!("expected import cycle to fail"),
+    }
+}
+
+#[test]
+fn import_call_typechecks() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let b = tmp.path().join("b.sal");
+    let a = tmp.path().join("a.sal");
+    fs::write(&b, "fn helper() -> Int\n    7\n").expect("write");
+    fs::write(
+        &a,
+        "import \"./b.sal\"\n\nfn main() -> Int\n    helper()\n",
+    )
+    .expect("write");
+    let graph = resolve_module_graph(&a, tmp.path()).expect("graph");
+    let root = graph.order.last().expect("root");
+    check_module_semantics(root, &graph).expect("imported helper visible");
 }

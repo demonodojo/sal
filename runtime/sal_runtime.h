@@ -28,6 +28,7 @@ char *sal_argv(int64_t i);
 
 /* Read entire file into a heap buffer (NUL-terminated). Caller sal_free. */
 char *sal_read_file(const char *path);
+int64_t sal_path_readable(const char *path);
 /* Write bytes to path (or stdout when path is NULL / "-"). */
 int64_t sal_write_file(const char *path, const char *data);
 /* Print NUL-terminated string to stdout (no extra newline). */
@@ -88,8 +89,20 @@ void *sal_list_new(void);
 void *sal_list_push(void *v, int64_t x);
 int64_t sal_list_len(void *v);
 int64_t sal_list_get(void *v, int64_t i);
+/* elem_kind: 0 Int, 1 Float (bits), 2 Bool, 3 String (ptr) */
+void *sal_list_new_typed(int64_t elem_kind);
+int64_t sal_list_get_typed(void *v, int64_t i);
+void *sal_dict_new(int64_t key_kind, int64_t val_kind);
+void *sal_dict_put(void *d, const char *key, int64_t val);
+int64_t sal_dict_get(void *d, const char *key);
 /* Compile a generated .c with clang, linking runtime+kernels+instrument (not selfhost). */
 int64_t sal_clang(const char *c_path, const char *out_path);
+/* Canonical path; falls back to a copy of p if realpath fails. */
+char *sal_realpath(const char *p);
+/* Compile .c to .o (no link). */
+int64_t sal_clang_obj(const char *c_path, const char *obj_path);
+/* Link space-separated .o paths with runtime; objs may be empty aside from objects. */
+int64_t sal_link_objs(const char *objs, const char *out_path);
 /* Heap path like /tmp/sal-<pid>-<suffix>; caller sal_free. */
 char *sal_tmp_path(const char *suffix);
 char *sal_exec_capture(const char *bin, const char *arg);
