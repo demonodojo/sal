@@ -1,0 +1,49 @@
+# Incremental cache for emitted IR.
+
+fn hash_go(src: Int, i: Int, n: Int, h: Int) -> Int ! alloc
+    if i >= n
+        h
+    else
+        c = str_char(src, i)
+        nh = h * 33 + c
+        hash_go(src, i + 1, n, nh)
+
+fn source_hash(src: Int) -> Int ! io, alloc
+    h = str_hash(src, 5381)
+    self = argv(0)
+    h = str_hash(self, h)
+    if h < 0
+        h = 0 - h
+    else
+        h = h
+    int_to_str(h)
+
+fn cache_dir() -> Int ! io, alloc
+    e = getenv(strdup("SAL_SELFHOST_CACHE"))
+    if str_len(e) == 0
+        strdup("target/selfhost-cache")
+    else
+        e
+
+fn cache_ir_path(dir: Int, key: Int) -> Int ! alloc
+    acc = strdup(dir)
+    acc = str_append(acc, strdup("/"))
+    acc = str_append(acc, key)
+    acc = str_append(acc, strdup(".ir"))
+    acc
+
+fn cache_meta_path(dir: Int, key: Int) -> Int ! alloc
+    acc = strdup(dir)
+    acc = str_append(acc, strdup("/"))
+    acc = str_append(acc, key)
+    acc = str_append(acc, strdup(".meta"))
+    acc
+
+fn cache_key_for_graph_path(pre: Int, source_path: Int) -> Int ! io, alloc
+    base = source_hash(pre)
+    p = realpath(source_path)
+    src = read_file(p)
+    h = str_hash(src, str_hash(p, 5381))
+    piece = int_to_str(h)
+    acc = str_concat(base, strdup(":"))
+    str_append(acc, piece)

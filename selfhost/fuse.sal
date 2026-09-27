@@ -1,0 +1,597 @@
+# Fusion, peak_bytes, and the lowering that builds fused regions.
+# lower_program calls fusion; fusion reads ir.sal. Keeping both here avoids an import cycle.
+import ast
+import ir
+
+fn FO_MATMUL() -> Int
+    0
+
+fn FO_EPILOGUE() -> Int
+    1
+
+fn FO_SOFTMAX() -> Int
+    2
+
+fn lower_args(cx: Int, args: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        a = vec_get(args, i)
+        v = lower_expr(cx, a)
+        _p = vec_push(out, v)
+        lower_args(cx, args, i + 1, n, out)
+
+fn collect_fused(e: Int, cx: Int, ops: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_CALL()
+            args = vec_get(e, 2)
+            _a = collect_fused_args(args, cx, ops, 0, vec_len(args))
+            fname = vec_get(e, 1)
+            collect_fused_call(e, cx, ops, fname, args)
+        else
+            if k == EX_BINARY()
+                _a = collect_fused(vec_get(e, 2), cx, ops)
+                collect_fused(vec_get(e, 3), cx, ops)
+            else
+                0
+
+fn collect_fused_args(args: Int, cx: Int, ops: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = collect_fused(vec_get(args, i), cx, ops)
+        collect_fused_args(args, cx, ops, i + 1, n)
+
+fn fo_new(kind: Int, a: Int, b: Int, c: Int) -> Int ! alloc
+    o = vec_new()
+    _a = vec_push(o, kind)
+    _b = vec_push(o, a)
+    _c = vec_push(o, b)
+    _d = vec_push(o, c)
+    o
+
+fn fused_arg_name(cx: Int, a: Int) -> Int ! alloc
+    if ex_kind(a) == EX_IDENT()
+        cx_lookup(cx, vec_get(a, 1))
+    else
+        strdup("tmp")
+
+fn fused_arg0_name(cx: Int, args: Int) -> Int ! alloc
+    if vec_len(args) > 0
+        fused_arg_name(cx, vec_get(args, 0))
+    else
+        strdup("tmp")
+
+fn collect_fused_call(e: Int, cx: Int, ops: Int, fname: Int, args: Int) -> Int ! alloc
+    nops = vec_len(ops)
+    if str_eq(fname, "relu") == 1
+        if nops > 0
+            last = vec_get(ops, nops - 1)
+            if vec_get(last, 0) == FO_MATMUL()
+                mmc = vec_get(last, 3)
+                ep = strdup("_epilogue")
+                dest = str_append(strdup(mmc), ep)
+                _p = vec_push(ops, fo_new(FO_EPILOGUE(), fname, mmc, dest))
+                0
+            else
+                0
+        else
+            0
+    else
+        if str_eq(fname, "map") == 1
+            if nops > 0
+                last = vec_get(ops, nops - 1)
+                if vec_get(last, 0) == FO_MATMUL()
+                    mmc = vec_get(last, 3)
+                    ep = strdup("_epilogue")
+                    dest = str_append(strdup(mmc), ep)
+                    _p = vec_push(ops, fo_new(FO_EPILOGUE(), fname, mmc, dest))
+                    0
+                else
+                    0
+            else
+                0
+        else
+            if str_eq(fname, "matmul") == 1
+                if vec_len(args) == 2
+                    lhs = fused_arg_name(cx, vec_get(args, 0))
+                    rhs = fused_arg_name(cx, vec_get(args, 1))
+                    mm = strdup("mm")
+                    _p = vec_push(ops, fo_new(FO_MATMUL(), lhs, rhs, mm))
+                    0
+                else
+                    0
+            else
+                if str_eq(fname, "softmax") == 1
+                    inp = fused_arg0_name(cx, args)
+                    sm = strdup("sm")
+                    _p = vec_push(ops, fo_new(FO_SOFTMAX(), inp, 0, sm))
+                    0
+                else
+                    0
+
+fn estimate_peak(r: Int, cx: Int) -> Int ! alloc
+    # Simplified peak matching salc_py for static tensors
+    ops = vec_get(r, 1)
+    estimate_peak_go(r, cx, ops, 0, vec_len(ops), 0, strdup(""), 0)
+
+fn estimate_peak_finish_sym(r: Int, static_total: Int, sym: Int) -> Int ! alloc
+    _a = vec_set(r, 4, 1)
+    if static_total > 0
+        pref = int_to_str(static_total)
+        plus = strdup("+")
+        s1 = str_append(pref, plus)
+        s2 = str_append(s1, sym)
+        _b = vec_set(r, 6, s2)
+    else
+        _b = vec_set(r, 6, sym)
+    _c = vec_set(r, 3, 1)
+    _d = vec_set(r, 5, static_total)
+    0
+
+fn estimate_peak_finish_static(r: Int, static_total: Int, saw: Int) -> Int ! alloc
+    if saw == 1
+        _c = vec_set(r, 3, 1)
+        _d = vec_set(r, 5, static_total)
+        0
+    else
+        if static_total > 0
+            _c = vec_set(r, 3, 1)
+            _d = vec_set(r, 5, static_total)
+            0
+        else
+            0
+
+fn estimate_peak_go(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int, sym: Int, saw: Int) -> Int ! alloc
+    if i >= n
+        if str_len(sym) > 0
+            estimate_peak_finish_sym(r, static_total, sym)
+        else
+            estimate_peak_finish_static(r, static_total, saw)
+    else
+        op = vec_get(ops, i)
+        if vec_get(op, 0) == FO_MATMUL()
+            estimate_peak_mm(r, cx, ops, i, n, static_total, sym, saw, op)
+        else
+            estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
+
+fn append_sym_plus(sym: Int, piece: Int) -> Int ! alloc
+    if str_len(sym) > 0
+        plus = strdup("+")
+        s1 = str_append(sym, plus)
+        str_append(s1, piece)
+    else
+        str_append(sym, piece)
+
+fn add_peak_piece(st: Int, sym: Int, piece: Int) -> Int ! alloc
+    out = vec_new()
+    if vec_get(piece, 0) == 1
+        _a = vec_push(out, st + vec_get(piece, 1))
+        _b = vec_push(out, sym)
+        out
+    else
+        s2 = append_sym_plus(sym, vec_get(piece, 2))
+        _a = vec_push(out, st)
+        _b = vec_push(out, s2)
+        out
+
+fn estimate_peak_mm(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int, sym: Int, saw: Int, op: Int) -> Int ! alloc
+    l = cx_find(cx, vec_get(op, 1))
+    w = cx_find(cx, vec_get(op, 2))
+    if l == 0
+        estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
+    else
+        if w == 0
+            estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
+        else
+            if bind_is_tensor(l) == 0
+                estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
+            else
+                if bind_is_tensor(w) == 0
+                    estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
+                else
+                    pa = peak_tensor_piece(l, strdup("act"))
+                    a1 = add_peak_piece(static_total, sym, pa)
+                    pw = peak_tensor_piece(w, strdup("w"))
+                    a2 = add_peak_piece(vec_get(a1, 0), vec_get(a1, 1), pw)
+                    po = peak_out_piece(l, w)
+                    a3 = add_peak_piece(vec_get(a2, 0), vec_get(a2, 1), po)
+                    estimate_peak_go(r, cx, ops, i + 1, n, vec_get(a3, 0), vec_get(a3, 1), 1)
+
+fn peak_tensor_piece(tens: Int, label: Int) -> Int ! alloc
+    # returns vec [is_static, static_bytes, sym_piece]
+    res = vec_new()
+    dims = bind_dims(tens)
+    conc = bind_concrete(tens)
+    nd = bind_ndims(tens)
+    eb = bind_elem(tens)
+    pr = peak_prod(dims, conc, 0, nd, 1, 0, strdup(""))
+    is_dyn = vec_get(pr, 0)
+    prod = vec_get(pr, 1)
+    parts = vec_get(pr, 2)
+    if is_dyn == 1
+        _a = vec_push(res, 0)
+        _b = vec_push(res, 0)
+        col = strdup(":")
+        s1 = str_append(label, col)
+        free(col)
+        s2 = str_append(s1, parts)
+        star = strdup("*")
+        s3 = str_append(s2, star)
+        free(star)
+        ebs = int_to_str(eb)
+        s4 = str_append(s3, ebs)
+        free(ebs)
+        _c = vec_push(res, s4)
+        res
+    else
+        _a = vec_push(res, 1)
+        _b = vec_push(res, prod * eb)
+        _c = vec_push(res, strdup(""))
+        res
+
+fn peak_dyn_parts(parts: Int) -> Int ! alloc
+    if str_len(parts) > 0
+        star = strdup("*?")
+        str_append(parts, star)
+    else
+        strdup("?")
+
+fn peak_static_prefix(parts: Int) -> Int ! alloc
+    if str_len(parts) > 0
+        star = strdup("*")
+        str_append(parts, star)
+    else
+        strdup("")
+
+fn peak_prod(dims: Int, conc: Int, d: Int, nd: Int, prod: Int, dyn: Int, parts: Int) -> Int ! alloc
+    if d >= nd
+        r = vec_new()
+        _a = vec_push(r, dyn)
+        _b = vec_push(r, prod)
+        _c = vec_push(r, parts)
+        r
+    else
+        dv = dim_at(dims, d)
+        cv = dim_at(conc, d)
+        if dv < 0
+            if cv < 0
+                np = peak_dyn_parts(parts)
+                peak_prod(dims, conc, d + 1, nd, prod, 1, np)
+            else
+                peak_prod_static(dims, conc, d, nd, prod, dyn, parts, cv)
+        else
+            peak_prod_static(dims, conc, d, nd, prod, dyn, parts, dv)
+
+fn peak_prod_static(dims: Int, conc: Int, d: Int, nd: Int, prod: Int, dyn: Int, parts: Int, v: Int) -> Int ! alloc
+    np = peak_static_prefix(parts)
+    vs = int_to_str(v)
+    np2 = str_append(np, vs)
+    peak_prod(dims, conc, d + 1, nd, prod * v, dyn, np2)
+
+fn peak_out_piece(l: Int, w: Int) -> Int ! alloc
+    res = vec_new()
+    ld = bind_dims(l)
+    lc = bind_concrete(l)
+    wd = bind_dims(w)
+    wc = bind_concrete(w)
+    lnd = bind_ndims(l)
+    wnd = bind_ndims(w)
+    eb = bind_elem(l)
+    od = vec_new()
+    oc = vec_new()
+    _a = peak_out_fill(od, oc, ld, lc, 0, lnd - 1)
+    widx = wnd - 1
+    wdv = dim_at(wd, widx)
+    wcv = dim_at(wc, widx)
+    _b = vec_push(od, wdv)
+    _c = vec_push(oc, wcv)
+    pr = peak_prod(od, oc, 0, vec_len(od), 1, 0, strdup(""))
+    is_dyn = vec_get(pr, 0)
+    prod = vec_get(pr, 1)
+    parts = vec_get(pr, 2)
+    if is_dyn == 1
+        lab = strdup("out:")
+        s2 = str_append(lab, parts)
+        star = strdup("*")
+        s3 = str_append(s2, star)
+        ebs = int_to_str(eb)
+        s4 = str_append(s3, ebs)
+        _d = vec_push(res, 0)
+        _e = vec_push(res, 0)
+        _f = vec_push(res, s4)
+        res
+    else
+        _d = vec_push(res, 1)
+        _e = vec_push(res, prod * eb)
+        _f = vec_push(res, strdup(""))
+        res
+
+fn peak_out_fill(od: Int, oc: Int, ld: Int, lc: Int, d: Int, n: Int) -> Int ! alloc
+    if d >= n
+        0
+    else
+        dv = dim_at(ld, d)
+        cv = dim_at(lc, d)
+        _a = vec_push(od, dv)
+        _b = vec_push(oc, cv)
+        peak_out_fill(od, oc, ld, lc, d + 1, n)
+
+fn lower_expr(cx: Int, e: Int) -> Int ! alloc
+    if e == 0
+        strdup("0")
+    else
+        k = ex_kind(e)
+        if k == EX_INT()
+            d = fresh(cx)
+            _p = push_const_int(cx, d, vec_get(e, 1))
+            d
+        else
+            if k == EX_FLOAT()
+                d = fresh(cx)
+                _p = push_const_int(cx, d, 0)
+                d
+            else
+                if k == EX_STRING()
+                    d = fresh(cx)
+                    _p = ir_push(cx, ir_cs(d, vec_get(e, 1)))
+                    d
+                else
+                    if k == EX_IDENT()
+                        cx_lookup(cx, vec_get(e, 1))
+                    else
+                        if k == EX_BINARY()
+                            l = lower_expr(cx, vec_get(e, 2))
+                            r = lower_expr(cx, vec_get(e, 3))
+                            d = fresh(cx)
+                            _p = ir_push(cx, ir_bin(d, vec_get(e, 1), l, r))
+                            d
+                        else
+                            if k == EX_TENSOR()
+                                fresh(cx)
+                            else
+                                if k == EX_TO()
+                                    lower_to(cx, e)
+                                else
+                                    if k == EX_ON()
+                                        lower_on(cx, e)
+                                    else
+                                        if k == EX_CALL()
+                                            lower_call(cx, e)
+                                        else
+                                            if k == EX_IF()
+                                                lower_if(cx, e)
+                                            else
+                                                fresh(cx)
+
+fn lower_to(cx: Int, e: Int) -> Int ! alloc
+    src = lower_expr(cx, vec_get(e, 2))
+    d = fresh(cx)
+    _p = ir_push(cx, ir_place(d, src, vec_get(e, 1)))
+    dropn = drop_name_for(vec_get(e, 2))
+    _q = ir_push(cx, ir_drop(dropn))
+    d
+
+fn collect_on_ops(body: Int, cx: Int) -> Int ! alloc
+    ops = vec_new()
+    if body == 0
+        ops
+    else
+        tail = block_tail(body)
+        if tail == 0
+            ops
+        else
+            _a = collect_fused(tail, cx, ops)
+            ops
+
+fn fused_flag(has_ep: Int, has_mm: Int, nops: Int) -> Int ! alloc
+    if has_ep == 1
+        1
+    else
+        if nops > 1
+            1
+        else
+            if has_mm == 1
+                1
+            else
+                0
+
+fn lower_on(cx: Int, e: Int) -> Int ! alloc
+    ops = collect_on_ops(vec_get(e, 2), cx)
+    has_ep = ops_has_kind(ops, FO_EPILOGUE(), 0, vec_len(ops))
+    has_mm = ops_has_kind(ops, FO_MATMUL(), 0, vec_len(ops))
+    fused = fused_flag(has_ep, has_mm, vec_len(ops))
+    reg = region_new(vec_get(e, 1), ops, fused)
+    _e = estimate_peak(reg, cx)
+    d = fresh(cx)
+    _m = lower_on_matmul(cx, ops, d, 0, vec_len(ops))
+    _r = vec_push(cx_regions(cx), reg)
+    d
+
+fn ops_has_kind(ops: Int, kind: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        if vec_get(vec_get(ops, i), 0) == kind
+            1
+        else
+            ops_has_kind(ops, kind, i + 1, n)
+
+fn lower_on_matmul(cx: Int, ops: Int, d: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        op = vec_get(ops, i)
+        if vec_get(op, 0) == FO_MATMUL()
+            m = axis_len(cx, vec_get(op, 1), 1)
+            k = axis_len(cx, vec_get(op, 1), 0)
+            nn = axis_len(cx, vec_get(op, 2), 0)
+            args = vec_new()
+            _a = vec_push(args, vec_get(op, 1))
+            _b = vec_push(args, vec_get(op, 2))
+            _c = vec_push(args, m)
+            _d = vec_push(args, k)
+            _e = vec_push(args, nn)
+            fnm = strdup("sal_matmul_f32")
+            _p = ir_push(cx, ir_call(d, fnm, args, 1))
+            0
+        else
+            lower_on_matmul(cx, ops, d, i + 1, n)
+
+fn lower_call(cx: Int, e: Int) -> Int ! alloc
+    fname = vec_get(e, 1)
+    args = vec_get(e, 2)
+    out = vec_new()
+    arg_names = lower_args(cx, args, 0, vec_len(args), out)
+    d = fresh(cx)
+    if str_eq(fname, "load") == 1
+        if vec_len(args) > 0
+            a0 = vec_get(args, 0)
+            if ex_kind(a0) == EX_STRING()
+                q1 = strdup("\"")
+                mid = strdup(vec_get(a0, 1))
+                q2 = str_append(q1, mid)
+                qe = strdup("\"")
+                q3 = str_append(q2, qe)
+                argv = vec_new()
+                _a = vec_push(argv, q3)
+                fnm = strdup("sal_load")
+                _p = ir_push(cx, ir_call(d, fnm, argv, 1))
+                d
+            else
+                rname = runtime_name(cx, fname)
+                _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
+                d
+        else
+            rname = runtime_name(cx, fname)
+            _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
+            d
+    else
+        rname = runtime_name(cx, fname)
+        _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
+        d
+
+fn lower_call_normal(cx: Int, e: Int) -> Int ! alloc
+    fname = vec_get(e, 1)
+    args = vec_get(e, 2)
+    out = vec_new()
+    arg_names = lower_args(cx, args, 0, vec_len(args), out)
+    d = fresh(cx)
+    rname = runtime_name(cx, fname)
+    _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
+    d
+
+fn lower_if(cx: Int, e: Int) -> Int ! alloc
+    c = lower_expr(cx, vec_get(e, 1))
+    saved = cx_insts(cx)
+    then_env = cx_binds(cx)
+    _a = cx_set_insts(cx, vec_new())
+    then_b = vec_get(e, 2)
+    then_val = lower_block_value(cx, then_b)
+    then_body = cx_insts(cx)
+    _b = cx_set_insts(cx, vec_new())
+    # restore binds shallowly - binds mutated in place; for corpus if rare
+    else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
+    else_val = lower_block_value(cx, else_b)
+    else_body = cx_insts(cx)
+    _c = cx_set_insts(cx, saved)
+    d = fresh(cx)
+    inst = vec_new()
+    _d = vec_push(inst, II_IF())
+    _e = vec_push(inst, d)
+    _f = vec_push(inst, c)
+    _g = vec_push(inst, then_body)
+    _h = vec_push(inst, else_body)
+    _i = vec_push(inst, then_val)
+    _j = vec_push(inst, else_val)
+    _p = ir_push(cx, inst)
+    d
+
+fn lower_block_value(cx: Int, b: Int) -> Int ! alloc
+    if b == 0
+        d = fresh(cx)
+        _p = push_const_int(cx, d, 0)
+        d
+    else
+        stmts = block_stmts(b)
+        _a = lower_stmts(cx, stmts, 0, vec_len(stmts))
+        tail = block_tail(b)
+        if tail == 0
+            d = fresh(cx)
+            _p = push_const_int(cx, d, 0)
+            d
+        else
+            lower_expr(cx, tail)
+
+fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = vec_get(stmts, i)
+        is_as = vec_get(st, 0)
+        if is_as == 1
+            v = lower_expr(cx, vec_get(st, 2))
+            _b = cx_bind(cx, vec_get(st, 1), v)
+            # tensor literal assign
+            ex = vec_get(st, 2)
+            if ex_kind(ex) == EX_TENSOR()
+                bb = cx_find(cx, vec_get(st, 1))
+                if bb == 0
+                    _x = 0
+                else
+                    _t = bind_set_tensor(bb, 1)
+                    _n = bind_set_ndims(bb, 2)
+                    dims = bind_dims(bb)
+                    conc = bind_concrete(bb)
+                    _p = vec_push(dims, vec_get(ex, 1))
+                    _q = vec_push(dims, vec_get(ex, 2))
+                    _r = vec_push(conc, vec_get(ex, 1))
+                    _s = vec_push(conc, vec_get(ex, 2))
+            else
+                _x = 0
+        else
+            _v = lower_expr(cx, vec_get(st, 2))
+        lower_stmts(cx, stmts, i + 1, n)
+
+fn lower_fn(f: Int, fn_names: Int, fm: Int) -> Int ! alloc
+    cx = cx_new(fn_names, fm)
+    params = vec_get(f, 1)
+    _a = lower_params(cx, params, 0, vec_len(params))
+    body = vec_get(f, 2)
+    stmts = block_stmts(body)
+    _b = lower_stmts(cx, stmts, 0, vec_len(stmts))
+    tail = block_tail(body)
+    if tail == 0
+        _c = 0
+    else
+        v = lower_expr(cx, tail)
+        _c = ir_push(cx, ir_ret(v))
+    out = vec_new()
+    _d = vec_push(out, vec_get(f, 0))
+    _e = vec_push(out, cx_dim_params(cx))
+    _f = vec_push(out, cx_insts(cx))
+    _g = vec_push(out, cx_regions(cx))
+    out
+
+fn lower_program(prog: Int) -> Int ! alloc
+    lower_program_with_callables(prog, vec_new())
+
+fn lower_program_with_callables(prog: Int, extra: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    names = collect_fn_names(fns, 0, vec_len(fns), vec_new())
+    names = merge_callable_names(extra, names)
+    fm = map_new()
+    _i = fill_fn_map(fm, names, 0, vec_len(names))
+    out = vec_new()
+    lower_fns(fns, names, fm, 0, vec_len(fns), out)
+
+fn lower_fns(fns: Int, names: Int, fm: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        irf = lower_fn(vec_get(fns, i), names, fm)
+        _p = vec_push(out, irf)
+        lower_fns(fns, names, fm, i + 1, n, out)

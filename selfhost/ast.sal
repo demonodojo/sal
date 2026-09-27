@@ -1,0 +1,168 @@
+# AST constructors. Binary operators are left-associative in the parser that builds them.
+
+fn EX_INT() -> Int
+    0
+
+fn EX_FLOAT() -> Int
+    1
+
+fn EX_STRING() -> Int
+    2
+
+fn EX_IDENT() -> Int
+    3
+
+fn EX_BINARY() -> Int
+    4
+
+fn EX_CALL() -> Int
+    5
+
+fn EX_TO() -> Int
+    6
+
+fn EX_ON() -> Int
+    7
+
+fn EX_TENSOR() -> Int
+    8
+
+fn EX_IF() -> Int
+    9
+
+fn EX_WHILE() -> Int
+    10
+
+# ---- AST ----
+fn ex_int(v: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_INT())
+    _b = vec_push(e, v)
+    e
+
+fn ex_float() -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_FLOAT())
+    _b = vec_push(e, 0)
+    e
+
+fn ex_string(t: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_STRING())
+    _b = vec_push(e, t)
+    e
+
+fn ex_ident(t: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_IDENT())
+    _b = vec_push(e, t)
+    e
+
+fn ex_binary(op: Int, left: Int, right: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_BINARY())
+    _b = vec_push(e, op)
+    _c = vec_push(e, left)
+    _d = vec_push(e, right)
+    e
+
+fn ex_call(name: Int, args: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_CALL())
+    _b = vec_push(e, name)
+    _c = vec_push(e, args)
+    e
+
+fn ex_to(place: Int, inner: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_TO())
+    _b = vec_push(e, place)
+    _c = vec_push(e, inner)
+    e
+
+fn ex_on(place: Int, body: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_ON())
+    _b = vec_push(e, place)
+    _c = vec_push(e, body)
+    e
+
+fn ex_tensor(nrows: Int, ncols: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_TENSOR())
+    _b = vec_push(e, nrows)
+    _c = vec_push(e, ncols)
+    e
+
+fn ex_if(cond: Int, then_b: Int, else_b: Int, arms: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_IF())
+    _b = vec_push(e, cond)
+    _c = vec_push(e, then_b)
+    _d = vec_push(e, else_b)
+    _e = vec_push(e, arms)
+    e
+
+fn ex_while(cond: Int, body: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_WHILE())
+    _b = vec_push(e, cond)
+    _c = vec_push(e, body)
+    e
+
+fn ex_kind(e: Int) -> Int ! alloc
+    if e == 0
+        0 - 1
+    else
+        vec_get(e, 0)
+
+fn stmt_new(is_as: Int, name: Int, expr: Int) -> Int ! alloc
+    s = vec_new()
+    _a = vec_push(s, is_as)
+    _b = vec_push(s, name)
+    _c = vec_push(s, expr)
+    s
+
+fn block_new() -> Int ! alloc
+    b = vec_new()
+    stmts = vec_new()
+    _a = vec_push(b, stmts)
+    _b = vec_push(b, 0)
+    b
+
+fn block_stmts(b: Int) -> Int ! alloc
+    vec_get(b, 0)
+
+fn block_tail(b: Int) -> Int ! alloc
+    vec_get(b, 1)
+
+fn block_set_tail(b: Int, t: Int) -> Int ! alloc
+    _s = vec_set(b, 1, t)
+    0
+
+fn param_new(name: Int, ty: Int) -> Int ! alloc
+    pr = vec_new()
+    _a = vec_push(pr, name)
+    _b = vec_push(pr, ty)
+    pr
+
+fn fndef_new(name: Int, params: Int, body: Int) -> Int ! alloc
+    f = vec_new()
+    _a = vec_push(f, name)
+    _b = vec_push(f, params)
+    _c = vec_push(f, body)
+    f
+
+fn prog_new() -> Int ! alloc
+    pr = vec_new()
+    fns = vec_new()
+    imps = vec_new()
+    _a = vec_push(pr, fns)
+    _b = vec_push(pr, imps)
+    pr
+
+fn prog_fns(pr: Int) -> Int ! alloc
+    vec_get(pr, 0)
+
+fn prog_imports(pr: Int) -> Int ! alloc
+    vec_get(pr, 1)

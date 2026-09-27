@@ -1,0 +1,1678 @@
+# Emission: IR text and C.
+import result
+import lexer
+import ast
+import parser
+import ir
+import fuse
+import modules
+import cache
+
+# ---- ir_to_text ----
+fn qquote() -> Int ! alloc
+    char_to_str(34)
+
+fn emit_escape_arg(s: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        c = str_char(s, i)
+        if c == 34
+            bs = strdup("\\")
+            a2 = str_append(acc, bs)
+            # free(bs)
+            piece = char_to_str(34)
+            a3 = str_append(a2, piece)
+            # free(piece)
+            emit_escape_arg(s, i + 1, n, a3)
+        else
+            if c == 92
+                bs = strdup("\\\\")
+                a2 = str_append(acc, bs)
+                # free(bs)
+                emit_escape_arg(s, i + 1, n, a2)
+            else
+                piece = char_to_str(c)
+                a2 = str_append(acc, piece)
+                # free(piece)
+                emit_escape_arg(s, i + 1, n, a2)
+
+fn emit_arg_comma(i: Int) -> Int ! alloc
+    if i > 0
+        strdup(", ")
+    else
+        strdup("")
+
+fn emit_arg_list(args: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        comma = emit_arg_comma(i)
+        acc = str_append(acc, comma)
+        q = qquote()
+        acc = str_append(acc, q)
+        a = vec_get(args, i)
+        esc = emit_escape_arg(a, 0, str_len(a), strdup(""))
+        acc = str_append(acc, esc)
+        acc = str_append(acc, q)
+        emit_arg_list(args, i + 1, n, acc)
+
+fn emit_inst(inst: Int) -> Int ! alloc
+    k = vec_get(inst, 0)
+    if k == II_CI()
+        emit_ci(inst)
+    else
+        if k == II_CS()
+            emit_cs(inst)
+        else
+            if k == II_BIN()
+                emit_bin(inst)
+            else
+                if k == II_CALL()
+                    emit_call(inst)
+                else
+                    if k == II_PLACE()
+                        emit_place(inst)
+                    else
+                        if k == II_RET()
+                            emit_ret(inst)
+                        else
+                            if k == II_DROP()
+                                emit_drop(inst)
+                            else
+                                if k == II_IF()
+                                    emit_if_inst(inst)
+                                else
+                                    strdup("")
+
+fn emit_ci(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  ConstInt {{ dest: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 1))
+    acc = str_append(acc, q)
+    mid = strdup(", value: ")
+    acc = str_append(acc, mid)
+    # free(mid)
+    vs = int_to_str(vec_get(inst, 2))
+    acc = str_append(acc, vs)
+    # free(vs)
+    end = strdup(" }}\n")
+    acc = str_append(acc, end)
+    # free(end)
+    # free(q)
+    acc
+
+fn emit_cs(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  ConstString {{ dest: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 1))
+    acc = str_append(acc, q)
+    mid = strdup(", value: ")
+    acc = str_append(acc, mid)
+    # free(mid)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 2))
+    acc = str_append(acc, q)
+    end = strdup(" }}\n")
+    acc = str_append(acc, end)
+    # free(end)
+    # free(q)
+    acc
+
+fn emit_bin(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  Binary {{ dest: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 1))
+    acc = str_append(acc, q)
+    mid = strdup(", op: ")
+    acc = str_append(acc, mid)
+    # free(mid)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 2))
+    acc = str_append(acc, q)
+    mid2 = strdup(", left: ")
+    acc = str_append(acc, mid2)
+    # free(mid2)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 3))
+    acc = str_append(acc, q)
+    mid3 = strdup(", right: ")
+    acc = str_append(acc, mid3)
+    # free(mid3)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 4))
+    acc = str_append(acc, q)
+    end = strdup(" }}\n")
+    acc = str_append(acc, end)
+    # free(end)
+    # free(q)
+    acc
+
+fn emit_call_dest(inst: Int, q: Int) -> Int ! alloc
+    if vec_get(inst, 4) == 1
+        acc = strdup("Some(")
+        acc = str_append(acc, q)
+        acc = str_append(acc, vec_get(inst, 1))
+        acc = str_append(acc, q)
+        rp = strdup(")")
+        acc = str_append(acc, rp)
+        acc
+    else
+        strdup("None")
+
+fn emit_call(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  Call {{ dest: ")
+    destbit = emit_call_dest(inst, q)
+    acc = str_append(acc, destbit)
+    mid = strdup(", func: ")
+    acc = str_append(acc, mid)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 2))
+    acc = str_append(acc, q)
+    mid2 = strdup(", args: [")
+    acc = str_append(acc, mid2)
+    args = vec_get(inst, 3)
+    acc = emit_arg_list(args, 0, vec_len(args), acc)
+    end = strdup("] }}\n")
+    acc = str_append(acc, end)
+    acc
+
+fn emit_place(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  PlaceCopy {{ dest: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 1))
+    acc = str_append(acc, q)
+    mid = strdup(", from: ")
+    acc = str_append(acc, mid)
+    # free(mid)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 2))
+    acc = str_append(acc, q)
+    mid2 = strdup(", to_place: ")
+    acc = str_append(acc, mid2)
+    # free(mid2)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 3))
+    acc = str_append(acc, q)
+    end = strdup(" }}\n")
+    acc = str_append(acc, end)
+    # free(end)
+    # free(q)
+    acc
+
+fn emit_ret(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  Return {{ value: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 1))
+    acc = str_append(acc, q)
+    end = strdup(" }}\n")
+    acc = str_append(acc, end)
+    # free(end)
+    # free(q)
+    acc
+
+fn emit_drop(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  Drop {{ name: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 1))
+    acc = str_append(acc, q)
+    end = strdup(" }}\n")
+    acc = str_append(acc, end)
+    # free(end)
+    # free(q)
+    acc
+
+fn emit_if_comma(i: Int) -> Int ! alloc
+    if i > 0
+        strdup(", ")
+    else
+        strdup("")
+
+fn trim_nl(piece: Int) -> Int ! alloc
+    ln = str_len(piece)
+    if ln > 0
+        if str_char(piece, ln - 1) == 10
+            str_slice(piece, 0, ln - 1)
+        else
+            piece
+    else
+        piece
+
+fn emit_if_body(body: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        comma = emit_if_comma(i)
+        acc = str_append(acc, comma)
+        piece = emit_inst(vec_get(body, i))
+        piece2 = trim_nl(piece)
+        piece3 = strip_spaces(piece2)
+        acc = str_append(acc, piece3)
+        emit_if_body(body, i + 1, n, acc)
+
+fn strip_spaces(s: Int) -> Int ! alloc
+    n = str_len(s)
+    i = 0
+    strip_spaces_go(s, 0, n)
+
+fn strip_spaces_go(s: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        strdup("")
+    else
+        if str_char(s, i) == 32
+            strip_spaces_go(s, i + 1, n)
+        else
+            str_slice(s, i, n)
+
+fn emit_if_inst(inst: Int) -> Int ! alloc
+    q = qquote()
+    acc = strdup("  If {{ cond: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 2))
+    acc = str_append(acc, q)
+    mid = strdup(", then_body: [")
+    acc = str_append(acc, mid)
+    # free(mid)
+    tb = vec_get(inst, 3)
+    acc = emit_if_body(tb, 0, vec_len(tb), acc)
+    mid2 = strdup("], else_body: [")
+    acc = str_append(acc, mid2)
+    # free(mid2)
+    eb = vec_get(inst, 4)
+    acc = emit_if_body(eb, 0, vec_len(eb), acc)
+    mid3 = strdup("], then_val: ")
+    acc = str_append(acc, mid3)
+    # free(mid3)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 5))
+    acc = str_append(acc, q)
+    mid4 = strdup(", else_val: ")
+    acc = str_append(acc, mid4)
+    # free(mid4)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 6))
+    acc = str_append(acc, q)
+    mid5 = strdup(", dest: ")
+    acc = str_append(acc, mid5)
+    # free(mid5)
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(inst, 1))
+    acc = str_append(acc, q)
+    end = strdup(" }}\n")
+    acc = str_append(acc, end)
+    # free(end)
+    # free(q)
+    acc
+
+fn emit_fused_word(fused: Int) -> Int ! alloc
+    if fused == 1
+        strdup("true")
+    else
+        strdup("false")
+
+fn emit_peak_bytes(r: Int) -> Int ! alloc
+    has_peak = vec_get(r, 3)
+    place = vec_get(r, 0)
+    peak = vec_get(r, 5)
+    if has_peak == 1
+        acc = strdup("{{\"")
+        acc = str_append(acc, place)
+        acc = str_append(acc, strdup("\": "))
+        vs = int_to_str(peak)
+        acc = str_append(acc, vs)
+        acc = str_append(acc, strdup("}}"))
+        acc
+    else
+        strdup("{{}}")
+
+fn emit_peak_sym(r: Int) -> Int ! alloc
+    has_sym = vec_get(r, 4)
+    place = vec_get(r, 0)
+    peak_sym = vec_get(r, 6)
+    if has_sym == 1
+        acc = strdup(" peak_symbolic={{\"")
+        acc = str_append(acc, place)
+        acc = str_append(acc, strdup("\": \""))
+        acc = str_append(acc, peak_sym)
+        acc = str_append(acc, strdup("\"}}"))
+        acc
+    else
+        strdup("")
+
+fn emit_region(r: Int) -> Int ! alloc
+    place = vec_get(r, 0)
+    fused = vec_get(r, 2)
+    acc = strdup("  region on ")
+    acc = str_append(acc, place)
+    mid = strdup(" fused=")
+    acc = str_append(acc, mid)
+    fw = emit_fused_word(fused)
+    acc = str_append(acc, fw)
+    mid2 = strdup(" peak_bytes=")
+    acc = str_append(acc, mid2)
+    pb = emit_peak_bytes(r)
+    acc = str_append(acc, pb)
+    ps = emit_peak_sym(r)
+    acc = str_append(acc, ps)
+    acc = str_append(acc, strdup("\n"))
+    ops = vec_get(r, 1)
+    emit_region_ops(ops, 0, vec_len(ops), acc)
+
+fn emit_op_matmul(op: Int, q: Int) -> Int ! alloc
+    acc = strdup("    Matmul {{ lhs: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 1))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(", rhs: "))
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 2))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(", dest: "))
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 3))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(" }}\n"))
+    acc
+
+fn emit_op_epilogue(op: Int, q: Int) -> Int ! alloc
+    acc = strdup("    MapEpilogue {{ op: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 1))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(", input: "))
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 2))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(", dest: "))
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 3))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(" }}  # fused epilogue, no intermediate buffer\n"))
+    acc
+
+fn emit_op_softmax(op: Int, q: Int) -> Int ! alloc
+    acc = strdup("    Softmax {{ input: ")
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 1))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(", dest: "))
+    acc = str_append(acc, q)
+    acc = str_append(acc, vec_get(op, 3))
+    acc = str_append(acc, q)
+    acc = str_append(acc, strdup(" }}\n"))
+    acc
+
+fn emit_one_op(op: Int) -> Int ! alloc
+    k = vec_get(op, 0)
+    q = qquote()
+    if k == FO_MATMUL()
+        emit_op_matmul(op, q)
+    else
+        if k == FO_EPILOGUE()
+            emit_op_epilogue(op, q)
+        else
+            if k == FO_SOFTMAX()
+                emit_op_softmax(op, q)
+            else
+                strdup("")
+
+fn emit_region_ops(ops: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_one_op(vec_get(ops, i))
+        acc2 = str_append(acc, piece)
+        emit_region_ops(ops, i + 1, n, acc2)
+
+fn emit_dim_comma(i: Int) -> Int ! alloc
+    if i > 0
+        strdup(", ")
+    else
+        strdup("")
+
+fn emit_dim_params(dps: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        comma = emit_dim_comma(i)
+        acc = str_append(acc, comma)
+        q = qquote()
+        acc = str_append(acc, q)
+        acc = str_append(acc, vec_get(dps, i))
+        acc = str_append(acc, q)
+        emit_dim_params(dps, i + 1, n, acc)
+
+fn emit_dim_section(dps: Int) -> Int ! alloc
+    if vec_len(dps) > 0
+        acc = strdup("  dim_params=[")
+        acc = emit_dim_params(dps, 0, vec_len(dps), acc)
+        acc = str_append(acc, strdup("]\n"))
+        acc
+    else
+        strdup("")
+
+fn emit_fn(irf: Int) -> Int ! alloc
+    name = vec_get(irf, 0)
+    dps = vec_get(irf, 1)
+    insts = vec_get(irf, 2)
+    regions = vec_get(irf, 3)
+    acc = strdup("fn ")
+    acc = str_append(acc, name)
+    acc = str_append(acc, strdup(":\n"))
+    dims = emit_dim_section(dps)
+    acc = str_append(acc, dims)
+    acc = emit_insts(insts, 0, vec_len(insts), acc)
+    emit_regions(regions, 0, vec_len(regions), acc)
+
+fn emit_insts(insts: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_inst(vec_get(insts, i))
+        acc = str_append(acc, piece)
+        # free(piece)
+        emit_insts(insts, i + 1, n, acc)
+
+fn emit_regions(regions: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_region(vec_get(regions, i))
+        acc = str_append(acc, piece)
+        # free(piece)
+        emit_regions(regions, i + 1, n, acc)
+
+fn ir_to_text(mod: Int) -> Int ! alloc
+    ir_text(mod)
+
+fn emit_fns(mod: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_fn(vec_get(mod, i))
+        acc = str_append(acc, piece)
+        # free(piece)
+        emit_fns(mod, i + 1, n, acc)
+
+fn emit_ir_from_prog(prog: Int) -> Int ! alloc
+    emit_ir_from_prog_with_extra(prog, vec_new())
+
+fn emit_ir_from_prog_with_extra(prog: Int, extra: Int) -> Int ! alloc
+    ir = lower_program_with_callables(prog, extra)
+    ir_to_text(ir)
+
+fn emit_ir_from_graph(order_in: Int, source_path: Int) -> Int ! io, alloc
+    proot = project_root()
+    chk = check_all_modules(order_in, proot)
+    if result_is_err(chk) == 1
+        chk
+    else
+        root_m = graph_root_mod(order_in)
+        cstep = callable_fn_names(root_m, order_in, proot)
+        if result_is_err(cstep) == 1
+            cstep
+        else
+            extra = result_unwrap(cstep)
+            root_prog = graph_root_prog(order_in)
+            result_ok(emit_ir_from_prog_with_extra(root_prog, extra))
+
+fn emit_ir_from_path(source_path: Int) -> Int ! io, alloc
+    proot = project_root()
+    g = resolve_module_graph(source_path, proot)
+    if result_is_err(g) == 1
+        g
+    else
+        emit_ir_from_graph(result_payload(g), source_path)
+
+fn emit_ir_for_file(source_path: Int, src: Int) -> Int ! io, alloc
+    pre = preprocess(src)
+    parsed = parse_program(pre)
+    if result_is_err(parsed) == 1
+        parsed
+    else
+        prog = result_unwrap(parsed)
+        dir = cache_dir()
+        _m = mkdir_p(dir)
+        if str_len(source_path) == 0
+            key = source_hash(pre)
+            irpath = cache_ir_path(dir, key)
+            metapath = cache_meta_path(dir, key)
+            cached = read_file(irpath)
+            if str_len(cached) > 0
+                _w = write_file(metapath, strdup("hit=1\n"))
+                result_ok(cached)
+            else
+                ir0 = emit_ir_from_prog(prog)
+                _w0 = write_file(irpath, ir0)
+                _w1 = write_file(metapath, strdup("hit=0\n"))
+                result_ok(ir0)
+        else
+            if vec_len(prog_imports(prog)) == 0
+                key = source_hash(pre)
+                irpath = cache_ir_path(dir, key)
+                metapath = cache_meta_path(dir, key)
+                cached = read_file(irpath)
+                if str_len(cached) > 0
+                    _w = write_file(metapath, strdup("hit=1\n"))
+                    result_ok(cached)
+                else
+                    ir0 = emit_ir_from_prog(prog)
+                    _w0 = write_file(irpath, ir0)
+                    _w1 = write_file(metapath, strdup("hit=0\n"))
+                    result_ok(ir0)
+            else
+                g = resolve_module_graph(source_path, project_root())
+                if result_is_err(g) == 1
+                    g
+                else
+                    key = cache_key_for_graph_path(pre, source_path)
+                    irpath = cache_ir_path(dir, key)
+                    metapath = cache_meta_path(dir, key)
+                    cached = read_file(irpath)
+                    if str_len(cached) > 0
+                        _w = write_file(metapath, strdup("hit=1\n"))
+                        result_ok(cached)
+                    else
+                        ir1 = emit_ir_from_graph(g, source_path)
+                        if result_is_err(ir1) == 1
+                            ir1
+                        else
+                            body = result_unwrap(ir1)
+                            _w2 = write_file(irpath, body)
+                            _w3 = write_file(metapath, strdup("hit=0\n"))
+                            result_ok(body)
+
+fn emit_ir(src: Int) -> Int ! io, alloc
+    emit_ir_for_file(strdup(""), src)
+
+fn emit_c_from_prog_result(src: Int) -> Int ! alloc
+    pre = preprocess(src)
+    parsed = parse_program(pre)
+    if result_is_err(parsed) == 1
+        parsed
+    else
+        prog = result_unwrap(parsed)
+        result_ok(emit_c_from_ast(prog))
+
+fn emit_c_for_file(source_path: Int, src: Int, out_path: Int) -> Int ! io, alloc
+    pre = preprocess(src)
+    parsed = parse_program(pre)
+    if result_is_err(parsed) == 1
+        parsed
+    else
+        prog = result_unwrap(parsed)
+        if str_len(source_path) == 0
+            result_ok(emit_c_from_ast(prog))
+        else
+            if vec_len(prog_imports(prog)) == 0
+                ccode = emit_c_from_ast(prog)
+                cpath = tmp_path("out.c")
+                _w = write_file(cpath, ccode)
+                if clang(cpath, out_path) == 0
+                    result_ok(strdup(""))
+                else
+                    result_err(strdup("clang failed"))
+            else
+                emit_c_from_path(source_path, out_path)
+
+fn emit_c_from_path(source_path: Int, out_path: Int) -> Int ! io, alloc
+    proot = project_root()
+    g = resolve_module_graph(source_path, proot)
+    if result_is_err(g) == 1
+        g
+    else
+        chk = check_all_modules(g, proot)
+        if result_is_err(chk) == 1
+            chk
+        else
+            root_key = graph_root_key(g)
+            emit_c_compile_graph(g, root_key, out_path, proot)
+
+# ---- emit_c (AST → C) ----
+fn mangled(name: Int) -> Int ! alloc
+    pref = strdup("fn_")
+    str_append(pref, name)
+
+fn c_escape_go(s: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        c = str_char(s, i)
+        if c == 92
+            acc = str_append(acc, strdup("\\\\"))
+            c_escape_go(s, i + 1, n, acc)
+        else
+            if c == 34
+                acc = str_append(acc, strdup("\\\""))
+                c_escape_go(s, i + 1, n, acc)
+            else
+                if c == 10
+                    acc = str_append(acc, strdup("\\n"))
+                    c_escape_go(s, i + 1, n, acc)
+                else
+                    if c == 9
+                        acc = str_append(acc, strdup("\\t"))
+                        c_escape_go(s, i + 1, n, acc)
+                    else
+                        piece = char_to_str(c)
+                        acc = str_append(acc, piece)
+                        # free(piece)
+                        c_escape_go(s, i + 1, n, acc)
+
+fn c_escape_str(s: Int) -> Int ! alloc
+    acc = strdup("\"")
+    if s == 0
+        acc = str_append(acc, strdup("\""))
+        acc
+    else
+        acc = c_escape_go(s, 0, str_len(s), acc)
+        acc = str_append(acc, strdup("\""))
+        acc
+
+fn runtime_decls() -> Int ! alloc
+    strdup("#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\n\n")
+
+fn user_fns_from_prog(prog: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    collect_fn_names(fns, 0, vec_len(fns), vec_new())
+
+fn names_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        if str_eq(vec_get(names, i), name) == 1
+            1
+        else
+            names_has(names, name, i + 1, n)
+
+fn collect_assigns_block(b: Int, names: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        _a = collect_assigns_stmts(stmts, 0, vec_len(stmts), names)
+        collect_assigns_expr(block_tail(b), names)
+
+fn collect_assigns_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = vec_get(stmts, i)
+        if vec_get(st, 0) == 1
+            nm = vec_get(st, 1)
+            if names_has(names, nm, 0, vec_len(names)) == 0
+                _p = vec_push(names, nm)
+            else
+                _p = 0
+        else
+            _p = 0
+        _c = collect_assigns_expr(vec_get(st, 2), names)
+        collect_assigns_stmts(stmts, i + 1, n, names)
+
+fn collect_assigns_expr(e: Int, names: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_IF()
+            _a = collect_assigns_expr(vec_get(e, 1), names)
+            _b = collect_assigns_block(vec_get(e, 2), names)
+            _c = collect_assigns_arms(vec_get(e, 4), 0, vec_len(vec_get(e, 4)), names)
+            collect_assigns_block(vec_get(e, 3), names)
+        else
+            if k == EX_WHILE()
+                _a = collect_assigns_expr(vec_get(e, 1), names)
+                collect_assigns_block(vec_get(e, 2), names)
+            else
+                if k == EX_BINARY()
+                    _a = collect_assigns_expr(vec_get(e, 2), names)
+                    collect_assigns_expr(vec_get(e, 3), names)
+                else
+                    if k == EX_CALL()
+                        args = vec_get(e, 2)
+                        collect_assigns_args(args, 0, vec_len(args), names)
+                    else
+                        if k == EX_TO()
+                            collect_assigns_expr(vec_get(e, 2), names)
+                        else
+                            if k == EX_ON()
+                                collect_assigns_block(vec_get(e, 2), names)
+                            else
+                                0
+
+fn collect_assigns_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = collect_assigns_expr(vec_get(arm, 0), names)
+        _b = collect_assigns_block(vec_get(arm, 1), names)
+        collect_assigns_arms(arms, i + 1, n, names)
+
+fn collect_assigns_args(args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = collect_assigns_expr(vec_get(args, i), names)
+        collect_assigns_args(args, i + 1, n, names)
+
+fn emit_decl_names(names: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        acc = str_append(acc, strdup("  int64_t "))
+        acc = str_append(acc, vec_get(names, i))
+        acc = str_append(acc, strdup(" = 0;\n"))
+        emit_decl_names(names, i + 1, n, acc)
+
+fn tmp_counter_new() -> Int ! alloc
+    v = vec_new()
+    _p = vec_push(v, 0)
+    v
+
+fn tmp_fresh(tc: Int) -> Int ! alloc
+    n = vec_get(tc, 0) + 1
+    _s = vec_set(tc, 0, n)
+    pref = strdup("__t")
+    ns = int_to_str(n)
+    r = str_append(pref, ns)
+    # free(ns)
+    r
+
+fn cmap_op(op: Int) -> Int ! alloc
+    if str_eq(op, "add") == 1
+        strdup("+")
+    else
+        if str_eq(op, "sub") == 1
+            strdup("-")
+        else
+            if str_eq(op, "mul") == 1
+                strdup("*")
+            else
+                if str_eq(op, "div") == 1
+                    strdup("/")
+                else
+                    if str_eq(op, "eq") == 1
+                        strdup("==")
+                    else
+                        if str_eq(op, "ne") == 1
+                            strdup("!=")
+                        else
+                            if str_eq(op, "lt") == 1
+                                strdup("<")
+                            else
+                                if str_eq(op, "le") == 1
+                                    strdup("<=")
+                                else
+                                    if str_eq(op, "gt") == 1
+                                        strdup(">")
+                                    else
+                                        if str_eq(op, "ge") == 1
+                                            strdup(">=")
+                                        else
+                                            strdup("+")
+
+fn emit_c_expr(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    if e == 0
+        strdup("0")
+    else
+        k = ex_kind(e)
+        if k == EX_INT()
+            int_to_str(vec_get(e, 1))
+        else
+            if k == EX_FLOAT()
+                strdup("0")
+            else
+                if k == EX_STRING()
+                    esc = c_escape_str(vec_get(e, 1))
+                    acc = strdup("((int64_t)(uintptr_t)(const char *)")
+                    acc = str_append(acc, esc)
+                    # free(esc)
+                    acc = str_append(acc, strdup(")"))
+                    acc
+                else
+                    if k == EX_IDENT()
+                        strdup(vec_get(e, 1))
+                    else
+                        if k == EX_BINARY()
+                            emit_c_binary(e, user, stmts, tc)
+                        else
+                            if k == EX_CALL()
+                                emit_c_call(e, user, stmts, tc)
+                            else
+                                if k == EX_IF()
+                                    emit_c_if(e, user, stmts, tc)
+                                else
+                                    if k == EX_WHILE()
+                                        emit_c_while(e, user, stmts, tc)
+                                    else
+                                        strdup("0")
+
+fn emit_c_binary(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    l = emit_c_expr(vec_get(e, 2), user, stmts, tc)
+    r = emit_c_expr(vec_get(e, 3), user, stmts, tc)
+    op = cmap_op(vec_get(e, 1))
+    acc = strdup("(")
+    acc = str_append(acc, l)
+    # free(l)
+    acc = str_append(acc, strdup(" "))
+    acc = str_append(acc, op)
+    # free(op)
+    acc = str_append(acc, strdup(" "))
+    acc = str_append(acc, r)
+    # free(r)
+    acc = str_append(acc, strdup(")"))
+    acc
+
+fn emit_c_args(args: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        a = emit_c_expr(vec_get(args, i), user, stmts, tc)
+        _p = vec_push(out, a)
+        emit_c_args(args, i + 1, n, user, stmts, tc, out)
+
+fn join_comma_piece(i: Int) -> Int ! alloc
+    if i > 0
+        strdup(", ")
+    else
+        strdup("")
+
+fn join_commas(parts: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        comma = join_comma_piece(i)
+        acc = str_append(acc, comma)
+        acc = str_append(acc, vec_get(parts, i))
+        join_commas(parts, i + 1, n, acc)
+
+fn emit_c_call(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    fname = vec_get(e, 1)
+    args_e = vec_get(e, 2)
+    arg_parts = emit_c_args(args_e, 0, vec_len(args_e), user, stmts, tc, vec_new())
+    if names_has(user, fname, 0, vec_len(user)) == 1
+        m = mangled(fname)
+        acc = strdup(m)
+        # free(m)
+        acc = str_append(acc, strdup("("))
+        acc = join_commas(arg_parts, 0, vec_len(arg_parts), acc)
+        acc = str_append(acc, strdup(")"))
+        acc
+    else
+        emit_c_builtin(fname, arg_parts, stmts)
+
+fn arg_at(args: Int, i: Int) -> Int ! alloc
+    if i < vec_len(args)
+        vec_get(args, i)
+    else
+        strdup("0")
+
+fn emit_c_builtin(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "map_new") == 1
+        strdup("((int64_t)(uintptr_t)sal_map_new())")
+    else
+        if str_eq(fname, "map_get") == 1
+            a0 = arg_at(args, 0)
+            a1 = arg_at(args, 1)
+            acc = strdup("sal_map_get((void *)(uintptr_t)")
+            acc = str_append(acc, a0)
+            acc = str_append(acc, strdup(", (const char *)(uintptr_t)"))
+            acc = str_append(acc, a1)
+            acc = str_append(acc, strdup(")"))
+            acc
+        else
+            if str_eq(fname, "map_put") == 1
+                a0 = arg_at(args, 0)
+                a1 = arg_at(args, 1)
+                a2 = arg_at(args, 2)
+                acc = strdup("sal_map_put((void *)(uintptr_t)")
+                acc = str_append(acc, a0)
+                acc = str_append(acc, strdup(", (const char *)(uintptr_t)"))
+                acc = str_append(acc, a1)
+                acc = str_append(acc, strdup(", "))
+                acc = str_append(acc, a2)
+                acc = str_append(acc, strdup(")"))
+                acc
+            else
+                if str_eq(fname, "ir_text") == 1
+                    a0 = arg_at(args, 0)
+                    acc = strdup("((int64_t)(uintptr_t)sal_ir_text((void *)(uintptr_t)")
+                    acc = str_append(acc, a0)
+                    acc = str_append(acc, strdup("))"))
+                    acc
+                else
+                    if str_eq(fname, "lex_src") == 1
+                        a0 = arg_at(args, 0)
+                        acc = strdup("((int64_t)(uintptr_t)sal_lex_src((const char *)(uintptr_t)")
+                        acc = str_append(acc, a0)
+                        acc = str_append(acc, strdup("))"))
+                        acc
+                    else
+                        emit_c_builtin_skip(fname, args, stmts)
+
+fn emit_c_builtin_skip(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "str_skip") == 1
+        a = arg_at(args, 0)
+        b = arg_at(args, 1)
+        c = arg_at(args, 2)
+        d = arg_at(args, 3)
+        acc = strdup("sal_str_skip((const char*)(uintptr_t)")
+        acc = str_append(acc, a)
+        acc = str_append(acc, strdup(","))
+        acc = str_append(acc, b)
+        acc = str_append(acc, strdup(","))
+        acc = str_append(acc, c)
+        acc = str_append(acc, strdup(","))
+        acc = str_append(acc, d)
+        acc = str_append(acc, strdup(")"))
+        acc
+    else
+        if str_eq(fname, "str_hash") == 1
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            acc = strdup("sal_str_hash((const char*)(uintptr_t)")
+            acc = str_append(acc, a)
+            acc = str_append(acc, strdup(","))
+            acc = str_append(acc, b)
+            acc = str_append(acc, strdup(")"))
+            acc
+        else
+            emit_c_builtin_rest(fname, args, stmts)
+
+fn emit_c_builtin_rest(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "vec_new") == 1
+        strdup("((int64_t)(uintptr_t)sal_vec_new())")
+    else
+        if str_eq(fname, "argv") == 1
+            a0 = arg_at(args, 0)
+            acc = strdup("((int64_t)(uintptr_t)sal_argv(")
+            acc = str_append(acc, a0)
+            acc = str_append(acc, strdup("))"))
+            acc
+        else
+            if str_eq(fname, "read_file") == 1
+                a0 = arg_at(args, 0)
+                acc = strdup("((int64_t)(uintptr_t)sal_read_file((const char *)(uintptr_t)")
+                acc = str_append(acc, a0)
+                acc = str_append(acc, strdup("))"))
+                acc
+            else
+                if str_eq(fname, "strdup") == 1
+                    a0 = arg_at(args, 0)
+                    acc = strdup("((int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)")
+                    acc = str_append(acc, a0)
+                    acc = str_append(acc, strdup("))"))
+                    acc
+                else
+                    if str_eq(fname, "tmp_path") == 1
+                        a0 = arg_at(args, 0)
+                        acc = strdup("((int64_t)(uintptr_t)sal_tmp_path((const char *)(uintptr_t)")
+                        acc = str_append(acc, a0)
+                        acc = str_append(acc, strdup("))"))
+                        acc
+                    else
+                        if str_eq(fname, "int_to_str") == 1
+                            a0 = arg_at(args, 0)
+                            acc = strdup("((int64_t)(uintptr_t)sal_int_to_str(")
+                            acc = str_append(acc, a0)
+                            acc = str_append(acc, strdup("))"))
+                            acc
+                        else
+                            if str_eq(fname, "char_to_str") == 1
+                                a0 = arg_at(args, 0)
+                                acc = strdup("((int64_t)(uintptr_t)sal_char_to_str(")
+                                acc = str_append(acc, a0)
+                                acc = str_append(acc, strdup("))"))
+                                acc
+                            else
+                                emit_c_builtin2(fname, args, stmts)
+
+fn emit_c_builtin2(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "str_append") == 1
+        a = arg_at(args, 0)
+        b = arg_at(args, 1)
+        acc = strdup("((int64_t)(uintptr_t)sal_str_append((char*)(uintptr_t)")
+        acc = str_append(acc, a)
+        acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+        acc = str_append(acc, b)
+        acc = str_append(acc, strdup("))"))
+        acc
+    else
+        if str_eq(fname, "str_concat") == 1
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            acc = strdup("((int64_t)(uintptr_t)sal_str_concat((const char*)(uintptr_t)")
+            acc = str_append(acc, a)
+            acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+            acc = str_append(acc, b)
+            acc = str_append(acc, strdup("))"))
+            acc
+        else
+            if str_eq(fname, "str_slice") == 1
+                a = arg_at(args, 0)
+                b = arg_at(args, 1)
+                c = arg_at(args, 2)
+                acc = strdup("((int64_t)(uintptr_t)sal_str_slice((const char*)(uintptr_t)")
+                acc = str_append(acc, a)
+                acc = str_append(acc, strdup(","))
+                acc = str_append(acc, b)
+                acc = str_append(acc, strdup(","))
+                acc = str_append(acc, c)
+                acc = str_append(acc, strdup("))"))
+                acc
+            else
+                if str_eq(fname, "free") == 1
+                    a0 = arg_at(args, 0)
+                    line = strdup("  sal_free((void*)(uintptr_t)")
+                    line = str_append(line, a0)
+                    line = str_append(line, strdup(");\n"))
+                    _p = vec_push(stmts, line)
+                    strdup("0")
+                else
+                    if str_eq(fname, "clang") == 1
+                        a = arg_at(args, 0)
+                        b = arg_at(args, 1)
+                        acc = strdup("sal_clang((const char*)(uintptr_t)")
+                        acc = str_append(acc, a)
+                        acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+                        acc = str_append(acc, b)
+                        acc = str_append(acc, strdup(")"))
+                        acc
+                    else
+                        if str_eq(fname, "clang_obj") == 1
+                            a = arg_at(args, 0)
+                            b = arg_at(args, 1)
+                            acc = strdup("sal_clang_obj((const char*)(uintptr_t)")
+                            acc = str_append(acc, a)
+                            acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+                            acc = str_append(acc, b)
+                            acc = str_append(acc, strdup(")"))
+                            acc
+                        else
+                            if str_eq(fname, "link_objs") == 1
+                                a = arg_at(args, 0)
+                                b = arg_at(args, 1)
+                                acc = strdup("sal_link_objs((const char*)(uintptr_t)")
+                                acc = str_append(acc, a)
+                                acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+                                acc = str_append(acc, b)
+                                acc = str_append(acc, strdup(")"))
+                                acc
+                            else
+                                if str_eq(fname, "realpath") == 1
+                                    a = arg_at(args, 0)
+                                    acc = strdup("((int64_t)(uintptr_t)sal_realpath((const char*)(uintptr_t)")
+                                    acc = str_append(acc, a)
+                                    acc = str_append(acc, strdup("))"))
+                                    acc
+                                else
+                                    if str_eq(fname, "path_readable") == 1
+                                        a = arg_at(args, 0)
+                                        acc = strdup("sal_path_readable((const char*)(uintptr_t)")
+                                        acc = str_append(acc, a)
+                                        acc = str_append(acc, strdup(")"))
+                                        acc
+                                    else
+                                        emit_c_builtin3(fname, args, stmts)
+
+fn emit_c_builtin3(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "gated_print_str") == 1
+        a = arg_at(args, 0)
+        b = arg_at(args, 1)
+        acc = strdup("sal_gated_print_str(")
+        acc = str_append(acc, a)
+        acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+        acc = str_append(acc, b)
+        acc = str_append(acc, strdup(")"))
+        acc
+    else
+        if str_eq(fname, "write_file") == 1
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            acc = strdup("sal_write_file((const char*)(uintptr_t)")
+            acc = str_append(acc, a)
+            acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+            acc = str_append(acc, b)
+            acc = str_append(acc, strdup(")"))
+            acc
+        else
+            if str_eq(fname, "str_eq") == 1
+                a = arg_at(args, 0)
+                b = arg_at(args, 1)
+                acc = strdup("sal_str_eq((const char*)(uintptr_t)")
+                acc = str_append(acc, a)
+                acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+                acc = str_append(acc, b)
+                acc = str_append(acc, strdup(")"))
+                acc
+            else
+                if str_eq(fname, "str_contains") == 1
+                    a = arg_at(args, 0)
+                    b = arg_at(args, 1)
+                    acc = strdup("sal_str_contains((const char*)(uintptr_t)")
+                    acc = str_append(acc, a)
+                    acc = str_append(acc, strdup(",(const char*)(uintptr_t)"))
+                    acc = str_append(acc, b)
+                    acc = str_append(acc, strdup(")"))
+                    acc
+                else
+                    if str_eq(fname, "str_len") == 1
+                        a = arg_at(args, 0)
+                        acc = strdup("sal_str_len((const char*)(uintptr_t)")
+                        acc = str_append(acc, a)
+                        acc = str_append(acc, strdup(")"))
+                        acc
+                    else
+                        emit_c_builtin4(fname, args, stmts)
+
+fn emit_c_builtin4(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "str_char") == 1
+        a = arg_at(args, 0)
+        b = arg_at(args, 1)
+        acc = strdup("sal_str_char((const char*)(uintptr_t)")
+        acc = str_append(acc, a)
+        acc = str_append(acc, strdup(","))
+        acc = str_append(acc, b)
+        acc = str_append(acc, strdup(")"))
+        acc
+    else
+        if str_eq(fname, "vec_push") == 1
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            acc = strdup("sal_vec_push((void*)(uintptr_t)")
+            acc = str_append(acc, a)
+            acc = str_append(acc, strdup(","))
+            acc = str_append(acc, b)
+            acc = str_append(acc, strdup(")"))
+            acc
+        else
+            if str_eq(fname, "vec_get") == 1
+                a = arg_at(args, 0)
+                b = arg_at(args, 1)
+                acc = strdup("sal_vec_get((void*)(uintptr_t)")
+                acc = str_append(acc, a)
+                acc = str_append(acc, strdup(","))
+                acc = str_append(acc, b)
+                acc = str_append(acc, strdup(")"))
+                acc
+            else
+                if str_eq(fname, "vec_set") == 1
+                    a = arg_at(args, 0)
+                    b = arg_at(args, 1)
+                    c = arg_at(args, 2)
+                    acc = strdup("sal_vec_set((void*)(uintptr_t)")
+                    acc = str_append(acc, a)
+                    acc = str_append(acc, strdup(","))
+                    acc = str_append(acc, b)
+                    acc = str_append(acc, strdup(","))
+                    acc = str_append(acc, c)
+                    acc = str_append(acc, strdup(")"))
+                    acc
+                else
+                    if str_eq(fname, "vec_len") == 1
+                        a = arg_at(args, 0)
+                        acc = strdup("sal_vec_len((void*)(uintptr_t)")
+                        acc = str_append(acc, a)
+                        acc = str_append(acc, strdup(")"))
+                        acc
+                    else
+                        emit_c_builtin5(fname, args, stmts)
+
+fn emit_c_builtin5(fname: Int, args: Int, stmts: Int) -> Int ! alloc
+    if str_eq(fname, "vec_free") == 1
+        a0 = arg_at(args, 0)
+        line = strdup("  sal_vec_free((void*)(uintptr_t)")
+        line = str_append(line, a0)
+        line = str_append(line, strdup(");\n"))
+        _p = vec_push(stmts, line)
+        strdup("0")
+    else
+        if str_eq(fname, "not") == 1
+            a0 = arg_at(args, 0)
+            acc = strdup("sal_not(")
+            acc = str_append(acc, a0)
+            acc = str_append(acc, strdup(")"))
+            acc
+        else
+            if str_eq(fname, "print_str") == 1
+                a0 = arg_at(args, 0)
+                acc = strdup("sal_print_str((const char*)(uintptr_t)")
+                acc = str_append(acc, a0)
+                acc = str_append(acc, strdup(")"))
+                acc
+            else
+                if str_eq(fname, "eprint_str") == 1
+                    a0 = arg_at(args, 0)
+                    acc = strdup("sal_eprint_str((const char*)(uintptr_t)")
+                    acc = str_append(acc, a0)
+                    acc = str_append(acc, strdup(")"))
+                    acc
+                else
+                    if str_eq(fname, "print") == 1
+                        a0 = arg_at(args, 0)
+                        acc = strdup("sal_print_i64(")
+                        acc = str_append(acc, a0)
+                        acc = str_append(acc, strdup(")"))
+                        acc
+                    else
+                        if str_eq(fname, "getenv") == 1
+                            a0 = arg_at(args, 0)
+                            acc = strdup("((int64_t)(uintptr_t)sal_getenv((const char*)(uintptr_t)")
+                            acc = str_append(acc, a0)
+                            acc = str_append(acc, strdup("))"))
+                            acc
+                        else
+                            if str_eq(fname, "mkdir_p") == 1
+                                a0 = arg_at(args, 0)
+                                acc = strdup("sal_mkdir_p((const char*)(uintptr_t)")
+                                acc = str_append(acc, a0)
+                                acc = str_append(acc, strdup(")"))
+                                acc
+                            else
+                                if str_eq(fname, "select_str") == 1
+                                    c = arg_at(args, 0)
+                                    a = arg_at(args, 1)
+                                    b = arg_at(args, 2)
+                                    acc = strdup("((int64_t)(uintptr_t)sal_select_str(")
+                                    acc = str_append(acc, c)
+                                    acc = str_append(acc, strdup(",(char*)(uintptr_t)"))
+                                    acc = str_append(acc, a)
+                                    acc = str_append(acc, strdup(",(char*)(uintptr_t)"))
+                                    acc = str_append(acc, b)
+                                    acc = str_append(acc, strdup("))"))
+                                    acc
+                                else
+                                    if str_eq(fname, "place_matmul_ai_sum") == 1
+                                        a0 = arg_at(args, 0)
+                                        acc = strdup("sal_place_matmul_ai_sum(")
+                                        acc = str_append(acc, a0)
+                                        acc = str_append(acc, strdup(")"))
+                                        acc
+                                    else
+                                        if str_eq(fname, "place_launches") == 1
+                                            a0 = arg_at(args, 0)
+                                            acc = strdup("sal_place_launches(")
+                                            acc = str_append(acc, a0)
+                                            acc = str_append(acc, strdup(")"))
+                                            acc
+                                        else
+                                            if str_eq(fname, "image_new") == 1
+                                                a = arg_at(args, 0)
+                                                b = arg_at(args, 1)
+                                                acc = strdup("((int64_t)(uintptr_t)sal_image_new(")
+                                                acc = str_append(acc, a)
+                                                acc = str_append(acc, strdup(","))
+                                                acc = str_append(acc, b)
+                                                acc = str_append(acc, strdup("))"))
+                                                acc
+                                            else
+                                                if str_eq(fname, "write_png") == 1
+                                                    a = arg_at(args, 0)
+                                                    b = arg_at(args, 1)
+                                                    c = arg_at(args, 2)
+                                                    d = arg_at(args, 3)
+                                                    acc = strdup("sal_write_png((const char*)(uintptr_t)")
+                                                    acc = str_append(acc, a)
+                                                    acc = str_append(acc, strdup(","))
+                                                    acc = str_append(acc, b)
+                                                    acc = str_append(acc, strdup(","))
+                                                    acc = str_append(acc, c)
+                                                    acc = str_append(acc, strdup(",(void*)(uintptr_t)"))
+                                                    acc = str_append(acc, d)
+                                                    acc = str_append(acc, strdup(")"))
+                                                    acc
+                                                else
+                                                    strdup("0")
+
+fn emit_c_while(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    cond_stmts = vec_new()
+    c = emit_c_expr(vec_get(e, 1), user, cond_stmts, tc)
+    _q = vec_push(stmts, strdup("  while (1) {{\n"))
+    _a = append_stmts(stmts, cond_stmts)
+    line = strdup("    if (!(")
+    line = str_append(line, c)
+    line = str_append(line, strdup(")) break;\n"))
+    _b = vec_push(stmts, line)
+    body_stmts = vec_new()
+    _tv = emit_c_block(vec_get(e, 2), user, body_stmts, tc)
+    _c = append_stmts(stmts, body_stmts)
+    _d = vec_push(stmts, strdup("  }}\n"))
+    strdup("0")
+
+fn emit_c_if(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    c = emit_c_expr(vec_get(e, 1), user, stmts, tc)
+    tname = tmp_fresh(tc)
+    line = strdup("  int64_t ")
+    line = str_append(line, tname)
+    line = str_append(line, strdup(";\n"))
+    _p = vec_push(stmts, line)
+    line2 = strdup("  if (")
+    line2 = str_append(line2, c)
+    # free(c)
+    line2 = str_append(line2, strdup(") {{\n"))
+    _q = vec_push(stmts, line2)
+    then_stmts = vec_new()
+    then_val = emit_c_block(vec_get(e, 2), user, then_stmts, tc)
+    _a = append_stmts(stmts, then_stmts)
+    line3 = strdup("    ")
+    line3 = str_append(line3, tname)
+    line3 = str_append(line3, strdup(" = "))
+    line3 = str_append(line3, then_val)
+    # free(then_val)
+    line3 = str_append(line3, strdup(";\n"))
+    _r = vec_push(stmts, line3)
+    _s = vec_push(stmts, strdup("  }} else {{\n"))
+    else_stmts = vec_new()
+    else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
+    else_val = emit_c_block(else_b, user, else_stmts, tc)
+    _b = append_stmts(stmts, else_stmts)
+    line4 = strdup("    ")
+    line4 = str_append(line4, tname)
+    line4 = str_append(line4, strdup(" = "))
+    line4 = str_append(line4, else_val)
+    # free(else_val)
+    line4 = str_append(line4, strdup(";\n"))
+    _t = vec_push(stmts, line4)
+    _u = vec_push(stmts, strdup("  }}\n"))
+    tname
+
+fn append_stmts(dst: Int, src: Int) -> Int ! alloc
+    append_stmts_go(dst, src, 0, vec_len(src))
+
+fn append_stmts_go(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(dst, vec_get(src, i))
+        append_stmts_go(dst, src, i + 1, n)
+
+fn emit_c_block(b: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    if b == 0
+        strdup("0")
+    else
+        _a = emit_c_stmts(block_stmts(b), 0, vec_len(block_stmts(b)), user, stmts, tc)
+        tail = block_tail(b)
+        if tail == 0
+            strdup("0")
+        else
+            emit_c_expr(tail, user, stmts, tc)
+
+fn emit_c_stmts(sts: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = vec_get(sts, i)
+        if vec_get(st, 0) == 1
+            val = emit_c_expr(vec_get(st, 2), user, stmts, tc)
+            line = strdup("  ")
+            line = str_append(line, vec_get(st, 1))
+            line = str_append(line, strdup(" = "))
+            line = str_append(line, val)
+            line = str_append(line, strdup(";\n"))
+            _p = vec_push(stmts, line)
+        else
+            val = emit_c_expr(vec_get(st, 2), user, stmts, tc)
+            line = strdup("  ")
+            line = str_append(line, val)
+            line = str_append(line, strdup(";\n"))
+            _p = vec_push(stmts, line)
+        emit_c_stmts(sts, i + 1, n, user, stmts, tc)
+
+fn emit_params_comma(i: Int) -> Int ! alloc
+    if i > 0
+        strdup(", ")
+    else
+        strdup("")
+
+fn emit_params_c(params: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        comma = emit_params_comma(i)
+        acc = str_append(acc, comma)
+        acc = str_append(acc, strdup("int64_t "))
+        acc = str_append(acc, vec_get(vec_get(params, i), 0))
+        emit_params_c(params, i + 1, n, acc)
+
+fn emit_extern_comma(i: Int, acc: Int) -> Int ! alloc
+    if i > 0
+        str_append(acc, strdup(", "))
+    else
+        acc
+
+fn emit_extern_params(n: Int, i: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        acc2 = emit_extern_comma(i, acc)
+        acc3 = str_append(acc2, strdup("int64_t p"))
+        acc4 = str_append(acc3, int_to_str(i))
+        emit_extern_params(n, i + 1, acc4)
+
+fn emit_extern_decl(pair: Int) -> Int ! alloc
+    name = vec_get(pair, 0)
+    nparams = vec_get(pair, 1)
+    m = mangled(name)
+    acc = str_append(strdup("extern int64_t "), m)
+    acc = str_append(acc, strdup("("))
+    if nparams == 0
+        acc = str_append(acc, strdup("void"))
+    else
+        acc = emit_extern_params(nparams, 0, acc)
+    str_append(acc, strdup(");\n"))
+
+fn emit_extern_decls(externs: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_extern_decl(vec_get(externs, i))
+        acc = str_append(acc, piece)
+        emit_extern_decls(externs, i + 1, n, acc)
+
+fn emit_c_fn_header(f: Int, linkable: Int, allow_main: Int) -> Int ! alloc
+    name = vec_get(f, 0)
+    params = vec_get(f, 1)
+    if allow_main == 0
+        if str_eq(name, "main") == 1
+            strdup("")
+        else
+            emit_c_fn_header_body(name, params, linkable)
+    else
+        if str_eq(name, "main") == 1
+            acc = strdup("int main(int argc, char **argv) {{\n")
+            acc = str_append(acc, strdup("  sal_runtime_init((int64_t)argc, (const char **)argv);\n"))
+            acc
+        else
+            emit_c_fn_header_body(name, params, linkable)
+
+fn emit_c_fn_header_body(name: Int, params: Int, linkable: Int) -> Int ! alloc
+    m = mangled(name)
+    pref = select_str(linkable, strdup("int64_t "), strdup("static int64_t "))
+    acc = str_append(pref, m)
+    acc = str_append(acc, strdup("("))
+    acc = emit_params_c(params, 0, vec_len(params), acc)
+    str_append(acc, strdup(") {{\n"))
+
+fn emit_c_fn_footer(is_main: Int, val: Int) -> Int ! alloc
+    if is_main == 1
+        acc = strdup("  return (int)(")
+        acc = str_append(acc, val)
+        acc = str_append(acc, strdup(");\n}}\n\n"))
+        acc
+    else
+        acc = strdup("  return ")
+        acc = str_append(acc, val)
+        acc = str_append(acc, strdup(";\n}}\n\n"))
+        acc
+
+fn param_names(params: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _p = vec_push(out, vec_get(vec_get(params, i), 0))
+        param_names(params, i + 1, n, out)
+
+fn emit_decl_names_filtered(names: Int, i: Int, n: Int, skip: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        nm = vec_get(names, i)
+        if names_has(skip, nm, 0, vec_len(skip)) == 1
+            emit_decl_names_filtered(names, i + 1, n, skip, acc)
+        else
+            acc = str_append(acc, strdup("  int64_t "))
+            acc = str_append(acc, nm)
+            acc = str_append(acc, strdup(" = 0;\n"))
+            emit_decl_names_filtered(names, i + 1, n, skip, acc)
+
+fn emit_c_fn(f: Int, user: Int, linkable: Int, allow_main: Int) -> Int ! alloc
+    name = vec_get(f, 0)
+    body = vec_get(f, 2)
+    is_main = str_eq(name, "main")
+    acc = emit_c_fn_header(f, linkable, allow_main)
+    if str_len(acc) == 0
+        strdup("")
+    else
+        emit_c_fn_body(f, user, is_main, acc)
+
+fn emit_c_fn_body(f: Int, user: Int, is_main: Int, acc: Int) -> Int ! alloc
+    name = vec_get(f, 0)
+    body = vec_get(f, 2)
+    names = vec_new()
+    _c = collect_assigns_block(body, names)
+    skip = param_names(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), vec_new())
+    acc = emit_decl_names_filtered(names, 0, vec_len(names), skip, acc)
+    stmts = vec_new()
+    tc = tmp_counter_new()
+    val = emit_c_block(body, user, stmts, tc)
+    acc = append_stmt_strings(acc, stmts, 0, vec_len(stmts))
+    foot = emit_c_fn_footer(is_main, val)
+    acc = str_append(acc, foot)
+    acc
+
+fn emit_forward_params(params: Int) -> Int ! alloc
+    if vec_len(params) == 0
+        strdup("void")
+    else
+        emit_params_c(params, 0, vec_len(params), strdup(""))
+
+fn emit_forward_decls(fns: Int, i: Int, n: Int, acc: Int, allow_main: Int, linkable: Int) -> Int ! alloc
+    idx = i
+    out = acc
+    while idx < n
+        f = vec_get(fns, idx)
+        name = vec_get(f, 0)
+        skip_main = 0
+        if allow_main == 0
+            if str_eq(name, "main") == 1
+                skip_main = 1
+            else
+                skip_main = 0
+        else
+            if str_eq(name, "main") == 1
+                skip_main = 1
+            else
+                skip_main = 0
+        if skip_main == 0
+            out = emit_forward_one(f, out, linkable)
+        else
+            out = out
+        idx = idx + 1
+    out
+
+fn emit_forward_one(f: Int, acc: Int, linkable: Int) -> Int ! alloc
+    m = mangled(vec_get(f, 0))
+    pref = select_str(linkable, strdup("int64_t "), strdup("static int64_t "))
+    acc = str_append(acc, pref)
+    acc = str_append(acc, m)
+    acc = str_append(acc, strdup("("))
+    ps = emit_forward_params(vec_get(f, 1))
+    acc = str_append(acc, ps)
+    str_append(acc, strdup(");\n"))
+
+fn append_stmt_strings(acc: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        acc = str_append(acc, vec_get(stmts, i))
+        append_stmt_strings(acc, stmts, i + 1, n)
+
+fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: Int, allow_main: Int, linkable: Int) -> Int ! alloc
+    idx = i
+    out = acc
+    while idx < n
+        piece = emit_c_fn(vec_get(fns, idx), user, linkable, allow_main)
+        if str_len(piece) > 0
+            out = str_append(out, piece)
+        else
+            out = out
+        idx = idx + 1
+    out
+
+fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: Int, linkable: Int) -> Int ! alloc
+    acc = runtime_decls()
+    acc = str_append(acc, strdup("#include <stdint.h>\n"))
+    acc = emit_extern_decls(externs, 0, vec_len(externs), acc)
+    fns = prog_fns(prog)
+    acc = emit_forward_decls(fns, 0, vec_len(fns), acc, allow_main, linkable)
+    acc = str_append(acc, strdup("\n"))
+    emit_c_fns(fns, 0, vec_len(fns), callables, acc, allow_main, linkable)
+
+fn emit_c_from_ast(prog: Int) -> Int ! alloc
+    user = user_fns_from_prog(prog)
+    emit_c_from_ast_module(prog, user, vec_new(), 1, 0)
+
+fn call_link_objs(obj_list: Int, out_path: Int) -> Int ! io, alloc
+    link_objs(obj_list, out_path)
+
+fn call_clang_obj(c_path: Int, o_path: Int) -> Int ! io, alloc
+    clang_obj(c_path, o_path)
+
+fn obj_list_prefix(obj_list: Int) -> Int ! alloc
+    if str_len(obj_list) > 0
+        str_append(obj_list, strdup(" "))
+    else
+        obj_list
+
+fn emit_c_compile_graph_go(graph: Int, i: Int, n: Int, root_key: Int, proot: Int, out_path: Int, obj_list: Int) -> Int ! io, alloc
+    if i >= n
+        lrc = call_link_objs(obj_list, out_path)
+        if lrc == 0
+            result_ok(strdup(""))
+        else
+            result_err(strdup("link failed"))
+    else
+        m = vec_get(graph, i)
+        is_root = str_eq(mod_key(m), root_key)
+        allow_main = is_root
+        cstep = callable_fn_names(m, graph, proot)
+        if result_is_err(cstep) == 1
+            cstep
+        else
+            callables = result_unwrap(cstep)
+            externs = extern_fn_arity(m, graph, callables)
+            ccode = emit_c_from_ast_module(mod_prog(m), callables, externs, allow_main, 1)
+            suf = str_concat(strdup("m"), int_to_str(i))
+            cpath = tmp_path(str_concat(suf, strdup(".c")))
+            opath = tmp_path(str_concat(suf, strdup(".o")))
+            _w = write_file(cpath, ccode)
+            if call_clang_obj(cpath, opath) != 0
+                result_err(strdup("clang_obj failed"))
+            else
+                prefix = obj_list_prefix(obj_list)
+                objs2 = str_append(prefix, opath)
+                emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2)
+
+fn emit_c_compile_graph(graph_in: Int, root_key: Int, out_path: Int, proot: Int) -> Int ! io, alloc
+    emit_c_compile_graph_go(module_order_vec(graph_in), 0, vec_len(module_order_vec(graph_in)), root_key, proot, out_path, strdup(""))
+
+fn emit_c(src: Int) -> Int ! alloc
+    emit_c_from_prog_result(src)
