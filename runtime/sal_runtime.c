@@ -1904,9 +1904,9 @@ int64_t sal_clang(const char *c_path, const char *out_path) {
     find_runtime_dir(rdir, sizeof(rdir));
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g -I%s -o %s %s %s/sal_runtime.c %s/gpu_driver.c %s/kernels.c %s/instrument.c -lm "
+             "clang -O0 -g -I%s -o %s %s %s/sal_runtime.c %s/kernels.c %s/instrument.c -lm "
              "2>/tmp/sal-selfhost-clang.err",
-             rdir, out_path, c_path, rdir, rdir, rdir, rdir);
+             rdir, out_path, c_path, rdir, rdir, rdir);
     int rc = system(cmd);
     if (rc != 0) {
         fprintf(stderr, "sal_clang: clang failed (%d)\n", rc);
@@ -1976,9 +1976,9 @@ int64_t sal_link_objs(const char *objs, const char *out_path) {
     char cmd[8192];
     const char *olist = objs ? objs : "";
     snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g %s %s/sal_runtime.c %s/gpu_driver.c %s/kernels.c %s/instrument.c -o %s -lm "
+             "clang -O0 -g %s %s/sal_runtime.c %s/kernels.c %s/instrument.c -o %s -lm "
              "2>/tmp/sal-selfhost-clang.err",
-             olist, rdir, rdir, rdir, rdir, out_path);
+             olist, rdir, rdir, rdir, out_path);
     int rc = system(cmd);
     if (rc != 0) {
         sal_clang_report_err("sal_link_objs", rc);
@@ -2256,3 +2256,6 @@ int64_t sal_place_launches(int64_t place) {
     int p = clamp_place((int)place);
     return g_place_launches[p];
 }
+
+/* Link gpu_driver with every sal_runtime.c TU (sal_clang, older standard/sal on PATH). */
+#include "gpu_driver.c"

@@ -399,7 +399,6 @@ fn link_binary_multi(
         link.arg(obj);
     }
     link.arg(runtime.join("sal_runtime.c"))
-        .arg(runtime.join("gpu_driver.c"))
         .arg(runtime.join("kernels.c"))
         .arg(runtime.join("instrument.c"));
     if let Some(obj) = gpu_obj {
