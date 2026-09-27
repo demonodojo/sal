@@ -319,3 +319,27 @@ fn import_two_modules_run() {
         .expect("run");
     assert_eq!(out.status.code(), Some(42));
 }
+
+#[test]
+fn sal_selfhost_builds_stage2() {
+    let tmp = isolated_root();
+    let project = tmp.path().to_path_buf();
+    let stage2 = project.join("stage2-bin");
+    let status = Command::new(sal_bin())
+        .args([
+            "selfhost",
+            "--out",
+            stage2.to_str().expect("utf8 path"),
+        ])
+        .current_dir(root())
+        .status()
+        .expect("sal selfhost");
+    assert!(status.success(), "sal selfhost failed");
+    assert!(stage2.is_file(), "stage2 binary missing");
+    let nm = Command::new("nm").arg(&stage2).output().expect("nm");
+    let txt = String::from_utf8_lossy(&nm.stdout);
+    assert!(
+        !txt.contains("sal_emit_ir"),
+        "stage2 must not link legacy sal_emit_ir"
+    );
+}

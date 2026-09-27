@@ -24,9 +24,10 @@ sal run examples/hello.sal
 sal fmt examples/hello.sal
 sal emit ast examples/hello.sal
 sal emit ir examples/forward.sal
+sal selfhost   # stage1 (bootstrap) compila selfhost; stage2 se recompila consigo mismo
 
 standard check examples/hello.sal
-standard fix examples/hello.sal
+standard fix examples/hello.sal   # reescribe el fichero in situ
 ```
 
 Flags: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `--instrument-out FILE`.

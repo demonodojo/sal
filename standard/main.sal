@@ -123,7 +123,7 @@ fn run_fix(path: Int, src: Int) -> Int ! io, alloc
         2
     else
         fixed = fix_to_point(src, 0, 16)
-        _pr = print_str(fixed)
+        _wr = write_file(path, fixed)
         pack2 = run_all_cops(fixed)
         if cops_pack_status(pack2) != LEX_OK()
             2

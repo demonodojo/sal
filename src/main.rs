@@ -65,6 +65,16 @@ enum Commands {
         kind: String,
         file: PathBuf,
     },
+    /// Bootstrap selfhost, then recompile it with that binary (stage2).
+    Selfhost {
+        #[arg(long)]
+        release: bool,
+        #[arg(long)]
+        instrument: bool,
+        /// Stage2 binary path (default: target/sal-out/selfhost-stage2).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Compile from a JSON AST (`sal emit ast` output).
     Compile {
         /// Path to a JSON-serialized `Program`.
@@ -194,6 +204,17 @@ fn main() {
                 }
             }
         }
+        Commands::Selfhost {
+            release,
+            instrument,
+            out,
+        } => match build_selfhost_stage2(&root, release, instrument, out.as_ref()) {
+            Ok(path) => println!("{}", path.display()),
+            Err(diags) => {
+                print_diags(&diags, "human");
+                std::process::exit(1);
+            }
+        },
         Commands::Compile {
             ast,
             release,
@@ -262,6 +283,52 @@ fn run_check(
 ) -> Result<(), Vec<Diagnostic>> {
     // skip_link: check does not require a physical GPU/TPU toolchain.
     compile_file(file, &opts(root, false, false, device, true)).map(|_| ())
+}
+
+fn build_selfhost_stage2(
+    root: &PathBuf,
+    release: bool,
+    instrument: bool,
+    out: Option<&PathBuf>,
+) -> Result<PathBuf, Vec<Diagnostic>> {
+    let main = root.join("selfhost/main.sal");
+    let stage1 = build(&main, root, release, instrument, "cpu", false)?;
+    let stage2 = out.cloned().unwrap_or_else(|| {
+        root.join("target")
+            .join("sal-out")
+            .join("selfhost-stage2")
+    });
+    if let Some(parent) = stage2.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            vec![Diagnostic::new(
+                sal_compiler::diag::ErrorCode::EInternal,
+                format!("create stage2 dir: {e}"),
+                Default::default(),
+            )]
+        })?;
+    }
+    let output = Command::new(&stage1)
+        .arg(&main)
+        .arg("-o")
+        .arg(&stage2)
+        .current_dir(root)
+        .output()
+        .map_err(|e| {
+            vec![Diagnostic::new(
+                sal_compiler::diag::ErrorCode::EInternal,
+                format!("run stage1: {e}"),
+                Default::default(),
+            )]
+        })?;
+    if !output.status.success() {
+        let msg = String::from_utf8_lossy(&output.stderr);
+        return Err(vec![Diagnostic::new(
+            sal_compiler::diag::ErrorCode::EInternal,
+            format!("stage1 failed to build stage2: {msg}"),
+            Default::default(),
+        )]);
+    }
+    Ok(stage2)
 }
 
 fn build(

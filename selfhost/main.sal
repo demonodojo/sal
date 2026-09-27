@@ -7,7 +7,7 @@ fn model_check(ir: Int, needle: Int) -> Int ! alloc
     str_contains(ir, needle)
 
 fn run_model_package_tests() -> Int ! io, alloc
-    src = read_file(strdup("selfhost/models.sal"))
+    src = read_file(d"selfhost/models.sal")
     r = emit_ir(src)
     if result_is_err(r) == 1
         _e = eprint_str(result_format_err(r))
@@ -15,86 +15,82 @@ fn run_model_package_tests() -> Int ! io, alloc
     else
         ir = result_unwrap(r)
         ok = 1
-        if model_check(ir, strdup("peak_bytes")) == 0
+        if model_check(ir, d"peak_bytes") == 0
             ok = 0
         else
             ok = ok
-        if model_check(ir, strdup("Matmul")) == 0
+        if model_check(ir, d"Matmul") == 0
             ok = 0
         else
             ok = ok
-        if model_check(ir, strdup("Softmax")) == 0
+        if model_check(ir, d"Softmax") == 0
             ok = 0
         else
             ok = ok
-        if model_check(ir, strdup("sal_load")) == 0
+        if model_check(ir, d"sal_load") == 0
             ok = 0
         else
             ok = ok
-        if model_check(ir, strdup("gpu")) == 0
+        if model_check(ir, d"gpu") == 0
             ok = 0
         else
             ok = ok
-        if model_check(ir, strdup("tpu")) == 0
+        if model_check(ir, d"tpu") == 0
             ok = 0
         else
             ok = ok
-        if model_check(ir, strdup("cpu")) == 0
+        if model_check(ir, d"cpu") == 0
             ok = 0
         else
             ok = ok
         if ok == 0
-            _e = eprint_str(strdup("Err(model package IR missing expected ops)\n"))
+            _e = eprint_str(d"Err(model package IR missing expected ops)\n")
             1
         else
             outp = tmp_path("models.bin")
             self = argv(0)
-            boot = getenv(strdup("SAL_BOOTSTRAP"))
+            boot = getenv(d"SAL_BOOTSTRAP")
             # Prefer bootstrap LLVM path so `on gpu`/`on tpu` + matmul actually run.
             # SAL_BOOTSTRAP is the rust `sal` binary (`sal build src` prints the out path).
             if str_len(boot) > 0
-                built = exec_capture(boot, strdup("build selfhost/models.sal"))
+                built = exec_capture(boot, d"build selfhost/models.sal")
                 blen = str_len(built)
                 lastc = str_char(built, blen - 1)
                 binp = select_str(lastc == 10, str_slice(built, 0, blen - 1), built)
-                out = exec_capture(binp, strdup(""))
-                if str_contains(out, strdup("sum=10")) == 0
-                    _e = eprint_str(strdup("Err(model package missing sum=10)\n"))
+                out = exec_capture(binp, d"")
+                if str_contains(out, d"sum=10") == 0
+                    _e = eprint_str(d"Err(model package missing sum=10)\n")
+                    1
+                elsif str_contains(out, d"gpu=1")
+                    _e = eprint_str(d"Err(model package missing gpu=1)\n")
+                    1
+                elsif str_contains(out, d"tpu=1")
+                    _e = eprint_str(d"Err(model package missing tpu=1)\n")
                     1
                 else
-                    if str_contains(out, strdup("gpu=1")) == 0
-                        _e = eprint_str(strdup("Err(model package missing gpu=1)\n"))
-                        1
-                    else
-                        if str_contains(out, strdup("tpu=1")) == 0
-                            _e = eprint_str(strdup("Err(model package missing tpu=1)\n"))
-                            1
-                        else
-                            _p = print_str(out)
-                            _p2 = print_str(strdup("model_tests_ok\n"))
-                            0
+                    _p = print_str(out)
+                    _p2 = print_str(d"model_tests_ok\n")
+                    0
             else
-                rc = exec_compile(self, strdup("selfhost/models.sal"), outp)
+                rc = exec_compile(self, d"selfhost/models.sal", outp)
                 if rc != 0
-                    _e = eprint_str(strdup("Err(model package compile failed)\n"))
+                    _e = eprint_str(d"Err(model package compile failed)\n")
                     1
                 else
-                    out = exec_capture(outp, strdup(""))
-                    if str_contains(out, strdup("sum=10")) == 0
-                        _e = eprint_str(strdup("Err(model package missing sum=10)\n"))
+                    out = exec_capture(outp, d"")
+                    if str_contains(out, d"sum=10") == 0
+                        _e = eprint_str(d"Err(model package missing sum=10)\n")
+                        1
+                    elsif str_contains(out, d"gpu=1")
+                        _e = eprint_str(d"Err(model package missing gpu=1)\n")
+                        1
+                    elsif str_contains(out, d"tpu=1")
+                        _e = eprint_str(d"Err(model package missing tpu=1)\n")
                         1
                     else
-                        if str_contains(out, strdup("gpu=1")) == 0
-                            _e = eprint_str(strdup("Err(model package missing gpu=1)\n"))
-                            1
-                        else
-                            if str_contains(out, strdup("tpu=1")) == 0
-                                _e = eprint_str(strdup("Err(model package missing tpu=1)\n"))
-                                1
-                            else
-                                _p = print_str(out)
-                                _p2 = print_str(strdup("model_tests_ok\n"))
-                                0
+                        _p = print_str(out)
+                        _p2 = print_str(d"model_tests_ok\n")
+                        0
 
 fn main() -> Int ! io, alloc
     path = argv(1)
