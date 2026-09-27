@@ -1,0 +1,3 @@
+fn main() -> String ! alloc
+    acc = "a" + "b" + "c"
+    acc

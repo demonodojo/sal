@@ -1,0 +1,3 @@
+fn main() -> String ! alloc
+    alone = d"keep"
+    "x" + "y"

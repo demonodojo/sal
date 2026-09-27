@@ -39,3 +39,5 @@ Stage1 sale de compilar `selfhost/` con el arranque. Stage2 sale de compilar `se
 ## Cierre
 
 `tests/selfhost_ir.rs` compara las tres IR y falla si una difiere. No marcar el criterio como cumplido con un stub.
+
+Limpieza de estilo en `selfhost/` (`standard check` / `fix`) no sustituye ese test; ver [sal-standard](../sal-standard/SKILL.md).

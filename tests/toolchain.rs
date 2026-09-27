@@ -43,6 +43,7 @@ fn incremental_cache_reuses_object_and_skips_ll_rewrite() {
         release: false,
         instrument: false,
         device: "cpu".into(),
+        emit_entry_main: true,
     };
     let key = cache_key(&a.program, &a.typed, &flags);
     let meta_path = cache_path(&project, &key);
@@ -251,6 +252,7 @@ fn import_change_invalidates_importer_cache() {
         release: false,
         instrument: false,
         device: "cpu".into(),
+        emit_entry_main: true,
     };
 
     let first = compile_file(&a_path, &opts).expect("first build of A");

@@ -104,52 +104,10 @@ fn emit_ci(inst: Int) -> Int ! alloc
     acc
 
 fn emit_cs(inst: Int) -> Int ! alloc
-    q = qquote()
-    acc = strdup("  ConstString {{ dest: ")
-    acc = str_append(acc, q)
-    acc = str_append(acc, vec_get(inst, 1))
-    acc = str_append(acc, q)
-    mid = strdup(", value: ")
-    acc = str_append(acc, mid)
-    # free(mid)
-    acc = str_append(acc, q)
-    acc = str_append(acc, vec_get(inst, 2))
-    acc = str_append(acc, q)
-    end = strdup(" }}\n")
-    acc = str_append(acc, end)
-    # free(end)
-    # free(q)
-    acc
+    "  ConstString {{ dest: " + char_to_str(34) + strdup(vec_get(inst, 1)) + char_to_str(34) + ", value: " + char_to_str(34) + strdup(vec_get(inst, 2)) + char_to_str(34) + " }}\n"
 
 fn emit_bin(inst: Int) -> Int ! alloc
-    q = qquote()
-    acc = strdup("  Binary {{ dest: ")
-    acc = str_append(acc, q)
-    acc = str_append(acc, vec_get(inst, 1))
-    acc = str_append(acc, q)
-    mid = strdup(", op: ")
-    acc = str_append(acc, mid)
-    # free(mid)
-    acc = str_append(acc, q)
-    acc = str_append(acc, vec_get(inst, 2))
-    acc = str_append(acc, q)
-    mid2 = strdup(", left: ")
-    acc = str_append(acc, mid2)
-    # free(mid2)
-    acc = str_append(acc, q)
-    acc = str_append(acc, vec_get(inst, 3))
-    acc = str_append(acc, q)
-    mid3 = strdup(", right: ")
-    acc = str_append(acc, mid3)
-    # free(mid3)
-    acc = str_append(acc, q)
-    acc = str_append(acc, vec_get(inst, 4))
-    acc = str_append(acc, q)
-    end = strdup(" }}\n")
-    acc = str_append(acc, end)
-    # free(end)
-    # free(q)
-    acc
+    "  Binary {{ dest: " + char_to_str(34) + strdup(vec_get(inst, 1)) + char_to_str(34) + ", op: " + char_to_str(34) + strdup(vec_get(inst, 2)) + char_to_str(34) + ", left: " + char_to_str(34) + strdup(vec_get(inst, 3)) + char_to_str(34) + ", right: " + char_to_str(34) + strdup(vec_get(inst, 4)) + char_to_str(34) + " }}\n"
 
 fn emit_call_dest(inst: Int, q: Int) -> Int ! alloc
     if vec_get(inst, 4) == 1

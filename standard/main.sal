@@ -2,6 +2,8 @@ import lexer
 import patch
 import cop_dupstring
 import cop_elsif
+import cop_stringplus
+import cop_plusliteral
 
 fn run_lex(src: Int) -> Int ! alloc
     lex(src)
@@ -18,7 +20,11 @@ fn run_all_cops(src: Int) -> Int ! alloc
         toks = lex_result_tokens(lr)
         a = cop_dupstring(src, toks)
         b = cop_elsif(src, toks)
-        offs = merge_off_lists(a, b)
+        c = cop_stringplus(src, toks)
+        d = cop_plusliteral(src, toks)
+        ab = merge_off_lists(a, b)
+        abc = merge_off_lists(ab, c)
+        offs = merge_off_lists(abc, d)
         pack = vec_new()
         _s = vec_push(pack, LEX_OK())
         _o = vec_push(pack, offs)

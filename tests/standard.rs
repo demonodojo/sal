@@ -1,13 +1,50 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+
+use sal_compiler::compile::compile_file;
+use sal_compiler::compile::CompileOptions;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+static COMPILE_LOCK: Mutex<()> = Mutex::new(());
+
+fn isolated_project_root() -> PathBuf {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().to_path_buf();
+        std::mem::forget(tmp);
+        p
+    })
+    .clone()
+}
+
 fn standard_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_standard"))
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let _guard = COMPILE_LOCK.lock().expect("standard compile lock");
+        let opts = CompileOptions {
+            release: false,
+            instrument: false,
+            device: "cpu".into(),
+            project_root: isolated_project_root(),
+            skip_link: false,
+        };
+        let art =
+            compile_file(&root().join("standard/main.sal"), &opts).expect("compile standard");
+        let bin = art.binary.expect("standard binary");
+        let copy = PathBuf::from(format!(
+            "/tmp/sal-standard-bin-{}",
+            std::process::id()
+        ));
+        fs::copy(&bin, &copy).expect("copy standard bin");
+        copy
+    })
+    .clone()
 }
 
 fn run_standard(args: &[&str]) -> std::process::Output {
@@ -90,6 +127,54 @@ fn standard_fix_preserves_comment() {
     let (_dir, got, out) = fix_in_temp(&input);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(got, read_fixture("comment_survives_out.sal"));
+}
+
+#[test]
+fn standard_fix_stringplus_call() {
+    let input = read_fixture("stringplus_call_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("stringplus_call_out.sal"));
+}
+
+#[test]
+fn standard_fix_stringplus_chain() {
+    let input = read_fixture("stringplus_chain_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("stringplus_chain_out.sal"));
+}
+
+#[test]
+fn standard_check_stringplus_reports() {
+    let path = root()
+        .join("standard/fixtures/stringplus_call_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Style/StringPlus"), "stderr: {err}");
+}
+
+#[test]
+fn standard_fix_plusliteral() {
+    let input = read_fixture("plusliteral_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("plusliteral_out.sal"));
+}
+
+#[test]
+fn standard_check_plusliteral_reports() {
+    let path = root()
+        .join("standard/fixtures/plusliteral_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Style/PlusLiteral"), "stderr: {err}");
 }
 
 #[test]

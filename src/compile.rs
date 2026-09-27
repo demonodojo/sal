@@ -82,6 +82,7 @@ fn compile_program_at(
         release: opts.release,
         instrument: opts.instrument,
         device: opts.device.clone(),
+        emit_entry_main: true,
     };
     let key = cache_key_with_deps(program, &typed, &flags, &[]);
     let fn_names: HashMap<String, ()> = program
@@ -130,10 +131,11 @@ fn compile_file_with_imports(
     let infer_out = infer_module(root, &graph)?;
     let typed = TypedProgram::from_program(program.clone(), infer_out.expr_types_by_fn);
 
-    let flags = CompileFlags {
+    let base_flags = CompileFlags {
         release: opts.release,
         instrument: opts.instrument,
         device: opts.device.clone(),
+        emit_entry_main: false,
     };
 
     let mut all_objs = Vec::new();
@@ -144,11 +146,15 @@ fn compile_file_with_imports(
         let infer_m = infer_module(m, &graph)?;
         let typed_m = TypedProgram::from_program(m.program.clone(), infer_m.expr_types_by_fn);
         let deps_m = import_graph_digest(&m.program, &m.path, &graph.project_root);
-        let key_m = cache_key_with_deps(&m.program, &typed_m, &flags, &deps_m);
-        let callables = callable_fn_names(m, &graph);
-        let externs = extern_fn_arity(m, &graph, &callables);
         let is_root = fs::canonicalize(&m.path).unwrap_or_else(|_| m.path.clone())
             == fs::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone());
+        let flags_m = CompileFlags {
+            emit_entry_main: is_root,
+            ..base_flags.clone()
+        };
+        let key_m = cache_key_with_deps(&m.program, &typed_m, &flags_m, &deps_m);
+        let callables = callable_fn_names(m, &graph);
+        let externs = extern_fn_arity(m, &graph, &callables);
         let artifacts = compile_single_module(
             &m.program,
             &typed_m,

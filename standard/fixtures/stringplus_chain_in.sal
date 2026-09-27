@@ -1,0 +1,4 @@
+fn main() -> String ! alloc
+    acc = str_concat(d"a", d"b")
+    acc = str_append(acc, d"c")
+    acc

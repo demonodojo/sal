@@ -1,0 +1,325 @@
+import lexer
+import patch
+import util
+
+fn CODE_PLUS() -> Int ! alloc
+    strdup("Style/StringPlus")
+
+fn is_str_fun(name: Int) -> Int ! alloc
+    if str_eq(name, "str_concat") == 1
+        1
+    else
+        if str_eq(name, "str_append") == 1
+            2
+        else
+            0
+
+fn prev_non_nl(toks: Int, i: Int) -> Int ! alloc
+    if i <= 0
+        0 - 1
+    else
+        t = vec_get(toks, i - 1)
+        if tok_kind(t) == TK_NL()
+            prev_non_nl(toks, i - 1)
+        else
+            i - 1
+
+fn next_non_nl(toks: Int, n: Int, i: Int) -> Int ! alloc
+    if i >= n
+        n
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) == TK_NL()
+            next_non_nl(toks, n, i + 1)
+        else
+            i
+
+fn join_plus(parts: Int) -> Int ! alloc
+    join_plus_go(parts, 0, vec_len(parts), strdup(""))
+
+fn join_plus_go(parts: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        piece = vec_get(parts, i)
+        if i == 0
+            join_plus_go(parts, i + 1, n, piece)
+        else
+            mid = str_concat(str_concat(acc, strdup(" + ")), piece)
+            join_plus_go(parts, i + 1, n, mid)
+
+fn vec_from2(a: Int, b: Int) -> Int ! alloc
+    v = vec_new()
+    _p = vec_push(v, a)
+    _q = vec_push(v, b)
+    v
+
+fn parse_two_args(toks: Int, n: Int, lp: Int) -> Int ! alloc
+    out = vec_new()
+    _z = vec_push(out, 0)
+    i = next_non_nl(toks, n, lp + 1)
+    if i >= n
+        out
+    else
+        a1s = tok_start(vec_get(toks, i))
+        st = scan_paren(toks, n, i, 1, 0 - 1)
+        if vec_get(st, 0) == 0
+            out
+        else
+            ci = vec_get(st, 1)
+            rp = vec_get(st, 2)
+            if ci < 0
+                out
+            else
+                a1e = tok_end(vec_get(toks, prev_non_nl(toks, ci)))
+                a2i = next_non_nl(toks, n, ci + 1)
+                a2s = tok_start(vec_get(toks, a2i))
+                a2e = tok_end(vec_get(toks, prev_non_nl(toks, rp)))
+                ce = tok_end(vec_get(toks, rp))
+                _ok = vec_set(out, 0, 1)
+                _ce = vec_push(out, ce)
+                _a1s = vec_push(out, a1s)
+                _a1e = vec_push(out, a1e)
+                _a2s = vec_push(out, a2s)
+                _a2e = vec_push(out, a2e)
+                out
+
+fn scan_paren(toks: Int, n: Int, i: Int, depth: Int, ci: Int) -> Int ! alloc
+    if i >= n
+        fail_scan()
+    else
+        t = vec_get(toks, i)
+        k = tok_kind(t)
+        if k == TK_LPAREN()
+            scan_paren(toks, n, i + 1, depth + 1, ci)
+        else
+            if k == TK_RPAREN()
+                d2 = depth - 1
+                if d2 == 0
+                    ok_scan(ci, i)
+                else
+                    scan_paren(toks, n, i + 1, d2, ci)
+            else
+                if k == TK_COMMA()
+                    if depth == 1
+                        scan_paren(toks, n, i + 1, depth, i)
+                    else
+                        scan_paren(toks, n, i + 1, depth, ci)
+                else
+                    scan_paren(toks, n, i + 1, depth, ci)
+
+fn fail_scan() -> Int ! alloc
+    v = vec_new()
+    _a = vec_push(v, 0)
+    v
+
+fn ok_scan(ci: Int, rp: Int) -> Int ! alloc
+    v = vec_new()
+    _a = vec_push(v, 1)
+    _b = vec_push(v, ci)
+    _c = vec_push(v, rp)
+    v
+
+fn parse_call_at(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
+    pack = vec_new()
+    _z = vec_push(pack, 0)
+    if i >= n
+        pack
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) != TK_IDENT()
+            pack
+        else
+            name = tok_text(src, t)
+            fk = is_str_fun(name)
+            free(name)
+            if fk == 0
+                pack
+            else
+                j = skip_nl(toks, n, i + 1)
+                if j >= n
+                    pack
+                else
+                    if tok_kind(vec_get(toks, j)) != TK_LPAREN()
+                        pack
+                    else
+                        parsed = parse_two_args(toks, n, j)
+                        if vec_get(parsed, 0) == 0
+                            pack
+                        else
+                            _ok = vec_set(pack, 0, 1)
+                            _cs = vec_push(pack, tok_start(t))
+                            _ce = vec_push(pack, vec_get(parsed, 1))
+                            _a1s = vec_push(pack, vec_get(parsed, 2))
+                            _a1e = vec_push(pack, vec_get(parsed, 3))
+                            _a2s = vec_push(pack, vec_get(parsed, 4))
+                            _a2e = vec_push(pack, vec_get(parsed, 5))
+                            _fk = vec_push(pack, fk)
+                            pack
+
+fn pack_ok(p: Int) -> Int ! alloc
+    vec_get(p, 0)
+
+fn build_call_fix(src: Int, p: Int) -> Int ! alloc
+    a = str_slice(src, vec_get(p, 3), vec_get(p, 4))
+    b = str_slice(src, vec_get(p, 5), vec_get(p, 6))
+    join_plus(vec_from2(a, b))
+
+fn try_assign_chain(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
+    pack = vec_new()
+    _z = vec_push(pack, 0)
+    if i >= n
+        pack
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) != TK_IDENT()
+            pack
+        else
+            var = tok_text(src, t)
+            j = skip_nl(toks, n, i + 1)
+            if j >= n
+                free(var)
+                pack
+            else
+                if tok_kind(vec_get(toks, j)) != TK_EQ()
+                    free(var)
+                    pack
+                else
+                    k = skip_nl(toks, n, j + 1)
+                    call = parse_call_at(src, toks, n, k)
+                    if pack_ok(call) == 0
+                        free(var)
+                        pack
+                    else
+                        parts = vec_new()
+                        a = str_slice(src, vec_get(call, 3), vec_get(call, 4))
+                        b = str_slice(src, vec_get(call, 5), vec_get(call, 6))
+                        fk = vec_get(call, 7)
+                        if fk == 1
+                            _p = vec_push(parts, a)
+                            _q = vec_push(parts, b)
+                        else
+                            _p = vec_push(parts, a)
+                            _q = vec_push(parts, b)
+                        end_i = vec_get(call, 2)
+                        ti = tok_index_at_or_after(toks, n, end_i, 0)
+                        end_i = chain_append_lines(src, toks, n, ti, var, parts, end_i)
+                        rhs = join_plus(parts)
+                        head = str_concat(var, strdup(" = "))
+                        fix = str_concat(head, rhs)
+                        _ok = vec_set(pack, 0, 1)
+                        _st = vec_push(pack, tok_start(t))
+                        _en = vec_push(pack, end_i)
+                        _fx = vec_push(pack, fix)
+                        free(var)
+                        pack
+
+fn tok_index_at_or_after(toks: Int, n: Int, byte_pos: Int, i: Int) -> Int ! alloc
+    if i >= n
+        n
+    else
+        t = vec_get(toks, i)
+        if tok_start(t) >= byte_pos
+            i
+        else
+            tok_index_at_or_after(toks, n, byte_pos, i + 1)
+
+fn chain_append_lines(src: Int, toks: Int, n: Int, i: Int, var: Int, parts: Int, end_byte: Int) -> Int ! alloc
+    i2 = skip_nl(toks, n, i)
+    if i2 >= n
+        end_byte
+    else
+        t = vec_get(toks, i2)
+        if tok_kind(t) == TK_DEDENT()
+            end_byte
+        else
+            if tok_kind(t) != TK_IDENT()
+                end_byte
+            else
+                name = tok_text(src, t)
+                if str_eq(name, var) == 0
+                    free(name)
+                    end_byte
+                else
+                    free(name)
+                    j = skip_nl(toks, n, i2 + 1)
+                    if j >= n
+                        end_byte
+                    else
+                        if tok_kind(vec_get(toks, j)) != TK_EQ()
+                            end_byte
+                        else
+                            k = skip_nl(toks, n, j + 1)
+                            call = parse_call_at(src, toks, n, k)
+                            if pack_ok(call) == 0
+                                end_byte
+                            else
+                                if vec_get(call, 7) != 2
+                                    end_byte
+                                else
+                                    a = str_slice(src, vec_get(call, 3), vec_get(call, 4))
+                                    b = str_slice(src, vec_get(call, 5), vec_get(call, 6))
+                                    if str_eq(a, var) == 0
+                                        end_byte
+                                    else
+                                        _p = vec_push(parts, b)
+                                        end2 = vec_get(call, 2)
+                                        ti = tok_index_at_or_after(toks, n, end2, 0)
+                                        chain_append_lines(src, toks, n, ti, var, parts, end2)
+
+fn cop_stringplus(src: Int, toks: Int) -> Int ! alloc
+    offs = vec_new()
+    n = vec_len(toks)
+    offs = cop_plus_assign_go(src, toks, offs, 0, n)
+    cop_plus_call_go(src, toks, offs, 0, n)
+
+fn cop_plus_assign_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        offs
+    else
+        ch = try_assign_chain(src, toks, n, i)
+        if pack_ok(ch) == 1
+            msg = strdup("use + instead of str_concat/str_append")
+            o = off_new(CODE_PLUS(), msg, vec_get(ch, 1), vec_get(ch, 2), vec_get(ch, 3))
+            _p = vec_push(offs, o)
+            next_i = tok_index_at_or_after(toks, n, vec_get(ch, 2), 0)
+            cop_plus_assign_go(src, toks, offs, next_i, n)
+        else
+            cop_plus_assign_go(src, toks, offs, i + 1, n)
+
+fn inside_any_off(offs: Int, start: Int, end: Int) -> Int ! alloc
+    inside_off_go(offs, 0, vec_len(offs), start, end)
+
+fn inside_off_go(offs: Int, i: Int, n: Int, start: Int, end: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        o = vec_get(offs, i)
+        s0 = off_start(o)
+        s1 = off_end(o)
+        if start >= s0
+            if end <= s1
+                1
+            else
+                inside_off_go(offs, i + 1, n, start, end)
+        else
+            inside_off_go(offs, i + 1, n, start, end)
+
+fn cop_plus_call_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        offs
+    else
+        call = parse_call_at(src, toks, n, i)
+        if pack_ok(call) == 0
+            cop_plus_call_go(src, toks, offs, i + 1, n)
+        else
+            cs = vec_get(call, 1)
+            ce = vec_get(call, 2)
+            if inside_any_off(offs, cs, ce) == 1
+                cop_plus_call_go(src, toks, offs, ce, n)
+            else
+                fix = build_call_fix(src, call)
+                msg = strdup("use + instead of str_concat/str_append")
+                o = off_new(CODE_PLUS(), msg, cs, ce, fix)
+                _p = vec_push(offs, o)
+                cop_plus_call_go(src, toks, offs, ce, n)

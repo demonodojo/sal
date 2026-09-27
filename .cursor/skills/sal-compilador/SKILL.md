@@ -3,8 +3,9 @@ name: sal-compilador
 description: >-
   Guía los cambios del compilador bootstrap de sal en Rust y del runtime C:
   orden de pases, archivo dueño y test que cierra el cambio. Usar al editar
-  src/, runtime/ o tests/, o al implementar lexer, parser, inferencia,
-  ownership, efectos, lugares, IR, fusión, LLVM, instrumentación, caché o la CLI.
+  src/, runtime/ o tests/, al binario standard, o al implementar lexer, parser,
+  inferencia, ownership, efectos, lugares, IR, fusión, LLVM, instrumentación,
+  caché o la CLI.
 ---
 
 # Compilador bootstrap
@@ -31,8 +32,9 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |
 | Sondas, solo con `--instrument` | `runtime/instrument.c`, `src/llvm.rs` | `tests/instrument_events.rs`, `tests/instrument_leak.rs`, `tests/instrument_sal.rs` |
 | CLI, módulos, caché | `src/main.rs`, `src/compile.rs`, `src/incremental.rs` | `tests/toolchain.rs`, `tests/run_hello.rs` |
+| Linter `standard` (wrapper + tests) | `src/bin/standard.rs`, `standard/*.sal` | `tests/standard.rs` (`--test-threads=1`) |
 
-La extensión de VS Code solo llama a `sal check --error-format json` y `sal fmt`. No reimplementa pases.
+La extensión de VS Code solo llama a `sal check --error-format json` y `sal fmt`. No reimplementa pases. El linter de estilo vive en `standard/` (sal); detalle en [sal-standard](../sal-standard/SKILL.md).
 
 ## Parser
 

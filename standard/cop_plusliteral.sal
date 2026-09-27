@@ -1,0 +1,98 @@
+import lexer
+import patch
+import util
+
+fn CODE_LITERAL() -> Int ! alloc
+    strdup("Style/PlusLiteral")
+
+fn pl_prev_nl(toks: Int, i: Int) -> Int ! alloc
+    if i <= 0
+        0 - 1
+    else
+        t = vec_get(toks, i - 1)
+        if tok_kind(t) == TK_NL()
+            pl_prev_nl(toks, i - 1)
+        else
+            i - 1
+
+fn pl_next_nl(toks: Int, n: Int, i: Int) -> Int ! alloc
+    if i >= n
+        n
+    else
+        t = vec_get(toks, i)
+        if tok_kind(t) == TK_NL()
+            pl_next_nl(toks, n, i + 1)
+        else
+            i
+
+fn pl_skip_rparens(toks: Int, n: Int, j: Int) -> Int ! alloc
+    if j >= n
+        j
+    else
+        t = vec_get(toks, j)
+        if tok_kind(t) == TK_RPAREN()
+            pl_skip_rparens(toks, n, pl_next_nl(toks, n, j + 1))
+        else
+            j
+
+fn plus_after_dstring(toks: Int, n: Int, i: Int) -> Int ! alloc
+    j = pl_next_nl(toks, n, i + 1)
+    j = pl_skip_rparens(toks, n, j)
+    if j >= n
+        0
+    else
+        t = vec_get(toks, j)
+        if tok_kind(t) == TK_PLUS()
+            1
+        else
+            0
+
+fn pl_plus_before_go(toks: Int, j: Int) -> Int ! alloc
+    if j < 0
+        0
+    else
+        t = vec_get(toks, j)
+        k = tok_kind(t)
+        if k == TK_PLUS()
+            1
+        else
+            if k == TK_LPAREN()
+                j2 = pl_prev_nl(toks, j)
+                pl_plus_before_go(toks, j2)
+            else
+                0
+
+fn plus_before_dstring(toks: Int, n: Int, i: Int) -> Int ! alloc
+    j = pl_prev_nl(toks, i)
+    pl_plus_before_go(toks, j)
+
+fn dstring_in_plus(toks: Int, n: Int, i: Int) -> Int ! alloc
+    t = vec_get(toks, i)
+    if tok_kind(t) != TK_DSTRING()
+        0
+    else
+        if plus_after_dstring(toks, n, i) == 1
+            1
+        else
+            plus_before_dstring(toks, n, i)
+
+fn cop_plusliteral(src: Int, toks: Int) -> Int ! alloc
+    offs = vec_new()
+    n = vec_len(toks)
+    cop_pluslit_go(src, toks, offs, 0, n)
+
+fn cop_pluslit_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        offs
+    else
+        if dstring_in_plus(toks, n, i) == 1
+            t = vec_get(toks, i)
+            start = tok_start(t)
+            end = tok_end(t)
+            fix = str_slice(src, start + 1, end)
+            msg = strdup("use plain string literal in + expression")
+            o = off_new(CODE_LITERAL(), msg, start, end, fix)
+            _p = vec_push(offs, o)
+            cop_pluslit_go(src, toks, offs, i + 1, n)
+        else
+            cop_pluslit_go(src, toks, offs, i + 1, n)

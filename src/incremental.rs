@@ -17,6 +17,8 @@ pub struct CompileFlags {
     pub release: bool,
     pub instrument: bool,
     pub device: String,
+    /// Stub `@main` when the module has no `fn main`; must differ in the cache key from import objects.
+    pub emit_entry_main: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +48,11 @@ pub fn cache_key_with_deps(
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     hasher.update(serde_json::to_string(prog).unwrap_or_default());
     hasher.update(serde_json::to_string(typed).unwrap_or_default());
-    hasher.update([flags.release as u8, flags.instrument as u8]);
+    hasher.update([
+        flags.release as u8,
+        flags.instrument as u8,
+        flags.emit_entry_main as u8,
+    ]);
     hasher.update(flags.device.as_bytes());
     if !deps_digest.is_empty() {
         hasher.update(deps_digest);

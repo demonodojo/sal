@@ -36,6 +36,15 @@ fn TK_ELSIF() -> Int
 fn TK_ELSE() -> Int
     11
 
+fn TK_EQ() -> Int
+    12
+
+fn TK_COMMA() -> Int
+    13
+
+fn TK_PLUS() -> Int
+    14
+
 fn LEX_OK() -> Int
     0
 
@@ -237,38 +246,53 @@ fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int, err: Int) 
                                         _p = vec_push(out, t)
                                         lex_go(src, i + 1, n, out, st, 0, err)
                                     else
-                                        if is_ident_start(c) == 1
-                                            end = str_skip(src, i, 2, 0)
-                                            text = str_slice(src, i, end)
-                                            if str_eq(text, "d") == 1
-                                                if end < n
-                                                    if str_char(src, end) == 34
-                                                        free(text)
-                                                        lex_emit_string(src, end - 1, n, out, st, TK_DSTRING(), err)
-                                                    else
-                                                        kind = kw_kind(text)
-                                                        t = tok_new(kind, i, end)
-                                                        _p = vec_push(out, t)
-                                                        free(text)
-                                                        lex_go(src, end, n, out, st, 0, err)
-                                                else
-                                                    kind = kw_kind(text)
-                                                    t = tok_new(kind, i, end)
-                                                    _p = vec_push(out, t)
-                                                    free(text)
-                                                    lex_go(src, end, n, out, st, 0, err)
-                                            else
-                                                kind = kw_kind(text)
-                                                t = tok_new(kind, i, end)
-                                                _p = vec_push(out, t)
-                                                free(text)
-                                                lex_go(src, end, n, out, st, 0, err)
+                                        if c == 61
+                                            t = tok_new(TK_EQ(), i, i + 1)
+                                            _p = vec_push(out, t)
+                                            lex_go(src, i + 1, n, out, st, 0, err)
                                         else
-                                            j = str_skip(src, i, 8, 0)
-                                            if j == i
+                                            if c == 44
+                                                t = tok_new(TK_COMMA(), i, i + 1)
+                                                _p = vec_push(out, t)
                                                 lex_go(src, i + 1, n, out, st, 0, err)
                                             else
-                                                lex_go(src, j, n, out, st, 0, err)
+                                                if c == 43
+                                                    t = tok_new(TK_PLUS(), i, i + 1)
+                                                    _p = vec_push(out, t)
+                                                    lex_go(src, i + 1, n, out, st, 0, err)
+                                                else
+                                                    if is_ident_start(c) == 1
+                                                        end = str_skip(src, i, 2, 0)
+                                                        text = str_slice(src, i, end)
+                                                        if str_eq(text, "d") == 1
+                                                            if end < n
+                                                                if str_char(src, end) == 34
+                                                                    free(text)
+                                                                    lex_emit_string(src, end - 1, n, out, st, TK_DSTRING(), err)
+                                                                else
+                                                                    kind = kw_kind(text)
+                                                                    t = tok_new(kind, i, end)
+                                                                    _p = vec_push(out, t)
+                                                                    free(text)
+                                                                    lex_go(src, end, n, out, st, 0, err)
+                                                            else
+                                                                kind = kw_kind(text)
+                                                                t = tok_new(kind, i, end)
+                                                                _p = vec_push(out, t)
+                                                                free(text)
+                                                                lex_go(src, end, n, out, st, 0, err)
+                                                        else
+                                                            kind = kw_kind(text)
+                                                            t = tok_new(kind, i, end)
+                                                            _p = vec_push(out, t)
+                                                            free(text)
+                                                            lex_go(src, end, n, out, st, 0, err)
+                                                    else
+                                                        j = str_skip(src, i, 8, 0)
+                                                        if j == i
+                                                            lex_go(src, i + 1, n, out, st, 0, err)
+                                                        else
+                                                            lex_go(src, j, n, out, st, 0, err)
             0
 
 fn is_ident_start(c: Int) -> Int

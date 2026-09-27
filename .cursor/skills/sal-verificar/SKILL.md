@@ -2,8 +2,9 @@
 name: sal-verificar
 description: >-
   Verifica cambios de sal con cargo test y la CLI sal (check, fmt, emit, build,
-  run). Usar al terminar un cambio del compilador, del runtime, de un programa
-  .sal, de la extensión o del autohospedaje, antes de dar la tarea por hecha.
+  run) y el linter standard (check, fix). Usar al terminar un cambio del
+  compilador, del runtime, de un programa .sal, de standard/, de la extensión o
+  del autohospedaje, antes de dar la tarea por hecha.
 ---
 
 # Verificar un cambio
@@ -22,6 +23,8 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
 | CLI, módulos o caché | `cargo test --test toolchain --test run_hello` |
 | Un `.sal` concreto | `cargo run -- check <fichero>` y, si debe ejecutar, `cargo run -- run <fichero>` |
+| Estilo en `.sal` (no sintaxis) | `cargo run --bin standard -- check <fichero>`; opcional `fix` in situ. Ver [sal-standard](../sal-standard/SKILL.md) |
+| `standard/` o cops de estilo | `cargo test --test standard -- --test-threads=1` |
 | `selfhost/`, preludio o `corpus/` | `cargo test --test selfhost_ir` y la skill [sal-autohospedaje](../sal-autohospedaje/SKILL.md) |
 
 Si el test nuevo afirma un diagnóstico, el código tiene que ser el de la lista cerrada (`E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`).
@@ -34,9 +37,12 @@ cargo run -- fmt examples/hello.sal
 cargo run -- emit ast examples/hello.sal
 cargo run -- emit ir examples/forward.sal
 cargo run -- run examples/hello.sal
+cargo run --bin standard -- check examples/hello.sal
+cargo run --bin standard -- fix path/to/file.sal
 ```
 
 - `fmt` escribe la fuente canónica por stdout y sale 0 solo si parsea. Si no parsea, no imprime una reescritura.
+- `standard check` avisa de estilo (`Style/*`); `standard fix` parchea el fichero. No sustituye a `sal check` ni a `sal fmt`.
 - `emit ast` es el JSON que `sal compile --ast` vuelve a aceptar.
 - `--error-format json` es una línea de stderr por diagnóstico, con `code`, `message`, `span` (`start`/`end` en bytes UTF-8; `line` y `col` desde 1) y `hint`.
 - `--instrument` cambia el binario. Un programa limpio sale 0. Un evento (`LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`) sale distinto de 0.
@@ -45,5 +51,7 @@ cargo run -- run examples/hello.sal
 ## Hecho
 
 El test del pase pasa y, si el cambio es de superficie, `fmt` es idempotente sobre un ejemplo que use la construcción nueva.
+
+Si el cambio toca estilo acordado del repo (`d"…"`, `+` en cadenas, `elsif`), `standard check` debe quedar limpio en los ficheros editados (o aplicar `standard fix` y revisar el diff).
 
 Superficie `if` / `elsif` / `else`: `tests/frontend.rs` (`if_without_else_*`, `if_else_binds_to_inner_if`, `elsif_chain_is_flat`, `fmt_if_without_else_is_idempotent`, `fmt_elsif_is_idempotent`) y `tests/semantics.rs` (`if_without_else_as_stmt_ok_for_int_return`, `if_without_else_as_tail_rejects_non_unit_return`, `elsif_without_else_is_unit`, `elsif_with_else_has_then_type`, `elsif_without_else_as_stmt_ok`). Tras tocar `parse_if` en Rust o en `selfhost/`, incluir `cargo test --test selfhost_ir` si puede afectar la IR del corpus.

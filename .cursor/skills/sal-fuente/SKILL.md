@@ -2,8 +2,9 @@
 name: sal-fuente
 description: >-
   Escribe y revisa programas sal canónicos: indentación, funciones, efectos,
-  lugares cpu/gpu/tpu, tensores y el formateador. Usar al crear o editar
-  ficheros .sal, ejemplos, el preludio, el corpus o código del autohospedaje.
+  lugares cpu/gpu/tpu, tensores, sal fmt y el linter standard. Usar al crear o
+  editar ficheros .sal, ejemplos, el preludio, el corpus, standard/ o código
+  del autohospedaje.
 ---
 
 # Programas sal
@@ -73,7 +74,17 @@ fn main() -> Int ! gpu
 | `corpus/` | Programas cuya IR tienen que coincidir las tres cadenas |
 | `std/prelude.sal` | `Option`, `Result`, `List` y firmas de primitivas |
 | `selfhost/` | El compilador escrito en sal |
+| `standard/` | Linter de estilo (check / fix), escrito en sal |
 
 Las primitivas `matmul`, `softmax`, `map`, `reduce`, `reshape`, `transpose`, `relu`, `load` y `print` las resuelve el runtime. En el preludio no se reimplementan como funciones ordinarias que el usuario pueda sombrear.
 
-Después de editar fuente, pasar el texto por `sal fmt` y comprobar que un segundo `fmt` no cambia nada. Ver [sal-verificar](../sal-verificar/SKILL.md).
+## Formato vs estilo
+
+| Herramienta | Alcance |
+|-------------|---------|
+| `sal fmt` | Sangría, forma canónica del AST, idempotencia sintáctica |
+| `standard` | Convenciones de texto: `d"…"` en lugar de `strdup("…")`, `+` en lugar de `str_concat` / `str_append`, `"…"` (no `d"…"`) en operandos de `+`, `elsif` donde aplique la regla |
+
+Orden habitual al cerrar un fichero `.sal`: `sal fmt` (stdout o editor), luego `standard check`; si hay avisos aceptables, `standard fix` y revisar el diff.
+
+Después de editar fuente, comprobar que un segundo `fmt` no cambia nada y que `standard check` no reporta infracciones en los ficheros tocados. Ver [sal-verificar](../sal-verificar/SKILL.md) y [sal-standard](../sal-standard/SKILL.md).

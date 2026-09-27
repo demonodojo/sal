@@ -26,12 +26,6 @@ fn main() -> Int ! io, alloc, gpu, tpu
         matmul(at, bt)
     g = place_launches(1)
     tp = place_launches(2)
-    msg = strdup("sum=")
-    msg = str_append(msg, int_to_str(s))
-    msg = str_append(msg, strdup(" gpu="))
-    msg = str_append(msg, int_to_str(g))
-    msg = str_append(msg, strdup(" tpu="))
-    msg = str_append(msg, int_to_str(tp))
-    msg = str_append(msg, strdup("\n"))
+    msg = "sum=" + int_to_str(s) + " gpu=" + int_to_str(g) + " tpu=" + int_to_str(tp) + "\n"
     _p = print_str(msg)
     0
