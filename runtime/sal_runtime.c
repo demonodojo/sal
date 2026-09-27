@@ -1904,9 +1904,9 @@ int64_t sal_clang(const char *c_path, const char *out_path) {
     find_runtime_dir(rdir, sizeof(rdir));
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g -I%s -o %s %s %s/sal_runtime.c %s/kernels.c %s/instrument.c -lm "
+             "clang -O0 -g -I%s -o %s %s %s/sal_runtime.c %s/gpu_driver.c %s/kernels.c %s/instrument.c -lm "
              "2>/tmp/sal-selfhost-clang.err",
-             rdir, out_path, c_path, rdir, rdir, rdir);
+             rdir, out_path, c_path, rdir, rdir, rdir, rdir);
     int rc = system(cmd);
     if (rc != 0) {
         fprintf(stderr, "sal_clang: clang failed (%d)\n", rc);
@@ -1976,9 +1976,9 @@ int64_t sal_link_objs(const char *objs, const char *out_path) {
     char cmd[8192];
     const char *olist = objs ? objs : "";
     snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g %s %s/sal_runtime.c %s/kernels.c %s/instrument.c -o %s -lm "
+             "clang -O0 -g %s %s/sal_runtime.c %s/gpu_driver.c %s/kernels.c %s/instrument.c -o %s -lm "
              "2>/tmp/sal-selfhost-clang.err",
-             olist, rdir, rdir, rdir, out_path);
+             olist, rdir, rdir, rdir, rdir, out_path);
     int rc = system(cmd);
     if (rc != 0) {
         sal_clang_report_err("sal_link_objs", rc);
@@ -2144,12 +2144,34 @@ static int clamp_place(int place) {
     return place;
 }
 
+int sal_mem_place(const void *p) {
+    if (!p) {
+        return -1;
+    }
+    for (int pl = 0; pl < SAL_PLACE_N; pl++) {
+        SalPlaceBlock *cur = g_place_heaps[pl];
+        while (cur) {
+            if (cur->ptr == p) {
+                return cur->place;
+            }
+            cur = cur->next;
+        }
+    }
+    return -1;
+}
+
 void *sal_place_malloc(int64_t size, int place) {
     place = clamp_place(place);
     if (size < 0) {
         size = 0;
     }
-    void *p = malloc((size_t)size);
+    void *p = NULL;
+    if (place == 1 && sal_gpu_enabled()) {
+        p = sal_gpu_alloc((size_t)size);
+    }
+    if (!p) {
+        p = malloc((size_t)size);
+    }
     if (!p) {
         return NULL;
     }
@@ -2175,7 +2197,11 @@ void sal_place_free(void *p) {
             if ((*cur)->ptr == p) {
                 SalPlaceBlock *dead = *cur;
                 *cur = dead->next;
-                free(dead->ptr);
+                if (dead->place == 1 && sal_gpu_enabled()) {
+                    sal_gpu_free(dead->ptr);
+                } else {
+                    free(dead->ptr);
+                }
                 free(dead);
                 return;
             }
@@ -2195,7 +2221,28 @@ void *sal_place_copy(const void *src, int64_t nbytes, int to_place) {
         return NULL;
     }
     if (src && nbytes > 0) {
-        memcpy(dst, src, (size_t)nbytes);
+        int from_place = sal_mem_place(src);
+        if (to_place == 1 && from_place == 0 && sal_gpu_enabled()) {
+            if (sal_gpu_copy_h2d(dst, src, (size_t)nbytes) != 0) {
+                sal_place_free(dst);
+                return NULL;
+            }
+        } else if (to_place == 0 && from_place == 1 && sal_gpu_enabled()) {
+            if (sal_gpu_copy_d2h(dst, src, (size_t)nbytes) != 0) {
+                sal_place_free(dst);
+                return NULL;
+            }
+        } else if (from_place == 1 && to_place == 1 && sal_gpu_enabled()) {
+            if (sal_gpu_copy_d2d(dst, src, (size_t)nbytes) != 0) {
+                sal_place_free(dst);
+                return NULL;
+            }
+        } else {
+            memcpy(dst, src, (size_t)nbytes);
+        }
+    }
+    if (to_place == 1 && sal_gpu_enabled()) {
+        sal_gpu_sync();
     }
     return dst;
 }

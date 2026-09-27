@@ -8,6 +8,14 @@
 #endif
 
 void sal_matmul_f32(const float *a, const float *b, float *out, int64_t m, int64_t k, int64_t n) {
+    int place = sal_mem_place(a);
+    if (place < 0) {
+        place = sal_mem_place(out);
+    }
+    if (place == 1 && sal_gpu_enabled()) {
+        sal_gpu_matmul_f32(a, b, out, m, k, n);
+        return;
+    }
     for (int64_t i0 = 0; i0 < m; i0 += SAL_MATMUL_TILE) {
         int64_t i1 = i0 + SAL_MATMUL_TILE;
         if (i1 > m) {

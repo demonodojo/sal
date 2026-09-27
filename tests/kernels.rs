@@ -8,8 +8,12 @@ fn matmul_kernel_numeric() {
     let bin = root.join("target/test-matmul");
     std::fs::create_dir_all(root.join("target")).unwrap();
     let status = Command::new("clang")
+        .arg("-I")
+        .arg(root.join("runtime"))
         .arg(&src)
         .arg(root.join("runtime/kernels.c"))
+        .arg(root.join("runtime/gpu_driver.c"))
+        .arg(root.join("tests/support/place_stubs.c"))
         .arg("-o")
         .arg(&bin)
         .arg("-lm")

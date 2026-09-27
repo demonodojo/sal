@@ -141,7 +141,9 @@ elem_list    → elem_list "," expr
              | expr
              | ε
 
-on_expr      → "on" place ("kernel" | ε) suite
+on_expr      → "on" place kernel_head suite
+kernel_head  → ε | "kernel" kernel_spec | "kernel"
+kernel_spec  → IDENT ("," IDENT)* "in" type
 match_expr   → "match" expr NEWLINE INDENT arm_list DEDENT
 arm_list     → arm_list arm
              | arm
@@ -250,6 +252,8 @@ Ruta inexistente, choque de nombre entre importados o con items locales, o ciclo
 
 - `to gpu expr`, `to cpu expr`, `to tpu expr` — única transferencia (`E_PLACE` si se mezcla sin `to`).
 - `on p` … bloque en dispositivo; `on gpu kernel` rechazado en tpu (`E_DEVICE`).
+- `on gpu kernel i, j in Tensor[…] on gpu` (o `in` un binding tensor): `i`, `j` son `Int` sobre la forma estática; el compilador reparte el grid. Sin `kernel_spec`, el kernel escalar sigue siendo válido en gpu.
+- `@shared` y barreras de bloque siguen reservados (`E_PARSE`); la memoria compartida de `matmul` en gpu es interna del runtime.
 
 ## Modelos
 

@@ -266,8 +266,24 @@ fn check_expr(
                 }
             }
         }
-        Expr::On { body, .. } => {
+        Expr::On {
+            body,
+            kernel_index,
+            ..
+        } => {
             let mut local = env.clone();
+            if let Some(ki) = kernel_index {
+                for n in &ki.names {
+                    local.insert(
+                        n.clone(),
+                        Type::Named {
+                            name: "Int".into(),
+                            args: vec![],
+                            span: ki.span,
+                        },
+                    );
+                }
+            }
             for st in &body.stmts {
                 check_stmt(st, &mut local, types, entries)?;
             }

@@ -109,6 +109,7 @@ fn check_expr_devices(
         Expr::On {
             place,
             kernel,
+            kernel_index,
             body,
             span,
         } => {
@@ -118,6 +119,15 @@ fn check_expr_devices(
                     "TPU does not support `on tpu kernel`",
                     *span,
                 )]);
+            }
+            if kernel_index.is_some() {
+                if matches!(place, Place::Cpu | Place::Tpu) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EDevice,
+                        "kernel index requires `on gpu`",
+                        *span,
+                    )]);
+                }
             }
             let mut local = env.clone();
             check_block_devices(body, &mut local, Some(place.clone()))?;

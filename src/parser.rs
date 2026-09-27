@@ -903,9 +903,13 @@ impl Parser {
         let sp = self.bump().span;
         let place = self.parse_place()?;
         let mut kernel = false;
+        let mut kernel_index = None;
         if self.at(TokenKind::Kernel) {
             self.bump();
             kernel = true;
+            if self.at_ident() {
+                kernel_index = Some(self.parse_kernel_index()?);
+            }
         }
         self.expect(TokenKind::Newline, "expected newline after on")?;
         self.expect(TokenKind::Indent, "expected indented on body")?;
@@ -916,7 +920,35 @@ impl Parser {
         Ok(Expr::On {
             place,
             kernel,
+            kernel_index,
             body,
+            span: sp,
+        })
+    }
+
+    fn parse_kernel_index(&mut self) -> Result<KernelIndex, Diagnostic> {
+        let sp = self.peek().span;
+        let mut names = vec![self.parse_ident()?];
+        while self.at(TokenKind::Comma) {
+            self.bump();
+            names.push(self.parse_ident()?);
+        }
+        self.expect(TokenKind::In, "expected `in` after kernel indices")?;
+        let ty = self.parse_type()?;
+        let shape = match ty {
+            Type::Tensor { .. } => KernelShape::Type(ty),
+            Type::Named { name, .. } => KernelShape::Binding(name),
+            other => {
+                return Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    format!("expected tensor shape in kernel index, got `{other:?}`"),
+                    sp,
+                ))
+            }
+        };
+        Ok(KernelIndex {
+            names,
+            shape,
             span: sp,
         })
     }
@@ -1216,6 +1248,7 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         | (On, On)
         | (To, To)
         | (Kernel, Kernel)
+        | (In, In)
         | (Return, Return)
         | (True, True)
         | (False, False)

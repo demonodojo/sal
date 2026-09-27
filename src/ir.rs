@@ -63,6 +63,15 @@ pub enum IrInst {
         #[serde(default)]
         carried: Vec<WhileCarry>,
     },
+    /// Explicit grid for `on gpu kernel i, j in …`: nested loops over static bounds.
+    KernelGrid {
+        place: String,
+        index_names: Vec<String>,
+        bounds: Vec<u64>,
+        body: Vec<IrInst>,
+        tail: String,
+        dest: String,
+    },
 }
 
 /// Assignment merged at the join of an `if`.
@@ -853,7 +862,64 @@ fn lower_expr(
             *counter += 1;
             format!("t{counter}")
         }
-        Expr::On { place, body, .. } => {
+        Expr::On {
+            place,
+            kernel_index,
+            body,
+            ..
+        } => {
+            if let Some(ki) = kernel_index {
+                let place_s = place_str(place);
+                let bounds = kernel_bounds(ki, tensors, env);
+                *counter += 1;
+                let dest = format!("t{counter}");
+                let mut kenv = env.clone();
+                for n in &ki.names {
+                    kenv.insert(n.clone(), format!("__{n}"));
+                }
+                let mut body_insts = Vec::new();
+                for st in &body.stmts {
+                    lower_stmt(
+                        st,
+                        &mut body_insts,
+                        &mut kenv,
+                        counter,
+                        regions,
+                        tensors,
+                        dim_params,
+                        fn_names,
+                    );
+                }
+                let tail = if let Some(t) = &body.tail {
+                    lower_expr(
+                        t,
+                        &mut body_insts,
+                        &mut kenv,
+                        counter,
+                        regions,
+                        tensors,
+                        dim_params,
+                        fn_names,
+                    )
+                } else {
+                    let z = format!("t{}", *counter + 1);
+                    *counter += 1;
+                    body_insts.push(IrInst::ConstInt {
+                        dest: z.clone(),
+                        value: 0,
+                    });
+                    z
+                };
+                instructions.push(IrInst::KernelGrid {
+                    place: place_s,
+                    index_names: ki.names.clone(),
+                    bounds,
+                    body: body_insts,
+                    tail,
+                    dest: dest.clone(),
+                });
+                return dest;
+            }
             let place_s = place_str(place);
             let mut ops = Vec::new();
             if let Some(t) = &body.tail {
@@ -1290,6 +1356,28 @@ fn estimate_peak_for_region(
     }
 
     (peak_bytes, peak_symbolic)
+}
+
+fn kernel_bounds(
+    ki: &KernelIndex,
+    tensors: &HashMap<String, TensorInfo>,
+    env: &HashMap<String, String>,
+) -> Vec<u64> {
+    let dims = match &ki.shape {
+        KernelShape::Type(Type::Tensor { dims, .. }) => dims.clone(),
+        KernelShape::Binding(name) => env
+            .get(name)
+            .and_then(|v| tensors.get(v))
+            .map(|t| t.dims.clone())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    dims.iter()
+        .map(|d| match d {
+            Dim::Static(n) => *n,
+            Dim::Dynamic => 1,
+        })
+        .collect()
 }
 
 pub fn ir_to_text(m: &IrModule) -> String {

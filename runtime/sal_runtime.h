@@ -7,11 +7,22 @@ int64_t sal_print_i64(int64_t v);
 void sal_panic(const char *msg);
 
 void sal_matmul_f32(const float *a, const float *b, float *out, int64_t m, int64_t k, int64_t n);
+void sal_gpu_matmul_f32(const float *a, const float *b, float *out, int64_t m, int64_t k,
+                        int64_t n);
 void sal_softmax_f32(float *data, int64_t len);
+
+int sal_gpu_enabled(void);
+void *sal_gpu_alloc(int64_t nbytes);
+void sal_gpu_free(void *p);
+int sal_gpu_copy_h2d(void *dst, const void *src, int64_t nbytes);
+int sal_gpu_copy_d2h(void *dst, const void *src, int64_t nbytes);
+int sal_gpu_copy_d2d(void *dst, const void *src, int64_t nbytes);
+int sal_mem_place(const void *p);
+void sal_gpu_sync(void);
 
 void *sal_load_f32(const char *path, int64_t *out_elems);
 
-/* Per-actor heaps: place 0=cpu, 1=gpu, 2=tpu (host-side emulation, no device). */
+/* Per-actor heaps: place 0=cpu, 1=gpu, 2=tpu. With SAL_USE_CUDA, gpu uses device memory. */
 void *sal_place_malloc(int64_t size, int place);
 void sal_place_free(void *p);
 /* Copy `nbytes` onto `to_place` heap; returns dest pointer. */

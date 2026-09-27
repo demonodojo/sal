@@ -1042,6 +1042,31 @@ fn emit_main(
                 // Matmul/load main path does not lower structured if.
             }
             IrInst::While { .. } => {}
+            IrInst::KernelGrid {
+                place,
+                index_names,
+                bounds,
+                body,
+                tail,
+                dest,
+            } => {
+                let place_i = place_to_i32(place);
+                if place_i != 0 {
+                    s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+                }
+                let kconsts = consts.clone();
+                emit_kernel_grid_body(
+                    s,
+                    &mut uid,
+                    index_names,
+                    bounds,
+                    body,
+                    tail,
+                    dest,
+                    &kconsts,
+                    str_globals,
+                );
+            }
         }
     }
 
@@ -2076,7 +2101,7 @@ fn emit_inst_list(
                 }
                 *cur_block = join_l;
             }
-            IrInst::Drop { .. } | IrInst::PlaceCopy { .. } => {}
+            IrInst::Drop { .. } | IrInst::PlaceCopy { .. } | IrInst::KernelGrid { .. } => {}
             IrInst::While {
                 cond_insts,
                 cond,
@@ -2358,4 +2383,111 @@ fn emit_main_general(
     }
     s.push_str(&format!("  ret i64 {ret}\n"));
     s.push_str("}\n");
+}
+
+fn emit_kernel_grid_body(
+    s: &mut String,
+    uid: &mut u32,
+    index_names: &[String],
+    bounds: &[u64],
+    body: &[IrInst],
+    tail: &str,
+    dest: &str,
+    consts: &HashMap<String, i64>,
+    str_globals: &HashMap<String, String>,
+) {
+    if index_names.len() != bounds.len() {
+        s.push_str("  ; kernel grid: index/bounds mismatch\n");
+        s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+        return;
+    }
+    *uid += 1;
+    let done = format!("kg_done_{uid}");
+    let mut prefix = Vec::new();
+    emit_kernel_product(
+        s,
+        0,
+        index_names,
+        bounds,
+        body,
+        tail,
+        dest,
+        consts,
+        str_globals,
+        &mut prefix,
+    );
+    s.push_str(&format!("  br label %{done}\n"));
+    s.push_str(&format!("{done}:\n"));
+}
+
+fn emit_kernel_product(
+    s: &mut String,
+    depth: usize,
+    index_names: &[String],
+    bounds: &[u64],
+    body: &[IrInst],
+    tail: &str,
+    dest: &str,
+    consts: &HashMap<String, i64>,
+    str_globals: &HashMap<String, String>,
+    prefix: &mut Vec<i64>,
+) {
+    if depth >= index_names.len() {
+        let mut local = consts.clone();
+        for (name, val) in index_names.iter().zip(prefix.iter()) {
+            local.insert(format!("__{name}"), *val);
+        }
+        let body_consts = const_int_map_from(body);
+        local.extend(body_consts);
+        for inst in body {
+            match inst {
+                IrInst::ConstInt { dest: d, value } => {
+                    s.push_str(&format!("  %{d} = add i64 0, {value}\n"));
+                }
+                IrInst::ConstString { dest: d, value } => {
+                    let g = str_globals
+                        .get(value)
+                        .cloned()
+                        .unwrap_or_else(|| "@.site.alloc".into());
+                    s.push_str(&format!("  %{d} = ptrtoint ptr {g} to i64\n"));
+                }
+                IrInst::Binary {
+                    dest: d,
+                    op,
+                    left,
+                    right,
+                } => {
+                    let l = i64_operand(left, &local);
+                    let r = i64_operand(right, &local);
+                    match op.as_str() {
+                        "add" => s.push_str(&format!("  %{d} = add i64 {l}, {r}\n")),
+                        "sub" => s.push_str(&format!("  %{d} = sub i64 {l}, {r}\n")),
+                        "mul" => s.push_str(&format!("  %{d} = mul i64 {l}, {r}\n")),
+                        _ => s.push_str(&format!("  %{d} = add i64 {l}, 0\n")),
+                    }
+                }
+                _ => {}
+            }
+        }
+        let tv = i64_operand(tail, &local);
+        s.push_str(&format!("  %{dest} = add i64 {tv}, 0\n"));
+        return;
+    }
+    let b = bounds[depth];
+    for v in 0..b {
+        prefix.push(v as i64);
+        emit_kernel_product(
+            s,
+            depth + 1,
+            index_names,
+            bounds,
+            body,
+            tail,
+            dest,
+            consts,
+            str_globals,
+            prefix,
+        );
+        prefix.pop();
+    }
 }

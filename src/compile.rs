@@ -374,13 +374,44 @@ fn link_binary_multi(
     let opt_flag = if opts.release { "-O3" } else { "-O0" };
 
     let runtime = runtime_dir(root);
+    let use_cuda = opts.device == "gpu" && device_toolchain_present("gpu") && command_exists("nvcc");
+    let gpu_obj = if use_cuda {
+        let obj = out_dir.join("sal_gpu_matmul.o");
+        let mut nvcc = Command::new("nvcc");
+        nvcc.arg("-c")
+            .arg(runtime.join("gpu_matmul.cu"))
+            .arg("-o")
+            .arg(&obj)
+            .arg("-DSAL_USE_CUDA=1");
+        if opts.release {
+            nvcc.arg("-O3");
+        } else {
+            nvcc.arg("-O0");
+        }
+        run_cmd(nvcc)?;
+        Some(obj)
+    } else {
+        None
+    };
+
     let mut link = Command::new("clang");
     for obj in obj_paths {
         link.arg(obj);
     }
     link.arg(runtime.join("sal_runtime.c"))
+        .arg(runtime.join("gpu_driver.c"))
         .arg(runtime.join("kernels.c"))
         .arg(runtime.join("instrument.c"));
+    if let Some(obj) = gpu_obj {
+        link.arg(obj);
+        link.arg("-DSAL_USE_CUDA=1");
+        if let Ok(cuda_home) = std::env::var("CUDA_HOME") {
+            link.arg(format!("-L{cuda_home}/lib64"));
+        } else {
+            link.arg("-L/usr/local/cuda/lib64");
+        }
+        link.arg("-lcudart");
+    }
     if opts.instrument {
         link.arg("-DSAL_INSTRUMENT=1");
     }

@@ -218,12 +218,27 @@ fn format_expr(e: &Expr, indent: usize) -> String {
         Expr::On {
             place,
             kernel,
+            kernel_index,
             body,
             ..
         } => {
             let mut s = format!("on {}", format_place(place));
             if *kernel {
                 s.push_str(" kernel");
+                if let Some(ki) = kernel_index {
+                    s.push(' ');
+                    for (i, n) in ki.names.iter().enumerate() {
+                        if i > 0 {
+                            s.push_str(", ");
+                        }
+                        s.push_str(n);
+                    }
+                    s.push_str(" in ");
+                    match &ki.shape {
+                        crate::ast::KernelShape::Type(t) => s.push_str(&format_type(t)),
+                        crate::ast::KernelShape::Binding(b) => s.push_str(b),
+                    }
+                }
             }
             s.push('\n');
             let body_s = format_block(body, indent + 1);

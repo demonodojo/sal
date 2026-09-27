@@ -48,7 +48,7 @@ fn emit_arg_list(args: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         acc
     else
         comma = emit_arg_comma(i)
-        acc = str_append(acc, comma)
+        acc = acc + comma
         q = qquote()
         acc = str_append(acc, q)
         a = vec_get(args, i)

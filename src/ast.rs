@@ -119,6 +119,20 @@ pub enum Place {
     Param(String),
 }
 
+/// Coordinate grid for `on gpu kernel`: names bind to `Int` over the tensor shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KernelIndex {
+    pub names: Vec<String>,
+    pub shape: KernelShape,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum KernelShape {
+    Type(Type),
+    Binding(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
@@ -205,6 +219,8 @@ pub enum Expr {
     On {
         place: Place,
         kernel: bool,
+        #[serde(default)]
+        kernel_index: Option<KernelIndex>,
         body: Block,
         span: Span,
     },
