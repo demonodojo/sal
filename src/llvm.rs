@@ -1,7 +1,49 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::ast::{Dim, Expr, FnDef, Item, Program, Stmt, Type};
+use crate::ast::{Dim, Expr, FnDef, Item, Program, Stmt, StructDef, Type};
 use crate::ir::{FusedOp, IrFunction, IrInst, IrModule};
+use crate::layout::{is_transparent_struct, llvm_struct_symbol};
+
+thread_local! {
+    static EMIT_STRUCT_DEFS: RefCell<HashMap<String, StructDef>> = RefCell::new(HashMap::new());
+    static EMIT_AGG: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+fn emit_layout_scope<R>(struct_defs: &HashMap<String, StructDef>, f: impl FnOnce() -> R) -> R {
+    EMIT_STRUCT_DEFS.with(|d| *d.borrow_mut() = struct_defs.clone());
+    EMIT_AGG.with(|a| a.borrow_mut().clear());
+    let out = f();
+    EMIT_STRUCT_DEFS.with(|d| d.borrow_mut().clear());
+    EMIT_AGG.with(|a| a.borrow_mut().clear());
+    out
+}
+
+/// LLVM global `@.str.N` with `{ cap, len, [bytes] }` rodata; `byte_len` excludes NUL.
+#[derive(Debug, Clone)]
+struct StrLitGlobal {
+    sym: String,
+    ty: String,
+    _byte_len: usize,
+}
+
+fn emit_ir_const_string(s: &mut String, dest: &str, g: &StrLitGlobal) {
+    s.push_str(&format!(
+        "  %{dest}_p = getelementptr inbounds {}, ptr {}, i32 0, i32 2, i32 0\n",
+        g.ty, g.sym
+    ));
+    s.push_str(&format!("  %{dest} = ptrtoint ptr %{dest}_p to i64\n"));
+}
+
+fn str_lit_ptr_temp(g: &StrLitGlobal, tmp: &mut u32, s: &mut String) -> String {
+    *tmp += 1;
+    let t = format!("slit{tmp}");
+    s.push_str(&format!(
+        "  %{t} = getelementptr inbounds {}, ptr {}, i32 0, i32 2, i32 0\n",
+        g.ty, g.sym
+    ));
+    format!("%{t}")
+}
 
 pub struct LlvmOptions {
     pub instrument: bool,
@@ -9,6 +51,7 @@ pub struct LlvmOptions {
     pub extern_user_fns: HashMap<String, usize>,
     /// When false, do not synthesize `@main` if the module has no `main` (dependency `.o`).
     pub emit_entry_main: bool,
+    pub struct_defs: HashMap<String, StructDef>,
 }
 
 /// Static host tensor materialised from a `tensor[[…]]` literal (or param shape).
@@ -205,6 +248,19 @@ pub fn emit_llvm_with_externs(
     if opts.instrument {
         s.push_str("; instrumented build\n");
     }
+    for (name, def) in &opts.struct_defs {
+        if !is_transparent_struct(def) && !def.fields.is_empty() {
+            let slots: Vec<&str> = (0..def.fields.len()).map(|_| "i64").collect();
+            s.push_str(&format!(
+                "{} = type {{ {} }}\n",
+                llvm_struct_symbol(name),
+                slots.join(", ")
+            ));
+        }
+    }
+    if !opts.struct_defs.is_empty() {
+        s.push('\n');
+    }
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare void @sal_matmul_f32(ptr, ptr, ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_softmax_f32(ptr, i64)\n");
@@ -231,6 +287,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_str_eq(ptr, ptr)\n");
     s.push_str("declare i64 @sal_str_contains(ptr, ptr)\n");
     s.push_str("declare i64 @sal_str_len(ptr)\n");
+    s.push_str("declare i64 @sal_str_bytes(ptr)\n");
     s.push_str("declare ptr @sal_str_concat(ptr, ptr)\n");
     s.push_str("declare ptr @sal_str_append(ptr, ptr)\n");
     s.push_str("declare ptr @sal_strdup(ptr)\n");
@@ -252,6 +309,8 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_str_slice(ptr, i64, i64)\n");
     s.push_str("declare ptr @sal_int_to_str(i64)\n");
     s.push_str("declare ptr @sal_char_to_str(i64)\n");
+    s.push_str("declare ptr @sal_str_from_int(i64)\n");
+    s.push_str("declare i64 @sal_str_as_int(ptr)\n");
     s.push_str("declare ptr @sal_vec_new()\n");
     s.push_str("declare i64 @sal_vec_push(ptr, i64)\n");
     s.push_str("declare i64 @sal_vec_get(ptr, i64)\n");
@@ -259,6 +318,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_vec_len(ptr)\n");
     s.push_str("declare void @sal_vec_free(ptr)\n");
     s.push_str("declare ptr @sal_list_new()\n");
+    s.push_str("declare ptr @sal_list_new_typed(i64)\n");
     s.push_str("declare ptr @sal_list_push(ptr, i64)\n");
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
@@ -302,18 +362,21 @@ pub fn emit_llvm_with_externs(
     s.push_str("@.site.access = private unnamed_addr constant [7 x i8] c\"access\\00\"\n");
     s.push_str("@.site.index = private unnamed_addr constant [6 x i8] c\"index\\00\"\n\n");
 
-    let mut str_globals: HashMap<String, String> = HashMap::new();
+    let mut str_globals: HashMap<String, StrLitGlobal> = HashMap::new();
     let mut str_id = 0u32;
-    let mut ensure_str = |raw: &str, s: &mut String, str_globals: &mut HashMap<String, String>| {
+    let mut ensure_str = |raw: &str, s: &mut String, str_globals: &mut HashMap<String, StrLitGlobal>| {
         if str_globals.contains_key(raw) {
             return;
         }
         str_id += 1;
         let gname = format!("@.str.{str_id}");
+        let lty = format!("%str.{str_id}.ty");
         let bytes = raw.as_bytes();
-        let len = bytes.len() + 1;
+        let arr = bytes.len() + 1;
+        let blen = bytes.len();
+        s.push_str(&format!("{lty} = type {{ i64, i64, [{arr} x i8] }}\n"));
         s.push_str(&format!(
-            "{gname} = private unnamed_addr constant [{len} x i8] c\""
+            "{gname} = private unnamed_addr constant {lty} {{ i64 0, i64 {blen}, [{arr} x i8] c\""
         ));
         for &b in bytes {
             match b {
@@ -327,8 +390,15 @@ pub fn emit_llvm_with_externs(
                 _ => s.push_str(&format!("\\{b:02X}")),
             }
         }
-        s.push_str("\\00\"\n");
-        str_globals.insert(raw.to_string(), gname);
+        s.push_str("\\00\" }, align 16\n");
+        str_globals.insert(
+            raw.to_string(),
+            StrLitGlobal {
+                sym: gname,
+                ty: lty,
+                _byte_len: blen,
+            },
+        );
     };
 
     for f in &m.functions {
@@ -364,7 +434,7 @@ pub fn emit_llvm_with_externs(
         } else if fn_has_matmul(f) {
             emit_matmul_fn(f, &mut s);
         } else {
-            emit_general_fn(f, &str_globals, &user_fns, &mut s);
+            emit_general_fn(f, &str_globals, &user_fns, &opts.struct_defs, &mut s);
         }
     }
 
@@ -381,9 +451,9 @@ fn walk_insts_for_strings<F>(
     insts: &[IrInst],
     ensure_str: &mut F,
     s: &mut String,
-    str_globals: &mut HashMap<String, String>,
+    str_globals: &mut HashMap<String, StrLitGlobal>,
 ) where
-    F: FnMut(&str, &mut String, &mut HashMap<String, String>),
+    F: FnMut(&str, &mut String, &mut HashMap<String, StrLitGlobal>),
 {
     for inst in insts {
         match inst {
@@ -566,7 +636,7 @@ fn emit_main(
     f: &IrFunction,
     opts: &LlvmOptions,
     tensors: &HashMap<String, HostTensor>,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
 ) {
@@ -639,11 +709,11 @@ fn emit_main(
                 s.push_str(&format!("  %{dest} = add i64 0, {value}\n"));
             }
             IrInst::ConstString { dest, value } => {
-                let g = str_globals
-                    .get(value)
-                    .cloned()
-                    .unwrap_or_else(|| "@.site.alloc".into());
-                s.push_str(&format!("  %{dest} = ptrtoint ptr {g} to i64\n"));
+                if let Some(g) = str_globals.get(value) {
+                    emit_ir_const_string(s, dest, g);
+                } else {
+                    s.push_str(&format!("  %{dest} = ptrtoint ptr @.site.alloc to i64\n"));
+                }
             }
             IrInst::Binary {
                 dest,
@@ -1067,6 +1137,10 @@ fn emit_main(
                     str_globals,
                 );
             }
+            IrInst::Aggregate { .. }
+            | IrInst::Extract { .. }
+            | IrInst::EnumMake { .. }
+            | IrInst::BitAnd { .. } => {}
         }
     }
 
@@ -1193,7 +1267,7 @@ fn emit_load(
     dest: Option<&str>,
     args: &[String],
     opts: &LlvmOptions,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     ptrs: &mut HashMap<String, String>,
     owned: &mut Vec<String>,
     uid: &mut u32,
@@ -1203,11 +1277,12 @@ fn emit_load(
         .first()
         .map(|p| p.trim_matches('"').to_string())
         .unwrap_or_default();
-    let gname = str_globals
-        .get(&path_raw)
-        .cloned()
-        .unwrap_or_else(|| "@.site.load".into());
     *uid += 1;
+    let path_ptr = if let Some(g) = str_globals.get(&path_raw) {
+        str_lit_ptr_temp(g, uid, s)
+    } else {
+        "@.site.load".to_string()
+    };
     let elems = format!("load_elems_{uid}");
     s.push_str(&format!("  %{elems} = alloca i64, align 8\n"));
     s.push_str(&format!(
@@ -1216,7 +1291,7 @@ fn emit_load(
     *uid += 1;
     let buf = format!("load_buf_{uid}");
     s.push_str(&format!(
-        "  %{buf} = call ptr @sal_load_f32(ptr {gname}, ptr %{elems})\n"
+        "  %{buf} = call ptr @sal_load_f32(ptr {path_ptr}, ptr %{elems})\n"
     ));
     if opts.instrument {
         s.push_str(&format!(
@@ -1353,7 +1428,7 @@ fn emit_runtime_or_user_call(
     func: &str,
     args: &[String],
     consts: &HashMap<String, i64>,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
     tmp: &mut u32,
@@ -1364,7 +1439,7 @@ fn emit_runtime_or_user_call(
         if a.starts_with('"') {
             let raw = a.trim_matches('"');
             if let Some(g) = str_globals.get(raw) {
-                return format!("{g}");
+                return str_lit_ptr_temp(g, tmp, s);
             }
         }
         *tmp += 1;
@@ -1505,6 +1580,12 @@ fn emit_runtime_or_user_call(
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_str_len(ptr {a})\n"));
+            }
+        }
+        "sal_str_bytes" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_str_bytes(ptr {a})\n"));
             }
         }
         "sal_str_concat" => {
@@ -1682,6 +1763,19 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
         }
+        "sal_str_from_int" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_str_from_int(i64 {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_str_as_int" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_str_as_int(ptr {a})\n"));
+            }
+        }
         "sal_vec_new" => {
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d}_p = call ptr @sal_vec_new()\n"));
@@ -1731,7 +1825,9 @@ fn emit_runtime_or_user_call(
         }
         "sal_list_new" => {
             if let Some(d) = dest {
-                s.push_str(&format!("  %{d}_p = call ptr @sal_list_new()\n"));
+                s.push_str(&format!(
+                    "  %{d}_p = call ptr @sal_list_new_typed(i64 0)\n"
+                ));
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
         }
@@ -1910,7 +2006,7 @@ fn emit_runtime_or_user_call(
 
 fn emit_body_insts(
     f: &IrFunction,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
 ) -> String {
@@ -1931,7 +2027,7 @@ fn emit_body_insts(
 
 fn emit_inst_list(
     instructions: &[IrInst],
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
     label_id: &mut u32,
@@ -1946,11 +2042,11 @@ fn emit_inst_list(
                 s.push_str(&format!("  %{dest} = add i64 0, {value}\n"));
             }
             IrInst::ConstString { dest, value } => {
-                let g = str_globals
-                    .get(value)
-                    .cloned()
-                    .unwrap_or_else(|| "@.site.alloc".into());
-                s.push_str(&format!("  %{dest} = ptrtoint ptr {g} to i64\n"));
+                if let Some(g) = str_globals.get(value) {
+                    emit_ir_const_string(s, dest, g);
+                } else {
+                    s.push_str(&format!("  %{dest} = ptrtoint ptr @.site.alloc to i64\n"));
+                }
             }
             IrInst::Binary {
                 dest,
@@ -1994,6 +2090,84 @@ fn emit_inst_list(
             }
             IrInst::Return { value } => {
                 ret = i64_operand(value, &consts);
+            }
+            IrInst::Aggregate {
+                dest,
+                struct_name,
+                fields,
+            } => {
+                let ty = llvm_struct_symbol(struct_name);
+                if fields.is_empty() {
+                    s.push_str(&format!("  %{dest} = insertvalue {ty} undef, i64 0, 0\n"));
+                } else {
+                    let mut agg = String::new();
+                    for (i, f) in fields.iter().enumerate() {
+                        let op = i64_operand(f, &consts);
+                        let next = if i + 1 == fields.len() {
+                            dest.clone()
+                        } else {
+                            *tmp += 1;
+                            format!("agg{tmp}")
+                        };
+                        if i == 0 {
+                            s.push_str(&format!(
+                                "  %{next} = insertvalue {ty} undef, i64 {op}, 0\n"
+                            ));
+                        } else {
+                            s.push_str(&format!(
+                                "  %{next} = insertvalue {ty} %{agg}, i64 {op}, {i}\n"
+                            ));
+                        }
+                        agg = next;
+                    }
+                }
+                EMIT_AGG.with(|a| {
+                    a.borrow_mut()
+                        .insert(dest.clone(), struct_name.clone());
+                });
+            }
+            IrInst::Extract {
+                dest,
+                base,
+                struct_name,
+                field_index,
+            } => {
+                let ty = llvm_struct_symbol(struct_name);
+                let b = if EMIT_AGG.with(|a| a.borrow().contains_key(base)) {
+                    format!("%{base}")
+                } else {
+                    i64_operand(base, &consts)
+                };
+                s.push_str(&format!(
+                    "  %{dest} = extractvalue {ty} {b}, {field_index}\n"
+                ));
+            }
+            IrInst::EnumMake {
+                dest,
+                variant_index,
+                payload,
+                ..
+            } => {
+                if let Some(p) = payload {
+                    let pop = i64_operand(p, &consts);
+                    *tmp += 1;
+                    let sh = format!("em{tmp}");
+                    s.push_str(&format!("  %{sh} = shl i64 {pop}, 8\n"));
+                    let tag = variant_index + 1;
+                    s.push_str(&format!(
+                        "  %{dest} = or i64 %{sh}, {tag}\n"
+                    ));
+                } else if *variant_index == 0 {
+                    s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+                } else {
+                    let tag = variant_index + 1;
+                    s.push_str(&format!("  %{dest} = add i64 0, {tag}\n"));
+                }
+            }
+            IrInst::BitAnd { dest, left, right } => {
+                let l = i64_operand(left, &consts);
+                let r = i64_operand(right, &consts);
+                s.push_str(&format!("  %{dest} = and i64 {l}, {r}\n"));
             }
             IrInst::Call { dest, func, args } => {
                 if func == "sal_matmul_f32" || func == "sal_matmul" || func == "sal_load"
@@ -2175,8 +2349,9 @@ fn const_int_map_from(instructions: &[IrInst]) -> HashMap<String, i64> {
 
 fn emit_general_fn(
     f: &IrFunction,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
+    struct_defs: &HashMap<String, StructDef>,
     s: &mut String,
 ) {
     let params: Vec<String> = f
@@ -2190,25 +2365,27 @@ fn emit_general_fn(
         params.join(", ")
     ));
     s.push_str("entry:\n");
-    let mut label_id = 0u32;
-    let mut tmp = 0u32;
-    let mut cur_block = "entry".to_string();
-    if let Some(IrInst::Return { value }) = f.instructions.last() {
-        let prefix = &f.instructions[..f.instructions.len() - 1];
-        emit_value_as_return(
-            prefix,
-            value,
-            str_globals,
-            user_fns,
-            s,
-            &mut label_id,
-            &mut tmp,
-            &mut cur_block,
-        );
-    } else {
-        let ret = emit_body_insts(f, str_globals, user_fns, s);
-        s.push_str(&format!("  ret i64 {ret}\n"));
-    }
+    emit_layout_scope(struct_defs, || {
+        let mut label_id = 0u32;
+        let mut tmp = 0u32;
+        let mut cur_block = "entry".to_string();
+        if let Some(IrInst::Return { value }) = f.instructions.last() {
+            let prefix = &f.instructions[..f.instructions.len() - 1];
+            emit_value_as_return(
+                prefix,
+                value,
+                str_globals,
+                user_fns,
+                s,
+                &mut label_id,
+                &mut tmp,
+                &mut cur_block,
+            );
+        } else {
+            let ret = emit_body_insts(f, str_globals, user_fns, s);
+            s.push_str(&format!("  ret i64 {ret}\n"));
+        }
+    });
     s.push_str("}\n");
 }
 
@@ -2217,7 +2394,7 @@ fn emit_general_fn(
 fn emit_value_as_return(
     body: &[IrInst],
     val: &str,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
     label_id: &mut u32,
@@ -2320,7 +2497,7 @@ fn emit_if_as_return(
     else_body: &[IrInst],
     then_val: &str,
     else_val: &str,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
     label_id: &mut u32,
@@ -2367,7 +2544,7 @@ fn emit_if_as_return(
 fn emit_main_general(
     f: &IrFunction,
     opts: &LlvmOptions,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
 ) {
@@ -2394,7 +2571,7 @@ fn emit_kernel_grid_body(
     tail: &str,
     dest: &str,
     consts: &HashMap<String, i64>,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
 ) {
     if index_names.len() != bounds.len() {
         s.push_str("  ; kernel grid: index/bounds mismatch\n");
@@ -2429,7 +2606,7 @@ fn emit_kernel_product(
     tail: &str,
     dest: &str,
     consts: &HashMap<String, i64>,
-    str_globals: &HashMap<String, String>,
+    str_globals: &HashMap<String, StrLitGlobal>,
     prefix: &mut Vec<i64>,
 ) {
     if depth >= index_names.len() {
@@ -2445,11 +2622,11 @@ fn emit_kernel_product(
                     s.push_str(&format!("  %{d} = add i64 0, {value}\n"));
                 }
                 IrInst::ConstString { dest: d, value } => {
-                    let g = str_globals
-                        .get(value)
-                        .cloned()
-                        .unwrap_or_else(|| "@.site.alloc".into());
-                    s.push_str(&format!("  %{d} = ptrtoint ptr {g} to i64\n"));
+                    if let Some(g) = str_globals.get(value) {
+                        emit_ir_const_string(s, d, g);
+                    } else {
+                        s.push_str(&format!("  %{d} = ptrtoint ptr @.site.alloc to i64\n"));
+                    }
                 }
                 IrInst::Binary {
                     dest: d,

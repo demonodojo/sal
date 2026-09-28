@@ -6,7 +6,7 @@ fn hash_go(src: Int, i: Int, n: Int, h: Int) -> Int ! alloc
         nh = h * 33 + c
         hash_go(src, i + 1, n, nh)
 
-fn source_hash(src: Int) -> Int ! io, alloc
+fn source_hash(src: Int) -> String ! io, alloc
     h = str_hash(src, 5381)
     self = argv(0)
     h = str_hash(self, h)
@@ -16,27 +16,27 @@ fn source_hash(src: Int) -> Int ! io, alloc
         h = h
     int_to_str(h)
 
-fn cache_dir() -> Int ! io, alloc
+fn cache_dir() -> String ! io, alloc
     e = getenv(d"SAL_SELFHOST_CACHE")
     if str_len(e) == 0
         d"target/selfhost-cache"
     else
         e
 
-fn cache_ir_path(dir: Int, key: Int) -> Int ! alloc
+fn cache_ir_path(dir: String, key: String) -> String ! alloc
     acc = strdup(dir)
-    acc = acc + "/" + int_to_str(key) + ".ir"
+    acc = acc + "/" + key + ".ir"
     acc
 
-fn cache_meta_path(dir: Int, key: Int) -> Int ! alloc
+fn cache_meta_path(dir: String, key: String) -> String ! alloc
     acc = strdup(dir)
-    acc = acc + "/" + int_to_str(key) + ".meta"
+    acc = acc + "/" + key + ".meta"
     acc
 
-fn cache_key_for_graph_path(src: Int, source_path: Int) -> Int ! io, alloc
+fn cache_key_for_graph_path(src: Int, source_path: Int) -> String ! io, alloc
     base = source_hash(src)
     p = realpath(source_path)
     h = str_hash(src, str_hash(p, 5381))
     piece = int_to_str(h)
-    acc = int_to_str(base) + ":" + piece
+    acc = base + ":" + piece
     acc

@@ -1,0 +1,6 @@
+struct Tag
+    raw: Int
+
+fn main() -> Int
+    t = Tag(7)
+    t.raw

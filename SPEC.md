@@ -229,6 +229,10 @@ parallel_expr → "parallel" suite
 | structs, enums | |
 | genéricos | monomorfización |
 
+Los tipos nominales no se mezclan: `Int`, `String` y un `struct`/`enum` distinto son incompatibles salvo conversión explícita (p. ej. `.campo` en un newtype de un solo campo). La excepción de `+` con `String` a la izquierda sigue permitiendo un operando derecho no-`String` vía `str_concat`/`str_append`, sin unificar tipos en el resto del programa.
+
+Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos. Un `struct` de un solo campo es un **newtype transparente**: misma representación que el campo en IR/LLVM. Un enum se construye con el nombre de variante (`None`, `Some(x)`, …); en ejecución vale un `i64` con tag en el byte bajo y payload desplazado 8 bits cuando aplica.
+
 Lugar: `cpu`, `gpu`, `tpu` o parámetro `p`.
 
 ## Módulos
@@ -248,6 +252,19 @@ Ruta inexistente, choque de nombre entre importados o con items locales, o ciclo
 - Préstamo solo en argumento de llamada.
 - `@frozen`, `@stack`, `@layout(c)`, `@resource` (fase posterior parcial).
 
+### `String`
+
+Bloque alineado a 16: `[cap: i64][len: i64][bytes…][0]`. El valor `String` es un puntero a `bytes` (terminado en NUL, como `char*` en C).
+
+| `cap` | Significado |
+|-------|-------------|
+| `0` | Literal estático en rodata: inmutable, compartible entre hilos, no se libera; `append` copia. |
+| `> 0` | Heap: un solo dueño (`move`); la base del bloque es `bytes - 16`; `append` in situ si cabe. |
+
+`len` es `*(bytes - 8)` (longitud en bytes, sin contar el NUL). La cadena vacía es un único estático compartido.
+
+`String` vive en `cpu`. `to gpu` / `to tpu` sobre un `String`, o un `String` usado dentro de `on gpu` / `on tpu`, es `E_PLACE`. Para usar bytes en dispositivo: `str_bytes(s) -> Tensor[I8, ?] on cpu` y después `to gpu` (única transferencia).
+
 ## Dispositivos
 
 - `to gpu expr`, `to cpu expr`, `to tpu expr` — única transferencia (`E_PLACE` si se mezcla sin `to`).
@@ -257,7 +274,7 @@ Ruta inexistente, choque de nombre entre importados o con items locales, o ciclo
 
 ## Modelos
 
-Operaciones: `matmul`, `map`, `reduce`, `softmax`, `reshape`, `transpose`, `relu`, `load`, `tensor[…]`.
+Operaciones: `matmul`, `map`, `reduce`, `softmax`, `reshape`, `transpose`, `relu`, `load`, `str_bytes`, `tensor[…]`.
 Fusión en bloque `on`; IR publica `peak_bytes` por lugar.
 `load` → cpu, efectos `io`, `alloc`.
 

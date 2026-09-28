@@ -16,6 +16,9 @@ fn result_err(e: Int) -> Int ! alloc
     _b = vec_push(r, e)
     r
 
+fn result_err_str(e: String) -> Int ! alloc
+    result_err(str_as_int(e))
+
 fn result_is_err(r: Int) -> Int ! alloc
     if vec_get(r, 0) == 1
         1
@@ -37,9 +40,9 @@ fn module_order_vec(x: Int) -> Int ! alloc
     else
         x
 
-fn result_format_err(r: Int) -> Int ! alloc
+fn result_format_err(r: Int) -> String ! alloc
     msg = result_unwrap(r)
     acc = strdup("Err(")
-    acc = str_append(acc, msg)
+    acc = str_append(acc, str_from_int(msg))
     acc = str_append(acc, strdup(")\n"))
     acc

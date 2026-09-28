@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, Expr, Item, Param, Program, Type};
+use crate::ast::{BinOp, EnumDef, Expr, Item, Param, Program, StructDef, Type};
+use crate::layout::{collect_enum_defs, collect_struct_defs};
 
 pub fn call_returns_string(name: &str) -> bool {
     matches!(
@@ -18,6 +19,10 @@ pub fn call_returns_string(name: &str) -> bool {
 pub struct StringEnv {
     pub locals: HashSet<String>,
     pub fns: HashSet<String>,
+    pub structs: HashMap<String, StructDef>,
+    pub enums: HashMap<String, EnumDef>,
+    /// Local/param names bound to a struct type (for `.field` lowering).
+    pub struct_types: HashMap<String, String>,
 }
 
 impl StringEnv {
@@ -33,12 +38,16 @@ impl StringEnv {
         Self {
             locals: HashSet::new(),
             fns,
+            structs: collect_struct_defs(prog),
+            enums: collect_enum_defs(prog),
+            struct_types: HashMap::new(),
         }
     }
 
     pub fn seed_params(&mut self, params: &[Param]) {
         for p in params {
             self.note(&p.name, is_string_type(&p.ty));
+            self.note_struct_binding(&p.name, &p.ty);
         }
     }
 
@@ -58,6 +67,33 @@ impl StringEnv {
             expr_produces_string_with(init, self)
         };
         self.note(name, is_string);
+        if let Some(ty) = declared {
+            self.note_struct_binding(name, ty);
+        } else if let Some(sn) = struct_name_from_init(init, self) {
+            self.struct_types.insert(name.to_string(), sn);
+        }
+    }
+
+    pub fn note_struct_binding(&mut self, name: &str, ty: &Type) {
+        if let Type::Named { name: sn, args, .. } = ty {
+            if args.is_empty() && self.structs.contains_key(sn) {
+                self.struct_types.insert(name.to_string(), sn.clone());
+            }
+        }
+    }
+}
+
+fn struct_name_from_init(init: &Expr, env: &StringEnv) -> Option<String> {
+    match init {
+        Expr::Call { func, args, .. } => {
+            if let Expr::Ident { name, .. } = func.as_ref() {
+                if env.structs.contains_key(name) && !args.is_empty() {
+                    return Some(name.clone());
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 

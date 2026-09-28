@@ -9,6 +9,7 @@ pub mod incremental;
 pub mod infer;
 pub mod modules;
 pub mod ir;
+pub mod layout;
 pub mod lexer;
 pub mod llvm;
 pub mod ownership;

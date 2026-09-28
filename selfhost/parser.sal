@@ -12,9 +12,9 @@ fn parser_new(toks: Int) -> Int ! alloc
     _e = vec_push(pr, 0)
     pr
 
-fn p_set_err(pr: Int, msg: Int) -> Int ! alloc
+fn p_set_err(pr: Int, msg: String) -> Int ! alloc
     _a = vec_set(pr, 2, 1)
-    _b = vec_set(pr, 3, msg)
+    _b = vec_set(pr, 3, str_as_int(msg))
     0
 
 fn p_has_err(pr: Int) -> Int ! alloc
@@ -35,7 +35,7 @@ fn p_peek(pr: Int) -> Int ! alloc
     idx = vec_get(pr, 1)
     n = vec_len(toks)
     if idx >= n
-        tok_new(TK_EOF(), 0, 0)
+        tok_new(TK_EOF(), d"", 0)
     else
         vec_get(toks, idx)
 
@@ -104,7 +104,7 @@ fn at_block_end(pr: Int) -> Int ! alloc
                         0
 
 # ---- type text / expr parsing ----
-fn parse_type_text_go(pr: Int, depth: Int, acc: Int) -> Int ! alloc
+fn parse_type_text_go(pr: Int, depth: Int, acc: String) -> String ! alloc
     t = p_peek(pr)
     k = tok_kind(t)
     if k == TK_EOF()
@@ -136,7 +136,7 @@ fn parse_type_text_go(pr: Int, depth: Int, acc: Int) -> Int ! alloc
         else
             parse_type_text_cont(pr, depth, acc, t, k)
 
-fn parse_type_text_cont(pr: Int, depth: Int, acc: Int, t: Int, k: Int) -> Int ! alloc
+fn parse_type_text_cont(pr: Int, depth: Int, acc: String, t: Int, k: Int) -> String ! alloc
     if k == TK_NL()
         _a = p_advance(pr)
         parse_type_text_go(pr, depth, acc)
@@ -204,7 +204,7 @@ fn parse_type_text_cont(pr: Int, depth: Int, acc: Int, t: Int, k: Int) -> Int ! 
                                     else
                                         acc
 
-fn parse_type_text(pr: Int) -> Int ! alloc
+fn parse_type_text(pr: Int) -> String ! alloc
     acc = strdup("")
     r = parse_type_text_go(pr, 0, acc)
     if str_len(r) == 0
@@ -246,7 +246,7 @@ fn binop_prec(k: Int) -> Int
                                         else
                                             0
 
-fn binop_name(k: Int) -> Int ! alloc
+fn binop_name(k: Int) -> String ! alloc
     if k == TK_EQEQ()
         strdup("eq")
     else
@@ -383,8 +383,8 @@ fn parse_tensor_cells(pr: Int, rowc: Int) -> Int ! alloc
                         _a = p_advance(pr)
                         parse_tensor_cells(pr, rowc)
 
-fn or_place(place: Int, fallback: Int) -> Int ! alloc
-    if place == 0
+fn or_place(place: String, fallback: String) -> String ! alloc
+    if str_len(place) == 0
         fallback
     else
         place
@@ -410,7 +410,7 @@ fn parse_primary(pr: Int) -> Int ! alloc
                     _a = p_advance(pr)
                     args = vec_new()
                     _b = vec_push(args, ex_string(s))
-                    ex_call(strdup("strdup"), args)
+                    ex_call(d"strdup", args)
                 else
                     if k == TK_IF()
                         parse_if(pr)
@@ -421,14 +421,14 @@ fn parse_primary(pr: Int) -> Int ! alloc
                             if k == TK_TO()
                                 _a = p_advance(pr)
                                 pl = p_advance(pr)
-                                place = or_place(tok_text(pl), strdup("cpu"))
+                                place = or_place(tok_text(pl), d"cpu")
                                 inner = parse_expr(pr)
                                 ex_to(place, inner)
                             else
                                 if k == TK_ON()
                                     _a = p_advance(pr)
                                     pl = p_advance(pr)
-                                    place = or_place(tok_text(pl), strdup("pp"))
+                                    place = or_place(tok_text(pl), d"pp")
                                     _b = p_skip_nls(pr)
                                     _c = p_accept(pr, TK_INDENT())
                                     body = parse_block_after_indent(pr)
@@ -493,9 +493,9 @@ fn parse_while(pr: Int) -> Int ! alloc
     body = parse_block_after_indent(pr)
     ex_while(cond, body)
 
-fn or_fn_name(name: Int) -> Int ! alloc
-    if name == 0
-        strdup("fn")
+fn or_fn_name(name: String) -> String ! alloc
+    if str_len(name) == 0
+        d"fn"
     else
         name
 
@@ -522,7 +522,7 @@ fn parse_ident_primary(pr: Int) -> Int ! alloc
     else
         parse_ident_or_call(pr, name)
 
-fn parse_ident_or_call(pr: Int, name: Int) -> Int ! alloc
+fn parse_ident_or_call(pr: Int, name: String) -> Int ! alloc
     if tok_kind(p_peek(pr)) == TK_LBRACK()
         _a = skip_brackets(pr, 0)
         parse_ident_or_call(pr, name)
@@ -572,7 +572,7 @@ fn parse_block_expr(pr: Int, b: Int) -> Int ! alloc
         _c = p_accept(pr, TK_DEDENT())
         b
     else
-        st = stmt_new(0, 0, ex)
+        st = stmt_new(0, d"", ex)
         _d = vec_push(block_stmts(b), st)
         parse_block_go(pr, b)
 
@@ -594,17 +594,17 @@ fn skip_effects_go(pr: Int) -> Int ! alloc
         else
             0
 
-fn or_arg_name(pn: Int) -> Int ! alloc
-    if pn == 0
-        strdup("argx")
+fn or_arg_name(pn: String) -> String ! alloc
+    if str_len(pn) == 0
+        d"argx"
     else
         pn
 
-fn parse_param_ty(pr: Int) -> Int ! alloc
+fn parse_param_ty(pr: Int) -> String ! alloc
     if p_accept(pr, TK_COLON()) == 1
         parse_type_text(pr)
     else
-        strdup("Int")
+        d"Int"
 
 fn parse_params(pr: Int, params: Int) -> Int ! alloc
     _s = p_skip_nls(pr)
@@ -643,24 +643,24 @@ fn parse_fn(pr: Int) -> Int ! alloc
         body = parse_block_after_indent(pr)
         fndef_new(name, params, body)
     else
-        _e = p_set_err(pr, strdup("parse error: expected function name"))
-        fndef_new(strdup("_bad"), vec_new(), block_new())
+        _e = p_set_err(pr, d"parse error: expected function name")
+        fndef_new(d"_bad", vec_new(), block_new())
 
-fn parse_import_path_dots(pr: Int, path: Int) -> Int ! alloc
+fn parse_import_path_dots(pr: Int, path: String) -> String ! alloc
     if tok_kind(p_peek(pr)) == TK_DOT()
         _d = p_advance(pr)
         if tok_kind(p_peek(pr)) == TK_IDENT()
             t = p_peek(pr)
             _t = p_advance(pr)
             seg = tok_text(t)
-            npath = str_concat(str_concat(path, strdup(".")), seg)
+            npath = str_concat(str_concat(path, d"."), seg)
             parse_import_path_dots(pr, npath)
         else
             path
     else
         path
 
-fn parse_import_path(pr: Int) -> Int ! alloc
+fn parse_import_path(pr: Int) -> String ! alloc
     t = p_peek(pr)
     k = tok_kind(t)
     if k == TK_STRING()
@@ -673,8 +673,8 @@ fn parse_import_path(pr: Int) -> Int ! alloc
             _b = p_advance(pr)
             parse_import_path_dots(pr, path)
         else
-            _e = p_set_err(pr, strdup("parse error: expected identifier"))
-            strdup("")
+            _e = p_set_err(pr, d"parse error: expected identifier")
+            d""
 
 fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
     _a = p_skip_nls(pr)
@@ -685,7 +685,7 @@ fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
         if k == TK_IMPORT()
             _i = p_advance(pr)
             path = parse_import_path(pr)
-            _b = vec_push(prog_imports(prog), path)
+            _b = vec_push(prog_imports(prog), str_as_int(path))
             parse_program_go(pr, prog)
         else
             if k == TK_FN()
@@ -715,7 +715,7 @@ fn toks_has_code(toks: Int, i: Int, n: Int) -> Int ! alloc
                     else
                         1
 
-fn parse_program(src: Int) -> Int ! alloc
+fn parse_program(src: String) -> Int ! alloc
     toks = lex(src)
     pr = parser_new(toks)
     prog = prog_new()
@@ -726,11 +726,11 @@ fn parse_program(src: Int) -> Int ! alloc
     else
         if vec_len(prog_fns(prog)) == 0
             if toks_has_code(toks, 0, vec_len(toks)) == 1
-                result_err(strdup("parse error: expected fn"))
+                result_err_str(d"parse error: expected fn")
             else
                 if str_len(src) == 0
-                    result_err(strdup("parse error: empty source"))
+                    result_err_str(d"parse error: empty source")
                 else
-                    result_err(strdup("parse error: no functions"))
+                    result_err_str(d"parse error: no functions")
         else
             result_ok(prog)

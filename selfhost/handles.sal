@@ -1,0 +1,16 @@
+# Newtypes transparentes del autohospedaje (misma ABI que el campo).
+
+struct ExprHandle
+    raw: Int
+
+struct TokenVec
+    raw: Int
+
+struct ParserState
+    raw: Int
+
+struct IrModule
+    raw: Int
+
+struct StrPath
+    raw: String

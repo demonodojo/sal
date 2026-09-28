@@ -14,6 +14,7 @@ use crate::incremental::{
 };
 use crate::infer::infer_program;
 use crate::ir::{ir_to_text, lower_program_with_callables};
+use crate::layout::collect_struct_defs;
 use crate::llvm::{collect_host_tensors, emit_llvm_with_externs, LlvmOptions};
 use crate::modules::{
     callable_fn_names, infer_module, resolve_module_graph, LoadedModule, ModuleGraph,
@@ -258,6 +259,7 @@ fn compile_single_module(
                 instrument: opts.instrument,
                 extern_user_fns: externs.clone(),
                 emit_entry_main,
+                struct_defs: collect_struct_defs(program),
             },
             &tensors,
             externs,

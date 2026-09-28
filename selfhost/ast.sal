@@ -46,44 +46,44 @@ fn ex_float() -> Int ! alloc
     _b = vec_push(e, 0)
     e
 
-fn ex_string(t: Int) -> Int ! alloc
+fn ex_string(t: String) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_STRING())
-    _b = vec_push(e, t)
+    _b = vec_push(e, str_as_int(t))
     e
 
-fn ex_ident(t: Int) -> Int ! alloc
+fn ex_ident(t: String) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_IDENT())
-    _b = vec_push(e, t)
+    _b = vec_push(e, str_as_int(t))
     e
 
-fn ex_binary(op: Int, left: Int, right: Int) -> Int ! alloc
+fn ex_binary(op: String, left: Int, right: Int) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_BINARY())
-    _b = vec_push(e, op)
+    _b = vec_push(e, str_as_int(op))
     _c = vec_push(e, left)
     _d = vec_push(e, right)
     e
 
-fn ex_call(name: Int, args: Int) -> Int ! alloc
+fn ex_call(name: String, args: Int) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_CALL())
-    _b = vec_push(e, name)
+    _b = vec_push(e, str_as_int(name))
     _c = vec_push(e, args)
     e
 
-fn ex_to(place: Int, inner: Int) -> Int ! alloc
+fn ex_to(place: String, inner: Int) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_TO())
-    _b = vec_push(e, place)
+    _b = vec_push(e, str_as_int(place))
     _c = vec_push(e, inner)
     e
 
-fn ex_on(place: Int, body: Int) -> Int ! alloc
+fn ex_on(place: String, body: Int) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_ON())
-    _b = vec_push(e, place)
+    _b = vec_push(e, str_as_int(place))
     _c = vec_push(e, body)
     e
 
@@ -116,10 +116,10 @@ fn ex_kind(e: Int) -> Int ! alloc
     else
         vec_get(e, 0)
 
-fn stmt_new(is_as: Int, name: Int, expr: Int) -> Int ! alloc
+fn stmt_new(is_as: Int, name: String, expr: Int) -> Int ! alloc
     s = vec_new()
     _a = vec_push(s, is_as)
-    _b = vec_push(s, name)
+    _b = vec_push(s, str_as_int(name))
     _c = vec_push(s, expr)
     s
 
@@ -140,15 +140,15 @@ fn block_set_tail(b: Int, t: Int) -> Int ! alloc
     _s = vec_set(b, 1, t)
     0
 
-fn param_new(name: Int, ty: Int) -> Int ! alloc
+fn param_new(name: String, ty: String) -> Int ! alloc
     pr = vec_new()
-    _a = vec_push(pr, name)
-    _b = vec_push(pr, ty)
+    _a = vec_push(pr, str_as_int(name))
+    _b = vec_push(pr, str_as_int(ty))
     pr
 
-fn fndef_new(name: Int, params: Int, body: Int) -> Int ! alloc
+fn fndef_new(name: String, params: Int, body: Int) -> Int ! alloc
     f = vec_new()
-    _a = vec_push(f, name)
+    _a = vec_push(f, str_as_int(name))
     _b = vec_push(f, params)
     _c = vec_push(f, body)
     f
@@ -215,7 +215,7 @@ fn strenv_has(env: Int, name: Int) -> Int ! alloc
     else
         strenv_has_go(env, name, strenv_len(env) - 1)
 
-fn ty_is_string(ty: Int) -> Int ! alloc
+fn ty_is_string(ty: String) -> Int ! alloc
     if str_eq(ty, "String") == 1
         1
     else

@@ -86,7 +86,11 @@ fn check_expr_devices(
         Expr::Int { span, .. } => Ok(named("Int", *span)),
         Expr::Float { span, .. } => Ok(named("Float", *span)),
         Expr::Bool { span, .. } => Ok(named("Bool", *span)),
-        Expr::String { span, .. } => Ok(named("String", *span)),
+        Expr::String { span, .. } => {
+            let ty = named("String", *span);
+            reject_string_off_cpu(&ty, expected.as_ref(), *span)?;
+            Ok(ty)
+        }
         Expr::Ident { name, span } => {
             let ty = env
                 .get(name)
@@ -104,6 +108,7 @@ fn check_expr_devices(
                     }
                 }
             }
+            reject_string_off_cpu(&ty, expected.as_ref(), *span)?;
             Ok(ty)
         }
         Expr::On {
@@ -136,6 +141,14 @@ fn check_expr_devices(
         }
         Expr::To { place, expr, span } => {
             let ty = check_expr_devices(expr, env, None)?;
+            if is_string_type(&ty) && !matches!(place, Place::Cpu) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EPlace,
+                    "String lives on cpu",
+                    *span,
+                )
+                .with_hint("use `str_bytes` then `to` for device data")]);
+            }
             Ok(with_place(ty, place.clone(), *span))
         }
         Expr::Call {
@@ -286,6 +299,31 @@ fn check_lambda_devices(
         effects: vec![],
         span,
     })
+}
+
+fn is_string_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named { name, .. } if name == "String")
+}
+
+fn reject_string_off_cpu(
+    ty: &Type,
+    expected: Option<&Place>,
+    span: crate::span::Span,
+) -> DiagResult<()> {
+    if !is_string_type(ty) {
+        return Ok(());
+    }
+    if let Some(exp) = expected {
+        if !places_compatible(&Place::Cpu, exp) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EPlace,
+                "String lives on cpu",
+                span,
+            )
+            .with_hint("use `str_bytes` then `to` for device data")]);
+        }
+    }
+    Ok(())
 }
 
 fn type_place(ty: &Type) -> Option<Place> {

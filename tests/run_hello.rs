@@ -89,6 +89,123 @@ fn main() -> Int ! alloc, io
 }
 
 #[test]
+fn string_header_concat_slice_eq_and_literal_immutable() {
+    let src = r#"
+fn main() -> Int ! alloc
+    lit = "ab"
+    n0 = str_len(lit)
+    heap = strdup("ab")
+    chain = "ab" + "c" + "d"
+    if str_len(chain) != 4
+        10
+    else
+        if n0 != 2
+            11
+        else
+            if str_len(lit) != 2
+                12
+            else
+                _tail = str_append(heap, "z")
+                if str_len(lit) != 2
+                    13
+                else
+                    if str_eq(str_slice(chain, 0, 2), lit) == 1
+                        0
+                    else
+                        14
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn struct_point_fields_sum_at_runtime() {
+    let src = r#"
+struct Point
+    x: Int
+    y: Int
+
+fn main() -> Int
+    p = Point(3, 4)
+    p.x + p.y
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(7), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn option_some_match_returns_payload() {
+    let src = r#"
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int
+    o = Some(42)
+    match o
+        Some(x) => x
+        None => 0
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(42), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn transparent_newtype_same_as_inner() {
+    let src = r#"
+struct Tag
+    raw: Int
+
+fn main() -> Int
+    t = Tag(99)
+    t.raw
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(99), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
 fn assign_inside_if_is_visible_after() {
     let src = r#"
 fn main() -> Int

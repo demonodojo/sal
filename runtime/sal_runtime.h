@@ -54,6 +54,8 @@ int64_t sal_mkdir_p(const char *path);
 int64_t sal_str_eq(const char *a, const char *b);
 int64_t sal_str_contains(const char *hay, const char *needle);
 int64_t sal_str_len(const char *s);
+/* Heap copy of string bytes on cpu; returns data pointer as i64 (length = str_len(s)). */
+int64_t sal_str_bytes(const char *s);
 char *sal_str_concat(const char *a, const char *b);
 /* Like concat but frees heap-owned `a` (b is borrowed). */
 char *sal_str_append(char *a, const char *b);
@@ -84,6 +86,8 @@ void *sal_lex_src(const char *src);
 char *sal_str_slice(const char *s, int64_t start, int64_t end);
 char *sal_int_to_str(int64_t v);
 char *sal_char_to_str(int64_t c);
+char *sal_str_from_int(int64_t x);
+int64_t sal_str_as_int(const char *s);
 void *sal_vec_new(void);
 int64_t sal_vec_push(void *v, int64_t x);
 int64_t sal_vec_get(void *v, int64_t i);

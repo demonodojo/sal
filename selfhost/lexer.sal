@@ -150,23 +150,23 @@ fn is_ident_char(c: Int) -> Int
     else
         is_digit(c)
 
-fn tok_new(kind: Int, text: Int, ival: Int) -> Int ! alloc
+fn tok_new(kind: Int, text: String, ival: Int) -> Int ! alloc
     v = vec_new()
     _a = vec_push(v, kind)
-    _b = vec_push(v, text)
+    _b = vec_push(v, str_as_int(text))
     _c = vec_push(v, ival)
     v
 
 fn tok_kind(t: Int) -> Int ! alloc
     vec_get(t, 0)
 
-fn tok_text(t: Int) -> Int ! alloc
-    vec_get(t, 1)
+fn tok_text(t: Int) -> String ! alloc
+    str_from_int(vec_get(t, 1))
 
 fn tok_ival(t: Int) -> Int ! alloc
     vec_get(t, 2)
 
-fn kw_kind(text: Int) -> Int ! alloc
+fn kw_kind(text: String) -> Int ! alloc
     if str_eq(text, "fn") == 1
         TK_FN()
     else
@@ -262,25 +262,25 @@ fn count_live_indent(st: Int, i: Int, acc: Int) -> Int ! alloc
         else
             count_live_indent(st, i + 1, acc + 1)
 
-fn skip_line_comment(src: Int, i: Int, n: Int) -> Int ! alloc
+fn skip_line_comment(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
     str_skip(src, i, 4, 0)
 
-fn count_spaces(src: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn count_spaces(src: String, i: Int, n: Int, acc: Int) -> Int ! alloc
     _n = n
     _a = acc
     end = str_skip(src, i, 1, 0)
     end - i
 
-fn read_ident(src: Int, i: Int, n: Int) -> Int ! alloc
+fn read_ident(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
     str_skip(src, i, 2, 0)
 
-fn read_digits(src: Int, i: Int, n: Int) -> Int ! alloc
+fn read_digits(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
     str_skip(src, i, 3, 0)
 
-fn parse_int_digits(src: Int, i: Int, end: Int, acc: Int) -> Int ! alloc
+fn parse_int_digits(src: String, i: Int, end: Int, acc: Int) -> Int ! alloc
     if i >= end
         acc
     else
@@ -299,7 +299,7 @@ fn unescape_char(e: Int) -> Int ! alloc
             else
                 e
 
-fn read_string_chars(src: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn read_string_chars(src: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -314,18 +314,16 @@ fn read_string_chars(src: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
                     e = str_char(src, i + 1)
                     ch = unescape_char(e)
                     piece = char_to_str(ch)
-                    acc2 = str_append(acc, piece)
-                    read_string_chars(src, i + 2, n, acc2)
+                    read_string_chars(src, i + 2, n, acc + piece)
             else
                 piece = char_to_str(c)
-                acc2 = str_append(acc, piece)
-                read_string_chars(src, i + 1, n, acc2)
+                read_string_chars(src, i + 1, n, acc + piece)
 
-fn string_end(src: Int, i: Int, n: Int) -> Int ! alloc
+fn string_end(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
     str_skip(src, i, 7, 0)
 
-fn unescape_braces(s: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn unescape_braces(s: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -377,16 +375,16 @@ fn dedent_to_col(out: Int, st: Int, col: Int) -> Int ! alloc
     top = indent_top(st)
     if col < top
         _t = indent_pop(st)
-        t = tok_new(TK_DEDENT(), 0, 0)
+        t = tok_new(TK_DEDENT(), d"", 0)
         _q = vec_push(out, t)
         dedent_to_col(out, st, col)
     else
         0
 
-fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int ! alloc
+fn lex_go(src: String, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int ! alloc
     if i >= n
         dedent_to_col(out, st, 0)
-        t = tok_new(TK_EOF(), 0, 0)
+        t = tok_new(TK_EOF(), d"", 0)
         _p = vec_push(out, t)
         out
     else
@@ -428,7 +426,7 @@ fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int ! a
                             top = indent_top(st)
                             if sp > top
                                 _p = indent_push(st, sp)
-                                t = tok_new(TK_INDENT(), 0, 0)
+                                t = tok_new(TK_INDENT(), d"", 0)
                                 _q = vec_push(out, t)
                                 lex_go(src, j, n, out, st, 0)
                             else
@@ -436,7 +434,7 @@ fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int ! a
                                 lex_go(src, j, n, out, st, 0)
             else
                 if c == 10
-                    t = tok_new(TK_NL(), 0, 0)
+                    t = tok_new(TK_NL(), d"", 0)
                     _p = vec_push(out, t)
                     if group_depth(st) > 0
                         lex_go(src, i + 1, n, out, st, 0)
@@ -449,13 +447,13 @@ fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int ! a
                     else
                         lex_go(src, j, n, out, st, 0)
 
-fn lex_tok(src: Int, i: Int, n: Int, out: Int, st: Int) -> Int ! alloc
+fn lex_tok(src: String, i: Int, n: Int, out: Int, st: Int) -> Int ! alloc
     c = str_char(src, i)
     if c == 45
         if i + 1 < n
             c2 = str_char(src, i + 1)
             if c2 == 62
-                t = tok_new(TK_ARROW(), 0, 0)
+                t = tok_new(TK_ARROW(), d"", 0)
                 _p = vec_push(out, t)
                 lex_go(src, i + 2, n, out, st, 0)
             else
@@ -465,41 +463,41 @@ fn lex_tok(src: Int, i: Int, n: Int, out: Int, st: Int) -> Int ! alloc
     else
         lex_tok_rest(src, i, n, out, st, c)
 
-fn lex_tok_rest(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
     if c == 40
-        t = tok_new(TK_LPAREN(), 0, 0)
+        t = tok_new(TK_LPAREN(), d"", 0)
         _p = vec_push(out, t)
         _g = group_enter(st)
         lex_go(src, i + 1, n, out, st, 0)
     else
         if c == 41
-            t = tok_new(TK_RPAREN(), 0, 0)
+            t = tok_new(TK_RPAREN(), d"", 0)
             _p = vec_push(out, t)
             _g = group_leave(st)
             lex_go(src, i + 1, n, out, st, 0)
         else
             if c == 91
-                t = tok_new(TK_LBRACK(), 0, 0)
+                t = tok_new(TK_LBRACK(), d"", 0)
                 _p = vec_push(out, t)
                 _g = group_enter(st)
                 lex_go(src, i + 1, n, out, st, 0)
             else
                 if c == 93
-                    t = tok_new(TK_RBRACK(), 0, 0)
+                    t = tok_new(TK_RBRACK(), d"", 0)
                     _p = vec_push(out, t)
                     _g = group_leave(st)
                     lex_go(src, i + 1, n, out, st, 0)
                 else
                     lex_tok_rest2(src, i, n, out, st, c)
 
-fn lex_tok_rest2(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest2(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
     if c == 44
-        t = tok_new(TK_COMMA(), 0, 0)
+        t = tok_new(TK_COMMA(), d"", 0)
         _p = vec_push(out, t)
         lex_go(src, i + 1, n, out, st, 0)
     else
         if c == 58
-            t = tok_new(TK_COLON(), 0, 0)
+            t = tok_new(TK_COLON(), d"", 0)
             _p = vec_push(out, t)
             lex_go(src, i + 1, n, out, st, 0)
         else
@@ -507,34 +505,34 @@ fn lex_tok_rest2(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
                 if i + 1 < n
                     c2 = str_char(src, i + 1)
                     if c2 == 61
-                        t = tok_new(TK_EQEQ(), 0, 0)
+                        t = tok_new(TK_EQEQ(), d"", 0)
                         _p = vec_push(out, t)
                         lex_go(src, i + 2, n, out, st, 0)
                     else
-                        t = tok_new(TK_EQ(), 0, 0)
+                        t = tok_new(TK_EQ(), d"", 0)
                         _p = vec_push(out, t)
                         lex_go(src, i + 1, n, out, st, 0)
                 else
-                    t = tok_new(TK_EQ(), 0, 0)
+                    t = tok_new(TK_EQ(), d"", 0)
                     _p = vec_push(out, t)
                     lex_go(src, i + 1, n, out, st, 0)
             else
                 lex_tok_rest3(src, i, n, out, st, c)
 
-fn lex_tok_rest3(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest3(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
     if c == 33
         if i + 1 < n
             c2 = str_char(src, i + 1)
             if c2 == 61
-                t = tok_new(TK_NE(), 0, 0)
+                t = tok_new(TK_NE(), d"", 0)
                 _p = vec_push(out, t)
                 lex_go(src, i + 2, n, out, st, 0)
             else
-                t = tok_new(TK_BANG(), 0, 0)
+                t = tok_new(TK_BANG(), d"", 0)
                 _p = vec_push(out, t)
                 lex_go(src, i + 1, n, out, st, 0)
         else
-            t = tok_new(TK_BANG(), 0, 0)
+            t = tok_new(TK_BANG(), d"", 0)
             _p = vec_push(out, t)
             lex_go(src, i + 1, n, out, st, 0)
     else
@@ -542,55 +540,55 @@ fn lex_tok_rest3(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
             if i + 1 < n
                 c2 = str_char(src, i + 1)
                 if c2 == 61
-                    t = tok_new(TK_LE(), 0, 0)
+                    t = tok_new(TK_LE(), d"", 0)
                     _p = vec_push(out, t)
                     lex_go(src, i + 2, n, out, st, 0)
                 else
-                    t = tok_new(TK_LT(), 0, 0)
+                    t = tok_new(TK_LT(), d"", 0)
                     _p = vec_push(out, t)
                     lex_go(src, i + 1, n, out, st, 0)
             else
-                t = tok_new(TK_LT(), 0, 0)
+                t = tok_new(TK_LT(), d"", 0)
                 _p = vec_push(out, t)
                 lex_go(src, i + 1, n, out, st, 0)
         else
             lex_tok_rest4(src, i, n, out, st, c)
 
-fn lex_tok_rest4(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest4(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
     if c == 62
         if i + 1 < n
             c2 = str_char(src, i + 1)
             if c2 == 61
-                t = tok_new(TK_GE(), 0, 0)
+                t = tok_new(TK_GE(), d"", 0)
                 _p = vec_push(out, t)
                 lex_go(src, i + 2, n, out, st, 0)
             else
-                t = tok_new(TK_GT(), 0, 0)
+                t = tok_new(TK_GT(), d"", 0)
                 _p = vec_push(out, t)
                 lex_go(src, i + 1, n, out, st, 0)
         else
-            t = tok_new(TK_GT(), 0, 0)
+            t = tok_new(TK_GT(), d"", 0)
             _p = vec_push(out, t)
             lex_go(src, i + 1, n, out, st, 0)
     else
         if c == 43
-            t = tok_new(TK_PLUS(), 0, 0)
+            t = tok_new(TK_PLUS(), d"", 0)
             _p = vec_push(out, t)
             lex_go(src, i + 1, n, out, st, 0)
         else
             if c == 42
-                t = tok_new(TK_STAR(), 0, 0)
+                t = tok_new(TK_STAR(), d"", 0)
                 _p = vec_push(out, t)
                 lex_go(src, i + 1, n, out, st, 0)
             else
                 if c == 47
-                    t = tok_new(TK_SLASH(), 0, 0)
+                    t = tok_new(TK_SLASH(), d"", 0)
                     _p = vec_push(out, t)
                     lex_go(src, i + 1, n, out, st, 0)
                 else
                     lex_tok_rest5(src, i, n, out, st, c)
 
-fn lex_quoted(src: Int, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int ! alloc
+fn lex_quoted(src: String, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int ! alloc
     raw = strdup("")
     raw2 = read_string_chars(src, i + 1, n, raw)
     end = string_end(src, i + 1, n)
@@ -607,14 +605,14 @@ fn lex_quoted(src: Int, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int ! a
         j = end
     lex_go(src, j, n, out, st, 0)
 
-fn lex_tok_rest5(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
     if c == 34
         lex_quoted(src, i, n, out, st, TK_STRING())
     else
         if is_digit(c) == 1
             end = read_digits(src, i, n)
             ival = parse_int_digits(src, i, end, 0)
-            t = tok_new(TK_INT(), 0, ival)
+            t = tok_new(TK_INT(), d"", ival)
             _p = vec_push(out, t)
             lex_go(src, end, n, out, st, 0)
         else
@@ -624,20 +622,20 @@ fn lex_tok_rest5(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
                     if is_digit(c2) == 1
                         end = read_digits(src, i + 1, n)
                         ival = 0 - parse_int_digits(src, i + 1, end, 0)
-                        t = tok_new(TK_INT(), 0, ival)
+                        t = tok_new(TK_INT(), d"", ival)
                         _p = vec_push(out, t)
                         lex_go(src, end, n, out, st, 0)
                     else
-                        t = tok_new(TK_MINUS(), 0, 0)
+                        t = tok_new(TK_MINUS(), d"", 0)
                         _p = vec_push(out, t)
                         lex_go(src, i + 1, n, out, st, 0)
                 else
-                    t = tok_new(TK_MINUS(), 0, 0)
+                    t = tok_new(TK_MINUS(), d"", 0)
                     _p = vec_push(out, t)
                     lex_go(src, i + 1, n, out, st, 0)
             else
                 if c == 46
-                    t = tok_new(TK_DOT(), 0, 0)
+                    t = tok_new(TK_DOT(), d"", 0)
                     _p = vec_push(out, t)
                     lex_go(src, i + 1, n, out, st, 0)
                 else
@@ -667,22 +665,22 @@ fn lex_tok_rest5(src: Int, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! a
                     else
                         lex_go(src, i + 1, n, out, st, 0)
 
-fn lex(src: Int) -> Int ! alloc
+fn lex(src: String) -> Int ! alloc
     lex_src(src)
 
-fn preprocess_scan(src: Int, i: Int, n: Int, limit: Int) -> Int ! alloc
+fn preprocess_scan(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc
     if i >= n
         n
     else
         str_skip(src, i, 5, limit)
 
-fn preprocess_scan_str(src: Int, i: Int, n: Int, limit: Int) -> Int ! alloc
+fn preprocess_scan_str(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc
     if i >= n
         n
     else
         str_skip(src, i, 6, limit)
 
-fn preprocess_go(src: Int, i: Int, n: Int, acc: Int, in_str: Int) -> Int ! alloc
+fn preprocess_go(src: String, i: Int, n: Int, acc: String, in_str: Int) -> String ! alloc
     if i >= n
         acc
     else
@@ -727,19 +725,19 @@ fn preprocess_go(src: Int, i: Int, n: Int, acc: Int, in_str: Int) -> Int ! alloc
                         acc2 = str_append(acc, piece)
                         preprocess_go(src, i + 1, n, acc2, 0)
 
-fn preprocess_qdyn_ok(src: Int, i: Int) -> Int ! alloc
+fn preprocess_qdyn_ok(src: String, i: Int) -> Int ! alloc
     if i == 0
         1
     else
         prev = str_char(src, i - 1)
         1 - is_ident_char(prev)
 
-fn preprocess(src: Int) -> Int ! alloc
+fn preprocess(src: String) -> String ! alloc
     n = str_len(src)
     acc = strdup("")
     preprocess_go(src, 0, n, acc, 0)
 
-fn find_char(s: Int, ch: Int, i: Int, n: Int) -> Int ! alloc
+fn find_char(s: String, ch: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0 - 1
     else

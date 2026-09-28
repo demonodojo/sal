@@ -55,17 +55,17 @@ pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<Inf
 fn infer_fn(f: &FnDef, types: &TypeEnv) -> DiagResult<Vec<ExprTypeEntry>> {
     let mut env: HashMap<String, Type> = HashMap::new();
     for p in &f.params {
-        check_type_well_formed(&p.ty)?;
+        check_type_well_formed(&p.ty, types)?;
         env.insert(p.name.clone(), p.ty.clone());
     }
-    check_type_well_formed(&f.ret)?;
+    check_type_well_formed(&f.ret, types)?;
     let mut entries = Vec::new();
     check_block(&f.body, &mut env, &f.ret, types, &mut entries)?;
     Ok(entries)
 }
 
-/// Reject illegal tensor element types if they appear in AST (parser also checks).
-fn check_type_well_formed(ty: &Type) -> DiagResult<()> {
+/// Reject illegal tensor element types and unknown nominal types.
+fn check_type_well_formed(ty: &Type, types: &TypeEnv) -> DiagResult<()> {
     match ty {
         Type::Named { name, args, span } => {
             if name == "Tensor" {
@@ -79,10 +79,43 @@ fn check_type_well_formed(ty: &Type) -> DiagResult<()> {
                         )]);
                     }
                 }
-                let _ = span;
+            } else if !is_builtin_named_type(name) {
+                if let Some(def) = types.structs.get(name) {
+                    if args.len() != def.type_params.len() {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!(
+                                "struct `{name}` expects {} type argument(s), found {}",
+                                def.type_params.len(),
+                                args.len()
+                            ),
+                            *span,
+                        )]);
+                    }
+                } else if let Some(def) = types.enums.get(name) {
+                    if args.len() != def.type_params.len() {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!(
+                                "enum `{name}` expects {} type argument(s), found {}",
+                                def.type_params.len(),
+                                args.len()
+                            ),
+                            *span,
+                        )]);
+                    }
+                } else {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("unknown type `{name}`"),
+                        *span,
+                    )]);
+                }
+            } else {
+                validate_builtin_type_args(name, args, *span)?;
             }
             for a in args {
-                check_type_well_formed(a)?;
+                check_type_well_formed(a, types)?;
             }
             Ok(())
         }
@@ -91,11 +124,43 @@ fn check_type_well_formed(ty: &Type) -> DiagResult<()> {
             params, ret, ..
         } => {
             for p in params {
-                check_type_well_formed(p)?;
+                check_type_well_formed(p, types)?;
             }
-            check_type_well_formed(ret)
+            check_type_well_formed(ret, types)
         }
     }
+}
+
+fn is_builtin_named_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Int" | "Float" | "Bool" | "String" | "Unit" | "List" | "Dict" | "Unknown"
+            | "F32" | "F16" | "BF16" | "I8"
+    )
+}
+
+fn validate_builtin_type_args(name: &str, args: &[Type], span: Span) -> DiagResult<()> {
+    let expected = match name {
+        "List" => Some(1),
+        "Dict" => Some(2),
+        _ => None,
+    };
+    if let Some(n) = expected {
+        if args.len() != n {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!("`{name}` expects {n} type argument(s), found {}", args.len()),
+                span,
+            )]);
+        }
+    } else if !args.is_empty() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("`{name}` is not generic"),
+            span,
+        )]);
+    }
+    Ok(())
 }
 
 fn check_block(
@@ -131,7 +196,7 @@ fn check_stmt(
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr(init, env, types, entries)?;
             if let Some(decl) = ty {
-                check_type_well_formed(decl)?;
+                check_type_well_formed(decl, types)?;
                 if !types_compatible(&ity, decl) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -535,7 +600,7 @@ fn bind_pattern(
     }
 }
 
-fn subst_type_params(ty: &Type, params: &[String], args: &[Type], span: Span) -> Type {
+pub fn subst_type_params(ty: &Type, params: &[String], args: &[Type], span: Span) -> Type {
     match ty {
         Type::Named {
             name,
@@ -593,6 +658,139 @@ fn ty_with_span(mut ty: Type, span: Span) -> Type {
     ty
 }
 
+fn find_enum_variant_call<'a>(
+    variant: &str,
+    types: &'a TypeEnv,
+) -> Option<(&'a EnumDef, &'a crate::ast::EnumVariant)> {
+    for edef in types.enums.values() {
+        if let Some(v) = edef.variants.iter().find(|v| v.name == variant) {
+            return Some((edef, v));
+        }
+    }
+    None
+}
+
+fn infer_struct_constructor(
+    def: &StructDef,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if !def.type_params.is_empty() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("struct `{}` requires type arguments", def.name),
+            span,
+        )]);
+    }
+    if args.len() != def.fields.len() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!(
+                "struct `{}` expects {} field(s), found {}",
+                def.name,
+                def.fields.len(),
+                args.len()
+            ),
+            span,
+        )]);
+    }
+    for (arg, field) in args.iter().zip(def.fields.iter()) {
+        let aty = check_expr(arg, env, types, entries)?;
+        if !types_compatible(&aty, &field.ty) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!(
+                    "struct `{}` field `{}`: expected {}, found {}",
+                    def.name,
+                    field.name,
+                    type_name(&field.ty),
+                    type_name(&aty)
+                ),
+                arg.span(),
+            )]);
+        }
+    }
+    Ok(Type::Named {
+        name: def.name.clone(),
+        args: vec![],
+        span,
+    })
+}
+
+fn infer_enum_variant_constructor(
+    edef: &EnumDef,
+    variant: &EnumVariant,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if !edef.type_params.is_empty() && edef.type_params.len() != 1 {
+        // Multi-param enums need explicit type args at the call site (later).
+    }
+    if args.len() != variant.fields.len() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!(
+                "variant `{}` expects {} payload field(s), found {}",
+                variant.name,
+                variant.fields.len(),
+                args.len()
+            ),
+            span,
+        )]);
+    }
+    let mut type_args: Vec<Type> = edef
+        .type_params
+        .iter()
+        .map(|p| {
+            Type::Named {
+                name: p.clone(),
+                args: vec![],
+                span,
+            }
+        })
+        .collect();
+    for (arg, field_ty) in args.iter().zip(variant.fields.iter()) {
+        let aty = check_expr(arg, env, types, entries)?;
+        let expected = subst_type_params(field_ty, &edef.type_params, &type_args, span);
+        let is_param = matches!(
+            &expected,
+            Type::Named { name, args, .. } if args.is_empty()
+                && edef.type_params.iter().any(|p| p == name)
+        );
+        if is_param {
+            if let Some(i) = edef
+                .type_params
+                .iter()
+                .position(|p| matches!(&expected, Type::Named { name, .. } if name == p))
+            {
+                type_args[i] = aty.clone();
+            }
+        } else if !types_compatible(&aty, &expected) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!(
+                    "variant `{}`: expected {}, found {}",
+                    variant.name,
+                    type_name(&expected),
+                    type_name(&aty)
+                ),
+                arg.span(),
+            )]);
+        }
+    }
+    Ok(Type::Named {
+        name: edef.name.clone(),
+        args: type_args,
+        span,
+    })
+}
+
 fn infer_call(
     func: &Expr,
     type_args: &[TypeArg],
@@ -615,7 +813,19 @@ fn infer_call(
     };
     for a in type_args {
         if let TypeArg::Type(ty) = a {
-            check_type_well_formed(ty)?;
+            check_type_well_formed(ty, types)?;
+        }
+    }
+    if type_args.is_empty() {
+        if let Some(def) = types.structs.get(name) {
+            if def.type_params.is_empty() {
+                return infer_struct_constructor(def, args, env, types, entries, span);
+            }
+        }
+        if let Some(vinfo) = find_enum_variant_call(name, types) {
+            return infer_enum_variant_constructor(
+                &vinfo.0, &vinfo.1, args, env, types, entries, span,
+            );
         }
     }
     match name {
@@ -670,6 +880,29 @@ fn infer_call(
                 load_tensor_type(type_args, span)
             }
         }
+        "str_bytes" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_bytes expects one String argument",
+                    span,
+                )]);
+            }
+            let arg = check_expr(&args[0], env, types, entries)?;
+            if !matches!(arg, Type::Named { name, .. } if name == "String") {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_bytes expects String",
+                    args[0].span(),
+                )]);
+            }
+            Ok(Type::Tensor {
+                elem: TensorElem::I8,
+                dims: vec![Dim::Dynamic],
+                place: Place::Cpu,
+                span,
+            })
+        }
         "map" | "reduce" => infer_map_like(args, env, types, entries, span),
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
@@ -679,6 +912,43 @@ fn infer_call(
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
             for a in args {
                 check_expr(a, env, types, entries)?;
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "str_from_int" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_from_int expects one argument",
+                    span,
+                )]);
+            }
+            check_expr(&args[0], env, types, entries)?;
+            Ok(Type::Named {
+                name: "String".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "str_as_int" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_as_int expects one argument",
+                    span,
+                )]);
+            }
+            let t = check_expr(&args[0], env, types, entries)?;
+            if !is_string_type(&t) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_as_int expects String",
+                    span,
+                )]);
             }
             Ok(Type::Named {
                 name: "Int".into(),
@@ -737,12 +1007,37 @@ fn infer_call(
         "dict_put" => infer_dict_put(args, env, types, entries, span),
         "dict_get" => infer_dict_get(args, env, types, entries, span),
         _ => {
-            for a in args {
-                check_expr(a, env, types, entries)?;
-            }
-            if let Some((_params, ret)) = types.fns.get(name) {
+            if let Some((params, ret)) = types.fns.get(name) {
+                if args.len() != params.len() {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!(
+                            "function `{name}` expects {} argument(s), found {}",
+                            params.len(),
+                            args.len()
+                        ),
+                        span,
+                    )]);
+                }
+                for (a, pt) in args.iter().zip(params.iter()) {
+                    let aty = check_expr(a, env, types, entries)?;
+                    if !types_compatible(&aty, pt) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!(
+                                "argument type mismatch calling `{name}`: expected {}, found {}",
+                                type_name(pt),
+                                type_name(&aty)
+                            ),
+                            a.span(),
+                        )]);
+                    }
+                }
                 Ok(ret.clone())
             } else {
+                for a in args {
+                    check_expr(a, env, types, entries)?;
+                }
                 Ok(Type::Named {
                     name: "Unknown".into(),
                     args: vec![],
@@ -997,9 +1292,6 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
                 return true;
             }
             if na != nb {
-                if (na == "Int" && nb == "String") || (na == "String" && nb == "Int") {
-                    return true;
-                }
                 return false;
             }
             if aa.len() != ab.len() {

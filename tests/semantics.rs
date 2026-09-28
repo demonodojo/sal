@@ -376,6 +376,30 @@ fn gpu_roundtrip_ok() {
 }
 
 #[test]
+fn int_param_rejects_string_without_bridge() {
+    expect_code(
+        r#"
+fn sink(n: Int) -> Int
+    n
+
+fn main() -> Int
+    sink("x")
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn unknown_type_name_is_etype() {
+    expect_code(
+        r#"
+fn main(x: NotARealType) -> Int
+    0
+"#,
+        ErrorCode::EType,
+    );
+}
+
 fn struct_field_int_ok() {
     let src = r#"
 struct User
@@ -650,4 +674,26 @@ fn import_call_typechecks() {
     let graph = resolve_module_graph(&a, tmp.path()).expect("graph");
     let root = graph.order.last().expect("root");
     check_module_semantics(root, &graph).expect("imported helper visible");
+}
+
+#[test]
+fn string_to_gpu_is_e_place() {
+    expect_code(
+        r#"
+fn main() -> Int ! gpu, alloc
+    s = to gpu "hi"
+    0
+"#,
+        ErrorCode::EPlace,
+    );
+}
+
+#[test]
+fn str_bytes_typechecks() {
+    expect_ok(
+        r#"
+fn main() -> Tensor[I8, ?] on cpu ! alloc
+    str_bytes("abc")
+"#,
+    );
 }

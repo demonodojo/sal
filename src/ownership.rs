@@ -220,9 +220,13 @@ fn track_expr(
                         consume_if_unique(a, ty, moved, params, taken);
                     }
                 } else if !is_borrow_fn(name) {
-                    // Unknown calls take unique args by move (String, Tensor, …).
-                    for (a, ty) in args.iter().zip(arg_tys.iter()) {
-                        consume_if_unique(a, ty, moved, params, taken);
+                    // Unknown callees: count args as uses only (selfhost passes String handles).
+                    for a in args {
+                        if let Expr::Ident { name: arg_name, .. } = a {
+                            if params.contains(arg_name) {
+                                used.insert(arg_name.clone());
+                            }
+                        }
                     }
                 }
                 // borrow_fn: args already counted as uses, not taken
@@ -306,30 +310,34 @@ fn track_expr(
             ..
         } => {
             track_expr(cond, env, moved, params, taken, used)?;
+            let branch_base = moved.clone();
+            let mut then_moved = branch_base.clone();
             let mut then_env = env.clone();
             for st in &then_block.stmts {
-                track_stmt(st, &mut then_env, moved, params, taken, used)?;
+                track_stmt(st, &mut then_env, &mut then_moved, params, taken, used)?;
             }
             if let Some(t) = &then_block.tail {
-                track_expr(t, &then_env, moved, params, taken, used)?;
+                track_expr(t, &then_env, &mut then_moved, params, taken, used)?;
             }
             for arm in elsifs {
                 track_expr(&arm.cond, env, moved, params, taken, used)?;
+                let mut arm_moved = branch_base.clone();
                 let mut arm_env = env.clone();
                 for st in &arm.body.stmts {
-                    track_stmt(st, &mut arm_env, moved, params, taken, used)?;
+                    track_stmt(st, &mut arm_env, &mut arm_moved, params, taken, used)?;
                 }
                 if let Some(t) = &arm.body.tail {
-                    track_expr(t, &arm_env, moved, params, taken, used)?;
+                    track_expr(t, &arm_env, &mut arm_moved, params, taken, used)?;
                 }
             }
             if let Some(else_block) = else_block {
+                let mut else_moved = branch_base.clone();
                 let mut else_env = env.clone();
                 for st in &else_block.stmts {
-                    track_stmt(st, &mut else_env, moved, params, taken, used)?;
+                    track_stmt(st, &mut else_env, &mut else_moved, params, taken, used)?;
                 }
                 if let Some(t) = &else_block.tail {
-                    track_expr(t, &else_env, moved, params, taken, used)?;
+                    track_expr(t, &else_env, &mut else_moved, params, taken, used)?;
                 }
             }
             Ok(named("Int", *span))

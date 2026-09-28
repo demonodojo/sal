@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ast::*;
+use crate::layout::{enum_variant_index, is_transparent_struct, struct_field_index};
 use crate::string_expr::{
     binary_add_is_string_concat_with, binary_add_uses_append_with, StringEnv,
 };
@@ -73,6 +74,30 @@ pub enum IrInst {
         body: Vec<IrInst>,
         tail: String,
         dest: String,
+    },
+    /// Multi-field struct value (LLVM aggregate lowered to i64 slots packed in one SSA name).
+    Aggregate {
+        dest: String,
+        struct_name: String,
+        fields: Vec<String>,
+    },
+    Extract {
+        dest: String,
+        base: String,
+        struct_name: String,
+        field_index: u32,
+    },
+    /// Enum as one i64: unit variants use the tag alone; payloads use `(payload << 8) | tag`.
+    EnumMake {
+        dest: String,
+        enum_name: String,
+        variant_index: u32,
+        payload: Option<String>,
+    },
+    BitAnd {
+        dest: String,
+        left: String,
+        right: String,
     },
 }
 
@@ -697,6 +722,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "str_concat"
             | "str_append"
             | "str_len"
+            | "str_bytes"
             | "str_char"
             | "str_skip"
             | "str_hash"
@@ -708,6 +734,8 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "str_slice"
             | "int_to_str"
             | "char_to_str"
+            | "str_from_int"
+            | "str_as_int"
             | "strdup"
             | "free"
             | "select_str"
@@ -858,6 +886,34 @@ fn lower_expr(
                     });
                     return dest;
                 }
+            }
+            if let Some(sdef) = strings.structs.get(&fname) {
+                if sdef.type_params.is_empty() && arg_names.len() == sdef.fields.len() {
+                    if is_transparent_struct(sdef) {
+                        return arg_names.into_iter().next().unwrap_or(dest);
+                    }
+                    instructions.push(IrInst::Aggregate {
+                        dest: dest.clone(),
+                        struct_name: fname,
+                        fields: arg_names,
+                    });
+                    return dest;
+                }
+            }
+            if let Some((edef, vdef)) = find_variant_in_enums(&fname, &strings.enums) {
+                let vidx = enum_variant_index(edef, &vdef.name).unwrap_or(0) as u32;
+                let payload = if arg_names.is_empty() {
+                    None
+                } else {
+                    Some(arg_names[0].clone())
+                };
+                instructions.push(IrInst::EnumMake {
+                    dest: dest.clone(),
+                    enum_name: edef.name.clone(),
+                    variant_index: vidx,
+                    payload,
+                });
+                return dest;
             }
             let func_name = runtime_call_name(&fname, fn_names);
             if fname == "matmul" && arg_names.len() >= 2 {
@@ -1106,10 +1162,241 @@ fn lower_expr(
             });
             dest
         }
+        Expr::Field { base, field, .. } => {
+            let base_ssa = lower_expr_simple(
+                base,
+                instructions,
+                env,
+                counter,
+                tensors,
+                fn_names,
+                strings,
+            );
+            if let Some(name) = struct_name_of_base(base, strings) {
+                if let Some(sdef) = strings.structs.get(&name) {
+                    if is_transparent_struct(sdef) {
+                        return base_ssa;
+                    }
+                    if let Some(idx) = struct_field_index(sdef, field) {
+                        *counter += 1;
+                        let dest = format!("t{counter}");
+                        instructions.push(IrInst::Extract {
+                            dest: dest.clone(),
+                            base: base_ssa,
+                            struct_name: name,
+                            field_index: idx as u32,
+                        });
+                        return dest;
+                    }
+                }
+            }
+            *counter += 1;
+            format!("t{counter}")
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            let scrut = lower_expr_simple(
+                scrutinee,
+                instructions,
+                env,
+                counter,
+                tensors,
+                fn_names,
+                strings,
+            );
+            lower_match_chain(
+                scrut,
+                arms,
+                instructions,
+                env,
+                counter,
+                regions,
+                tensors,
+                dim_params,
+                fn_names,
+                strings,
+            )
+        }
         _ => {
             *counter += 1;
             format!("t{counter}")
         }
+    }
+}
+
+fn find_variant_in_enums<'a>(
+    variant: &str,
+    enums: &'a HashMap<String, crate::ast::EnumDef>,
+) -> Option<(&'a crate::ast::EnumDef, &'a crate::ast::EnumVariant)> {
+    for edef in enums.values() {
+        if let Some(v) = edef.variants.iter().find(|v| v.name == variant) {
+            return Some((edef, v));
+        }
+    }
+    None
+}
+
+fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
+    match base {
+        Expr::Ident { name, .. } => strings.struct_types.get(name).cloned(),
+        _ => None,
+    }
+}
+
+fn lower_match_chain(
+    scrut: String,
+    arms: &[MatchArm],
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+    regions: &mut Vec<FusedRegion>,
+    tensors: &mut HashMap<String, TensorInfo>,
+    dim_params: &[String],
+    fn_names: &HashMap<String, ()>,
+    strings: &mut StringEnv,
+) -> String {
+    if arms.is_empty() {
+        *counter += 1;
+        return format!("t{counter}");
+    }
+    let arm = &arms[0];
+    let rest = &arms[1..];
+    let (cond_ssa, mut arm_env) = match_arm_cond(&scrut, &arm.pattern, counter, instructions);
+    for (k, v) in env.iter() {
+        arm_env.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    let mut then_body = Vec::new();
+    let then_val = lower_expr(
+        &arm.body,
+        &mut then_body,
+        &mut arm_env,
+        counter,
+        regions,
+        tensors,
+        dim_params,
+        fn_names,
+        strings,
+    );
+    if rest.is_empty() {
+        *counter += 1;
+        let dest = format!("t{counter}");
+        instructions.push(IrInst::If {
+            cond: cond_ssa,
+            then_body,
+            else_body: Vec::new(),
+            then_val,
+            else_val: "0".into(),
+            dest: dest.clone(),
+            carried: Vec::new(),
+        });
+        return dest;
+    }
+    let else_val = lower_match_chain(
+        scrut.clone(),
+        rest,
+        instructions,
+        env,
+        counter,
+        regions,
+        tensors,
+        dim_params,
+        fn_names,
+        strings,
+    );
+    *counter += 1;
+    let dest = format!("t{counter}");
+    instructions.push(IrInst::If {
+        cond: cond_ssa,
+        then_body,
+        else_body: Vec::new(),
+        then_val,
+        else_val,
+        dest: dest.clone(),
+        carried: Vec::new(),
+    });
+    dest
+}
+
+fn match_arm_cond(
+    scrut: &str,
+    pat: &Pattern,
+    counter: &mut u32,
+    instructions: &mut Vec<IrInst>,
+) -> (String, HashMap<String, String>) {
+    let mut env = HashMap::new();
+    match pat {
+        Pattern::Wild(_) => {
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::ConstInt {
+                dest: dest.clone(),
+                value: 1,
+            });
+            (dest, env)
+        }
+        Pattern::Int(v, _) => {
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::Binary {
+                dest: dest.clone(),
+                op: "eq".into(),
+                left: scrut.to_string(),
+                right: format!("{v}"),
+            });
+            (dest, env)
+        }
+        Pattern::Ident(name, _) => {
+            // Unit variant (e.g. None): tag == 0
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::Binary {
+                dest: dest.clone(),
+                op: "eq".into(),
+                left: scrut.to_string(),
+                right: "0".into(),
+            });
+            let _ = name;
+            (dest, env)
+        }
+        Pattern::Variant { name, args, .. } => {
+            let vtag = variant_tag_for_name(name) + 1;
+            *counter += 1;
+            let low = format!("t{counter}");
+            instructions.push(IrInst::BitAnd {
+                dest: low.clone(),
+                left: scrut.to_string(),
+                right: "255".into(),
+            });
+            *counter += 1;
+            let tag_tmp = format!("t{counter}");
+            instructions.push(IrInst::Binary {
+                dest: tag_tmp.clone(),
+                op: "eq".into(),
+                left: low,
+                right: vtag.to_string(),
+            });
+            if let Some(Pattern::Ident(bind, _)) = args.first() {
+                *counter += 1;
+                let payload = format!("t{counter}");
+                instructions.push(IrInst::Binary {
+                    dest: payload.clone(),
+                    op: "div".into(),
+                    left: scrut.to_string(),
+                    right: "256".into(),
+                });
+                env.insert(bind.clone(), payload);
+            }
+            (tag_tmp, env)
+        }
+    }
+}
+
+fn variant_tag_for_name(name: &str) -> i64 {
+    match name {
+        "None" => 0,
+        "Some" => 1,
+        "Ok" => 1,
+        "Err" => 2,
+        _ => 1,
     }
 }
 

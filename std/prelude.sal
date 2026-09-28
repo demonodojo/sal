@@ -69,3 +69,13 @@ fn load_weights(path: String) -> Tensor[F32, 4, 4] on cpu ! io, alloc
 
 fn print_line(s: String) -> Int ! io
     print(s)
+
+# Opaque i64 string handles in selfhost vectors (zero-cost at runtime).
+fn str_from_int(x: Int) -> String
+    str_from_int(x)
+
+fn str_as_int(s: String) -> Int
+    str_as_int(s)
+
+fn str_bytes(s: String) -> Tensor[I8, ?] on cpu ! alloc
+    str_bytes(s)

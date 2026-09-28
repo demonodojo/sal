@@ -3,7 +3,7 @@
 import result
 import emit
 
-fn model_check(ir: Int, needle: Int) -> Int ! alloc
+fn model_check(ir: Int, needle: String) -> Int ! alloc
     str_contains(ir, needle)
 
 fn run_model_package_tests() -> Int ! io, alloc

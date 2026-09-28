@@ -5,62 +5,62 @@ import ast
 import parser
 
 # ---- Modules ----
-fn project_root() -> Int ! io, alloc
-    r = getenv(strdup("SAL_PROJECT_ROOT"))
+fn project_root() -> String ! io, alloc
+    r = getenv(d"SAL_PROJECT_ROOT")
     if str_len(r) == 0
-        strdup(".")
+        d"."
     else
         r
 
-fn parent_dir(path: Int) -> Int ! alloc
+fn parent_dir(path: String) -> String ! alloc
     n = str_len(path)
     if n == 0
-        strdup(".")
+        d"."
     else
         parent_dir_go(path, n - 1)
 
-fn parent_dir_go(path: Int, i: Int) -> Int ! alloc
+fn parent_dir_go(path: String, i: Int) -> String ! alloc
     if i < 0
-        strdup(".")
+        d"."
     else
         if str_char(path, i) == 47
             if i == 0
-                strdup("/")
+                d"/"
             else
                 str_slice(path, 0, i)
         else
             parent_dir_go(path, i - 1)
 
-fn path_join(base: Int, rel: Int) -> Int ! alloc
+fn path_join(base: String, rel: String) -> String ! alloc
     if str_len(base) == 0
         rel
     else
         if str_char(base, str_len(base) - 1) == 47
             str_concat(base, rel)
         else
-            str_concat(str_concat(base, strdup("/")), rel)
+            str_concat(str_concat(base, d"/"), rel)
 
-fn ends_with_sal(s: Int) -> Int ! alloc
+fn ends_with_sal(s: String) -> Int ! alloc
     n = str_len(s)
     if n < 4
         0
     else
         tail = str_slice(s, n - 4, n)
-        if str_eq(tail, strdup(".sal")) == 1
+        if str_eq(tail, d".sal") == 1
             1
         else
             0
 
-fn try_candidate(base: Int, imp: Int) -> Int ! io, alloc
+fn try_candidate(base: String, imp: String) -> String ! io, alloc
     p1 = path_join(base, imp)
     if path_readable(p1) == 1
         p1
     else
         if ends_with_sal(imp) == 1
             free(p1)
-            strdup("")
+            d""
         else
-            imp2 = str_concat(imp, strdup(".sal"))
+            imp2 = str_concat(imp, d".sal")
             p2 = path_join(base, imp2)
             if path_readable(p2) == 1
                 free(p1)
@@ -68,18 +68,18 @@ fn try_candidate(base: Int, imp: Int) -> Int ! io, alloc
             else
                 free(p1)
                 free(p2)
-                strdup("")
+                d""
 
-fn dep_line_in_deps(line: Int, in_deps: Int) -> Int ! alloc
-    if str_contains(line, strdup("[dependencies]")) == 1
+fn dep_line_in_deps(line: String, in_deps: Int) -> Int ! alloc
+    if str_contains(line, d"[dependencies]") == 1
         1
     else
-        if str_contains(line, strdup("[")) == 1
+        if str_contains(line, d"[") == 1
             0
         else
             in_deps
 
-fn dep_line_push_path(line: Int, in_deps: Int, proot: Int, out: Int) -> Int ! alloc
+fn dep_line_push_path(line: String, in_deps: Int, proot: String, out: Int) -> Int ! alloc
     if in_deps == 0
         out
     else
@@ -89,7 +89,7 @@ fn dep_line_push_path(line: Int, in_deps: Int, proot: Int, out: Int) -> Int ! al
         else
             dep_extract_path(line, proot, out)
 
-fn read_until_quote(line: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn read_until_quote(line: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -100,22 +100,22 @@ fn read_until_quote(line: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
             acc2 = str_concat(acc, char_to_str(c))
             read_until_quote(line, i + 1, n, acc2)
 
-fn dep_extract_path(line: Int, proot: Int, out: Int) -> Int ! alloc
-    needle = strdup("path = \"")
+fn dep_extract_path(line: String, proot: String, out: Int) -> Int ! alloc
+    needle = d"path = \""
     pos = find_substr(line, needle, 0)
     if pos < 0
         out
     else
         start = pos + str_len(needle)
-        rel = read_until_quote(line, start, str_len(line), strdup(""))
+        rel = read_until_quote(line, start, str_len(line), d"")
         if str_len(rel) == 0
             out
         else
             base = path_join(proot, rel)
-            _p = vec_push(out, base)
+            _p = vec_push(out, str_as_int(base))
             out
 
-fn substr_eq_at(hay: Int, hi: Int, needle: Int, ni: Int, rem: Int) -> Int ! alloc
+fn substr_eq_at(hay: String, hi: Int, needle: String, ni: Int, rem: Int) -> Int ! alloc
     if rem <= 0
         1
     else
@@ -124,7 +124,7 @@ fn substr_eq_at(hay: Int, hi: Int, needle: Int, ni: Int, rem: Int) -> Int ! allo
         else
             substr_eq_at(hay, hi + 1, needle, ni + 1, rem - 1)
 
-fn find_substr(hay: Int, needle: Int, i: Int) -> Int ! alloc
+fn find_substr(hay: String, needle: String, i: Int) -> Int ! alloc
     nh = str_len(needle)
     n = str_len(hay)
     if nh == 0
@@ -138,7 +138,7 @@ fn find_substr(hay: Int, needle: Int, i: Int) -> Int ! alloc
             else
                 find_substr(hay, needle, i + 1)
 
-fn dep_bases_scan(raw: Int, i: Int, n: Int, in_deps: Int, proot: Int, out: Int) -> Int ! alloc
+fn dep_bases_scan(raw: String, i: Int, n: Int, in_deps: Int, proot: String, out: Int) -> Int ! alloc
     if i >= n
         out
     else
@@ -148,7 +148,7 @@ fn dep_bases_scan(raw: Int, i: Int, n: Int, in_deps: Int, proot: Int, out: Int) 
         out2 = dep_line_push_path(line, nd, proot, out)
         dep_bases_scan(raw, j + 1, n, nd, proot, out2)
 
-fn find_nl(s: Int, i: Int, n: Int) -> Int ! alloc
+fn find_nl(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
     else
@@ -157,13 +157,13 @@ fn find_nl(s: Int, i: Int, n: Int) -> Int ! alloc
         else
             find_nl(s, i + 1, n)
 
-fn dependency_search_bases(proot: Int) -> Int ! io, alloc
-    manifest = path_join(proot, strdup("Sal.toml"))
+fn dependency_search_bases(proot: String) -> Int ! io, alloc
+    manifest = path_join(proot, d"Sal.toml")
     raw = read_file(manifest)
     out = vec_new()
     dep_bases_scan(raw, 0, str_len(raw), 0, proot, out)
 
-fn resolve_import_path_with_manifest(imp: Int, source_file: Int, proot: Int) -> Int ! io, alloc
+fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: String) -> String ! io, alloc
     dir = parent_dir(source_file)
     hit = try_candidate(dir, imp)
     if str_len(hit) > 0
@@ -178,11 +178,11 @@ fn resolve_import_path_with_manifest(imp: Int, source_file: Int, proot: Int) -> 
             bases = dependency_search_bases(proot)
             resolve_import_path_deps(imp, proot, bases, 0, vec_len(bases))
 
-fn resolve_import_path_deps(imp: Int, proot: Int, bases: Int, i: Int, n: Int) -> Int ! io, alloc
+fn resolve_import_path_deps(imp: String, proot: String, bases: Int, i: Int, n: Int) -> String ! io, alloc
     if i >= n
-        strdup("")
+        d""
     else
-        base = vec_get(bases, i)
+        base = str_from_int(vec_get(bases, i))
         hit = try_candidate(base, imp)
         if str_len(hit) > 0
             hit
@@ -194,14 +194,14 @@ fn resolve_import_path_deps(imp: Int, proot: Int, bases: Int, i: Int, n: Int) ->
             else
                 resolve_import_path_deps(imp, proot, bases, i + 1, n)
 
-fn basename_path(p: Int) -> Int ! alloc
+fn basename_path(p: String) -> String ! alloc
     n = str_len(p)
     if n == 0
-        strdup("")
+        d""
     else
         basename_go(p, n - 1)
 
-fn basename_go(p: Int, i: Int) -> Int ! alloc
+fn basename_go(p: String, i: Int) -> String ! alloc
     if i < 0
         p
     else
@@ -210,10 +210,10 @@ fn basename_go(p: Int, i: Int) -> Int ! alloc
         else
             basename_go(p, i - 1)
 
-fn resolve_import_path_dep_split(imp: Int, base: Int) -> Int ! io, alloc
+fn resolve_import_path_dep_split(imp: String, base: String) -> String ! io, alloc
     slash = find_char(imp, 47, 0, str_len(imp))
     if slash < 0
-        strdup("")
+        d""
     else
         dep = str_slice(imp, 0, slash)
         rest = str_slice(imp, slash + 1, str_len(imp))
@@ -221,15 +221,15 @@ fn resolve_import_path_dep_split(imp: Int, base: Int) -> Int ! io, alloc
         if str_eq(bname, dep) == 1
             try_candidate(base, rest)
         else
-            strdup("")
+            d""
 
-fn path_key(p: Int) -> Int ! io, alloc
+fn path_key(p: String) -> String ! io, alloc
     realpath(p)
 
-fn mod_new(key: Int, path: Int, prog: Int) -> Int ! alloc
+fn mod_new(key: String, path: String, prog: Int) -> Int ! alloc
     m = vec_new()
-    _a = vec_push(m, key)
-    _b = vec_push(m, path)
+    _a = vec_push(m, str_as_int(key))
+    _b = vec_push(m, str_as_int(path))
     _c = vec_push(m, prog)
     m
 
@@ -270,17 +270,17 @@ fn stack_set_at(stack: Int, sp: Int, key: Int) -> Int ! alloc
         _p = vec_set(stack, sp, key)
         0
 
-fn load_imports_of(prog: Int, source_file: Int, proot: Int, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_imports_of(prog: Int, source_file: String, proot: String, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     load_imports_of_go(prog_imports(prog), 0, vec_len(prog_imports(prog)), source_file, proot, order, visited, stack, sp)
 
-fn load_imports_of_go(imps: Int, i: Int, n: Int, source_file: Int, proot: Int, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_imports_of_go(imps: Int, i: Int, n: Int, source_file: String, proot: String, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
-        imp = vec_get(imps, i)
+        imp = str_from_int(vec_get(imps, i))
         dep = resolve_import_path_with_manifest(imp, source_file, proot)
         if str_len(dep) == 0
-            result_err(str_concat(strdup("import not found: "), imp))
+            result_err_str(str_concat(d"import not found: ", imp))
         else
             step = load_module_recursive(dep, proot, order, visited, stack, sp)
             if result_is_err(step) == 1
@@ -288,16 +288,16 @@ fn load_imports_of_go(imps: Int, i: Int, n: Int, source_file: Int, proot: Int, o
             else
                 load_imports_of_go(imps, i + 1, n, source_file, proot, order, visited, stack, sp)
 
-fn load_module_recursive(path: Int, proot: Int, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_module_recursive(path: String, proot: String, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     key = path_key(path)
     if stack_has_key(stack, sp, key, 0) == 1
-        result_err(strdup("import cycle"))
+        result_err_str(d"import cycle")
     else
         if vec_has_str(visited, key, 0, vec_len(visited)) == 1
             result_ok(0)
         else
             if path_readable(path) == 0
-                result_err(str_concat(strdup("import not found: "), path))
+                result_err_str(str_concat(d"import not found: ", path))
             else
                 src = read_file(path)
                 pre = preprocess(src)
@@ -311,7 +311,7 @@ fn load_module_recursive(path: Int, proot: Int, order: Int, visited: Int, stack:
                     if result_is_err(step) == 1
                         step
                     else
-                        _v = vec_push(visited, key)
+                        _v = vec_push(visited, str_as_int(key))
                         ent = mod_new(key, path, prog)
                         _o = vec_push(order, ent)
                         result_ok(0)
@@ -321,11 +321,11 @@ fn module_graph_finish(step: Int, order: Int) -> Int ! alloc
         step
     else
         if vec_len(order) == 0
-            result_err(strdup("empty module graph"))
+            result_err_str(d"empty module graph")
         else
             result_ok(order)
 
-fn resolve_module_graph(root_path: Int, proot: Int) -> Int ! io, alloc
+fn resolve_module_graph(root_path: String, proot: String) -> Int ! io, alloc
     visited = vec_new()
     stack = vec_new()
     order = vec_new()
@@ -383,10 +383,10 @@ fn merge_exports_names(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
             _p = vec_push(dst, nm)
             merge_exports_names(dst, src, i + 1, n)
 
-fn walk_imports_collect(m: Int, graph: Int, proot: Int, visited: Int, out: Int) -> Int ! io, alloc
+fn walk_imports_collect(m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
     walk_imports_collect_go(prog_imports(mod_prog(m)), 0, vec_len(prog_imports(mod_prog(m))), m, graph, proot, visited, out)
 
-fn walk_imports_collect_go(imps: Int, i: Int, n: Int, m: Int, graph: Int, proot: Int, visited: Int, out: Int) -> Int ! io, alloc
+fn walk_imports_collect_go(imps: Int, i: Int, n: Int, m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
     if i >= n
         result_ok(out)
     else
@@ -412,13 +412,13 @@ fn walk_imports_collect_go(imps: Int, i: Int, n: Int, m: Int, graph: Int, proot:
                         _p = vec_push(out2, dep_m)
                         walk_imports_collect_go(imps, i + 1, n, m, graph, proot, visited, out2)
 
-fn transitive_import_modules(m: Int, graph: Int, proot: Int) -> Int ! io, alloc
+fn transitive_import_modules(m: Int, graph: Int, proot: String) -> Int ! io, alloc
     visited = vec_new()
     out = vec_new()
     step = walk_imports_collect(m, graph, proot, visited, out)
     step
 
-fn check_module_names(m: Int, graph: Int, proot: Int) -> Int ! io, alloc
+fn check_module_names(m: Int, graph: Int, proot: String) -> Int ! io, alloc
     step = transitive_import_modules(m, graph, proot)
     if result_is_err(step) == 1
         step
@@ -460,7 +460,7 @@ fn check_local_names_go(fns: Int, i: Int, n: Int, env: Int) -> Int ! alloc
             _p = vec_push(env, nm)
             check_local_names_go(fns, i + 1, n, env)
 
-fn callable_fn_names(m: Int, graph: Int, proot: Int) -> Int ! io, alloc
+fn callable_fn_names(m: Int, graph: Int, proot: String) -> Int ! io, alloc
     step = transitive_import_modules(m, graph, proot)
     if result_is_err(step) == 1
         step
@@ -537,10 +537,10 @@ fn extern_fn_arity_go(callables: Int, i: Int, n: Int, prog: Int, graph: Int, out
                 _p = vec_push(out, pair)
                 extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
 
-fn check_all_modules(graph: Int, proot: Int) -> Int ! io, alloc
+fn check_all_modules(graph: Int, proot: String) -> Int ! io, alloc
     check_all_modules_order(module_order_vec(graph), 0, vec_len(module_order_vec(graph)), proot)
 
-fn check_all_modules_order(order: Int, i: Int, n: Int, proot: Int) -> Int ! io, alloc
+fn check_all_modules_order(order: Int, i: Int, n: Int, proot: String) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
@@ -551,18 +551,18 @@ fn check_all_modules_order(order: Int, i: Int, n: Int, proot: Int) -> Int ! io, 
         else
             check_all_modules_order(order, i + 1, n, proot)
 
-fn graph_source_digest(graph: Int) -> Int ! io, alloc
-    graph_source_digest_go(graph, 0, vec_len(graph), strdup(""))
+fn graph_source_digest(graph: Int) -> String ! io, alloc
+    graph_source_digest_go(graph, 0, vec_len(graph), d"")
 
-fn graph_source_digest_go(graph: Int, i: Int, n: Int, acc: Int) -> Int ! io, alloc
+fn graph_source_digest_go(graph: Int, i: Int, n: Int, acc: String) -> String ! io, alloc
     if i >= n
         acc
     else
         m = vec_get(graph, i)
-        p = mod_path(m)
+        p = str_from_int(mod_path(m))
         src = read_file(p)
         h = str_hash(src, str_hash(p, 5381))
         piece = int_to_str(h)
         acc = str_append(acc, piece)
-        acc = str_append(acc, strdup(":"))
+        acc = str_append(acc, d":")
         graph_source_digest_go(graph, i + 1, n, acc)

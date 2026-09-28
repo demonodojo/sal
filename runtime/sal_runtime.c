@@ -40,14 +40,14 @@ typedef struct SalArena {
     char data[];
 } SalArena;
 
-static SalArena *g_arena;
+static _Thread_local SalArena *g_arena;
 
 static void *sal_xmalloc(size_t n, const char *site) {
     (void)site;
     if (n == 0) {
         n = 1;
     }
-    n = (n + 7u) & ~7u;
+    n = (n + 15u) & ~15u;
     if (!g_arena || g_arena->used + n > g_arena->cap) {
         size_t cap = (size_t)1 << 20;
         if (n > cap) {
@@ -71,161 +71,64 @@ static void sal_xfree(void *p) {
 }
 #endif
 
-/* Heap strings remember len and spare capacity. `str_char` on a source buffer
- * used to call strlen on every byte (quadratic). Literals are not in the table:
- * they are short and strlen is fine. The hot slot is only a table pointer, never
- * a stack temporary, so a reused stack address cannot report a stale length.
- */
-typedef struct {
-    const char *ptr; /* NULL empty, SAL_STR_TOMB deleted */
-    size_t len;
-    size_t cap;
-} SalStrSlot;
+/* String layout: [cap: i64][len: i64][bytes…][0]; value points at bytes. */
+#define SAL_STR_HDR 16
 
-#define SAL_STR_TOMB ((const char *)(uintptr_t)1)
+static const struct __attribute__((aligned(16))) {
+    int64_t cap;
+    int64_t len;
+    char b[1];
+} g_sal_empty_blk = {0, 0, ""};
 
-static SalStrSlot *g_str_slots;
-static size_t g_str_nslots;
-static size_t g_str_live;
-static size_t g_str_fill;
-static const char *g_str_hot_ptr;
-static size_t g_str_hot_len;
+static const char *g_sal_empty = g_sal_empty_blk.b;
 
-static size_t sal_str_slot_hash(const char *p) {
-    uintptr_t x = (uintptr_t)p >> 4;
-    x *= 0x9E3779B97F4A7C15ULL;
-    return (size_t)x;
-}
-
-static SalStrSlot *sal_str_find(const char *p) {
-    if (!p || !g_str_nslots || p == SAL_STR_TOMB) {
-        return NULL;
-    }
-    size_t mask = g_str_nslots - 1;
-    size_t i = sal_str_slot_hash(p) & mask;
-    for (size_t n = 0; n < g_str_nslots; n++) {
-        const char *k = g_str_slots[i].ptr;
-        if (k == NULL) {
-            return NULL;
-        }
-        if (k == p) {
-            return &g_str_slots[i];
-        }
-        i = (i + 1) & mask;
-    }
-    return NULL;
-}
-
-static void sal_str_insert_new(const char *p, size_t len, size_t cap) {
-    size_t mask = g_str_nslots - 1;
-    size_t i = sal_str_slot_hash(p) & mask;
-    for (;;) {
-        const char *k = g_str_slots[i].ptr;
-        if (k == NULL || k == SAL_STR_TOMB) {
-            if (k == NULL) {
-                g_str_fill++;
-            }
-            g_str_slots[i].ptr = p;
-            g_str_slots[i].len = len;
-            g_str_slots[i].cap = cap;
-            g_str_live++;
-            return;
-        }
-        if (k == p) {
-            g_str_slots[i].len = len;
-            g_str_slots[i].cap = cap;
-            return;
-        }
-        i = (i + 1) & mask;
-    }
-}
-
-static void sal_str_rehash(size_t nslots) {
-    SalStrSlot *old = g_str_slots;
-    size_t oldn = g_str_nslots;
-    SalStrSlot *neu = (SalStrSlot *)calloc(nslots, sizeof(SalStrSlot));
-    if (!neu) {
-        return;
-    }
-    g_str_slots = neu;
-    g_str_nslots = nslots;
-    g_str_live = 0;
-    g_str_fill = 0;
-    for (size_t i = 0; i < oldn; i++) {
-        const char *k = old[i].ptr;
-        if (k && k != SAL_STR_TOMB) {
-            sal_str_insert_new(k, old[i].len, old[i].cap);
-        }
-    }
-    free(old);
-}
-
-static void sal_str_remember(const char *p, size_t len, size_t cap) {
+static inline int64_t sal_str_cap(const char *p) {
     if (!p) {
-        return;
-    }
-    if (g_str_nslots == 0 || g_str_fill * 10 >= g_str_nslots * 7) {
-        sal_str_rehash(g_str_nslots ? g_str_nslots * 2 : 1024);
-    }
-    if (!g_str_nslots || g_str_live == g_str_nslots) {
-        return;
-    }
-    SalStrSlot *slot = sal_str_find(p);
-    if (slot) {
-        slot->len = len;
-        slot->cap = cap;
-    } else {
-        sal_str_insert_new(p, len, cap);
-    }
-    if (g_str_hot_ptr == p) {
-        g_str_hot_len = len;
-    }
-}
-
-static void sal_str_forget(const char *p) {
-    if (!p || !g_str_nslots) {
-        if (p && p == g_str_hot_ptr) {
-            g_str_hot_ptr = NULL;
-        }
-        return;
-    }
-    size_t mask = g_str_nslots - 1;
-    size_t i = sal_str_slot_hash(p) & mask;
-    for (size_t n = 0; n < g_str_nslots; n++) {
-        const char *k = g_str_slots[i].ptr;
-        if (k == NULL) {
-            break;
-        }
-        if (k == p) {
-            g_str_slots[i].ptr = SAL_STR_TOMB;
-            g_str_slots[i].len = 0;
-            g_str_slots[i].cap = 0;
-            if (g_str_live) {
-                g_str_live--;
-            }
-            break;
-        }
-        i = (i + 1) & mask;
-    }
-    if (g_str_hot_ptr == p) {
-        g_str_hot_ptr = NULL;
-    }
-}
-
-static size_t sal_cstr_len(const char *s) {
-    if (!s) {
         return 0;
     }
-    if (s == g_str_hot_ptr) {
-        return g_str_hot_len;
+    return *(const int64_t *)((const unsigned char *)p - SAL_STR_HDR);
+}
+
+static inline int64_t sal_str_len_raw(const char *p) {
+    if (!p) {
+        return 0;
     }
-    SalStrSlot *slot = sal_str_find(s);
-    if (slot) {
-        g_str_hot_ptr = s;
-        g_str_hot_len = slot->len;
-        return slot->len;
+    return *(const int64_t *)((const unsigned char *)p - 8);
+}
+
+static inline char *sal_str_base(const char *p) {
+    return (char *)((unsigned char *)p - SAL_STR_HDR);
+}
+
+static char *sal_str_alloc_size(size_t content_len, size_t cap_bytes) {
+    if (cap_bytes < content_len + 1) {
+        cap_bytes = content_len + 1;
     }
-    return strlen(s);
+    size_t total = (size_t)SAL_STR_HDR + cap_bytes;
+    char *base = (char *)sal_xmalloc(total, "strdup");
+    if (!base) {
+        return NULL;
+    }
+    int64_t *h = (int64_t *)base;
+    h[0] = (int64_t)cap_bytes;
+    h[1] = (int64_t)content_len;
+    char *p = base + SAL_STR_HDR;
+    p[content_len] = '\0';
+    return p;
+}
+
+/* Wrap a libc C string (argv, getenv, …) into a heap String. */
+static char *sal_str_from_cstr(const char *s) {
+    if (!s || s[0] == '\0') {
+        return (char *)g_sal_empty;
+    }
+    size_t n = strlen(s);
+    char *p = sal_str_alloc_size(n, n + 1);
+    if (!p) {
+        return NULL;
+    }
+    memcpy(p, s, n + 1);
+    return p;
 }
 
 void sal_runtime_init(int64_t argc, const char **argv) {
@@ -253,30 +156,48 @@ int64_t sal_argc(void) {
 
 char *sal_argv(int64_t i) {
     if (i < 0 || i >= g_argc || !g_argv || !g_argv[i]) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
-    return sal_strdup(g_argv[i]);
+    return sal_str_from_cstr(g_argv[i]);
 }
 
 char *sal_strdup(const char *s) {
     if (!s) {
-        s = "";
+        s = g_sal_empty;
     }
-    size_t n = sal_cstr_len(s);
-    char *out = (char *)sal_xmalloc(n + 1, "strdup");
+    if (s == g_sal_empty) {
+        return (char *)g_sal_empty;
+    }
+    int64_t cap = sal_str_cap(s);
+    size_t n = (size_t)sal_str_len_raw(s);
+    if (cap == 0) {
+        char *out = sal_str_alloc_size(n, n + 1);
+        if (!out) {
+            return NULL;
+        }
+        memcpy(out, s, n + 1);
+        return out;
+    }
+    char *out = sal_str_alloc_size(n, n + 1);
     if (!out) {
         return NULL;
     }
     memcpy(out, s, n + 1);
-    sal_str_remember(out, n, n + 1);
     return out;
 }
 
 void sal_free(void *p) {
-    if (p) {
-        sal_str_forget(p);
-        sal_xfree(p);
+    if (!p) {
+        return;
     }
+    const char *s = (const char *)p;
+    if (s == g_sal_empty) {
+        return;
+    }
+    if (sal_str_cap(s) == 0) {
+        return;
+    }
+    sal_xfree(sal_str_base(s));
 }
 
 int64_t sal_path_readable(const char *path) {
@@ -288,39 +209,40 @@ int64_t sal_path_readable(const char *path) {
 
 char *sal_read_file(const char *path) {
     if (!path) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     FILE *f = fopen(path, "rb");
     if (!f) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     long sz = ftell(f);
     if (sz < 0) {
         fclose(f);
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     if (fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
-    char *buf = (char *)sal_xmalloc((size_t)sz + 1, "read_file");
-    if (!buf) {
+    size_t n = (size_t)sz;
+    char *p = sal_str_alloc_size(n, n + 1);
+    if (!p) {
         fclose(f);
         return NULL;
     }
-    size_t n = fread(buf, 1, (size_t)sz, f);
+    size_t got = fread(p, 1, n, f);
     fclose(f);
-    buf[n] = '\0';
-    sal_str_remember(buf, n, (size_t)sz + 1);
-    return buf;
+    p[got] = '\0';
+    *(int64_t *)((unsigned char *)p - 8) = (int64_t)got;
+    return p;
 }
 
 int64_t sal_write_file(const char *path, const char *data) {
-    const char *bytes = data ? data : "";
+    const char *bytes = data ? data : g_sal_empty;
     FILE *f;
     if (!path || path[0] == '\0' || (path[0] == '-' && path[1] == '\0')) {
         f = stdout;
@@ -330,7 +252,7 @@ int64_t sal_write_file(const char *path, const char *data) {
             return 1;
         }
     }
-    size_t n = strlen(bytes);
+    size_t n = (size_t)sal_str_len_raw(bytes);
     size_t w = fwrite(bytes, 1, n, f);
     if (f != stdout) {
         fclose(f);
@@ -345,8 +267,8 @@ int64_t sal_print_str(const char *data) {
 }
 
 int64_t sal_eprint_str(const char *data) {
-    const char *bytes = data ? data : "";
-    size_t n = strlen(bytes);
+    const char *bytes = data ? data : g_sal_empty;
+    size_t n = (size_t)sal_str_len_raw(bytes);
     size_t w = fwrite(bytes, 1, n, stderr);
     fflush(stderr);
     return w == n ? 0 : 1;
@@ -354,10 +276,10 @@ int64_t sal_eprint_str(const char *data) {
 
 char *sal_getenv(const char *name) {
     if (!name) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     const char *v = getenv(name);
-    return sal_strdup(v ? v : "");
+    return sal_str_from_cstr(v ? v : "");
 }
 
 int64_t sal_mkdir_p(const char *path) {
@@ -392,68 +314,102 @@ int64_t sal_mkdir_p(const char *path) {
 
 int64_t sal_str_eq(const char *a, const char *b) {
     if (!a) {
-        a = "";
+        a = g_sal_empty;
     }
     if (!b) {
-        b = "";
+        b = g_sal_empty;
     }
-    return strcmp(a, b) == 0 ? 1 : 0;
+    int64_t na = sal_str_len_raw(a);
+    int64_t nb = sal_str_len_raw(b);
+    if (na != nb) {
+        return 0;
+    }
+    return memcmp(a, b, (size_t)na) == 0 ? 1 : 0;
 }
 
 int64_t sal_str_contains(const char *hay, const char *needle) {
     if (!hay) {
-        hay = "";
+        hay = g_sal_empty;
     }
     if (!needle || needle[0] == '\0') {
         return 1;
     }
-    return strstr(hay, needle) != NULL ? 1 : 0;
+    int64_t hn = sal_str_len_raw(hay);
+    int64_t nn = sal_str_len_raw(needle);
+    if (nn > hn) {
+        return 0;
+    }
+    for (int64_t i = 0; i <= hn - nn; i++) {
+        if (memcmp(hay + i, needle, (size_t)nn) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int64_t sal_str_len(const char *s) {
-    return (int64_t)sal_cstr_len(s);
+    if (!s) {
+        return 0;
+    }
+    return sal_str_len_raw(s);
+}
+
+int64_t sal_str_bytes(const char *s) {
+    if (!s) {
+        s = g_sal_empty;
+    }
+    int64_t n = sal_str_len_raw(s);
+    if (n <= 0) {
+        return 0;
+    }
+    void *p = sal_place_malloc(n, 0);
+    if (!p) {
+        return 0;
+    }
+    memcpy(p, s, (size_t)n);
+    return (int64_t)(uintptr_t)p;
 }
 
 char *sal_str_concat(const char *a, const char *b) {
     if (!a) {
-        a = "";
+        a = g_sal_empty;
     }
     if (!b) {
-        b = "";
+        b = g_sal_empty;
     }
-    size_t na = sal_cstr_len(a);
-    size_t nb = sal_cstr_len(b);
-    char *out = (char *)sal_xmalloc(na + nb + 1, "concat");
+    size_t na = (size_t)sal_str_len_raw(a);
+    size_t nb = (size_t)sal_str_len_raw(b);
+    char *out = sal_str_alloc_size(na + nb, na + nb + 1);
     if (!out) {
         return NULL;
     }
     memcpy(out, a, na);
     memcpy(out + na, b, nb + 1);
-    sal_str_remember(out, na + nb, na + nb + 1);
+    *(int64_t *)((unsigned char *)out - 8) = (int64_t)(na + nb);
     return out;
 }
 
 char *sal_str_append(char *a, const char *b) {
     if (!b) {
-        b = "";
+        b = (char *)g_sal_empty;
     }
     if (!a) {
         return sal_strdup(b);
     }
-    size_t nb = sal_cstr_len(b);
-    SalStrSlot *slot = sal_str_find(a);
-    size_t na = slot ? slot->len : sal_cstr_len(a);
+    size_t nb = (size_t)sal_str_len_raw(b);
+    size_t na = (size_t)sal_str_len_raw(a);
     size_t need = na + nb + 1;
-    int overlap = slot && b >= a && b < a + slot->cap;
-    if (slot && slot->cap >= need && !overlap) {
+    int64_t cap_i = sal_str_cap(a);
+    size_t cap = cap_i > 0 ? (size_t)cap_i : 0;
+    int overlap = cap_i > 0 && b >= a && b < a + cap;
+    if (cap_i > 0 && cap >= need && !overlap) {
         memcpy(a + na, b, nb + 1);
-        slot->len = na + nb;
-        if (g_str_hot_ptr == a) {
-            g_str_hot_len = slot->len;
-        }
+        *(int64_t *)((unsigned char *)a - 8) = (int64_t)(na + nb);
         return a;
     }
-    size_t cap = slot && slot->cap > 16 ? slot->cap : 16;
+    if (cap < 16) {
+        cap = 16;
+    }
     while (cap < need) {
         if (cap > SIZE_MAX / 2) {
             cap = need;
@@ -461,13 +417,13 @@ char *sal_str_append(char *a, const char *b) {
         }
         cap *= 2;
     }
-    char *out = (char *)sal_xmalloc(cap, "append");
+    char *out = sal_str_alloc_size(na + nb, cap);
     if (!out) {
         return NULL;
     }
     memcpy(out, a, na);
     memcpy(out + na, b, nb + 1);
-    sal_str_remember(out, na + nb, cap);
+    *(int64_t *)((unsigned char *)out - 8) = (int64_t)(na + nb);
     sal_free(a);
     return out;
 }
@@ -475,10 +431,10 @@ char *sal_str_append(char *a, const char *b) {
 char *sal_select_str(int64_t cond, char *a, char *b) {
     if (cond) {
         sal_free(b);
-        return a ? a : sal_strdup("");
+        return a ? a : (char *)g_sal_empty;
     }
     sal_free(a);
-    return b ? b : sal_strdup("");
+    return b ? b : (char *)g_sal_empty;
 }
 
 int64_t sal_copy_file(const char *src, const char *dst) {
@@ -549,7 +505,7 @@ int64_t sal_str_char(const char *s, int64_t i) {
     if (!s || i < 0) {
         return 0;
     }
-    size_t n = sal_cstr_len(s);
+    size_t n = (size_t)sal_str_len_raw(s);
     if ((size_t)i >= n) {
         return 0;
     }
@@ -567,7 +523,7 @@ int64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit) {
     if (!s || i < 0) {
         return 0;
     }
-    size_t n = sal_cstr_len(s);
+    size_t n = (size_t)sal_str_len_raw(s);
     if ((size_t)i >= n) {
         return i;
     }
@@ -643,7 +599,7 @@ int64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit) {
 }
 
 int64_t sal_str_hash(const char *s, int64_t seed) {
-    size_t n = sal_cstr_len(s);
+    size_t n = (size_t)sal_str_len_raw(s);
     uint64_t h = (uint64_t)seed;
     if (!s) {
         return seed;
@@ -656,9 +612,9 @@ int64_t sal_str_hash(const char *s, int64_t seed) {
 
 char *sal_str_slice(const char *s, int64_t start, int64_t end) {
     if (!s) {
-        s = "";
+        s = g_sal_empty;
     }
-    size_t n = sal_cstr_len(s);
+    size_t n = (size_t)sal_str_len_raw(s);
     if (start < 0) {
         start = 0;
     }
@@ -672,27 +628,36 @@ char *sal_str_slice(const char *s, int64_t start, int64_t end) {
         end = (int64_t)n;
     }
     size_t len = (size_t)(end - start);
-    char *out = (char *)sal_xmalloc(len + 1, "str_slice");
+    char *out = sal_str_alloc_size(len, len + 1);
     if (!out) {
         return NULL;
     }
     memcpy(out, s + start, len);
     out[len] = '\0';
-    sal_str_remember(out, len, len + 1);
+    *(int64_t *)((unsigned char *)out - 8) = (int64_t)len;
     return out;
 }
 
 char *sal_int_to_str(int64_t v) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%lld", (long long)v);
-    return sal_strdup(buf);
+    return sal_str_from_cstr(buf);
 }
 
 char *sal_char_to_str(int64_t c) {
     char buf[2];
     buf[0] = (char)(unsigned char)c;
     buf[1] = '\0';
-    return sal_strdup(buf);
+    return sal_str_from_cstr(buf);
+}
+
+/* Selfhost hetero vectors store string handles as i64; String is the same pointer. */
+char *sal_str_from_int(int64_t x) {
+    return (char *)(uintptr_t)x;
+}
+
+int64_t sal_str_as_int(const char *s) {
+    return (int64_t)(uintptr_t)s;
 }
 
 typedef struct {
@@ -1289,8 +1254,14 @@ static char *lex_unescape(const char *s, size_t n) {
     }
     out[o] = 0;
     sal_xfree(raw);
-    sal_str_remember(out, o, w + 1);
-    return out;
+    char *p = sal_str_alloc_size(o, w + 1);
+    if (!p) {
+        return NULL;
+    }
+    memcpy(p, out, o + 1);
+    *(int64_t *)((unsigned char *)p - 8) = (int64_t)o;
+    sal_xfree(out);
+    return p;
 }
 
 /* Scans that already know the length. sal_str_skip looks the length up again. */
@@ -1338,24 +1309,22 @@ static inline int64_t lex_scan_str(const char *s, int64_t i, int64_t n) {
 
 static char *lex_span(const char *s, int64_t start, int64_t end) {
     size_t len = (size_t)(end - start);
-    char *out = (char *)sal_xmalloc(len + 1, "str_slice");
+    char *out = sal_str_alloc_size(len, len + 1);
     if (!out) {
         return NULL;
     }
     memcpy(out, s + start, len);
     out[len] = '\0';
-    /* Names are short. strlen is cheaper than a hash-table insert, and
-     * str_eq does not need the length. Long strings are remembered in
-     * lex_unescape. */
+    *(int64_t *)((unsigned char *)out - 8) = (int64_t)len;
     return out;
 }
 
 /* Same tokens as selfhost lex_go / lex_tok. Indent stack starts at 0. */
 void *sal_lex_src(const char *src) {
     if (!src) {
-        src = "";
+        src = g_sal_empty;
     }
-    int64_t n = (int64_t)sal_cstr_len(src);
+    int64_t n = sal_str_len_raw(src);
     g_lex_vecs = NULL;
     g_lex_ints = NULL;
     g_lex_nt = 0;
@@ -1552,8 +1521,20 @@ char *sal_ir_text(void *modp) {
         b.n = 0;
         b.cap = 1;
     }
-    sal_str_remember(b.p, b.n, b.cap);
-    return b.p;
+    {
+        size_t n = b.n;
+        char *p = sal_str_alloc_size(n, b.cap > n + 1 ? b.cap : n + 1);
+        if (!p) {
+            return NULL;
+        }
+        if (b.p && n) {
+            memcpy(p, b.p, n + 1);
+        } else {
+            p[0] = '\0';
+        }
+        *(int64_t *)((unsigned char *)p - 8) = (int64_t)n;
+        return p;
+    }
 }
 
 void sal_vec_free(void *vp) {
@@ -1928,11 +1909,11 @@ int64_t sal_clang(const char *c_path, const char *out_path) {
 
 char *sal_realpath(const char *p) {
     if (!p || !p[0]) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     char resolved[PATH_MAX];
     if (realpath(p, resolved)) {
-        return sal_strdup(resolved);
+        return sal_str_from_cstr(resolved);
     }
     return sal_strdup(p);
 }
@@ -1994,20 +1975,20 @@ char *sal_tmp_path(const char *suffix) {
     char buf[512];
     const char *suf = suffix ? suffix : "tmp";
     snprintf(buf, sizeof(buf), "/tmp/sal-%d-%s", (int)getpid(), suf);
-    return sal_strdup(buf);
+    return sal_str_from_cstr(buf);
 }
 
 
 char *sal_exec_capture(const char *bin, const char *arg) {
     if (!bin) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     char cmd[4096];
     const char *a = arg ? arg : "";
     snprintf(cmd, sizeof(cmd), "%s %s", bin, a);
     FILE *fp = popen(cmd, "r");
     if (!fp) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
     size_t cap = 4096, len = 0;
     char *buf = (char *)malloc(cap);
@@ -2034,7 +2015,7 @@ char *sal_exec_capture(const char *bin, const char *arg) {
         buf[len] = 0;
     }
     pclose(fp);
-    char *out = sal_strdup(buf);
+    char *out = sal_str_from_cstr(buf);
     free(buf);
     return out;
 }

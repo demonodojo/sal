@@ -193,6 +193,7 @@ fn main() {
                                 instrument: false,
                                 extern_user_fns: HashMap::new(),
                                 emit_entry_main: true,
+                                struct_defs: sal_compiler::layout::collect_struct_defs(&prog),
                             },
                             &tensors
                         )
