@@ -320,8 +320,8 @@ fn peak_out_fill(od: Int, oc: Int, ld: Int, lc: Int, d: Int, n: Int) -> Int ! al
         _b = vec_push(oc, cv)
         peak_out_fill(od, oc, ld, lc, d + 1, n)
 
-fn str_add_name(e: Int) -> Int ! alloc
-    if binary_add_uses_append(e) == 1
+fn str_add_name(e: Int, env: Int) -> Int ! alloc
+    if binary_add_uses_append(e, env) == 1
         strdup("sal_str_append")
     else
         strdup("sal_str_concat")
@@ -333,7 +333,7 @@ fn lower_str_add(cx: Int, e: Int) -> Int ! alloc
     args = vec_new()
     _a = vec_push(args, l)
     _b = vec_push(args, r)
-    fnm = str_add_name(e)
+    fnm = str_add_name(e, cx_strenv(cx))
     _p = ir_push(cx, ir_call(d, fnm, args, 1))
     d
 
@@ -361,7 +361,7 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
                         cx_lookup(cx, vec_get(e, 1))
                     else
                         if k == EX_BINARY()
-                            if binary_add_is_string_concat(e) == 1
+                            if binary_add_is_string_concat(e, cx_strenv(cx)) == 1
                                 lower_str_add(cx, e)
                             else
                                 l = lower_expr(cx, vec_get(e, 2))
@@ -509,15 +509,18 @@ fn lower_if(cx: Int, e: Int) -> Int ! alloc
     c = lower_expr(cx, vec_get(e, 1))
     saved = cx_insts(cx)
     then_env = cx_binds(cx)
+    slen = strenv_len(cx_strenv(cx))
     _a = cx_set_insts(cx, vec_new())
     then_b = vec_get(e, 2)
     then_val = lower_block_value(cx, then_b)
     then_body = cx_insts(cx)
+    _rs = strenv_set_len(cx_strenv(cx), slen)
     _b = cx_set_insts(cx, vec_new())
     # restore binds shallowly - binds mutated in place; for corpus if rare
     else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
     else_val = lower_block_value(cx, else_b)
     else_body = cx_insts(cx)
+    _rs2 = strenv_set_len(cx_strenv(cx), slen)
     _c = cx_set_insts(cx, saved)
     d = fresh(cx)
     inst = vec_new()
@@ -556,8 +559,9 @@ fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
         if is_as == 1
             v = lower_expr(cx, vec_get(st, 2))
             _b = cx_bind(cx, vec_get(st, 1), v)
-            # tensor literal assign
             ex = vec_get(st, 2)
+            _ns = strenv_bind(cx_strenv(cx), vec_get(st, 1), expr_produces_string(ex, cx_strenv(cx)))
+            # tensor literal assign
             if ex_kind(ex) == EX_TENSOR()
                 bb = cx_find(cx, vec_get(st, 1))
                 if bb == 0

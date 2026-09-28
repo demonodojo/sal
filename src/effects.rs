@@ -1,19 +1,22 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
-use crate::string_expr::binary_add_is_string_concat;
+use crate::string_expr::{binary_add_is_string_concat_with, StringEnv};
 
 pub fn check_effects(prog: &Program) -> DiagResult<()> {
+    let fns = StringEnv::from_program(prog);
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            check_fn_effects(f)?;
+            check_fn_effects(f, &fns)?;
         }
     }
     Ok(())
 }
 
-fn check_fn_effects(f: &FnDef) -> DiagResult<()> {
+fn check_fn_effects(f: &FnDef, fns: &StringEnv) -> DiagResult<()> {
     let mut used = EffectsUsed::default();
-    scan_block(&f.body, &mut used);
+    let mut strings = fns.clone();
+    strings.seed_params(&f.params);
+    scan_block(&f.body, &mut used, &mut strings);
     for need in used.into_list() {
         if !f.effects.contains(&need) {
             return Err(vec![Diagnostic::new(
@@ -62,33 +65,41 @@ impl EffectsUsed {
     }
 }
 
-fn scan_block(b: &Block, used: &mut EffectsUsed) {
+fn scan_block(b: &Block, used: &mut EffectsUsed, strings: &mut StringEnv) {
     for st in &b.stmts {
-        scan_stmt(st, used);
+        scan_stmt(st, used, strings);
     }
     if let Some(t) = &b.tail {
-        scan_expr(t, used);
+        scan_expr(t, used, strings);
     }
 }
 
-fn scan_stmt(st: &Stmt, used: &mut EffectsUsed) {
+fn scan_stmt(st: &Stmt, used: &mut EffectsUsed, strings: &mut StringEnv) {
     match st {
-        Stmt::Let { init, .. } => scan_expr(init, used),
-        Stmt::Expr(e) => scan_expr(e, used),
-        Stmt::Assign { value, .. } => scan_expr(value, used),
+        Stmt::Let { name, ty, init, .. } => {
+            scan_expr(init, used, strings);
+            strings.note_init(name, ty.as_ref(), init);
+        }
+        Stmt::Expr(e) => scan_expr(e, used, strings),
+        Stmt::Assign { target, value, .. } => {
+            scan_expr(value, used, strings);
+            if let Expr::Ident { name, .. } = target {
+                strings.note_init(name, None, value);
+            }
+        }
         Stmt::Return { value, .. } => {
             if let Some(v) = value {
-                scan_expr(v, used);
+                scan_expr(v, used, strings);
             }
         }
         Stmt::While { cond, body, .. } => {
-            scan_expr(cond, used);
-            scan_block(body, used);
+            scan_expr(cond, used, strings);
+            scan_block(body, used, strings);
         }
     }
 }
 
-fn scan_expr(e: &Expr, used: &mut EffectsUsed) {
+fn scan_expr(e: &Expr, used: &mut EffectsUsed, strings: &mut StringEnv) {
     match e {
         Expr::Call { func, args, .. } => {
             if let Expr::Ident { name, .. } = func.as_ref() {
@@ -112,45 +123,47 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed) {
                     _ => {}
                 }
             }
-            scan_expr(func, used);
+            scan_expr(func, used, strings);
             for a in args {
-                scan_expr(a, used);
+                scan_expr(a, used, strings);
             }
         }
         Expr::Lambda { body, .. } => {
             // Lambda is not an effectful call; only scan the body.
-            scan_expr(body, used);
+            scan_expr(body, used, strings);
         }
         Expr::On { place, body, .. } => {
             mark_place_effect(place, used);
-            scan_block(body, used);
+            let mut local = strings.clone();
+            scan_block(body, used, &mut local);
         }
         Expr::To { place, expr, .. } => {
             mark_place_effect(place, used);
-            scan_expr(expr, used);
+            scan_expr(expr, used, strings);
         }
         Expr::Binary { left, right, .. } => {
-            scan_expr(left, used);
-            scan_expr(right, used);
-            if binary_add_is_string_concat(e) {
+            scan_expr(left, used, strings);
+            scan_expr(right, used, strings);
+            if binary_add_is_string_concat_with(e, strings) {
                 used.alloc = true;
             }
         }
-        Expr::Unary { expr, .. } => scan_expr(expr, used),
-        Expr::Block(b) => scan_block(b, used),
+        Expr::Unary { expr, .. } => scan_expr(expr, used, strings),
+        Expr::Block(b) => scan_block(b, used, strings),
         Expr::TensorLit { rows, .. } => {
             used.alloc = true;
             for row in rows {
                 for c in row {
-                    scan_expr(c, used);
+                    scan_expr(c, used, strings);
                 }
             }
         }
-        Expr::Field { base, .. } => scan_expr(base, used),
+        Expr::Field { base, .. } => scan_expr(base, used, strings),
         Expr::Match { scrutinee, arms, .. } => {
-            scan_expr(scrutinee, used);
+            scan_expr(scrutinee, used, strings);
             for arm in arms {
-                scan_expr(&arm.body, used);
+                let mut local = strings.clone();
+                scan_expr(&arm.body, used, &mut local);
             }
         }
         Expr::If {
@@ -160,17 +173,20 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed) {
             else_block,
             ..
         } => {
-            scan_expr(cond, used);
-            scan_block(then_block, used);
+            scan_expr(cond, used, strings);
+            let mut then_strings = strings.clone();
+            scan_block(then_block, used, &mut then_strings);
             for arm in elsifs {
-                scan_expr(&arm.cond, used);
-                scan_block(&arm.body, used);
+                scan_expr(&arm.cond, used, strings);
+                let mut arm_strings = strings.clone();
+                scan_block(&arm.body, used, &mut arm_strings);
             }
             if let Some(else_block) = else_block {
-                scan_block(else_block, used);
+                let mut else_strings = strings.clone();
+                scan_block(else_block, used, &mut else_strings);
             }
         }
-        Expr::Try { expr, .. } => scan_expr(expr, used),
+        Expr::Try { expr, .. } => scan_expr(expr, used, strings),
         _ => {}
     }
 }

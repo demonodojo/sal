@@ -243,9 +243,11 @@ fn track_expr(
         } => {
             let lt = track_expr(left, env, moved, params, taken, used)?;
             let rt = track_expr(right, env, moved, params, taken, used)?;
-            if *op == BinOp::Add && is_string_type(&lt) && is_string_type(&rt) {
+            if *op == BinOp::Add && is_string_type(&lt) {
                 consume_if_unique(left, &lt, moved, params, taken);
-                consume_if_unique(right, &rt, moved, params, taken);
+                if is_string_type(&rt) {
+                    consume_if_unique(right, &rt, moved, params, taken);
+                }
                 Ok(named("String", *span))
             } else {
                 Ok(named("Int", *span))

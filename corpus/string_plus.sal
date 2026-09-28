@@ -1,0 +1,8 @@
+# Corpus: a String on the left of + concatenates. The right operand need not
+# be String: the first + is str_concat and the next is str_append.
+
+fn join(s: String, n: Int, m: Int) -> String ! alloc
+    s + n + m
+
+fn main() -> Int ! alloc
+    0

@@ -66,7 +66,9 @@ El cuerpo no puede hacer un efecto que la firma no declara (`E_EFFECT`).
 | Construcción | Efectos |
 |--------------|---------|
 | `load` | `io`, `alloc` |
-| literal `tensor`, `String`, `List` | `alloc` |
+| literal `tensor`, `String`, `List`, `+` con izquierdo `String` | `alloc` |
+
+`+` con el izquierdo `String` devuelve `String`. El derecho puede no ser `String`: se pasa como el segundo argumento de `str_concat` (primer `+`) o `str_append` (los siguientes de la misma cadena). Si el derecho es `String` y el izquierdo no, `E_TYPE`.
 | `on gpu`, `to gpu` | `gpu` |
 | `on tpu`, `to tpu` | `tpu` |
 | `panic` | `panic` |

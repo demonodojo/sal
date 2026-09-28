@@ -39,6 +39,7 @@ fn cx_new(fn_names: Int, fm: Int) -> Int ! alloc
     bm = map_new()
     _g = vec_push(cx, bm)
     _h = vec_push(cx, fm)
+    _i = vec_push(cx, strenv_new())
     cx
 
 fn fill_fn_map(m: Int, names: Int, i: Int, n: Int) -> Int ! alloc
@@ -53,6 +54,9 @@ fn cx_bind_map(cx: Int) -> Int ! alloc
 
 fn cx_fn_map(cx: Int) -> Int ! alloc
     vec_get(cx, 7)
+
+fn cx_strenv(cx: Int) -> Int ! alloc
+    vec_get(cx, 8)
 
 fn cx_counter(cx: Int) -> Int ! alloc
     vec_get(cx, 0)
@@ -473,6 +477,10 @@ fn lower_params(cx: Int, params: Int, i: Int, n: Int) -> Int ! alloc
             _d = 0
         _q = vec_push(cx_binds(cx), b)
         _m = map_put(cx_bind_map(cx), name, b)
+        if ty_is_string(ty) == 1
+            _s = strenv_bind(cx_strenv(cx), name, 1)
+        else
+            _s = 0
         lower_params(cx, params, i + 1, n)
 
 fn add_dim_params(cx: Int, b: Int, d: Int, nd: Int) -> Int ! alloc

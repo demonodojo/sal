@@ -167,9 +167,59 @@ fn prog_fns(pr: Int) -> Int ! alloc
 fn prog_imports(pr: Int) -> Int ! alloc
     vec_get(pr, 1)
 
-# Same string heuristic as the bootstrap (src/string_expr.rs): either child of `+`
-# producing a string makes the add a concatenation. The first `+` is str_concat;
-# a later `+` whose left child is itself a string add is str_append.
+# Same string heuristic as the bootstrap (src/string_expr.rs). A name noted in
+# `env` counts as String. The right operand of `+` need not be a string: the
+# first `+` is str_concat and a later `+` whose left child is a string add is
+# str_append. `env` is a strenv (0 means no locals).
+
+fn strenv_new() -> Int ! alloc
+    v = vec_new()
+    _p = vec_push(v, 0)
+    v
+
+fn strenv_len(env: Int) -> Int ! alloc
+    vec_get(env, 0)
+
+fn strenv_set_len(env: Int, n: Int) -> Int ! alloc
+    _s = vec_set(env, 0, n)
+    0
+
+fn strenv_bind(env: Int, name: Int, flag: Int) -> Int ! alloc
+    if env == 0
+        0
+    else
+        len = strenv_len(env)
+        base = 1 + len * 2
+        if base >= vec_len(env)
+            _a = vec_push(env, name)
+            _b = vec_push(env, flag)
+            strenv_set_len(env, len + 1)
+        else
+            _a = vec_set(env, base, name)
+            _b = vec_set(env, base + 1, flag)
+            strenv_set_len(env, len + 1)
+
+fn strenv_has_go(env: Int, name: Int, i: Int) -> Int ! alloc
+    if i < 0
+        0
+    else
+        base = 1 + i * 2
+        if str_eq(vec_get(env, base), name) == 1
+            vec_get(env, base + 1)
+        else
+            strenv_has_go(env, name, i - 1)
+
+fn strenv_has(env: Int, name: Int) -> Int ! alloc
+    if env == 0
+        0
+    else
+        strenv_has_go(env, name, strenv_len(env) - 1)
+
+fn ty_is_string(ty: Int) -> Int ! alloc
+    if str_eq(ty, "String") == 1
+        1
+    else
+        str_eq(ty, "String ") == 1
 
 fn call_returns_string(name: Int) -> Int ! alloc
     if str_eq(name, "argv") == 1
@@ -219,13 +269,13 @@ fn call_returns_string3(name: Int) -> Int ! alloc
                     else
                         0
 
-fn string_add_child(left: Int, right: Int) -> Int ! alloc
-    if expr_produces_string(left) == 1
+fn string_add_child(left: Int, right: Int, env: Int) -> Int ! alloc
+    if expr_produces_string(left, env) == 1
         1
     else
-        expr_produces_string(right)
+        expr_produces_string(right, env)
 
-fn expr_produces_string(e: Int) -> Int ! alloc
+fn expr_produces_string(e: Int, env: Int) -> Int ! alloc
     if e == 0
         0
     else
@@ -236,34 +286,37 @@ fn expr_produces_string(e: Int) -> Int ! alloc
             if k == EX_CALL()
                 call_returns_string(vec_get(e, 1))
             else
-                if k == EX_BINARY()
-                    if str_eq(vec_get(e, 1), "add") == 1
-                        string_add_child(vec_get(e, 2), vec_get(e, 3))
+                if k == EX_IDENT()
+                    strenv_has(env, vec_get(e, 1))
+                else
+                    if k == EX_BINARY()
+                        if str_eq(vec_get(e, 1), "add") == 1
+                            string_add_child(vec_get(e, 2), vec_get(e, 3), env)
+                        else
+                            0
                     else
                         0
-                else
-                    0
 
-fn binary_add_is_string_concat(e: Int) -> Int ! alloc
+fn binary_add_is_string_concat(e: Int, env: Int) -> Int ! alloc
     if e == 0
         0
     else
         if ex_kind(e) == EX_BINARY()
             if str_eq(vec_get(e, 1), "add") == 1
-                string_add_child(vec_get(e, 2), vec_get(e, 3))
+                string_add_child(vec_get(e, 2), vec_get(e, 3), env)
             else
                 0
         else
             0
 
-fn binary_add_uses_append(e: Int) -> Int ! alloc
-    if binary_add_is_string_concat(e) == 0
+fn binary_add_uses_append(e: Int, env: Int) -> Int ! alloc
+    if binary_add_is_string_concat(e, env) == 0
         0
     else
         left = vec_get(e, 2)
         if ex_kind(left) == EX_BINARY()
             if str_eq(vec_get(left, 1), "add") == 1
-                binary_add_is_string_concat(left)
+                binary_add_is_string_concat(left, env)
             else
                 0
         else

@@ -65,6 +65,30 @@ fn incremental_cache_second_build() {
 }
 
 #[test]
+fn string_plus_appends_nonstr_pointer() {
+    let src = r#"
+fn main() -> Int ! alloc, io
+    v = vec_new()
+    _p = vec_push(v, d"Z")
+    s = d"A" + d"B" + vec_get(v, 0)
+    _q = print_str(s)
+    0
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ABZ");
+}
+
+#[test]
 fn assign_inside_if_is_visible_after() {
     let src = r#"
 fn main() -> Int

@@ -25,17 +25,16 @@ fn emit_escape_arg(s: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
             a3 = str_append(a2, piece)
             # free(piece)
             emit_escape_arg(s, i + 1, n, a3)
+        elsif c == 92
+            bs = strdup("\\\\")
+            a2 = str_append(acc, bs)
+            # free(bs)
+            emit_escape_arg(s, i + 1, n, a2)
         else
-            if c == 92
-                bs = strdup("\\\\")
-                a2 = str_append(acc, bs)
-                # free(bs)
-                emit_escape_arg(s, i + 1, n, a2)
-            else
-                piece = char_to_str(c)
-                a2 = str_append(acc, piece)
-                # free(piece)
-                emit_escape_arg(s, i + 1, n, a2)
+            piece = char_to_str(c)
+            a2 = int_to_str(acc) + piece
+            # free(piece)
+            emit_escape_arg(s, i + 1, n, a2)
 
 fn emit_arg_comma(i: Int) -> Int ! alloc
     if i > 0
@@ -116,20 +115,12 @@ fn emit_call_dest(inst: Int, q: Int) -> Int ! alloc
 
 fn emit_call(inst: Int) -> Int ! alloc
     q = qquote()
-    acc = strdup("  Call {{ dest: ")
     destbit = emit_call_dest(inst, q)
-    acc = str_append(acc, destbit)
-    mid = strdup(", func: ")
-    acc = str_append(acc, mid)
-    acc = str_append(acc, q)
-    acc = str_append(acc, vec_get(inst, 2))
-    acc = str_append(acc, q)
-    mid2 = strdup(", args: [")
-    acc = str_append(acc, mid2)
-    args = vec_get(inst, 3)
-    acc = emit_arg_list(args, 0, vec_len(args), acc)
-    end = strdup("] }}\n")
-    acc = str_append(acc, end)
+    acc = (
+    "  Call {{ dest: " + int_to_str(destbit)
+     + ", func: " + int_to_str(q) + int_to_str(vec_get(inst, 2)) + int_to_str(q)
+     + ", args: [" + int_to_str(emit_arg_list(vec_get(inst, 3), 0, vec_len(vec_get(inst, 3)), "" )) + "] }}\n"
+    )
     acc
 
 fn emit_place(inst: Int) -> Int ! alloc
@@ -728,7 +719,22 @@ fn emit_decl_names(names: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
 fn tmp_counter_new() -> Int ! alloc
     v = vec_new()
     _p = vec_push(v, 0)
+    _q = vec_push(v, strenv_new())
     v
+
+fn tc_strenv(tc: Int) -> Int ! alloc
+    vec_get(tc, 1)
+
+fn seed_string_params(params: Int, i: Int, n: Int, env: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = vec_get(params, i)
+        if ty_is_string(vec_get(pm, 1)) == 1
+            _b = strenv_bind(env, vec_get(pm, 0), 1)
+        else
+            _b = 0
+        seed_string_params(params, i + 1, n, env)
 
 fn tmp_fresh(tc: Int) -> Int ! alloc
     n = vec_get(tc, 0) + 1
@@ -814,13 +820,13 @@ fn emit_c_str_add(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
     args = vec_new()
     _a = vec_push(args, l)
     _b = vec_push(args, r)
-    if binary_add_uses_append(e) == 1
+    if binary_add_uses_append(e, tc_strenv(tc)) == 1
         emit_c_builtin2(strdup("str_append"), args, stmts)
     else
         emit_c_builtin2(strdup("str_concat"), args, stmts)
 
 fn emit_c_binary(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
-    if binary_add_is_string_concat(e) == 1
+    if binary_add_is_string_concat(e, tc_strenv(tc)) == 1
         emit_c_str_add(e, user, stmts, tc)
     else
         emit_c_binary_num(e, user, stmts, tc)
@@ -1329,8 +1335,10 @@ fn emit_c_if(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
     # free(c)
     line2 = str_append(line2, strdup(") {{\n"))
     _q = vec_push(stmts, line2)
+    slen = strenv_len(tc_strenv(tc))
     then_stmts = vec_new()
     then_val = emit_c_block(vec_get(e, 2), user, then_stmts, tc)
+    _rs = strenv_set_len(tc_strenv(tc), slen)
     _a = append_stmts(stmts, then_stmts)
     line3 = strdup("    ")
     line3 = str_append(line3, tname)
@@ -1343,6 +1351,7 @@ fn emit_c_if(e: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
     else_stmts = vec_new()
     else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
     else_val = emit_c_block(else_b, user, else_stmts, tc)
+    _rs2 = strenv_set_len(tc_strenv(tc), slen)
     _b = append_stmts(stmts, else_stmts)
     line4 = strdup("    ")
     line4 = str_append(line4, tname)
@@ -1382,6 +1391,7 @@ fn emit_c_stmts(sts: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int) -> Int
         st = vec_get(sts, i)
         if vec_get(st, 0) == 1
             val = emit_c_expr(vec_get(st, 2), user, stmts, tc)
+            _ns = strenv_bind(tc_strenv(tc), vec_get(st, 1), expr_produces_string(vec_get(st, 2), tc_strenv(tc)))
             line = strdup("  ")
             line = str_append(line, vec_get(st, 1))
             line = str_append(line, strdup(" = "))
@@ -1522,6 +1532,7 @@ fn emit_c_fn_body(f: Int, user: Int, is_main: Int, acc: Int) -> Int ! alloc
     acc = emit_decl_names_filtered(names, 0, vec_len(names), skip, acc)
     stmts = vec_new()
     tc = tmp_counter_new()
+    _sp = seed_string_params(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), tc_strenv(tc))
     val = emit_c_block(body, user, stmts, tc)
     acc = append_stmt_strings(acc, stmts, 0, vec_len(stmts))
     foot = emit_c_fn_footer(is_main, val)

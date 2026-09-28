@@ -28,7 +28,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `drop` | fin de ámbito de un único que sigue vivo |
 | `borrow` | argumento prestado; el alcance es la llamada |
 | `alloca` | local de pila |
-| binario y unario | operadores de la gramática |
+| binario y unario | operadores de la gramática. `+` con izquierdo `String` es `sal_str_concat` (primer paso, o izquierdo `IDENT`) o `sal_str_append` (paso siguiente de la misma cadena). El derecho se pasa como el segundo argumento de esa llamada, aunque no sea `String` |
 | `call` | llamada, ya monomorfizada |
 | `place_copy` | `to` |
 | `on_device` | bloque `on`, con su lugar |

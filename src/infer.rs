@@ -215,15 +215,17 @@ fn check_expr(
             let lt = check_expr(left, env, types, entries)?;
             let rt = check_expr(right, env, types, entries)?;
             match op {
-                BinOp::Add if is_string_type(&lt) && is_string_type(&rt) => Type::Named {
+                // Left is String: concat. The right operand is passed like the
+                // second argument of str_concat / str_append and need not be String.
+                BinOp::Add if is_string_type(&lt) => Type::Named {
                     name: "String".into(),
                     args: vec![],
                     span: *span,
                 },
-                BinOp::Add if is_string_type(&lt) || is_string_type(&rt) => {
+                BinOp::Add if is_string_type(&rt) => {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
-                        "string concatenation requires two String values",
+                        "string concatenation requires a String on the left",
                         *span,
                     )]);
                 }

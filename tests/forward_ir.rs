@@ -54,3 +54,30 @@ fn forward_single_fused_region() {
     );
     assert_eq!(mm[2], "x_d0", "batch `?` must be the named dim arg");
 }
+
+#[test]
+fn string_plus_nonstr_lowers_like_concat_then_append() {
+    let src = r#"
+fn join(s: String, n: Int, m: Int) -> String ! alloc
+    s + n + m
+"#;
+    let p = parse(src).expect("parse");
+    let ir = lower_program(&p);
+    let text = ir_to_text(&ir);
+    let join = text
+        .split("fn main:")
+        .next()
+        .unwrap_or(&text);
+    assert!(
+        join.contains("sal_str_concat"),
+        "first + of a String variable must be str_concat:\n{text}"
+    );
+    assert!(
+        join.contains("sal_str_append"),
+        "later + must be str_append and accept a non-String right operand:\n{text}"
+    );
+    assert!(
+        !join.contains("Binary"),
+        "string + must not lower to integer add:\n{text}"
+    );
+}

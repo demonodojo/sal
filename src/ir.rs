@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ast::*;
-use crate::string_expr::{binary_add_is_string_concat, binary_add_uses_append};
+use crate::string_expr::{
+    binary_add_is_string_concat_with, binary_add_uses_append_with, StringEnv,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IrModule {
@@ -136,22 +138,25 @@ pub fn lower_program_with_callables(
     callable_fns: &HashMap<String, ()>,
 ) -> IrModule {
     let fn_names = callable_fns;
+    let strings = StringEnv::from_program(prog);
     let mut functions = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            functions.push(lower_fn(f, &fn_names));
+            functions.push(lower_fn(f, &fn_names, &strings));
         }
     }
     IrModule { functions }
 }
 
-fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>) -> IrFunction {
+fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>, base: &StringEnv) -> IrFunction {
     let mut instructions = Vec::new();
     let mut regions = Vec::new();
     let mut counter = 0u32;
     let mut env: HashMap<String, String> = HashMap::new();
     let mut tensors: HashMap<String, TensorInfo> = HashMap::new();
     let mut dim_params: Vec<String> = Vec::new();
+    let mut strings = base.clone();
+    strings.seed_params(&f.params);
 
     for p in &f.params {
         env.insert(p.name.clone(), p.name.clone());
@@ -186,6 +191,7 @@ fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>) -> IrFunction {
             &mut tensors,
             &dim_params,
             fn_names,
+            &mut strings,
         );
     }
     if let Some(t) = &f.body.tail {
@@ -198,6 +204,7 @@ fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>) -> IrFunction {
             &mut tensors,
             &dim_params,
             fn_names,
+            &mut strings,
         );
         instructions.push(IrInst::Return { value: v });
     }
@@ -326,6 +333,7 @@ fn lower_stmt(
     tensors: &mut HashMap<String, TensorInfo>,
     dim_params: &[String],
     fn_names: &HashMap<String, ()>,
+    strings: &mut StringEnv,
 ) {
     match st {
         Stmt::Let { name, ty, init, .. } => {
@@ -338,9 +346,11 @@ fn lower_stmt(
                 tensors,
                 dim_params,
                 fn_names,
+                strings,
             );
             register_let_tensor(name, ty.as_ref(), init, &v, tensors);
             env.insert(name.clone(), v);
+            strings.note_init(name, ty.as_ref(), init);
         }
         Stmt::Assign { target, value, .. } => {
             if let Expr::Ident { name, .. } = target {
@@ -353,9 +363,11 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    strings,
                 );
                 register_let_tensor(name, None, value, &v, tensors);
                 env.insert(name.clone(), v);
+                strings.note_init(name, None, value);
             } else {
                 lower_expr(
                     value,
@@ -366,6 +378,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    strings,
                 );
             }
         }
@@ -379,6 +392,7 @@ fn lower_stmt(
                 tensors,
                 dim_params,
                 fn_names,
+                strings,
             );
         }
         Stmt::Return { value, .. } => {
@@ -392,6 +406,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    strings,
                 );
                 instructions.push(IrInst::Return { value: val });
             }
@@ -426,6 +441,7 @@ fn lower_stmt(
                 tensors,
                 dim_params,
                 fn_names,
+                strings,
             );
             let mut body_insts = Vec::new();
             let mut body_env = loop_env;
@@ -439,6 +455,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    strings,
                 );
             }
             if let Some(t) = &body.tail {
@@ -451,6 +468,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    strings,
                 );
             }
             let mut carried = Vec::new();
@@ -616,6 +634,7 @@ fn lower_expr_simple(
     counter: &mut u32,
     tensors: &mut HashMap<String, TensorInfo>,
     fn_names: &HashMap<String, ()>,
+    strings: &mut StringEnv,
 ) -> String {
     lower_expr(
         e,
@@ -626,6 +645,7 @@ fn lower_expr_simple(
         tensors,
         &[],
         fn_names,
+        strings,
     )
 }
 
@@ -731,6 +751,7 @@ fn lower_expr(
     tensors: &mut HashMap<String, TensorInfo>,
     dim_params: &[String],
     fn_names: &HashMap<String, ()>,
+    strings: &mut StringEnv,
 ) -> String {
     match e {
         Expr::Int { value, .. } => {
@@ -767,12 +788,12 @@ fn lower_expr(
             right,
             ..
         } => {
-            let l = lower_expr_simple(left, instructions, env, counter, tensors, fn_names);
-            let r = lower_expr_simple(right, instructions, env, counter, tensors, fn_names);
+            let l = lower_expr_simple(left, instructions, env, counter, tensors, fn_names, strings);
+            let r = lower_expr_simple(right, instructions, env, counter, tensors, fn_names, strings);
             *counter += 1;
             let dest = format!("t{counter}");
-            if *op == BinOp::Add && binary_add_is_string_concat(e) {
-                let func = if binary_add_uses_append(e) {
+            if *op == BinOp::Add && binary_add_is_string_concat_with(e, strings) {
+                let func = if binary_add_uses_append_with(e, strings) {
                     "sal_str_append"
                 } else {
                     "sal_str_concat"
@@ -823,6 +844,7 @@ fn lower_expr(
                     counter,
                     tensors,
                     fn_names,
+                    strings,
                 ));
             }
             *counter += 1;
@@ -878,6 +900,7 @@ fn lower_expr(
                     kenv.insert(n.clone(), format!("__{n}"));
                 }
                 let mut body_insts = Vec::new();
+                let mut kstrings = strings.clone();
                 for st in &body.stmts {
                     lower_stmt(
                         st,
@@ -888,6 +911,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        &mut kstrings,
                     );
                 }
                 let tail = if let Some(t) = &body.tail {
@@ -900,6 +924,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        &mut kstrings,
                     )
                 } else {
                     let z = format!("t{}", *counter + 1);
@@ -956,7 +981,7 @@ fn lower_expr(
             dest
         }
         Expr::To { place, expr, .. } => {
-            let src = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names);
+            let src = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, strings);
             *counter += 1;
             let dest = format!("t{counter}");
             instructions.push(IrInst::PlaceCopy {
@@ -981,11 +1006,13 @@ fn lower_expr(
             ..
         } => {
             let else_block = else_block_for_elsifs(else_block.clone(), elsifs);
-            let c = lower_expr_simple(cond, instructions, env, counter, tensors, fn_names);
+            let c = lower_expr_simple(cond, instructions, env, counter, tensors, fn_names, strings);
             let mut then_body = Vec::new();
             let mut else_body = Vec::new();
             let mut then_env = env.clone();
             let mut else_env = env.clone();
+            let mut then_strings = strings.clone();
+            let mut else_strings = strings.clone();
             for st in &then_block.stmts {
                 lower_stmt(
                     st,
@@ -996,6 +1023,7 @@ fn lower_expr(
                     tensors,
                     dim_params,
                     fn_names,
+                    &mut then_strings,
                 );
             }
             let then_val = if let Some(t) = &then_block.tail {
@@ -1008,6 +1036,7 @@ fn lower_expr(
                     tensors,
                     dim_params,
                     fn_names,
+                    &mut then_strings,
                 )
             } else {
                 *counter += 1;
@@ -1029,6 +1058,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        &mut else_strings,
                     );
                 }
                 if let Some(t) = &else_block.tail {
@@ -1041,6 +1071,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        &mut else_strings,
                     )
                 } else {
                     *counter += 1;

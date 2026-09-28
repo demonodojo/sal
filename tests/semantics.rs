@@ -243,6 +243,39 @@ fn main() -> String ! alloc
 }
 
 #[test]
+fn string_plus_right_may_be_int() {
+    expect_ok(
+        r#"
+fn main() -> String ! alloc
+    v = vec_new()
+    _p = vec_push(v, d"z")
+    d"a" + vec_get(v, 0)
+"#,
+    );
+}
+
+#[test]
+fn string_plus_var_plus_int_requires_alloc() {
+    expect_code(
+        r#"
+fn join(s: String, n: Int, m: Int) -> String
+    s + n + m
+"#,
+        ErrorCode::EEffect,
+    );
+}
+
+#[test]
+fn string_plus_var_plus_int_ok() {
+    expect_ok(
+        r#"
+fn join(s: String, n: Int, m: Int) -> String ! alloc
+    s + n + m
+"#,
+    );
+}
+
+#[test]
 fn e_effect_alloc_without_decl() {
     expect_code(
         r#"

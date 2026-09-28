@@ -25,6 +25,7 @@ fn corpus_files() -> Vec<PathBuf> {
         "corpus/load_salt.sal",
         "corpus/instrument_oob.sal",
         "corpus/instrument_leak.sal",
+        "corpus/string_plus.sal",
         "examples/hello.sal",
         "examples/forward.sal",
     ]
