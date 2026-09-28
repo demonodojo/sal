@@ -34,6 +34,29 @@ pub enum IrInst {
         left: String,
         right: String,
     },
+    ConstFloat {
+        dest: String,
+        value: f64,
+    },
+    /// Element-wise tensor op; `right_scalar` when the RHS is Int/Float, not a tensor buffer.
+    TensorBin {
+        dest: String,
+        op: String,
+        elem: TensorElem,
+        place: String,
+        left: String,
+        right: String,
+        len: String,
+        right_scalar: bool,
+    },
+    TensorUnary {
+        dest: String,
+        op: String,
+        elem: TensorElem,
+        place: String,
+        input: String,
+        len: String,
+    },
     Call {
         dest: Option<String>,
         func: String,
@@ -152,12 +175,21 @@ pub enum FusedOp {
     MapEpilogue { op: String, input: String, dest: String },
     Softmax { input: String, dest: String },
     Load { path: String, dest: String },
+    /// Fused element-wise binop inside `on` (no separate intermediate buffer).
+    ColumnBin {
+        op: String,
+        left: String,
+        right: String,
+        dest: String,
+        scalar: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
 struct TensorInfo {
     elem: TensorElem,
     dims: Vec<Dim>,
+    place: Place,
     /// When a literal (or other known extent) resolves a `?` axis, that length lives here.
     concrete: Vec<Option<u64>>,
 }
@@ -228,7 +260,10 @@ fn lower_fn(
 
     for p in &f.params {
         env.insert(p.name.clone(), p.name.clone());
-        if let Type::Tensor { elem, dims, .. } = &p.ty {
+        if let Type::Tensor {
+            elem, dims, place, ..
+        } = &p.ty
+        {
             let concrete = dims.iter().map(|_| None).collect();
             for (i, d) in dims.iter().enumerate() {
                 if matches!(d, Dim::Dynamic) {
@@ -243,6 +278,7 @@ fn lower_fn(
                 TensorInfo {
                     elem: *elem,
                     dims: dims.clone(),
+                    place: place.clone(),
                     concrete,
                 },
             );
@@ -858,12 +894,19 @@ fn register_let_tensor(
         Some(TensorInfo {
             elem: *elem,
             dims: dims.clone(),
+            place: annotated
+                .and_then(|t| match t {
+                    Type::Tensor { place, .. } => Some(place.clone()),
+                    _ => None,
+                })
+                .unwrap_or(Place::Cpu),
             concrete,
         })
     } else if let Some((rows, cols)) = lit {
         Some(TensorInfo {
             elem: TensorElem::F32,
             dims: vec![Dim::Static(rows), Dim::Static(cols)],
+            place: Place::Cpu,
             concrete: vec![Some(rows), Some(cols)],
         })
     } else {
@@ -1035,6 +1078,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "relu"
             | "map"
             | "reduce"
+            | "where"
             | "index"
             | "read_file"
             | "write_file"
@@ -1139,6 +1183,15 @@ fn lower_expr(
             });
             dest
         }
+        Expr::Float { value, .. } => {
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::ConstFloat {
+                dest: dest.clone(),
+                value: *value,
+            });
+            dest
+        }
         Expr::Ident { name, .. } => env.get(name).cloned().unwrap_or_else(|| name.clone()),
         Expr::Binary {
             op,
@@ -1181,6 +1234,21 @@ fn lower_expr(
                 }
                 return dest;
             }
+            if let Some(tb) = try_tensor_bin(
+                op,
+                &l,
+                left,
+                &r,
+                right,
+                dest.clone(),
+                tensors,
+                env,
+                dim_params,
+                instructions,
+                counter,
+            ) {
+                return tb;
+            }
             let op_s = match op {
                 BinOp::Add => "add",
                 BinOp::Sub => "sub",
@@ -1198,6 +1266,50 @@ fn lower_expr(
                 op: op_s.into(),
                 left: l,
                 right: r,
+            });
+            dest
+        }
+        Expr::Unary { op, expr, .. } => {
+            let inner = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, strings);
+            *counter += 1;
+            let dest = format!("t{counter}");
+            if let Some(info) = tensor_info_for_ssa(&inner, env, tensors) {
+                let len = tensor_len_operand(&info, &inner, dim_params, instructions, counter);
+                let place = tensor_place_name(&info, env);
+                let op_s = match op {
+                    UnOp::Neg => "neg",
+                    UnOp::Not => "not",
+                };
+                instructions.push(IrInst::TensorUnary {
+                    dest: dest.clone(),
+                    op: op_s.into(),
+                    elem: info.elem,
+                    place,
+                    input: inner,
+                    len,
+                });
+                let out_info = if op_s == "not" {
+                    TensorInfo {
+                        elem: TensorElem::I8,
+                        dims: info.dims.clone(),
+                        place: info.place.clone(),
+                        concrete: info.concrete.clone(),
+                    }
+                } else {
+                    info.clone()
+                };
+                tensors.insert(dest.clone(), out_info);
+                return dest;
+            }
+            let op_s = match op {
+                UnOp::Neg => "neg",
+                UnOp::Not => "not",
+            };
+            instructions.push(IrInst::Binary {
+                dest: dest.clone(),
+                op: op_s.into(),
+                left: inner,
+                right: "0".into(),
             });
             dest
         }
@@ -1371,37 +1483,62 @@ fn lower_expr(
             let place_s = place_str(place);
             let mut ops = Vec::new();
             if let Some(t) = &body.tail {
-                collect_fused_ops(t, &mut ops, env);
+                collect_fused_ops(t, &mut ops, env, tensors);
             }
             let has_epilogue = ops
                 .iter()
                 .any(|o| matches!(o, FusedOp::MapEpilogue { .. }));
+            let has_column = ops
+                .iter()
+                .any(|o| matches!(o, FusedOp::ColumnBin { .. }));
             let fused = has_epilogue
+                || has_column
                 || ops.len() > 1
                 || ops.iter().any(|o| matches!(o, FusedOp::Matmul { .. }));
             let (peak_bytes, peak_symbolic) = estimate_peak_for_region(&ops, tensors, &place_s);
             regions.push(FusedRegion {
-                place: place_s,
+                place: place_s.clone(),
                 ops: ops.clone(),
                 peak_bytes,
                 peak_symbolic,
                 fused,
             });
 
-            *counter += 1;
-            let dest = format!("t{counter}");
-            if let Some(FusedOp::Matmul { lhs, rhs, .. }) =
-                ops.iter().find(|o| matches!(o, FusedOp::Matmul { .. }))
-            {
-                let (m, k, n) =
-                    emit_matmul_dim_args(lhs, rhs, tensors, dim_params, instructions, counter);
-                instructions.push(IrInst::Call {
-                    dest: Some(dest.clone()),
-                    func: "sal_matmul_f32".into(),
-                    args: vec![lhs.clone(), rhs.clone(), m, k, n],
-                });
+            let mut on_strings = strings.clone();
+            for st in &body.stmts {
+                lower_stmt(
+                    st,
+                    instructions,
+                    env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    &mut on_strings,
+                );
             }
-            dest
+            if let Some(t) = &body.tail {
+                lower_expr(
+                    t,
+                    instructions,
+                    env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    &mut on_strings,
+                )
+            } else {
+                *counter += 1;
+                let dest = format!("t{counter}");
+                instructions.push(IrInst::ConstInt {
+                    dest: dest.clone(),
+                    value: 0,
+                });
+                dest
+            }
         }
         Expr::To { place, expr, .. } => {
             let src = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, strings);
@@ -1959,11 +2096,182 @@ fn place_str(p: &Place) -> String {
     }
 }
 
-fn collect_fused_ops(e: &Expr, ops: &mut Vec<FusedOp>, env: &HashMap<String, String>) {
+fn tensor_info_for_ssa(
+    ssa: &str,
+    env: &HashMap<String, String>,
+    tensors: &HashMap<String, TensorInfo>,
+) -> Option<TensorInfo> {
+    if let Some(i) = tensors.get(ssa) {
+        return Some(i.clone());
+    }
+    env.get(ssa)
+        .and_then(|n| tensors.get(n))
+        .cloned()
+}
+
+fn tensor_place_name(info: &TensorInfo, _env: &HashMap<String, String>) -> String {
+    place_str(&info.place)
+}
+
+fn tensor_len_operand(
+    info: &TensorInfo,
+    tensor_ssa: &str,
+    dim_params: &[String],
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+) -> String {
+    if info.dims.len() == 1 {
+        return axis_len_ssa(
+            Some(info),
+            tensor_ssa,
+            false,
+            dim_params,
+            instructions,
+            counter,
+        );
+    }
+    match dims_elems(info) {
+        Ok(n) => push_const_dim(n, instructions, counter),
+        Err(sym) => {
+            let _ = sym;
+            push_const_dim(1, instructions, counter)
+        }
+    }
+}
+
+fn expr_has_tensor(e: &Expr, env: &HashMap<String, String>, tensors: &HashMap<String, TensorInfo>) -> bool {
     match e {
+        Expr::Ident { name, .. } => {
+            tensors.contains_key(name)
+                || env
+                    .get(name)
+                    .and_then(|n| tensors.get(n))
+                    .is_some()
+        }
+        Expr::TensorLit { .. } => true,
+        Expr::Binary { left, right, .. } => {
+            expr_has_tensor(left, env, tensors) || expr_has_tensor(right, env, tensors)
+        }
+        _ => false,
+    }
+}
+
+fn try_tensor_bin(
+    op: &BinOp,
+    l_ssa: &str,
+    left: &Expr,
+    r_ssa: &str,
+    right: &Expr,
+    dest: String,
+    tensors: &mut HashMap<String, TensorInfo>,
+    env: &HashMap<String, String>,
+    dim_params: &[String],
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+) -> Option<String> {
+    if !expr_has_tensor(left, env, tensors) && !expr_has_tensor(right, env, tensors) {
+        return None;
+    }
+    let (tensor_side, other_ssa, tensor_expr) = if expr_has_tensor(left, env, tensors) {
+        (l_ssa, r_ssa, left)
+    } else {
+        (r_ssa, l_ssa, right)
+    };
+    let info = tensor_info_for_ssa(tensor_side, env, tensors)?;
+    let len = tensor_len_operand(&info, tensor_side, dim_params, instructions, counter);
+    let place = tensor_place_name(&info, env);
+    let op_s = match op {
+        BinOp::Add => "add",
+        BinOp::Sub => "sub",
+        BinOp::Mul => "mul",
+        BinOp::Div => "div",
+        BinOp::Eq => "eq",
+        BinOp::Ne => "ne",
+        BinOp::Lt => "lt",
+        BinOp::Le => "le",
+        BinOp::Gt => "gt",
+        BinOp::Ge => "ge",
+    };
+    let right_scalar = !expr_has_tensor(
+        if std::ptr::eq(tensor_expr, left) {
+            right
+        } else {
+            left
+        },
+        env,
+        tensors,
+    );
+    instructions.push(IrInst::TensorBin {
+        dest: dest.clone(),
+        op: op_s.into(),
+        elem: info.elem,
+        place,
+        left: l_ssa.to_string(),
+        right: other_ssa.to_string(),
+        len,
+        right_scalar,
+    });
+    let out_info = if matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+    ) {
+        TensorInfo {
+            elem: TensorElem::I8,
+            dims: info.dims.clone(),
+            place: info.place.clone(),
+            concrete: info.concrete.clone(),
+        }
+    } else {
+        info.clone()
+    };
+    tensors.insert(dest.clone(), out_info);
+    Some(dest)
+}
+
+fn collect_fused_ops(
+    e: &Expr,
+    ops: &mut Vec<FusedOp>,
+    env: &HashMap<String, String>,
+    tensors: &HashMap<String, TensorInfo>,
+) {
+    match e {
+        Expr::Binary { op, left, right, .. } => {
+            collect_fused_ops(left, ops, env, tensors);
+            collect_fused_ops(right, ops, env, tensors);
+            if expr_has_tensor(left, env, tensors) || expr_has_tensor(right, env, tensors) {
+                let op_s = match op {
+                    BinOp::Add => "add",
+                    BinOp::Sub => "sub",
+                    BinOp::Mul => "mul",
+                    BinOp::Div => "div",
+                    BinOp::Eq => "eq",
+                    BinOp::Ne => "ne",
+                    BinOp::Lt => "lt",
+                    BinOp::Le => "le",
+                    BinOp::Gt => "gt",
+                    BinOp::Ge => "ge",
+                };
+                let scalar = if expr_has_tensor(left, env, tensors) {
+                    if expr_has_tensor(right, env, tensors) {
+                        None
+                    } else {
+                        Some(expr_id(right, env))
+                    }
+                } else {
+                    Some(expr_id(left, env))
+                };
+                ops.push(FusedOp::ColumnBin {
+                    op: op_s.into(),
+                    left: expr_id(left, env),
+                    right: expr_id(right, env),
+                    dest: format!("col_{}", ops.len()),
+                    scalar,
+                });
+            }
+        }
         Expr::Call { func, args, .. } => {
             for a in args {
-                collect_fused_ops(a, ops, env);
+                collect_fused_ops(a, ops, env, tensors);
             }
             let fname = match func.as_ref() {
                 Expr::Ident { name, .. } => name.as_str(),
@@ -2076,6 +2384,7 @@ fn matmul_out_info(lhs: &TensorInfo, rhs: &TensorInfo) -> Option<TensorInfo> {
     Some(TensorInfo {
         elem: lhs.elem,
         dims: out_dims,
+        place: lhs.place.clone(),
         concrete,
     })
 }
@@ -2133,6 +2442,17 @@ fn estimate_peak_for_region(
                 }
             }
             FusedOp::Load { .. } => {}
+            FusedOp::ColumnBin { left, .. } => {
+                if let Some(info) = tensors.get(left) {
+                    saw_shaped = true;
+                    match tensor_nbytes(info) {
+                        Ok(n) => static_total = static_total.saturating_add(n.saturating_mul(2)),
+                        Err(s) => sym_parts.push(format!("col:{s}")),
+                    }
+                } else {
+                    sym_parts.push(format!("column_bin({left}):symbolic"));
+                }
+            }
         }
     }
 
@@ -2203,6 +2523,17 @@ pub fn ir_to_text(m: &IrModule) -> String {
                     FusedOp::MapEpilogue { op: eop, input, dest } => {
                         s.push_str(&format!(
                             "    MapEpilogue {{ op: \"{eop}\", input: \"{input}\", dest: \"{dest}\" }}  # fused epilogue, no intermediate buffer\n"
+                        ));
+                    }
+                    FusedOp::ColumnBin {
+                        op,
+                        left,
+                        right,
+                        dest,
+                        scalar,
+                    } => {
+                        s.push_str(&format!(
+                            "    ColumnBin {{ op: \"{op}\", left: \"{left}\", right: \"{right}\", dest: \"{dest}\", scalar: {scalar:?} }}\n"
                         ));
                     }
                     other => s.push_str(&format!("    {other:?}\n")),

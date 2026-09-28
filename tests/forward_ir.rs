@@ -3,6 +3,17 @@ use sal_compiler::ir::{ir_to_text, lower_program};
 use sal_compiler::parser::parse;
 
 #[test]
+fn column_ops_fused_region() {
+    let src = include_str!("../corpus/column_ops.sal");
+    let p = parse(src).expect("parse column_ops");
+    let mut ir = lower_program(&p);
+    fuse_module(&mut ir);
+    let text = ir_to_text(&ir);
+    assert!(text.contains("ColumnBin"), "{text}");
+    assert!(text.contains("TensorBin") || text.contains("tensor_bin"), "{text}");
+}
+
+#[test]
 fn forward_single_fused_region() {
     let src = include_str!("../examples/forward.sal");
     let p = parse(src).expect("parse forward");

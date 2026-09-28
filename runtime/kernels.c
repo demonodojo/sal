@@ -46,6 +46,87 @@ void sal_matmul_f32(const float *a, const float *b, float *out, int64_t m, int64
 }
 
 /* Softmax: reduce and normalize in ascending index order (observable). */
+static void tensor_bin_f32_host(int op, float *out, const float *a, const float *b, int64_t len,
+                                int b_is_scalar, double b_scalar) {
+    for (int64_t i = 0; i < len; i++) {
+        float av = a[i];
+        float bv = b_is_scalar ? (float)b_scalar : b[i];
+        switch (op) {
+        case 0:
+            out[i] = av + bv;
+            break;
+        case 1:
+            out[i] = av - bv;
+            break;
+        case 2:
+            out[i] = av * bv;
+            break;
+        case 3:
+            out[i] = av / bv;
+            break;
+        default:
+            out[i] = 0.f;
+            break;
+        }
+    }
+}
+
+void sal_tensor_bin_f32(int op, float *out, const float *a, const float *b, int64_t len,
+                        int b_is_scalar, double b_scalar) {
+    (void)sal_mem_place;
+    tensor_bin_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
+}
+
+void sal_tensor_neg_f32(float *out, const float *a, int64_t len) {
+    for (int64_t i = 0; i < len; i++) {
+        out[i] = -a[i];
+    }
+}
+
+void sal_tensor_not_i8(int8_t *out, const int8_t *a, int64_t len) {
+    for (int64_t i = 0; i < len; i++) {
+        out[i] = (int8_t)(a[i] == 0 ? 1 : 0);
+    }
+}
+
+static void tensor_cmp_f32_host(int op, int8_t *out, const float *a, const float *b, int64_t len,
+                                int b_is_scalar, double b_scalar) {
+    for (int64_t i = 0; i < len; i++) {
+        float av = a[i];
+        float bv = b_is_scalar ? (float)b_scalar : b[i];
+        int8_t v = 0;
+        switch (op) {
+        case 4:
+            v = (av == bv) ? 1 : 0;
+            break;
+        case 5:
+            v = (av != bv) ? 1 : 0;
+            break;
+        case 6:
+            v = (av < bv) ? 1 : 0;
+            break;
+        case 7:
+            v = (av <= bv) ? 1 : 0;
+            break;
+        case 8:
+            v = (av > bv) ? 1 : 0;
+            break;
+        case 9:
+            v = (av >= bv) ? 1 : 0;
+            break;
+        default:
+            v = 0;
+            break;
+        }
+        out[i] = v;
+    }
+}
+
+void sal_tensor_cmp_f32(int op, int8_t *out, const float *a, const float *b, int64_t len,
+                        int b_is_scalar, double b_scalar) {
+    tensor_cmp_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
+}
+
 void sal_softmax_f32(float *data, int64_t len) {
     if (len <= 0) {
         return;

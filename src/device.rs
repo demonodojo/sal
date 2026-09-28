@@ -1,35 +1,44 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 
 pub fn check_devices(prog: &Program) -> DiagResult<()> {
+    let mut string_frames: HashSet<String> = HashSet::new();
+    for item in &prog.items {
+        if let Item::Frame(f) = item {
+            if f.columns.iter().any(|c| c.elem == ColumnElem::String) {
+                string_frames.insert(f.name.clone());
+            }
+        }
+    }
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            check_fn_devices(f)?;
+            check_fn_devices(f, &string_frames)?;
         }
     }
     Ok(())
 }
 
-fn check_fn_devices(f: &FnDef) -> DiagResult<()> {
+fn check_fn_devices(f: &FnDef, string_frames: &HashSet<String>) -> DiagResult<()> {
     let mut env: HashMap<String, Type> = HashMap::new();
     for p in &f.params {
         env.insert(p.name.clone(), p.ty.clone());
     }
-    check_block_devices(&f.body, &mut env, None)
+    check_block_devices(&f.body, &mut env, None, string_frames)
 }
 
 fn check_block_devices(
     b: &Block,
     env: &mut HashMap<String, Type>,
     expected: Option<Place>,
+    string_frames: &HashSet<String>,
 ) -> DiagResult<()> {
     for st in &b.stmts {
-        check_stmt_devices(st, env, expected.clone())?;
+        check_stmt_devices(st, env, expected.clone(), string_frames)?;
     }
     if let Some(t) = &b.tail {
-        check_expr_devices(t, env, expected)?;
+        check_expr_devices(t, env, expected, string_frames)?;
     }
     Ok(())
 }
@@ -38,39 +47,40 @@ fn check_stmt_devices(
     st: &Stmt,
     env: &mut HashMap<String, Type>,
     expected: Option<Place>,
+    string_frames: &HashSet<String>,
 ) -> DiagResult<()> {
     match st {
         Stmt::Let { name, ty, init, .. } => {
-            let ity = check_expr_devices(init, env, expected)?;
+            let ity = check_expr_devices(init, env, expected, string_frames)?;
             env.insert(name.clone(), ty.clone().unwrap_or(ity));
             Ok(())
         }
         Stmt::Expr(e) => {
-            check_expr_devices(e, env, expected)?;
+            check_expr_devices(e, env, expected, string_frames)?;
             Ok(())
         }
         Stmt::Assign { target, value, .. } => {
-            let vty = check_expr_devices(value, env, expected.clone())?;
+            let vty = check_expr_devices(value, env, expected.clone(), string_frames)?;
             if let Expr::Ident { name, .. } = target {
                 env.insert(name.clone(), vty);
             } else {
-                check_expr_devices(target, env, expected)?;
+                check_expr_devices(target, env, expected, string_frames)?;
             }
             Ok(())
         }
         Stmt::Return { value, .. } => {
             if let Some(v) = value {
-                check_expr_devices(v, env, expected)?;
+                check_expr_devices(v, env, expected, string_frames)?;
             }
             Ok(())
         }
         Stmt::While { cond, body, .. } => {
-            check_expr_devices(cond, env, expected.clone())?;
+            check_expr_devices(cond, env, expected.clone(), string_frames)?;
             for st in &body.stmts {
-                check_stmt_devices(st, env, expected.clone())?;
+                check_stmt_devices(st, env, expected.clone(), string_frames)?;
             }
             if let Some(t) = &body.tail {
-                check_expr_devices(t, env, expected)?;
+                check_expr_devices(t, env, expected, string_frames)?;
             }
             Ok(())
         }
@@ -81,6 +91,7 @@ fn check_expr_devices(
     e: &Expr,
     env: &HashMap<String, Type>,
     expected: Option<Place>,
+    string_frames: &HashSet<String>,
 ) -> DiagResult<Type> {
     match e {
         Expr::Int { span, .. } => Ok(named("Int", *span)),
@@ -135,12 +146,12 @@ fn check_expr_devices(
                 }
             }
             let mut local = env.clone();
-            check_block_devices(body, &mut local, Some(place.clone()))?;
+            check_block_devices(body, &mut local, Some(place.clone()), string_frames)?;
             let _ = span;
             Ok(named("Unit", body.span))
         }
         Expr::To { place, expr, span } => {
-            let ty = check_expr_devices(expr, env, None)?;
+            let ty = check_expr_devices(expr, env, None, string_frames)?;
             if is_string_type(&ty) && !matches!(place, Place::Cpu) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EPlace,
@@ -148,6 +159,15 @@ fn check_expr_devices(
                     *span,
                 )
                 .with_hint("use `str_bytes` then `to` for device data")]);
+            }
+            if let Type::Named { name, .. } = &ty {
+                if string_frames.contains(name) && !matches!(place, Place::Cpu) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EPlace,
+                        "frame with String columns lives on cpu",
+                        *span,
+                    )]);
+                }
             }
             Ok(with_place(ty, place.clone(), *span))
         }
@@ -157,10 +177,10 @@ fn check_expr_devices(
             span,
             ..
         } => {
-            check_expr_devices(func, env, expected.clone())?;
+            check_expr_devices(func, env, expected.clone(), string_frames)?;
             let mut arg_tys = Vec::new();
             for a in args {
-                arg_tys.push(check_expr_devices(a, env, expected.clone())?);
+                arg_tys.push(check_expr_devices(a, env, expected.clone(), string_frames)?);
             }
             if let Some(exp) = &expected {
                 for (a, ty) in args.iter().zip(arg_tys.iter()) {
@@ -198,22 +218,22 @@ fn check_expr_devices(
             params,
             body,
             span,
-        } => check_lambda_devices(params, body, env, expected, *span),
+        } => check_lambda_devices(params, body, env, expected, *span, string_frames),
         Expr::Binary { left, right, span, .. } => {
-            check_expr_devices(left, env, expected.clone())?;
-            check_expr_devices(right, env, expected)?;
+            check_expr_devices(left, env, expected.clone(), string_frames)?;
+            check_expr_devices(right, env, expected, string_frames)?;
             Ok(named("Int", *span))
         }
-        Expr::Unary { expr, .. } => check_expr_devices(expr, env, expected),
+        Expr::Unary { expr, .. } => check_expr_devices(expr, env, expected, string_frames),
         Expr::Block(b) => {
             let mut local = env.clone();
-            check_block_devices(b, &mut local, expected)?;
+            check_block_devices(b, &mut local, expected, string_frames)?;
             Ok(named("Unit", b.span))
         }
         Expr::TensorLit { rows, span, .. } => {
             for row in rows {
                 for c in row {
-                    check_expr_devices(c, env, expected.clone())?;
+                    check_expr_devices(c, env, expected.clone(), string_frames)?;
                 }
             }
             let ty = Type::Tensor {
@@ -235,7 +255,7 @@ fn check_expr_devices(
             Ok(ty)
         }
         Expr::Field { base, span, .. } => {
-            check_expr_devices(base, env, expected)?;
+            check_expr_devices(base, env, expected, string_frames)?;
             Ok(named("Unknown", *span))
         }
         Expr::Match {
@@ -244,11 +264,11 @@ fn check_expr_devices(
             span,
             ..
         } => {
-            check_expr_devices(scrutinee, env, expected.clone())?;
+            check_expr_devices(scrutinee, env, expected.clone(), string_frames)?;
             for arm in arms {
                 let mut local = env.clone();
                 bind_pattern_names(&arm.pattern, &mut local);
-                check_expr_devices(&arm.body, &local, expected.clone())?;
+                check_expr_devices(&arm.body, &local, expected.clone(), string_frames)?;
             }
             Ok(named("Unknown", *span))
         }
@@ -260,21 +280,21 @@ fn check_expr_devices(
             span,
             ..
         } => {
-            check_expr_devices(cond, env, expected.clone())?;
+            check_expr_devices(cond, env, expected.clone(), string_frames)?;
             let mut then_env = env.clone();
-            check_block_devices(then_block, &mut then_env, expected.clone())?;
+            check_block_devices(then_block, &mut then_env, expected.clone(), string_frames)?;
             for arm in elsifs {
                 let mut arm_env = env.clone();
-                check_expr_devices(&arm.cond, &arm_env, expected.clone())?;
-                check_block_devices(&arm.body, &mut arm_env, expected.clone())?;
+                check_expr_devices(&arm.cond, &arm_env, expected.clone(), string_frames)?;
+                check_block_devices(&arm.body, &mut arm_env, expected.clone(), string_frames)?;
             }
             if let Some(else_block) = else_block {
                 let mut else_env = env.clone();
-                check_block_devices(else_block, &mut else_env, expected)?;
+                check_block_devices(else_block, &mut else_env, expected, string_frames)?;
             }
             Ok(named("Int", *span))
         }
-        Expr::Try { expr, .. } => check_expr_devices(expr, env, expected),
+        Expr::Try { expr, .. } => check_expr_devices(expr, env, expected, string_frames),
     }
 }
 
@@ -285,6 +305,7 @@ fn check_lambda_devices(
     env: &HashMap<String, Type>,
     expected: Option<Place>,
     span: crate::span::Span,
+    string_frames: &HashSet<String>,
 ) -> DiagResult<Type> {
     if params.len() != 1 {
         return Ok(named("Unknown", span));
@@ -292,7 +313,7 @@ fn check_lambda_devices(
     let mut local = env.clone();
     let param_ty = named("Float", span);
     local.insert(params[0].clone(), param_ty.clone());
-    let body_ty = check_expr_devices(body, &local, expected)?;
+    let body_ty = check_expr_devices(body, &local, expected, string_frames)?;
     Ok(Type::Fn {
         params: vec![param_ty],
         ret: Box::new(body_ty),

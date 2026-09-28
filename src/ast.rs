@@ -20,6 +20,32 @@ pub enum Item {
     Import(Import),
     Struct(StructDef),
     Enum(EnumDef),
+    Frame(FrameDef),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ColumnElem {
+    F32,
+    F16,
+    BF16,
+    I8,
+    String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FrameColumn {
+    pub name: String,
+    pub elem: ColumnElem,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FrameDef {
+    pub name: String,
+    #[serde(default)]
+    pub type_params: Vec<String>,
+    pub columns: Vec<FrameColumn>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

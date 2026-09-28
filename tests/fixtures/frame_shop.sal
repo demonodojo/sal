@@ -1,0 +1,6 @@
+frame Shop
+    price: F32
+    name: String
+
+fn main() -> Int
+    0

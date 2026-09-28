@@ -11,6 +11,14 @@ void sal_gpu_matmul_f32(const float *a, const float *b, float *out, int64_t m, i
                         int64_t n);
 void sal_softmax_f32(float *data, int64_t len);
 
+/* Element-wise F32 tensors; `b_is_scalar` uses `b_scalar` instead of `b`. */
+void sal_tensor_bin_f32(int op, float *out, const float *a, const float *b, int64_t len,
+                        int b_is_scalar, double b_scalar);
+void sal_tensor_neg_f32(float *out, const float *a, int64_t len);
+void sal_tensor_not_i8(int8_t *out, const int8_t *a, int64_t len);
+void sal_tensor_cmp_f32(int op, int8_t *out, const float *a, const float *b, int64_t len,
+                        int b_is_scalar, double b_scalar);
+
 int sal_gpu_enabled(void);
 void *sal_gpu_alloc(int64_t nbytes);
 void sal_gpu_free(void *p);

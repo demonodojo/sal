@@ -33,6 +33,8 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `place_copy` | `to` |
 | `on_device` | bloque `on`, con su lugar |
 | `matmul`, `map`, `reduce`, `softmax`, `reshape`, `transpose`, `relu` | operaciones de tensor, todavía sin fusionar |
+| `tensor_bin` | `+`/`-`/`*`/`/`/cmp y `-`/`!` unarios sobre tensores de rango 1 |
+| `where` | filtro de filas de un `frame` por máscara `I8` |
 | `load` | `load[…](path)` |
 | `return` | valor de la función |
 
@@ -46,9 +48,10 @@ Sobre las instrucciones de un solo `on`, en orden:
 
 1. Varias operaciones del mismo lugar forman una región: un lanzamiento, no uno por operación. Un `to` no se fusiona; es el punto de sincronización.
 2. Un `map` o `relu` cuyo único uso es el destino de un `matmul` de esa región se convierte en el epílogo de ese producto. El destino intermedio desaparece de la IR. No hay `sal_matmul` seguido de `sal_relu` como dos buffers.
-3. Los tensores únicos que mueren dentro de la región reutilizan un buffer de trabajo. Los parámetros `borrow` (los pesos) no se reservan otra vez.
-4. `peak_bytes` por lugar es el máximo, a lo largo de la región, de la suma de bytes vivos en ese punto: pesos prestados que el cálculo necesita tener residentes, activaciones vivas y el buffer de trabajo. El tamaño de un tensor es `tam(elem) * producto(ejes)`. `F32` = 4, `F16` = 2, `BF16` = 2, `I8` = 1. Esos números salen de la forma, no de una constante fija por operación.
-5. Si algún eje es `?`, `peak_bytes` de esa parte queda simbólico (`peak_symbolic`, con la fórmula) y el número publicado es solo el de los factores estáticos. No se inventa un lote.
+3. Una cadena de `tensor_bin` del mismo lugar dentro del `on` se registra en la región fusionada; los destinos intermedios únicos no reservan buffer aparte (misma regla que el epílogo).
+4. Los tensores únicos que mueren dentro de la región reutilizan un buffer de trabajo. Los parámetros `borrow` (los pesos) no se reservan otra vez.
+5. `peak_bytes` por lugar es el máximo, a lo largo de la región, de la suma de bytes vivos en ese punto: pesos prestados que el cálculo necesita tener residentes, activaciones vivas y el buffer de trabajo. El tamaño de un tensor es `tam(elem) * producto(ejes)`. `F32` = 4, `F16` = 2, `BF16` = 2, `I8` = 1. Esos números salen de la forma, no de una constante fija por operación.
+6. Si algún eje es `?`, `peak_bytes` de esa parte queda simbólico (`peak_symbolic`, con la fórmula) y el número publicado es solo el de los factores estáticos. No se inventa un lote.
 
 `reduce` y la suma de `softmax` recorren el eje en orden creciente de índice. La fusión no reordena esa reducción: el mismo fuente y los mismos datos dan el mismo número.
 

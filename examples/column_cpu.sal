@@ -1,0 +1,9 @@
+# Element-wise column ops on cpu; exit 0 when IR/runtime link succeeds.
+fn scale(v: Tensor[F32, 4] on p) -> Tensor[F32, 4] on p
+    on p
+        v * 2.0
+
+fn main() -> Int ! alloc
+    x = tensor[[1.0, 2.0, 3.0, 4.0]]
+    _ = scale(x)
+    0

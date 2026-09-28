@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::ast::{Dim, Expr, FnDef, Item, Program, Stmt, StructDef, Type};
+use crate::ast::{Dim, Expr, FnDef, Item, Program, Stmt, StructDef, TensorElem, Type};
 use crate::ir::{FusedOp, IrFunction, IrInst, IrModule};
 use crate::layout::{is_transparent_struct, llvm_struct_symbol};
 
@@ -264,6 +264,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare void @sal_matmul_f32(ptr, ptr, ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_softmax_f32(ptr, i64)\n");
+    s.push_str("declare void @sal_tensor_bin_f32(i32, ptr, ptr, ptr, i64, i32, double)\n");
+    s.push_str("declare void @sal_tensor_cmp_f32(i32, ptr, ptr, ptr, i64, i32, double)\n");
+    s.push_str("declare void @sal_tensor_neg_f32(ptr, ptr, i64)\n");
+    s.push_str("declare void @sal_tensor_not_i8(ptr, ptr, i64)\n");
     s.push_str("declare ptr @sal_load_f32(ptr, ptr)\n");
     s.push_str("declare ptr @sal_place_malloc(i64, i32)\n");
     s.push_str("declare void @sal_place_free(ptr)\n");
@@ -583,6 +587,36 @@ fn const_int_map(f: &IrFunction) -> HashMap<String, i64> {
     m
 }
 
+fn const_float_map(f: &IrFunction) -> HashMap<String, f64> {
+    let mut m = HashMap::new();
+    for inst in &f.instructions {
+        if let IrInst::ConstFloat { dest, value } = inst {
+            m.insert(dest.clone(), *value);
+        }
+    }
+    m
+}
+
+fn tensor_bin_op_code(op: &str) -> i32 {
+    match op {
+        "add" => 0,
+        "sub" => 1,
+        "mul" => 2,
+        "div" => 3,
+        "eq" => 4,
+        "ne" => 5,
+        "lt" => 6,
+        "le" => 7,
+        "gt" => 8,
+        "ge" => 9,
+        _ => 0,
+    }
+}
+
+fn is_tensor_cmp_op(op: &str) -> bool {
+    matches!(op, "eq" | "ne" | "lt" | "le" | "gt" | "ge")
+}
+
 fn resolve_dim_operand(
     name: &str,
     consts: &HashMap<String, i64>,
@@ -710,11 +744,15 @@ fn emit_main(
     let mut matmul_ordinal = 0usize;
     let mut last_out: Option<(String, DimOperand)> = None; // ptr name, elem count
     let consts = const_int_map(f);
+    let floats = const_float_map(f);
 
     for inst in &f.instructions {
         match inst {
             IrInst::ConstInt { dest, value } => {
                 s.push_str(&format!("  %{dest} = add i64 0, {value}\n"));
+            }
+            IrInst::ConstFloat { dest, value } => {
+                s.push_str(&format!("  ; float const %{dest} = {value}\n"));
             }
             IrInst::ConstString { dest, value } => {
                 if let Some(g) = str_globals.get(value) {
@@ -762,6 +800,59 @@ fn emit_main(
                     }
                     _ => s.push_str(&format!("  %{dest} = add i64 {l}, 0\n")),
                 }
+            }
+            IrInst::TensorBin {
+                dest,
+                op,
+                elem,
+                place,
+                left,
+                right,
+                len,
+                right_scalar,
+            } => {
+                emit_one_tensor_bin(
+                    opts,
+                    s,
+                    &mut uid,
+                    &mut ptrs,
+                    &mut buf_bytes,
+                    &mut owned,
+                    &consts,
+                    &floats,
+                    dest,
+                    op,
+                    place,
+                    left,
+                    right,
+                    len,
+                    *right_scalar,
+                    *elem,
+                );
+            }
+            IrInst::TensorUnary {
+                dest,
+                op,
+                elem,
+                place,
+                input,
+                len,
+            } => {
+                emit_one_tensor_unary(
+                    opts,
+                    s,
+                    &mut uid,
+                    &mut ptrs,
+                    &mut buf_bytes,
+                    &mut owned,
+                    &consts,
+                    dest,
+                    op,
+                    place,
+                    input,
+                    len,
+                    *elem,
+                );
             }
             IrInst::Return { value } => {
                 if value.starts_with('t') {
@@ -2190,6 +2281,7 @@ fn emit_inst_list(
                 let r = i64_operand(right, &consts);
                 s.push_str(&format!("  %{dest} = and i64 {l}, {r}\n"));
             }
+            IrInst::ConstFloat { .. } | IrInst::TensorBin { .. } | IrInst::TensorUnary { .. } => {}
             IrInst::Call { dest, func, args } => {
                 if func == "sal_matmul_f32" || func == "sal_matmul" || func == "sal_load"
                     || func == "sal_load_f32" || func == "sal_softmax" || func == "sal_softmax_f32"
@@ -2763,4 +2855,139 @@ fn emit_kernel_product(
         );
         prefix.pop();
     }
+}
+
+fn tensor_ptr_operand(name: &str, ptrs: &HashMap<String, String>) -> String {
+    if let Some(p) = ptrs.get(name) {
+        if p == "null" {
+            "null".into()
+        } else {
+            format!("%{p}")
+        }
+    } else if name.chars().all(|c| c.is_ascii_digit()) {
+        name.to_string()
+    } else {
+        format!("%{name}")
+    }
+}
+
+fn emit_one_tensor_bin(
+    opts: &LlvmOptions,
+    s: &mut String,
+    uid: &mut u32,
+    ptrs: &mut HashMap<String, String>,
+    buf_bytes: &mut HashMap<String, u64>,
+    owned: &mut Vec<String>,
+    consts: &HashMap<String, i64>,
+    floats: &HashMap<String, f64>,
+    dest: &str,
+    op: &str,
+    place: &str,
+    left: &str,
+    right: &str,
+    len: &str,
+    right_scalar: bool,
+    elem: TensorElem,
+) {
+    if elem != TensorElem::F32 {
+        s.push_str("  ; tensor bin skipped: only F32 lowered today\n");
+        return;
+    }
+    let place_i = place_to_i32(place);
+    if place_i != 0 {
+        s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+    }
+    let len_op = i64_operand(len, consts);
+    *uid += 1;
+    let out = format!("tbin_{uid}");
+    let elem_sz = if is_tensor_cmp_op(op) { 1 } else { 4 };
+    s.push_str(&format!("  %{out}_bytes = mul i64 {len_op}, {elem_sz}\n"));
+    if opts.instrument {
+        s.push_str(&format!(
+            "  %{out} = call ptr @sal_instrument_malloc(i64 %{out}_bytes, i32 {place_i}, ptr @.site.access)\n"
+        ));
+    } else {
+        s.push_str(&format!(
+            "  %{out} = call ptr @sal_place_malloc(i64 %{out}_bytes, i32 {place_i})\n"
+        ));
+    }
+    owned.push(out.clone());
+    let a_op = tensor_ptr_operand(left, ptrs);
+    let b_op = if right_scalar {
+        "null".into()
+    } else {
+        tensor_ptr_operand(right, ptrs)
+    };
+    let scalar_v = if right_scalar {
+        floats
+            .get(right)
+            .copied()
+            .or_else(|| consts.get(right).map(|v| *v as f64))
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let scalar_i = if right_scalar { 1 } else { 0 };
+    let opcode = tensor_bin_op_code(op);
+    if is_tensor_cmp_op(op) {
+        s.push_str(&format!(
+            "  call void @sal_tensor_cmp_f32(i32 {opcode}, ptr %{out}, ptr {a_op}, ptr {b_op}, i64 {len_op}, i32 {scalar_i}, double {scalar_v})\n"
+        ));
+    } else {
+        s.push_str(&format!(
+            "  call void @sal_tensor_bin_f32(i32 {opcode}, ptr %{out}, ptr {a_op}, ptr {b_op}, i64 {len_op}, i32 {scalar_i}, double {scalar_v})\n"
+        ));
+    }
+    ptrs.insert(dest.to_string(), out.clone());
+    buf_bytes.insert(dest.to_string(), 0);
+    s.push_str(&format!("  %{dest} = ptrtoint ptr %{out} to i64\n"));
+}
+
+fn emit_one_tensor_unary(
+    opts: &LlvmOptions,
+    s: &mut String,
+    uid: &mut u32,
+    ptrs: &mut HashMap<String, String>,
+    buf_bytes: &mut HashMap<String, u64>,
+    owned: &mut Vec<String>,
+    consts: &HashMap<String, i64>,
+    dest: &str,
+    op: &str,
+    place: &str,
+    input: &str,
+    len: &str,
+    elem: TensorElem,
+) {
+    let place_i = place_to_i32(place);
+    if place_i != 0 {
+        s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+    }
+    let len_op = i64_operand(len, consts);
+    *uid += 1;
+    let out = format!("tun_{uid}");
+    let elem_sz = if op == "not" { 1 } else { 4 };
+    s.push_str(&format!("  %{out}_bytes = mul i64 {len_op}, {elem_sz}\n"));
+    if opts.instrument {
+        s.push_str(&format!(
+            "  %{out} = call ptr @sal_instrument_malloc(i64 %{out}_bytes, i32 {place_i}, ptr @.site.access)\n"
+        ));
+    } else {
+        s.push_str(&format!(
+            "  %{out} = call ptr @sal_place_malloc(i64 %{out}_bytes, i32 {place_i})\n"
+        ));
+    }
+    owned.push(out.clone());
+    let a_op = tensor_ptr_operand(input, ptrs);
+    if op == "not" && elem == TensorElem::I8 {
+        s.push_str(&format!(
+            "  call void @sal_tensor_not_i8(ptr %{out}, ptr {a_op}, i64 {len_op})\n"
+        ));
+    } else if op == "neg" && elem == TensorElem::F32 {
+        s.push_str(&format!(
+            "  call void @sal_tensor_neg_f32(ptr %{out}, ptr {a_op}, i64 {len_op})\n"
+        ));
+    }
+    ptrs.insert(dest.to_string(), out.clone());
+    buf_bytes.insert(dest.to_string(), 0);
+    s.push_str(&format!("  %{dest} = ptrtoint ptr %{out} to i64\n"));
 }

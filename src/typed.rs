@@ -38,6 +38,9 @@ impl TypedProgram {
             match item {
                 Item::Import(i) => items.push(TypedItem::Import(i)),
                 Item::Struct(s) => items.push(TypedItem::Struct(s)),
+                Item::Frame(f) => {
+                    items.push(TypedItem::Struct(crate::infer::frame_as_struct(&f)))
+                }
                 Item::Enum(e) => items.push(TypedItem::Enum(e)),
                 Item::Fn(f) => {
                     let types = entries

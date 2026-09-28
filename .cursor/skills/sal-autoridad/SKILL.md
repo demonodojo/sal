@@ -4,8 +4,8 @@ description: >-
   Aplica la autoridad cerrada del lenguaje sal: SPEC.md manda sobre los
   subplanes y sobre el código, la gramática es recursiva por la izquierda, y
   el arranque rechaza lo reservado. Usar al cambiar gramática, tipos, memoria,
-  efectos, lugares, tensores, códigos de error, o al proponer una construcción
-  nueva del lenguaje.
+  efectos, lugares, tensores, frame, operadores columnares, where, códigos de
+  error, o al proponer una construcción nueva del lenguaje.
 ---
 
 # Autoridad del lenguaje sal
@@ -38,6 +38,14 @@ Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `
 Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@frozen`, `@stack`, `@layout`, `@resource`, `@shared`, `@arena`, `@no_heap`, `@copy`, diferenciación automática, registro de paquetes.
 
 `Float` es f64 y no es elemento de tensor (`E_TENSOR_ELEM`). Elementos: `F32`, `F16`, `BF16`, `I8`.
+
+## Tablas columnares (arranque)
+
+- **Operadores sobre tensores**: si un operando de `+`, `-`, `*`, `/`, comparaciones o el prefijo `-` / `!` (máscara `I8`) es un `Tensor`, la operación es elemento a elemento. `String + String` sigue siendo concatenación. Mismo lugar (`E_PLACE`), mismo elemento o escalar difundido (`E_TENSOR_ELEM`), forma de rango 1 compatible (`E_SHAPE`). Comparaciones → `Tensor[I8, …] on lugar`.
+- **`frame`**: item al nivel de `struct`. Columnas `F32` | `F16` | `BF16` | `I8` | `String`. Numéricas → `Tensor[Elem, ?] on p`; `String` → `List[String]` en `cpu`. Con columna `String`, el frame no admite `to gpu` / `to tpu` sobre el valor entero (`E_PLACE`); las numéricas pasan al dispositivo con `to` columna a columna. Construcción como struct: `Nombre(col1, …)`.
+- **`where(tabla, mascara)`**: primitiva como `matmul`. Máscara `Tensor[I8, ?] on p` con el mismo largo de fila. Fuera de este corte pueden quedar groupby, join, CSV y la bajada runtime completa del filtro.
+
+Dentro de `on`, cadenas de operadores columnares del mismo lugar forman región fusionada (`ColumnBin` en IR); ver [docs/subplans/04-ir-runtime.md](../../../docs/subplans/04-ir-runtime.md).
 
 ## Al cambiar el lenguaje
 

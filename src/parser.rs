@@ -86,8 +86,10 @@ impl Parser {
             Ok(Item::Struct(self.parse_struct()?))
         } else if self.at(TokenKind::Enum) {
             Ok(Item::Enum(self.parse_enum()?))
+        } else if self.at(TokenKind::Frame) {
+            Ok(Item::Frame(self.parse_frame()?))
         } else {
-            self.expect(TokenKind::Fn, "expected fn, import, struct or enum")?;
+            self.expect(TokenKind::Fn, "expected fn, import, struct, enum or frame")?;
             self.parse_fn_after_kw().map(Item::Fn)
         }
     }
@@ -114,6 +116,53 @@ impl Parser {
         self.expect(TokenKind::RBracket, "expected ] after type parameters")?;
         self.leave_group();
         Ok(params)
+    }
+
+    fn parse_column_elem(&mut self) -> Result<ColumnElem, Diagnostic> {
+        let sp = self.peek().span;
+        let name = self.parse_ident()?;
+        match name.as_str() {
+            "F32" => Ok(ColumnElem::F32),
+            "F16" => Ok(ColumnElem::F16),
+            "BF16" => Ok(ColumnElem::BF16),
+            "I8" => Ok(ColumnElem::I8),
+            "String" => Ok(ColumnElem::String),
+            _ => Err(Diagnostic::new(
+                ErrorCode::EParse,
+                format!("expected column type F32, F16, BF16, I8 or String, found `{name}`"),
+                sp,
+            )),
+        }
+    }
+
+    fn parse_frame(&mut self) -> Result<FrameDef, Diagnostic> {
+        let sp = self.expect(TokenKind::Frame, "expected frame")?.span;
+        let name = self.parse_ident()?;
+        let type_params = self.parse_type_params()?;
+        self.expect(TokenKind::Newline, "expected newline after frame header")?;
+        self.expect(TokenKind::Indent, "expected indented frame columns")?;
+        let mut columns = Vec::new();
+        while !self.at(TokenKind::Dedent) && !self.at(TokenKind::Eof) {
+            let csp = self.peek().span;
+            let cname = self.parse_ident()?;
+            self.expect(TokenKind::Colon, "expected : in frame column")?;
+            let elem = self.parse_column_elem()?;
+            columns.push(FrameColumn {
+                name: cname,
+                elem,
+                span: csp,
+            });
+            self.skip_newlines();
+        }
+        if self.at(TokenKind::Dedent) {
+            self.bump();
+        }
+        Ok(FrameDef {
+            name,
+            type_params,
+            columns,
+            span: sp,
+        })
     }
 
     fn parse_struct(&mut self) -> Result<StructDef, Diagnostic> {
@@ -1257,6 +1306,7 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         | (While, While)
         | (Struct, Struct)
         | (Enum, Enum)
+        | (Frame, Frame)
         | (Parallel, Parallel)
         | (Cpu, Cpu)
         | (Gpu, Gpu)

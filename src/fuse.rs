@@ -38,5 +38,7 @@ fn fuse_ops(ops: &mut Vec<FusedOp>) -> bool {
         i += 1;
     }
     // Also fused if a MapEpilogue is already present (from lower).
-    fused || ops.iter().any(|o| matches!(o, FusedOp::MapEpilogue { .. }))
+    fused
+        || ops.iter().any(|o| matches!(o, FusedOp::MapEpilogue { .. }))
+        || ops.iter().any(|o| matches!(o, FusedOp::ColumnBin { .. }))
 }

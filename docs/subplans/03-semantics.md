@@ -32,6 +32,10 @@ El resto, en el mismo lugar y el mismo elemento:
 | `reshape` | las dimensiones escritas; si todas son estáticas, el producto tiene que coincidir (`E_SHAPE` si no) |
 | `to q` | la misma forma, lugar `q` |
 
+Operadores columnares (`+`, `-`, `*`, `/`, comparaciones, `-` unario, `!` sobre máscara `I8`): si un operando es `Tensor`, elemento a elemento. Escalar `Int`/`Float` se difunde; resultado aritmético mismo elemento y lugar; comparación → `Tensor[I8, …] on lugar`. Dos lugares sin `to`: `E_PLACE`. Elementos distintos: `E_TENSOR_ELEM`. Formas de rango 1 incompatibles: `E_SHAPE`.
+
+Un `frame` con columnas `F32`/`F16`/`BF16`/`I8`/`String` y parámetro de lugar `p`: columna numérica → `Tensor[Elem, ?] on p`; `String` → `List[String]` en `cpu`. Con alguna columna `String`, el valor del frame es solo `cpu`; `to gpu`/`to tpu` sobre el frame: `E_PLACE`. `where(frame, mask)` exige máscara `Tensor[I8, ?] on p` y largo de fila unificado con las columnas.
+
 Dos tensores del mismo elemento y la misma forma unifican eje a eje. `?` unifica con un estático y sigue siendo `?` en la firma; el estático no se filtra hacia el tipo público. Dentro de una función, un literal puede concretar el `?` para calcular tamaños, sin cambiar la firma.
 
 `List[T]` es heap. El índice es `Int`. En el arranque, `T` es `Int`, `Float`, `Bool` o `String`. `list_get` copia el elemento (`String` devuelve una copia nueva; el de la lista sigue siendo del dueño).

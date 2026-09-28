@@ -2,8 +2,9 @@
 name: sal-fuente
 description: >-
   Escribe y revisa programas sal canónicos: indentación, funciones, efectos,
-  lugares cpu/gpu/tpu, tensores, sal fmt y el linter standard. Usar al crear o
-  editar ficheros .sal, ejemplos, el preludio, el corpus, standard/ o código
+  lugares cpu/gpu/tpu, tensores, frame, operadores columnares, sal fmt y el
+  linter standard. Usar al crear o editar ficheros .sal, ejemplos, el preludio,
+  el corpus, standard/ o código
   del autohospedaje. El estilo se aplica con standard; si falta una práctica
   que va a repetirse, se amplía el linter.
 ---
@@ -18,7 +19,7 @@ La superficie aceptada está en [SPEC.md](../../../SPEC.md). Un programa que el 
 - Bloque indentado. La última expresión es el valor. Sin ella, el bloque es `Unit`.
 - `fn nombre(params) -> Tipo` y, si hace falta, `!` con efectos `io`, `alloc`, `panic`, `gpu`, `tpu`.
 - `if` con `elsif` y `else` opcionales, al mismo nivel de sangría. Sin `else`, el `if` es `Unit` aunque haya `elsif` (efecto secundario, no valor). Con `else`, el valor es el de la rama then. `let` con tipo opcional.
-- Items del arranque: `import`, `struct`, `enum`, `fn`.
+- Items del arranque: `import`, `struct`, `enum`, `frame`, `fn`.
 
 Ejemplo mínimo:
 
@@ -67,11 +68,34 @@ fn main() -> Int ! gpu
 - Dentro de `on gpu` u `on tpu`, los agregados libres ya están en ese lugar. Los escalares entran por valor.
 - `on gpu kernel` existe. `on tpu kernel` es `E_DEVICE`.
 
+## Columnas y frames
+
+Las columnas numéricas son tensores de rango 1; los operadores aritméticos y de comparación del lenguaje actúan elemento a elemento dentro de `on` (sin sustituir `map` para lambdas arbitrarias):
+
+```sal
+fn neto(precio: Tensor[F32, ?] on p, iva: Tensor[F32, ?] on p) -> Tensor[F32, ?] on p
+    on p
+        precio * 1.21 + iva
+```
+
+Un **`frame`** declara el esquema de filas. Las columnas numéricas son `Tensor[Elem, ?] on p`; `String` es `List[String]` en `cpu`:
+
+```sal
+frame Ventas[p]
+    precio: F32
+    nombre: String
+
+fn row(precio: Tensor[F32, ?] on p, nombre: List[String]) -> Ventas[p]
+    Ventas(precio, nombre)
+```
+
+No uses `to gpu` sobre un frame que tenga columna `String` (`E_PLACE`). Pasa cada columna numérica con `to` por separado. `where(tabla, mascara)` exige máscara `Tensor[I8, ?] on p` del mismo largo de fila (tipado en arranque; filtrado runtime puede estar incompleto).
+
 ## Dónde vive cada programa
 
 | Ruta | Para qué |
 |------|----------|
-| `examples/` | Programas de uso y de ejecución |
+| `examples/` | Programas de uso y de ejecución (p. ej. `column_cpu.sal`) |
 | `corpus/` | Programas cuya IR tienen que coincidir las tres cadenas |
 | `std/prelude.sal` | `Option`, `Result`, `List` y firmas de primitivas |
 | `selfhost/` | El compilador escrito en sal |

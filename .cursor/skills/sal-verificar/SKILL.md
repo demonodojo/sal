@@ -17,9 +17,9 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | Se tocó | Comando |
 |---------|---------|
 | Lexer o parser | `cargo test --test frontend --test parse_and_fmt` |
-| Tipos, ownership, efectos, lugares | `cargo test --test semantics` |
-| IR o fusión | `cargo test --test forward_ir` |
-| Runtime o kernels | `cargo test --test kernels --test exec_matmul --test exec_salt` |
+| Tipos, ownership, efectos, lugares (`frame`, ops columnares, …) | `cargo test --test semantics` |
+| IR o fusión (`ColumnBin`, `TensorBin`, …) | `cargo test --test forward_ir` |
+| Runtime o kernels (matmul, **tensor bin**, …) | `cargo test --test kernels --test exec_matmul --test exec_column --test exec_salt` |
 | LLVM o enlace | `cargo test --test run_hello` |
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
 | CLI, módulos o caché | `cargo test --test toolchain --test run_hello` |
@@ -37,6 +37,7 @@ cargo run -- check examples/hello.sal
 cargo run -- fmt examples/hello.sal
 cargo run -- emit ast examples/hello.sal
 cargo run -- emit ir examples/forward.sal
+cargo run -- emit ir corpus/column_ops.sal
 cargo run -- run examples/hello.sal
 cargo run --bin standard -- check examples/hello.sal
 cargo run --bin standard -- fix path/to/file.sal

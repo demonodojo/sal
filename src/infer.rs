@@ -14,6 +14,7 @@ pub struct InferOutput {
 pub struct TypeEnv {
     pub structs: HashMap<String, StructDef>,
     pub enums: HashMap<String, EnumDef>,
+    pub frames: HashMap<String, FrameDef>,
     /// Declared function signatures (name → params + return), for user calls.
     pub fns: HashMap<String, (Vec<Type>, Type)>,
 }
@@ -25,6 +26,12 @@ pub fn infer_program(prog: &Program) -> DiagResult<InferOutput> {
         match item {
             Item::Struct(s) => {
                 types.structs.insert(s.name.clone(), s.clone());
+            }
+            Item::Frame(f) => {
+                types.frames.insert(f.name.clone(), f.clone());
+                types
+                    .structs
+                    .insert(f.name.clone(), frame_as_struct(f));
             }
             Item::Enum(e) => {
                 types.enums.insert(e.name.clone(), e.clone());
@@ -279,6 +286,9 @@ fn check_expr(
         } => {
             let lt = check_expr(left, env, types, entries)?;
             let rt = check_expr(right, env, types, entries)?;
+            if tensor_dims(&lt).is_some() || tensor_dims(&rt).is_some() {
+                return infer_tensor_binary(*op, &lt, &rt, *span);
+            }
             match op {
                 // String + String: concat. Nominal on both sides; `str_from_int`
                 // is the explicit bridge for a handle held in an Int.
@@ -315,7 +325,34 @@ fn check_expr(
                 }
             }
         }
-        Expr::Unary { expr, .. } => check_expr(expr, env, types, entries)?,
+        Expr::Unary { op, expr, span } => {
+            let inner = check_expr(expr, env, types, entries)?;
+            if let Some((dims, elem, place)) = tensor_dims(&inner) {
+                match op {
+                    UnOp::Neg => Type::Tensor {
+                        elem,
+                        dims,
+                        place,
+                        span: *span,
+                    },
+                    UnOp::Not if elem == TensorElem::I8 => Type::Tensor {
+                        elem: TensorElem::I8,
+                        dims,
+                        place,
+                        span: *span,
+                    },
+                    UnOp::Not => {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            "! on a tensor expects Tensor[I8, …]",
+                            *span,
+                        )]);
+                    }
+                }
+            } else {
+                inner
+            }
+        }
         Expr::Call {
             func,
             type_args,
@@ -934,6 +971,7 @@ fn infer_call(
                 span,
             })
         }
+        "where" => infer_where(args, env, types, entries, span),
         "map" | "reduce" => infer_map_like(args, env, types, entries, span),
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
@@ -1278,6 +1316,222 @@ fn matmul_result_type(a: &Type, b: &Type, span: Span) -> DiagResult<Type> {
         place,
         span,
     })
+}
+
+pub fn frame_as_struct(f: &FrameDef) -> StructDef {
+    let place = if f.type_params.len() == 1 {
+        Place::Param(f.type_params[0].clone())
+    } else {
+        Place::Cpu
+    };
+    let fields = f
+        .columns
+        .iter()
+        .map(|c| StructField {
+            name: c.name.clone(),
+            ty: column_elem_type(c.elem, place.clone(), c.span),
+            span: c.span,
+        })
+        .collect();
+    StructDef {
+        name: f.name.clone(),
+        type_params: f.type_params.clone(),
+        fields,
+        span: f.span,
+    }
+}
+
+fn column_elem_type(elem: ColumnElem, place: Place, span: Span) -> Type {
+    match elem {
+        ColumnElem::String => list_type(
+            Type::Named {
+                name: "String".into(),
+                args: vec![],
+                span,
+            },
+            span,
+        ),
+        ColumnElem::F32 => Type::Tensor {
+            elem: TensorElem::F32,
+            dims: vec![Dim::Dynamic],
+            place,
+            span,
+        },
+        ColumnElem::F16 => Type::Tensor {
+            elem: TensorElem::F16,
+            dims: vec![Dim::Dynamic],
+            place,
+            span,
+        },
+        ColumnElem::BF16 => Type::Tensor {
+            elem: TensorElem::BF16,
+            dims: vec![Dim::Dynamic],
+            place,
+            span,
+        },
+        ColumnElem::I8 => Type::Tensor {
+            elem: TensorElem::I8,
+            dims: vec![Dim::Dynamic],
+            place,
+            span,
+        },
+    }
+}
+
+fn infer_where(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.len() != 2 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "where expects frame and mask",
+            span,
+        )]);
+    }
+    let frame_ty = check_expr(&args[0], env, types, entries)?;
+    let mask_ty = check_expr(&args[1], env, types, entries)?;
+    let Type::Named { name, .. } = &frame_ty else {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "where expects a frame value as first argument",
+            span,
+        )]);
+    };
+    if !types.frames.contains_key(name) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("`{name}` is not a frame"),
+            span,
+        )]);
+    }
+    let Type::Tensor {
+        elem: TensorElem::I8,
+        dims,
+        place,
+        ..
+    } = &mask_ty
+    else {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "where mask must be Tensor[I8, ?] on the frame place",
+            args[1].span(),
+        )]);
+    };
+    if dims.len() != 1 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EShape,
+            "where mask must be rank-1",
+            args[1].span(),
+        )]);
+    }
+    let frame_place = types
+        .structs
+        .get(name)
+        .and_then(|s| s.fields.first())
+        .and_then(|f| tensor_dims(&f.ty).map(|(_, _, p)| p))
+        .unwrap_or(Place::Cpu);
+    if !place_compatible(place, &frame_place) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EPlace,
+            "where mask place must match frame columns",
+            args[1].span(),
+        )]);
+    }
+    Ok(frame_ty)
+}
+
+fn infer_tensor_binary(op: BinOp, lt: &Type, rt: &Type, span: Span) -> DiagResult<Type> {
+    let cmp = matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+    );
+    let arith = matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div);
+    if !cmp && !arith {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "this operator is not defined on tensors",
+            span,
+        )]);
+    }
+
+    let (base, other) = if let Some(_) = tensor_dims(lt) {
+        (lt, rt)
+    } else if let Some(_) = tensor_dims(rt) {
+        if !is_numeric(lt) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "tensor operation requires Int or Float scalar",
+                span,
+            )]);
+        }
+        (rt, lt)
+    } else {
+        unreachable!("infer_tensor_binary without tensor");
+    };
+
+    let (dims, elem, place) = tensor_dims(base).expect("tensor");
+    if let Some((od, oe, op)) = tensor_dims(other) {
+        if elem != oe {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::ETensorelem,
+                "tensor operands must share element type",
+                span,
+            )]);
+        }
+        if !place_compatible(&place, &op) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EPlace,
+                "tensor operands must share place",
+                span,
+            )]);
+        }
+        if !tensor_same_shape(&dims, &od) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EShape,
+                "tensor shapes must match for element-wise operation",
+                span,
+            )]);
+        }
+    } else if !is_numeric(other) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "tensor operation requires Int or Float scalar on the other side",
+            span,
+        )]);
+    }
+
+    if cmp {
+        Ok(Type::Tensor {
+            elem: TensorElem::I8,
+            dims,
+            place,
+            span,
+        })
+    } else {
+        Ok(Type::Tensor {
+            elem,
+            dims,
+            place,
+            span,
+        })
+    }
+}
+
+fn tensor_same_shape(a: &[Dim], b: &[Dim]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| match (x, y) {
+            (Dim::Static(n), Dim::Static(m)) => n == m,
+            (Dim::Dynamic, Dim::Dynamic) => true,
+            (Dim::Static(_), Dim::Dynamic) | (Dim::Dynamic, Dim::Static(_)) => true,
+        })
 }
 
 fn tensor_dims(t: &Type) -> Option<(Vec<Dim>, TensorElem, Place)> {

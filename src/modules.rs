@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ast::{EnumDef, FnDef, Item, Program, StructDef};
+use crate::ast::{EnumDef, FnDef, FrameDef, Item, Program, StructDef};
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::parser::parse;
 use crate::span::Span;
@@ -12,6 +12,7 @@ use crate::span::Span;
 pub struct ModuleExports {
     pub structs: HashMap<String, StructDef>,
     pub enums: HashMap<String, EnumDef>,
+    pub frames: HashMap<String, FrameDef>,
     pub fns: HashMap<String, FnDef>,
 }
 
@@ -185,6 +186,11 @@ pub fn exports_for_module(module: &LoadedModule) -> ModuleExports {
             Item::Fn(f) => {
                 out.fns.insert(f.name.clone(), f.clone());
             }
+            Item::Frame(f) => {
+                out.frames.insert(f.name.clone(), f.clone());
+                out.structs
+                    .insert(f.name.clone(), crate::infer::frame_as_struct(f));
+            }
             _ => {}
         }
     }
@@ -196,8 +202,23 @@ fn merge_exports(
     from: &ModuleExports,
     at: Span,
 ) -> Result<(), Vec<Diagnostic>> {
+    for (name, f) in &from.frames {
+        if into.frames.contains_key(name)
+            || into.structs.contains_key(name)
+            || into.enums.contains_key(name)
+            || into.fns.contains_key(name)
+        {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!("name `{name}` defined in more than one imported module"),
+                at,
+            )]);
+        }
+        into.frames.insert(name.clone(), f.clone());
+    }
     for (name, s) in &from.structs {
         if into.structs.contains_key(name)
+            || into.frames.contains_key(name)
             || into.enums.contains_key(name)
             || into.fns.contains_key(name)
         {
@@ -321,6 +342,7 @@ pub fn type_env_for_module(
     let mut env = crate::infer::TypeEnv::default();
     env.structs = imports.structs.clone();
     env.enums = imports.enums.clone();
+    env.frames = imports.frames.clone();
     for f in imports.fns.values() {
         let params: Vec<_> = f.params.iter().map(|p| p.ty.clone()).collect();
         env.fns.insert(f.name.clone(), (params, f.ret.clone()));
@@ -331,6 +353,7 @@ pub fn type_env_for_module(
                 if env.structs.contains_key(&s.name)
                     || env.enums.contains_key(&s.name)
                     || env.fns.contains_key(&s.name)
+                    || env.frames.contains_key(&s.name)
                 {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -339,6 +362,22 @@ pub fn type_env_for_module(
                     )]);
                 }
                 env.structs.insert(s.name.clone(), s.clone());
+            }
+            Item::Frame(f) => {
+                if env.structs.contains_key(&f.name)
+                    || env.enums.contains_key(&f.name)
+                    || env.fns.contains_key(&f.name)
+                    || env.frames.contains_key(&f.name)
+                {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("name `{}` already defined in an imported module", f.name),
+                        f.span,
+                    )]);
+                }
+                env.frames.insert(f.name.clone(), f.clone());
+                env.structs
+                    .insert(f.name.clone(), crate::infer::frame_as_struct(f));
             }
             Item::Enum(e) => {
                 if env.structs.contains_key(&e.name)

@@ -20,6 +20,14 @@ fn assert_fmt_idempotent(src: &str) {
 }
 
 #[test]
+#[test]
+fn frame_shop_parses() {
+    let src = include_str!("fixtures/frame_shop.sal");
+    let p = assert_parse(src);
+    assert!(p.items.iter().any(|i| matches!(i, Item::Frame(_))));
+}
+
+#[test]
 fn examples_parse() {
     for name in ["hello", "forward", "gpu_roundtrip"] {
         let src = std::fs::read_to_string(format!("examples/{name}.sal")).unwrap();

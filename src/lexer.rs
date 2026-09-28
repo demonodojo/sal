@@ -27,6 +27,7 @@ pub enum TokenKind {
     While,
     Struct,
     Enum,
+    Frame,
     /// Reservada. El parser la rechaza: no está en el arranque.
     Parallel,
     Cpu,
@@ -345,6 +346,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     "while" => TokenKind::While,
                     "struct" => TokenKind::Struct,
                     "enum" => TokenKind::Enum,
+                    "frame" => TokenKind::Frame,
                     "parallel" => TokenKind::Parallel,
                     "cpu" => TokenKind::Cpu,
                     "gpu" => TokenKind::Gpu,

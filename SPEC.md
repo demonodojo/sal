@@ -27,6 +27,7 @@ item_list    → item_list item
 item         → import_def
              | struct_def
              | enum_def
+             | frame_def
              | fn_def
 
 import_def   → "import" path
@@ -39,6 +40,13 @@ suite_fields → NEWLINE INDENT field_list DEDENT
 field_list   → field_list field
              | field
 field        → IDENT ":" type
+
+frame_def    → "frame" IDENT type_params suite_columns
+suite_columns → NEWLINE INDENT column_list DEDENT
+column_list  → column_list column
+             | column
+column       → IDENT ":" column_type
+column_type  → "F32" | "F16" | "BF16" | "I8" | "String"
 
 enum_def     → "enum" IDENT type_params NEWLINE INDENT variant_list DEDENT
 variant_list → variant_list variant
@@ -276,7 +284,27 @@ Bloque alineado a 16: `[cap: i64][len: i64][bytes…][0]`. El valor `String` es 
 
 ## Modelos
 
-Operaciones: `matmul`, `map`, `reduce`, `softmax`, `reshape`, `transpose`, `relu`, `load`, `str_bytes`, `tensor[…]`.
+Operaciones: `matmul`, `map`, `reduce`, `softmax`, `reshape`, `transpose`, `relu`, `load`, `str_bytes`, `where`, `tensor[…]`.
+
+### Operadores columnares
+
+Si un operando de `+`, `-`, `*`, `/`, `==`, `!=`, `<`, `<=`, `>`, `>=` o el prefijo `-` es un `Tensor`, la operación es elemento a elemento. `String + String` sigue siendo concatenación.
+
+- Mismo lugar en los dos tensores; un escalar `Int` o `Float` se difunde. Dos lugares distintos: `E_PLACE`.
+- Mismo elemento; el escalar se estrecha al elemento del tensor. Dos elementos distintos: `E_TENSOR_ELEM`.
+- Misma forma de rango 1 (estática o `?`), o un operando escalar. Formas incompatibles: `E_SHAPE`.
+- Aritmética y `-` unario devuelven el mismo elemento y lugar. Comparaciones devuelven `Tensor[I8, misma forma] on lugar` con `0` o `1`. `!` sobre esa máscara invierte `0` y `1` elemento a elemento.
+
+Dentro de `on`, una cadena de estas operaciones del mismo lugar forma una región fusionada (como el epílogo de `map`/`relu` sobre `matmul`): los intermedios únicos no se materializan y entran en `peak_bytes`. Fuera de `on`, cada operador es un lanzamiento en el lugar del tensor.
+
+### Frame
+
+Un `frame` declara columnas con tipos `F32`, `F16`, `BF16`, `I8` o `String`. Tiene un único eje de fila. Una columna numérica es `Tensor[Elem, ?] on p` donde `p` es el parámetro de lugar del frame (o `cpu` si no hay parámetro). Una columna `String` es `List[String]` en `cpu`. Si el esquema incluye `String`, el frame vive en `cpu` y `to gpu` / `to tpu` sobre el frame entero es `E_PLACE`; las columnas numéricas pasan al dispositivo con `to` columna a columna.
+
+Se construye como un struct: `Nombre(col1, …)` en el orden de las columnas. `.col` devuelve la columna. Los operadores columnares actúan sobre cada `Tensor` de columna, no sobre el frame.
+
+`where(tabla, mascara)` filtra filas: la máscara es `Tensor[I8, ?] on p` con la misma longitud de fila. El resultado conserva el esquema y el orden relativo de las filas que pasan.
+
 Fusión en bloque `on`; IR publica `peak_bytes` por lugar.
 `load` → cpu, efectos `io`, `alloc`.
 

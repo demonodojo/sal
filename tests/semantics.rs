@@ -786,3 +786,55 @@ fn main() -> Tensor[I8, ?] on cpu ! alloc
 "#,
     );
 }
+
+#[test]
+fn tensor_mul_scalar_typechecks() {
+    expect_ok(
+        r#"
+fn f(v: Tensor[F32, 4] on p) -> Tensor[F32, 4] on p
+    on p
+        v * 2.0
+"#,
+    );
+}
+
+#[test]
+fn tensor_place_mismatch_is_e_place() {
+    expect_code(
+        r#"
+fn f(a: Tensor[F32, 4] on cpu, b: Tensor[F32, 4] on gpu) -> Tensor[F32, 4] on cpu
+    a + b
+"#,
+        ErrorCode::EPlace,
+    );
+}
+
+#[test]
+fn frame_with_string_parses_and_typechecks() {
+    expect_ok(
+        r#"
+frame Shop
+    price: F32
+    name: String
+
+fn main() -> Int ! alloc
+    0
+"#,
+    );
+}
+
+#[test]
+fn frame_with_string_to_gpu_is_e_place() {
+    expect_code(
+        r#"
+frame Shop
+    price: F32
+    name: String
+
+fn go(s: Shop) -> Int ! gpu
+    to gpu s
+    0
+"#,
+        ErrorCode::EPlace,
+    );
+}

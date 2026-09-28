@@ -1,0 +1,9 @@
+fn neto(precio: Tensor[F32, 4] on p, iva: Tensor[F32, 4] on p) -> Tensor[F32, 4] on p
+    on p
+        precio * 1.21 + iva
+
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0, 3.0, 4.0]]
+    b = tensor[[0.1, 0.2, 0.3, 0.4]]
+    _ = neto(a, b)
+    0

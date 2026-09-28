@@ -18,6 +18,7 @@ fn format_program_raw(p: &Program) -> String {
             Item::Import(imp) => out.push_str(&format!("import {}\n", imp.path)),
             Item::Fn(f) => out.push_str(&format_fn(f)),
             Item::Struct(s) => out.push_str(&format_struct(s)),
+            Item::Frame(f) => out.push_str(&format_frame(f)),
             Item::Enum(e) => out.push_str(&format_enum(e)),
         }
     }
@@ -60,6 +61,30 @@ fn format_enum(e: &EnumDef) -> String {
             );
             out.push(')');
         }
+        out.push('\n');
+    }
+    out
+}
+
+fn format_frame(f: &FrameDef) -> String {
+    let mut out = format!("frame {}", f.name);
+    if !f.type_params.is_empty() {
+        out.push('[');
+        out.push_str(&f.type_params.join(", "));
+        out.push(']');
+    }
+    out.push('\n');
+    for c in &f.columns {
+        out.push_str("    ");
+        out.push_str(&c.name);
+        out.push_str(": ");
+        out.push_str(match c.elem {
+            ColumnElem::F32 => "F32",
+            ColumnElem::F16 => "F16",
+            ColumnElem::BF16 => "BF16",
+            ColumnElem::I8 => "I8",
+            ColumnElem::String => "String",
+        });
         out.push('\n');
     }
     out

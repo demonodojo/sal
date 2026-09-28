@@ -12,6 +12,9 @@ fn FO_EPILOGUE() -> Int
 fn FO_SOFTMAX() -> Int
     2
 
+fn FO_COLUMN() -> Int
+    3
+
 fn lower_args(cx: Int, args: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
@@ -33,7 +36,8 @@ fn collect_fused(e: Int, cx: Int, ops: Int) -> Int ! alloc
             collect_fused_call(e, cx, ops, fname, args)
         elsif k == EX_BINARY()
             _a = collect_fused(vec_get(e, 2), cx, ops)
-            collect_fused(vec_get(e, 3), cx, ops)
+            _b = collect_fused(vec_get(e, 3), cx, ops)
+            collect_fused_binary(e, cx, ops)
         else
             0
 
@@ -63,6 +67,16 @@ fn fused_arg0_name(cx: Int, args: Int) -> Int ! alloc
         fused_arg_name(cx, vec_get(args, 0))
     else
         str_as_int(d"tmp")
+
+fn collect_fused_binary(e: Int, cx: Int, ops: Int) -> Int ! alloc
+    left = vec_get(e, 2)
+    right = vec_get(e, 3)
+    op = vec_get(e, 1)
+    lhs = fused_arg_name(cx, left)
+    rhs = fused_arg_name(cx, right)
+    dest = str_as_int(d"col")
+    _p = vec_push(ops, fo_new(FO_COLUMN(), lhs, rhs, dest))
+    0
 
 fn collect_fused_call(e: Int, cx: Int, ops: Int, fname: Int, args: Int) -> Int ! alloc
     nops = vec_len(ops)
@@ -425,8 +439,10 @@ fn collect_on_ops(body: Int, cx: Int) -> Int ! alloc
             _a = collect_fused(tail, cx, ops)
             ops
 
-fn fused_flag(has_ep: Int, has_mm: Int, nops: Int) -> Int ! alloc
+fn fused_flag(has_ep: Int, has_mm: Int, has_col: Int, nops: Int) -> Int ! alloc
     if has_ep == 1
+        1
+    elsif has_col == 1
         1
     elsif nops > 1
         1
@@ -439,7 +455,8 @@ fn lower_on(cx: Int, e: Int) -> Int ! alloc
     ops = collect_on_ops(vec_get(e, 2), cx)
     has_ep = ops_has_kind(ops, FO_EPILOGUE(), 0, vec_len(ops))
     has_mm = ops_has_kind(ops, FO_MATMUL(), 0, vec_len(ops))
-    fused = fused_flag(has_ep, has_mm, vec_len(ops))
+    has_col = ops_has_kind(ops, FO_COLUMN(), 0, vec_len(ops))
+    fused = fused_flag(has_ep, has_mm, has_col, vec_len(ops))
     reg = region_new(vec_get(e, 1), ops, fused)
     _e = estimate_peak(reg, cx)
     d = fresh(cx)

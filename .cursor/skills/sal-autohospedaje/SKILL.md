@@ -3,7 +3,8 @@ name: sal-autohospedaje
 description: >-
   Mantiene el compilador escrito en sal, el preludio y el corpus de las tres
   cadenas con IR idéntica. Usar al editar selfhost/, std/prelude.sal, corpus/
-  o tests/selfhost_ir.rs, o al hablar de stage1, stage2 o autohospedaje.
+  (p. ej. column_ops.sal), fuse.sal o tests/selfhost_ir.rs, o al hablar de
+  stage1, stage2 o autohospedaje.
 ---
 
 # Autohospedaje
@@ -12,7 +13,9 @@ description: >-
 
 ## Cortes
 
-Los módulos de `selfhost/` siguen los cortes del arranque: lexer, parser, tipos, ownership, efectos, lugares, IR, fusión, emisión. `1 - 2 - 3` tiene el mismo árbol que en `src/parser.rs`. En el parser, `parse_if` coincide con `src/parser.rs`: acumula `elsif` con `parse_elsif_arms` mientras `p_peek` sea `TK_ELSIF()`, y `else` solo si después es `TK_ELSE()`; si no, `ex_if(..., else_b = 0, arms)` y el resto del pipeline ya trata el bloque `0` como vacío. La bajada anida cada `elsif` como un `if` en la rama else.
+Los módulos de `selfhost/` siguen los cortes del arranque: lexer, parser, tipos, ownership, efectos, lugares, IR, fusión, emisión. `1 - 2 - 3` tiene el mismo árbol que en `src/parser.rs`. En **`selfhost/fuse.sal`**, `FO_COLUMN` y `collect_fused_binary` reflejan `FusedOp::ColumnBin` del arranque. El parser escrito en sal debe reconocer `frame` cuando el arranque lo haga.
+
+En el parser, `parse_if` coincide con `src/parser.rs`: acumula `elsif` con `parse_elsif_arms` mientras `p_peek` sea `TK_ELSIF()`, y `else` solo si después es `TK_ELSE()`; si no, `ex_if(..., else_b = 0, arms)` y el resto del pipeline ya trata el bloque `0` como vacío. La bajada anida cada `elsif` como un `if` en la rama else.
 
 Las primitivas de tensor no se reimplementan en sal. Se llaman y el runtime del arranque las resuelve.
 
@@ -20,7 +23,7 @@ Las primitivas de tensor no se reimplementan en sal. Se llaman y el runtime del 
 
 ## Corpus
 
-`corpus/` cubre, como mínimo: un movimiento legal, efectos declarados, un `to` explícito, un `forward` del que se mira `peak_bytes`, un `load` de `.salt` y un programa pensado para `--instrument`.
+`corpus/` cubre, como mínimo: un movimiento legal, efectos declarados, un `to` explícito, un `forward` del que se mira `peak_bytes`, un `load` de `.salt`, **`corpus/column_ops.sal`** (operadores columnares en `on`, región `ColumnBin`) y un programa pensado para `--instrument`.
 
 ## Tres cadenas
 
