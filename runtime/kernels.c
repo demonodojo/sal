@@ -71,9 +71,44 @@ static void tensor_bin_f32_host(int op, float *out, const float *a, const float 
     }
 }
 
+int64_t sal_mask_select_count(const int8_t *mask, int64_t len) {
+    int64_t n = 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (mask[i] != 0) {
+            n++;
+        }
+    }
+    return n;
+}
+
+void sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len) {
+    int64_t j = 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (mask[i] != 0) {
+            out[j++] = in[i];
+        }
+    }
+}
+
+void sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len) {
+    int64_t j = 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (mask[i] != 0) {
+            out[j++] = in[i];
+        }
+    }
+}
+
 void sal_tensor_bin_f32(int op, float *out, const float *a, const float *b, int64_t len,
                         int b_is_scalar, double b_scalar) {
-    (void)sal_mem_place;
+    int place = sal_mem_place(a);
+    if (place < 0) {
+        place = sal_mem_place(out);
+    }
+    if (place == 1 && sal_gpu_enabled()) {
+        tensor_bin_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
+        return;
+    }
     tensor_bin_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
 }
 
@@ -124,6 +159,14 @@ static void tensor_cmp_f32_host(int op, int8_t *out, const float *a, const float
 
 void sal_tensor_cmp_f32(int op, int8_t *out, const float *a, const float *b, int64_t len,
                         int b_is_scalar, double b_scalar) {
+    int place = sal_mem_place(a);
+    if (place < 0) {
+        place = sal_mem_place(out);
+    }
+    if (place == 1 && sal_gpu_enabled()) {
+        tensor_cmp_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
+        return;
+    }
     tensor_cmp_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
 }
 

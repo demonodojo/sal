@@ -37,6 +37,17 @@ pub fn collect_struct_defs(prog: &crate::ast::Program) -> HashMap<String, Struct
     m
 }
 
+/// Struct and frame layouts (frames lower to the same ABI as `frame_as_struct`).
+pub fn collect_layout_structs(prog: &crate::ast::Program) -> HashMap<String, StructDef> {
+    let mut m = collect_struct_defs(prog);
+    for item in &prog.items {
+        if let crate::ast::Item::Frame(f) = item {
+            m.insert(f.name.clone(), crate::infer::frame_as_struct(f));
+        }
+    }
+    m
+}
+
 pub fn collect_enum_defs(prog: &crate::ast::Program) -> HashMap<String, EnumDef> {
     let mut m = HashMap::new();
     for item in &prog.items {
@@ -53,6 +64,22 @@ pub fn field_slots_for_struct(def: &StructDef) -> usize {
         1
     } else {
         def.fields.len()
+    }
+}
+
+/// LLVM field type for a struct field (`i64` when not `@layout(c)`).
+pub fn llvm_field_type(ty: &Type, layout_c: bool) -> &'static str {
+    if !layout_c {
+        return "i64";
+    }
+    match ty {
+        Type::Named { name, args, .. } if args.is_empty() => match name.as_str() {
+            "Int" => "i64",
+            "Float" => "double",
+            "Bool" => "i8",
+            _ => "i64",
+        },
+        _ => "i64",
     }
 }
 

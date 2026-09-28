@@ -56,6 +56,10 @@ Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, 
 
 Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`.
 
+## Atributos en el arranque
+
+`@frozen` y `@stack` delante de `let`; `@no_heap` delante de `fn`; `@layout(c)` delante de `struct`. Cualquier otro `@…` es `E_PARSE`. Las violaciones semánticas de un atributo admitido son `E_TYPE`.
+
 ## Fuera de arranque
 
-`parallel`, `@frozen`, `@stack`, `@layout`, `@resource`, `@shared`, `@arena`, `@no_heap`, `@copy`, diferenciación automática y el registro remoto de paquetes. Están reservados en la gramática. Verlos en el arranque es `E_PARSE`.
+`parallel`, `@resource`, `@shared`, `@arena`, `@copy`, `@unique`, `@no_gc`, diferenciación automática y el registro remoto de paquetes. Verlos en el arranque es `E_PARSE`.

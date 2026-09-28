@@ -22,6 +22,14 @@ fn check_effects_typed(prog: &Program, env: &StringEnv) -> DiagResult<()> {
     Ok(())
 }
 
+/// Whether the function body performs an allocation (for `@no_heap`).
+pub fn fn_body_uses_alloc(f: &FnDef, env: &StringEnv) -> bool {
+    let mut used = EffectsUsed::default();
+    let mut strings = env.clone();
+    scan_block(&f.body, &mut used, &mut strings);
+    used.alloc
+}
+
 fn check_fn_effects(f: &FnDef, env: &StringEnv) -> DiagResult<()> {
     let mut used = EffectsUsed::default();
     let mut strings = env.clone();

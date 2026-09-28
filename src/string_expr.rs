@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::ast::{BinOp, EnumDef, Expr, Item, Param, Program, StructDef, Type};
 use crate::infer::InferOutput;
-use crate::layout::{collect_enum_defs, collect_struct_defs};
+use crate::layout::{collect_enum_defs, collect_layout_structs};
 
 /// Types infer recorded per expression span, plus the nominal structs/enums the
 /// lowering needs for `.field` and variants. `+` on strings is decided by the
@@ -30,7 +30,7 @@ impl StringEnv {
         let mut fn_struct_rets = HashMap::new();
         let mut enums = HashMap::new();
         for prog in progs {
-            for (k, v) in collect_struct_defs(prog) {
+            for (k, v) in collect_layout_structs(prog) {
                 structs.entry(k).or_insert(v);
             }
             for (k, v) in collect_enum_defs(prog) {

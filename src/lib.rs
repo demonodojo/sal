@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod attrs;
 pub mod compile;
 pub mod device;
 pub mod diag;

@@ -1337,6 +1337,7 @@ pub fn frame_as_struct(f: &FrameDef) -> StructDef {
         name: f.name.clone(),
         type_params: f.type_params.clone(),
         fields,
+        layout_c: false,
         span: f.span,
     }
 }
@@ -1421,7 +1422,12 @@ fn infer_where(
             args[1].span(),
         )]);
     };
-    if dims.len() != 1 {
+    let row_len_ok = match dims.as_slice() {
+        [Dim::Static(_)] | [Dim::Dynamic] => true,
+        [Dim::Static(1), Dim::Static(_)] | [Dim::Static(1), Dim::Dynamic] => true,
+        _ => false,
+    };
+    if !row_len_ok {
         return Err(vec![Diagnostic::new(
             ErrorCode::EShape,
             "where mask must be rank-1",

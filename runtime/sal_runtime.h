@@ -18,6 +18,10 @@ void sal_tensor_neg_f32(float *out, const float *a, int64_t len);
 void sal_tensor_not_i8(int8_t *out, const int8_t *a, int64_t len);
 void sal_tensor_cmp_f32(int op, int8_t *out, const float *a, const float *b, int64_t len,
                         int b_is_scalar, double b_scalar);
+int64_t sal_mask_select_count(const int8_t *mask, int64_t len);
+void sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);
+void sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);
+void *sal_list_select(void *in_list, const int8_t *mask, int64_t len);
 
 int sal_gpu_enabled(void);
 void *sal_gpu_alloc(int64_t nbytes);

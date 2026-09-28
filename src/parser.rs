@@ -191,6 +191,7 @@ impl Parser {
             name,
             type_params,
             fields,
+            layout_c: false,
             span: sp,
         })
     }
@@ -282,6 +283,7 @@ impl Parser {
             ret,
             effects,
             body,
+            no_heap: false,
             span,
         })
     }
@@ -530,6 +532,7 @@ impl Parser {
                     name,
                     ty,
                     init,
+                    frozen: false,
                     span: sp,
                 });
                 self.skip_newlines();

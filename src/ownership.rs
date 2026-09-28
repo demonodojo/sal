@@ -53,7 +53,16 @@ fn infer_fn_modes(f: &mut FnDef, structs: &HashMap<String, StructDef>) {
     let mut moved: HashSet<String> = HashSet::new();
     let mut taken: HashSet<String> = HashSet::new();
     let mut used: HashSet<String> = HashSet::new();
-    let _ = track_block(&f.body, &mut env, &mut moved, &param_names, &mut taken, &mut used);
+    let mut frozen = HashSet::new();
+    let _ = track_block(
+        &f.body,
+        &mut env,
+        &mut moved,
+        &param_names,
+        &mut taken,
+        &mut used,
+        &mut frozen,
+    );
     for p in &mut f.params {
         if p.mode != ParamMode::Inferred {
             continue;
@@ -93,6 +102,7 @@ fn check_block(
         &HashSet::new(),
         &mut HashSet::new(),
         &mut HashSet::new(),
+        &mut HashSet::new(),
     )
 }
 
@@ -103,12 +113,13 @@ fn track_block(
     params: &HashSet<String>,
     taken: &mut HashSet<String>,
     used: &mut HashSet<String>,
+    frozen: &mut HashSet<String>,
 ) -> DiagResult<()> {
     for st in &b.stmts {
-        track_stmt(st, env, moved, params, taken, used)?;
+        track_stmt(st, env, moved, params, taken, used, frozen)?;
     }
     if let Some(t) = &b.tail {
-        let ty = track_expr(t, env, moved, params, taken, used)?;
+        let ty = track_expr(t, env, moved, params, taken, used, frozen)?;
         // Tail value escapes the block (function result or block expr) → move unique.
         consume_if_unique(t, &ty, moved, params, taken);
     }
@@ -122,20 +133,39 @@ fn track_stmt(
     params: &HashSet<String>,
     taken: &mut HashSet<String>,
     used: &mut HashSet<String>,
+    frozen: &mut HashSet<String>,
 ) -> DiagResult<()> {
     match st {
-        Stmt::Let { name, ty, init, .. } => {
-            let ity = track_expr(init, env, moved, params, taken, used)?;
+        Stmt::Let {
+            name,
+            ty,
+            init,
+            frozen: is_frozen,
+            ..
+        } => {
+            let ity = track_expr(init, env, moved, params, taken, used, frozen)?;
             consume_if_unique(init, &ity, moved, params, taken);
             let bound = ty.clone().unwrap_or(ity);
             env.insert(name.clone(), bound);
             moved.remove(name);
+            if *is_frozen {
+                frozen.insert(name.clone());
+            }
         }
         Stmt::Expr(e) => {
-            track_expr(e, env, moved, params, taken, used)?;
+            track_expr(e, env, moved, params, taken, used, frozen)?;
         }
         Stmt::Assign { target, value, span } => {
-            let vty = track_expr(value, env, moved, params, taken, used)?;
+            if let Some(name) = frozen_assign_name(target) {
+                if frozen.contains(name) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("`{name}` is @frozen and cannot be mutated"),
+                        *span,
+                    )]);
+                }
+            }
+            let vty = track_expr(value, env, moved, params, taken, used, frozen)?;
             consume_if_unique(value, &vty, moved, params, taken);
             if let Expr::Ident { name, .. } = target {
                 // `x = x + ...` appends in place: the old `x` is moved into the result.
@@ -149,27 +179,33 @@ fn track_stmt(
                 env.insert(name.clone(), vty);
                 moved.remove(name);
             } else {
-                track_expr(target, env, moved, params, taken, used)?;
+                track_expr(target, env, moved, params, taken, used, frozen)?;
                 let _ = span;
             }
         }
         Stmt::Return { value, .. } => {
             if let Some(v) = value {
-                let ty = track_expr(v, env, moved, params, taken, used)?;
+                let ty = track_expr(v, env, moved, params, taken, used, frozen)?;
                 consume_if_unique(v, &ty, moved, params, taken);
             }
         }
         Stmt::While { cond, body, .. } => {
-            track_expr(cond, env, moved, params, taken, used)?;
-            for st in &body.stmts {
-                track_stmt(st, env, moved, params, taken, used)?;
-            }
-            if let Some(t) = &body.tail {
-                track_expr(t, env, moved, params, taken, used)?;
-            }
+            track_expr(cond, env, moved, params, taken, used, frozen)?;
+            track_block(body, env, moved, params, taken, used, frozen)?;
         }
     }
     Ok(())
+}
+
+fn frozen_assign_name(target: &Expr) -> Option<&str> {
+    match target {
+        Expr::Ident { name, .. } => Some(name),
+        Expr::Field { base, .. } => match base.as_ref() {
+            Expr::Ident { name, .. } => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn track_expr(
@@ -179,6 +215,7 @@ fn track_expr(
     params: &HashSet<String>,
     taken: &mut HashSet<String>,
     used: &mut HashSet<String>,
+    frozen: &mut HashSet<String>,
 ) -> DiagResult<Type> {
     match e {
         Expr::Int { span, .. } => Ok(named("Int", *span)),
@@ -218,10 +255,10 @@ fn track_expr(
                 .unwrap_or_else(|| named("Unknown", *span)))
         }
         Expr::Call { func, args, span, .. } => {
-            track_expr(func, env, moved, params, taken, used)?;
+            track_expr(func, env, moved, params, taken, used, frozen)?;
             let mut arg_tys = Vec::new();
             for a in args {
-                arg_tys.push(track_expr(a, env, moved, params, taken, used)?);
+                arg_tys.push(track_expr(a, env, moved, params, taken, used, frozen)?);
             }
             if let Expr::Ident { name, .. } = func.as_ref() {
                 if is_move_fn(name) {
@@ -254,8 +291,8 @@ fn track_expr(
             span,
             ..
         } => {
-            let lt = track_expr(left, env, moved, params, taken, used)?;
-            track_expr(right, env, moved, params, taken, used)?;
+            let lt = track_expr(left, env, moved, params, taken, used, frozen)?;
+            track_expr(right, env, moved, params, taken, used, frozen)?;
             // String `+` copies (str_concat) or appends onto a temporary: neither
             // operand is consumed. Only `x = x + ...` moves `x` (see track_stmt).
             if *op == BinOp::Add && is_string_type(&lt) {
@@ -264,26 +301,26 @@ fn track_expr(
                 Ok(named("Int", *span))
             }
         }
-        Expr::Unary { expr, .. } => track_expr(expr, env, moved, params, taken, used),
+        Expr::Unary { expr, .. } => track_expr(expr, env, moved, params, taken, used, frozen),
         Expr::Block(b) => {
             let mut local = env.clone();
-            track_block(b, &mut local, moved, params, taken, used)?;
+            track_block(b, &mut local, moved, params, taken, used, frozen)?;
             Ok(named("Unit", b.span))
         }
         Expr::On { body, .. } => {
             let mut local = env.clone();
-            track_block(body, &mut local, moved, params, taken, used)?;
+            track_block(body, &mut local, moved, params, taken, used, frozen)?;
             Ok(named("Unit", body.span))
         }
         Expr::To { expr, span, .. } => {
-            let ty = track_expr(expr, env, moved, params, taken, used)?;
+            let ty = track_expr(expr, env, moved, params, taken, used, frozen)?;
             consume_if_unique(expr, &ty, moved, params, taken);
             Ok(ty_with_span(ty, *span))
         }
         Expr::TensorLit { rows, span, .. } => {
             for row in rows {
                 for c in row {
-                    track_expr(c, env, moved, params, taken, used)?;
+                    track_expr(c, env, moved, params, taken, used, frozen)?;
                 }
             }
             Ok(Type::Tensor {
@@ -294,17 +331,17 @@ fn track_expr(
             })
         }
         Expr::Field { base, span, .. } => {
-            track_expr(base, env, moved, params, taken, used)?;
+            track_expr(base, env, moved, params, taken, used, frozen)?;
             Ok(named("Unknown", *span))
         }
         Expr::Match {
             scrutinee, arms, span, ..
         } => {
-            track_expr(scrutinee, env, moved, params, taken, used)?;
+            track_expr(scrutinee, env, moved, params, taken, used, frozen)?;
             for arm in arms {
                 let mut local = env.clone();
                 bind_pattern_names(&arm.pattern, &mut local);
-                track_expr(&arm.body, &local, moved, params, taken, used)?;
+                track_expr(&arm.body, &local, moved, params, taken, used, frozen)?;
             }
             Ok(named("Unknown", *span))
         }
@@ -316,40 +353,64 @@ fn track_expr(
             span,
             ..
         } => {
-            track_expr(cond, env, moved, params, taken, used)?;
+            track_expr(cond, env, moved, params, taken, used, frozen)?;
             let branch_base = moved.clone();
             let mut then_moved = branch_base.clone();
             let mut then_env = env.clone();
             for st in &then_block.stmts {
-                track_stmt(st, &mut then_env, &mut then_moved, params, taken, used)?;
+                track_stmt(
+                    st,
+                    &mut then_env,
+                    &mut then_moved,
+                    params,
+                    taken,
+                    used,
+                    frozen,
+                )?;
             }
             if let Some(t) = &then_block.tail {
-                track_expr(t, &then_env, &mut then_moved, params, taken, used)?;
+                track_expr(t, &then_env, &mut then_moved, params, taken, used, frozen)?;
             }
             for arm in elsifs {
-                track_expr(&arm.cond, env, moved, params, taken, used)?;
+                track_expr(&arm.cond, env, moved, params, taken, used, frozen)?;
                 let mut arm_moved = branch_base.clone();
                 let mut arm_env = env.clone();
                 for st in &arm.body.stmts {
-                    track_stmt(st, &mut arm_env, &mut arm_moved, params, taken, used)?;
+                    track_stmt(
+                        st,
+                        &mut arm_env,
+                        &mut arm_moved,
+                        params,
+                        taken,
+                        used,
+                        frozen,
+                    )?;
                 }
                 if let Some(t) = &arm.body.tail {
-                    track_expr(t, &arm_env, &mut arm_moved, params, taken, used)?;
+                    track_expr(t, &arm_env, &mut arm_moved, params, taken, used, frozen)?;
                 }
             }
             if let Some(else_block) = else_block {
                 let mut else_moved = branch_base.clone();
                 let mut else_env = env.clone();
                 for st in &else_block.stmts {
-                    track_stmt(st, &mut else_env, &mut else_moved, params, taken, used)?;
+                    track_stmt(
+                        st,
+                        &mut else_env,
+                        &mut else_moved,
+                        params,
+                        taken,
+                        used,
+                        frozen,
+                    )?;
                 }
                 if let Some(t) = &else_block.tail {
-                    track_expr(t, &else_env, &mut else_moved, params, taken, used)?;
+                    track_expr(t, &else_env, &mut else_moved, params, taken, used, frozen)?;
                 }
             }
             Ok(named("Int", *span))
         }
-        Expr::Try { expr, .. } => track_expr(expr, env, moved, params, taken, used),
+        Expr::Try { expr, .. } => track_expr(expr, env, moved, params, taken, used, frozen),
     }
 }
 
@@ -371,7 +432,16 @@ fn use_lambda(
     // Fresh binding — do not treat the param name as a use of an outer value.
     let param_ty = named("Float", span);
     local.insert(params[0].clone(), param_ty.clone());
-    let body_ty = track_expr(body, &local, moved, fn_params, taken, used)?;
+    let mut lambda_frozen = HashSet::new();
+    let body_ty = track_expr(
+        body,
+        &local,
+        moved,
+        fn_params,
+        taken,
+        used,
+        &mut lambda_frozen,
+    )?;
     Ok(Type::Fn {
         params: vec![param_ty],
         ret: Box::new(body_ty),

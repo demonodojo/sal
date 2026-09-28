@@ -1761,6 +1761,24 @@ void *sal_list_push(void *vp, int64_t x) {
     return l;
 }
 
+void *sal_list_select(void *in_list, const int8_t *mask, int64_t len) {
+    SalList *in = (SalList *)in_list;
+    void *out = sal_list_new_typed(3);
+    if (!in || !out) {
+        return out;
+    }
+    int64_t n = (int64_t)in->vec.len;
+    if (len < n) {
+        n = len;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        if (mask[i] != 0) {
+            sal_list_push(out, in->vec.data[i]);
+        }
+    }
+    return out;
+}
+
 int64_t sal_list_len(void *vp) {
     SalList *l = (SalList *)vp;
     return l ? (int64_t)l->vec.len : 0;

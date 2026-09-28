@@ -15,7 +15,7 @@ use crate::incremental::{
 use crate::infer::infer_program;
 use crate::ir::{ir_to_text, lower_program_with_callables_env};
 use crate::string_expr::StringEnv;
-use crate::layout::collect_struct_defs;
+use crate::layout::collect_layout_structs;
 use crate::llvm::{collect_host_tensors, emit_llvm_with_externs, LlvmOptions};
 use crate::modules::{
     callable_fn_names, check_module_semantics, infer_module, resolve_module_graph, LoadedModule,
@@ -75,6 +75,8 @@ fn compile_program_at(
     }
 
     let infer_out = infer_program(program)?;
+    let strings_for_attrs = StringEnv::from_program(program).with_infer(&infer_out);
+    crate::attrs::check_no_heap_fns(program, &strings_for_attrs)?;
     check_effects_with_infer(program, &infer_out)?;
     check_ownership(program)?;
     check_devices(program)?;
@@ -264,7 +266,7 @@ fn compile_single_module(
                 instrument: opts.instrument,
                 extern_user_fns: externs.clone(),
                 emit_entry_main,
-                struct_defs: collect_struct_defs(program),
+                struct_defs: collect_layout_structs(program),
             },
             &tensors,
             externs,

@@ -63,6 +63,8 @@ pub struct FnDef {
     pub ret: Type,
     pub effects: Vec<Effect>,
     pub body: Block,
+    #[serde(default)]
+    pub no_heap: bool,
     pub span: Span,
 }
 
@@ -172,6 +174,8 @@ pub enum Stmt {
         name: String,
         ty: Option<Type>,
         init: Expr,
+        #[serde(default)]
+        frozen: bool,
         span: Span,
     },
     Expr(Expr),
@@ -352,6 +356,8 @@ pub struct StructDef {
     #[serde(default)]
     pub type_params: Vec<String>,
     pub fields: Vec<StructField>,
+    #[serde(default)]
+    pub layout_c: bool,
     pub span: Span,
 }
 

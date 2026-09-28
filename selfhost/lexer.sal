@@ -114,6 +114,9 @@ fn TK_DSTRING() -> Int
 fn TK_STRUCT() -> Int
     37
 
+fn TK_AT() -> Int
+    38
+
 fn is_digit(c: Int) -> Int
     if c < 48
         0
@@ -421,20 +424,19 @@ fn lex_go(src: String, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int 
                     else
                         _d = dedent_to_col(out, st, sp)
                         lex_go(src, j, n, out, st, 0)
-        else
-            if c == 10
-                t = tok_new(TK_NL(), d"", 0)
-                _p = vec_push(out, t)
-                if group_depth(st) > 0
-                    lex_go(src, i + 1, n, out, st, 0)
-                else
-                    lex_go(src, i + 1, n, out, st, 1)
+        elsif c == 10
+            t = tok_new(TK_NL(), d"", 0)
+            _p = vec_push(out, t)
+            if group_depth(st) > 0
+                lex_go(src, i + 1, n, out, st, 0)
             else
-                j = str_skip(src, i, 8, 0)
-                if j == i
-                    lex_tok(src, i, n, out, st)
-                else
-                    lex_go(src, j, n, out, st, 0)
+                lex_go(src, i + 1, n, out, st, 1)
+        else
+            j = str_skip(src, i, 8, 0)
+            if j == i
+                lex_tok(src, i, n, out, st)
+            else
+                lex_go(src, j, n, out, st, 0)
 
 fn lex_tok(src: String, i: Int, n: Int, out: Int, st: Int) -> Int ! alloc
     c = str_char(src, i)
@@ -613,6 +615,10 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
             lex_go(src, i + 1, n, out, st, 0)
     elsif c == 46
         t = tok_new(TK_DOT(), d"", 0)
+        _p = vec_push(out, t)
+        lex_go(src, i + 1, n, out, st, 0)
+    elsif c == 64
+        t = tok_new(TK_AT(), d"", 0)
         _p = vec_push(out, t)
         lex_go(src, i + 1, n, out, st, 0)
     elsif is_ident_start(c) == 1

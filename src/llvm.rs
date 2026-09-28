@@ -1,7 +1,7 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Dim, Expr, FnDef, Item, Program, Stmt, StructDef, TensorElem, Type};
+use crate::ast::{Dim, Expr, FnDef, Item, Program, Stmt, StructDef, StructField, TensorElem, Type};
 use crate::ir::{FusedOp, IrFunction, IrInst, IrModule};
 use crate::layout::{is_transparent_struct, llvm_struct_symbol};
 
@@ -57,6 +57,8 @@ pub struct LlvmOptions {
 /// Static host tensor materialised from a `tensor[[…]]` literal (or param shape).
 #[derive(Debug, Clone)]
 pub struct HostTensor {
+    /// Function that owns this literal / shape entry.
+    pub owner_fn: String,
     /// SSA / IR name used in `Call` args (`t1`, or source name for bare assigns).
     pub ir_name: String,
     pub rows: u64,
@@ -80,6 +82,7 @@ pub fn collect_host_tensors(prog: &Program) -> HashMap<String, HostTensor> {
                         out.insert(
                             ir_name.clone(),
                             HostTensor {
+                                owner_fn: f.name.clone(),
                                 ir_name,
                                 rows,
                                 cols,
@@ -93,18 +96,23 @@ pub fn collect_host_tensors(prog: &Program) -> HashMap<String, HostTensor> {
                     }
                 }
                 Stmt::Assign { target, value, .. } => {
-                    if let (Expr::Ident { name, .. }, Some((rows, cols, data))) =
+                    if let (Expr::Ident { .. }, Some((rows, cols, data))) =
                         (target, tensor_lit_data(value))
                     {
+                        counter += 1;
+                        let ir_name = format!("t{counter}");
                         out.insert(
-                            name.clone(),
+                            ir_name.clone(),
                             HostTensor {
-                                ir_name: name.clone(),
+                                owner_fn: f.name.clone(),
+                                ir_name,
                                 rows,
                                 cols,
                                 data,
                             },
                         );
+                    } else if matches!(target, Expr::Ident { .. }) {
+                        bump_counter_for_expr(value, &mut counter);
                     }
                 }
                 Stmt::Expr(e) | Stmt::Return { value: Some(e), .. } => {
@@ -127,34 +135,29 @@ pub fn collect_host_tensors(prog: &Program) -> HashMap<String, HostTensor> {
 fn collect_param_shapes(f: &FnDef, out: &mut HashMap<String, HostTensor>) {
     for p in &f.params {
         if let Type::Tensor { dims, .. } = &p.ty {
-            if dims.len() >= 2 {
+            let mk = |rows: u64, cols: u64| HostTensor {
+                owner_fn: f.name.clone(),
+                ir_name: p.name.clone(),
+                rows,
+                cols,
+                data: Vec::new(),
+            };
+            if dims.len() == 1 {
+                if let Dim::Static(n) = &dims[0] {
+                    out.entry(p.name.clone()).or_insert_with(|| mk(1, *n));
+                }
+            } else if dims.len() >= 2 {
                 let r = &dims[dims.len() - 2];
                 let c = &dims[dims.len() - 1];
                 match (r, c) {
                     (Dim::Static(rows), Dim::Static(cols)) => {
-                        out.entry(p.name.clone()).or_insert_with(|| HostTensor {
-                            ir_name: p.name.clone(),
-                            rows: *rows,
-                            cols: *cols,
-                            data: Vec::new(),
-                        });
+                        out.entry(p.name.clone()).or_insert_with(|| mk(*rows, *cols));
                     }
                     (Dim::Dynamic, Dim::Static(cols)) => {
-                        // `?` rows: length is a runtime dim arg; cols known statically.
-                        out.entry(p.name.clone()).or_insert_with(|| HostTensor {
-                            ir_name: p.name.clone(),
-                            rows: 0,
-                            cols: *cols,
-                            data: Vec::new(),
-                        });
+                        out.entry(p.name.clone()).or_insert_with(|| mk(0, *cols));
                     }
                     (Dim::Static(rows), Dim::Dynamic) => {
-                        out.entry(p.name.clone()).or_insert_with(|| HostTensor {
-                            ir_name: p.name.clone(),
-                            rows: *rows,
-                            cols: 0,
-                            data: Vec::new(),
-                        });
+                        out.entry(p.name.clone()).or_insert_with(|| mk(*rows, 0));
                     }
                     _ => {}
                 }
@@ -268,6 +271,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_tensor_cmp_f32(i32, ptr, ptr, ptr, i64, i32, double)\n");
     s.push_str("declare void @sal_tensor_neg_f32(ptr, ptr, i64)\n");
     s.push_str("declare void @sal_tensor_not_i8(ptr, ptr, i64)\n");
+    s.push_str("declare i64 @sal_mask_select_count(ptr, i64)\n");
+    s.push_str("declare void @sal_tensor_select_f32(ptr, ptr, ptr, i64)\n");
+    s.push_str("declare void @sal_tensor_select_i8(ptr, ptr, ptr, i64)\n");
+    s.push_str("declare ptr @sal_list_select(ptr, ptr, i64)\n");
     s.push_str("declare ptr @sal_load_f32(ptr, ptr)\n");
     s.push_str("declare ptr @sal_place_malloc(i64, i32)\n");
     s.push_str("declare void @sal_place_free(ptr)\n");
@@ -433,12 +440,20 @@ pub fn emit_llvm_with_externs(
             if fn_has_matmul(f) || fn_has_load(f) {
                 emit_main(f, opts, tensors, &str_globals, &user_fns, &mut s);
             } else {
-                emit_main_general(f, opts, &str_globals, &user_fns, &mut s);
+                emit_main_general(f, opts, tensors, &str_globals, &user_fns, &mut s);
             }
         } else if fn_has_matmul(f) {
             emit_matmul_fn(f, &mut s);
         } else {
-            emit_general_fn(f, &str_globals, &user_fns, &opts.struct_defs, &mut s);
+            emit_general_fn(
+                f,
+                opts,
+                tensors,
+                &str_globals,
+                &user_fns,
+                &opts.struct_defs,
+                &mut s,
+            );
         }
     }
 
@@ -519,6 +534,210 @@ fn fn_has_matmul(f: &IrFunction) -> bool {
             .iter()
             .any(|o| matches!(o, FusedOp::Matmul { .. }))
     })
+}
+
+fn insts_have_tensor_ops(insts: &[IrInst]) -> bool {
+    for inst in insts {
+        match inst {
+            IrInst::TensorBin { .. } | IrInst::TensorUnary { .. } | IrInst::ConstFloat { .. } => {
+                return true;
+            }
+            IrInst::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if insts_have_tensor_ops(then_body) || insts_have_tensor_ops(else_body) {
+                    return true;
+                }
+            }
+            IrInst::While {
+                cond_insts,
+                body,
+                ..
+            } => {
+                if insts_have_tensor_ops(cond_insts) || insts_have_tensor_ops(body) {
+                    return true;
+                }
+            }
+            IrInst::Switch {
+                arms,
+                default_body,
+                ..
+            } => {
+                for arm in arms {
+                    if insts_have_tensor_ops(&arm.body) {
+                        return true;
+                    }
+                }
+                if insts_have_tensor_ops(default_body) {
+                    return true;
+                }
+            }
+            IrInst::KernelGrid { body, .. } => {
+                if insts_have_tensor_ops(body) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn fn_has_tensor_ops(f: &IrFunction) -> bool {
+    insts_have_tensor_ops(&f.instructions)
+}
+
+struct TensorEmitCtx<'a> {
+    opts: &'a LlvmOptions,
+    ptrs: &'a mut HashMap<String, String>,
+    buf_bytes: &'a mut HashMap<String, u64>,
+    owned: &'a mut Vec<String>,
+    consts: &'a HashMap<String, i64>,
+    floats: &'a HashMap<String, f64>,
+    uid: &'a mut u32,
+}
+
+fn collect_tensor_ptr_names(insts: &[IrInst], out: &mut HashSet<String>) {
+    for inst in insts {
+        match inst {
+            IrInst::TensorBin { dest, left, right, .. } => {
+                out.insert(dest.clone());
+                out.insert(left.clone());
+                out.insert(right.clone());
+            }
+            IrInst::TensorUnary { dest, input, .. } => {
+                out.insert(dest.clone());
+                out.insert(input.clone());
+            }
+            IrInst::Call { args, .. } => {
+                for a in args {
+                    out.insert(a.clone());
+                }
+            }
+            IrInst::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_tensor_ptr_names(then_body, out);
+                collect_tensor_ptr_names(else_body, out);
+            }
+            IrInst::While {
+                cond_insts,
+                body,
+                ..
+            } => {
+                collect_tensor_ptr_names(cond_insts, out);
+                collect_tensor_ptr_names(body, out);
+            }
+            IrInst::Switch {
+                arms,
+                default_body,
+                ..
+            } => {
+                for arm in arms {
+                    collect_tensor_ptr_names(&arm.body, out);
+                }
+                collect_tensor_ptr_names(default_body, out);
+            }
+            IrInst::KernelGrid { body, .. } => collect_tensor_ptr_names(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn emit_materialize_host_tensor(
+    opts: &LlvmOptions,
+    name: &str,
+    t: &HostTensor,
+    s: &mut String,
+    ptrs: &mut HashMap<String, String>,
+    owned: &mut Vec<String>,
+    uid: &mut u32,
+) {
+    if ptrs.contains_key(name) {
+        return;
+    }
+    let elems = t.rows.saturating_mul(t.cols).max(1);
+    let nbytes = elems.saturating_mul(4);
+    *uid += 1;
+    let ptr = format!("buf_{uid}");
+    emit_alloc(opts, &ptr, nbytes, "alloc", s);
+    for (i, &v) in t.data.iter().enumerate() {
+        s.push_str(&format!(
+            "  %{ptr}_gep{i} = getelementptr float, ptr %{ptr}, i64 {i}\n"
+        ));
+        s.push_str(&format!(
+            "  store float {}, ptr %{ptr}_gep{i}\n",
+            fmt_float(v)
+        ));
+    }
+    ptrs.insert(name.to_string(), ptr.clone());
+    s.push_str(&format!("  %{name} = ptrtoint ptr %{ptr} to i64\n"));
+    owned.push(ptr);
+}
+
+fn fn_needs_tensor_emit(f: &IrFunction, tensors: &HashMap<String, HostTensor>) -> bool {
+    if fn_has_tensor_ops(f) {
+        return true;
+    }
+    let mut needed = HashSet::new();
+    collect_tensor_ptr_names(&f.instructions, &mut needed);
+    tensors
+        .iter()
+        .any(|(k, t)| !t.data.is_empty() && needed.contains(k))
+}
+
+fn seed_tensor_ptrs_for_fn(
+    f: &IrFunction,
+    tensors: &HashMap<String, HostTensor>,
+    opts: &LlvmOptions,
+    s: &mut String,
+    ptrs: &mut HashMap<String, String>,
+    buf_bytes: &mut HashMap<String, u64>,
+    owned: &mut Vec<String>,
+    uid: &mut u32,
+    consts: &mut HashMap<String, i64>,
+) {
+    let _ = buf_bytes;
+    let mut needed = HashSet::new();
+    collect_tensor_ptr_names(&f.instructions, &mut needed);
+    for p in &f.params {
+        needed.insert(p.clone());
+    }
+    for name in &needed {
+        if let Some(t) = tensors.get(name) {
+            if t.owner_fn != f.name {
+                continue;
+            }
+            if !t.data.is_empty() {
+                emit_materialize_host_tensor(opts, name, t, s, ptrs, owned, uid);
+            }
+        }
+    }
+    for p in &f.params {
+        if !ptrs.contains_key(p) {
+            *uid += 1;
+            let slot = format!("p{uid}");
+            s.push_str(&format!("  %{slot} = inttoptr i64 %{p} to ptr\n"));
+            ptrs.insert(p.clone(), slot);
+        }
+        if let Some(t) = tensors.get(p) {
+            if t.owner_fn != f.name {
+                continue;
+            }
+            let len = t.rows.saturating_mul(t.cols).max(1);
+            if len > 0 {
+                let dim = format!("{p}_d0");
+                if !consts.contains_key(&dim) {
+                    consts.insert(dim.clone(), len as i64);
+                    s.push_str(&format!("  %{dim} = add i64 0, {len}\n"));
+                }
+            }
+        }
+    }
 }
 
 fn region_place_for_matmul(f: &IrFunction, matmul_ordinal: usize) -> String {
@@ -1414,6 +1633,14 @@ fn emit_load(
     owned.push(buf);
 }
 
+fn fmt_double(v: f64) -> String {
+    if v.fract() == 0.0 && v.is_finite() {
+        format!("{v:.1}")
+    } else {
+        format!("{v}")
+    }
+}
+
 fn fmt_float(v: f32) -> String {
     if v.is_nan() {
         return "0x7FF8000000000000".into(); // LLVM double nan bitcast used carefully — use hex float
@@ -2116,11 +2343,190 @@ fn emit_runtime_or_user_call(
     }
 }
 
+fn field_is_tensor_f32(ty: &Type) -> bool {
+    matches!(ty, Type::Tensor { elem: TensorElem::F32, .. })
+}
+
+fn field_is_tensor_i8(ty: &Type) -> bool {
+    matches!(ty, Type::Tensor { elem: TensorElem::I8, .. })
+}
+
+fn field_is_list_string(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Named { name, args, .. } if name == "List" && !args.is_empty()
+    )
+}
+
+fn emit_ptr_from_i64_ssa(
+    ssa: &str,
+    consts: &HashMap<String, i64>,
+    ptrs: &HashMap<String, String>,
+    s: &mut String,
+    uid: &mut u32,
+) -> String {
+    if let Some(p) = ptrs.get(ssa) {
+        return format!("%{p}");
+    }
+    *uid += 1;
+    let slot = format!("wp{uid}");
+    let op = i64_operand(ssa, consts);
+    s.push_str(&format!("  %{slot} = inttoptr i64 {op} to ptr\n"));
+    format!("%{slot}")
+}
+
+fn emit_where_frame(
+    dest: &str,
+    args: &[String],
+    consts: &HashMap<String, i64>,
+    ptrs: &HashMap<String, String>,
+    opts: Option<&LlvmOptions>,
+    s: &mut String,
+    uid: &mut u32,
+    tmp: &mut u32,
+) {
+    if args.len() < 4 {
+        s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+        return;
+    }
+    let frame_name = args[3].trim_matches('"');
+    let def = EMIT_STRUCT_DEFS.with(|d| d.borrow().get(frame_name).cloned());
+    let Some(def) = def else {
+        s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+        return;
+    };
+    let frame_base = &args[0];
+    let frame_ref = if EMIT_AGG.with(|a| a.borrow().contains_key(frame_base)) {
+        format!("%{frame_base}")
+    } else {
+        format!("%{frame_base}")
+    };
+    let len_op = i64_operand(&args[2], consts);
+    let mask_ptr = emit_ptr_from_i64_ssa(&args[1], consts, ptrs, s, uid);
+    *uid += 1;
+    let count = format!("wcnt{uid}");
+    s.push_str(&format!(
+        "  %{count} = call i64 @sal_mask_select_count(ptr {mask_ptr}, i64 {len_op})\n"
+    ));
+    let struct_ty = llvm_struct_symbol(frame_name);
+    let mut field_ssas: Vec<String> = Vec::new();
+    for (i, field) in def.fields.iter().enumerate() {
+        *tmp += 1;
+        let raw = format!("wf{tmp}");
+        s.push_str(&format!(
+            "  %{raw} = extractvalue {struct_ty} {frame_ref}, {i}\n"
+        ));
+        *uid += 1;
+        let col_ptr = format!("wcp{uid}");
+        s.push_str(&format!("  %{col_ptr} = inttoptr i64 %{raw} to ptr\n"));
+        emit_where_column(
+            field,
+            &col_ptr,
+            &mask_ptr,
+            &len_op,
+            &count,
+            opts,
+            s,
+            uid,
+            tmp,
+            &mut field_ssas,
+        );
+    }
+    if field_ssas.is_empty() {
+        s.push_str(&format!("  %{dest} = insertvalue {struct_ty} undef, i64 0, 0\n"));
+    } else {
+        let mut agg = String::new();
+        for (i, f) in field_ssas.iter().enumerate() {
+            let op = i64_operand(f, consts);
+            let next = if i + 1 == field_ssas.len() {
+                dest.to_string()
+            } else {
+                *tmp += 1;
+                format!("wag{tmp}")
+            };
+            if i == 0 {
+                s.push_str(&format!(
+                    "  %{next} = insertvalue {struct_ty} undef, i64 {op}, 0\n"
+                ));
+            } else {
+                s.push_str(&format!(
+                    "  %{next} = insertvalue {struct_ty} %{agg}, i64 {op}, {i}\n"
+                ));
+            }
+            agg = next;
+        }
+    }
+    EMIT_AGG.with(|a| {
+        a.borrow_mut()
+            .insert(dest.to_string(), frame_name.to_string());
+    });
+}
+
+fn emit_where_column(
+    field: &StructField,
+    col_ptr: &str,
+    mask_ptr: &str,
+    len_op: &str,
+    count: &str,
+    opts: Option<&LlvmOptions>,
+    s: &mut String,
+    uid: &mut u32,
+    tmp: &mut u32,
+    out_ssa: &mut Vec<String>,
+) {
+    *tmp += 1;
+    let slot = format!("wout{tmp}");
+    if field_is_tensor_f32(&field.ty) {
+        s.push_str(&format!("  %{slot}_bytes = mul i64 %{count}, 4\n"));
+        if let Some(o) = opts {
+            if o.instrument {
+                s.push_str(&format!(
+                    "  %{slot} = call ptr @sal_instrument_malloc(i64 %{slot}_bytes, i32 0, ptr @.site.access)\n"
+                ));
+            } else {
+                s.push_str(&format!(
+                    "  %{slot} = call ptr @sal_place_malloc(i64 %{slot}_bytes, i32 0)\n"
+                ));
+            }
+        } else {
+            s.push_str(&format!(
+                "  %{slot} = call ptr @sal_place_malloc(i64 %{slot}_bytes, i32 0)\n"
+            ));
+        }
+        s.push_str(&format!(
+            "  call void @sal_tensor_select_f32(ptr %{slot}, ptr {col_ptr}, ptr {mask_ptr}, i64 {len_op})\n"
+        ));
+    } else if field_is_tensor_i8(&field.ty) {
+        s.push_str(&format!("  %{slot}_bytes = mul i64 %{count}, 1\n"));
+        s.push_str(&format!(
+            "  %{slot} = call ptr @sal_place_malloc(i64 %{slot}_bytes, i32 0)\n"
+        ));
+        s.push_str(&format!(
+            "  call void @sal_tensor_select_i8(ptr %{slot}, ptr {col_ptr}, ptr {mask_ptr}, i64 {len_op})\n"
+        ));
+    } else if field_is_list_string(&field.ty) {
+        s.push_str(&format!(
+            "  %{slot} = call ptr @sal_list_select(ptr {col_ptr}, ptr {mask_ptr}, i64 {len_op})\n"
+        ));
+    } else {
+        *uid += 1;
+        let z = format!("wz{uid}");
+        s.push_str(&format!("  %{z} = add i64 0, 0\n"));
+        out_ssa.push(z);
+        return;
+    }
+    *uid += 1;
+    let handle = format!("wh{uid}");
+    s.push_str(&format!("  %{handle} = ptrtoint ptr %{slot} to i64\n"));
+    out_ssa.push(handle);
+}
+
 fn emit_body_insts(
     f: &IrFunction,
     str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
+    tensor: Option<&mut TensorEmitCtx<'_>>,
 ) -> String {
     let mut label_id = 0u32;
     let mut tmp = 0u32;
@@ -2133,6 +2539,7 @@ fn emit_body_insts(
         &mut label_id,
         &mut tmp,
         &mut cur_block,
+        tensor,
     );
     ret
 }
@@ -2145,6 +2552,7 @@ fn emit_inst_list(
     label_id: &mut u32,
     tmp: &mut u32,
     cur_block: &mut String,
+    mut tensor: Option<&mut TensorEmitCtx<'_>>,
 ) -> (String, String) {
     let consts = const_int_map_from(instructions);
     let mut ret = "0".to_string();
@@ -2281,9 +2689,99 @@ fn emit_inst_list(
                 let r = i64_operand(right, &consts);
                 s.push_str(&format!("  %{dest} = and i64 {l}, {r}\n"));
             }
-            IrInst::ConstFloat { .. } | IrInst::TensorBin { .. } | IrInst::TensorUnary { .. } => {}
+            IrInst::ConstFloat { dest, value } => {
+                if let Some(te) = tensor.as_deref_mut() {
+                    s.push_str(&format!("  ; float const %{dest} = {value}\n"));
+                    let _ = te;
+                }
+            }
+            IrInst::TensorBin {
+                dest,
+                op,
+                elem,
+                place,
+                left,
+                right,
+                len,
+                right_scalar,
+            } => {
+                if let Some(te) = tensor.as_deref_mut() {
+                    emit_one_tensor_bin(
+                        te.opts,
+                        s,
+                        te.uid,
+                        te.ptrs,
+                        te.buf_bytes,
+                        te.owned,
+                        te.consts,
+                        te.floats,
+                        dest,
+                        op,
+                        place,
+                        left,
+                        right,
+                        len,
+                        *right_scalar,
+                        *elem,
+                    );
+                }
+            }
+            IrInst::TensorUnary {
+                dest,
+                op,
+                elem,
+                place,
+                input,
+                len,
+            } => {
+                if let Some(te) = tensor.as_deref_mut() {
+                    emit_one_tensor_unary(
+                        te.opts,
+                        s,
+                        te.uid,
+                        te.ptrs,
+                        te.buf_bytes,
+                        te.owned,
+                        te.consts,
+                        dest,
+                        op,
+                        place,
+                        input,
+                        len,
+                        *elem,
+                    );
+                }
+            }
             IrInst::Call { dest, func, args } => {
-                if func == "sal_matmul_f32" || func == "sal_matmul" || func == "sal_load"
+                if func == "sal_where" {
+                    if let Some(d) = dest {
+                        if let Some(te) = tensor.as_deref_mut() {
+                            emit_where_frame(
+                                d,
+                                args,
+                                te.consts,
+                                te.ptrs,
+                                Some(te.opts),
+                                s,
+                                te.uid,
+                                tmp,
+                            );
+                        } else {
+                            let empty = HashMap::new();
+                            let mut local_uid = 0u32;
+                            emit_where_frame(
+                                d,
+                                args,
+                                &consts,
+                                &empty,
+                                None,
+                                s,
+                                &mut local_uid,
+                                tmp,
+                            );
+                        }
+                    }
+                } else if func == "sal_matmul_f32" || func == "sal_matmul" || func == "sal_load"
                     || func == "sal_load_f32" || func == "sal_softmax" || func == "sal_softmax_f32"
                 {
                     if let Some(d) = dest {
@@ -2333,6 +2831,7 @@ fn emit_inst_list(
                     label_id,
                     tmp,
                     &mut then_block,
+                    tensor.as_deref_mut(),
                 );
                 let tv = if then_consts.contains_key(then_val)
                     || then_val.chars().all(|c| c.is_ascii_digit())
@@ -2353,6 +2852,7 @@ fn emit_inst_list(
                     label_id,
                     tmp,
                     &mut else_block,
+                    tensor.as_deref_mut(),
                 );
                 let ev = if else_consts.contains_key(else_val)
                     || else_val.chars().all(|c| c.is_ascii_digit())
@@ -2422,6 +2922,7 @@ fn emit_inst_list(
                         label_id,
                         tmp,
                         &mut block,
+                        tensor.as_deref_mut(),
                     );
                     let arm_consts = const_int_map_from(&arm.body);
                     let v = if arm_consts.contains_key(&arm.value)
@@ -2444,6 +2945,7 @@ fn emit_inst_list(
                     label_id,
                     tmp,
                     &mut def_block,
+                    tensor.as_deref_mut(),
                 );
                 let def_consts = const_int_map_from(default_body);
                 let dv = if def_consts.contains_key(default_val)
@@ -2496,6 +2998,7 @@ fn emit_inst_list(
                     label_id,
                     tmp,
                     &mut head_block,
+                    tensor.as_deref_mut(),
                 );
                 let cconsts = const_int_map_from(cond_insts);
                 let c = i64_operand(cond, &cconsts);
@@ -2513,6 +3016,7 @@ fn emit_inst_list(
                     label_id,
                     tmp,
                     &mut body_block,
+                    tensor.as_deref_mut(),
                 );
                 s.push_str(&format!("  br label %{latch}\n"));
                 s.push_str(&format!("{latch}:\n"));
@@ -2537,6 +3041,8 @@ fn const_int_map_from(instructions: &[IrInst]) -> HashMap<String, i64> {
 
 fn emit_general_fn(
     f: &IrFunction,
+    opts: &LlvmOptions,
+    tensors: &HashMap<String, HostTensor>,
     str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     struct_defs: &HashMap<String, StructDef>,
@@ -2554,6 +3060,39 @@ fn emit_general_fn(
     ));
     s.push_str("entry:\n");
     emit_layout_scope(struct_defs, || {
+        let mut consts = const_int_map(f);
+        let floats = const_float_map(f);
+        let mut ptrs = HashMap::new();
+        let mut buf_bytes = HashMap::new();
+        let mut owned = Vec::new();
+        let mut uid = 0u32;
+        if fn_needs_tensor_emit(f, tensors) {
+            seed_tensor_ptrs_for_fn(
+                f,
+                tensors,
+                opts,
+                s,
+                &mut ptrs,
+                &mut buf_bytes,
+                &mut owned,
+                &mut uid,
+                &mut consts,
+            );
+        }
+        let mut tctx = if fn_has_tensor_ops(f) {
+            Some(TensorEmitCtx {
+                opts,
+                ptrs: &mut ptrs,
+                buf_bytes: &mut buf_bytes,
+                owned: &mut owned,
+                consts: &consts,
+                floats: &floats,
+                uid: &mut uid,
+            })
+        } else {
+            None
+        };
+        let tensor_ref = tctx.as_mut();
         let mut label_id = 0u32;
         let mut tmp = 0u32;
         let mut cur_block = "entry".to_string();
@@ -2568,9 +3107,10 @@ fn emit_general_fn(
                 &mut label_id,
                 &mut tmp,
                 &mut cur_block,
+                tensor_ref,
             );
         } else {
-            let ret = emit_body_insts(f, str_globals, user_fns, s);
+            let ret = emit_body_insts(f, str_globals, user_fns, s, tensor_ref);
             s.push_str(&format!("  ret i64 {ret}\n"));
         }
     });
@@ -2588,6 +3128,7 @@ fn emit_value_as_return(
     label_id: &mut u32,
     tmp: &mut u32,
     cur_block: &mut String,
+    mut tensor: Option<&mut TensorEmitCtx<'_>>,
 ) {
     if let Some(IrInst::If {
         cond,
@@ -2610,6 +3151,7 @@ fn emit_value_as_return(
                     label_id,
                     tmp,
                     cur_block,
+                    tensor.as_deref_mut(),
                 );
             }
             emit_if_as_return(
@@ -2624,6 +3166,7 @@ fn emit_value_as_return(
                 label_id,
                 tmp,
                 cur_block,
+                tensor,
             );
             return;
         }
@@ -2645,6 +3188,7 @@ fn emit_value_as_return(
                     label_id,
                     tmp,
                     cur_block,
+                    tensor.as_deref_mut(),
                 );
             }
             let consts = const_int_map_from(body);
@@ -2672,6 +3216,7 @@ fn emit_value_as_return(
             label_id,
             tmp,
             cur_block,
+            tensor.as_deref_mut(),
         );
     }
     let consts = const_int_map_from(body);
@@ -2691,6 +3236,7 @@ fn emit_if_as_return(
     label_id: &mut u32,
     tmp: &mut u32,
     cur_block: &mut String,
+    mut tensor: Option<&mut TensorEmitCtx<'_>>,
 ) {
     *label_id += 1;
     let id = *label_id;
@@ -2713,6 +3259,7 @@ fn emit_if_as_return(
         label_id,
         tmp,
         &mut then_block,
+        tensor.as_deref_mut(),
     );
     s.push_str(&format!("{else_l}:\n"));
     let mut else_block = else_l;
@@ -2725,6 +3272,7 @@ fn emit_if_as_return(
         label_id,
         tmp,
         &mut else_block,
+        tensor,
     );
     *cur_block = format!("join{id}");
 }
@@ -2732,6 +3280,7 @@ fn emit_if_as_return(
 fn emit_main_general(
     f: &IrFunction,
     opts: &LlvmOptions,
+    tensors: &HashMap<String, HostTensor>,
     str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
     s: &mut String,
@@ -2742,7 +3291,39 @@ fn emit_main_general(
     if opts.instrument {
         s.push_str("  call void @sal_instrument_init()\n");
     }
-    let ret = emit_body_insts(f, str_globals, user_fns, s);
+    let mut consts = const_int_map(f);
+    let floats = const_float_map(f);
+    let mut ptrs = HashMap::new();
+    let mut buf_bytes = HashMap::new();
+    let mut owned = Vec::new();
+    let mut uid = 0u32;
+    if fn_needs_tensor_emit(f, tensors) {
+        seed_tensor_ptrs_for_fn(
+            f,
+            tensors,
+            opts,
+            s,
+            &mut ptrs,
+            &mut buf_bytes,
+            &mut owned,
+            &mut uid,
+            &mut consts,
+        );
+    }
+    let mut tctx = if fn_has_tensor_ops(f) {
+        Some(TensorEmitCtx {
+            opts,
+            ptrs: &mut ptrs,
+            buf_bytes: &mut buf_bytes,
+            owned: &mut owned,
+            consts: &consts,
+            floats: &floats,
+            uid: &mut uid,
+        })
+    } else {
+        None
+    };
+    let ret = emit_body_insts(f, str_globals, user_fns, s, tctx.as_mut());
     if opts.instrument {
         s.push_str("  call void @sal_instrument_shutdown()\n");
     }
@@ -2928,14 +3509,15 @@ fn emit_one_tensor_bin(
         0.0
     };
     let scalar_i = if right_scalar { 1 } else { 0 };
+    let scalar_lit = fmt_double(scalar_v);
     let opcode = tensor_bin_op_code(op);
     if is_tensor_cmp_op(op) {
         s.push_str(&format!(
-            "  call void @sal_tensor_cmp_f32(i32 {opcode}, ptr %{out}, ptr {a_op}, ptr {b_op}, i64 {len_op}, i32 {scalar_i}, double {scalar_v})\n"
+            "  call void @sal_tensor_cmp_f32(i32 {opcode}, ptr %{out}, ptr {a_op}, ptr {b_op}, i64 {len_op}, i32 {scalar_i}, double {scalar_lit})\n"
         ));
     } else {
         s.push_str(&format!(
-            "  call void @sal_tensor_bin_f32(i32 {opcode}, ptr %{out}, ptr {a_op}, ptr {b_op}, i64 {len_op}, i32 {scalar_i}, double {scalar_v})\n"
+            "  call void @sal_tensor_bin_f32(i32 {opcode}, ptr %{out}, ptr {a_op}, ptr {b_op}, i64 {len_op}, i32 {scalar_i}, double {scalar_lit})\n"
         ));
     }
     ptrs.insert(dest.to_string(), out.clone());

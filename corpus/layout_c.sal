@@ -1,0 +1,8 @@
+@layout(c) struct Point
+    x: Int
+    y: Float
+    live: Bool
+
+fn main() -> Int
+    p = Point(1, 2.0, true)
+    p.x

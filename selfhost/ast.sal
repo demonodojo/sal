@@ -87,7 +87,15 @@ fn structdef_new(name: String, fields: Int) -> Int ! alloc
     s = vec_new()
     _a = vec_push(s, str_as_int(name))
     _b = vec_push(s, fields)
+    _c = vec_push(s, 0)
     s
+
+fn structdef_set_layout_c(s: Int, v: Int) -> Int ! alloc
+    if vec_len(s) > 2
+        _x = vec_set(s, 2, v)
+    else
+        _x = vec_push(s, v)
+    0
 
 fn structdef_name(s: Int) -> Int ! alloc
     vec_get(s, 0)
@@ -177,7 +185,15 @@ fn fndef_new(name: String, params: Int, body: Int) -> Int ! alloc
     _b = vec_push(f, params)
     _c = vec_push(f, body)
     _d = vec_push(f, 0)
+    _e = vec_push(f, 0)
     f
+
+fn fndef_set_no_heap(f: Int, v: Int) -> Int ! alloc
+    if vec_len(f) > 4
+        _x = vec_set(f, 4, v)
+    else
+        _x = vec_push(f, v)
+    0
 
 # Handle of the declared return type text, 0 when the signature has none.
 fn fndef_ret(f: Int) -> Int ! alloc

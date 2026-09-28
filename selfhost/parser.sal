@@ -594,6 +594,48 @@ fn parse_struct_fields(pr: Int, fields: Int) -> Int ! alloc
         _e = p_set_err(pr, d"parse error: expected struct field")
         fields
 
+# 0 = none, 1 = @no_heap, 2 = @layout(c), -1 = error
+fn parse_item_attr_kind(pr: Int) -> Int ! alloc
+    if tok_kind(p_peek(pr)) != TK_AT()
+        0
+    else
+        _at = p_accept(pr, TK_AT())
+        nt = p_peek(pr)
+        if tok_kind(nt) != TK_IDENT()
+            _e = p_set_err(pr, d"parse error: expected attribute name")
+            -1
+        else
+            nt = p_advance(pr)
+            name = tok_text(nt)
+            if str_eq(name, d"no_heap") == 1
+                1
+            elsif str_eq(name, d"layout") == 1
+                if p_accept(pr, TK_LPAREN()) == 0
+                    _e = p_set_err(pr, d"parse error: expected ( after @layout")
+                    -1
+                else
+                    nt2 = p_peek(pr)
+                    if tok_kind(nt2) != TK_IDENT()
+                        _e = p_set_err(pr, d"parse error: expected c in @layout(c)")
+                        -1
+                    else
+                        nt2 = p_advance(pr)
+                        arg = tok_text(nt2)
+                        if p_accept(pr, TK_RPAREN()) == 0
+                            _e = p_set_err(pr, d"parse error: expected ) after @layout(c)")
+                            -1
+                        elsif str_eq(arg, d"c") == 0
+                            _e = p_set_err(pr, d"parse error: only @layout(c) is supported")
+                            -1
+                        else
+                            2
+            elsif str_eq(name, d"shared") == 1
+                _e = p_set_err(pr, d"parse error: attribute @shared is not in this version")
+                -1
+            else
+                _e = p_set_err(pr, d"parse error: unknown attribute")
+                -1
+
 fn parse_struct(pr: Int) -> Int ! alloc
     if tok_kind(p_peek(pr)) == TK_STRUCT()
         _a = p_accept(pr, TK_STRUCT())
@@ -680,6 +722,20 @@ fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
     k = tok_kind(p_peek(pr))
     if k == TK_EOF()
         prog
+    elsif k == TK_AT()
+        ak = parse_item_attr_kind(pr)
+        if ak == 1
+            f = parse_fn(pr)
+            _h = fndef_set_no_heap(f, 1)
+            _c = vec_push(prog_fns(prog), f)
+            parse_program_go(pr, prog)
+        elsif ak == 2
+            sd = parse_struct(pr)
+            _h = structdef_set_layout_c(sd, 1)
+            _s = vec_push(prog_structs(prog), sd)
+            parse_program_go(pr, prog)
+        else
+            prog
     elsif k == TK_IMPORT()
         _i = p_advance(pr)
         path = parse_import_path(pr)

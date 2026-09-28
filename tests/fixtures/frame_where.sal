@@ -1,0 +1,9 @@
+frame Rows
+    val: F32
+
+fn main() -> Int ! alloc
+    v = tensor[[1.0, 2.0, 3.0]]
+    r = Rows(v)
+    mask = v != 2.0
+    _ = where(r, mask)
+    0

@@ -1394,6 +1394,32 @@ fn lower_expr(
                 });
                 return dest;
             }
+            if fname == "where" && arg_names.len() == 2 {
+                if let Some(frame_ty) = frame_name_for_where(&args[0], strings) {
+                    let frame_ssa = arg_names[0].clone();
+                    let mask_ssa = arg_names[1].clone();
+                    if let Some(info) = tensor_info_for_ssa(&mask_ssa, env, tensors) {
+                        let len = tensor_len_operand(
+                            &info,
+                            &mask_ssa,
+                            dim_params,
+                            instructions,
+                            counter,
+                        );
+                        instructions.push(IrInst::Call {
+                            dest: Some(dest.clone()),
+                            func: "sal_where".into(),
+                            args: vec![
+                                frame_ssa,
+                                mask_ssa,
+                                len,
+                                format!("\"{frame_ty}\""),
+                            ],
+                        });
+                        return dest;
+                    }
+                }
+            }
             let func_name = runtime_call_name(&fname, fn_names);
             if fname == "matmul" && arg_names.len() >= 2 {
                 let lhs = arg_names[0].clone();
@@ -1742,6 +1768,30 @@ fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
     match base {
         Expr::Ident { name, .. } => strings.struct_types.get(name).cloned(),
         _ => None,
+    }
+}
+
+fn frame_name_for_where(expr: &Expr, strings: &StringEnv) -> Option<String> {
+    match expr {
+        Expr::Ident { name, .. } => strings.struct_types.get(name).cloned(),
+        Expr::Call { func, .. } => {
+            let Expr::Ident { name, .. } = func.as_ref() else {
+                return None;
+            };
+            if strings.structs.contains_key(name) {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }
+        _ => strings.expr_type(expr).and_then(|ty| {
+            if let crate::ast::Type::Named { name, args, .. } = ty {
+                if args.is_empty() && strings.structs.contains_key(name) {
+                    return Some(name.clone());
+                }
+            }
+            None
+        }),
     }
 }
 
