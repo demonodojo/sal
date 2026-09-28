@@ -26,6 +26,7 @@ fn corpus_files() -> Vec<PathBuf> {
         "corpus/instrument_oob.sal",
         "corpus/instrument_leak.sal",
         "corpus/string_plus.sal",
+        "corpus/newtypes.sal",
         "examples/hello.sal",
         "examples/forward.sal",
     ]
@@ -536,6 +537,69 @@ fn incremental_ir_cache_hit_on_second_emit() {
             .unwrap_or(false)
     });
     assert!(any_miss, "changed source must create a miss meta");
+}
+
+/// Stage2 runs the selfhost C backend (`emit_c_*`). A regression there once
+/// lowered `StrPath.raw + "/" + key` with a bogus left operand, wrote cache
+/// paths under `/`, and segfaulted in `write_file`. This test ensures stage2
+/// actually populates `SAL_SELFHOST_CACHE` with `.ir`/`.meta` artifacts.
+#[test]
+fn stage2_emit_ir_writes_selfhost_cache() {
+    let stage1 = compile_selfhost(false);
+    let stage2 = compile_stage2(&stage1);
+    let prog = write_temp_sal("fn main() -> Int\n    13\n");
+    let cache = unique_cache_dir("stage2-cache");
+
+    let out = Command::new(&stage2)
+        .arg(&prog)
+        .env("SAL_SELFHOST_CACHE", &cache)
+        .env("SAL_PROJECT_ROOT", root())
+        .current_dir(root())
+        .output()
+        .expect("stage2 emit");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stage2 failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8(out.stdout).expect("utf8");
+    assert!(ir.contains("value: 13"), "got: {ir}");
+
+    let ir_files: Vec<_> = std::fs::read_dir(&cache)
+        .expect("cache dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("ir"))
+        .collect();
+    assert!(
+        !ir_files.is_empty(),
+        "stage2 must write at least one .ir under SAL_SELFHOST_CACHE ({})",
+        cache.display()
+    );
+    for p in &ir_files {
+        assert!(
+            p.starts_with(&cache),
+            "cache artifact must live under SAL_SELFHOST_CACHE: {}",
+            p.display()
+        );
+        let body = std::fs::read_to_string(p).expect("read cached ir");
+        assert!(
+            body.contains("fn main:"),
+            "cached .ir must contain lowered IR: {}",
+            p.display()
+        );
+    }
+
+    let metas: Vec<_> = std::fs::read_dir(&cache)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("meta"))
+        .collect();
+    assert!(!metas.is_empty(), "expected .meta after stage2 emit");
+    let meta0 = std::fs::read_to_string(&metas[0]).expect("meta");
+    assert!(meta0.contains("hit=0"), "first emit must be miss: {meta0}");
 }
 
 #[test]

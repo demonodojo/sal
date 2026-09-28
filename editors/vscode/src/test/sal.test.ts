@@ -75,6 +75,40 @@ test("E_PARSE del doble cae en el span de bytes", async () => {
   assert.deepEqual(calls, [["sal", "check", "/tmp/main.sal", "--error-format", "json"]]);
 });
 
+test("E_TYPE de concatenación nominal cae en el span con hint", async () => {
+  const run: ProcessRunner = async () => ({
+    stdout: "",
+    stderr:
+      JSON.stringify({
+        code: "E_TYPE",
+        message: "string concatenation requires a String on the right",
+        span: { start: 4, end: 5, line: 1, col: 5 },
+        hint: "use str_from_int(...) or int_to_str(...)",
+      }) + "\n",
+    exitCode: 1,
+    notFound: false,
+  });
+  const src = "a + 1\n";
+  const outcome = await checkFile({
+    command: "sal",
+    filePath: "/tmp/plus.sal",
+    cwd: "/tmp",
+    text: src,
+    run,
+  });
+  assert.equal(outcome.diagnostics.length, 1);
+  const diag = outcome.diagnostics[0];
+  assert.equal(diag.code, "E_TYPE");
+  assert.match(diag.message, /String on the right/);
+  assert.equal(diag.hint, "use str_from_int(...) or int_to_str(...)");
+  assert.deepEqual(diag.range, {
+    startLine: 0,
+    startCharacter: 4,
+    endLine: 0,
+    endCharacter: 5,
+  });
+});
+
 test("un carácter multibyte ocupa sus bytes y sus unidades UTF-16", () => {
   const cafe = spanToRange("café", { start: 3, end: 5, line: 1, col: 4 });
   assert.deepEqual(cafe, {

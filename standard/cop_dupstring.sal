@@ -3,7 +3,7 @@ import patch
 import util
 
 fn CODE_DUP() -> Int ! alloc
-    strdup("Style/DupString")
+    str_as_int(strdup("Style/DupString"))
 
 fn cop_dupstring(src: Int, toks: Int) -> Int ! alloc
     offs = vec_new()
@@ -32,9 +32,9 @@ fn cop_dup_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
                                     if tok_kind(t4) == TK_RPAREN()
                                         start = tok_start(t)
                                         end = tok_end(t4)
-                                        lit = str_slice(src, tok_start(t3), tok_end(t3))
-                                        fix = str_concat(strdup("d"), lit)
-                                        msg = strdup("use d\"…\" instead of strdup(\"…\")")
+                                        lit = str_as_int(str_slice(src, tok_start(t3), tok_end(t3)))
+                                        fix = str_as_int(str_concat(strdup("d"), lit))
+                                        msg = str_as_int(strdup("use d\"…\" instead of strdup(\"…\")"))
                                         o = off_new(CODE_DUP(), msg, start, end, fix)
                                         _p = vec_push(offs, o)
                                         free(name)

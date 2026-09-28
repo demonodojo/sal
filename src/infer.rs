@@ -280,13 +280,22 @@ fn check_expr(
             let lt = check_expr(left, env, types, entries)?;
             let rt = check_expr(right, env, types, entries)?;
             match op {
-                // Left is String: concat. The right operand is passed like the
-                // second argument of str_concat / str_append and need not be String.
-                BinOp::Add if is_string_type(&lt) => Type::Named {
-                    name: "String".into(),
-                    args: vec![],
-                    span: *span,
-                },
+                // String + String: concat. Nominal on both sides; `str_from_int`
+                // is the explicit bridge for a handle held in an Int.
+                BinOp::Add if is_string_type(&lt) => {
+                    if !is_string_type(&rt) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            "string concatenation requires a String on the right; use str_from_int(...) or int_to_str(...)",
+                            *span,
+                        )]);
+                    }
+                    Type::Named {
+                        name: "String".into(),
+                        args: vec![],
+                        span: *span,
+                    }
+                }
                 BinOp::Add if is_string_type(&rt) => {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -456,8 +465,30 @@ fn check_expr(
                 for st in &else_block.stmts {
                     check_stmt(st, &mut else_env, types, entries)?;
                 }
-                if let Some(t) = &else_block.tail {
-                    check_expr(t, &else_env, types, entries)?;
+                let else_ty = if let Some(t) = &else_block.tail {
+                    check_expr(t, &else_env, types, entries)?
+                } else {
+                    Type::Named {
+                        name: "Int".into(),
+                        args: vec![],
+                        span: *span,
+                    }
+                };
+                if !types_compatible(&then_ty, &else_ty) {
+                    let err_span = else_block
+                        .tail
+                        .as_ref()
+                        .map(|t| t.span())
+                        .unwrap_or(*span);
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!(
+                            "expected {}, found {}",
+                            type_name(&then_ty),
+                            type_name(&else_ty)
+                        ),
+                        err_span,
+                    )]);
                 }
                 then_ty
             } else {
@@ -982,12 +1013,16 @@ fn infer_call(
             for a in args {
                 check_expr(a, env, types, entries)?;
             }
+            let elem = type_args.iter().find_map(|a| match a {
+                TypeArg::Type(t) => Some(t.clone()),
+                TypeArg::Dim(_) => None,
+            });
             Ok(list_type(
-                Type::Named {
+                elem.unwrap_or(Type::Named {
                     name: "Int".into(),
                     args: vec![],
                     span,
-                },
+                }),
                 span,
             ))
         }

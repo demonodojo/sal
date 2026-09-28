@@ -243,22 +243,42 @@ fn main() -> String ! alloc
 }
 
 #[test]
-fn string_plus_right_may_be_int() {
-    expect_ok(
+fn string_plus_right_must_be_string() {
+    expect_code(
         r#"
 fn main() -> String ! alloc
     v = vec_new()
     _p = vec_push(v, d"z")
     d"a" + vec_get(v, 0)
 "#,
+        ErrorCode::EType,
+    );
+    expect_code(
+        r#"
+fn join(s: String, n: Int) -> String ! alloc
+    s + n
+"#,
+        ErrorCode::EType,
     );
 }
 
 #[test]
-fn string_plus_var_plus_int_requires_alloc() {
+fn string_plus_right_from_int_ok() {
+    expect_ok(
+        r#"
+fn main() -> String ! alloc
+    v = vec_new()
+    _p = vec_push(v, d"z")
+    d"a" + str_from_int(vec_get(v, 0))
+"#,
+    );
+}
+
+#[test]
+fn string_plus_var_requires_alloc() {
     expect_code(
         r#"
-fn join(s: String, n: Int, m: Int) -> String
+fn join(s: String, n: String, m: String) -> String
     s + n + m
 "#,
         ErrorCode::EEffect,
@@ -266,11 +286,67 @@ fn join(s: String, n: Int, m: Int) -> String
 }
 
 #[test]
-fn string_plus_var_plus_int_ok() {
+fn string_plus_var_ok() {
     expect_ok(
         r#"
-fn join(s: String, n: Int, m: Int) -> String ! alloc
+fn join(s: String, n: String, m: String) -> String ! alloc
     s + n + m
+"#,
+    );
+}
+
+#[test]
+fn string_plus_does_not_move_left() {
+    expect_ok(
+        r#"
+fn twice(s: String) -> String ! alloc
+    a = s + "x"
+    b = s + "y"
+    a + b
+"#,
+    );
+}
+
+#[test]
+fn string_param_only_in_plus_is_borrow() {
+    let prog = parse(
+        r#"
+fn show(s: String) -> String ! alloc
+    s + "!"
+"#,
+    )
+    .unwrap();
+    let inferred = infer_param_modes(&prog);
+    let Item::Fn(f) = &inferred.items[0] else { panic!("fn") };
+    assert_eq!(f.params[0].mode, ParamMode::Borrow, "s: String borrow");
+}
+
+#[test]
+fn string_accumulator_param_is_take() {
+    let prog = parse(
+        r#"
+fn go(acc: String, piece: String) -> String ! alloc
+    acc = acc + piece
+    acc
+"#,
+    )
+    .unwrap();
+    let inferred = infer_param_modes(&prog);
+    let Item::Fn(f) = &inferred.items[0] else { panic!("fn") };
+    assert_eq!(f.params[0].mode, ParamMode::Take, "acc is appended in place");
+    assert_eq!(f.params[1].mode, ParamMode::Borrow, "piece is only read");
+}
+
+#[test]
+fn struct_string_field_plus_ok() {
+    expect_ok(
+        r#"
+struct Msg
+    text: String
+    n: Int
+
+fn show(m: Msg) -> String ! alloc
+    m.text + "!"
 "#,
     );
 }
@@ -390,6 +466,19 @@ fn main() -> Int
 }
 
 #[test]
+fn let_int_from_string_binding_is_etype() {
+    expect_code(
+        r#"
+fn main() -> Int
+    s = d"hi"
+    let n: Int = s
+    0
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
 fn unknown_type_name_is_etype() {
     expect_code(
         r#"
@@ -400,6 +489,7 @@ fn main(x: NotARealType) -> Int
     );
 }
 
+#[test]
 fn struct_field_int_ok() {
     let src = r#"
 struct User
@@ -485,20 +575,19 @@ fn prelude_parses() {
 }
 
 #[test]
-fn lambda_move_string_then_use_is_emoved() {
-    expect_code(
+fn lambda_string_handle_stays_usable() {
+    expect_ok(
         r#"
 fn main() -> String
     s = "hi"
     f = x => consume(s)
     s
 "#,
-        ErrorCode::EMoved,
     );
 }
 
 #[test]
-fn string_param_passed_to_consumer_is_take() {
+fn string_param_passed_to_consumer_is_borrow() {
     let src = r#"
 fn sink(s: String) -> Int
     0
@@ -515,11 +604,11 @@ fn give(s: String) -> Int
             _ => None,
         })
         .expect("give");
-    assert_eq!(give.params[0].mode, ParamMode::Take);
+    assert_eq!(give.params[0].mode, ParamMode::Borrow);
     let formatted = format_program(&prog);
     assert!(
-        formatted.contains("s: String take"),
-        "expected take in formatted give, got:\n{formatted}"
+        formatted.contains("s: String borrow"),
+        "expected borrow in formatted give, got:\n{formatted}"
     );
 }
 

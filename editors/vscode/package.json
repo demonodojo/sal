@@ -1,8 +1,8 @@
 {
   "name": "sal",
   "displayName": "sal",
-  "description": "Editar programas sal: resaltado, diagnósticos del compilador y de standard, formato e ir a la definición de funciones.",
-  "version": "0.1.0",
+  "description": "Editar programas sal: resaltado, diagnósticos del compilador (E_*) y de standard (Style/*), formato e ir a la definición de funciones.",
+  "version": "0.1.1",
   "private": true,
   "publisher": "sal",
   "icon": "icons/sal.png",

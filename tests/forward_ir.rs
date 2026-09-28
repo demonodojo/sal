@@ -56,9 +56,9 @@ fn forward_single_fused_region() {
 }
 
 #[test]
-fn string_plus_nonstr_lowers_like_concat_then_append() {
+fn string_plus_lowers_concat_then_append() {
     let src = r#"
-fn join(s: String, n: Int, m: Int) -> String ! alloc
+fn join(s: String, n: String, m: String) -> String ! alloc
     s + n + m
 "#;
     let p = parse(src).expect("parse");
@@ -74,10 +74,123 @@ fn join(s: String, n: Int, m: Int) -> String ! alloc
     );
     assert!(
         join.contains("sal_str_append"),
-        "later + must be str_append and accept a non-String right operand:\n{text}"
+        "later + must be str_append on the temporary:\n{text}"
     );
     assert!(
         !join.contains("Binary"),
         "string + must not lower to integer add:\n{text}"
+    );
+    assert!(
+        !join.contains("sal_free"),
+        "operands owned by bindings are not freed by +:\n{text}"
+    );
+}
+
+fn lower_text(src: &str) -> String {
+    let p = parse(src).expect("parse");
+    ir_to_text(&lower_program(&p))
+}
+
+#[test]
+fn string_plus_typed_left_from_call_and_field() {
+    // The decision is infer's type of the left operand, not the syntax.
+    let by_call = lower_text(
+        r#"
+fn tag(x: Int) -> String ! alloc
+    str_from_int(x) + "a"
+"#,
+    );
+    assert!(
+        by_call.contains("sal_str_concat") && !by_call.contains("Binary"),
+        "str_from_int(x) + lit must be a concat:\n{by_call}"
+    );
+    assert!(
+        !by_call.contains("sal_free"),
+        "str_from_int is a cast, not a fresh temp:\n{by_call}"
+    );
+
+    let by_field = lower_text(
+        r#"
+struct Msg
+    text: String
+    n: Int
+
+fn show(m: Msg) -> String ! alloc
+    m.text + "!"
+"#,
+    );
+    assert!(
+        by_field.contains("sal_str_concat") && !by_field.contains("Binary"),
+        "m.text + lit must be a concat:\n{by_field}"
+    );
+}
+
+#[test]
+fn string_accumulator_appends_in_place() {
+    let text = lower_text(
+        r#"
+fn go(acc: String, piece: String) -> String ! alloc
+    acc = acc + piece + "\n"
+    acc
+"#,
+    );
+    assert!(
+        text.contains("sal_str_append"),
+        "acc = acc + ... must append:\n{text}"
+    );
+    assert!(
+        !text.contains("sal_str_concat"),
+        "acc = acc + ... must not copy acc:\n{text}"
+    );
+    // Not the accumulator pattern: `x = y + ...` copies `y`.
+    let copy = lower_text(
+        r#"
+fn go(a: String, b: String) -> String ! alloc
+    a = b + a
+    a
+"#,
+    );
+    assert!(
+        copy.contains("sal_str_concat"),
+        "a = b + a must start with a copy of b:\n{copy}"
+    );
+}
+
+#[test]
+fn string_plus_frees_fresh_right_temporaries() {
+    let fresh = lower_text(
+        r#"
+fn show(s: String, n: Int) -> String ! alloc
+    s + int_to_str(n)
+"#,
+    );
+    let concat_pos = fresh.find("sal_str_concat").expect("concat");
+    let free_pos = fresh.find("sal_free").expect("temp must be freed");
+    assert!(
+        concat_pos < free_pos,
+        "the int_to_str temp is freed after the concat:\n{fresh}"
+    );
+
+    let nested = lower_text(
+        r#"
+fn show(s: String, t: String, u: String) -> String ! alloc
+    s + (t + u)
+"#,
+    );
+    assert_eq!(
+        nested.matches("sal_free").count(),
+        1,
+        "the inner (t + u) temp is freed once:\n{nested}"
+    );
+
+    let cast = lower_text(
+        r#"
+fn show(s: String, h: Int) -> String ! alloc
+    s + str_from_int(h)
+"#,
+    );
+    assert!(
+        !cast.contains("sal_free"),
+        "str_from_int(h) is a borrowed handle, never freed:\n{cast}"
     );
 }

@@ -1,21 +1,30 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
-use crate::string_expr::{binary_add_is_string_concat_with, StringEnv};
+use crate::infer::InferOutput;
+use crate::string_expr::StringEnv;
 
+/// Effects with the types `infer_program` gives this program on its own.
 pub fn check_effects(prog: &Program) -> DiagResult<()> {
-    let fns = StringEnv::from_program(prog);
+    check_effects_typed(prog, &StringEnv::from_program_inferred(prog))
+}
+
+/// Effects with the types infer already produced (module graphs included).
+pub fn check_effects_with_infer(prog: &Program, out: &InferOutput) -> DiagResult<()> {
+    check_effects_typed(prog, &StringEnv::from_program(prog).with_infer(out))
+}
+
+fn check_effects_typed(prog: &Program, env: &StringEnv) -> DiagResult<()> {
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            check_fn_effects(f, &fns)?;
+            check_fn_effects(f, env)?;
         }
     }
     Ok(())
 }
 
-fn check_fn_effects(f: &FnDef, fns: &StringEnv) -> DiagResult<()> {
+fn check_fn_effects(f: &FnDef, env: &StringEnv) -> DiagResult<()> {
     let mut used = EffectsUsed::default();
-    let mut strings = fns.clone();
-    strings.seed_params(&f.params);
+    let mut strings = env.clone();
     scan_block(&f.body, &mut used, &mut strings);
     for need in used.into_list() {
         if !f.effects.contains(&need) {
@@ -144,7 +153,7 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed, strings: &mut StringEnv) {
         Expr::Binary { left, right, .. } => {
             scan_expr(left, used, strings);
             scan_expr(right, used, strings);
-            if binary_add_is_string_concat_with(e, strings) {
+            if strings.add_is_string_concat(e) {
                 used.alloc = true;
             }
         }

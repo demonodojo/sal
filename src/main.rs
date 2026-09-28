@@ -10,8 +10,9 @@ use sal_compiler::diag::Diagnostic;
 use sal_compiler::fmt::format_program;
 use sal_compiler::fuse::fuse_module;
 use sal_compiler::infer::infer_program;
-use sal_compiler::ir::{ir_to_text, lower_program, lower_program_with_callables};
-use sal_compiler::modules::{callable_fn_names, resolve_module_graph};
+use sal_compiler::ir::{ir_to_text, lower_program, lower_program_with_callables_env};
+use sal_compiler::modules::{callable_fn_names, infer_module, resolve_module_graph};
+use sal_compiler::string_expr::StringEnv;
 use sal_compiler::llvm::{collect_host_tensors, emit_llvm_with_tensors, LlvmOptions};
 use sal_compiler::parser::parse;
 use sal_compiler::typed::TypedProgram;
@@ -167,7 +168,18 @@ fn main() {
                 };
                 let root_mod = graph.order.last().expect("empty module graph");
                 let callables = callable_fn_names(root_mod, &graph);
-                let mut ir = lower_program_with_callables(&root_mod.program, &callables);
+                let infer_out = match infer_module(root_mod, &graph) {
+                    Ok(o) => o,
+                    Err(diags) => {
+                        print_diags(&diags, "human");
+                        std::process::exit(1);
+                    }
+                };
+                let graph_progs: Vec<&sal_compiler::ast::Program> =
+                    graph.order.iter().map(|m| &m.program).collect();
+                let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
+                let mut ir =
+                    lower_program_with_callables_env(&root_mod.program, &callables, strings);
                 fuse_module(&mut ir);
                 print!("{}", ir_to_text(&ir));
                 return;

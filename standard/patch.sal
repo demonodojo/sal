@@ -32,11 +32,11 @@ fn off_has_fix(o: Int) -> Int ! alloc
         1
 
 fn patch_one(src: Int, start: Int, end: Int, repl: Int) -> Int ! alloc
-    left = str_slice(src, 0, start)
-    right = str_slice(src, end, str_len(src))
+    left = str_as_int(str_slice(src, 0, start))
+    right = str_as_int(str_slice(src, end, str_len(src)))
     mid = repl
-    acc = str_concat(left, mid)
-    str_concat(acc, right)
+    acc = str_as_int(str_concat(left, mid))
+    str_as_int(str_concat(acc, right))
 
 fn pick_best_fix(offs: Int) -> Int ! alloc
     n = vec_len(offs)

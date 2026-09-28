@@ -6,18 +6,20 @@ use std::process::Command;
 use crate::ast::{Item, Program};
 use crate::device::check_devices;
 use crate::diag::{Diagnostic, ErrorCode};
-use crate::effects::check_effects;
+use crate::effects::check_effects_with_infer;
 use crate::fuse::fuse_module;
 use crate::incremental::{
     cache_key_with_deps, cache_path, import_graph_digest, is_cache_hit, ll_cache_path,
     load_cached_meta, obj_cache_path, store_cached_meta, CacheMeta, CompileFlags,
 };
 use crate::infer::infer_program;
-use crate::ir::{ir_to_text, lower_program_with_callables};
+use crate::ir::{ir_to_text, lower_program_with_callables_env};
+use crate::string_expr::StringEnv;
 use crate::layout::collect_struct_defs;
 use crate::llvm::{collect_host_tensors, emit_llvm_with_externs, LlvmOptions};
 use crate::modules::{
-    callable_fn_names, infer_module, resolve_module_graph, LoadedModule, ModuleGraph,
+    callable_fn_names, check_module_semantics, infer_module, resolve_module_graph, LoadedModule,
+    ModuleGraph,
 };
 use crate::ownership::check_ownership;
 use crate::parser::parse;
@@ -73,10 +75,11 @@ fn compile_program_at(
     }
 
     let infer_out = infer_program(program)?;
-    check_effects(program)?;
+    check_effects_with_infer(program, &infer_out)?;
     check_ownership(program)?;
     check_devices(program)?;
 
+    let strings_env = StringEnv::from_program(program).with_infer(&infer_out);
     let typed = TypedProgram::from_program(program.clone(), infer_out.expr_types_by_fn);
 
     let flags = CompileFlags {
@@ -100,6 +103,7 @@ fn compile_program_at(
         &key,
         &fn_names,
         &HashMap::new(),
+        &strings_env,
         opts,
         true,
     )?;
@@ -118,10 +122,7 @@ fn compile_file_with_imports(
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
     let graph = resolve_module_graph(path, &opts.project_root)?;
     for m in &graph.order {
-        infer_module(m, &graph)?;
-        check_effects(&m.program)?;
-        check_ownership(&m.program)?;
-        check_devices(&m.program)?;
+        check_module_semantics(m, &graph)?;
     }
 
     let root = graph
@@ -145,6 +146,8 @@ fn compile_file_with_imports(
 
     for m in &graph.order {
         let infer_m = infer_module(m, &graph)?;
+        let graph_progs: Vec<&Program> = graph.order.iter().map(|x| &x.program).collect();
+        let strings_env = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_m);
         let typed_m = TypedProgram::from_program(m.program.clone(), infer_m.expr_types_by_fn);
         let deps_m = import_graph_digest(&m.program, &m.path, &graph.project_root);
         let is_root = fs::canonicalize(&m.path).unwrap_or_else(|_| m.path.clone())
@@ -162,6 +165,7 @@ fn compile_file_with_imports(
             &key_m,
             &callables,
             &externs,
+            &strings_env,
             opts,
             is_root,
         )?;
@@ -234,6 +238,7 @@ fn compile_single_module(
     key: &str,
     callables: &HashMap<String, ()>,
     externs: &HashMap<String, usize>,
+    strings_env: &StringEnv,
     opts: &CompileOptions,
     emit_entry_main: bool,
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
@@ -243,7 +248,7 @@ fn compile_single_module(
     let cache_hit = is_cache_hit(&meta_file, key);
     let prev_meta = load_cached_meta(&meta_file);
 
-    let mut ir = lower_program_with_callables(program, callables);
+    let mut ir = lower_program_with_callables_env(program, callables, strings_env.clone());
     fuse_module(&mut ir);
     let ir_text = ir_to_text(&ir);
 

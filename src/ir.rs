@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::*;
 use crate::layout::{enum_variant_index, is_transparent_struct, struct_field_index};
 use crate::string_expr::{
-    binary_add_is_string_concat_with, binary_add_uses_append_with, StringEnv,
+    add_chain_leftmost, add_right_is_fresh_temp, is_string_type, StringEnv,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,6 +99,22 @@ pub enum IrInst {
         left: String,
         right: String,
     },
+    /// `match` on an enum: dispatch on the low tag byte.
+    Switch {
+        scrut: String,
+        arms: Vec<SwitchArm>,
+        default_body: Vec<IrInst>,
+        default_val: String,
+        dest: String,
+    },
+}
+
+/// One `match` arm lowered to a switch case.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwitchArm {
+    pub tag: i64,
+    pub body: Vec<IrInst>,
+    pub value: String,
 }
 
 /// Assignment merged at the join of an `if`.
@@ -162,18 +178,45 @@ pub fn lower_program_with_callables(
     prog: &Program,
     callable_fns: &HashMap<String, ()>,
 ) -> IrModule {
+    lower_program_with_callables_env(prog, callable_fns, StringEnv::from_program_inferred(prog))
+}
+
+/// `x = x + ...` where the chain is a string concatenation starting at `x`.
+fn assign_accumulates_string(target: &str, value: &Expr, strings: &StringEnv) -> bool {
+    strings.add_is_string_concat(value)
+        && matches!(add_chain_leftmost(value), Expr::Ident { name, .. } if name == target)
+}
+
+pub fn lower_program_with_callables_env(
+    prog: &Program,
+    callable_fns: &HashMap<String, ()>,
+    strings: StringEnv,
+) -> IrModule {
     let fn_names = callable_fns;
-    let strings = StringEnv::from_program(prog);
+    let mut param_modes: HashMap<String, Vec<ParamMode>> = HashMap::new();
+    for item in &prog.items {
+        if let Item::Fn(f) = item {
+            param_modes.insert(
+                f.name.clone(),
+                f.params.iter().map(|p| p.mode).collect(),
+            );
+        }
+    }
     let mut functions = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            functions.push(lower_fn(f, &fn_names, &strings));
+            functions.push(lower_fn(f, &fn_names, &strings, &param_modes));
         }
     }
     IrModule { functions }
 }
 
-fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>, base: &StringEnv) -> IrFunction {
+fn lower_fn(
+    f: &FnDef,
+    fn_names: &HashMap<String, ()>,
+    base: &StringEnv,
+    param_modes: &HashMap<String, Vec<ParamMode>>,
+) -> IrFunction {
     let mut instructions = Vec::new();
     let mut regions = Vec::new();
     let mut counter = 0u32;
@@ -233,6 +276,21 @@ fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>, base: &StringEnv) -> IrFu
         );
         instructions.push(IrInst::Return { value: v });
     }
+    let ret = match instructions.last() {
+        Some(IrInst::Return { .. }) => instructions.pop(),
+        _ => None,
+    };
+    emit_struct_string_drops(
+        f,
+        &mut instructions,
+        &env,
+        &mut counter,
+        &strings,
+        param_modes,
+    );
+    if let Some(r) = ret {
+        instructions.push(r);
+    }
 
     IrFunction {
         name: f.name.clone(),
@@ -240,6 +298,180 @@ fn lower_fn(f: &FnDef, fn_names: &HashMap<String, ()>, base: &StringEnv) -> IrFu
         instructions,
         regions,
         dim_params,
+    }
+}
+
+fn emit_struct_string_drops(
+    f: &FnDef,
+    instructions: &mut Vec<IrInst>,
+    env: &HashMap<String, String>,
+    counter: &mut u32,
+    strings: &StringEnv,
+    param_modes: &HashMap<String, Vec<ParamMode>>,
+) {
+    let moved = moved_bindings(f, param_modes);
+    let own_mode: HashMap<&str, ParamMode> = f
+        .params
+        .iter()
+        .map(|p| (p.name.as_str(), p.mode))
+        .collect();
+    let mut names: Vec<String> = strings.struct_types.keys().cloned().collect();
+    names.sort();
+    for name in names {
+        if moved.contains(&name) {
+            continue;
+        }
+        if let Some(mode) = own_mode.get(name.as_str()) {
+            if *mode != ParamMode::Take {
+                continue;
+            }
+        }
+        let Some(sn) = strings.struct_types.get(&name).cloned() else {
+            continue;
+        };
+        let Some(sdef) = strings.structs.get(&sn) else {
+            continue;
+        };
+        let Some(base) = env.get(&name).cloned() else {
+            continue;
+        };
+        let transparent = is_transparent_struct(sdef);
+        for (i, field) in sdef.fields.iter().enumerate() {
+            if !is_string_type(&field.ty) {
+                continue;
+            }
+            let ssa = if transparent {
+                base.clone()
+            } else {
+                *counter += 1;
+                let d = format!("t{counter}");
+                instructions.push(IrInst::Extract {
+                    dest: d.clone(),
+                    base: base.clone(),
+                    struct_name: sn.clone(),
+                    field_index: i as u32,
+                });
+                d
+            };
+            instructions.push(IrInst::Call {
+                dest: None,
+                func: "sal_free".into(),
+                args: vec![ssa],
+            });
+        }
+    }
+}
+
+fn moved_bindings(f: &FnDef, param_modes: &HashMap<String, Vec<ParamMode>>) -> HashSet<String> {
+    let mut moved = HashSet::new();
+    collect_moved_block(&f.body, param_modes, &mut moved);
+    moved
+}
+
+fn collect_moved_block(
+    b: &Block,
+    param_modes: &HashMap<String, Vec<ParamMode>>,
+    moved: &mut HashSet<String>,
+) {
+    for st in &b.stmts {
+        collect_moved_stmt(st, param_modes, moved);
+    }
+    if let Some(t) = &b.tail {
+        if let Expr::Ident { name, .. } = t.as_ref() {
+            moved.insert(name.clone());
+        }
+        collect_moved_expr(t, param_modes, moved);
+    }
+}
+
+fn collect_moved_stmt(
+    st: &Stmt,
+    param_modes: &HashMap<String, Vec<ParamMode>>,
+    moved: &mut HashSet<String>,
+) {
+    match st {
+        Stmt::Let { init, .. } => {
+            if let Expr::Ident { name, .. } = init {
+                moved.insert(name.clone());
+            }
+            collect_moved_expr(init, param_modes, moved);
+        }
+        Stmt::Assign { value, .. } => {
+            if let Expr::Ident { name, .. } = value {
+                moved.insert(name.clone());
+            }
+            collect_moved_expr(value, param_modes, moved);
+        }
+        Stmt::Return { value, .. } => {
+            if let Some(v) = value {
+                if let Expr::Ident { name, .. } = v {
+                    moved.insert(name.clone());
+                }
+                collect_moved_expr(v, param_modes, moved);
+            }
+        }
+        Stmt::Expr(e) => collect_moved_expr(e, param_modes, moved),
+        Stmt::While { cond, body, .. } => {
+            collect_moved_expr(cond, param_modes, moved);
+            collect_moved_block(body, param_modes, moved);
+        }
+    }
+}
+
+fn collect_moved_expr(
+    e: &Expr,
+    param_modes: &HashMap<String, Vec<ParamMode>>,
+    moved: &mut HashSet<String>,
+) {
+    match e {
+        Expr::Call { func, args, .. } => {
+            if let Expr::Ident { name, .. } = func.as_ref() {
+                if let Some(modes) = param_modes.get(name) {
+                    for (i, a) in args.iter().enumerate() {
+                        if modes.get(i) == Some(&ParamMode::Take) {
+                            if let Expr::Ident { name: arg, .. } = a {
+                                moved.insert(arg.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            for a in args {
+                collect_moved_expr(a, param_modes, moved);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_moved_expr(left, param_modes, moved);
+            collect_moved_expr(right, param_modes, moved);
+        }
+        Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } | Expr::Field { base: expr, .. } => {
+            collect_moved_expr(expr, param_modes, moved);
+        }
+        Expr::If {
+            cond,
+            then_block,
+            elsifs,
+            else_block,
+            ..
+        } => {
+            collect_moved_expr(cond, param_modes, moved);
+            collect_moved_block(then_block, param_modes, moved);
+            for arm in elsifs {
+                collect_moved_expr(&arm.cond, param_modes, moved);
+                collect_moved_block(&arm.body, param_modes, moved);
+            }
+            if let Some(b) = else_block {
+                collect_moved_block(b, param_modes, moved);
+            }
+        }
+        Expr::Block(b) | Expr::On { body: b, .. } => collect_moved_block(b, param_modes, moved),
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_moved_expr(scrutinee, param_modes, moved);
+            for arm in arms {
+                collect_moved_expr(&arm.body, param_modes, moved);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -378,7 +610,74 @@ fn lower_stmt(
             strings.note_init(name, ty.as_ref(), init);
         }
         Stmt::Assign { target, value, .. } => {
+            if let Expr::Field { base, field, .. } = target {
+                if let Expr::Ident { name, .. } = base.as_ref() {
+                    if let Some(sn) = strings.struct_types.get(name).cloned() {
+                        if let Some(sdef) = strings.structs.get(&sn).cloned() {
+                            if is_transparent_struct(&sdef) {
+                                let v = lower_expr(
+                                    value,
+                                    instructions,
+                                    env,
+                                    counter,
+                                    regions,
+                                    tensors,
+                                    dim_params,
+                                    fn_names,
+                                    strings,
+                                );
+                                env.insert(name.clone(), v);
+                                return;
+                            }
+                            if let Some(idx) = struct_field_index(&sdef, field) {
+                                let new_val = lower_expr(
+                                    value,
+                                    instructions,
+                                    env,
+                                    counter,
+                                    regions,
+                                    tensors,
+                                    dim_params,
+                                    fn_names,
+                                    strings,
+                                );
+                                let base_ssa = env.get(name).cloned().unwrap_or_else(|| "0".into());
+                                let mut field_ssas = Vec::new();
+                                for i in 0..sdef.fields.len() {
+                                    if i == idx {
+                                        field_ssas.push(new_val.clone());
+                                    } else {
+                                        *counter += 1;
+                                        let d = format!("t{counter}");
+                                        instructions.push(IrInst::Extract {
+                                            dest: d.clone(),
+                                            base: base_ssa.clone(),
+                                            struct_name: sn.clone(),
+                                            field_index: i as u32,
+                                        });
+                                        field_ssas.push(d);
+                                    }
+                                }
+                                *counter += 1;
+                                let dest = format!("t{counter}");
+                                instructions.push(IrInst::Aggregate {
+                                    dest: dest.clone(),
+                                    struct_name: sn,
+                                    fields: field_ssas,
+                                });
+                                env.insert(name.clone(), dest);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
             if let Expr::Ident { name, .. } = target {
+                strings.accumulate = if assign_accumulates_string(name, value, strings) {
+                    Some(name.clone())
+                } else {
+                    None
+                };
                 let v = lower_expr(
                     value,
                     instructions,
@@ -390,6 +689,7 @@ fn lower_stmt(
                     fn_names,
                     strings,
                 );
+                strings.accumulate = None;
                 register_let_tensor(name, None, value, &v, tensors);
                 env.insert(name.clone(), v);
                 strings.note_init(name, None, value);
@@ -674,6 +974,36 @@ fn lower_expr_simple(
     )
 }
 
+/// Runtime container kind: Int 0, Float 1, Bool 2, String 3.
+fn scalar_kind(ty: &crate::ast::Type) -> i64 {
+    match ty {
+        crate::ast::Type::Named { name, .. } => match name.as_str() {
+            "Float" => 1,
+            "Bool" => 2,
+            "String" => 3,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+fn container_kinds(fname: &str, type_args: &[crate::ast::TypeArg]) -> Vec<i64> {
+    let kinds: Vec<i64> = type_args
+        .iter()
+        .filter_map(|a| match a {
+            crate::ast::TypeArg::Type(t) => Some(scalar_kind(t)),
+            crate::ast::TypeArg::Dim(_) => None,
+        })
+        .collect();
+    if fname == "dict_new" {
+        let k = kinds.first().copied().unwrap_or(0);
+        let v = kinds.get(1).copied().unwrap_or(0);
+        vec![k, v]
+    } else {
+        vec![kinds.first().copied().unwrap_or(0)]
+    }
+}
+
 fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     // List ops always hit the runtime; prelude bodies are signatures only.
     if matches!(
@@ -816,12 +1146,23 @@ fn lower_expr(
             right,
             ..
         } => {
+            // `x = x + ...`: only the left spine of the chain may see the accumulator.
+            let acc = strings.accumulate.take();
+            let is_concat = *op == BinOp::Add && strings.add_is_string_concat(e);
+            if is_concat && matches!(left.as_ref(), Expr::Binary { op: BinOp::Add, .. }) {
+                strings.accumulate = acc.clone();
+            }
             let l = lower_expr_simple(left, instructions, env, counter, tensors, fn_names, strings);
+            strings.accumulate = None;
             let r = lower_expr_simple(right, instructions, env, counter, tensors, fn_names, strings);
             *counter += 1;
             let dest = format!("t{counter}");
-            if *op == BinOp::Add && binary_add_is_string_concat_with(e, strings) {
-                let func = if binary_add_uses_append_with(e, strings) {
+            if is_concat {
+                let into_acc = matches!(
+                    (left.as_ref(), &acc),
+                    (Expr::Ident { name, .. }, Some(a)) if name == a
+                );
+                let func = if into_acc || strings.add_uses_append(e) {
                     "sal_str_append"
                 } else {
                     "sal_str_concat"
@@ -829,8 +1170,15 @@ fn lower_expr(
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),
                     func: func.into(),
-                    args: vec![l, r],
+                    args: vec![l, r.clone()],
                 });
+                if add_right_is_fresh_temp(right, strings) {
+                    instructions.push(IrInst::Call {
+                        dest: None,
+                        func: "sal_free".into(),
+                        args: vec![r],
+                    });
+                }
                 return dest;
             }
             let op_s = match op {
@@ -855,7 +1203,7 @@ fn lower_expr(
         }
         Expr::Call {
             func,
-            type_args: _,
+            type_args,
             args,
             ..
         } => {
@@ -886,6 +1234,25 @@ fn lower_expr(
                     });
                     return dest;
                 }
+            }
+            if fname == "list_new" || fname == "dict_new" {
+                let kinds = container_kinds(&fname, type_args);
+                let mut call_args = Vec::new();
+                for k in kinds {
+                    *counter += 1;
+                    let kd = format!("t{counter}");
+                    instructions.push(IrInst::ConstInt {
+                        dest: kd.clone(),
+                        value: k,
+                    });
+                    call_args.push(kd);
+                }
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: format!("sal_{fname}"),
+                    args: call_args,
+                });
+                return dest;
             }
             if let Some(sdef) = strings.structs.get(&fname) {
                 if sdef.type_params.is_empty() && arg_names.len() == sdef.fields.len() {
@@ -1190,8 +1557,7 @@ fn lower_expr(
                     }
                 }
             }
-            *counter += 1;
-            format!("t{counter}")
+            base_ssa
         }
         Expr::Match { scrutinee, arms, .. } => {
             let scrut = lower_expr_simple(
@@ -1258,6 +1624,25 @@ fn lower_match_chain(
         *counter += 1;
         return format!("t{counter}");
     }
+    if arms.iter().all(|a| {
+        matches!(
+            a.pattern,
+            Pattern::Variant { .. } | Pattern::Ident(_, _) | Pattern::Wild(_)
+        )
+    }) {
+        return lower_match_switch(
+            scrut,
+            arms,
+            instructions,
+            env,
+            counter,
+            regions,
+            tensors,
+            dim_params,
+            fn_names,
+            strings,
+        );
+    }
     let arm = &arms[0];
     let rest = &arms[1..];
     let (cond_ssa, mut arm_env) = match_arm_cond(&scrut, &arm.pattern, counter, instructions);
@@ -1312,6 +1697,100 @@ fn lower_match_chain(
         else_val,
         dest: dest.clone(),
         carried: Vec::new(),
+    });
+    dest
+}
+
+fn lower_match_switch(
+    scrut: String,
+    arms: &[MatchArm],
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+    regions: &mut Vec<FusedRegion>,
+    tensors: &mut HashMap<String, TensorInfo>,
+    dim_params: &[String],
+    fn_names: &HashMap<String, ()>,
+    strings: &mut StringEnv,
+) -> String {
+    let mut switch_arms = Vec::new();
+    let mut default_body = Vec::new();
+    let mut default_val = "0".to_string();
+    for arm in arms {
+        match &arm.pattern {
+            Pattern::Wild(_) => {
+                let mut arm_env = env.clone();
+                default_val = lower_expr(
+                    &arm.body,
+                    &mut default_body,
+                    &mut arm_env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    strings,
+                );
+            }
+            Pattern::Ident(_, _) => {
+                let mut arm_env = env.clone();
+                let mut body = Vec::new();
+                let value = lower_expr(
+                    &arm.body,
+                    &mut body,
+                    &mut arm_env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    strings,
+                );
+                switch_arms.push(SwitchArm {
+                    tag: 0,
+                    body,
+                    value,
+                });
+            }
+            Pattern::Variant { name, args, .. } => {
+                let tag = variant_tag_for_name(name) + 1;
+                let mut body = Vec::new();
+                let mut arm_env = env.clone();
+                if let Some(Pattern::Ident(bind, _)) = args.first() {
+                    *counter += 1;
+                    let payload = format!("t{counter}");
+                    body.push(IrInst::Binary {
+                        dest: payload.clone(),
+                        op: "div".into(),
+                        left: scrut.clone(),
+                        right: "256".into(),
+                    });
+                    arm_env.insert(bind.clone(), payload);
+                }
+                let value = lower_expr(
+                    &arm.body,
+                    &mut body,
+                    &mut arm_env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    strings,
+                );
+                switch_arms.push(SwitchArm { tag, body, value });
+            }
+            _ => {}
+        }
+    }
+    *counter += 1;
+    let dest = format!("t{counter}");
+    instructions.push(IrInst::Switch {
+        scrut,
+        arms: switch_arms,
+        default_body,
+        default_val,
+        dest: dest.clone(),
     });
     dest
 }

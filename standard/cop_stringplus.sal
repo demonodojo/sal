@@ -3,7 +3,7 @@ import patch
 import util
 
 fn CODE_PLUS() -> Int ! alloc
-    strdup("Style/StringPlus")
+    str_as_int(strdup("Style/StringPlus"))
 
 fn is_str_fun(name: Int) -> Int ! alloc
     if str_eq(name, "str_concat") == 1
@@ -35,7 +35,7 @@ fn next_non_nl(toks: Int, n: Int, i: Int) -> Int ! alloc
             i
 
 fn join_plus(parts: Int) -> Int ! alloc
-    join_plus_go(parts, 0, vec_len(parts), strdup(""))
+    join_plus_go(parts, 0, vec_len(parts), str_as_int(strdup("")))
 
 fn join_plus_go(parts: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -45,7 +45,7 @@ fn join_plus_go(parts: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         if i == 0
             join_plus_go(parts, i + 1, n, piece)
         else
-            mid = str_concat(str_concat(acc, strdup(" + ")), piece)
+            mid = str_as_int(str_concat(str_concat(acc, strdup(" + ")), piece))
             join_plus_go(parts, i + 1, n, mid)
 
 fn vec_from2(a: Int, b: Int) -> Int ! alloc
@@ -161,8 +161,8 @@ fn pack_ok(p: Int) -> Int ! alloc
     vec_get(p, 0)
 
 fn build_call_fix(src: Int, p: Int) -> Int ! alloc
-    a = str_slice(src, vec_get(p, 3), vec_get(p, 4))
-    b = str_slice(src, vec_get(p, 5), vec_get(p, 6))
+    a = str_as_int(str_slice(src, vec_get(p, 3), vec_get(p, 4)))
+    b = str_as_int(str_slice(src, vec_get(p, 5), vec_get(p, 6)))
     join_plus(vec_from2(a, b))
 
 fn try_assign_chain(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
@@ -192,8 +192,8 @@ fn try_assign_chain(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
                         pack
                     else
                         parts = vec_new()
-                        a = str_slice(src, vec_get(call, 3), vec_get(call, 4))
-                        b = str_slice(src, vec_get(call, 5), vec_get(call, 6))
+                        a = str_as_int(str_slice(src, vec_get(call, 3), vec_get(call, 4)))
+                        b = str_as_int(str_slice(src, vec_get(call, 5), vec_get(call, 6)))
                         fk = vec_get(call, 7)
                         if fk == 1
                             _p = vec_push(parts, a)
@@ -205,8 +205,8 @@ fn try_assign_chain(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
                         ti = tok_index_at_or_after(toks, n, end_i, 0)
                         end_i = chain_append_lines(src, toks, n, ti, var, parts, end_i)
                         rhs = join_plus(parts)
-                        head = str_concat(var, strdup(" = "))
-                        fix = str_concat(head, rhs)
+                        head = str_as_int(str_concat(var, strdup(" = ")))
+                        fix = str_as_int(str_concat(head, rhs))
                         _ok = vec_set(pack, 0, 1)
                         _st = vec_push(pack, tok_start(t))
                         _en = vec_push(pack, end_i)
@@ -257,8 +257,8 @@ fn chain_append_lines(src: Int, toks: Int, n: Int, i: Int, var: Int, parts: Int,
                                 if vec_get(call, 7) != 2
                                     end_byte
                                 else
-                                    a = str_slice(src, vec_get(call, 3), vec_get(call, 4))
-                                    b = str_slice(src, vec_get(call, 5), vec_get(call, 6))
+                                    a = str_as_int(str_slice(src, vec_get(call, 3), vec_get(call, 4)))
+                                    b = str_as_int(str_slice(src, vec_get(call, 5), vec_get(call, 6)))
                                     if str_eq(a, var) == 0
                                         end_byte
                                     else
@@ -279,7 +279,7 @@ fn cop_plus_assign_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! a
     else
         ch = try_assign_chain(src, toks, n, i)
         if pack_ok(ch) == 1
-            msg = strdup("use + instead of str_concat/str_append")
+            msg = str_as_int(strdup("use + instead of str_concat/str_append"))
             o = off_new(CODE_PLUS(), msg, vec_get(ch, 1), vec_get(ch, 2), vec_get(ch, 3))
             _p = vec_push(offs, o)
             next_i = tok_index_at_or_after(toks, n, vec_get(ch, 2), 0)
@@ -319,7 +319,7 @@ fn cop_plus_call_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! all
                 cop_plus_call_go(src, toks, offs, ce, n)
             else
                 fix = build_call_fix(src, call)
-                msg = strdup("use + instead of str_concat/str_append")
+                msg = str_as_int(strdup("use + instead of str_concat/str_append"))
                 o = off_new(CODE_PLUS(), msg, cs, ce, fix)
                 _p = vec_push(offs, o)
                 cop_plus_call_go(src, toks, offs, ce, n)

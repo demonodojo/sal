@@ -482,6 +482,14 @@ fn walk_insts_for_strings<F>(
                 walk_insts_for_strings(cond_insts, ensure_str, s, str_globals);
                 walk_insts_for_strings(body, ensure_str, s, str_globals);
             }
+            IrInst::Switch {
+                arms, default_body, ..
+            } => {
+                for arm in arms {
+                    walk_insts_for_strings(&arm.body, ensure_str, s, str_globals);
+                }
+                walk_insts_for_strings(default_body, ensure_str, s, str_globals);
+            }
             _ => {}
         }
     }
@@ -1140,7 +1148,8 @@ fn emit_main(
             IrInst::Aggregate { .. }
             | IrInst::Extract { .. }
             | IrInst::EnumMake { .. }
-            | IrInst::BitAnd { .. } => {}
+            | IrInst::BitAnd { .. }
+            | IrInst::Switch { .. } => {}
         }
     }
 
@@ -1824,9 +1833,13 @@ fn emit_runtime_or_user_call(
             }
         }
         "sal_list_new" => {
+            let kind = args
+                .first()
+                .map(|a| i64_operand(a, consts))
+                .unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!(
-                    "  %{d}_p = call ptr @sal_list_new_typed(i64 0)\n"
+                    "  %{d}_p = call ptr @sal_list_new_typed(i64 {kind})\n"
                 ));
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
@@ -1855,9 +1868,17 @@ fn emit_runtime_or_user_call(
             }
         }
         "sal_dict_new" => {
+            let kk = args
+                .first()
+                .map(|a| i64_operand(a, consts))
+                .unwrap_or_else(|| "0".into());
+            let vk = args
+                .get(1)
+                .map(|a| i64_operand(a, consts))
+                .unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!(
-                    "  %{d}_p = call ptr @sal_dict_new(i64 1, i64 0)\n"
+                    "  %{d}_p = call ptr @sal_dict_new(i64 {kk}, i64 {vk})\n"
                 ));
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
@@ -2276,6 +2297,81 @@ fn emit_inst_list(
                 *cur_block = join_l;
             }
             IrInst::Drop { .. } | IrInst::PlaceCopy { .. } | IrInst::KernelGrid { .. } => {}
+            IrInst::Switch {
+                scrut,
+                arms,
+                default_body,
+                default_val,
+                dest,
+            } => {
+                *label_id += 1;
+                let id = *label_id;
+                let scrut_op = i64_operand(scrut, &consts);
+                *tmp += 1;
+                let tag = format!("swtag{tmp}");
+                s.push_str(&format!("  %{tag} = and i64 {scrut_op}, 255\n"));
+                let join = format!("swjoin{id}");
+                let def_l = format!("swdef{id}");
+                s.push_str(&format!("  switch i64 %{tag}, label %{def_l} [\n"));
+                for (i, arm) in arms.iter().enumerate() {
+                    s.push_str(&format!("    i64 {}, label %sw{id}_{i}\n", arm.tag));
+                }
+                s.push_str("  ]\n");
+                let mut incoming: Vec<(String, String)> = Vec::new();
+                for (i, arm) in arms.iter().enumerate() {
+                    let lab = format!("sw{id}_{i}");
+                    s.push_str(&format!("{lab}:\n"));
+                    let mut block = lab.clone();
+                    emit_inst_list(
+                        &arm.body,
+                        str_globals,
+                        user_fns,
+                        s,
+                        label_id,
+                        tmp,
+                        &mut block,
+                    );
+                    let arm_consts = const_int_map_from(&arm.body);
+                    let v = if arm_consts.contains_key(&arm.value)
+                        || arm.value.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(&arm.value, &arm_consts)
+                    } else {
+                        format!("%{}", arm.value)
+                    };
+                    s.push_str(&format!("  br label %{join}\n"));
+                    incoming.push((v, block));
+                }
+                s.push_str(&format!("{def_l}:\n"));
+                let mut def_block = def_l.clone();
+                emit_inst_list(
+                    default_body,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    &mut def_block,
+                );
+                let def_consts = const_int_map_from(default_body);
+                let dv = if def_consts.contains_key(default_val)
+                    || default_val.chars().all(|c| c.is_ascii_digit())
+                {
+                    i64_operand(default_val, &def_consts)
+                } else {
+                    format!("%{default_val}")
+                };
+                s.push_str(&format!("  br label %{join}\n"));
+                incoming.push((dv, def_block));
+                s.push_str(&format!("{join}:\n"));
+                let phi = incoming
+                    .iter()
+                    .map(|(v, b)| format!("[ {v}, %{b} ]"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                s.push_str(&format!("  %{dest} = phi i64 {phi}\n"));
+                *cur_block = join;
+            }
             IrInst::While {
                 cond_insts,
                 cond,

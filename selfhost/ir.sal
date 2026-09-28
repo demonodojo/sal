@@ -28,7 +28,7 @@ fn II_IF() -> Int
     7
 
 # ---- Lower / IR ----
-fn cx_new(fn_names: Int, fm: Int) -> Int ! alloc
+fn cx_new(fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
     cx = vec_new()
     _a = vec_push(cx, 0)
     _b = vec_push(cx, vec_new())
@@ -39,8 +39,43 @@ fn cx_new(fn_names: Int, fm: Int) -> Int ! alloc
     bm = map_new()
     _g = vec_push(cx, bm)
     _h = vec_push(cx, fm)
-    _i = vec_push(cx, strenv_new())
+    senv = strenv_new()
+    _s = strenv_set_globals(senv, fnrets, struct_map)
+    _i = vec_push(cx, senv)
+    _j = vec_push(cx, struct_map)
+    _k = vec_push(cx, 0)
     cx
+
+fn cx_struct_map(cx: Int) -> Int ! alloc
+    vec_get(cx, 9)
+
+# Name of the binding an `x = x + ...` chain accumulates into (0 when none).
+fn cx_acc(cx: Int) -> Int ! alloc
+    vec_get(cx, 10)
+
+fn cx_set_acc(cx: Int, name: Int) -> Int ! alloc
+    _s = vec_set(cx, 10, name)
+    0
+
+fn transparent_struct_go(structs: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        sd = vec_get(structs, i)
+        if structdef_field_count(sd) == 1
+            if str_eq(str_from_int(structdef_name(sd)), str_from_int(name)) == 1
+                1
+            else
+                transparent_struct_go(structs, name, i + 1, n)
+        else
+            transparent_struct_go(structs, name, i + 1, n)
+
+fn struct_map_from_prog(prog: Int) -> Int ! alloc
+    prog_structs(prog)
+
+fn is_transparent_struct_name(cx: Int, name: Int) -> Int ! alloc
+    sts = cx_struct_map(cx)
+    transparent_struct_go(sts, name, 0, vec_len(sts))
 
 fn fill_fn_map(m: Int, names: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -89,10 +124,10 @@ fn fresh(cx: Int) -> Int ! alloc
     _s = cx_set_counter(cx, n)
     pref = char_to_str(116)
     ns = int_to_str(n)
-    r = str_concat(pref, ns)
+    r = pref + ns
     free(pref)
     free(ns)
-    r
+    str_as_int(r)
 
 fn ir_ci(dest: Int, v: Int) -> Int ! alloc
     inst = vec_new()
@@ -231,11 +266,10 @@ fn cx_bind(cx: Int, name: Int, ssa: Int) -> Int ! alloc
 fn fn_names_has_at(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
+    elsif str_eq(vec_get(names, i), name) == 1
+        1
     else
-        if str_eq(vec_get(names, i), name) == 1
-            1
-        else
-            fn_names_has_at(names, name, i + 1, n)
+        fn_names_has_at(names, name, i + 1, n)
 
 fn is_user_fn(cx: Int, name: Int) -> Int ! alloc
     if map_get(cx_fn_map(cx), name) == 0
@@ -246,23 +280,20 @@ fn is_user_fn(cx: Int, name: Int) -> Int ! alloc
 fn runtime_name(cx: Int, fname: Int) -> Int ! alloc
     if is_user_fn(cx, fname) == 1
         fname
+    elsif str_eq(str_from_int(fname), d"matmul") == 1
+        str_as_int(d"sal_matmul_f32")
     else
-        if str_eq(fname, "matmul") == 1
-            strdup("sal_matmul_f32")
-        else
-            pref = strdup("sal_")
-            str_append(pref, fname)
+        pref = d"sal_"
+        str_as_int(pref + str_from_int(fname))
 
 fn push_const_int(cx: Int, dest: Int, v: Int) -> Int ! alloc
     ir_push(cx, ir_ci(dest, v))
 
-fn str_contains_tensor(ty: Int) -> Int ! alloc
-    needle = strdup("Tensor")
-    r = str_contains(ty, needle)
-    free(needle)
+fn str_contains_tensor(ty: String) -> Int ! alloc
+    r = str_contains(ty, d"Tensor")
     r
 
-fn parse_tensor_type(ty: Int, b: Int) -> Int ! alloc
+fn parse_tensor_type(ty: String, b: Int) -> Int ! alloc
     _a = bind_set_tensor(b, 0)
     _b = bind_set_ndims(b, 0)
     _c = bind_set_elem(b, 4)
@@ -278,7 +309,7 @@ fn clamp_rb(rb: Int, n: Int) -> Int ! alloc
     else
         rb
 
-fn parse_tensor_dims(ty: Int, b: Int, i: Int, first: Int) -> Int ! alloc
+fn parse_tensor_dims(ty: String, b: Int, i: Int, first: Int) -> Int ! alloc
     n = str_len(ty)
     lb = find_char(ty, 91, 0, n)
     if lb < 0
@@ -289,33 +320,31 @@ fn parse_tensor_dims(ty: Int, b: Int, i: Int, first: Int) -> Int ! alloc
         _p = parse_dim_tokens(inner, b, 0, str_len(inner), 1)
         0
 
-fn skip_spaces(s: Int, i: Int, n: Int) -> Int ! alloc
+fn skip_spaces(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
     else
         c = str_char(s, i)
         if c == 32
             skip_spaces(s, i + 1, n)
+        elsif c == 44
+            skip_spaces(s, i + 1, n)
         else
-            if c == 44
-                skip_spaces(s, i + 1, n)
-            else
-                i
+            i
 
-fn read_tok_end(s: Int, i: Int, n: Int) -> Int ! alloc
+fn read_tok_end(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
     else
         c = str_char(s, i)
         if c == 32
             i
+        elsif c == 44
+            i
         else
-            if c == 44
-                i
-            else
-                read_tok_end(s, i + 1, n)
+            read_tok_end(s, i + 1, n)
 
-fn parse_dim_tokens(s: Int, b: Int, i: Int, n: Int, first: Int) -> Int ! alloc
+fn parse_dim_tokens(s: String, b: Int, i: Int, n: Int, first: Int) -> Int ! alloc
     i2 = skip_spaces(s, i, n)
     if i2 >= n
         0
@@ -325,14 +354,12 @@ fn parse_dim_tokens(s: Int, b: Int, i: Int, n: Int, first: Int) -> Int ! alloc
         if first == 1
             if str_eq(tok, "F16") == 1
                 _e = bind_set_elem(b, 2)
+            elsif str_eq(tok, "BF16") == 1
+                _e = bind_set_elem(b, 2)
+            elsif str_eq(tok, "I8") == 1
+                _e = bind_set_elem(b, 1)
             else
-                if str_eq(tok, "BF16") == 1
-                    _e = bind_set_elem(b, 2)
-                else
-                    if str_eq(tok, "I8") == 1
-                        _e = bind_set_elem(b, 1)
-                    else
-                        _e = 0
+                _e = 0
             free(tok)
             parse_dim_tokens(s, b, j, n, 0)
         else
@@ -346,18 +373,16 @@ fn parse_dim_tokens(s: Int, b: Int, i: Int, n: Int, first: Int) -> Int ! alloc
                 if str_eq(tok, "QDYN") == 1
                     _p = vec_push(dims, 0 - 1)
                     _q = vec_push(conc, 0 - 1)
+                elsif str_eq(tok, "?") == 1
+                    _p = vec_push(dims, 0 - 1)
+                    _q = vec_push(conc, 0 - 1)
+                elsif is_digit(str_char(tok, 0)) == 1
+                    v = parse_int_digits(tok, 0, str_len(tok), 0)
+                    _p = vec_push(dims, v)
+                    _q = vec_push(conc, v)
                 else
-                    if str_eq(tok, "?") == 1
-                        _p = vec_push(dims, 0 - 1)
-                        _q = vec_push(conc, 0 - 1)
-                    else
-                        if is_digit(str_char(tok, 0)) == 1
-                            v = parse_int_digits(tok, 0, str_len(tok), 0)
-                            _p = vec_push(dims, v)
-                            _q = vec_push(conc, v)
-                        else
-                            _p = vec_push(dims, 0 - 1)
-                            _q = vec_push(conc, 0 - 1)
+                    _p = vec_push(dims, 0 - 1)
+                    _q = vec_push(conc, 0 - 1)
                 _n = bind_set_ndims(b, nd + 1)
                 free(tok)
                 parse_dim_tokens(s, b, j, n, 0)
@@ -396,28 +421,26 @@ fn axis_len(cx: Int, tname: Int, take_row: Int) -> Int ! alloc
     b = cx_find(cx, tname)
     if b == 0
         axis_len_fallback(tname, take_row)
+    elsif bind_is_tensor(b) == 0
+        axis_len_fallback(tname, take_row)
+    elsif bind_ndims(b) < 2
+        axis_len_fallback(tname, take_row)
     else
-        if bind_is_tensor(b) == 0
-            axis_len_fallback(tname, take_row)
-        else
-            if bind_ndims(b) < 2
-                axis_len_fallback(tname, take_row)
-            else
-                idx = axis_idx(bind_ndims(b), take_row)
-                dims = bind_dims(b)
-                conc = bind_concrete(b)
-                axis_len_from_dim(cx, tname, dims, conc, idx)
+        idx = axis_idx(bind_ndims(b), take_row)
+        dims = bind_dims(b)
+        conc = bind_concrete(b)
+        axis_len_from_dim(cx, tname, dims, conc, idx)
 
 fn axis_len_fallback(tname: Int, take_row: Int) -> Int ! alloc
     idx = axis_idx(2, take_row)
     axis_len_dim(tname, idx)
 
 fn axis_len_dim(tname: Int, idx: Int) -> Int ! alloc
-    mid = strdup("_d")
+    mid = d"_d"
     is_ = int_to_str(idx)
-    a = str_append(strdup(tname), mid)
-    r = str_append(a, is_)
-    r
+    a = str_from_int(tname) + mid
+    r = a + is_
+    str_as_int(r)
 
 fn region_new(place: Int, ops: Int, fused: Int) -> Int ! alloc
     r = vec_new()
@@ -427,23 +450,22 @@ fn region_new(place: Int, ops: Int, fused: Int) -> Int ! alloc
     _d = vec_push(r, 0)
     _e = vec_push(r, 0)
     _f = vec_push(r, 0)
-    _g = vec_push(r, strdup(""))
+    _g = vec_push(r, str_as_int(d""))
     r
 
 fn dim_at(dims: Int, d: Int) -> Int ! alloc
     if d < 0
         0 - 1
+    elsif d < vec_len(dims)
+        vec_get(dims, d)
     else
-        if d < vec_len(dims)
-            vec_get(dims, d)
-        else
-            0 - 1
+        0 - 1
 
 fn drop_name_for(inner: Int) -> Int ! alloc
     if ex_kind(inner) == EX_IDENT()
         vec_get(inner, 1)
     else
-        strdup("tmp")
+        str_as_int(d"tmp")
 
 fn else_block_for_elsifs(else_b: Int, arms: Int) -> Int ! alloc
     n = vec_len(arms)
@@ -470,17 +492,14 @@ fn lower_params(cx: Int, params: Int, i: Int, n: Int) -> Int ! alloc
         name = vec_get(pm, 0)
         ty = vec_get(pm, 1)
         b = bind_new(name, name)
-        _p = parse_tensor_type(ty, b)
+        _p = parse_tensor_type(str_from_int(ty), b)
         if bind_is_tensor(b) == 1
             _d = add_dim_params(cx, b, 0, bind_ndims(b))
         else
             _d = 0
         _q = vec_push(cx_binds(cx), b)
         _m = map_put(cx_bind_map(cx), name, b)
-        if ty_is_string(ty) == 1
-            _s = strenv_bind(cx_strenv(cx), name, 1)
-        else
-            _s = 0
+        _s = strenv_bind(cx_strenv(cx), name, ty)
         lower_params(cx, params, i + 1, n)
 
 fn add_dim_params(cx: Int, b: Int, d: Int, nd: Int) -> Int ! alloc
@@ -490,12 +509,12 @@ fn add_dim_params(cx: Int, b: Int, d: Int, nd: Int) -> Int ! alloc
         dims = bind_dims(b)
         dv = dim_at(dims, d)
         if dv < 0
-            mid = strdup("_d")
+            mid = d"_d"
             ds = int_to_str(d)
-            bn = strdup(bind_name(b))
-            a = str_append(bn, mid)
-            nm = str_append(a, ds)
-            _p = vec_push(cx_dim_params(cx), nm)
+            bn = str_from_int(bind_name(b))
+            a = bn + mid
+            nm = a + ds
+            _p = vec_push(cx_dim_params(cx), str_as_int(nm))
         else
             _p = 0
         add_dim_params(cx, b, d + 1, nd)

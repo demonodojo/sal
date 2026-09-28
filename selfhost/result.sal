@@ -10,6 +10,9 @@ fn result_ok(v: Int) -> Int ! alloc
     _b = vec_push(r, v)
     r
 
+fn result_ok_str(v: String) -> Int ! alloc
+    result_ok(str_as_int(v))
+
 fn result_err(e: Int) -> Int ! alloc
     r = vec_new()
     _a = vec_push(r, 1)
@@ -42,7 +45,6 @@ fn module_order_vec(x: Int) -> Int ! alloc
 
 fn result_format_err(r: Int) -> String ! alloc
     msg = result_unwrap(r)
-    acc = strdup("Err(")
-    acc = str_append(acc, str_from_int(msg))
-    acc = str_append(acc, strdup(")\n"))
+    acc = d"Err("
+    acc = acc + str_from_int(msg) + ")\n"
     acc

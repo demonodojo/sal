@@ -7,6 +7,25 @@
       "script": "compile",
       "group": "build",
       "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "cargo: toolchain",
+      "type": "shell",
+      "command": "cargo build --bin sal --bin standard",
+      "options": {
+        "cwd": "${workspaceFolder}/../.."
+      },
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "sal extension: build",
+      "dependsOn": ["npm: compile", "cargo: toolchain"],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
     }
   ]
 }

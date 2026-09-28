@@ -71,7 +71,7 @@ fn tok_end(t: Int) -> Int ! alloc
     vec_get(t, 2)
 
 fn tok_text(src: Int, t: Int) -> Int ! alloc
-    str_slice(src, tok_start(t), tok_end(t))
+    str_as_int(str_slice(src, tok_start(t), tok_end(t)))
 
 fn kw_kind(text: Int) -> Int ! alloc
     if str_eq(text, "if") == 1
@@ -263,7 +263,7 @@ fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int, err: Int) 
                                                 else
                                                     if is_ident_start(c) == 1
                                                         end = str_skip(src, i, 2, 0)
-                                                        text = str_slice(src, i, end)
+                                                        text = str_as_int(str_slice(src, i, end))
                                                         if str_eq(text, "d") == 1
                                                             if end < n
                                                                 if str_char(src, end) == 34

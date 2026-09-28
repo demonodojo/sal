@@ -65,12 +65,12 @@ fn incremental_cache_second_build() {
 }
 
 #[test]
-fn string_plus_appends_nonstr_pointer() {
+fn string_plus_appends_handle_via_str_from_int() {
     let src = r#"
 fn main() -> Int ! alloc, io
     v = vec_new()
     _p = vec_push(v, d"Z")
-    s = d"A" + d"B" + vec_get(v, 0)
+    s = d"A" + d"B" + str_from_int(vec_get(v, 0))
     _q = print_str(s)
     0
 "#;
@@ -86,6 +86,78 @@ fn main() -> Int ! alloc, io
     let out = Command::new(bin).output().expect("run");
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "ABZ");
+}
+
+#[test]
+fn string_plus_struct_field_and_fresh_temp_at_runtime() {
+    let src = r#"
+struct Msg
+    text: String
+    n: Int
+
+fn main() -> Int ! alloc, io
+    m = Msg(d"k", 7)
+    s = m.text + "=" + int_to_str(m.n)
+    _q = print_str(s)
+    0
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    assert!(
+        art.ir_text.contains("sal_free"),
+        "the int_to_str temp is freed after the append:\n{}",
+        art.ir_text
+    );
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "k=7");
+}
+
+#[test]
+fn string_accumulator_loop_appends_without_copy() {
+    // 5000 steps of `acc = acc + piece`: linear with in-place append.
+    let src = r#"
+fn fill(acc: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        acc
+    else
+        acc = acc + "ab"
+        fill(acc, i + 1, n)
+
+fn main() -> Int ! alloc, io
+    s = fill(d"", 0, 5000)
+    _q = print_str(int_to_str(str_len(s)))
+    0
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let fill = art
+        .ir_text
+        .split("fn main:")
+        .next()
+        .unwrap_or(&art.ir_text)
+        .to_string();
+    assert!(
+        fill.contains("sal_str_append") && !fill.contains("sal_str_concat"),
+        "acc = acc + lit must append in place:\n{fill}"
+    );
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "10000");
 }
 
 #[test]
@@ -180,6 +252,148 @@ fn main() -> Int
     let bin = art.binary.expect("binary");
     let out = Command::new(bin).output().expect("run");
     assert_eq!(out.status.code(), Some(42), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn newtype_llvm_has_no_extra_storage() {
+    let tag = r#"
+struct Tag
+    raw: Int
+
+fn main() -> Int
+    t = Tag(7)
+    t.raw
+"#;
+    let plain = r#"
+fn main() -> Int
+    7
+"#;
+    let opts = CompileOptions {
+        release: true,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: true,
+    };
+    let tagged = compile_source(tag, &opts).expect("tag");
+    let bare = compile_source(plain, &opts).expect("int");
+    let tagged_at = tagged.llvm.find("define i64 @main").expect("main");
+    let bare_at = bare.llvm.find("define i64 @main").expect("main");
+    let tagged_body = &tagged.llvm[tagged_at..];
+    let bare_body = &bare.llvm[bare_at..];
+    assert_eq!(tagged_body, bare_body, "newtype body:\n{tagged_body}");
+    assert!(!tagged_body.contains("alloca"), "{tagged_body}");
+    assert!(!tagged_body.contains("insertvalue"), "{tagged_body}");
+    assert!(!tagged_body.contains("call ptr @malloc"), "{tagged_body}");
+}
+
+#[test]
+fn list_string_and_dict_bool_kinds() {
+    let src = r#"
+fn main() -> Int ! alloc
+    xs = list_new[String]()
+    _ = dict_new[Int, Bool]()
+    list_len(xs)
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: true,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    assert!(
+        art.llvm.contains("call ptr @sal_list_new_typed(i64 3)"),
+        "{}",
+        art.llvm
+    );
+    assert!(
+        art.llvm.contains("call ptr @sal_dict_new(i64 0, i64 2)"),
+        "{}",
+        art.llvm
+    );
+}
+
+#[test]
+fn struct_field_assign_rebuilds_owner() {
+    let src = r#"
+struct Point
+    x: Int
+    y: Int
+
+fn main() -> Int
+    p = Point(3, 4)
+    p.x = 10
+    p.x + p.y
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(14), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn struct_string_field_drops_clean() {
+    let src = r#"
+struct Msg
+    text: String
+    n: Int
+
+fn main() -> Int ! alloc
+    m = Msg(strdup("ab"), 1)
+    str_len(m.text) + m.n
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: true,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(3), "stderr: {err}");
+    assert!(!err.contains("LEAK"), "{err}");
+    assert!(!err.contains("DOUBLE_FREE"), "{err}");
+}
+
+#[test]
+fn moved_string_newtype_drops_clean() {
+    let src = r#"
+struct Msg
+    text: String
+
+fn eat(m: Msg take) -> Int
+    str_len(m.text)
+
+fn main() -> Int ! alloc
+    m = Msg(strdup("ab"))
+    eat(m)
+"#;
+    let opts = CompileOptions {
+        release: false,
+        instrument: true,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {err}");
+    assert!(!err.contains("LEAK"), "{err}");
+    assert!(!err.contains("DOUBLE_FREE"), "{err}");
 }
 
 #[test]

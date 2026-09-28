@@ -3,7 +3,7 @@ import patch
 import util
 
 fn CODE_LITERAL() -> Int ! alloc
-    strdup("Style/PlusLiteral")
+    str_as_int(strdup("Style/PlusLiteral"))
 
 fn pl_prev_nl(toks: Int, i: Int) -> Int ! alloc
     if i <= 0
@@ -89,8 +89,8 @@ fn cop_pluslit_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
             t = vec_get(toks, i)
             start = tok_start(t)
             end = tok_end(t)
-            fix = str_slice(src, start + 1, end)
-            msg = strdup("use plain string literal in + expression")
+            fix = str_as_int(str_slice(src, start + 1, end))
+            msg = str_as_int(strdup("use plain string literal in + expression"))
             o = off_new(CODE_LITERAL(), msg, start, end, fix)
             _p = vec_push(offs, o)
             cop_pluslit_go(src, toks, offs, i + 1, n)

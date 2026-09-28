@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::string_expr::is_string_type;
+use crate::string_expr::{add_chain_leftmost, is_string_type};
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::span::Span;
 
@@ -19,7 +19,8 @@ pub fn check_ownership(prog: &Program) -> DiagResult<()> {
 /// - Trivial types (`Int`, `Float`, `Bool`, and structs of only those) stay `Inferred`
 ///   (formatter prints no mode).
 /// - Unique params only read (borrow-fn args, field reads, interpolation) → `Borrow`.
-/// - Unique params moved/consumed (`to`, move-fn / unknown call, bind, return) → `Take`.
+/// - Unique params moved/consumed (`to`, move-fn, bind, return) → `Take`.
+/// - A call to an unknown function uses the argument; it does not move a String handle.
 /// - Unused unique params are treated as `Take` (implicit drop).
 /// - Explicit `Borrow` / `Take` in the source AST are preserved.
 pub fn infer_param_modes(prog: &Program) -> Program {
@@ -137,6 +138,14 @@ fn track_stmt(
             let vty = track_expr(value, env, moved, params, taken, used)?;
             consume_if_unique(value, &vty, moved, params, taken);
             if let Expr::Ident { name, .. } = target {
+                // `x = x + ...` appends in place: the old `x` is moved into the result.
+                if is_string_type(&vty) && matches!(value, Expr::Binary { op: BinOp::Add, .. }) {
+                    if let Expr::Ident { name: leaf, .. } = add_chain_leftmost(value) {
+                        if leaf == name {
+                            consume_if_unique(add_chain_leftmost(value), &vty, moved, params, taken);
+                        }
+                    }
+                }
                 env.insert(name.clone(), vty);
                 moved.remove(name);
             } else {
@@ -246,12 +255,10 @@ fn track_expr(
             ..
         } => {
             let lt = track_expr(left, env, moved, params, taken, used)?;
-            let rt = track_expr(right, env, moved, params, taken, used)?;
+            track_expr(right, env, moved, params, taken, used)?;
+            // String `+` copies (str_concat) or appends onto a temporary: neither
+            // operand is consumed. Only `x = x + ...` moves `x` (see track_stmt).
             if *op == BinOp::Add && is_string_type(&lt) {
-                consume_if_unique(left, &lt, moved, params, taken);
-                if is_string_type(&rt) {
-                    consume_if_unique(right, &rt, moved, params, taken);
-                }
                 Ok(named("String", *span))
             } else {
                 Ok(named("Int", *span))

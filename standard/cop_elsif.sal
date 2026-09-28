@@ -3,7 +3,7 @@ import patch
 import util
 
 fn CODE_ELSIF() -> Int ! alloc
-    strdup("Style/Elsif")
+    str_as_int(strdup("Style/Elsif"))
 
 fn skip_to_indent(toks: Int, n: Int, i: Int) -> Int ! alloc
     if i >= n
@@ -100,9 +100,9 @@ fn drop_first_line(s: Int) -> Int ! alloc
     n = str_len(s)
     nl = find_first_nl(s, 0, n)
     if nl >= n
-        strdup("")
+        str_as_int(strdup(""))
     else
-        str_slice(s, nl + 1, n)
+        str_as_int(str_slice(s, nl + 1, n))
 
 fn unindent_line(s: Int, spaces: Int) -> Int ! alloc
     n = str_len(s)
@@ -112,7 +112,7 @@ fn unindent_line(s: Int, spaces: Int) -> Int ! alloc
         ok = 1
         ok = count_spaces_match(s, 0, spaces, ok)
         if ok == 1
-            str_slice(s, spaces, n)
+            str_as_int(str_slice(s, spaces, n))
         else
             s
 
@@ -129,7 +129,7 @@ fn count_spaces_match(s: Int, i: Int, left: Int, ok: Int) -> Int ! alloc
                 0
 
 fn unindent_text(s: Int, spaces: Int) -> Int ! alloc
-    unindent_go(s, 0, str_len(s), spaces, strdup(""))
+    unindent_go(s, 0, str_len(s), spaces, str_as_int(strdup("")))
 
 fn unindent_go(s: Int, i: Int, n: Int, spaces: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -137,15 +137,15 @@ fn unindent_go(s: Int, i: Int, n: Int, spaces: Int, acc: Int) -> Int ! alloc
     else
         nl = find_first_nl(s, i, n)
         if nl >= n
-            line = str_slice(s, i, n)
+            line = str_as_int(str_slice(s, i, n))
             line2 = unindent_line(line, spaces)
-            str_append(acc, line2)
+            str_as_int(str_append(acc, line2))
         else
-            line = str_slice(s, i, nl + 1)
-            body = str_slice(s, i, nl)
+            line = str_as_int(str_slice(s, i, nl + 1))
+            body = str_as_int(str_slice(s, i, nl))
             body2 = unindent_line(body, spaces)
-            piece = str_concat(body2, strdup("\n"))
-            acc2 = str_append(acc, piece)
+            piece = str_as_int(str_concat(body2, strdup("\n")))
+            acc2 = str_as_int(str_append(acc, piece))
             unindent_go(s, nl + 1, n, spaces, acc2)
 
 fn trim_nl_suffix(toks: Int, j: Int) -> Int ! alloc
@@ -162,11 +162,11 @@ fn cond_text_from_if(src: Int, toks: Int, n: Int, if_i: Int) -> Int ! alloc
     j = skip_to_indent(toks, n, if_i + 1)
     j2 = trim_nl_suffix(toks, j)
     if j2 <= if_i + 1
-        strdup("")
+        str_as_int(strdup(""))
     else
         start = tok_start(vec_get(toks, if_i + 1))
         end = tok_start(vec_get(toks, j2))
-        str_slice(src, start, end)
+        str_as_int(str_slice(src, start, end))
 
 fn find_line_start(src: Int, i: Int) -> Int ! alloc
     if i < 0
@@ -180,11 +180,11 @@ fn find_line_start(src: Int, i: Int) -> Int ! alloc
 
 fn line_leading(src: Int, pos: Int) -> Int ! alloc
     ls = find_line_start(src, pos - 1)
-    str_slice(src, ls, pos)
+    str_as_int(str_slice(src, ls, pos))
 
 fn slice_has_comment(src: Int, start: Int, end: Int) -> Int ! alloc
-    piece = str_slice(src, start, end)
-    if str_contains(piece, strdup("#")) == 1
+    piece = str_as_int(str_slice(src, start, end))
+    if str_contains(piece, str_as_int(strdup("#"))) == 1
         1
     else
         0
@@ -196,13 +196,13 @@ fn build_elsif_fix(src: Int, toks: Int, else_i: Int, if_i: Int, if_end: Int) -> 
     if_start = tok_start(if_tok)
     if_end_byte = tok_end(vec_get(toks, if_end - 1))
     cond = cond_text_from_if(src, toks, vec_len(toks), if_i)
-    inner = str_slice(src, if_start, if_end_byte)
+    inner = str_as_int(str_slice(src, if_start, if_end_byte))
     rest = drop_first_line(inner)
     body = unindent_text(rest, 4)
     lead = line_leading(src, else_start)
-    head = str_concat(lead, str_concat(strdup("elsif "), cond))
-    mid = str_concat(head, strdup("\n"))
-    str_concat(mid, body)
+    head = str_as_int(str_concat(lead, str_concat(strdup("elsif "), cond)))
+    mid = str_as_int(str_concat(head, strdup("\n")))
+    str_as_int(str_concat(mid, body))
 
 fn cop_elsif(src: Int, toks: Int) -> Int ! alloc
     offs = vec_new()
@@ -230,13 +230,13 @@ fn cop_elsif_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
                                 if_start = tok_start(t3)
                                 patch_start = find_line_start(src, else_start - 1)
                                 if slice_has_comment(src, tok_end(t), if_start) == 1
-                                    msg = strdup("else/if could be elsif; comment in between blocks auto-fix")
+                                    msg = str_as_int(strdup("else/if could be elsif; comment in between blocks auto-fix"))
                                     o = off_new(CODE_ELSIF(), msg, patch_start, tok_end(vec_get(toks, if_end - 1)), 0)
                                     _p = vec_push(offs, o)
                                     cop_elsif_go(src, toks, offs, if_end, n)
                                 else
                                     fix = build_elsif_fix(src, toks, i, j2, if_end)
-                                    msg = strdup("use elsif instead of else/if")
+                                    msg = str_as_int(strdup("use elsif instead of else/if"))
                                     o = off_new(CODE_ELSIF(), msg, patch_start, tok_end(vec_get(toks, if_end - 1)), fix)
                                     _p = vec_push(offs, o)
                                     cop_elsif_go(src, toks, offs, if_end, n)

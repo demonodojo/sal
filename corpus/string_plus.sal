@@ -1,8 +1,26 @@
-# Corpus: a String on the left of + concatenates. The right operand need not
-# be String: the first + is str_concat and the next is str_append.
+# Corpus: + on String is nominal (String on both sides) and decided by the type
+# of the left operand. The first + of a chain is str_concat and the rest are
+# str_append on the temporary; `x = x + ...` appends in place; a fresh temp on
+# the right (int_to_str) is freed after the copy; str_from_int is a plain cast.
 
-fn join(s: String, n: Int, m: Int) -> String ! alloc
+struct Path
+    raw: String
+
+fn join(s: String, n: String, m: String) -> String ! alloc
     s + n + m
+
+fn tag(x: Int) -> String ! alloc
+    str_from_int(x) + "a"
+
+fn show(p: Path) -> String ! alloc
+    p.raw + "/x"
+
+fn fill(acc: String, piece: String) -> String ! alloc
+    acc = acc + piece + ","
+    acc
+
+fn count(s: String, n: Int) -> String ! alloc
+    s + int_to_str(n)
 
 fn main() -> Int ! alloc
     0

@@ -405,8 +405,8 @@ pub fn check_module_semantics(
     module: &LoadedModule,
     graph: &ModuleGraph,
 ) -> DiagResult<()> {
-    infer_module(module, graph)?;
-    crate::effects::check_effects(&module.program)?;
+    let out = infer_module(module, graph)?;
+    crate::effects::check_effects_with_infer(&module.program, &out)?;
     crate::ownership::check_ownership(&module.program)?;
     crate::device::check_devices(&module.program)?;
     Ok(())

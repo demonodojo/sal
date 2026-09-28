@@ -58,84 +58,84 @@ fn lc_col(p: Int) -> Int ! alloc
 fn format_off(path: Int, src: Int, o: Int) -> Int ! alloc
     start = off_start(o)
     lc = byte_line_col(src, start, 0, 1, 1)
-    ln = int_to_str(lc_line(lc))
-    cl = int_to_str(lc_col(lc))
-    acc = str_concat(path, strdup(":"))
-    acc = str_append(acc, ln)
-    acc = str_append(acc, strdup(":"))
-    acc = str_append(acc, cl)
-    acc = str_append(acc, strdup(": "))
-    acc = str_append(acc, off_code(o))
-    acc = str_append(acc, strdup(": "))
-    str_append(acc, off_msg(o))
+    ln = str_as_int(int_to_str(lc_line(lc)))
+    cl = str_as_int(int_to_str(lc_col(lc)))
+    acc = str_as_int(str_concat(path, strdup(":")))
+    acc = str_as_int(str_append(acc, ln))
+    acc = str_as_int(str_append(acc, strdup(":")))
+    acc = str_as_int(str_append(acc, cl))
+    acc = str_as_int(str_append(acc, strdup(": ")))
+    acc = str_as_int(str_append(acc, off_code(o)))
+    acc = str_as_int(str_append(acc, strdup(": ")))
+    str_as_int(str_append(acc, off_msg(o)))
 
 fn json_escape(s: Int) -> Int ! alloc
-    json_escape_go(s, 0, str_len(s), strdup(""))
+    json_escape_go(s, 0, str_len(s), str_as_int(strdup("")))
 
 fn json_escape_go(s: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
         piece = json_escape_byte(str_char(s, i))
-        acc2 = str_append(acc, piece)
+        acc2 = str_as_int(str_append(acc, piece))
         json_escape_go(s, i + 1, n, acc2)
 
 fn json_escape_byte(c: Int) -> Int ! alloc
     if c == 34
-        strdup("\\\"")
+        str_as_int(strdup("\\\""))
     elsif c == 92
-        strdup("\\\\")
+        str_as_int(strdup("\\\\"))
     elsif c == 10
-        strdup("\\n")
+        str_as_int(strdup("\\n"))
     elsif c == 13
-        strdup("\\r")
+        str_as_int(strdup("\\r"))
     elsif c == 9
-        strdup("\\t")
+        str_as_int(strdup("\\t"))
     elsif c < 32
         json_u(c)
     else
-        char_to_str(c)
+        str_as_int(char_to_str(c))
 
 fn hex_digit(n: Int) -> Int ! alloc
     if n < 10
-        char_to_str(48 + n)
+        str_as_int(char_to_str(48 + n))
     else
-        char_to_str(87 + n)
+        str_as_int(char_to_str(87 + n))
 
 fn json_u(c: Int) -> Int ! alloc
     hi = c / 16
     lo = c - hi * 16
-    acc = strdup("\\u00")
-    acc2 = str_append(acc, hex_digit(hi))
-    str_append(acc2, hex_digit(lo))
+    acc = str_as_int(strdup("\\u00"))
+    acc2 = str_as_int(str_append(acc, hex_digit(hi)))
+    str_as_int(str_append(acc2, hex_digit(lo)))
 
 fn json_fix(fix: Int) -> Int ! alloc
     if fix == 0
-        strdup("null")
+        str_as_int(strdup("null"))
     else
-        acc = strdup("\"")
-        acc2 = str_append(acc, json_escape(fix))
-        str_append(acc2, strdup("\""))
+        acc = str_as_int(strdup("\""))
+        acc2 = str_as_int(str_append(acc, json_escape(fix)))
+        str_as_int(str_append(acc2, strdup("\"")))
 
 fn format_off_json(src: Int, o: Int) -> Int ! alloc
     start = off_start(o)
     endb = off_end(o)
     lc = byte_line_col(src, start, 0, 1, 1)
-    acc = strdup("{{\"code\":\"")
-    acc = str_append(acc, json_escape(off_code(o)))
-    acc = str_append(acc, strdup("\",\"message\":\""))
-    acc = str_append(acc, json_escape(off_msg(o)))
-    acc = str_append(acc, strdup("\",\"span\":{{\"start\":"))
-    acc = str_append(acc, int_to_str(start))
-    acc = str_append(acc, strdup(",\"end\":"))
-    acc = str_append(acc, int_to_str(endb))
-    acc = str_append(acc, strdup(",\"line\":"))
-    acc = str_append(acc, int_to_str(lc_line(lc)))
-    acc = str_append(acc, strdup(",\"col\":"))
-    acc = str_append(acc, int_to_str(lc_col(lc)))
-    acc = str_append(acc, strdup("}},\"fix\":"))
-    acc = str_append(acc, json_fix(off_fix(o)))
-    str_append(acc, strdup("}}"))
+    acc = str_as_int(strdup("{{\"code\":\""))
+    acc = str_as_int(str_append(acc, json_escape(off_code(o))))
+    acc = str_as_int(str_append(acc, strdup("\",\"message\":\"")))
+    acc = str_as_int(str_append(acc, json_escape(off_msg(o))))
+    acc = str_as_int(str_append(acc, strdup("\",\"span\":{{\"start\":")))
+    acc = str_as_int(str_append(acc, int_to_str(start)))
+    acc = str_as_int(str_append(acc, strdup(",\"end\":")))
+    acc = str_as_int(str_append(acc, int_to_str(endb)))
+    acc = str_as_int(str_append(acc, strdup(",\"line\":")))
+    acc = str_as_int(str_append(acc, int_to_str(lc_line(lc))))
+    acc = str_as_int(str_append(acc, strdup(",\"col\":")))
+    acc = str_as_int(str_append(acc, int_to_str(lc_col(lc))))
+    acc = str_as_int(str_append(acc, strdup("}},\"fix\":")))
+    acc = str_as_int(str_append(acc, json_fix(off_fix(o))))
+    str_as_int(str_append(acc, strdup("}}")))
 
 fn print_offs_json(src: Int, offs: Int) -> Int ! io, alloc
     print_offs_json_go(src, offs, 0, vec_len(offs))
@@ -146,7 +146,7 @@ fn print_offs_json_go(src: Int, offs: Int, i: Int, n: Int) -> Int ! io, alloc
     else
         o = vec_get(offs, i)
         line = format_off_json(src, o)
-        msg = str_concat(line, strdup("\n"))
+        msg = str_as_int(str_concat(line, strdup("\n")))
         _e = eprint_str(msg)
         print_offs_json_go(src, offs, i + 1, n)
 
@@ -159,7 +159,7 @@ fn print_offs_go(path: Int, src: Int, offs: Int, i: Int, n: Int) -> Int ! io, al
     else
         o = vec_get(offs, i)
         line = format_off(path, src, o)
-        msg = str_concat(line, strdup("\n"))
+        msg = str_as_int(str_concat(line, strdup("\n")))
         _e = eprint_str(msg)
         print_offs_go(path, src, offs, i + 1, n)
 
@@ -192,7 +192,7 @@ fn fix_to_point(src: Int, pass: Int, max_pass: Int) -> Int ! alloc
 fn run_check(path: Int, src: Int, as_json: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
     if cops_pack_status(pack) != LEX_OK()
-        _e = eprint_str(strdup("lex error\n"))
+        _e = eprint_str(str_as_int(strdup("lex error\n")))
         2
     else
         offs = cops_pack_offs(pack)
@@ -207,8 +207,8 @@ fn run_check(path: Int, src: Int, as_json: Int) -> Int ! io, alloc
             1
 
 fn wants_json() -> Int ! alloc
-    flag = argv(3)
-    val = argv(4)
+    flag = str_as_int(argv(3))
+    val = str_as_int(argv(4))
     if str_eq(flag, "--error-format") == 1
         if str_eq(val, "json") == 1
             1
@@ -220,7 +220,7 @@ fn wants_json() -> Int ! alloc
 fn run_fix(path: Int, src: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
     if cops_pack_status(pack) != LEX_OK()
-        _e = eprint_str(strdup("lex error\n"))
+        _e = eprint_str(str_as_int(strdup("lex error\n")))
         2
     else
         fixed = fix_to_point(src, 0, 16)
@@ -238,13 +238,13 @@ fn run_fix(path: Int, src: Int) -> Int ! io, alloc
                 1
 
 fn main() -> Int ! io, alloc
-    cmd = argv(1)
-    path = argv(2)
-    src = read_file(path)
+    cmd = str_as_int(argv(1))
+    path = str_as_int(argv(2))
+    src = str_as_int(read_file(path))
     if str_eq(cmd, "check") == 1
         run_check(path, src, wants_json())
     elsif str_eq(cmd, "fix") == 1
         run_fix(path, src)
     else
-        _e = eprint_str(strdup("usage: check|fix FILE\n"))
+        _e = eprint_str(str_as_int(strdup("usage: check|fix FILE\n")))
         2
