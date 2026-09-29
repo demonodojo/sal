@@ -1110,6 +1110,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "char_to_str"
             | "str_from_int"
             | "str_as_int"
+            | "str_to_f64_bits"
             | "strdup"
             | "free"
             | "select_str"
@@ -1529,6 +1530,42 @@ fn lower_expr(
                 peak_symbolic,
                 fused,
             });
+
+            if has_column {
+                *counter += 1;
+                return format!("t{counter}");
+            }
+            if let Some(FusedOp::Matmul { lhs, rhs, .. }) = ops
+                .iter()
+                .find(|o| matches!(o, FusedOp::Matmul { .. }))
+            {
+                *counter += 1;
+                let dest = format!("t{counter}");
+                let (m, k, n) = emit_matmul_dim_args(
+                    lhs,
+                    rhs,
+                    tensors,
+                    dim_params,
+                    instructions,
+                    counter,
+                );
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_matmul_f32".into(),
+                    args: vec![lhs.clone(), rhs.clone(), m, k, n],
+                });
+                if has_epilogue {
+                    *counter += 1;
+                    let out = format!("t{counter}");
+                    instructions.push(IrInst::Call {
+                        dest: Some(out.clone()),
+                        func: "sal_relu".into(),
+                        args: vec![dest],
+                    });
+                    return out;
+                }
+                return dest;
+            }
 
             let mut on_strings = strings.clone();
             for st in &body.stmts {

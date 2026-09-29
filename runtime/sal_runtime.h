@@ -100,6 +100,7 @@ char *sal_int_to_str(int64_t v);
 char *sal_char_to_str(int64_t c);
 char *sal_str_from_int(int64_t x);
 int64_t sal_str_as_int(const char *s);
+int64_t sal_str_to_f64_bits(const char *s);
 void *sal_vec_new(void);
 int64_t sal_vec_push(void *v, int64_t x);
 int64_t sal_vec_get(void *v, int64_t i);

@@ -101,14 +101,12 @@ void sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int
 
 void sal_tensor_bin_f32(int op, float *out, const float *a, const float *b, int64_t len,
                         int b_is_scalar, double b_scalar) {
+    /* GPU heap: host loop today (like matmul without SAL_USE_CUDA). Dedicated CUDA in a later .cu. */
     int place = sal_mem_place(a);
     if (place < 0) {
         place = sal_mem_place(out);
     }
-    if (place == 1 && sal_gpu_enabled()) {
-        tensor_bin_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
-        return;
-    }
+    (void)place;
     tensor_bin_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
 }
 
@@ -163,10 +161,7 @@ void sal_tensor_cmp_f32(int op, int8_t *out, const float *a, const float *b, int
     if (place < 0) {
         place = sal_mem_place(out);
     }
-    if (place == 1 && sal_gpu_enabled()) {
-        tensor_cmp_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
-        return;
-    }
+    (void)place;
     tensor_cmp_f32_host(op, out, a, b, len, b_is_scalar, b_scalar);
 }
 

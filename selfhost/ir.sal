@@ -286,6 +286,13 @@ fn runtime_name(cx: Int, fname: Int) -> Int ! alloc
         pref = d"sal_"
         str_as_int(pref + str_from_int(fname))
 
+fn ir_call_unary(cx: Int, rname: Int, src: Int) -> Int ! alloc
+    out = fresh(cx)
+    argv = vec_new()
+    _a = vec_push(argv, src)
+    _p = ir_push(cx, ir_call(out, rname, argv, 1))
+    out
+
 fn push_const_int(cx: Int, dest: Int, v: Int) -> Int ! alloc
     ir_push(cx, ir_ci(dest, v))
 
@@ -442,6 +449,38 @@ fn axis_len_dim(tname: Int, idx: Int) -> Int ! alloc
     r = a + is_
     str_as_int(r)
 
+fn fused_op_clone(op: Int) -> Int ! alloc
+    if op == 0
+        0
+    else
+        o = vec_new()
+        _c = fused_op_clone_go(op, o, 0, vec_len(op))
+        o
+
+fn fused_op_clone_go(op: Int, out: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(out, vec_get(op, i))
+        fused_op_clone_go(op, out, i + 1, n)
+
+fn fused_ops_clone(ops: Int) -> Int ! alloc
+    if ops == 0
+        vec_new()
+    else
+        out = vec_new()
+        _c = fused_ops_clone_go(ops, out, 0, vec_len(ops))
+        out
+
+fn fused_ops_clone_go(ops: Int, out: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        op = vec_get(ops, i)
+        op2 = fused_op_clone(op)
+        _p = vec_push(out, op2)
+        fused_ops_clone_go(ops, out, i + 1, n)
+
 fn region_new(place: Int, ops: Int, fused: Int) -> Int ! alloc
     r = vec_new()
     _a = vec_push(r, place)
@@ -460,6 +499,65 @@ fn dim_at(dims: Int, d: Int) -> Int ! alloc
         vec_get(dims, d)
     else
         0 - 1
+
+fn bind_for_ssa_at(binds: Int, ssa: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        b = vec_get(binds, i)
+        if str_eq(bind_ssa(b), ssa) == 1
+            b
+        else
+            bind_for_ssa_at(binds, ssa, i + 1, n)
+
+fn bind_for_ssa(cx: Int, ssa: Int) -> Int ! alloc
+    bind_for_ssa_at(cx_binds(cx), ssa, 0, vec_len(cx_binds(cx)))
+
+fn conc_product_go(conc: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        cv = vec_get(conc, i)
+        if cv < 0
+            0 - 1
+        else
+            conc_product_go(conc, i + 1, n, acc * cv)
+
+fn tensor_row_len_from_bind(cx: Int, b: Int) -> Int ! alloc
+    conc = bind_concrete(b)
+    prod = conc_product_go(conc, 0, vec_len(conc), 1)
+    if prod > 0
+        d = fresh(cx)
+        _p = push_const_int(cx, d, prod)
+        d
+    else
+        axis_len(cx, bind_name(b), 1)
+
+fn tensor_row_len_for_expr(cx: Int, e: Int, ssa: Int) -> Int ! alloc
+    if e == 0
+        d = fresh(cx)
+        _p = push_const_int(cx, d, 1)
+        d
+    else
+        k = ex_kind(e)
+        b = 0
+        if k == EX_IDENT()
+            b = cx_find(cx, vec_get(e, 1))
+        else
+            b = bind_for_ssa(cx, ssa)
+        if b == 0
+            if k == EX_BINARY()
+                tensor_row_len_for_expr(cx, vec_get(e, 2), ssa)
+            else
+                d = fresh(cx)
+                _p = push_const_int(cx, d, 1)
+                d
+        elsif bind_is_tensor(b) == 0
+            d = fresh(cx)
+            _p = push_const_int(cx, d, 1)
+            d
+        else
+            tensor_row_len_from_bind(cx, b)
 
 fn drop_name_for(inner: Int) -> Int ! alloc
     if ex_kind(inner) == EX_IDENT()

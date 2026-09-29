@@ -1025,6 +1025,28 @@ fn infer_call(
                 span,
             })
         }
+        "str_to_f64_bits" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_to_f64_bits expects one argument",
+                    span,
+                )]);
+            }
+            let t = check_expr(&args[0], env, types, entries)?;
+            if !is_string_type(&t) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_to_f64_bits expects String",
+                    span,
+                )]);
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
         "argv" | "read_file" | "str_concat" | "str_append" | "str_slice" | "int_to_str"
         | "char_to_str" | "strdup" | "select_str" | "tmp_path" | "exec_capture" | "getenv"
         | "realpath" | "ir_text" => {

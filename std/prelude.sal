@@ -77,5 +77,8 @@ fn str_from_int(x: Int) -> String
 fn str_as_int(s: String) -> Int
     str_as_int(s)
 
+fn str_to_f64_bits(s: String) -> Int
+    str_to_f64_bits(s)
+
 fn str_bytes(s: String) -> Tensor[I8, ?] on cpu ! alloc
     str_bytes(s)

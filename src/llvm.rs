@@ -322,6 +322,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_char_to_str(i64)\n");
     s.push_str("declare ptr @sal_str_from_int(i64)\n");
     s.push_str("declare i64 @sal_str_as_int(ptr)\n");
+    s.push_str("declare i64 @sal_str_to_f64_bits(ptr)\n");
     s.push_str("declare ptr @sal_vec_new()\n");
     s.push_str("declare i64 @sal_vec_push(ptr, i64)\n");
     s.push_str("declare i64 @sal_vec_get(ptr, i64)\n");
@@ -2101,6 +2102,12 @@ fn emit_runtime_or_user_call(
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_str_as_int(ptr {a})\n"));
+            }
+        }
+        "sal_str_to_f64_bits" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_str_to_f64_bits(ptr {a})\n"));
             }
         }
         "sal_vec_new" => {

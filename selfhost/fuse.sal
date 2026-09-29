@@ -56,6 +56,20 @@ fn fo_new(kind: Int, a: Int, b: Int, c: Int) -> Int ! alloc
     _d = vec_push(o, c)
     o
 
+fn fo_column(op: Int, lhs: Int, rhs: Int, dest: Int, scalar: Int) -> Int ! alloc
+    o = fo_new(FO_COLUMN(), op, lhs, rhs)
+    _e = vec_push(o, dest)
+    o
+
+fn fused_rhs_is_scalar(right: Int) -> Int ! alloc
+    k = ex_kind(right)
+    if k == EX_INT()
+        1
+    elsif k == EX_FLOAT()
+        1
+    else
+        0
+
 fn fused_arg_name(cx: Int, a: Int) -> Int ! alloc
     if ex_kind(a) == EX_IDENT()
         cx_lookup(cx, vec_get(a, 1))
@@ -68,14 +82,42 @@ fn fused_arg0_name(cx: Int, args: Int) -> Int ! alloc
     else
         str_as_int(d"tmp")
 
+fn fused_op_is_matmul(op: Int) -> Int ! alloc
+    if op == 0
+        0
+    elsif vec_len(op) < 4
+        0
+    elsif vec_get(op, 0) == FO_MATMUL()
+        1
+    else
+        0
+
+fn fused_ops_valid_count(ops: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        op = vec_get(ops, i)
+        if vec_len(op) == 0
+            fused_ops_valid_count(ops, i + 1, n)
+        else
+            rest = fused_ops_valid_count(ops, i + 1, n)
+            1 + rest
+
 fn collect_fused_binary(e: Int, cx: Int, ops: Int) -> Int ! alloc
     left = vec_get(e, 2)
     right = vec_get(e, 3)
     op = vec_get(e, 1)
     lhs = fused_arg_name(cx, left)
     rhs = fused_arg_name(cx, right)
-    dest = str_as_int(d"col")
-    _p = vec_push(ops, fo_new(FO_COLUMN(), lhs, rhs, dest))
+    idx = fused_ops_valid_count(ops, 0, vec_len(ops))
+    dest = str_as_int(d"col_" + int_to_str(idx))
+    scal = 0
+    if fused_rhs_is_scalar(right) == 1
+        scal = str_as_int(d"tmp")
+    else
+        scal = 0
+    oprec = fo_column(op, lhs, rhs, dest, scal)
+    _p = vec_push(ops, oprec)
     0
 
 fn collect_fused_call(e: Int, cx: Int, ops: Int, fname: Int, args: Int) -> Int ! alloc
@@ -83,7 +125,7 @@ fn collect_fused_call(e: Int, cx: Int, ops: Int, fname: Int, args: Int) -> Int !
     if str_eq(fname, "relu") == 1
         if nops > 0
             last = vec_get(ops, nops - 1)
-            if vec_get(last, 0) == FO_MATMUL()
+            if fused_op_is_matmul(last) == 1
                 mmc = vec_get(last, 3)
                 ep = d"_epilogue"
                 dest = str_from_int(mmc) + ep
@@ -96,7 +138,7 @@ fn collect_fused_call(e: Int, cx: Int, ops: Int, fname: Int, args: Int) -> Int !
     elsif str_eq(fname, "map") == 1
         if nops > 0
             last = vec_get(ops, nops - 1)
-            if vec_get(last, 0) == FO_MATMUL()
+            if fused_op_is_matmul(last) == 1
                 mmc = vec_get(last, 3)
                 ep = d"_epilogue"
                 dest = str_from_int(mmc) + ep
@@ -164,8 +206,36 @@ fn estimate_peak_go(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int
         op = vec_get(ops, i)
         if vec_get(op, 0) == FO_MATMUL()
             estimate_peak_mm(r, cx, ops, i, n, static_total, sym, saw, op)
+        elsif vec_get(op, 0) == FO_COLUMN()
+            estimate_peak_col(r, cx, ops, i, n, static_total, sym, saw, op)
         else
             estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
+
+fn estimate_peak_col(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int, sym: String, saw: Int, op: Int) -> Int ! alloc
+    lhs = cx_find(cx, vec_get(op, 2))
+    if lhs == 0
+        piece = str_as_int(d"column_bin(tmp):symbolic")
+        s2 = append_sym_plus(sym, str_from_int(piece))
+        estimate_peak_go(r, cx, ops, i + 1, n, static_total, str_from_int(s2), saw)
+    elsif bind_is_tensor(lhs) == 0
+        piece = str_as_int(d"column_bin(tmp):symbolic")
+        s2 = append_sym_plus(sym, str_from_int(piece))
+        estimate_peak_go(r, cx, ops, i + 1, n, static_total, str_from_int(s2), saw)
+    else
+        pa = peak_tensor_piece(lhs, d"col")
+        pa2 = peak_column_piece(pa)
+        a1 = add_peak_piece(static_total, sym, pa2)
+        estimate_peak_go(r, cx, ops, i + 1, n, vec_get(a1, 0), str_from_int(vec_get(a1, 1)), 1)
+
+fn peak_column_piece(pa: Int) -> Int ! alloc
+    res = vec_new()
+    if vec_get(pa, 0) == 1
+        _a = vec_push(res, 1)
+        _b = vec_push(res, vec_get(pa, 1) * 2)
+        _c = vec_push(res, vec_get(pa, 2))
+        res
+    else
+        pa
 
 fn append_sym_plus(sym: String, piece: String) -> Int ! alloc
     if str_len(sym) > 0
@@ -429,15 +499,53 @@ fn lower_to(cx: Int, e: Int) -> Int ! alloc
 
 fn collect_on_ops(body: Int, cx: Int) -> Int ! alloc
     ops = vec_new()
+    _seed = vec_push(ops, vec_new())
     if body == 0
-        ops
+        fused_ops_drop_empty(ops)
     else
         tail = block_tail(body)
         if tail == 0
-            ops
+            fused_ops_drop_empty(ops)
         else
-            _a = collect_fused(tail, cx, ops)
-            ops
+            if ex_kind(tail) == EX_BINARY()
+                bins = vec_new()
+                _f = flatten_column_bins(tail, bins)
+                _c = collect_column_bins(bins, cx, ops, 0, vec_len(bins))
+            else
+                _a = collect_fused(tail, cx, ops)
+            fused_ops_drop_empty(ops)
+
+fn flatten_column_bins(e: Int, out: Int) -> Int ! alloc
+    if e == 0
+        0
+    elsif ex_kind(e) == EX_BINARY()
+        _l = flatten_column_bins(vec_get(e, 2), out)
+        _r = flatten_column_bins(vec_get(e, 3), out)
+        _p = vec_push(out, e)
+        0
+    else
+        0
+
+fn collect_column_bins(bins: Int, cx: Int, ops: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _c = collect_fused_binary(vec_get(bins, i), cx, ops)
+        collect_column_bins(bins, cx, ops, i + 1, n)
+
+fn fused_ops_drop_empty(ops: Int) -> Int ! alloc
+    out = vec_new()
+    _c = fused_ops_drop_empty_go(ops, out, 0, vec_len(ops))
+    out
+
+fn fused_ops_drop_empty_go(ops: Int, out: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        op = vec_get(ops, i)
+        if vec_len(op) > 0
+            _p = vec_push(out, op)
+        fused_ops_drop_empty_go(ops, out, i + 1, n)
 
 fn fused_flag(has_ep: Int, has_mm: Int, has_col: Int, nops: Int) -> Int ! alloc
     if has_ep == 1
@@ -459,18 +567,45 @@ fn lower_on(cx: Int, e: Int) -> Int ! alloc
     fused = fused_flag(has_ep, has_mm, has_col, vec_len(ops))
     reg = region_new(vec_get(e, 1), ops, fused)
     _e = estimate_peak(reg, cx)
-    d = fresh(cx)
-    _m = lower_on_matmul(cx, ops, d, 0, vec_len(ops))
-    _r = vec_push(cx_regions(cx), reg)
-    d
+    if has_col == 0
+        if has_mm == 0
+            _r = vec_push(cx_regions(cx), reg)
+            lower_block_value(cx, vec_get(e, 2))
+        else
+            d = fresh(cx)
+            _m = lower_on_matmul(cx, ops, d, 0, vec_len(ops))
+            _r = vec_push(cx_regions(cx), reg)
+            if has_ep == 1
+                lower_fused_epilogue_out(cx, ops, d, 0, vec_len(ops))
+            else
+                d
+    else
+        d = fresh(cx)
+        _m = lower_on_matmul(cx, ops, d, 0, vec_len(ops))
+        _r = vec_push(cx_regions(cx), reg)
+        d
 
 fn ops_has_kind(ops: Int, kind: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif vec_get(vec_get(ops, i), 0) == kind
-        1
     else
-        ops_has_kind(ops, kind, i + 1, n)
+        op = vec_get(ops, i)
+        if vec_len(op) == 0
+            ops_has_kind(ops, kind, i + 1, n)
+        elsif vec_get(op, 0) == kind
+            1
+        else
+            ops_has_kind(ops, kind, i + 1, n)
+
+fn lower_fused_epilogue_out(cx: Int, ops: Int, src: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        src
+    else
+        op = vec_get(ops, i)
+        if vec_get(op, 0) == FO_EPILOGUE()
+            ir_call_unary(cx, runtime_name(cx, vec_get(op, 1)), src)
+        else
+            lower_fused_epilogue_out(cx, ops, src, i + 1, n)
 
 fn lower_on_matmul(cx: Int, ops: Int, d: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -528,10 +663,71 @@ fn lower_call_runtime(cx: Int, e: Int, fname: Int, args: Int) -> Int ! alloc
             rname = runtime_name(cx, fname)
             _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
             d
+    elsif str_eq(str_from_int(fname), d"where") == 1
+        lower_where_call(cx, args, arg_names, d)
     else
         rname = runtime_name(cx, fname)
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
         d
+
+fn frame_name_for_where(cx: Int, e: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_IDENT()
+            ty = strenv_type(cx_strenv(cx), vec_get(e, 1))
+            if struct_find(cx_struct_map(cx), ty) != 0
+                ty
+            else
+                0
+        elsif k == EX_CALL()
+            callee = vec_get(e, 1)
+            if struct_find(cx_struct_map(cx), callee) != 0
+                callee
+            else
+                ty = expr_type(e, cx_strenv(cx))
+                if struct_find(cx_struct_map(cx), ty) != 0
+                    ty
+                else
+                    0
+        else
+            ty = expr_type(e, cx_strenv(cx))
+            if struct_find(cx_struct_map(cx), ty) != 0
+                ty
+            else
+                0
+
+fn where_frame_lit(frame_ty: Int) -> Int ! alloc
+    q1 = d"\""
+    mid = str_from_int(frame_ty)
+    q2 = q1 + mid
+    qe = d"\""
+    str_as_int(q2 + qe)
+
+fn lower_where_call(cx: Int, args: Int, arg_names: Int, d: Int) -> Int ! alloc
+    if vec_len(args) < 2
+        _p = push_const_int(cx, d, 0)
+        d
+    else
+        frame_e = vec_get(args, 0)
+        mask_e = vec_get(args, 1)
+        frame_ty = frame_name_for_where(cx, frame_e)
+        if frame_ty == 0
+            _p = push_const_int(cx, d, 0)
+            d
+        else
+            frame_ssa = vec_get(arg_names, 0)
+            mask_ssa = vec_get(arg_names, 1)
+            len_ssa = tensor_row_len_for_expr(cx, mask_e, mask_ssa)
+            argv = vec_new()
+            _a = vec_push(argv, frame_ssa)
+            _b = vec_push(argv, mask_ssa)
+            _c = vec_push(argv, len_ssa)
+            _d = vec_push(argv, where_frame_lit(frame_ty))
+            fnm = str_as_int(d"sal_where")
+            _p = ir_push(cx, ir_call(d, fnm, argv, 1))
+            d
 
 fn lower_call_normal(cx: Int, e: Int) -> Int ! alloc
     fname = vec_get(e, 1)

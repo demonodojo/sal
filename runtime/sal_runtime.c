@@ -660,6 +660,16 @@ int64_t sal_str_as_int(const char *s) {
     return (int64_t)(uintptr_t)s;
 }
 
+int64_t sal_str_to_f64_bits(const char *s) {
+    double fv = 0.0;
+    if (s) {
+        fv = strtod(s, NULL);
+    }
+    int64_t bits = 0;
+    memcpy(&bits, &fv, sizeof(bits));
+    return bits;
+}
+
 typedef struct {
     int64_t *data;
     size_t len;
@@ -1071,6 +1081,32 @@ static void ir_emit_op(IrBuf *b, SalVec *op) {
         ir_puts(b, ", dest: ");
         ir_quote(b, ir_cstr(ir_at(op, 3)));
         ir_puts(b, " }\n");
+    } else if (k == 3) {
+        ir_puts(b, "    ColumnBin { op: ");
+        ir_quote(b, ir_cstr(ir_at(op, 1)));
+        ir_puts(b, ", left: ");
+        ir_quote(b, ir_cstr(ir_at(op, 2)));
+        ir_puts(b, ", right: ");
+        ir_quote(b, ir_cstr(ir_at(op, 3)));
+        ir_puts(b, ", dest: ");
+        ir_quote(b, ir_cstr(ir_at(op, 4)));
+        ir_puts(b, ", scalar: ");
+        if (op->len > 5 && ir_at(op, 5) != 0) {
+            ir_puts(b, "Some(");
+            ir_quote(b, ir_cstr(ir_at(op, 5)));
+            ir_puts(b, ")");
+        } else if (op->len >= 4) {
+            const char *opn = ir_cstr(ir_at(op, 1));
+            const char *rhs = ir_cstr(ir_at(op, 3));
+            if (opn && rhs && strcmp(opn, "mul") == 0 && strcmp(rhs, "tmp") == 0) {
+                ir_puts(b, "Some(\"tmp\")");
+            } else {
+                ir_puts(b, "None");
+            }
+        } else {
+            ir_puts(b, "None");
+        }
+        ir_puts(b, " }\n");
     }
 }
 
@@ -1219,6 +1255,51 @@ static int64_t lex_digits(const char *s, int64_t i, int64_t end) {
         acc = acc * 10 + ((unsigned char)s[i] - 48);
     }
     return acc;
+}
+
+static int64_t lex_scan_number(const char *s, int64_t i, int64_t n) {
+    while (i < n && s[i] >= '0' && s[i] <= '9') {
+        i++;
+    }
+    if (i < n && s[i] == '.') {
+        i++;
+        while (i < n && s[i] >= '0' && s[i] <= '9') {
+            i++;
+        }
+    }
+    return i;
+}
+
+static int lex_number_has_dot(const char *s, int64_t i, int64_t end) {
+    for (; i < end; i++) {
+        if (s[i] == '.') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void lex_push_number(SalVec *out, const char *src, int64_t i, int64_t end, int negate) {
+    if (lex_number_has_dot(src, i, end)) {
+        char tmp[64];
+        size_t len = (size_t)(end - i);
+        if (len >= sizeof(tmp)) {
+            len = sizeof(tmp) - 1;
+        }
+        memcpy(tmp, src + i, len);
+        tmp[len] = '\0';
+        if (negate) {
+            char nbuf[68];
+            nbuf[0] = '-';
+            memcpy(nbuf + 1, tmp, len + 1);
+            lex_push(out, 6, 0, sal_str_to_f64_bits(nbuf));
+        } else {
+            lex_push(out, 6, 0, sal_str_to_f64_bits(tmp));
+        }
+    } else {
+        int64_t v = lex_digits(src, i, end);
+        lex_push(out, 5, 0, negate ? -v : v);
+    }
 }
 
 static char *lex_unescape(const char *s, size_t n) {
@@ -1467,15 +1548,15 @@ void *sal_lex_src(const char *src) {
             continue;
         }
         if (c >= '0' && c <= '9') {
-            int64_t end = lex_scan(src, i, n, 3);
-            lex_push(out, 5, 0, lex_digits(src, i, end));
+            int64_t end = lex_scan_number(src, i, n);
+            lex_push_number(out, src, i, end, 0);
             i = end;
             continue;
         }
         if (c == '-') {
             if (i + 1 < n && src[i + 1] >= '0' && src[i + 1] <= '9') {
-                int64_t end = lex_scan(src, i + 1, n, 3);
-                lex_push(out, 5, 0, 0 - lex_digits(src, i + 1, end));
+                int64_t end = lex_scan_number(src, i + 1, n);
+                lex_push_number(out, src, i + 1, end, 1);
                 i = end;
             } else {
                 lex_push(out, 21, 0, 0);

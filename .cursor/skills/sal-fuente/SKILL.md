@@ -89,7 +89,7 @@ fn row(precio: Tensor[F32, ?] on p, nombre: List[String]) -> Ventas[p]
     Ventas(precio, nombre)
 ```
 
-No uses `to gpu` sobre un frame que tenga columna `String` (`E_PLACE`). Pasa cada columna numérica con `to` por separado. `where(tabla, mascara)` exige máscara `Tensor[I8, ?] on p` del mismo largo de fila (tipado en arranque; filtrado runtime puede estar incompleto).
+No uses `to gpu` sobre un frame que tenga columna `String` (`E_PLACE`). Pasa cada columna numérica con `to` por separado. `where(tabla, mascara)` exige máscara `Tensor[I8, ?] on p` del mismo largo de fila; el arranque expande `sal_where` en LLVM (`sal_tensor_select_*`, `sal_list_select`).
 
 ## Dónde vive cada programa
 

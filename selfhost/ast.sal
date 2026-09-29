@@ -43,10 +43,10 @@ fn ex_int(v: Int) -> Int ! alloc
     _b = vec_push(e, v)
     e
 
-fn ex_float() -> Int ! alloc
+fn ex_float(v: Int) -> Int ! alloc
     e = vec_new()
     _a = vec_push(e, EX_FLOAT())
-    _b = vec_push(e, 0)
+    _b = vec_push(e, v)
     e
 
 fn ex_string(t: String) -> Int ! alloc

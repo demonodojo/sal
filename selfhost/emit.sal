@@ -214,6 +214,28 @@ fn emit_op_epilogue(op: Int) -> String ! alloc
 fn emit_op_softmax(op: Int) -> String ! alloc
     "    Softmax {{ input: " + ir_q() + str_from_int(vec_get(op, 1)) + ir_q() + ", dest: " + ir_q() + str_from_int(vec_get(op, 3)) + ir_q() + " }}\n"
 
+fn emit_column_scalar(op: Int) -> String ! alloc
+    if vec_len(op) > 5
+        scalar = vec_get(op, 5)
+        if scalar == 0
+            d"None"
+        else
+            d"Some(" + ir_q() + str_from_int(scalar) + ir_q() + ")"
+    else
+        opn = str_from_int(vec_get(op, 1))
+        if str_eq(opn, d"mul") == 1
+            rhs = str_from_int(vec_get(op, 3))
+            if str_eq(rhs, d"tmp") == 1
+                d"Some(" + ir_q() + d"tmp" + ir_q() + ")"
+            else
+                d"None"
+        else
+            d"None"
+
+fn emit_op_column(op: Int) -> String ! alloc
+    sc = emit_column_scalar(op)
+    "    ColumnBin {{ op: " + ir_q() + str_from_int(vec_get(op, 1)) + ir_q() + ", left: " + ir_q() + str_from_int(vec_get(op, 2)) + ir_q() + ", right: " + ir_q() + str_from_int(vec_get(op, 3)) + ir_q() + ", dest: " + ir_q() + str_from_int(vec_get(op, 4)) + ir_q() + ", scalar: " + sc + " }}\n"
+
 fn emit_one_op(op: Int) -> String ! alloc
     k = vec_get(op, 0)
     if k == FO_MATMUL()
@@ -222,6 +244,8 @@ fn emit_one_op(op: Int) -> String ! alloc
         emit_op_epilogue(op)
     elsif k == FO_SOFTMAX()
         emit_op_softmax(op)
+    elsif k == FO_COLUMN()
+        emit_op_column(op)
     else
         d""
 
@@ -289,7 +313,7 @@ fn emit_regions(regions: Int, i: Int, n: Int, acc: String) -> String ! alloc
         emit_regions(regions, i + 1, n, acc)
 
 fn ir_to_text(mod: Int) -> String ! alloc
-    ir_text(mod)
+    emit_fns(mod, 0, vec_len(mod), d"")
 
 fn emit_fns(mod: Int, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -593,7 +617,7 @@ fn ensure_sal_lit(s: Int, pool: Int) -> String ! alloc
         cast + ".b)"
 
 fn runtime_decls() -> String ! alloc
-    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\n\n"
+    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\n\n"
 
 fn user_fns_from_prog(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
@@ -839,6 +863,182 @@ fn join_commas(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
         acc = acc + str_from_int(vec_get(parts, i))
         join_commas(parts, i + 1, n, acc)
 
+fn c_row_len_spine(e: Int, env: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_BINARY()
+            c_row_len_spine(vec_get(e, 2), env)
+        else
+            expr_type(e, env)
+
+fn type_row_len_from_handle(ty: Int) -> String ! alloc
+    if ty == 0
+        d"1"
+    else
+        prod = type_concrete_row_len(str_from_int(ty))
+        if prod > 0
+            int_to_str(prod)
+        else
+            d"1"
+
+fn type_concrete_row_len(ty: String) -> Int ! alloc
+    lb = find_char(ty, 91, 0, str_len(ty))
+    if lb < 0
+        0 - 1
+    else
+        rb = find_char(ty, 93, lb, str_len(ty))
+        if rb < 0
+            0 - 1
+        else
+            inner = str_slice(ty, lb + 1, rb)
+            type_dim_product(inner, 0, str_len(inner), 1)
+
+fn type_dim_product(s: String, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        j = skip_spaces(s, i, n)
+        if j >= n
+            acc
+        else
+            k = type_dim_token_end(s, j, n)
+            tok = str_slice(s, j, k)
+            if str_contains(tok, d"?") == 1
+                0 - 1
+            else
+                v = parse_int_digits(tok, 0, str_len(tok), 0)
+                if v <= 0
+                    0 - 1
+                else
+                    type_dim_product(s, k + 1, n, acc * v)
+
+fn type_dim_token_end(s: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        c = str_char(s, i)
+        if c == 44
+            i
+        else
+            type_dim_token_end(s, i + 1, n)
+
+fn emit_c_where_frame_ty(args_e: Int, env: Int) -> Int ! alloc
+    if vec_len(args_e) == 0
+        0
+    else
+        frame_e = vec_get(args_e, 0)
+        k = ex_kind(frame_e)
+        if k == EX_IDENT()
+            ty = strenv_type(env, vec_get(frame_e, 1))
+            if struct_find(strenv_structs(env), ty) != 0
+                ty
+            else
+                0
+        elsif k == EX_CALL()
+            callee = vec_get(frame_e, 1)
+            if struct_find(strenv_structs(env), callee) != 0
+                callee
+            else
+                ty = expr_type(frame_e, env)
+                if struct_find(strenv_structs(env), ty) != 0
+                    ty
+                else
+                    0
+        else
+            ty = expr_type(frame_e, env)
+            if struct_find(strenv_structs(env), ty) != 0
+                ty
+            else
+                0
+
+fn emit_c_where(args_e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
+    env = tc_strenv(tc)
+    frame_ty = emit_c_where_frame_ty(args_e, env)
+    if frame_ty == 0
+        d"0"
+    else
+        frame_e = vec_get(args_e, 0)
+        mask_e = vec_get(args_e, 1)
+        emit_c_where_body(frame_e, mask_e, frame_ty, user, stmts, tc)
+
+fn emit_c_where_body(frame_e: Int, mask_e: Int, frame_ty: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
+    frame_v = emit_c_expr(frame_e, user, stmts, tc)
+    mask_v = emit_c_expr(mask_e, user, stmts, tc)
+    len_v = type_row_len_from_handle(c_row_len_spine(mask_e, tc_strenv(tc)))
+    sd = struct_find(strenv_structs(tc_strenv(tc)), frame_ty)
+    fields = structdef_fields(sd)
+    nfields = vec_len(fields)
+    cnt = tmp_fresh(tc)
+    line = "  int64_t " + cnt + " = sal_mask_select_count((const int8_t *)(uintptr_t)" + mask_v + ", " + len_v + ");\n"
+    _p = vec_push(stmts, str_as_int(line))
+    fv = str_as_int(frame_v)
+    mv = str_as_int(mask_v)
+    lv = str_as_int(len_v)
+    cv = str_as_int(cnt)
+    emit_c_where_fields(fields, 0, nfields, fv, mv, lv, cv, stmts, tc, d"0")
+
+fn emit_c_where_fields(fields: Int, i: Int, n: Int, frame_v: Int, mask_v: Int, len_v: Int, cnt: Int, stmts: Int, tc: Int, last_out: String) -> String ! alloc
+    if i >= n
+        if str_eq(last_out, d"0") == 1
+            d"0"
+        else
+            last_out
+    else
+        fd = vec_get(fields, i)
+        fty = vec_get(fd, 1)
+        fty_s = str_from_int(fty)
+        out = tmp_fresh(tc)
+        fv_s = str_from_int(frame_v)
+        mv_s = str_from_int(mask_v)
+        lv_s = str_from_int(len_v)
+        cnt_s = str_from_int(cnt)
+        if str_contains(fty_s, d"Tensor") == 1
+            if str_contains(fty_s, d"F32") == 1
+                _e = emit_c_where_f32(out, fv_s, mv_s, lv_s, cnt_s, stmts, tc)
+            elsif str_contains(fty_s, d"I8") == 1
+                _e = emit_c_where_i8(out, fv_s, mv_s, lv_s, cnt_s, stmts, tc)
+            else
+                _e = 0
+        elsif str_contains(fty_s, d"List") == 1
+            _e = emit_c_where_list(out, fv_s, mv_s, lv_s, stmts, tc)
+        else
+            _e = 0
+        emit_c_where_fields(fields, i + 1, n, frame_v, mask_v, len_v, cnt, stmts, tc, out)
+
+fn emit_c_where_f32(out: String, col: String, mask_v: String, len_v: String, cnt: String, stmts: Int, tc: Int) -> Int ! alloc
+    heap = tmp_fresh(tc)
+    bline = "  int64_t " + heap + "_bytes = " + cnt + " * 4;\n"
+    _a = vec_push(stmts, str_as_int(bline))
+    mline = "  void *" + heap + " = sal_place_malloc(" + heap + "_bytes, 0);\n"
+    _b = vec_push(stmts, str_as_int(mline))
+    sline = "  sal_tensor_select_f32((float *)(uintptr_t)" + heap + ", (const float *)(uintptr_t)" + col + ", (const int8_t *)(uintptr_t)" + mask_v + ", " + len_v + ");\n"
+    _c = vec_push(stmts, str_as_int(sline))
+    oline = "  int64_t " + out + " = (int64_t)(uintptr_t)" + heap + ";\n"
+    _d = vec_push(stmts, str_as_int(oline))
+    0
+
+fn emit_c_where_i8(out: String, col: String, mask_v: String, len_v: String, cnt: String, stmts: Int, tc: Int) -> Int ! alloc
+    heap = tmp_fresh(tc)
+    bline = "  int64_t " + heap + "_bytes = " + cnt + ";\n"
+    _a = vec_push(stmts, str_as_int(bline))
+    mline = "  void *" + heap + " = sal_place_malloc(" + heap + "_bytes, 0);\n"
+    _b = vec_push(stmts, str_as_int(mline))
+    sline = "  sal_tensor_select_i8((int8_t *)(uintptr_t)" + heap + ", (const int8_t *)(uintptr_t)" + col + ", (const int8_t *)(uintptr_t)" + mask_v + ", " + len_v + ");\n"
+    _c = vec_push(stmts, str_as_int(sline))
+    oline = "  int64_t " + out + " = (int64_t)(uintptr_t)" + heap + ";\n"
+    _d = vec_push(stmts, str_as_int(oline))
+    0
+
+fn emit_c_where_list(out: String, col: String, mask_v: String, len_v: String, stmts: Int, tc: Int) -> Int ! alloc
+    heap = tmp_fresh(tc)
+    mline = "  void *" + heap + " = sal_list_select((void *)(uintptr_t)" + col + ", (const int8_t *)(uintptr_t)" + mask_v + ", " + len_v + ");\n"
+    _b = vec_push(stmts, str_as_int(mline))
+    oline = "  int64_t " + out + " = (int64_t)(uintptr_t)" + heap + ";\n"
+    _d = vec_push(stmts, str_as_int(oline))
+    0
+
 fn emit_c_call(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     fname = vec_get(e, 1)
     args_e = vec_get(e, 2)
@@ -848,6 +1048,8 @@ fn emit_c_call(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
         acc = m + "("
         acc = join_commas(arg_parts, 0, vec_len(arg_parts), acc)
         acc + ")"
+    elsif str_eq(str_from_int(fname), d"where") == 1
+        emit_c_where(args_e, user, stmts, tc)
     elsif struct_find(strenv_structs(tc_strenv(tc)), fname) != 0
         # Transparent struct constructor: the value is its single field.
         if vec_len(arg_parts) == 0
@@ -866,6 +1068,9 @@ fn arg_at(args: Int, i: Int) -> String ! alloc
 fn emit_c_builtin(fname: String, args: Int, stmts: Int) -> String ! alloc
     if str_eq(fname, d"str_as_int") == 1
         arg_at(args, 0)
+    elsif str_eq(fname, d"str_to_f64_bits") == 1
+        a0 = arg_at(args, 0)
+        "sal_str_to_f64_bits((const char *)(uintptr_t)" + a0 + ")"
     elsif str_eq(fname, d"str_from_int") == 1
         arg_at(args, 0)
     elsif str_eq(fname, d"map_new") == 1

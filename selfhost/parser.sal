@@ -370,7 +370,7 @@ fn parse_primary(pr: Int) -> Int ! alloc
         ex_int(tok_ival(t))
     elsif k == TK_FLOAT()
         _a = p_advance(pr)
-        ex_float()
+        ex_float(tok_ival(t))
     elsif k == TK_STRING()
         _a = p_advance(pr)
         ex_string(tok_text(t))
