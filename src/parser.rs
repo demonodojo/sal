@@ -81,7 +81,17 @@ impl Parser {
         if self.at(TokenKind::Import) {
             let sp = self.bump().span;
             let path = self.parse_import_path()?;
-            Ok(Item::Import(Import { path, span: sp }))
+            let alias = if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "as") {
+                self.bump();
+                Some(self.parse_ident()?)
+            } else {
+                None
+            };
+            Ok(Item::Import(Import {
+                path,
+                alias,
+                span: sp,
+            }))
         } else if self.at(TokenKind::Struct) {
             Ok(Item::Struct(self.parse_struct()?))
         } else if self.at(TokenKind::Enum) {
@@ -362,6 +372,33 @@ impl Parser {
             let name = self.parse_ident()?;
             if name == "Tensor" {
                 return self.parse_tensor_type(span);
+            }
+            if self.at(TokenKind::Dot) {
+                self.bump();
+                let member = self.parse_ident()?;
+                let mut args = Vec::new();
+                if self.at(TokenKind::LBracket) {
+                    self.bump();
+                    self.enter_group();
+                    self.skip_group_newlines();
+                    while !self.at(TokenKind::RBracket) {
+                        args.push(self.parse_type()?);
+                        self.skip_group_newlines();
+                        if self.at(TokenKind::Comma) {
+                            self.bump();
+                            self.skip_group_newlines();
+                        }
+                    }
+                    self.skip_group_newlines();
+                    self.expect(TokenKind::RBracket, "expected ]")?;
+                    self.leave_group();
+                }
+                return Ok(Type::Qualified {
+                    qual: name,
+                    name: member,
+                    args,
+                    span,
+                });
             }
             let mut args = Vec::new();
             if self.at(TokenKind::LBracket) {
@@ -1101,7 +1138,16 @@ impl Parser {
             TokenKind::Ident(_) => {
                 let sp = self.peek().span;
                 let name = self.parse_ident()?;
-                if self.at(TokenKind::LParen) {
+                if self.at(TokenKind::Dot) {
+                    self.bump();
+                    let member = self.parse_ident()?;
+                    if !self.at(TokenKind::LParen) {
+                        return Err(Diagnostic::new(
+                            ErrorCode::EParse,
+                            "expected ( after qualified variant pattern",
+                            self.peek().span,
+                        ));
+                    }
                     self.bump();
                     let mut args = Vec::new();
                     if !self.at(TokenKind::RParen) {
@@ -1115,7 +1161,32 @@ impl Parser {
                         }
                     }
                     self.expect(TokenKind::RParen, "expected ) in pattern")?;
-                    Ok(Pattern::Variant { name, args, span: sp })
+                    Ok(Pattern::Variant {
+                        qual: Some(name),
+                        name: member,
+                        args,
+                        span: sp,
+                    })
+                } else if self.at(TokenKind::LParen) {
+                    self.bump();
+                    let mut args = Vec::new();
+                    if !self.at(TokenKind::RParen) {
+                        loop {
+                            args.push(self.parse_pattern()?);
+                            if self.at(TokenKind::Comma) {
+                                self.bump();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(TokenKind::RParen, "expected ) in pattern")?;
+                    Ok(Pattern::Variant {
+                        qual: None,
+                        name,
+                        args,
+                        span: sp,
+                    })
                 } else {
                     Ok(Pattern::Ident(name, sp))
                 }

@@ -400,6 +400,28 @@ fn import_path_is_left_recursive() {
 }
 
 #[test]
+fn import_as_and_qualified_type() {
+    let p = assert_parse("import lexer as lx\n");
+    assert!(matches!(
+        &p.items[0],
+        Item::Import(i) if i.path == "lexer" && i.alias.as_deref() == Some("lx")
+    ));
+    let p = assert_parse("import \"std/prelude.sal\" as pre\n");
+    assert!(matches!(
+        &p.items[0],
+        Item::Import(i) if i.path == "std/prelude.sal" && i.alias.as_deref() == Some("pre")
+    ));
+    let p = assert_parse("fn f() -> lx.Token\n    0\n");
+    match &p.items[0] {
+        Item::Fn(f) => assert!(matches!(
+            &f.ret,
+            Type::Qualified { qual, name, .. } if qual == "lx" && name == "Token"
+        )),
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
 fn if_without_else_has_no_else_block() {
     match tail_of(
         "fn f() -> Int\n    if true\n        1\n",

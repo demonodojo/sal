@@ -470,7 +470,7 @@ fn consume_if_unique(
 
 fn is_copy_type(ty: &Type) -> bool {
     match ty {
-        Type::Named { name, .. } => {
+        Type::Named { name, .. } | Type::Qualified { name, .. } => {
             matches!(name.as_str(), "Int" | "Float" | "Bool" | "Unit" | "Unknown")
         }
         Type::Tensor { .. } | Type::Fn { .. } => false,
@@ -487,7 +487,7 @@ fn is_copy_type_ext_rec(
     visiting: &mut HashSet<String>,
 ) -> bool {
     match ty {
-        Type::Named { name, .. } => {
+        Type::Named { name, .. } | Type::Qualified { name, .. } => {
             if matches!(name.as_str(), "Int" | "Float" | "Bool" | "Unit" | "Unknown") {
                 return true;
             }
@@ -575,7 +575,10 @@ fn named(name: &str, span: Span) -> Type {
 
 fn ty_with_span(mut ty: Type, span: Span) -> Type {
     match &mut ty {
-        Type::Named { span: s, .. } | Type::Tensor { span: s, .. } | Type::Fn { span: s, .. } => {
+        Type::Named { span: s, .. }
+        | Type::Qualified { span: s, .. }
+        | Type::Tensor { span: s, .. }
+        | Type::Fn { span: s, .. } => {
             *s = span;
         }
     }

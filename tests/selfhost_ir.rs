@@ -403,6 +403,72 @@ fn selfhost_import_two_modules_run() {
 }
 
 #[test]
+fn selfhost_import_alias_ir_and_run() {
+    let project = root();
+    let main_path = project.join("examples/import_alias.sal");
+
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: project.clone(),
+        skip_link: true,
+    };
+    let boot_ir = {
+        let _guard = LINK_LOCK.lock().expect("link lock");
+        compile_file(&main_path, &opts)
+            .expect("bootstrap compile import_alias")
+            .ir_text
+    };
+
+    let stage1 = compile_selfhost(false);
+    let ir1 = run_emit_ir_in(&stage1, &main_path, &project, "import-alias-ir-s1");
+    assert_eq!(
+        boot_ir, ir1,
+        "bootstrap vs stage1 IR for import alias example"
+    );
+
+    let bin = PathBuf::from(format!(
+        "/tmp/sal-import-alias-bin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let status = Command::new(&stage1)
+        .arg(&main_path)
+        .arg("-o")
+        .arg(&bin)
+        .env("SAL_PROJECT_ROOT", &project)
+        .current_dir(&project)
+        .output()
+        .expect("stage1 -o import_alias");
+    assert_eq!(
+        status.status.code(),
+        Some(0),
+        "stage1 -o import_alias failed: stderr={}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let run = Command::new(&bin).output().expect("run import_alias bin");
+    assert_eq!(
+        run.status.code(),
+        Some(10),
+        "import_alias must return L.helper() == 10: stderr={} stdout={}",
+        String::from_utf8_lossy(&run.stderr),
+        String::from_utf8_lossy(&run.stdout)
+    );
+
+    let stage2 = compile_stage2(&stage1);
+    let ir2 = run_emit_ir_in(&stage2, &main_path, &project, "import-alias-ir-s2");
+    assert_eq!(
+        boot_ir, ir2,
+        "bootstrap vs stage2 IR for import alias example"
+    );
+    assert_eq!(ir1, ir2, "stage1 vs stage2 IR for import alias example");
+}
+
+#[test]
 fn selfhost_instrumented_clean_on_hello() {
     let bin = compile_selfhost(true);
     let hello = root().join("examples/hello.sal");

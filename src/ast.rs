@@ -51,6 +51,8 @@ pub struct FrameDef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Import {
     pub path: String,
+    #[serde(default)]
+    pub alias: Option<String>,
     pub span: Span,
 }
 
@@ -105,6 +107,12 @@ pub enum TypeArg {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Type {
     Named {
+        name: String,
+        args: Vec<Type>,
+        span: Span,
+    },
+    Qualified {
+        qual: String,
         name: String,
         args: Vec<Type>,
         span: Span,
@@ -338,6 +346,8 @@ pub enum Pattern {
     Ident(String, Span),
     Int(i64, Span),
     Variant {
+        #[serde(default)]
+        qual: Option<String>,
         name: String,
         args: Vec<Pattern>,
         span: Span,
@@ -412,6 +422,7 @@ impl Type {
     pub fn span(&self) -> Span {
         match self {
             Type::Named { span, .. }
+            | Type::Qualified { span, .. }
             | Type::Tensor { span, .. }
             | Type::Fn { span, .. } => *span,
         }

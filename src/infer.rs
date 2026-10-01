@@ -74,6 +74,16 @@ fn infer_fn(f: &FnDef, types: &TypeEnv) -> DiagResult<Vec<ExprTypeEntry>> {
 /// Reject illegal tensor element types and unknown nominal types.
 fn check_type_well_formed(ty: &Type, types: &TypeEnv) -> DiagResult<()> {
     match ty {
+        Type::Qualified { name, args, span, .. } => {
+            check_type_well_formed(
+                &Type::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                    span: *span,
+                },
+                types,
+            )
+        }
         Type::Named { name, args, span } => {
             if name == "Tensor" {
                 // Named Tensor without going through Type::Tensor — treat elem arg.
@@ -621,6 +631,7 @@ fn bind_pattern(
             Ok(())
         }
         Pattern::Variant {
+            qual: _,
             name: variant,
             args,
             span,
@@ -670,6 +681,20 @@ fn bind_pattern(
 
 pub fn subst_type_params(ty: &Type, params: &[String], args: &[Type], span: Span) -> Type {
     match ty {
+        Type::Qualified {
+            qual,
+            name,
+            args: nested,
+            ..
+        } => Type::Qualified {
+            qual: qual.clone(),
+            name: name.clone(),
+            args: nested
+                .iter()
+                .map(|a| subst_type_params(a, params, args, span))
+                .collect(),
+            span,
+        },
         Type::Named {
             name,
             args: nested,
@@ -719,7 +744,10 @@ pub fn subst_type_params(ty: &Type, params: &[String], args: &[Type], span: Span
 
 fn ty_with_span(mut ty: Type, span: Span) -> Type {
     match &mut ty {
-        Type::Named { span: s, .. } | Type::Tensor { span: s, .. } | Type::Fn { span: s, .. } => {
+        Type::Named { span: s, .. }
+        | Type::Qualified { span: s, .. }
+        | Type::Tensor { span: s, .. }
+        | Type::Fn { span: s, .. } => {
             *s = span;
         }
     }
@@ -1897,7 +1925,7 @@ fn infer_dict_get(
 
 pub fn type_name(t: &Type) -> String {
     match t {
-        Type::Named { name, .. } => name.clone(),
+        Type::Named { name, .. } | Type::Qualified { name, .. } => name.clone(),
         Type::Tensor { elem, .. } => format!("Tensor[{elem:?}]"),
         Type::Fn { .. } => "fn".into(),
     }

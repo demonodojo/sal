@@ -214,9 +214,11 @@ fn prog_new() -> Int ! alloc
     fns = vec_new()
     imps = vec_new()
     structs = vec_new()
+    imp_aliases = vec_new()
     _a = vec_push(pr, fns)
     _b = vec_push(pr, imps)
     _c = vec_push(pr, structs)
+    _d = vec_push(pr, imp_aliases)
     pr
 
 fn prog_fns(pr: Int) -> Int ! alloc
@@ -227,6 +229,21 @@ fn prog_imports(pr: Int) -> Int ! alloc
 
 fn prog_structs(pr: Int) -> Int ! alloc
     vec_get(pr, 2)
+
+fn prog_import_aliases(pr: Int) -> Int ! alloc
+    if vec_len(pr) > 3
+        vec_get(pr, 3)
+    else
+        0
+
+fn prog_import_alias_at(pr: Int, i: Int) -> Int ! alloc
+    al = prog_import_aliases(pr)
+    if al == 0
+        0
+    elsif i >= vec_len(al)
+        0
+    else
+        vec_get(al, i)
 
 # Local String typer, the mirror of the bootstrap's typed decision for `+`
 # (src/string_expr.rs). A strenv is `[len, fnrets, structs, name, ty, ...]`:

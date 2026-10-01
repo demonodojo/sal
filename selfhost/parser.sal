@@ -244,6 +244,21 @@ fn binop_name(k: Int) -> String ! alloc
 fn parse_expr(pr: Int) -> Int ! alloc
     parse_binary(pr, 0)
 
+fn call_name_from_expr(e: Int) -> String ! alloc
+    k = ex_kind(e)
+    if k == EX_IDENT()
+        str_from_int(vec_get(e, 1))
+    elsif k == EX_FIELD()
+        base = vec_get(e, 1)
+        fld = str_from_int(vec_get(e, 2))
+        if ex_kind(base) == EX_IDENT()
+            qual = str_from_int(vec_get(base, 1))
+            qual + "." + fld
+        else
+            d""
+    else
+        d""
+
 fn parse_postfix_go(pr: Int, e: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(p_peek(pr)) == TK_DOT()
@@ -252,6 +267,17 @@ fn parse_postfix_go(pr: Int, e: Int) -> Int ! alloc
             t = p_advance(pr)
             fld = tok_text(t)
             parse_postfix_go(pr, ex_field(e, fld))
+        else
+            e
+    elsif tok_kind(p_peek(pr)) == TK_LPAREN()
+        nm = call_name_from_expr(e)
+        if str_len(nm) > 0
+            _a = p_advance(pr)
+            _g = p_enter_group(pr)
+            args = vec_new()
+            args2 = parse_arg_list(pr, args)
+            _h = p_leave_group(pr)
+            parse_postfix_go(pr, ex_call(nm, args2))
         else
             e
     else
@@ -702,6 +728,21 @@ fn parse_import_path_dots(pr: Int, path: String) -> String ! alloc
     else
         path
 
+fn parse_optional_import_as(pr: Int) -> Int ! alloc
+    if tok_kind(p_peek(pr)) == TK_IDENT()
+        if str_eq(tok_text(p_peek(pr)), d"as") == 1
+            _a = p_advance(pr)
+            if tok_kind(p_peek(pr)) == TK_IDENT()
+                t = p_advance(pr)
+                str_as_int(tok_text(t))
+            else
+                _e = p_set_err(pr, d"parse error: expected import alias name")
+                0
+        else
+            0
+    else
+        0
+
 fn parse_import_path(pr: Int) -> String ! alloc
     t = p_peek(pr)
     k = tok_kind(t)
@@ -739,7 +780,9 @@ fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
     elsif k == TK_IMPORT()
         _i = p_advance(pr)
         path = parse_import_path(pr)
+        alias = parse_optional_import_as(pr)
         _b = vec_push(prog_imports(prog), str_as_int(path))
+        _c = vec_push(prog_import_aliases(prog), alias)
         parse_program_go(pr, prog)
     elsif k == TK_STRUCT()
         sd = parse_struct(pr)

@@ -296,6 +296,36 @@ fn import_change_invalidates_importer_cache() {
 }
 
 #[test]
+fn import_as_two_modules_run() {
+    let tmp = isolated_root();
+    let project = tmp.path().to_path_buf();
+    let left = project.join("left.sal");
+    let right = project.join("right.sal");
+    let main = project.join("main.sal");
+    fs::write(&left, "fn helper() -> Int\n    10\n").expect("write left");
+    fs::write(&right, "fn helper() -> Int\n    32\n").expect("write right");
+    fs::write(
+        &main,
+        "import \"./left.sal\" as L\nimport \"./right.sal\" as R\n\nfn main() -> Int\n    _ = L.helper()\n    0\n",
+    )
+    .expect("write main");
+    let opts = CompileOptions {
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: project,
+        skip_link: false,
+    };
+    let art = compile_file(&main, &opts).expect("compile import-as graph");
+    let bin = art.binary.expect("binary");
+    let out = std::process::Command::new(&bin)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
 fn import_two_modules_run() {
     let tmp = isolated_root();
     let project = tmp.path().to_path_buf();

@@ -88,7 +88,7 @@ fn push_candidates(out: &mut Vec<PathBuf>, base: &Path, import_path: &str) {
     }
 }
 
-fn path_key(path: &Path) -> PathBuf {
+pub(crate) fn path_key(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
@@ -105,11 +105,13 @@ pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGr
         &mut stack,
         None,
     )?;
-    Ok(ModuleGraph {
+    let mut graph = ModuleGraph {
         root: root.clone(),
         project_root: project_root.to_path_buf(),
         order,
-    })
+    };
+    crate::qualify::qualify_module_graph(&mut graph)?;
+    Ok(graph)
 }
 
 fn load_module_recursive(
@@ -259,17 +261,69 @@ fn merge_exports(
     Ok(())
 }
 
+/// Transitive dependencies reachable without `import … as` (flattened into the type env).
+pub(crate) fn flat_transitive_import_modules<'a>(
+    module: &'a LoadedModule,
+    graph: &'a ModuleGraph,
+) -> Result<Vec<&'a LoadedModule>, Vec<Diagnostic>> {
+    let mut out: Vec<&LoadedModule> = Vec::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    walk_flat_imports(module, graph, &mut visited, &mut out)?;
+    Ok(out)
+}
+
+fn walk_flat_imports<'a>(
+    module: &'a LoadedModule,
+    graph: &'a ModuleGraph,
+    visited: &mut HashSet<PathBuf>,
+    out: &mut Vec<&'a LoadedModule>,
+) -> Result<(), Vec<Diagnostic>> {
+    for item in &module.program.items {
+        let Item::Import(imp) = item else {
+            continue;
+        };
+        if imp.alias.is_some() {
+            continue;
+        }
+        let Some(dep_path) = resolve_import_path_with_manifest(
+            &imp.path,
+            &module.path,
+            &graph.project_root,
+        ) else {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!("import not found: {}", imp.path),
+                imp.span,
+            )]);
+        };
+        let key = path_key(&dep_path);
+        if !visited.insert(key.clone()) {
+            continue;
+        }
+        let Some(dep) = graph
+            .order
+            .iter()
+            .find(|m| path_key(&m.path) == key)
+        else {
+            continue;
+        };
+        walk_flat_imports(dep, graph, visited, out)?;
+        out.push(dep);
+    }
+    Ok(())
+}
+
 fn transitive_import_modules<'a>(
     module: &'a LoadedModule,
     graph: &'a ModuleGraph,
 ) -> Result<Vec<&'a LoadedModule>, Vec<Diagnostic>> {
     let mut out: Vec<&LoadedModule> = Vec::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    walk_imports(module, graph, &mut visited, &mut out)?;
+    walk_all_imports(module, graph, &mut visited, &mut out)?;
     Ok(out)
 }
 
-fn walk_imports<'a>(
+fn walk_all_imports<'a>(
     module: &'a LoadedModule,
     graph: &'a ModuleGraph,
     visited: &mut HashSet<PathBuf>,
@@ -301,7 +355,7 @@ fn walk_imports<'a>(
         else {
             continue;
         };
-        walk_imports(dep, graph, visited, out)?;
+        walk_all_imports(dep, graph, visited, out)?;
         out.push(dep);
     }
     Ok(())
@@ -313,7 +367,7 @@ pub fn type_env_for_module(
     graph: &ModuleGraph,
 ) -> Result<crate::infer::TypeEnv, Vec<Diagnostic>> {
     let mut imports = ModuleExports::default();
-    for dep in transitive_import_modules(module, graph)? {
+    for dep in flat_transitive_import_modules(module, graph)? {
         let exp = exports_for_module(dep);
         let span = module
             .program

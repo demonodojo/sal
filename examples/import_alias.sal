@@ -1,0 +1,5 @@
+import "import_alias_left.sal" as L
+import "import_alias_right.sal" as R
+
+fn main() -> Int
+    L.helper()

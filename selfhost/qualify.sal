@@ -1,0 +1,665 @@
+# Import qualifiers and export link names (mirror of src/qualify.rs).
+import result
+import ast
+import modules
+import lexer
+
+fn str_replace_chr(s: String, ch: Int, rep: String) -> String ! alloc
+    str_replace_chr_go(s, 0, str_len(s), ch, rep, d"")
+
+fn str_replace_chr_go(s: String, i: Int, n: Int, ch: Int, rep: String, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        c = str_char(s, i)
+        if c == ch
+            str_replace_chr_go(s, i + 1, n, ch, rep, acc + rep)
+        else
+            str_replace_chr_go(s, i + 1, n, ch, rep, acc + char_to_str(c))
+
+fn implicit_qualifier(import_path: String) -> String ! alloc
+    base = import_path
+    if str_len(base) >= 4
+        if str_eq(str_slice(base, str_len(base) - 4, str_len(base)), d".sal") == 1
+            base = str_slice(base, 0, str_len(base) - 4)
+        else
+            base = base
+    else
+        base = base
+    seg = basename_path(base)
+    if str_len(seg) == 0
+        d""
+    else
+        seg
+
+fn modid_from_path(path: String, proot: String) -> String ! alloc
+    pl = str_len(proot)
+    n = str_len(path)
+    rel = modid_rel_path(path, proot, n, pl)
+    s = str_replace_chr(rel, 47, d"__")
+    if str_len(s) >= 4
+        if str_eq(str_slice(s, str_len(s) - 4, str_len(s)), d".sal") == 1
+            s = str_slice(s, 0, str_len(s) - 4)
+        else
+            s = s
+    else
+        s = s
+    s2 = str_replace_chr(s, 46, d"_")
+    if str_len(s2) == 0
+        d"root"
+    else
+        s2
+
+fn modid_rel_path(path: String, proot: String, n: Int, pl: Int) -> String ! alloc
+    if pl == 0
+        path
+    elsif n <= pl + 1
+        path
+    elsif substr_eq_at(path, 0, proot, 0, pl) == 0
+        path
+    elsif str_char(path, pl) != 47
+        path
+    else
+        str_slice(path, pl + 1, n)
+
+fn link_name(modid: String, name: String, clashing: Int) -> String ! alloc
+    if clashing == 1
+        modid + d"__" + name
+    else
+        name
+
+fn export_fn_names(prog: Int, out: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    export_fn_names_go(fns, 0, vec_len(fns), out)
+
+fn export_fn_names_go(fns: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        f = vec_get(fns, i)
+        _p = vec_push(out, vec_get(f, 0))
+        export_fn_names_go(fns, i + 1, n, out)
+
+fn export_struct_names(prog: Int, out: Int) -> Int ! alloc
+    sts = prog_structs(prog)
+    export_struct_names_go(sts, 0, vec_len(sts), out)
+
+fn export_struct_names_go(sts: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        s = vec_get(sts, i)
+        _p = vec_push(out, structdef_name(s))
+        export_struct_names_go(sts, i + 1, n, out)
+
+fn name_clash_count(order: Int, n: Int, name: Int) -> Int ! alloc
+    name_clash_count_go(order, 0, n, name, 0)
+
+fn name_clash_count_go(order: Int, i: Int, n: Int, name: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        m = vec_get(order, i)
+        prog = mod_prog(m)
+        if find_fn_named_in_prog(prog, name) != 0
+            name_clash_count_go(order, i + 1, n, name, acc + 1)
+        elsif struct_named_in_prog(prog, name) != 0
+            name_clash_count_go(order, i + 1, n, name, acc + 1)
+        else
+            name_clash_count_go(order, i + 1, n, name, acc)
+
+fn struct_named_in_prog(prog: Int, name: Int) -> Int ! alloc
+    struct_named_in_sts(prog_structs(prog), name, 0, vec_len(prog_structs(prog)))
+
+fn struct_named_in_sts(sts: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        s = vec_get(sts, i)
+        if str_eq(structdef_name(s), name) == 1
+            s
+        else
+            struct_named_in_sts(sts, name, i + 1, n)
+
+fn name_is_clashing(order: Int, n: Int, name: Int) -> Int ! alloc
+    if name_clash_count(order, n, name) > 1
+        1
+    else
+        0
+
+fn graph_has_import_alias(order: Int, n: Int) -> Int ! alloc
+    graph_has_import_alias_go(order, 0, n)
+
+fn graph_has_import_alias_go(order: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        m = vec_get(order, i)
+        prog = mod_prog(m)
+        imps = prog_imports(prog)
+        if import_alias_any(prog, imps, 0, vec_len(imps)) == 1
+            1
+        else
+            graph_has_import_alias_go(order, i + 1, n)
+
+fn import_alias_any(prog: Int, imps: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        if prog_import_alias_at(prog, i) != 0
+            1
+        else
+            import_alias_any(prog, imps, i + 1, n)
+
+fn graph_has_any_clash(order: Int, n: Int) -> Int ! alloc
+    graph_has_any_clash_go(order, 0, n)
+
+fn graph_has_any_clash_go(order: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        m = vec_get(order, i)
+        prog = mod_prog(m)
+        fns = prog_fns(prog)
+        if fn_list_has_clash(order, n, fns, 0, vec_len(fns)) == 1
+            1
+        else
+            sts = prog_structs(prog)
+            if struct_list_has_clash(order, n, sts, 0, vec_len(sts)) == 1
+                1
+            else
+                graph_has_any_clash_go(order, i + 1, n)
+
+fn fn_list_has_clash(order: Int, n: Int, fns: Int, i: Int, fn_n: Int) -> Int ! alloc
+    if i >= fn_n
+        0
+    else
+        f = vec_get(fns, i)
+        if name_is_clashing(order, n, vec_get(f, 0)) == 1
+            1
+        else
+            fn_list_has_clash(order, n, fns, i + 1, fn_n)
+
+fn struct_list_has_clash(order: Int, n: Int, sts: Int, i: Int, sn: Int) -> Int ! alloc
+    if i >= sn
+        0
+    else
+        s = vec_get(sts, i)
+        if name_is_clashing(order, n, structdef_name(s)) == 1
+            1
+        else
+            struct_list_has_clash(order, n, sts, i + 1, sn)
+
+fn needs_qualify(order: Int, n: Int) -> Int ! alloc
+    if graph_has_import_alias(order, n) == 1
+        1
+    elsif graph_has_any_clash(order, n) == 1
+        1
+    else
+        0
+
+fn links_push(links: Int, dep_key: Int, export_name: Int, link: Int) -> Int ! alloc
+    row = vec_new()
+    _a = vec_push(row, dep_key)
+    _b = vec_push(row, export_name)
+    _c = vec_push(row, link)
+    _p = vec_push(links, row)
+    links
+
+fn build_export_links(order: Int, n: Int, proot: String) -> Int ! alloc
+    links = vec_new()
+    build_export_links_go(order, 0, n, proot, links)
+
+fn build_export_links_go(order: Int, i: Int, n: Int, proot: String, links: Int) -> Int ! alloc
+    if i >= n
+        links
+    else
+        m = vec_get(order, i)
+        key = mod_key(m)
+        path = str_from_int(mod_path(m))
+        modid = modid_from_path(path, proot)
+        prog = mod_prog(m)
+        links2 = push_fn_links(order, n, key, modid, prog, links)
+        links3 = push_struct_links(order, n, key, modid, prog, links2)
+        build_export_links_go(order, i + 1, n, proot, links3)
+
+fn push_fn_links(order: Int, n: Int, key: Int, modid: String, prog: Int, links: Int) -> Int ! alloc
+    push_fn_links_go(order, n, key, modid, prog_fns(prog), 0, vec_len(prog_fns(prog)), links)
+
+fn push_fn_links_go(order: Int, n: Int, key: Int, modid: String, fns: Int, i: Int, fn_n: Int, links: Int) -> Int ! alloc
+    if i >= fn_n
+        links
+    else
+        f = vec_get(fns, i)
+        nm = vec_get(f, 0)
+        clash = name_is_clashing(order, n, nm)
+        lk = str_as_int(link_name(modid, str_from_int(nm), clash))
+        links2 = links_push(links, key, nm, lk)
+        push_fn_links_go(order, n, key, modid, fns, i + 1, fn_n, links2)
+
+fn push_struct_links(order: Int, n: Int, key: Int, modid: String, prog: Int, links: Int) -> Int ! alloc
+    push_struct_links_go(order, n, key, modid, prog_structs(prog), 0, vec_len(prog_structs(prog)), links)
+
+fn push_struct_links_go(order: Int, n: Int, key: Int, modid: String, sts: Int, i: Int, sn: Int, links: Int) -> Int ! alloc
+    if i >= sn
+        links
+    else
+        s = vec_get(sts, i)
+        nm = structdef_name(s)
+        clash = name_is_clashing(order, n, nm)
+        lk = str_as_int(link_name(modid, str_from_int(nm), clash))
+        links2 = links_push(links, key, nm, lk)
+        push_struct_links_go(order, n, key, modid, sts, i + 1, sn, links2)
+
+fn export_link_lookup(links: Int, dep_key: Int, item: Int) -> Int ! alloc
+    export_link_lookup_go(links, 0, vec_len(links), dep_key, item)
+
+fn export_link_lookup_go(links: Int, i: Int, n: Int, dep_key: Int, item: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        row = vec_get(links, i)
+        if str_eq(vec_get(row, 0), dep_key) == 1
+            if str_eq(vec_get(row, 1), item) == 1
+                vec_get(row, 2)
+            else
+                export_link_lookup_go(links, i + 1, n, dep_key, item)
+        else
+            export_link_lookup_go(links, i + 1, n, dep_key, item)
+
+fn quals_push(quals: Int, qual: Int, dep_key: Int) -> Int ! alloc
+    row = vec_new()
+    _a = vec_push(row, qual)
+    _b = vec_push(row, dep_key)
+    _p = vec_push(quals, row)
+    quals
+
+fn qualifier_dep(explicit: Int, implicit: Int, qual: Int) -> Int ! alloc
+    k = qualifier_dep_in(explicit, qual)
+    if k != 0
+        k
+    else
+        qualifier_dep_in(implicit, qual)
+
+fn qualifier_dep_in(quals: Int, qual: Int) -> Int ! alloc
+    qualifier_dep_in_go(quals, 0, vec_len(quals), qual)
+
+fn qualifier_dep_in_go(quals: Int, i: Int, n: Int, qual: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        row = vec_get(quals, i)
+        if str_eq(vec_get(row, 0), qual) == 1
+            vec_get(row, 1)
+        else
+            qualifier_dep_in_go(quals, i + 1, n, qual)
+
+fn local_fn_name(prog: Int, name: Int) -> Int ! alloc
+    if find_fn_named_in_prog(prog, name) == 0
+        0
+    else
+        1
+
+fn local_struct_name(prog: Int, name: Int) -> Int ! alloc
+    if struct_named_in_prog(prog, name) == 0
+        0
+    else
+        1
+
+fn module_qualifiers(m: Int, graph: Int, proot: String) -> Int ! io, alloc
+    explicit = vec_new()
+    implicit = vec_new()
+    prog = mod_prog(m)
+    imps = prog_imports(prog)
+    mpath = str_from_int(mod_path(m))
+    module_qualifiers_go(prog, imps, 0, vec_len(imps), mpath, proot, graph, explicit, implicit)
+
+fn module_qualifiers_go(prog: Int, imps: Int, i: Int, n: Int, mpath: String, proot: String, graph: Int, explicit: Int, implicit: Int) -> Int ! io, alloc
+    if i >= n
+        ctx = vec_new()
+        _a = vec_push(ctx, explicit)
+        _b = vec_push(ctx, implicit)
+        result_ok(ctx)
+    else
+        imp = str_from_int(vec_get(imps, i))
+        alias = prog_import_alias_at(prog, i)
+        dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
+        if str_len(dep_path) == 0
+            module_qualifiers_go(prog, imps, i + 1, n, mpath, proot, graph, explicit, implicit)
+        else
+            dep_key = str_as_int(path_key(dep_path))
+            if alias != 0
+                if local_fn_name(prog, alias) == 1
+                    result_err_str(d"import alias conflicts with a local item")
+                elsif local_struct_name(prog, alias) == 1
+                    result_err_str(d"import alias conflicts with a local item")
+                elsif qualifier_dep_in(explicit, alias) != 0
+                    result_err_str(d"duplicate import alias")
+                else
+                    ex2 = quals_push(explicit, alias, dep_key)
+                    module_qualifiers_go(prog, imps, i + 1, n, mpath, proot, graph, ex2, implicit)
+            else
+                iq = implicit_qualifier(imp)
+                if str_len(iq) == 0
+                    module_qualifiers_go(prog, imps, i + 1, n, mpath, proot, graph, explicit, implicit)
+                else
+                    iqh = str_as_int(iq)
+                    if local_fn_name(prog, iqh) == 1
+                        module_qualifiers_go(prog, imps, i + 1, n, mpath, proot, graph, explicit, implicit)
+                    elsif local_struct_name(prog, iqh) == 1
+                        module_qualifiers_go(prog, imps, i + 1, n, mpath, proot, graph, explicit, implicit)
+                    elsif qualifier_dep_in(implicit, iqh) != 0
+                        result_err_str(d"ambiguous implicit qualifier")
+                    else
+                        im2 = quals_push(implicit, iqh, dep_key)
+                        module_qualifiers_go(prog, imps, i + 1, n, mpath, proot, graph, explicit, im2)
+
+fn split_qual_member(name: String) -> Int ! alloc
+    dot = find_char(name, 46, 0, str_len(name))
+    if dot < 0
+        0
+    else
+        pair = vec_new()
+        _a = vec_push(pair, str_as_int(str_slice(name, 0, dot)))
+        _b = vec_push(pair, str_as_int(str_slice(name, dot + 1, str_len(name))))
+        pair
+
+fn resolve_qualified_item(ctx: Int, links: Int, qual: Int, member: Int) -> Int ! alloc
+    explicit = vec_get(ctx, 0)
+    implicit = vec_get(ctx, 1)
+    dep = qualifier_dep(explicit, implicit, qual)
+    if dep == 0
+        0
+    else
+        export_link_lookup(links, dep, member)
+
+fn qualify_type_handle(ty: Int, ctx: Int, links: Int) -> Int ! alloc
+    if ty == 0
+        0
+    else
+        s = str_from_int(ty)
+        pair = split_qual_member(s)
+        if pair == 0
+            ty
+        else
+            qual = vec_get(pair, 0)
+            member = vec_get(pair, 1)
+            lk = resolve_qualified_item(ctx, links, qual, member)
+            if lk == 0
+                ty
+            else
+                lk
+
+fn qualify_expr(e: Int, ctx: Int, links: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_FIELD()
+            base = vec_get(e, 1)
+            fld = vec_get(e, 2)
+            if ex_kind(base) == EX_IDENT()
+                qual = vec_get(base, 1)
+                lk = resolve_qualified_item(ctx, links, qual, fld)
+                if lk != 0
+                    ex_ident(str_from_int(lk))
+                else
+                    nb = qualify_expr(base, ctx, links)
+                    ex_field(nb, str_from_int(fld))
+            else
+                nb = qualify_expr(base, ctx, links)
+                ex_field(nb, str_from_int(fld))
+        elsif k == EX_CALL()
+            nm = vec_get(e, 1)
+            args = vec_get(e, 2)
+            args2 = qualify_args(args, 0, vec_len(args), ctx, links)
+            pair = split_qual_member(str_from_int(nm))
+            if pair == 0
+                ex_call(str_from_int(nm), args2)
+            else
+                qual = vec_get(pair, 0)
+                member = vec_get(pair, 1)
+                lk = resolve_qualified_item(ctx, links, qual, member)
+                if lk == 0
+                    ex_call(str_from_int(nm), args2)
+                else
+                    ex_call(str_from_int(lk), args2)
+        elsif k == EX_BINARY()
+            l = qualify_expr(vec_get(e, 2), ctx, links)
+            r = qualify_expr(vec_get(e, 3), ctx, links)
+            ex_binary(str_from_int(vec_get(e, 1)), l, r)
+        elsif k == EX_IF()
+            c = qualify_expr(vec_get(e, 1), ctx, links)
+            t = qualify_block(vec_get(e, 2), ctx, links)
+            el = qualify_block(vec_get(e, 3), ctx, links)
+            arms = qualify_arms(vec_get(e, 4), 0, vec_len(vec_get(e, 4)), ctx, links)
+            ex_if(c, t, el, arms)
+        elsif k == EX_WHILE()
+            c = qualify_expr(vec_get(e, 1), ctx, links)
+            b = qualify_block(vec_get(e, 2), ctx, links)
+            ex_while(c, b)
+        elsif k == EX_TO()
+            inner = qualify_expr(vec_get(e, 2), ctx, links)
+            ex_to(str_from_int(vec_get(e, 1)), inner)
+        elsif k == EX_ON()
+            b = qualify_block(vec_get(e, 2), ctx, links)
+            ex_on(str_from_int(vec_get(e, 1)), b)
+        else
+            e
+
+fn qualify_args(args: Int, i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+    if i >= n
+        args
+    else
+        q = qualify_expr(vec_get(args, i), ctx, links)
+        _s = vec_set(args, i, q)
+        qualify_args(args, i + 1, n, ctx, links)
+
+fn qualify_arms(arms: Int, i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+    if i >= n
+        arms
+    else
+        arm = vec_get(arms, i)
+        c = qualify_expr(vec_get(arm, 0), ctx, links)
+        b = qualify_block(vec_get(arm, 1), ctx, links)
+        _a = vec_set(arm, 0, c)
+        _b = vec_set(arm, 1, b)
+        qualify_arms(arms, i + 1, n, ctx, links)
+
+fn qualify_block(b: Int, ctx: Int, links: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        qualify_stmts(stmts, 0, vec_len(stmts), ctx, links)
+        tail = block_tail(b)
+        if tail != 0
+            qt = qualify_expr(tail, ctx, links)
+            _s = block_set_tail(b, qt)
+        b
+
+fn qualify_stmts(stmts: Int, i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = vec_get(stmts, i)
+        ex = vec_get(st, 2)
+        qe = qualify_expr(ex, ctx, links)
+        _s = vec_set(st, 2, qe)
+        qualify_stmts(stmts, i + 1, n, ctx, links)
+
+fn qualify_fn(f: Int, ctx: Int, links: Int) -> Int ! alloc
+    params = vec_get(f, 1)
+    qualify_params_types(params, 0, vec_len(params), ctx, links)
+    ret = fndef_ret(f)
+    if ret != 0
+        qr = qualify_type_handle(ret, ctx, links)
+        _r = fndef_set_ret(f, qr)
+    body = vec_get(f, 2)
+    qualify_block(body, ctx, links)
+    f
+
+fn qualify_params_types(params: Int, i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = vec_get(params, i)
+        ty = vec_get(pm, 1)
+        qt = qualify_type_handle(ty, ctx, links)
+        _s = vec_set(pm, 1, qt)
+        qualify_params_types(params, i + 1, n, ctx, links)
+
+fn qualify_prog(prog: Int, ctx: Int, links: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    qualify_prog_fns(fns, 0, vec_len(fns), ctx, links)
+
+fn qualify_prog_fns(fns: Int, i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        qualify_fn(f, ctx, links)
+        qualify_prog_fns(fns, i + 1, n, ctx, links)
+
+fn rename_clashing_fns(prog: Int, order: Int, n: Int, modid: String) -> Int ! alloc
+    fns = prog_fns(prog)
+    rename_clashing_fns_go(fns, 0, vec_len(fns), order, n, modid)
+
+fn rename_clashing_fns_go(fns: Int, i: Int, fn_n: Int, order: Int, n: Int, modid: String) -> Int ! alloc
+    if i >= fn_n
+        0
+    else
+        f = vec_get(fns, i)
+        nm = vec_get(f, 0)
+        if name_is_clashing(order, n, nm) == 1
+            lk = str_as_int(link_name(modid, str_from_int(nm), 1))
+            _s = vec_set(f, 0, lk)
+        rename_clashing_fns_go(fns, i + 1, fn_n, order, n, modid)
+
+fn rename_clashing_structs(prog: Int, order: Int, n: Int, modid: String) -> Int ! alloc
+    sts = prog_structs(prog)
+    rename_clashing_structs_go(sts, 0, vec_len(sts), order, n, modid)
+
+fn rename_clashing_structs_go(sts: Int, i: Int, sn: Int, order: Int, n: Int, modid: String) -> Int ! alloc
+    if i >= sn
+        0
+    else
+        s = vec_get(sts, i)
+        nm = structdef_name(s)
+        if name_is_clashing(order, n, nm) == 1
+            lk = str_as_int(link_name(modid, str_from_int(nm), 1))
+            _s = vec_set(s, 0, lk)
+        rename_clashing_structs_go(sts, i + 1, sn, order, n, modid)
+
+fn flat_export_name_seen(seen: Int, name: Int) -> Int ! alloc
+    vec_has_str(seen, name, 0, vec_len(seen))
+
+fn check_flat_import_clashes(m: Int, graph: Int, proot: String) -> Int ! io, alloc
+    prog = mod_prog(m)
+    imps = prog_imports(prog)
+    mpath = str_from_int(mod_path(m))
+    seen = vec_new()
+    check_flat_go(prog, imps, 0, vec_len(imps), mpath, proot, graph, seen)
+
+fn check_flat_go(prog: Int, imps: Int, i: Int, n: Int, mpath: String, proot: String, graph: Int, seen: Int) -> Int ! io, alloc
+    if i >= n
+        result_ok(0)
+    else
+        if prog_import_alias_at(prog, i) != 0
+            check_flat_go(prog, imps, i + 1, n, mpath, proot, graph, seen)
+        else
+            imp = str_from_int(vec_get(imps, i))
+            dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
+            if str_len(dep_path) == 0
+                check_flat_go(prog, imps, i + 1, n, mpath, proot, graph, seen)
+            else
+                key = str_as_int(path_key(dep_path))
+                dep_m = graph_find_by_key(graph, key, 0, vec_len(graph))
+                if dep_m == 0
+                    check_flat_go(prog, imps, i + 1, n, mpath, proot, graph, seen)
+                else
+                    step = check_flat_dep_exports(mod_prog(dep_m), seen)
+                    if result_is_err(step) == 1
+                        step
+                    else
+                        seen2 = result_unwrap(step)
+                        check_flat_go(prog, imps, i + 1, n, mpath, proot, graph, seen2)
+
+fn check_flat_dep_exports(prog: Int, seen: Int) -> Int ! alloc
+    seen2 = merge_export_names_into_seen(prog, seen)
+    if seen2 == 0
+        result_err_str(d"name defined in more than one imported module")
+    else
+        result_ok(seen2)
+
+fn merge_export_names_into_seen(prog: Int, seen: Int) -> Int ! alloc
+    seen = merge_fn_names_seen(prog_fns(prog), 0, vec_len(prog_fns(prog)), seen)
+    merge_struct_names_seen(prog_structs(prog), 0, vec_len(prog_structs(prog)), seen)
+
+fn merge_fn_names_seen(fns: Int, i: Int, n: Int, seen: Int) -> Int ! alloc
+    if i >= n
+        seen
+    else
+        f = vec_get(fns, i)
+        nm = vec_get(f, 0)
+        if flat_export_name_seen(seen, nm) == 1
+            0
+        else
+            _p = vec_push(seen, nm)
+            merge_fn_names_seen(fns, i + 1, n, seen)
+
+fn merge_struct_names_seen(sts: Int, i: Int, n: Int, seen: Int) -> Int ! alloc
+    if i >= n
+        seen
+    else
+        s = vec_get(sts, i)
+        nm = structdef_name(s)
+        if flat_export_name_seen(seen, nm) == 1
+            0
+        else
+            _p = vec_push(seen, nm)
+            merge_struct_names_seen(sts, i + 1, n, seen)
+
+fn qualify_one_module(m: Int, graph: Int, n: Int, proot: String, links: Int) -> Int ! io, alloc
+    ctx_step = module_qualifiers(m, graph, proot)
+    if result_is_err(ctx_step) == 1
+        ctx_step
+    else
+        ctx = result_unwrap(ctx_step)
+        prog = mod_prog(m)
+        qualify_prog(prog, ctx, links)
+        path = str_from_int(mod_path(m))
+        modid = modid_from_path(path, proot)
+        rename_clashing_fns(prog, graph, n, modid)
+        rename_clashing_structs(prog, graph, n, modid)
+        result_ok(0)
+
+fn qualify_all_modules(order: Int, n: Int, proot: String, links: Int) -> Int ! io, alloc
+    qualify_all_go(order, 0, n, proot, links)
+
+fn qualify_all_go(order: Int, i: Int, n: Int, proot: String, links: Int) -> Int ! io, alloc
+    if i >= n
+        result_ok(0)
+    else
+        m = vec_get(order, i)
+        step = check_flat_import_clashes(m, order, proot)
+        if result_is_err(step) == 1
+            step
+        else
+            step2 = qualify_one_module(m, order, n, proot, links)
+            if result_is_err(step2) == 1
+                step2
+            else
+                qualify_all_go(order, i + 1, n, proot, links)
+
+fn qualify_module_graph(order: Int, proot: String) -> Int ! io, alloc
+    n = vec_len(order)
+    if needs_qualify(order, n) == 0
+        result_ok(order)
+    else
+        links = build_export_links(order, n, proot)
+        step = qualify_all_modules(order, n, proot, links)
+        if result_is_err(step) == 1
+            step
+        else
+            result_ok(order)

@@ -6,7 +6,16 @@ import parser
 import ir
 import fuse
 import modules
+import qualify
 import cache
+
+fn resolve_module_graph_qualified(source_path: String, proot: String) -> Int ! io, alloc
+    g = resolve_module_graph(source_path, proot)
+    if result_is_err(g) == 1
+        g
+    else
+        order = result_payload(g)
+        qualify_module_graph(order, proot)
 
 # ---- ir_to_text ----
 fn qquote() -> String ! alloc
@@ -397,7 +406,7 @@ fn emit_ir_from_graph(order_in: Int, source_path: String) -> Int ! alloc
 
 fn emit_ir_from_path(source_path: String) -> Int ! io, alloc
     proot = project_root()
-    g = resolve_module_graph(source_path, proot)
+    g = resolve_module_graph_qualified(source_path, proot)
     if result_is_err(g) == 1
         g
     else
@@ -428,7 +437,7 @@ fn emit_ir_single_file(src: String) -> Int ! io, alloc
 fn emit_ir_imported_file(source_path: String, src: String) -> Int ! io, alloc
     dir = cache_dir()
     _m = cache_mkdir(dir)
-    g = resolve_module_graph(source_path, project_root())
+    g = resolve_module_graph_qualified(source_path, project_root())
     if result_is_err(g) == 1
         g
     else
@@ -492,7 +501,7 @@ fn emit_c_for_file(source_path: String, src: String, out_path: String) -> Int ! 
 
 fn emit_c_from_path(source_path: String, out_path: String) -> Int ! io, alloc
     proot = project_root()
-    g = resolve_module_graph(source_path, proot)
+    g = resolve_module_graph_qualified(source_path, proot)
     if result_is_err(g) == 1
         g
     else

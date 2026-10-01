@@ -30,7 +30,9 @@ item         → import_def
              | frame_def
              | fn_def
 
-import_def   → "import" path
+import_def   → "import" path import_as
+import_as    → "as" IDENT
+             | ε
 path         → path "." IDENT
              | IDENT
              | STRING
@@ -158,6 +160,7 @@ arm_list     → arm_list arm
 arm          → pattern "=>" expr
 pattern      → "_"
              | INT
+             | IDENT "." IDENT "(" pattern_list ")"
              | IDENT "(" pattern_list ")"
              | IDENT
 pattern_list → pattern_list "," pattern
@@ -186,6 +189,7 @@ dims         → dims "," dim
 dim          → INT
              | "?"
 named_type   → named_type "[" type_list "]"
+             | IDENT "." IDENT
              | IDENT
 place        → "cpu" | "gpu" | "tpu" | IDENT
 ```
@@ -247,11 +251,17 @@ Lugar: `cpu`, `gpu`, `tpu` o parámetro `p`.
 
 ## Módulos
 
-Un fichero es un módulo. `import path` enlaza las firmas de los módulos alcanzables: `fn`, `struct` y `enum` del importado entran en el entorno del que importa, en transitivo. No se copia el cuerpo al AST del raíz. El preludio no se inyecta; hace falta `import "std/prelude.sal"` (o la ruta resuelta equivalente) para `Option`, `Result` y las primitivas documentadas allí.
+Un fichero es un módulo. `import path` enlaza las firmas de los módulos alcanzables. No se copia el cuerpo al AST del raíz. El preludio no se inyecta; hace falta `import "std/prelude.sal"` (o la ruta resuelta equivalente) para `Option`, `Result` y las primitivas documentadas allí.
 
-La ruta se resuelve desde el directorio del fichero que importa, desde la raíz del proyecto y desde los `path` de `[dependencies]` en `Sal.toml`. Acepta `IDENT` con `.`, o `STRING`; si falta `.sal`, se prueba añadiéndolo.
+`import path as alias` importa ese módulo bajo un calificador: sus `fn`, `struct` y `enum` solo son accesibles como `alias.nombre` (llamadas, tipos y patrones de variante). No se aplanan en el entorno del que importa.
 
-Ruta inexistente, choque de nombre entre importados o con items locales, o ciclo en el grafo de imports: `E_TYPE` en el span del `import`.
+Sin `as`, el importado se aplanan en transitivo como antes: `fn`, `struct` y `enum` del importado y de sus imports entran en el entorno del que importa. Además, el último segmento del path (sin `.sal`) es un calificador implícito sobre los items definidos en ese fichero (`import lexer` → `lexer.tokenize`; `import "std/prelude.sal"` → `prelude.Option`). El calificador no cubre items reexportados por transitividad. Un local o parámetro con el mismo nombre sombrea el calificador implícito.
+
+La ruta se resuelve desde el directorio del fichero que importa, desde la raíz del proyecto y desde los `path` de `[dependencies]` en `Sal.toml`. Acepta `IDENT` con `.`, o `STRING`; si falta `.sal`, se prueba añadiéndolo. Tras el path, `as` es contextual (el `IDENT` `as` justo después del path).
+
+Si el mismo nombre de item choca entre módulos del grafo, el compilador asigna un símbolo de enlace único `modid__nombre` (con `modid` derivado de la ruta del módulo) solo a los items en conflicto; el resto conserva su nombre. Las referencias calificadas se resuelven a ese símbolo.
+
+Ruta inexistente, choque de nombre entre importados aplanados o con items locales, dos `as` con el mismo alias, un alias que coincide con un item visible, referencia `alias.x` inexistente, calificador implícito ambiguo en uso, o ciclo en el grafo de imports: `E_TYPE` en el span del `import` o de la referencia.
 
 `sal build` del módulo raíz compila cada módulo alcanzado a su objeto y enlaza esos objetos con el runtime.
 

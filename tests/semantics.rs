@@ -766,6 +766,43 @@ fn import_call_typechecks() {
 }
 
 #[test]
+fn import_as_avoids_flat_name_clash() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let left = tmp.path().join("left.sal");
+    let right = tmp.path().join("right.sal");
+    let main = tmp.path().join("main.sal");
+    fs::write(&left, "fn helper() -> Int\n    1\n").expect("write left");
+    fs::write(&right, "fn helper() -> Int\n    2\n").expect("write right");
+    fs::write(
+        &main,
+        "import \"./left.sal\" as L\nimport \"./right.sal\" as R\n\nfn main() -> Int\n    L.helper()\n",
+    )
+    .expect("write main");
+    let graph = resolve_module_graph(&main, tmp.path()).expect("graph");
+    let root = graph.order.last().expect("root");
+    check_module_semantics(root, &graph).expect("qualified imports resolve");
+}
+
+#[test]
+fn flat_import_same_name_still_clashes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let left = tmp.path().join("left.sal");
+    let right = tmp.path().join("right.sal");
+    let main = tmp.path().join("main.sal");
+    fs::write(&left, "fn helper() -> Int\n    1\n").expect("write left");
+    fs::write(&right, "fn helper() -> Int\n    2\n").expect("write right");
+    fs::write(
+        &main,
+        "import \"./left.sal\"\nimport \"./right.sal\"\n\nfn main() -> Int\n    helper()\n",
+    )
+    .expect("write main");
+    match resolve_module_graph(&main, tmp.path()) {
+        Err(err) => assert!(err.iter().any(|d| d.code == ErrorCode::EType)),
+        Ok(_) => panic!("expected flat import name clash"),
+    }
+}
+
+#[test]
 fn string_to_gpu_is_e_place() {
     expect_code(
         r#"

@@ -15,7 +15,13 @@ fn format_program_raw(p: &Program) -> String {
         }
         first = false;
         match item {
-            Item::Import(imp) => out.push_str(&format!("import {}\n", imp.path)),
+            Item::Import(imp) => {
+                if let Some(alias) = &imp.alias {
+                    out.push_str(&format!("import {} as {}\n", imp.path, alias));
+                } else {
+                    out.push_str(&format!("import {}\n", imp.path));
+                }
+            }
             Item::Fn(f) => out.push_str(&format_fn(f)),
             Item::Struct(s) => out.push_str(&format_struct(s)),
             Item::Frame(f) => out.push_str(&format_frame(f)),
@@ -371,6 +377,21 @@ fn format_unop(op: &UnOp) -> &'static str {
     }
 }
 
+fn format_type_name(name: &str, args: &[Type]) -> String {
+    if args.is_empty() {
+        name.to_string()
+    } else {
+        format!(
+            "{}[{}]",
+            name,
+            args.iter()
+                .map(format_type)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 fn format_type_arg(t: &TypeArg) -> String {
     match t {
         TypeArg::Type(ty) => format_type(ty),
@@ -381,20 +402,13 @@ fn format_type_arg(t: &TypeArg) -> String {
 
 fn format_type(t: &Type) -> String {
     match t {
-        Type::Named { name, args, .. } => {
-            if args.is_empty() {
-                name.clone()
-            } else {
-                format!(
-                    "{}[{}]",
-                    name,
-                    args.iter()
-                        .map(format_type)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        }
+        Type::Named { name, args, .. } => format_type_name(name, args),
+        Type::Qualified {
+            qual,
+            name,
+            args,
+            ..
+        } => format!("{}.{}", qual, format_type_name(name, args)),
         Type::Tensor {
             elem, dims, place, ..
         } => {
@@ -464,13 +478,22 @@ fn format_pattern(p: &Pattern) -> String {
         Pattern::Wild(_) => "_".to_string(),
         Pattern::Ident(n, _) => n.clone(),
         Pattern::Int(n, _) => n.to_string(),
-        Pattern::Variant { name, args, .. } => {
+        Pattern::Variant {
+            qual,
+            name,
+            args,
+            ..
+        } => {
+            let head = match qual {
+                Some(q) => format!("{q}.{name}"),
+                None => name.clone(),
+            };
             if args.is_empty() {
-                name.clone()
+                head
             } else {
                 format!(
                     "{}({})",
-                    name,
+                    head,
                     args.iter()
                         .map(format_pattern)
                         .collect::<Vec<_>>()

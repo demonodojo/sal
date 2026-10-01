@@ -15,7 +15,7 @@ fn is_stack_type_rec(
     visiting: &mut HashSet<String>,
 ) -> bool {
     match ty {
-        Type::Named { name, args, .. } => {
+        Type::Qualified { name, args, .. } | Type::Named { name, args, .. } => {
             if !args.is_empty() {
                 return false;
             }
@@ -47,7 +47,7 @@ pub fn type_uses_heap(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
 pub fn layout_c_field_ok(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Named { name, args, .. }
+        Type::Named { name, args, .. } | Type::Qualified { name, args, .. }
             if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool")
     )
 }

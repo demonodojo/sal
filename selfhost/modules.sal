@@ -372,6 +372,45 @@ fn merge_exports_names(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
 fn walk_imports_collect(m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
     walk_imports_collect_go(prog_imports(mod_prog(m)), 0, vec_len(prog_imports(mod_prog(m))), m, graph, proot, visited, out)
 
+fn walk_flat_imports_collect(m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+    prog = mod_prog(m)
+    walk_flat_imports_collect_go(prog, prog_imports(prog), 0, vec_len(prog_imports(prog)), m, graph, proot, visited, out)
+
+fn walk_flat_imports_collect_go(prog: Int, imps: Int, i: Int, n: Int, m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+    if i >= n
+        result_ok(out)
+    else
+        if prog_import_alias_at(prog, i) != 0
+            walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out)
+        else
+            imp = str_from_int(vec_get(imps, i))
+            mpath = str_from_int(mod_path(m))
+            dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
+            if str_len(dep_path) == 0
+                result_err_str("import not found: " + imp)
+            else
+                key = path_key(dep_path)
+                if vec_has_str(visited, str_as_int(key), 0, vec_len(visited)) == 1
+                    walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out)
+                else
+                    _v = vec_push(visited, str_as_int(key))
+                    dep_m = graph_find_by_key(graph, str_as_int(key), 0, vec_len(graph))
+                    if dep_m == 0
+                        walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out)
+                    else
+                        step = walk_flat_imports_collect(dep_m, graph, proot, visited, out)
+                        if result_is_err(step) == 1
+                            step
+                        else
+                            out2 = result_unwrap(step)
+                            _p = vec_push(out2, dep_m)
+                            walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out2)
+
+fn flat_transitive_import_modules(m: Int, graph: Int, proot: String) -> Int ! io, alloc
+    visited = vec_new()
+    out = vec_new()
+    walk_flat_imports_collect(m, graph, proot, visited, out)
+
 fn walk_imports_collect_go(imps: Int, i: Int, n: Int, m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
     if i >= n
         result_ok(out)
@@ -406,7 +445,7 @@ fn transitive_import_modules(m: Int, graph: Int, proot: String) -> Int ! io, all
     step
 
 fn check_module_names(m: Int, graph: Int, proot: String) -> Int ! io, alloc
-    step = transitive_import_modules(m, graph, proot)
+    step = flat_transitive_import_modules(m, graph, proot)
     if result_is_err(step) == 1
         step
     else

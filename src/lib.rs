@@ -15,6 +15,7 @@ pub mod lexer;
 pub mod llvm;
 pub mod ownership;
 pub mod parser;
+pub mod qualify;
 pub mod span;
 pub mod string_expr;
 pub mod typed;
