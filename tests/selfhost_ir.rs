@@ -47,6 +47,8 @@ fn bootstrap_ir(path: &Path) -> String {
 fn compile_selfhost(instrument: bool) -> PathBuf {
     let _guard = LINK_LOCK.lock().expect("link lock");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument,
         device: "cpu".into(),
@@ -345,6 +347,8 @@ fn selfhost_import_two_modules_run() {
     let a_path = project.join("a.sal");
 
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -408,6 +412,8 @@ fn selfhost_import_alias_ir_and_run() {
     let main_path = project.join("examples/import_alias.sal");
 
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -689,6 +695,8 @@ fn selfhost_model_package_tests_exit_zero() {
     // Drop incremental objs so a codegen-only compiler change cannot reuse a stale .o.
     let _ = std::fs::remove_dir_all(root().join("target").join("incremental"));
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),

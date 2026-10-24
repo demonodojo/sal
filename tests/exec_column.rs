@@ -12,6 +12,8 @@ fn root() -> PathBuf {
 fn exec_column_cpu_builds_and_runs() {
     let file = root().join("examples/column_cpu.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -40,6 +42,8 @@ fn exec_column_gpu_emulated_links() {
     let file = root().join("examples/column_gpu.sal");
     let link = device_toolchain_present("gpu");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "gpu".into(),

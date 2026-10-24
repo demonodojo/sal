@@ -24,6 +24,8 @@ fn speed_work_sal_matches_rust_output() {
     assert!(rustc.success(), "rustc failed to build benches/speed/work.rs");
 
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: true,
         instrument: false,
         device: "cpu".into(),

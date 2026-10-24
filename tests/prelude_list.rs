@@ -15,6 +15,8 @@ static LINK_LOCK: Mutex<()> = Mutex::new(());
 fn compile_list(src: &str, instrument: bool) -> PathBuf {
     let _guard = LINK_LOCK.lock().expect("link lock");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument,
         device: "cpu".into(),

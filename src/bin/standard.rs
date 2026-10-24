@@ -25,6 +25,8 @@ fn main() {
 
     let release = matches!(env::var("PROFILE").as_deref(), Ok("release"));
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release,
         instrument: false,
         device: "cpu".into(),

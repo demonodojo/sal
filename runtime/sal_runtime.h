@@ -7,9 +7,30 @@ int64_t sal_print_i64(int64_t v);
 void sal_panic(const char *msg);
 
 void sal_matmul_f32(const float *a, const float *b, float *out, int64_t m, int64_t k, int64_t n);
+void sal_matmul_f16(const uint16_t *a, const uint16_t *b, float *out, int64_t m, int64_t k,
+                    int64_t n);
+void sal_matmul_bf16(const uint16_t *a, const uint16_t *b, float *out, int64_t m, int64_t k,
+                     int64_t n);
 void sal_gpu_matmul_f32(const float *a, const float *b, float *out, int64_t m, int64_t k,
                         int64_t n);
 void sal_softmax_f32(float *data, int64_t len);
+void sal_softmax_axis_f32(float *data, int64_t outer, int64_t axis_len);
+void sal_reduce_axis_f32(const float *in, float *out, int64_t outer, int64_t axis_len);
+void sal_silu_f32(float *out, const float *in, int64_t len);
+void sal_rms_norm_f32(float *out, const float *in, const float *weight, int64_t len,
+                      double eps);
+void sal_rope_f32(float *data, int64_t seq, int64_t dim, int64_t pos);
+void sal_attention_f32(float *out, const float *q, const float *k, const float *v, int64_t seq,
+                       int64_t heads, int64_t kv_heads, int64_t head_dim, int64_t causal);
+void sal_qmatmul_f32(const float *a, const int8_t *w, const float *scale, float *out, int64_t m,
+                     int64_t k, int64_t n, int64_t group);
+void sal_tensor_write_row_f32(float *cache, int64_t seq, const float *row, int64_t row_elems);
+void sal_tensor_write_rows_f32(float *cache, int64_t seq, const float *block, int64_t n_rows,
+                               int64_t row_elems);
+float *sal_tensor_append_f32(float *cache, int64_t *cap, int64_t *len, const float *row,
+                              int64_t row_elems);
+int64_t sal_argmax_axis_f32(const float *data, int64_t len);
+void *sal_load_salt(const char *path, int64_t *out_elems, int64_t *out_elem_bytes);
 
 /* Element-wise F32 tensors; `b_is_scalar` uses `b_scalar` instead of `b`. */
 void sal_tensor_bin_f32(int op, float *out, const float *a, const float *b, int64_t len,
@@ -42,6 +63,9 @@ void *sal_place_copy(const void *src, int64_t nbytes, int to_place);
 /* Record a device-region launch on `place` (gpu/tpu heaps). */
 void sal_on_enter(int64_t place);
 int64_t sal_place_launches(int64_t place);
+/* Bump allocator for fused `on` regions; peak from IR. Syncs gpu on end. */
+void sal_region_begin(int64_t place, int64_t peak_bytes);
+void sal_region_end(int64_t place);
 
 /* Process args (set from generated main via sal_runtime_init). */
 void sal_runtime_init(int64_t argc, const char **argv);
@@ -101,6 +125,8 @@ char *sal_char_to_str(int64_t c);
 char *sal_str_from_int(int64_t x);
 int64_t sal_str_as_int(const char *s);
 int64_t sal_str_to_f64_bits(const char *s);
+char *sal_f64_bits_to_str(int64_t bits);
+int64_t sal_now_ns(void);
 void *sal_vec_new(void);
 int64_t sal_vec_push(void *v, int64_t x);
 int64_t sal_vec_get(void *v, int64_t i);

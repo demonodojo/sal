@@ -13,6 +13,8 @@ fn root() -> PathBuf {
 fn hello_runs_42() {
     let file = root().join("examples/hello.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -37,6 +39,8 @@ fn main() -> Int
         3
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -53,6 +57,8 @@ fn main() -> Int
 fn incremental_cache_second_build() {
     let file = root().join("examples/hello.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -75,6 +81,8 @@ fn main() -> Int ! alloc, io
     0
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -102,6 +110,8 @@ fn main() -> Int ! alloc, io
     0
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -137,6 +147,8 @@ fn main() -> Int ! alloc, io
     0
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -187,6 +199,8 @@ fn main() -> Int ! alloc
                         14
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -216,6 +230,8 @@ fn main() -> Int
     p.x + p.y
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -242,6 +258,8 @@ fn main() -> Int
         None => 0
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -269,6 +287,8 @@ fn main() -> Int
     7
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: true,
         instrument: false,
         device: "cpu".into(),
@@ -296,6 +316,8 @@ fn main() -> Int ! alloc
     list_len(xs)
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -328,6 +350,8 @@ fn main() -> Int
     p.x + p.y
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -352,6 +376,8 @@ fn main() -> Int ! alloc
     str_len(m.text) + m.n
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: true,
         device: "cpu".into(),
@@ -381,6 +407,8 @@ fn main() -> Int ! alloc
     eat(m)
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: true,
         device: "cpu".into(),
@@ -407,6 +435,8 @@ fn main() -> Int
     t.raw
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -431,6 +461,8 @@ fn main() -> Int
     acc
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -456,6 +488,8 @@ fn main() -> Int
     acc
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -484,6 +518,8 @@ fn main() -> Int
     acc
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -519,6 +555,8 @@ fn main() -> Int ! alloc
     ) + str_len(s)
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),

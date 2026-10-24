@@ -2,14 +2,19 @@
 #define _DEFAULT_SOURCE
 #include "sal_runtime.h"
 
+#ifdef SAL_SOSO
+#include "soso/platform.h"
+#else
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <limits.h>
 
+#endif
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/stat.h>
 static void chmod_dst_exec(const char *dst) {
@@ -40,7 +45,12 @@ typedef struct SalArena {
     char data[];
 } SalArena;
 
+#ifdef SAL_SOSO
+/* CPU runtime is single-threaded; no ELF TLS dependency. */
+static SalArena *g_arena;
+#else
 static _Thread_local SalArena *g_arena;
+#endif
 
 static void *sal_xmalloc(size_t n, const char *site) {
     (void)site;
@@ -134,6 +144,7 @@ static char *sal_str_from_cstr(const char *s) {
 void sal_runtime_init(int64_t argc, const char **argv) {
     g_argc = argc;
     g_argv = argv;
+#ifndef SAL_SOSO
     /* Selfhost uses deep recursion (lexer/parser); raise soft stack limit. */
     {
         struct rlimit rl;
@@ -148,6 +159,7 @@ void sal_runtime_init(int64_t argc, const char **argv) {
             setrlimit(RLIMIT_STACK, &rl);
         }
     }
+#endif
 }
 
 int64_t sal_argc(void) {
@@ -213,29 +225,47 @@ char *sal_read_file(const char *path) {
     }
     FILE *f = fopen(path, "rb");
     if (!f) {
+#ifdef SAL_SOSO
+        sal_panic("no se puede leer el archivo");
+#endif
         return (char *)g_sal_empty;
     }
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
+#ifdef SAL_SOSO
+        sal_panic("no se puede medir el archivo");
+#endif
         return (char *)g_sal_empty;
     }
     long sz = ftell(f);
     if (sz < 0) {
         fclose(f);
+#ifdef SAL_SOSO
+        sal_panic("no se puede medir el archivo");
+#endif
         return (char *)g_sal_empty;
     }
     if (fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
+#ifdef SAL_SOSO
+        sal_panic("no se puede posicionar el archivo");
+#endif
         return (char *)g_sal_empty;
     }
     size_t n = (size_t)sz;
     char *p = sal_str_alloc_size(n, n + 1);
     if (!p) {
         fclose(f);
+#ifdef SAL_SOSO
+        sal_panic("memoria insuficiente al leer el archivo");
+#endif
         return NULL;
     }
     size_t got = fread(p, 1, n, f);
     fclose(f);
+#ifdef SAL_SOSO
+    if (got != n) sal_panic("lectura incompleta");
+#endif
     p[got] = '\0';
     *(int64_t *)((unsigned char *)p - 8) = (int64_t)got;
     return p;
@@ -255,7 +285,7 @@ int64_t sal_write_file(const char *path, const char *data) {
     size_t n = (size_t)sal_str_len_raw(bytes);
     size_t w = fwrite(bytes, 1, n, f);
     if (f != stdout) {
-        fclose(f);
+        if (fclose(f) != 0) return 1;
     } else {
         fflush(stdout);
     }
@@ -279,7 +309,11 @@ char *sal_getenv(const char *name) {
         return (char *)g_sal_empty;
     }
     const char *v = getenv(name);
-    return sal_str_from_cstr(v ? v : "");
+    char *result = sal_str_from_cstr(v ? v : "");
+#ifdef SAL_SOSO
+    free((void *)v);
+#endif
+    return result;
 }
 
 int64_t sal_mkdir_p(const char *path) {
@@ -668,6 +702,22 @@ int64_t sal_str_to_f64_bits(const char *s) {
     int64_t bits = 0;
     memcpy(&bits, &fv, sizeof(bits));
     return bits;
+}
+
+char *sal_f64_bits_to_str(int64_t bits) {
+    double fv = 0.0;
+    memcpy(&fv, &bits, sizeof(fv));
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.17g", fv);
+    return sal_strdup(buf);
+}
+
+int64_t sal_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
 typedef struct {
@@ -1292,9 +1342,11 @@ static void lex_push_number(SalVec *out, const char *src, int64_t i, int64_t end
             char nbuf[68];
             nbuf[0] = '-';
             memcpy(nbuf + 1, tmp, len + 1);
-            lex_push(out, 6, 0, sal_str_to_f64_bits(nbuf));
+            int64_t text = (int64_t)(uintptr_t)sal_strdup(nbuf);
+            lex_push(out, 6, text, sal_str_to_f64_bits(nbuf));
         } else {
-            lex_push(out, 6, 0, sal_str_to_f64_bits(tmp));
+            int64_t text = (int64_t)(uintptr_t)sal_strdup(tmp);
+            lex_push(out, 6, text, sal_str_to_f64_bits(tmp));
         }
     } else {
         int64_t v = lex_digits(src, i, end);
@@ -1935,6 +1987,7 @@ int64_t sal_dict_get(void *dp, const char *key) {
     return -1;
 }
 
+#ifndef SAL_SOSO
 static int find_runtime_dir(char *out, size_t n) {
     const char *env = getenv("SAL_RUNTIME");
     if (env && env[0]) {
@@ -2129,6 +2182,10 @@ int64_t sal_exec_compile(const char *bin, const char *src, const char *outp) {
     return rc == 0 ? 0 : 1;
 }
 
+#else
+#include "soso/process.inc"
+#endif
+
 int64_t sal_gated_exec_compile(int64_t cond, const char *bin, const char *src, const char *outp) {
     if (!cond) {
         return 0;
@@ -2204,6 +2261,75 @@ void *sal_load_f32(const char *path, int64_t *out_elems) {
     return buf;
 }
 
+void *sal_load_salt(const char *path, int64_t *out_elems, int64_t *out_elem_bytes) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return NULL;
+    }
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "SALT", 4) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    uint16_t ver = 0;
+    uint8_t elem = 0, rank = 0, flags = 0;
+    if (fread(&ver, 2, 1, f) != 1 || fread(&elem, 1, 1, f) != 1 || fread(&rank, 1, 1, f) != 1) {
+        fclose(f);
+        return NULL;
+    }
+    if (ver >= 2 && fread(&flags, 1, 1, f) != 1) {
+        fclose(f);
+        return NULL;
+    }
+    (void)flags;
+    int64_t count = 1;
+    for (uint8_t i = 0; i < rank; i++) {
+        uint64_t d = 0;
+        if (fread(&d, 8, 1, f) != 1) {
+            fclose(f);
+            return NULL;
+        }
+        count *= (int64_t)d;
+    }
+    int64_t elem_bytes = 4;
+    if (elem == 1) {
+        elem_bytes = 2;
+    } else if (elem == 2) {
+        elem_bytes = 2;
+    } else if (elem == 3) {
+        elem_bytes = 1;
+    }
+    void *buf = malloc((size_t)count * (size_t)elem_bytes);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    if (fread(buf, (size_t)elem_bytes, (size_t)count, f) != (size_t)count) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    if (ver >= 2 && (flags & 2) != 0 && elem == 3) {
+        uint32_t group = 0;
+        if (fread(&group, 4, 1, f) != 1) {
+            free(buf);
+            fclose(f);
+            return NULL;
+        }
+        int64_t nscale = (count + (int64_t)group - 1) / (int64_t)group;
+        (void)nscale;
+        fseek(f, (long)(nscale * (long)sizeof(float)), SEEK_CUR);
+    }
+    fclose(f);
+    if (out_elems) {
+        *out_elems = count;
+    }
+    if (out_elem_bytes) {
+        *out_elem_bytes = elem_bytes;
+    }
+    return buf;
+}
+
 /* ---- Per-actor heaps (cpu=0, gpu=1, tpu=2); host malloc backed ---- */
 
 enum { SAL_PLACE_N = 3 };
@@ -2217,11 +2343,66 @@ typedef struct SalPlaceBlock {
 static SalPlaceBlock *g_place_heaps[SAL_PLACE_N];
 static int64_t g_place_launches[SAL_PLACE_N];
 
+typedef struct {
+    void *base;
+    int64_t cap;
+    int64_t off;
+    int active;
+} SalRegion;
+
+static SalRegion g_regions[SAL_PLACE_N];
+
 static int clamp_place(int place) {
     if (place < 0 || place >= SAL_PLACE_N) {
         return 0;
     }
     return place;
+}
+
+static void *place_alloc_raw(int64_t size, int place) {
+    if (size < 0) {
+        size = 0;
+    }
+    if (place == 1 && sal_gpu_enabled()) {
+        return sal_gpu_alloc((size_t)size);
+    }
+    return malloc((size_t)size);
+}
+
+void sal_region_begin(int64_t place, int64_t peak_bytes) {
+    place = clamp_place((int)place);
+    if (peak_bytes < 0) {
+        peak_bytes = 0;
+    }
+    if (g_regions[place].active) {
+        sal_region_end(place);
+    }
+    g_regions[place].base = place_alloc_raw(peak_bytes, place);
+    g_regions[place].cap = peak_bytes;
+    g_regions[place].off = 0;
+    g_regions[place].active = g_regions[place].base != NULL;
+}
+
+void sal_region_end(int64_t place) {
+    place = clamp_place((int)place);
+    if (!g_regions[place].active) {
+        return;
+    }
+    if (place == 1 && sal_gpu_enabled()) {
+        sal_gpu_sync();
+    }
+    void *base = g_regions[place].base;
+    g_regions[place].active = 0;
+    g_regions[place].off = 0;
+    g_regions[place].base = NULL;
+    g_regions[place].cap = 0;
+    if (base) {
+        if (place == 1 && sal_gpu_enabled()) {
+            sal_gpu_free(base);
+        } else {
+            free(base);
+        }
+    }
 }
 
 int sal_mem_place(const void *p) {
@@ -2245,6 +2426,15 @@ void *sal_place_malloc(int64_t size, int place) {
     if (size < 0) {
         size = 0;
     }
+    if (g_regions[place].active && g_regions[place].base && size > 0) {
+        int64_t off = g_regions[place].off;
+        int64_t need = off + size;
+        if (need <= g_regions[place].cap) {
+            void *p = (char *)g_regions[place].base + off;
+            g_regions[place].off = need;
+            return p;
+        }
+    }
     void *p = NULL;
     if (place == 1 && sal_gpu_enabled()) {
         p = sal_gpu_alloc((size_t)size);
@@ -2267,8 +2457,29 @@ void *sal_place_malloc(int64_t size, int place) {
     return p;
 }
 
+static int ptr_in_active_region(const void *p) {
+    if (!p) {
+        return 0;
+    }
+    const char *x = (const char *)p;
+    for (int pl = 0; pl < SAL_PLACE_N; pl++) {
+        if (!g_regions[pl].active || !g_regions[pl].base) {
+            continue;
+        }
+        const char *b = (const char *)g_regions[pl].base;
+        const char *e = b + g_regions[pl].cap;
+        if (x >= b && x < e) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void sal_place_free(void *p) {
     if (!p) {
+        return;
+    }
+    if (ptr_in_active_region(p)) {
         return;
     }
     for (int pl = 0; pl < SAL_PLACE_N; pl++) {

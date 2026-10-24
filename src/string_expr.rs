@@ -18,6 +18,8 @@ pub struct StringEnv {
     pub struct_types: HashMap<String, String>,
     /// User functions whose return type is a nominal struct (for assign/init typing).
     pub fn_struct_rets: HashMap<String, String>,
+    /// User functions that return `Tensor[…]` (for IR shape on call results).
+    pub fn_tensor_rets: HashMap<String, Type>,
     /// Name of the binding an `x = x + ...` chain accumulates into, while its
     /// left spine is being lowered.
     pub accumulate: Option<String>,
@@ -28,6 +30,7 @@ impl StringEnv {
     pub fn from_module_graph(progs: &[&Program]) -> Self {
         let mut structs = HashMap::new();
         let mut fn_struct_rets = HashMap::new();
+        let mut fn_tensor_rets = HashMap::new();
         let mut enums = HashMap::new();
         for prog in progs {
             for (k, v) in collect_layout_structs(prog) {
@@ -43,6 +46,9 @@ impl StringEnv {
                             fn_struct_rets.insert(f.name.clone(), name.clone());
                         }
                     }
+                    if matches!(f.ret, Type::Tensor { .. }) {
+                        fn_tensor_rets.insert(f.name.clone(), f.ret.clone());
+                    }
                 }
             }
         }
@@ -52,6 +58,7 @@ impl StringEnv {
             enums,
             struct_types: HashMap::new(),
             fn_struct_rets,
+            fn_tensor_rets,
             accumulate: None,
         }
     }

@@ -61,6 +61,27 @@ fn transpose(t: Tensor[F32, 2, 4] on p) -> Tensor[F32, 4, 2] on p
 fn relu(t: Tensor[F32, ?, 4] on p) -> Tensor[F32, ?, 4] on p
     t
 
+fn silu(t: Tensor[F32, ?, 4] on p) -> Tensor[F32, ?, 4] on p
+    t
+
+fn rms_norm(x: Tensor[F32, ?, 4] on p, w: Tensor[F32, ?, 4] on p) -> Tensor[F32, ?, 4] on p
+    x
+
+fn rope(x: Tensor[F32, ?, 4] on p, pos: Int) -> Tensor[F32, ?, 4] on p
+    x
+
+fn attention(q: Tensor[F32, ?, 2, 2] on p, k: Tensor[F32, ?, 1, 2] on p, v: Tensor[F32, ?, 1, 2] on p, causal: Bool) -> Tensor[F32, ?, 2, 2] on p
+    q
+
+fn qmatmul(a: Tensor[F32, ?, 4] on p, w: Tensor[I8, 4, 4] on p, scale: Tensor[F32, ?] on p, group: Int) -> Tensor[F32, ?, 4] on p
+    a
+
+fn tensor_append(cache: Tensor[F32, ?] on p, row: Tensor[F32, ?] on p) -> Tensor[F32, ?] on p
+    cache
+
+fn argmax(t: Tensor[F32, ?] on p, axis: Int) -> Int
+    0
+
 # Forma deseada del plan: load[F32, 4, 4]("w.salt") — no parsea (dims no son tipos).
 # Forma aceptada hoy: load[Tensor[F32, 4, 4] on cpu](path)
 
@@ -79,6 +100,12 @@ fn str_as_int(s: String) -> Int
 
 fn str_to_f64_bits(s: String) -> Int
     str_to_f64_bits(s)
+
+fn f64_bits_to_str(bits: Int) -> String ! alloc
+    f64_bits_to_str(bits)
+
+fn now_ns() -> Int
+    now_ns()
 
 fn str_bytes(s: String) -> Tensor[I8, ?] on cpu ! alloc
     str_bytes(s)

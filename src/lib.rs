@@ -17,6 +17,7 @@ pub mod ownership;
 pub mod parser;
 pub mod qualify;
 pub mod span;
+pub mod som_export;
 pub mod string_expr;
 pub mod typed;
 
@@ -24,3 +25,5 @@ pub use compile::{
     compile_file, compile_program, compile_source, device_toolchain_present, CompileArtifacts,
     CompileOptions,
 };
+
+pub mod target;

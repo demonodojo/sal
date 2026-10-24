@@ -1,7 +1,11 @@
 #include "sal_runtime.h"
 
+#ifdef SAL_SOSO
+#include "soso/platform.h"
+#else
 #include <stdlib.h>
 #include <string.h>
+#endif
 
 #ifdef SAL_USE_CUDA
 #include <cuda_runtime.h>

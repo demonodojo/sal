@@ -75,6 +75,10 @@ fn emit_inst(inst: Int) -> String ! alloc
         emit_cs(inst)
     elsif k == II_BIN()
         emit_bin(inst)
+    elsif k == II_CF()
+        emit_cf(inst)
+    elsif k == II_TBIN()
+        emit_tbin(inst)
     elsif k == II_CALL()
         emit_call(inst)
     elsif k == II_PLACE()
@@ -98,6 +102,38 @@ fn emit_cs(inst: Int) -> String ! alloc
 
 fn emit_bin(inst: Int) -> String ! alloc
     "  Binary {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ", op: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", left: " + ir_q() + str_from_int(vec_get(inst, 3)) + ir_q() + ", right: " + ir_q() + str_from_int(vec_get(inst, 4)) + ir_q() + " }}\n"
+
+fn emit_cf(inst: Int) -> String ! alloc
+    dest = str_from_int(vec_get(inst, 1))
+    txt = str_from_int(vec_get(inst, 3))
+    "  ConstFloat {{ dest: " + ir_q() + dest + ir_q() + ", value: " + txt + " }}\n"
+
+fn emit_elem_name(code: Int) -> String ! alloc
+    if code == 1
+        d"I8"
+    elsif code == 2
+        d"F16"
+    elsif code == 3
+        d"BF16"
+    else
+        d"F32"
+
+fn emit_tbin_scalar(scalar: Int) -> String ! alloc
+    if scalar == 1
+        d"true"
+    else
+        d"false"
+
+fn emit_tbin(inst: Int) -> String ! alloc
+    dest = str_from_int(vec_get(inst, 1))
+    op = str_from_int(vec_get(inst, 2))
+    elem = emit_elem_name(vec_get(inst, 3))
+    place = str_from_int(vec_get(inst, 4))
+    left = str_from_int(vec_get(inst, 5))
+    right = str_from_int(vec_get(inst, 6))
+    len = str_from_int(vec_get(inst, 7))
+    sc = emit_tbin_scalar(vec_get(inst, 8))
+    "  TensorBin {{ dest: " + ir_q() + dest + ir_q() + ", op: " + ir_q() + op + ir_q() + ", elem: " + elem + ", place: " + ir_q() + place + ir_q() + ", left: " + ir_q() + left + ir_q() + ", right: " + ir_q() + right + ir_q() + ", len: " + ir_q() + len + ir_q() + ", right_scalar: " + sc + " }}\n"
 
 fn emit_call_dest(inst: Int) -> String ! alloc
     if vec_get(inst, 4) == 1

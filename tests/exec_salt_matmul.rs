@@ -46,6 +46,8 @@ fn exec_salt_matmul_2x2_exit_sum() {
 
     let file = root().join("examples/salt_matmul.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),

@@ -303,13 +303,12 @@ fn push_number_tok(out: Int, src: String, i: Int, end: Int, neg: Int) -> Int ! a
             ntxt = "-" + txt
             free(txt)
             bits = str_to_f64_bits(ntxt)
+            t = tok_new(TK_FLOAT(), ntxt, bits)
             free(ntxt)
-            t = tok_new(TK_FLOAT(), d"", bits)
             _p = vec_push(out, t)
         else
             bits = str_to_f64_bits(txt)
-            free(txt)
-            t = tok_new(TK_FLOAT(), d"", bits)
+            t = tok_new(TK_FLOAT(), txt, bits)
             _p = vec_push(out, t)
     else
         ival = parse_int_digits(src, i, end, 0)

@@ -27,6 +27,8 @@ use crate::typed::TypedProgram;
 
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
+    pub toolchain: crate::target::Toolchain,
+    pub output: Option<PathBuf>,
     pub release: bool,
     pub instrument: bool,
     pub device: String,
@@ -70,6 +72,9 @@ fn compile_program_at(
     opts: &CompileOptions,
     source_path: Option<&Path>,
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
+    if opts.toolchain.target == crate::target::Target::Soso && (opts.instrument || opts.device != "cpu") {
+        return Err(vec![internal_diag("soso admite CPU sin instrumentación".into())]);
+    }
     if let Some(path) = source_path {
         return compile_file_with_imports(program, path, opts);
     }
@@ -85,6 +90,7 @@ fn compile_program_at(
     let typed = TypedProgram::from_program(program.clone(), infer_out.expr_types_by_fn);
 
     let flags = CompileFlags {
+        toolchain: opts.toolchain.identity(),
         release: opts.release,
         instrument: opts.instrument,
         device: opts.device.clone(),
@@ -136,6 +142,7 @@ fn compile_file_with_imports(
     let typed = TypedProgram::from_program(program.clone(), infer_out.expr_types_by_fn);
 
     let base_flags = CompileFlags {
+        toolchain: opts.toolchain.identity(),
         release: opts.release,
         instrument: opts.instrument,
         device: opts.device.clone(),
@@ -244,6 +251,20 @@ fn compile_single_module(
     opts: &CompileOptions,
     emit_entry_main: bool,
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
+    if opts.toolchain.target == crate::target::Target::Soso {
+        // Walk typed AST fields, never source text (a string "gpu" is ordinary data).
+        fn device(v: &serde_json::Value) -> bool {
+            match v {
+                serde_json::Value::Object(m) => m.iter().any(|(k, v)|
+                    (k == "place" && matches!(v.as_str(), Some("gpu" | "tpu"))) || device(v)),
+                serde_json::Value::Array(a) => a.iter().any(device),
+                _ => false,
+            }
+        }
+        if device(&serde_json::to_value(program).map_err(|e| vec![internal_diag(e.to_string())])?) {
+            return Err(vec![internal_diag("soso admite únicamente código CPU".into())]);
+        }
+    }
     let meta_file = cache_path(&opts.project_root, key);
     let ll_path = ll_cache_path(&opts.project_root, key);
     let obj_path = obj_cache_path(&opts.project_root, key);
@@ -263,6 +284,7 @@ fn compile_single_module(
         let llvm = emit_llvm_with_externs(
             &ir,
             &LlvmOptions {
+                target: opts.toolchain.target,
                 instrument: opts.instrument,
                 extern_user_fns: externs.clone(),
                 emit_entry_main,
@@ -315,7 +337,10 @@ fn compile_obj_from_ll(
         fs::create_dir_all(parent).map_err(|e| vec![internal_diag(e.to_string())])?;
     }
     let opt_flag = if opts.release { "-O3" } else { "-O0" };
-    let mut clang = Command::new("clang");
+    let mut clang = Command::new(&opts.toolchain.cc);
+    if opts.toolchain.target == crate::target::Target::Soso {
+        clang.args(["--target=x86_64-unknown-none-elf", "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-fno-pic"]);
+    }
     clang
         .arg("-x")
         .arg("ir")
@@ -379,7 +404,28 @@ fn link_binary_multi(
 ) -> Result<PathBuf, Vec<Diagnostic>> {
     let out_dir = root.join("target").join("sal-out");
     fs::create_dir_all(&out_dir).map_err(|e| vec![internal_diag(e.to_string())])?;
-    let bin = out_dir.join("a.out");
+    let bin = opts.output.clone().unwrap_or_else(|| out_dir.join("a.out"));
+    if let Some(parent) = bin.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|e| vec![internal_diag(e.to_string())])?;
+    }
+    if opts.toolchain.target == crate::target::Target::Soso {
+        let sdk = &opts.toolchain.sdk;
+        for f in ["manifest.txt", "link.ld", "libsal-soso.a", "runtime.o", "kernels.o"] {
+            if !sdk.join(f).is_file() { return Err(vec![internal_diag(format!("SDK de Sal incompleto: {}", sdk.join(f).display()))]); }
+        }
+        let mut link = Command::new(&opts.toolchain.linker);
+        if opts.toolchain.linker.file_name().is_some_and(|s| s == "rust-lld") { link.args(["-flavor", "gnu"]); }
+        link.args(["-static", "--gc-sections"]);
+        // The native wild-soso linker owns the fixed 0x400000 layout and
+        // selects _start itself; it does not interpret GNU linker scripts.
+        if !(cfg!(target_os = "soso") && opts.toolchain.linker.file_name().is_some_and(|s| s == "wild-soso")) {
+            link.arg("-T").arg(sdk.join("link.ld"));
+        }
+        link.args(obj_paths).arg(sdk.join("runtime.o")).arg(sdk.join("kernels.o"))
+            .arg(sdk.join("libsal-soso.a")).arg("-o").arg(&bin);
+        run_cmd(link)?;
+        return Ok(bin);
+    }
     let opt_flag = if opts.release { "-O3" } else { "-O0" };
 
     let runtime = runtime_dir(root);
@@ -403,7 +449,7 @@ fn link_binary_multi(
         None
     };
 
-    let mut link = Command::new("clang");
+    let mut link = Command::new(&opts.toolchain.cc);
     for obj in obj_paths {
         link.arg(obj);
     }
@@ -429,7 +475,7 @@ fn link_binary_multi(
 }
 
 fn run_cmd(mut cmd: Command) -> Result<(), Vec<Diagnostic>> {
-    let out = cmd.output().map_err(|e| vec![internal_diag(e.to_string())])?;
+    let out = cmd.output().map_err(|e| vec![internal_diag(format!("{}: {e}", cmd.get_program().to_string_lossy()))])?;
     if !out.status.success() {
         return Err(vec![internal_diag(format!(
             "{}\n{}",

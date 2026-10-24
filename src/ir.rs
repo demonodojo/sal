@@ -67,6 +67,8 @@ pub enum IrInst {
         from: String,
         to_place: String,
     },
+    /// Same storage as `src`, new shape metadata only (reshape / transpose view).
+    TensorRebind { dest: String, src: String },
     Return { value: String },
     Drop { name: String },
     /// Structured if: then/else are nested instruction lists; `dest` is the phi result.
@@ -269,7 +271,16 @@ fn lower_fn(
                 if matches!(d, Dim::Dynamic) {
                     let name = format!("{}_d{i}", p.name);
                     if !dim_params.contains(&name) {
-                        dim_params.push(name);
+                        dim_params.push(name.clone());
+                    }
+                    if !env.contains_key(&name) {
+                        counter += 1;
+                        let dssa = format!("t{counter}");
+                        instructions.push(IrInst::ConstInt {
+                            dest: dssa.clone(),
+                            value: 0,
+                        });
+                        env.insert(name, dssa);
                     }
                 }
             }
@@ -293,7 +304,7 @@ fn lower_fn(
             &mut counter,
             &mut regions,
             &mut tensors,
-            &dim_params,
+            &mut dim_params,
             fn_names,
             &mut strings,
         );
@@ -306,7 +317,7 @@ fn lower_fn(
             &mut counter,
             &mut regions,
             &mut tensors,
-            &dim_params,
+            &mut dim_params,
             fn_names,
             &mut strings,
         );
@@ -624,7 +635,7 @@ fn lower_stmt(
     counter: &mut u32,
     regions: &mut Vec<FusedRegion>,
     tensors: &mut HashMap<String, TensorInfo>,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
     strings: &mut StringEnv,
 ) {
@@ -641,8 +652,27 @@ fn lower_stmt(
                 fn_names,
                 strings,
             );
-            register_let_tensor(name, ty.as_ref(), init, &v, tensors);
+            register_let_tensor(name, ty.as_ref(), init, &v, strings, tensors);
             env.insert(name.clone(), v);
+            if let Some(Type::Tensor { dims, .. }) = ty.as_ref() {
+                for (i, d) in dims.iter().enumerate() {
+                    if matches!(d, Dim::Dynamic) {
+                        let dname = format!("{name}_d{i}");
+                        if !dim_params.contains(&dname) {
+                            dim_params.push(dname.clone());
+                        }
+                        if !env.contains_key(&dname) {
+                            *counter += 1;
+                            let dssa = format!("t{counter}");
+                            instructions.push(IrInst::ConstInt {
+                                dest: dssa.clone(),
+                                value: 0,
+                            });
+                            env.insert(dname, dssa);
+                        }
+                    }
+                }
+            }
             strings.note_init(name, ty.as_ref(), init);
         }
         Stmt::Assign { target, value, .. } => {
@@ -726,7 +756,7 @@ fn lower_stmt(
                     strings,
                 );
                 strings.accumulate = None;
-                register_let_tensor(name, None, value, &v, tensors);
+                register_let_tensor(name, None, value, &v, strings, tensors);
                 env.insert(name.clone(), v);
                 strings.note_init(name, None, value);
             } else {
@@ -864,16 +894,59 @@ fn lower_stmt(
     }
 }
 
+fn call_fn_tensor_ret<'a>(
+    init: &Expr,
+    strings: &'a StringEnv,
+) -> Option<&'a Type> {
+    let Expr::Call { func, .. } = init else {
+        return None;
+    };
+    let Expr::Ident { name, .. } = func.as_ref() else {
+        return None;
+    };
+    strings.fn_tensor_rets.get(name)
+}
+
+fn tensor_info_from_type(ty: &Type) -> Option<TensorInfo> {
+    let Type::Tensor {
+        elem, dims, place, ..
+    } = ty
+    else {
+        return None;
+    };
+    let concrete = dims
+        .iter()
+        .map(|d| match d {
+            Dim::Static(n) => Some(*n),
+            Dim::Dynamic => None,
+        })
+        .collect();
+    Some(TensorInfo {
+        elem: *elem,
+        dims: dims.clone(),
+        place: place.clone(),
+        concrete,
+    })
+}
+
+fn register_ssa_tensor(ty: &Type, ir_ssa: &str, tensors: &mut HashMap<String, TensorInfo>) {
+    if let Some(info) = tensor_info_from_type(ty) {
+        tensors.insert(ir_ssa.to_string(), info);
+    }
+}
+
 fn register_let_tensor(
     name: &str,
     ty: Option<&Type>,
     init: &Expr,
     ir_name: &str,
+    strings: &StringEnv,
     tensors: &mut HashMap<String, TensorInfo>,
 ) {
     let lit = tensor_lit_shape(init);
     let load_ty = load_type_arg(init);
-    let annotated = ty.or(load_ty.as_ref());
+    let call_ret = call_fn_tensor_ret(init, strings);
+    let annotated = ty.or(load_ty.as_ref()).or(call_ret);
     let info = if let Some(Type::Tensor { elem, dims, .. }) = annotated {
         let mut concrete: Vec<Option<u64>> = dims
             .iter()
@@ -1004,6 +1077,7 @@ fn lower_expr_simple(
     fn_names: &HashMap<String, ()>,
     strings: &mut StringEnv,
 ) -> String {
+    let mut empty_dims = Vec::new();
     lower_expr(
         e,
         instructions,
@@ -1011,7 +1085,7 @@ fn lower_expr_simple(
         counter,
         &mut Vec::new(),
         tensors,
-        &[],
+        &mut empty_dims,
         fn_names,
         strings,
     )
@@ -1047,6 +1121,14 @@ fn container_kinds(fname: &str, type_args: &[crate::ast::TypeArg]) -> Vec<i64> {
     }
 }
 
+fn matmul_runtime_name(tensors: &HashMap<String, TensorInfo>, lhs: &str) -> String {
+    match tensors.get(lhs).map(|t| t.elem) {
+        Some(TensorElem::F16) => "sal_matmul_f16".into(),
+        Some(TensorElem::BF16) => "sal_matmul_bf16".into(),
+        _ => "sal_matmul_f32".into(),
+    }
+}
+
 fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     // List ops always hit the runtime; prelude bodies are signatures only.
     if matches!(
@@ -1074,10 +1156,17 @@ fn is_runtime_builtin(name: &str) -> bool {
         "print"
             | "load"
             | "matmul"
+            | "qmatmul"
+            | "attention"
             | "softmax"
             | "relu"
+            | "silu"
+            | "rms_norm"
+            | "rope"
             | "map"
             | "reduce"
+            | "tensor_append"
+            | "argmax"
             | "where"
             | "index"
             | "read_file"
@@ -1111,6 +1200,8 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "str_from_int"
             | "str_as_int"
             | "str_to_f64_bits"
+            | "f64_bits_to_str"
+            | "now_ns"
             | "strdup"
             | "free"
             | "select_str"
@@ -1152,7 +1243,7 @@ fn lower_expr(
     counter: &mut u32,
     regions: &mut Vec<FusedRegion>,
     tensors: &mut HashMap<String, TensorInfo>,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
     strings: &mut StringEnv,
 ) -> String {
@@ -1421,23 +1512,235 @@ fn lower_expr(
                     }
                 }
             }
+            if fname == "reshape" && arg_names.len() >= 2 {
+                let src = arg_names[0].clone();
+                if let Some(mut info) = tensor_info_for_ssa(&src, env, tensors) {
+                    let mut new_dims = Vec::new();
+                    let mut concrete = Vec::new();
+                    for a in &args[1..] {
+                        if let Expr::Int { value: v, .. } = a {
+                            new_dims.push(Dim::Static(*v as u64));
+                            concrete.push(Some(*v as u64));
+                        }
+                    }
+                    if !new_dims.is_empty() {
+                        info.dims = new_dims;
+                        info.concrete = concrete;
+                    }
+                    tensors.insert(dest.clone(), info);
+                }
+                instructions.push(IrInst::TensorRebind {
+                    dest: dest.clone(),
+                    src: src.clone(),
+                });
+                return dest;
+            }
+            if fname == "transpose" && !arg_names.is_empty() {
+                let src = arg_names[0].clone();
+                if let Some(mut info) = tensor_info_for_ssa(&src, env, tensors) {
+                    let n = info.dims.len();
+                    if n >= 2 {
+                        info.dims.swap(n - 1, n - 2);
+                    }
+                    tensors.insert(dest.clone(), info);
+                }
+                instructions.push(IrInst::TensorRebind {
+                    dest: dest.clone(),
+                    src: src.clone(),
+                });
+                return dest;
+            }
+            if fname == "softmax" && arg_names.len() == 2 {
+                let input = arg_names[0].clone();
+                if let Some(info) = tensors.get(&input).cloned() {
+                    tensors.insert(dest.clone(), info);
+                }
+                if let Some(axis) = args.get(1).and_then(|e| match e {
+                    Expr::Int { value: v, .. } => Some(*v as i64),
+                    _ => None,
+                }) {
+                    instructions.push(IrInst::Call {
+                        dest: Some(dest.clone()),
+                        func: "sal_softmax_axis_f32".into(),
+                        args: vec![input, axis.to_string()],
+                    });
+                    return dest;
+                }
+            }
+            if fname == "attention" && arg_names.len() == 4 {
+                let q = arg_names[0].clone();
+                let k = arg_names[1].clone();
+                let v = arg_names[2].clone();
+                let causal = arg_names[3].clone();
+                let q_info = tensor_info_for_ssa(&q, env, tensors);
+                let k_info = tensor_info_for_ssa(&k, env, tensors);
+                let (seq, heads, head_dim) = attention_shape_q(q_info.as_ref(), &q);
+                let kv_heads = attention_shape_kv(k_info.as_ref(), &k);
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_attention_f32".into(),
+                    args: vec![
+                        q,
+                        k,
+                        v,
+                        seq,
+                        heads,
+                        kv_heads,
+                        head_dim,
+                        causal,
+                    ],
+                });
+                if let Some(info) = tensor_info_for_ssa(&arg_names[0], env, tensors) {
+                    tensors.insert(dest.clone(), info);
+                }
+                return dest;
+            }
+            if fname == "tensor_append" && arg_names.len() == 2 {
+                let cache = arg_names[0].clone();
+                let row = arg_names[1].clone();
+                let row_elems_total = tensors
+                    .get(&row)
+                    .and_then(|r| dims_elems(r).ok())
+                    .unwrap_or(1);
+                let rows_add = tensors
+                    .get(&row)
+                    .and_then(|r| match r.dims.first() {
+                        Some(Dim::Static(n)) => Some(*n),
+                        _ => Some(1),
+                    })
+                    .unwrap_or(1);
+                let row_stride = if rows_add > 0 {
+                    row_elems_total / rows_add
+                } else {
+                    row_elems_total
+                };
+                let dim_key = format!("{cache}_d0");
+                let seq_ssa = if let Some(s) = env.get(&dim_key) {
+                    s.clone()
+                } else {
+                    let s = push_const_dim(0, instructions, counter);
+                    env.insert(dim_key.clone(), s.clone());
+                    s
+                };
+                if rows_add > 1 {
+                    instructions.push(IrInst::Call {
+                        dest: None,
+                        func: "sal_tensor_write_rows_f32".into(),
+                        args: vec![
+                            cache.clone(),
+                            seq_ssa.clone(),
+                            row,
+                            rows_add.to_string(),
+                            row_stride.to_string(),
+                        ],
+                    });
+                } else {
+                    instructions.push(IrInst::Call {
+                        dest: None,
+                        func: "sal_tensor_write_row_f32".into(),
+                        args: vec![
+                            cache.clone(),
+                            seq_ssa.clone(),
+                            row,
+                            row_stride.to_string(),
+                        ],
+                    });
+                }
+                *counter += 1;
+                let new_seq = format!("t{counter}");
+                let rows_add_ssa = push_const_dim(rows_add, instructions, counter);
+                instructions.push(IrInst::Binary {
+                    dest: new_seq.clone(),
+                    op: "add".into(),
+                    left: seq_ssa.clone(),
+                    right: rows_add_ssa,
+                });
+                env.insert(format!("{dest}_d0"), new_seq.clone());
+                if let Some(c) = tensors.get(&cache).cloned() {
+                    tensors.insert(dest.clone(), c);
+                }
+                env.insert(format!("{cache}_d0"), new_seq);
+                env.insert(dest.clone(), cache.clone());
+                return dest;
+            }
+            if fname == "rope" && arg_names.len() == 2 {
+                let input = arg_names[0].clone();
+                let pos = arg_names[1].clone();
+                let info = tensor_info_for_ssa(&input, env, tensors);
+                let (seq, dim) = rope_seq_dim_ssa(
+                    info.as_ref(),
+                    &input,
+                    dim_params,
+                    instructions,
+                    counter,
+                );
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_rope".into(),
+                    args: vec![input.clone(), seq, dim, pos],
+                });
+                if let Some(i) = info {
+                    tensors.insert(dest.clone(), i);
+                }
+                return dest;
+            }
+            if fname == "silu" && !arg_names.is_empty() {
+                let input = arg_names[0].clone();
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_silu".into(),
+                    args: vec![input.clone()],
+                });
+                if let Some(i) = tensor_info_for_ssa(&input, env, tensors) {
+                    tensors.insert(dest.clone(), i);
+                }
+                return dest;
+            }
+            if fname == "qmatmul" && arg_names.len() == 4 {
+                let a = arg_names[0].clone();
+                let w = arg_names[1].clone();
+                let scale = arg_names[2].clone();
+                let group = arg_names[3].clone();
+                let (m, k, n) =
+                    emit_matmul_dim_args(&a, &w, env, tensors, dim_params, instructions, counter);
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_qmatmul_f32".into(),
+                    args: vec![a, w, scale, group, m, k, n],
+                });
+                return dest;
+            }
             let func_name = runtime_call_name(&fname, fn_names);
             if fname == "matmul" && arg_names.len() >= 2 {
                 let lhs = arg_names[0].clone();
                 let rhs = arg_names[1].clone();
                 let (m, k, n) =
-                    emit_matmul_dim_args(&lhs, &rhs, tensors, dim_params, instructions, counter);
+                    emit_matmul_dim_args(&lhs, &rhs, env, tensors, dim_params, instructions, counter);
+                let mm_func = matmul_runtime_name(tensors, &lhs);
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),
-                    func: func_name,
-                    args: vec![lhs, rhs, m, k, n],
+                    func: mm_func,
+                    args: vec![lhs.clone(), rhs.clone(), m, k, n],
                 });
+                if let (Some(li), Some(ri)) = (
+                    tensor_info_for_ssa(&lhs, env, tensors),
+                    tensor_info_for_ssa(&rhs, env, tensors),
+                ) {
+                    if let Some(out) = matmul_out_info(&li, &ri) {
+                        tensors.insert(dest.clone(), out);
+                    }
+                }
             } else {
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),
                     func: func_name,
                     args: arg_names,
                 });
+                if fn_names.contains_key(&fname) {
+                    if let Some(ret_ty) = strings.fn_tensor_rets.get(&fname) {
+                        register_ssa_tensor(ret_ty, &dest, tensors);
+                    }
+                }
             }
             dest
         }
@@ -1531,10 +1834,6 @@ fn lower_expr(
                 fused,
             });
 
-            if has_column {
-                *counter += 1;
-                return format!("t{counter}");
-            }
             if let Some(FusedOp::Matmul { lhs, rhs, .. }) = ops
                 .iter()
                 .find(|o| matches!(o, FusedOp::Matmul { .. }))
@@ -1544,14 +1843,16 @@ fn lower_expr(
                 let (m, k, n) = emit_matmul_dim_args(
                     lhs,
                     rhs,
+                    env,
                     tensors,
                     dim_params,
                     instructions,
                     counter,
                 );
+                let mm_func = matmul_runtime_name(tensors, &lhs);
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),
-                    func: "sal_matmul_f32".into(),
+                    func: mm_func,
                     args: vec![lhs.clone(), rhs.clone(), m, k, n],
                 });
                 if has_epilogue {
@@ -1840,7 +2141,7 @@ fn lower_match_chain(
     counter: &mut u32,
     regions: &mut Vec<FusedRegion>,
     tensors: &mut HashMap<String, TensorInfo>,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
     strings: &mut StringEnv,
 ) -> String {
@@ -1933,7 +2234,7 @@ fn lower_match_switch(
     counter: &mut u32,
     regions: &mut Vec<FusedRegion>,
     tensors: &mut HashMap<String, TensorInfo>,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
     strings: &mut StringEnv,
 ) -> String {
@@ -2107,24 +2408,81 @@ fn variant_tag_for_name(name: &str) -> i64 {
 fn emit_matmul_dim_args(
     lhs: &str,
     rhs: &str,
+    env: &HashMap<String, String>,
     tensors: &HashMap<String, TensorInfo>,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     instructions: &mut Vec<IrInst>,
     counter: &mut u32,
 ) -> (String, String, String) {
-    let li = tensors.get(lhs);
-    let ri = tensors.get(rhs);
-    let m = axis_len_ssa(li, lhs, /*row*/ true, dim_params, instructions, counter);
+    let lhs_info = tensor_info_for_ssa(lhs, env, tensors);
+    let rhs_info = tensor_info_for_ssa(rhs, env, tensors);
+    let li = lhs_info.as_ref();
+    let ri = rhs_info.as_ref();
+    let m = matmul_batch_m_ssa(li, lhs, dim_params, instructions, counter);
     let k = axis_len_ssa(li, lhs, /*row*/ false, dim_params, instructions, counter);
     let n = axis_len_ssa(ri, rhs, /*row*/ false, dim_params, instructions, counter);
     (m, k, n)
+}
+
+/// Product of leading axes of `lhs` (all but the last two) flattened into batch `m`.
+fn matmul_batch_m_ssa(
+    info: Option<&TensorInfo>,
+    tensor: &str,
+    dim_params: &mut Vec<String>,
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+) -> String {
+    let Some(t) = info else {
+        *counter += 1;
+        let dest = format!("t{counter}");
+        instructions.push(IrInst::ConstInt { dest: dest.clone(), value: 1 });
+        return dest;
+    };
+    if t.dims.len() <= 2 {
+        return axis_len_ssa(Some(t), tensor, true, dim_params, instructions, counter);
+    }
+    let lead = &t.dims[0..t.dims.len() - 2];
+    let mut acc = axis_len_ssa_for_dim(t, tensor, 0, &lead[0], dim_params, instructions, counter);
+    for (i, d) in lead.iter().enumerate().skip(1) {
+        let next = axis_len_ssa_for_dim(t, tensor, i, d, dim_params, instructions, counter);
+        *counter += 1;
+        let dest = format!("t{counter}");
+        instructions.push(IrInst::Binary {
+            dest: dest.clone(),
+            op: "mul".into(),
+            left: acc,
+            right: next,
+        });
+        acc = dest;
+    }
+    acc
+}
+
+fn axis_len_ssa_for_dim(
+    t: &TensorInfo,
+    tensor: &str,
+    idx: usize,
+    d: &Dim,
+    dim_params: &mut Vec<String>,
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+) -> String {
+    match (d, t.concrete.get(idx).copied().flatten()) {
+        (Dim::Static(n), _) => push_const_dim(*n, instructions, counter),
+        (Dim::Dynamic, Some(n)) => push_const_dim(n, instructions, counter),
+        (Dim::Dynamic, None) => {
+            let name = format!("{tensor}_d{idx}");
+            let _ = dim_params;
+            name
+        }
+    }
 }
 
 fn axis_len_ssa(
     info: Option<&TensorInfo>,
     tensor: &str,
     take_row: bool,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     instructions: &mut Vec<IrInst>,
     counter: &mut u32,
 ) -> String {
@@ -2191,9 +2549,17 @@ fn tensor_info_for_ssa(
     if let Some(i) = tensors.get(ssa) {
         return Some(i.clone());
     }
-    env.get(ssa)
-        .and_then(|n| tensors.get(n))
-        .cloned()
+    if let Some(i) = env.get(ssa).and_then(|n| tensors.get(n)) {
+        return Some(i.clone());
+    }
+    for (name, bound) in env {
+        if bound == ssa {
+            if let Some(i) = tensors.get(name) {
+                return Some(i.clone());
+            }
+        }
+    }
+    None
 }
 
 fn tensor_place_name(info: &TensorInfo, _env: &HashMap<String, String>) -> String {
@@ -2203,7 +2569,7 @@ fn tensor_place_name(info: &TensorInfo, _env: &HashMap<String, String>) -> Strin
 fn tensor_len_operand(
     info: &TensorInfo,
     tensor_ssa: &str,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     instructions: &mut Vec<IrInst>,
     counter: &mut u32,
 ) -> String {
@@ -2252,7 +2618,7 @@ fn try_tensor_bin(
     dest: String,
     tensors: &mut HashMap<String, TensorInfo>,
     env: &HashMap<String, String>,
-    dim_params: &[String],
+    dim_params: &mut Vec<String>,
     instructions: &mut Vec<IrInst>,
     counter: &mut u32,
 ) -> Option<String> {
@@ -2365,7 +2731,7 @@ fn collect_fused_ops(
                 _ => return,
             };
             match fname {
-                "relu" | "map" => {
+                "relu" | "map" | "silu" => {
                     if let Some(FusedOp::Matmul { dest, .. }) = ops.last() {
                         let mm_dest = dest.clone();
                         ops.push(FusedOp::MapEpilogue {
@@ -2448,6 +2814,60 @@ fn tensor_nbytes(info: &TensorInfo) -> Result<u64, String> {
     match dims_elems(info) {
         Ok(n) => Ok(n.saturating_mul(elem_bytes(info.elem))),
         Err(sym) => Err(format!("{sym}*{}", elem_bytes(info.elem))),
+    }
+}
+
+fn rope_seq_dim_ssa(
+    info: Option<&TensorInfo>,
+    tensor: &str,
+    dim_params: &mut Vec<String>,
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+) -> (String, String) {
+    let Some(t) = info else {
+        let one = push_const_dim(1, instructions, counter);
+        return (one.clone(), one);
+    };
+    if t.dims.len() >= 2 {
+        let seq = axis_len_ssa_for_dim(t, tensor, 0, &t.dims[0], dim_params, instructions, counter);
+        let dim = axis_len_ssa_for_dim(
+            t,
+            tensor,
+            t.dims.len() - 1,
+            t.dims.last().unwrap(),
+            dim_params,
+            instructions,
+            counter,
+        );
+        return (seq, dim);
+    }
+    (push_const_dim(1, instructions, counter), push_const_dim(1, instructions, counter))
+}
+
+fn attention_shape_q(info: Option<&TensorInfo>, tensor: &str) -> (String, String, String) {
+    match info {
+        Some(t) if t.dims.len() >= 3 => (
+            dim_lit_or_name(t, tensor, 0, "1"),
+            dim_lit_or_name(t, tensor, 1, "1"),
+            dim_lit_or_name(t, tensor, 2, "1"),
+        ),
+        _ => ("1".into(), "1".into(), "1".into()),
+    }
+}
+
+fn attention_shape_kv(info: Option<&TensorInfo>, tensor: &str) -> String {
+    match info {
+        Some(t) if t.dims.len() >= 2 => dim_lit_or_name(t, tensor, 1, "1"),
+        _ => "1".into(),
+    }
+}
+
+fn dim_lit_or_name(t: &TensorInfo, tensor: &str, idx: usize, fallback: &str) -> String {
+    match (t.dims.get(idx), t.concrete.get(idx).copied().flatten()) {
+        (Some(Dim::Static(n)), _) => n.to_string(),
+        (Some(Dim::Dynamic), Some(n)) => n.to_string(),
+        (Some(Dim::Dynamic), None) => format!("{tensor}_d{idx}"),
+        _ => fallback.into(),
     }
 }
 

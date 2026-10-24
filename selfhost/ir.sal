@@ -27,6 +27,12 @@ fn II_DROP() -> Int
 fn II_IF() -> Int
     7
 
+fn II_CF() -> Int
+    8
+
+fn II_TBIN() -> Int
+    9
+
 # ---- Lower / IR ----
 fn cx_new(fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
     cx = vec_new()
@@ -152,6 +158,27 @@ fn ir_bin(dest: Int, op: Int, left: Int, right: Int) -> Int ! alloc
     _e = vec_push(inst, right)
     inst
 
+fn ir_cf(dest: Int, bits: Int, txt: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_CF())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, bits)
+    _d = vec_push(inst, txt)
+    inst
+
+fn ir_tbin(dest: Int, op: Int, elem: Int, place: Int, left: Int, right: Int, len: Int, scalar: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_TBIN())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, op)
+    _d = vec_push(inst, elem)
+    _e = vec_push(inst, place)
+    _f = vec_push(inst, left)
+    _g = vec_push(inst, right)
+    _h = vec_push(inst, len)
+    _i = vec_push(inst, scalar)
+    inst
+
 fn ir_call(dest: Int, func: Int, args: Int, has_dest: Int) -> Int ! alloc
     inst = vec_new()
     _a = vec_push(inst, II_CALL())
@@ -194,7 +221,15 @@ fn bind_new(name: Int, ssa: Int) -> Int ! alloc
     _e = vec_push(b, vec_new())
     _f = vec_push(b, vec_new())
     _g = vec_push(b, 4)
+    _h = vec_push(b, str_as_int(d"cpu"))
     b
+
+fn bind_place(b: Int) -> Int ! alloc
+    vec_get(b, 7)
+
+fn bind_set_place(b: Int, v: Int) -> Int ! alloc
+    _s = vec_set(b, 7, v)
+    0
 
 fn bind_name(b: Int) -> Int ! alloc
     vec_get(b, 0)
@@ -308,7 +343,32 @@ fn parse_tensor_type(ty: String, b: Int) -> Int ! alloc
         0
     else
         _d = bind_set_tensor(b, 1)
+        _pl = parse_tensor_place(ty, b)
         parse_tensor_dims(ty, b, 0, 0)
+
+fn parse_tensor_place(ty: String, b: Int) -> Int ! alloc
+    if tensor_ty_on_place(ty, d"p") == 1
+        bind_set_place(b, str_as_int(d"p"))
+    elsif tensor_ty_on_place(ty, d"gpu") == 1
+        bind_set_place(b, str_as_int(d"gpu"))
+    elsif tensor_ty_on_place(ty, d"tpu") == 1
+        bind_set_place(b, str_as_int(d"tpu"))
+    else
+        bind_set_place(b, str_as_int(d"cpu"))
+
+fn tensor_ty_on_place(ty: String, place: String) -> Int ! alloc
+    mid = d"on "
+    needle = mid + place
+    free(mid)
+    if str_contains(ty, needle) == 1
+        1
+    else
+        sp = d" on "
+        needle2 = sp + place
+        free(sp)
+        r = str_contains(ty, needle2)
+        free(needle2)
+        r
 
 fn clamp_rb(rb: Int, n: Int) -> Int ! alloc
     if rb < 0
@@ -512,6 +572,53 @@ fn bind_for_ssa_at(binds: Int, ssa: Int, i: Int, n: Int) -> Int ! alloc
 
 fn bind_for_ssa(cx: Int, ssa: Int) -> Int ! alloc
     bind_for_ssa_at(cx_binds(cx), ssa, 0, vec_len(cx_binds(cx)))
+
+fn expr_is_tensor(cx: Int, e: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_IDENT()
+            b = cx_find(cx, vec_get(e, 1))
+            if b == 0
+                0
+            else
+                bind_is_tensor(b)
+        elsif k == EX_BINARY()
+            if expr_is_tensor(cx, vec_get(e, 2)) == 1
+                1
+            else
+                expr_is_tensor(cx, vec_get(e, 3))
+        else
+            0
+
+fn register_tensor_ssa(cx: Int, ssa: Int, from: Int) -> Int ! alloc
+    b = bind_new(ssa, ssa)
+    _t = bind_set_tensor(b, 1)
+    _e = bind_set_elem(b, bind_elem(from))
+    _p = bind_set_place(b, bind_place(from))
+    _n = bind_set_ndims(b, bind_ndims(from))
+    dims = bind_dims(from)
+    conc = bind_concrete(from)
+    i = 0
+    register_tensor_ssa_go(b, dims, conc, i, bind_ndims(from))
+    _q = vec_push(cx_binds(cx), b)
+    0
+
+fn register_tensor_ssa_go(b: Int, dims: Int, conc: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        if i < vec_len(dims)
+            _p = vec_push(bind_dims(b), vec_get(dims, i))
+        if i < vec_len(conc)
+            _q = vec_push(bind_concrete(b), vec_get(conc, i))
+        register_tensor_ssa_go(b, dims, conc, i + 1, n)
+
+fn tensor_len_ssa_name(tensor_ssa: Int) -> Int ! alloc
+    mid = d"_d0"
+    a = str_from_int(tensor_ssa) + mid
+    str_as_int(a)
 
 fn conc_product_go(conc: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n

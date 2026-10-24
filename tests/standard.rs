@@ -28,6 +28,8 @@ fn standard_bin() -> PathBuf {
     BIN.get_or_init(|| {
         let _guard = COMPILE_LOCK.lock().expect("standard compile lock");
         let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
             release: false,
             instrument: false,
             device: "cpu".into(),

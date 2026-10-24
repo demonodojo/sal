@@ -15,6 +15,8 @@ static LINK_LOCK: Mutex<()> = Mutex::new(());
 
 fn instrument_opts() -> CompileOptions {
     CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: true,
         device: "cpu".into(),

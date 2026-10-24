@@ -28,6 +28,8 @@ fn incremental_cache_reuses_object_and_skips_ll_rewrite() {
     let project = tmp.path().to_path_buf();
     let file = root().join("examples/hello.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -40,6 +42,7 @@ fn incremental_cache_reuses_object_and_skips_ll_rewrite() {
     assert!(a.binary.is_some());
 
     let flags = CompileFlags {
+        toolchain: opts.toolchain.identity(),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -212,6 +215,8 @@ fn skip_link_second_build_marks_cache_hit() {
     let tmp = isolated_root();
     let file = root().join("examples/hello.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -242,6 +247,8 @@ fn import_change_invalidates_importer_cache() {
     .expect("write a");
 
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -249,6 +256,7 @@ fn import_change_invalidates_importer_cache() {
         skip_link: false,
     };
     let flags = CompileFlags {
+        toolchain: opts.toolchain.identity(),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -310,6 +318,8 @@ fn import_as_two_modules_run() {
     )
     .expect("write main");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -338,6 +348,8 @@ fn import_two_modules_run() {
     )
     .expect("write a");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),

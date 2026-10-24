@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
+use sal_compiler::target::{Target, Toolchain};
 use sal_compiler::ast::Program;
 use sal_compiler::compile::{compile_file, compile_program, CompileOptions};
 use sal_compiler::diag::Diagnostic;
@@ -18,8 +19,12 @@ use sal_compiler::parser::parse;
 use sal_compiler::typed::TypedProgram;
 
 #[derive(Parser)]
-#[command(name = "sal", about = "Bootstrap compiler for sal")]
+#[command(name = "sal", version, about = "Bootstrap compiler for sal")]
 struct Cli {
+    #[arg(long, global = true, value_enum)]
+    target: Option<Target>,
+    #[arg(short = 'o', long, global = true)]
+    output: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -48,6 +53,8 @@ enum Commands {
     },
     Run {
         file: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
         #[arg(long)]
         release: bool,
         #[arg(long)]
@@ -94,6 +101,7 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+    let toolchain = Toolchain::new(cli.target.unwrap_or_else(Target::host));
     let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     match cli.command {
         Commands::Check {
@@ -101,7 +109,7 @@ fn main() {
             device,
             error_format,
         } => {
-            if let Err(diags) = run_check(&file, &root, &device) {
+            if let Err(diags) = compile_file(&file, &configured_opts(&root, false, false, &device, true, &toolchain, None)).map(|_| ()) {
                 print_diags(&diags, &error_format);
                 std::process::exit(1);
             }
@@ -113,7 +121,7 @@ fn main() {
             device,
             instrument_out: _,
             error_format,
-        } => match build(&file, &root, release, instrument, &device, false) {
+        } => match build_configured(&file, &root, release, instrument, &device, &toolchain, cli.output.clone()) {
             Ok(path) => println!("{}", path.display()),
             Err(diags) => {
                 print_diags(&diags, &error_format);
@@ -122,24 +130,33 @@ fn main() {
         },
         Commands::Run {
             file,
+            args,
             release,
             instrument,
             device,
             instrument_out,
             error_format,
         } => {
-            let bin = match build(&file, &root, release, instrument, &device, false) {
+            if toolchain.target != Target::host() {
+                eprintln!("sal run: el destino no se puede ejecutar en este sistema; usa sal build");
+                std::process::exit(1);
+            }
+            let bin = match build_configured(&file, &root, release, instrument, &device, &toolchain, cli.output.clone()) {
                 Ok(p) => p,
                 Err(diags) => {
                     print_diags(&diags, &error_format);
                     std::process::exit(1);
                 }
             };
-            let mut cmd = Command::new(bin);
+            let mut cmd = Command::new(std::fs::canonicalize(&bin).unwrap_or(bin));
+            cmd.args(args);
             if instrument {
                 cmd.env("SAL_INSTRUMENT", "1");
             }
-            let output = cmd.output().expect("run");
+            let output = cmd.output().unwrap_or_else(|e| {
+                eprintln!("sal run: {e}");
+                std::process::exit(1);
+            });
             let _ = std::io::stdout().write_all(&output.stdout);
             let _ = std::io::stderr().write_all(&output.stderr);
             // `--instrument-out` captures the process stderr (JSON event lines).
@@ -202,6 +219,7 @@ fn main() {
                         emit_llvm_with_tensors(
                             &ir,
                             &LlvmOptions {
+                target: toolchain.target,
                                 instrument: false,
                                 extern_user_fns: HashMap::new(),
                                 emit_entry_main: true,
@@ -221,7 +239,10 @@ fn main() {
             release,
             instrument,
             out,
-        } => match build_selfhost_stage2(&root, release, instrument, out.as_ref()) {
+        } => match if toolchain.target == Target::Soso {
+            eprintln!("sal selfhost: el compilador escrito en Sal todavía no está soportado en soso");
+            std::process::exit(1);
+        } else { build_selfhost_stage2(&root, release, instrument, out.as_ref()) } {
             Ok(path) => println!("{}", path.display()),
             Err(diags) => {
                 print_diags(&diags, "human");
@@ -245,7 +266,7 @@ fn main() {
             };
             match compile_program(
                 &prog,
-                &opts(&root, release, instrument, &device, false),
+                &configured_opts(&root, release, instrument, &device, false, &toolchain, cli.output.clone()),
             ) {
                 Ok(art) => {
                     if let Some(bin) = art.binary {
@@ -281,21 +302,14 @@ fn opts(
     skip_link: bool,
 ) -> CompileOptions {
     CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release,
         instrument,
         device: device.to_string(),
         project_root: root.clone(),
         skip_link,
     }
-}
-
-fn run_check(
-    file: &PathBuf,
-    root: &PathBuf,
-    device: &str,
-) -> Result<(), Vec<Diagnostic>> {
-    // skip_link: check does not require a physical GPU/TPU toolchain.
-    compile_file(file, &opts(root, false, false, device, true)).map(|_| ())
 }
 
 fn build_selfhost_stage2(
@@ -360,4 +374,19 @@ fn build(
             Default::default(),
         )]
     })
+}
+
+fn configured_opts(root: &PathBuf, release: bool, instrument: bool, device: &str,
+    skip_link: bool, toolchain: &Toolchain, output: Option<PathBuf>) -> CompileOptions {
+    let mut o = opts(root, release, instrument, device, skip_link);
+    o.toolchain = toolchain.clone();
+    o.output = output;
+    o
+}
+
+fn build_configured(file: &PathBuf, root: &PathBuf, release: bool, instrument: bool,
+    device: &str, toolchain: &Toolchain, output: Option<PathBuf>) -> Result<PathBuf, Vec<Diagnostic>> {
+    compile_file(file, &configured_opts(root, release, instrument, device, false, toolchain, output))?
+        .binary.ok_or_else(|| vec![Diagnostic::new(sal_compiler::diag::ErrorCode::EInternal,
+            "no binary produced", Default::default())])
 }

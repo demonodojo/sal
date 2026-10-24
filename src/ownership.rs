@@ -514,10 +514,16 @@ fn is_borrow_fn(name: &str) -> bool {
     matches!(
         name,
         "matmul"
+            | "qmatmul"
+            | "attention"
             | "relu"
+            | "silu"
+            | "rms_norm"
+            | "rope"
             | "softmax"
             | "map"
             | "reduce"
+            | "argmax"
             | "print"
             | "print_str"
             | "eprint_str"

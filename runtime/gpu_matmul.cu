@@ -4,18 +4,35 @@
 
 #ifdef SAL_USE_CUDA
 
+#ifndef SAL_CUDA_TILE
+#define SAL_CUDA_TILE 16
+#endif
+
 __global__ void sal_matmul_f32_kernel(const float *a, const float *b, float *out, int m, int k,
                                       int n) {
-    int j = (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    int i = (int)(blockIdx.y * blockDim.y + threadIdx.y);
-    if (i >= m || j >= n) {
-        return;
-    }
+    __shared__ float tile_a[SAL_CUDA_TILE][SAL_CUDA_TILE];
+    __shared__ float tile_b[SAL_CUDA_TILE][SAL_CUDA_TILE];
+
+    int row = (int)(blockIdx.y * blockDim.y + threadIdx.y);
+    int col = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+
     float sum = 0.f;
-    for (int t = 0; t < k; t++) {
-        sum += a[i * k + t] * b[t * n + j];
+    for (int t0 = 0; t0 < k; t0 += SAL_CUDA_TILE) {
+        int ta_col = t0 + (int)threadIdx.x;
+        int tb_row = t0 + (int)threadIdx.y;
+        tile_a[(int)threadIdx.y][(int)threadIdx.x] =
+            (row < m && ta_col < k) ? a[row * k + ta_col] : 0.f;
+        tile_b[(int)threadIdx.y][(int)threadIdx.x] =
+            (tb_row < k && col < n) ? b[tb_row * n + col] : 0.f;
+        __syncthreads();
+        for (int t = 0; t < SAL_CUDA_TILE; t++) {
+            sum += tile_a[(int)threadIdx.y][t] * tile_b[t][(int)threadIdx.x];
+        }
+        __syncthreads();
     }
-    out[i * n + j] = sum;
+    if (row < m && col < n) {
+        out[row * n + col] = sum;
+    }
 }
 
 void sal_gpu_matmul_f32(const float *a, const float *b, float *out, int64_t m, int64_t k,
@@ -23,10 +40,10 @@ void sal_gpu_matmul_f32(const float *a, const float *b, float *out, int64_t m, i
     if (m <= 0 || k <= 0 || n <= 0) {
         return;
     }
-    dim3 block(16, 16);
-    dim3 grid((unsigned)((n + 15) / 16), (unsigned)((m + 15) / 16));
+    dim3 block(SAL_CUDA_TILE, SAL_CUDA_TILE);
+    dim3 grid((unsigned)((n + SAL_CUDA_TILE - 1) / SAL_CUDA_TILE),
+              (unsigned)((m + SAL_CUDA_TILE - 1) / SAL_CUDA_TILE));
     sal_matmul_f32_kernel<<<grid, block>>>(a, b, out, (int)m, (int)k, (int)n);
-    cudaDeviceSynchronize();
 }
 
 #else

@@ -46,6 +46,7 @@ fn str_lit_ptr_temp(g: &StrLitGlobal, tmp: &mut u32, s: &mut String) -> String {
 }
 
 pub struct LlvmOptions {
+    pub target: crate::target::Target,
     pub instrument: bool,
     /// Imported user functions defined in other `.o` files (name → param count).
     pub extern_user_fns: HashMap<String, usize>,
@@ -247,7 +248,7 @@ pub fn emit_llvm_with_externs(
     extern_user_fns: &HashMap<String, usize>,
 ) -> String {
     let mut s = String::new();
-    s.push_str("target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+    s.push_str(&format!("target triple = \"{}\"\n\n", opts.target.triple()));
     if opts.instrument {
         s.push_str("; instrumented build\n");
     }
@@ -266,7 +267,20 @@ pub fn emit_llvm_with_externs(
     }
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare void @sal_matmul_f32(ptr, ptr, ptr, i64, i64, i64)\n");
+    s.push_str("declare void @sal_matmul_f16(ptr, ptr, ptr, i64, i64, i64)\n");
+    s.push_str("declare void @sal_matmul_bf16(ptr, ptr, ptr, i64, i64, i64)\n");
+    s.push_str("declare void @sal_qmatmul_f32(ptr, ptr, ptr, ptr, i64, i64, i64, i64)\n");
+    s.push_str("declare void @sal_attention_f32(ptr, ptr, ptr, ptr, i64, i64, i64, i64, i64)\n");
+    s.push_str("declare void @sal_tensor_write_row_f32(ptr, i64, ptr, i64)\n");
+    s.push_str("declare void @sal_tensor_write_rows_f32(ptr, i64, ptr, i64, i64)\n");
     s.push_str("declare void @sal_softmax_f32(ptr, i64)\n");
+    s.push_str("declare void @sal_softmax_axis_f32(ptr, i64, i64)\n");
+    s.push_str("declare void @sal_silu_f32(ptr, ptr, i64)\n");
+    s.push_str("declare void @sal_rope_f32(ptr, i64, i64, i64)\n");
+    s.push_str("declare void @sal_rms_norm_f32(ptr, ptr, ptr, i64, double)\n");
+    s.push_str("declare i64 @sal_argmax_axis_f32(ptr, i64)\n");
+    s.push_str("declare void @sal_region_begin(i64, i64)\n");
+    s.push_str("declare void @sal_region_end(i64)\n");
     s.push_str("declare void @sal_tensor_bin_f32(i32, ptr, ptr, ptr, i64, i32, double)\n");
     s.push_str("declare void @sal_tensor_cmp_f32(i32, ptr, ptr, ptr, i64, i32, double)\n");
     s.push_str("declare void @sal_tensor_neg_f32(ptr, ptr, i64)\n");
@@ -323,6 +337,8 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_str_from_int(i64)\n");
     s.push_str("declare i64 @sal_str_as_int(ptr)\n");
     s.push_str("declare i64 @sal_str_to_f64_bits(ptr)\n");
+    s.push_str("declare ptr @sal_f64_bits_to_str(i64)\n");
+    s.push_str("declare i64 @sal_now_ns()\n");
     s.push_str("declare ptr @sal_vec_new()\n");
     s.push_str("declare i64 @sal_vec_push(ptr, i64)\n");
     s.push_str("declare i64 @sal_vec_get(ptr, i64)\n");
@@ -439,12 +455,30 @@ pub fn emit_llvm_with_externs(
     for f in &m.functions {
         if f.name == "main" {
             if fn_has_matmul(f) || fn_has_load(f) {
-                emit_main(f, opts, tensors, &str_globals, &user_fns, &mut s);
+                emit_host_tensor_fn(
+                    f,
+                    opts,
+                    tensors,
+                    &str_globals,
+                    &user_fns,
+                    HostFnEntry::Main,
+                    &mut s,
+                );
             } else {
                 emit_main_general(f, opts, tensors, &str_globals, &user_fns, &mut s);
             }
-        } else if fn_has_matmul(f) {
+        } else if fn_is_fused_matmul_stub(f) {
             emit_matmul_fn(f, &mut s);
+        } else if fn_has_matmul(f) || fn_has_load(f) {
+            emit_host_tensor_fn(
+                f,
+                opts,
+                tensors,
+                &str_globals,
+                &user_fns,
+                HostFnEntry::User,
+                &mut s,
+            );
         } else {
             emit_general_fn(
                 f,
@@ -483,8 +517,10 @@ fn walk_insts_for_strings<F>(
             IrInst::Call { func, args, .. } => {
                 if func == "sal_load" || func == "sal_load_f32" {
                     if let Some(path) = args.first() {
-                        let raw = path.trim_matches('"');
-                        ensure_str(raw, s, str_globals);
+                        if path.starts_with('"') {
+                            let raw = path.trim_matches('"');
+                            ensure_str(raw, s, str_globals);
+                        }
                     }
                 }
             }
@@ -537,10 +573,36 @@ fn fn_has_matmul(f: &IrFunction) -> bool {
     })
 }
 
+/// Fused matmul regions lower to a void stub `(a,b,out,m,k,n)`. Full sal functions that
+/// also call attention/rope/load must use `emit_general_fn`, not this stub.
+fn fn_is_fused_matmul_stub(f: &IrFunction) -> bool {
+    if !fn_has_matmul(f) {
+        return false;
+    }
+    if fn_has_load(f) {
+        return false;
+    }
+    for inst in &f.instructions {
+        match inst {
+            IrInst::Call { func, .. } => {
+                if func != "sal_matmul_f32" && func != "sal_matmul" {
+                    return false;
+                }
+            }
+            IrInst::Return { .. } | IrInst::ConstInt { .. } => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn insts_have_tensor_ops(insts: &[IrInst]) -> bool {
     for inst in insts {
         match inst {
-            IrInst::TensorBin { .. } | IrInst::TensorUnary { .. } | IrInst::ConstFloat { .. } => {
+            IrInst::TensorBin { .. }
+            | IrInst::TensorUnary { .. }
+            | IrInst::ConstFloat { .. }
+            | IrInst::PlaceCopy { .. } => {
                 return true;
             }
             IrInst::If {
@@ -644,6 +706,14 @@ fn collect_tensor_ptr_names(insts: &[IrInst], out: &mut HashSet<String>) {
                 collect_tensor_ptr_names(default_body, out);
             }
             IrInst::KernelGrid { body, .. } => collect_tensor_ptr_names(body, out),
+            IrInst::PlaceCopy { from, dest, .. } => {
+                out.insert(from.clone());
+                out.insert(dest.clone());
+            }
+            IrInst::TensorRebind { dest, src } => {
+                out.insert(dest.clone());
+                out.insert(src.clone());
+            }
             _ => {}
         }
     }
@@ -732,7 +802,7 @@ fn seed_tensor_ptrs_for_fn(
             let len = t.rows.saturating_mul(t.cols).max(1);
             if len > 0 {
                 let dim = format!("{p}_d0");
-                if !consts.contains_key(&dim) {
+                if !consts.contains_key(&dim) && !f.dim_params.contains(&dim) {
                     consts.insert(dim.clone(), len as i64);
                     s.push_str(&format!("  %{dim} = add i64 0, {len}\n"));
                 }
@@ -760,13 +830,37 @@ fn region_has_relu_epilogue(f: &IrFunction, matmul_ordinal: usize) -> bool {
         if r.ops.iter().any(|o| matches!(o, FusedOp::Matmul { .. })) {
             if n == matmul_ordinal {
                 return r.ops.iter().any(|o| {
-                    matches!(o, FusedOp::MapEpilogue { op, .. } if op == "relu" || op == "map")
+                    matches!(
+                        o,
+                        FusedOp::MapEpilogue { op, .. }
+                            if op == "relu" || op == "map" || op == "silu"
+                    )
                 });
             }
             n += 1;
         }
     }
     false
+}
+
+fn region_peak_for_matmul(f: &IrFunction, matmul_ordinal: usize) -> u64 {
+    let mut n = 0usize;
+    for r in &f.regions {
+        if r.ops.iter().any(|o| matches!(o, FusedOp::Matmul { .. })) {
+            if n == matmul_ordinal {
+                return r.peak_bytes.get(r.place.as_str()).copied().unwrap_or(0);
+            }
+            n += 1;
+        }
+    }
+    0
+}
+
+fn is_matmul_runtime(func: &str) -> bool {
+    matches!(
+        func,
+        "sal_matmul_f32" | "sal_matmul" | "sal_matmul_f16" | "sal_matmul_bf16"
+    )
 }
 
 /// Derive (m, k, n) from host tensor shapes; `None` when an axis is still unknown.
@@ -894,19 +988,42 @@ fn dim_llvm_op(d: &DimOperand) -> String {
     }
 }
 
-fn emit_main(
+enum HostFnEntry {
+    Main,
+    User,
+}
+
+fn emit_host_tensor_fn(
     f: &IrFunction,
     opts: &LlvmOptions,
     tensors: &HashMap<String, HostTensor>,
     str_globals: &HashMap<String, StrLitGlobal>,
     user_fns: &HashMap<String, &IrFunction>,
+    entry: HostFnEntry,
     s: &mut String,
 ) {
-    s.push_str("define i64 @main(i64 %argc, ptr %argv) {\n");
-    s.push_str("entry:\n");
-    s.push_str("  call void @sal_runtime_init(i64 %argc, ptr %argv)\n");
-    if opts.instrument {
-        s.push_str("  call void @sal_instrument_init()\n");
+    match entry {
+        HostFnEntry::Main => {
+            s.push_str("define i64 @main(i64 %argc, ptr %argv) {\n");
+            s.push_str("entry:\n");
+            s.push_str("  call void @sal_runtime_init(i64 %argc, ptr %argv)\n");
+            if opts.instrument {
+                s.push_str("  call void @sal_instrument_init()\n");
+            }
+        }
+        HostFnEntry::User => {
+            let params: Vec<String> = f
+                .params
+                .iter()
+                .map(|p| format!("i64 %{p}"))
+                .collect();
+            s.push_str(&format!(
+                "define i64 @{}({}) {{\n",
+                f.name,
+                params.join(", ")
+            ));
+            s.push_str("entry:\n");
+        }
     }
 
     // Materialise host tensors referenced by this function's matmul/load.
@@ -915,6 +1032,20 @@ fn emit_main(
     let mut ssa_elems: HashMap<String, u64> = HashMap::new();
     let mut owned: Vec<String> = Vec::new();
     let mut uid = 0u32;
+    let mut consts_seed = const_int_map(f);
+    if matches!(entry, HostFnEntry::User) {
+        seed_tensor_ptrs_for_fn(
+            f,
+            tensors,
+            opts,
+            s,
+            &mut ptrs,
+            &mut buf_bytes,
+            &mut owned,
+            &mut uid,
+            &mut consts_seed,
+        );
+    }
 
     // Pre-allocate host tensors that feed matmul/load or place_copy.
     let mut needed: Vec<String> = Vec::new();
@@ -938,6 +1069,9 @@ fn emit_main(
         }
     }
     for name in &needed {
+        if ptrs.contains_key(name) {
+            continue;
+        }
         if let Some(t) = tensors.get(name) {
             uid += 1;
             let nbytes = t.rows.saturating_mul(t.cols).saturating_mul(4);
@@ -962,6 +1096,7 @@ fn emit_main(
 
     let mut ret = "0".to_string();
     let mut matmul_ordinal = 0usize;
+    let mut region_open: HashMap<i32, bool> = HashMap::new();
     let mut last_out: Option<(String, DimOperand)> = None; // ptr name, elem count
     let consts = const_int_map(f);
     let floats = const_float_map(f);
@@ -1100,9 +1235,16 @@ fn emit_main(
                     s.push_str(&format!("  call i64 @sal_print_i64(i64 {arg})\n"));
                 } else if func == "sal_load" || func == "sal_load_f32" {
                     emit_load(dest.as_deref(), args, opts, str_globals, &mut ptrs, &mut owned, &mut uid, s);
-                } else if func == "sal_matmul_f32" || func == "sal_matmul" {
+                } else if is_matmul_runtime(func) {
                     let place = region_place_for_matmul(f, matmul_ordinal);
                     let place_i = place_to_i32(&place);
+                    let peak = region_peak_for_matmul(f, matmul_ordinal);
+                    if peak > 0 && !region_open.get(&place_i).copied().unwrap_or(false) {
+                        s.push_str(&format!(
+                            "  call void @sal_region_begin(i64 {place_i}, i64 {peak})\n"
+                        ));
+                        region_open.insert(place_i, true);
+                    }
                     let relu = region_has_relu_epilogue(f, matmul_ordinal);
                     let lhs = args.first().map(String::as_str).unwrap_or("");
                     let rhs = args.get(1).map(String::as_str).unwrap_or("");
@@ -1180,8 +1322,15 @@ fn emit_main(
                         let m_op = dim_llvm_op(&m);
                         let k_op = dim_llvm_op(&k);
                         let n_op = dim_llvm_op(&n);
+                        let mm_fn = if func == "sal_matmul_f16" {
+                            "sal_matmul_f16"
+                        } else if func == "sal_matmul_bf16" {
+                            "sal_matmul_bf16"
+                        } else {
+                            "sal_matmul_f32"
+                        };
                         s.push_str(&format!(
-                            "  call void @sal_matmul_f32(ptr {a_op}, ptr {b_op}, ptr %{out}, i64 {m_op}, i64 {k_op}, i64 {n_op})\n"
+                            "  call void @{mm_fn}(ptr {a_op}, ptr {b_op}, ptr %{out}, i64 {m_op}, i64 {k_op}, i64 {n_op})\n"
                         ));
                         if opts.instrument {
                             match (&m, &n) {
@@ -1319,6 +1468,137 @@ fn emit_main(
                             s.push_str(&format!("  %{d} = add i64 0, 0\n"));
                         }
                     }
+                } else if func == "sal_softmax_axis_f32" && args.len() >= 2 {
+                    let input = args[0].as_str();
+                    let axis = i64_operand(&args[1], &consts);
+                    if let Some(p) = ptrs.get(input).cloned() {
+                        let outer = ssa_elems.get(input).copied().unwrap_or(1);
+                        s.push_str(&format!(
+                            "  call void @sal_softmax_axis_f32(ptr %{p}, i64 {outer}, i64 {axis})\n"
+                        ));
+                        if let Some(d) = dest {
+                            ptrs.insert(d.clone(), p.clone());
+                            s.push_str(&format!("  %{d} = ptrtoint ptr %{p} to i64\n"));
+                        }
+                    }
+                } else if func == "sal_tensor_write_row_f32" && args.len() >= 4 {
+                    let cache = ptrs.get(&args[0]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let seq = i64_operand(&args[1], &consts);
+                    let row = ptrs.get(&args[2]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let row_elems = i64_operand(&args[3], &consts);
+                    s.push_str(&format!(
+                        "  call void @sal_tensor_write_row_f32(ptr {cache}, i64 {seq}, ptr {row}, i64 {row_elems})\n"
+                    ));
+                } else if func == "sal_tensor_write_rows_f32" && args.len() >= 5 {
+                    let cache = ptrs.get(&args[0]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let seq = i64_operand(&args[1], &consts);
+                    let block = ptrs.get(&args[2]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let n_rows = i64_operand(&args[3], &consts);
+                    let row_elems = i64_operand(&args[4], &consts);
+                    s.push_str(&format!(
+                        "  call void @sal_tensor_write_rows_f32(ptr {cache}, i64 {seq}, ptr {block}, i64 {n_rows}, i64 {row_elems})\n"
+                    ));
+                } else if func == "sal_rope" && args.len() >= 4 {
+                    let input = args[0].as_str();
+                    let seq = i64_operand(&args[1], &consts);
+                    let dim = i64_operand(&args[2], &consts);
+                    let pos = i64_operand(&args[3], &consts);
+                    if let Some(p) = ptrs.get(input).cloned() {
+                        s.push_str(&format!(
+                            "  call void @sal_rope_f32(ptr %{p}, i64 {seq}, i64 {dim}, i64 {pos})\n"
+                        ));
+                        if let Some(d) = dest {
+                            ptrs.insert(d.clone(), p.clone());
+                            s.push_str(&format!("  %{d} = ptrtoint ptr %{p} to i64\n"));
+                        }
+                    } else if let Some(d) = dest {
+                        s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+                    }
+                } else if (func == "sal_silu" || func == "sal_silu_f32") && !args.is_empty() {
+                    let input = args[0].as_str();
+                    let len = ssa_elems.get(input).copied().unwrap_or_else(|| {
+                        tensors
+                            .get(input)
+                            .map(|t| t.rows.saturating_mul(t.cols))
+                            .unwrap_or(0)
+                    });
+                    uid += 1;
+                    let out = format!("silu_{uid}");
+                    if len > 0 {
+                        let nbytes = len.saturating_mul(4);
+                        emit_alloc_place(opts, &out, nbytes, 0, "silu", s);
+                        owned.push(out.clone());
+                        let in_ptr = ptrs.get(input).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                        s.push_str(&format!(
+                            "  call void @sal_silu_f32(ptr %{out}, ptr {in_ptr}, i64 {len})\n"
+                        ));
+                        if let Some(d) = dest {
+                            ptrs.insert(d.clone(), out.clone());
+                            ssa_elems.insert(d.clone(), len);
+                            s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+                        }
+                    } else if let Some(d) = dest {
+                        s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+                    }
+                } else if func == "sal_attention_f32" && args.len() >= 8 {
+                    let q = ptrs.get(&args[0]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let k = ptrs.get(&args[1]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let v = ptrs.get(&args[2]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let seq = i64_operand(&args[3], &consts);
+                    let heads = i64_operand(&args[4], &consts);
+                    let kv = i64_operand(&args[5], &consts);
+                    let hd = i64_operand(&args[6], &consts);
+                    let causal = i64_operand(&args[7], &consts);
+                    uid += 1;
+                    let out = format!("attn_{uid}");
+                    let elems = format!("({seq}*{heads}*{hd})");
+                    s.push_str(&format!(
+                        "  %{out}_bytes = mul i64 {seq}, {heads}\n  %{out}_b2 = mul i64 %{out}_bytes, {hd}\n  %{out}_b3 = mul i64 %{out}_b2, 4\n"
+                    ));
+                    s.push_str(&format!(
+                        "  %{out} = call ptr @sal_place_malloc(i64 %{out}_b3, i32 0)\n"
+                    ));
+                    owned.push(out.clone());
+                    s.push_str(&format!(
+                        "  call void @sal_attention_f32(ptr %{out}, ptr {q}, ptr {k}, ptr {v}, i64 {seq}, i64 {heads}, i64 {kv}, i64 {hd}, i64 {causal})\n"
+                    ));
+                    if let Some(d) = dest {
+                        ptrs.insert(d.clone(), out.clone());
+                        s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+                    }
+                    let _ = elems;
+                } else if func == "sal_qmatmul_f32" && args.len() >= 7 {
+                    let a_ptr = ptrs.get(&args[0]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let w_ptr = ptrs.get(&args[1]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let sc_ptr = ptrs.get(&args[2]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    let group = i64_operand(&args[3], &consts);
+                    let m = i64_operand(&args[4], &consts);
+                    let k = i64_operand(&args[5], &consts);
+                    let n = i64_operand(&args[6], &consts);
+                    uid += 1;
+                    let out = format!("qmm_{uid}");
+                    s.push_str(&format!(
+                        "  %{out}_elems = mul i64 {m}, {n}\n  %{out}_bytes = mul i64 %{out}_elems, 4\n"
+                    ));
+                    s.push_str(&format!(
+                        "  %{out} = call ptr @sal_place_malloc(i64 %{out}_bytes, i32 0)\n"
+                    ));
+                    owned.push(out.clone());
+                    s.push_str(&format!(
+                        "  call void @sal_qmatmul_f32(ptr {a_ptr}, ptr {w_ptr}, ptr {sc_ptr}, ptr %{out}, i64 {m}, i64 {k}, i64 {n}, i64 {group})\n"
+                    ));
+                    if let Some(d) = dest {
+                        ptrs.insert(d.clone(), out.clone());
+                        s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+                    }
+                } else if func == "sal_argmax_axis_f32" && !args.is_empty() {
+                    let p = ptrs.get(&args[0]).map(|x| format!("%{x}")).unwrap_or_else(|| "null".into());
+                    let len = args.get(1).map(|a| i64_operand(a, &consts)).unwrap_or_else(|| "1".into());
+                    if let Some(d) = dest {
+                        s.push_str(&format!(
+                            "  %{d} = call i64 @sal_argmax_axis_f32(ptr {p}, i64 {len})\n"
+                        ));
+                    }
                 } else if func == "sal_place_launches" || func == "place_launches" {
                     let pl = args.first().map(|a| i64_operand(a, &consts)).unwrap_or_else(|| "0".into());
                     if let Some(d) = dest {
@@ -1359,8 +1639,21 @@ fn emit_main(
                         s,
                         &mut tmp,
                         false,
+                        Some(&mut ptrs),
+                        Some(&mut uid),
                     );
                     uid = tmp;
+                }
+            }
+            IrInst::TensorRebind { dest, src } => {
+                if let Some(p) = ptrs.get(src).cloned() {
+                    ptrs.insert(dest.clone(), p.clone());
+                    if let Some(n) = ssa_elems.get(src).copied() {
+                        ssa_elems.insert(dest.clone(), n);
+                    }
+                    s.push_str(&format!("  %{dest} = ptrtoint ptr %{p} to i64\n"));
+                } else {
+                    s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
                 }
             }
             IrInst::Drop { name } => {
@@ -1503,6 +1796,10 @@ fn emit_main(
         }
     }
 
+    for pl in region_open.keys() {
+        s.push_str(&format!("  call void @sal_region_end(i64 {pl})\n"));
+    }
+
     if opts.instrument {
         s.push_str("  call void @sal_instrument_shutdown()\n");
     }
@@ -1593,15 +1890,19 @@ fn emit_load(
     uid: &mut u32,
     s: &mut String,
 ) {
-    let path_raw = args
-        .first()
-        .map(|p| p.trim_matches('"').to_string())
-        .unwrap_or_default();
+    let path_arg = args.first().cloned().unwrap_or_default();
+    let path_raw = path_arg.trim_matches('"').to_string();
     *uid += 1;
     let path_ptr = if let Some(g) = str_globals.get(&path_raw) {
         str_lit_ptr_temp(g, uid, s)
-    } else {
+    } else if path_arg.starts_with('"') {
         "@.site.load".to_string()
+    } else {
+        let cast = format!("load_path_{uid}");
+        s.push_str(&format!(
+            "  %{cast} = inttoptr i64 %{path_arg} to ptr\n"
+        ));
+        format!("%{cast}")
     };
     let elems = format!("load_elems_{uid}");
     s.push_str(&format!("  %{elems} = alloca i64, align 8\n"));
@@ -1761,6 +2062,8 @@ fn emit_runtime_or_user_call(
     s: &mut String,
     tmp: &mut u32,
     tail: bool,
+    ptrs: Option<&mut HashMap<String, String>>,
+    ptr_uid: Option<&mut u32>,
 ) {
     let ptr_arg = |a: &str, s: &mut String, tmp: &mut u32| -> String {
         // Only quoted IR args name string literals; bare names are i64 temps/params.
@@ -2110,6 +2413,21 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = call i64 @sal_str_to_f64_bits(ptr {a})\n"));
             }
         }
+        "sal_f64_bits_to_str" => {
+            let a = args
+                .first()
+                .map(|x| i64_operand(x, consts))
+                .unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_f64_bits_to_str(i64 {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_now_ns" => {
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_now_ns()\n"));
+            }
+        }
         "sal_vec_new" => {
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d}_p = call ptr @sal_vec_new()\n"));
@@ -2335,6 +2653,12 @@ fn emit_runtime_or_user_call(
             if let Some(d) = dest {
                 let mark = if tail { "tail " } else { "" };
                 s.push_str(&format!("  %{d} = {mark}call i64 @{other}({args_s})\n"));
+                if let (Some(ptrs), Some(uid)) = (ptrs, ptr_uid) {
+                    *uid += 1;
+                    let p = format!("pret_{uid}");
+                    s.push_str(&format!("  %{p} = inttoptr i64 %{d} to ptr\n"));
+                    ptrs.insert(d.to_string(), p);
+                }
             } else {
                 s.push_str(&format!("  call i64 @{other}({args_s})\n"));
             }
@@ -2794,6 +3118,20 @@ fn emit_inst_list(
                     if let Some(d) = dest {
                         s.push_str(&format!("  %{d} = add i64 0, 0\n"));
                     }
+                } else if let Some(te) = tensor.as_deref_mut() {
+                    emit_runtime_or_user_call(
+                        dest.as_deref(),
+                        func,
+                        args,
+                        &consts,
+                        str_globals,
+                        user_fns,
+                        s,
+                        tmp,
+                        false,
+                        Some(te.ptrs),
+                        Some(te.uid),
+                    );
                 } else {
                     emit_runtime_or_user_call(
                         dest.as_deref(),
@@ -2805,6 +3143,8 @@ fn emit_inst_list(
                         s,
                         tmp,
                         false,
+                        None,
+                        None,
                     );
                 }
             }
@@ -2895,7 +3235,64 @@ fn emit_inst_list(
                 }
                 *cur_block = join_l;
             }
-            IrInst::Drop { .. } | IrInst::PlaceCopy { .. } | IrInst::KernelGrid { .. } => {}
+            IrInst::PlaceCopy {
+                dest,
+                from,
+                to_place,
+            } => {
+                if let Some(te) = tensor.as_deref_mut() {
+                    let place_i = place_to_i32(to_place);
+                    let mut nbytes = te
+                        .buf_bytes
+                        .get(from)
+                        .copied()
+                        .or_else(|| te.buf_bytes.get(dest).copied())
+                        .unwrap_or(0);
+                    if nbytes == 0 {
+                        let dim = format!("{from}_d0");
+                        if let Some(len) = te.consts.get(&dim) {
+                            nbytes = (*len as u64).saturating_mul(4);
+                        }
+                    }
+                    if let Some(p) = te.ptrs.get(from).cloned() {
+                        if nbytes > 0 {
+                            *te.uid += 1;
+                            let dst = format!("pcopy_{}", te.uid);
+                            s.push_str(&format!(
+                                "  %{dst} = call ptr @sal_place_copy(ptr %{p}, i64 {nbytes}, i32 {place_i})\n"
+                            ));
+                            if te.opts.instrument {
+                                s.push_str(&format!(
+                                    "  call void @sal_instrument_alloc(ptr %{dst}, i64 {nbytes}, i32 {place_i}, ptr @.site.access)\n"
+                                ));
+                            }
+                            te.ptrs.insert(dest.clone(), dst.clone());
+                            te.buf_bytes.insert(dest.clone(), nbytes);
+                            te.owned.push(dst);
+                        } else if te.ptrs.contains_key(from) {
+                            te.ptrs.insert(dest.clone(), p);
+                        }
+                        s.push_str(&format!(
+                            "  %{dest} = ptrtoint ptr {} to i64\n",
+                            te.ptrs
+                                .get(dest)
+                                .map(|x| format!("%{x}"))
+                                .unwrap_or_else(|| "null".into())
+                        ));
+                    }
+                }
+            }
+            IrInst::TensorRebind { dest, src } => {
+                if let Some(te) = tensor.as_deref_mut() {
+                    if let Some(p) = te.ptrs.get(src).cloned() {
+                        te.ptrs.insert(dest.clone(), p.clone());
+                        s.push_str(&format!("  %{dest} = ptrtoint ptr %{p} to i64\n"));
+                    } else {
+                        s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+                    }
+                }
+            }
+            IrInst::Drop { .. } | IrInst::KernelGrid { .. } => {}
             IrInst::Switch {
                 scrut,
                 arms,
@@ -3199,17 +3596,35 @@ fn emit_value_as_return(
                 );
             }
             let consts = const_int_map_from(body);
-            emit_runtime_or_user_call(
-                Some(d),
-                func,
-                args,
-                &consts,
-                str_globals,
-                user_fns,
-                s,
-                tmp,
-                true,
-            );
+            if let Some(te) = tensor.as_deref_mut() {
+                emit_runtime_or_user_call(
+                    Some(d),
+                    func,
+                    args,
+                    &consts,
+                    str_globals,
+                    user_fns,
+                    s,
+                    tmp,
+                    true,
+                    Some(te.ptrs),
+                    Some(te.uid),
+                );
+            } else {
+                emit_runtime_or_user_call(
+                    Some(d),
+                    func,
+                    args,
+                    &consts,
+                    str_globals,
+                    user_fns,
+                    s,
+                    tmp,
+                    true,
+                    None,
+                    None,
+                );
+            }
             s.push_str(&format!("  ret i64 %{d}\n"));
             return;
         }

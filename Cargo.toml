@@ -12,16 +12,27 @@ path = "src/main.rs"
 name = "standard"
 path = "src/bin/standard.rs"
 
+[[bin]]
+name = "som2salt"
+path = "src/bin/som2salt.rs"
+
 [lib]
 name = "sal_compiler"
 path = "src/lib.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "suggestions"] }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sosomodel = { path = "../soso/crates/sosomodel", features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("soso"))'] }
+
+[build-dependencies]
+sha2 = "0.10"

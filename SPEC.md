@@ -294,7 +294,9 @@ Bloque alineado a 16: `[cap: i64][len: i64][bytes…][0]`. El valor `String` es 
 
 ## Modelos
 
-Operaciones: `matmul`, `map`, `reduce`, `softmax`, `reshape`, `transpose`, `relu`, `load`, `str_bytes`, `where`, `tensor[…]`.
+Operaciones: `matmul`, `qmatmul`, `attention`, `map`, `reduce`, `softmax`, `reshape`, `transpose`, `relu`, `silu`, `rms_norm`, `rope`, `tensor_append`, `argmax`, `load`, `str_bytes`, `where`, `tensor[…]`.
+
+`reshape(t, d0, …)` y `transpose(t)` cambian la forma en el tipo (vista si el layout lo permite). `softmax(t, eje)` y `reduce(t, eje)` actúan sobre el eje indicado (recorrido en orden de índice). `attention(q, k, v, causal)` con `q` `[?, H, D]`, `k`/`v` `[?, Hk, D]`, `H` múltiplo de `Hk`; `causal` es `Bool`. `qmatmul(a, w, escala, grupo)`: activación `F16`/`BF16`/`F32`, peso `I8`, escala en el elemento de `a`. `tensor_append(cache, fila)` crece el eje `?`. `argmax(t, eje) -> Int`.
 
 ### Operadores columnares
 
@@ -302,7 +304,7 @@ Si un operando de `+`, `-`, `*`, `/`, `==`, `!=`, `<`, `<=`, `>`, `>=` o el pref
 
 - Mismo lugar en los dos tensores; un escalar `Int` o `Float` se difunde. Dos lugares distintos: `E_PLACE`.
 - Mismo elemento; el escalar se estrecha al elemento del tensor. Dos elementos distintos: `E_TENSOR_ELEM`.
-- Misma forma de rango 1 (estática o `?`), o un operando escalar. Formas incompatibles: `E_SHAPE`.
+- Formas compatibles por difusión desde la derecha: ejes alineados al final, con `1` o `?` en un operando; un operando de menor rango se alinea al final; un escalar se difunde. Incompatibles: `E_SHAPE`.
 - Aritmética y `-` unario devuelven el mismo elemento y lugar. Comparaciones devuelven `Tensor[I8, misma forma] on lugar` con `0` o `1`. `!` sobre esa máscara invierte `0` y `1` elemento a elemento.
 
 Dentro de `on`, una cadena de estas operaciones del mismo lugar forma una región fusionada (como el epílogo de `map`/`relu` sobre `matmul`): los intermedios únicos no se materializan y entran en `peak_bytes`. Fuera de `on`, cada operador es un lanzamiento en el lugar del tensor.

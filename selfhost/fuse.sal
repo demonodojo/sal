@@ -448,7 +448,9 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
             d
         elsif k == EX_FLOAT()
             d = fresh(cx)
-            _p = push_const_int(cx, d, 0)
+            bits = vec_get(e, 1)
+            txt = vec_get(e, 2)
+            _p = ir_push(cx, ir_cf(d, bits, txt))
             d
         elsif k == EX_STRING()
             d = fresh(cx)
@@ -463,8 +465,11 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
                 l = lower_expr(cx, vec_get(e, 2))
                 r = lower_expr(cx, vec_get(e, 3))
                 d = fresh(cx)
-                _p = ir_push(cx, ir_bin(d, vec_get(e, 1), l, r))
-                d
+                if try_lower_tensor_bin(cx, e, l, r, d) == 1
+                    d
+                else
+                    _p = ir_push(cx, ir_bin(d, vec_get(e, 1), l, r))
+                    d
         elsif k == EX_TENSOR()
             fresh(cx)
         elsif k == EX_TO()
@@ -580,10 +585,8 @@ fn lower_on(cx: Int, e: Int) -> Int ! alloc
             else
                 d
     else
-        d = fresh(cx)
-        _m = lower_on_matmul(cx, ops, d, 0, vec_len(ops))
         _r = vec_push(cx_regions(cx), reg)
-        d
+        lower_block_value(cx, vec_get(e, 2))
 
 fn ops_has_kind(ops: Int, kind: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -839,6 +842,40 @@ fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int
     _f = vec_push(out, cx_insts(cx))
     _g = vec_push(out, cx_regions(cx))
     out
+
+fn try_lower_tensor_bin(cx: Int, e: Int, l: Int, r: Int, d: Int) -> Int ! alloc
+    left_e = vec_get(e, 2)
+    right_e = vec_get(e, 3)
+    if expr_is_tensor(cx, left_e) == 0
+        if expr_is_tensor(cx, right_e) == 0
+            0
+        else
+            try_lower_tensor_bin_go(cx, e, r, l, right_e, left_e, d)
+    else
+        try_lower_tensor_bin_go(cx, e, l, r, left_e, right_e, d)
+
+fn try_lower_tensor_bin_go(cx: Int, e: Int, tensor_ssa: Int, other_ssa: Int, tensor_e: Int, other_e: Int, d: Int) -> Int ! alloc
+    b = 0
+    if ex_kind(tensor_e) == EX_IDENT()
+        b = cx_find(cx, vec_get(tensor_e, 1))
+    else
+        b = bind_for_ssa(cx, tensor_ssa)
+    if b == 0
+        0
+    elsif bind_is_tensor(b) == 0
+        0
+    else
+        len = tensor_len_ssa_name(tensor_ssa)
+        scalar = 0
+        if expr_is_tensor(cx, other_e) == 0
+            scalar = 1
+        op = vec_get(e, 1)
+        place = bind_place(b)
+        elem = bind_elem(b)
+        _p = ir_push(cx, ir_tbin(d, op, elem, place, tensor_ssa, other_ssa, len, scalar))
+        src = b
+        register_tensor_ssa(cx, d, src)
+        1
 
 fn lower_program(prog: Int) -> Int ! alloc
     lower_program_with_callables(prog, vec_new())

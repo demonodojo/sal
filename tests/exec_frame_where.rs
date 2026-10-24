@@ -12,6 +12,8 @@ fn root() -> PathBuf {
 fn exec_frame_where_links_and_runs() {
     let file = root().join("tests/fixtures/frame_where.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),

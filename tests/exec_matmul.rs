@@ -13,6 +13,8 @@ fn root() -> PathBuf {
 fn exec_matmul_2x2_exit_sum() {
     let file = root().join("examples/cpu_matmul.sal");
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),

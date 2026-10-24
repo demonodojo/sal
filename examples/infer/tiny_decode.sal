@@ -1,0 +1,90 @@
+# Prefill (8 tokens, 4 layers) + N decode steps with KV (`tensor_append`).
+# KV seq length is tracked in one function (`run_benchmark`) so appends chain correctly.
+# Weights: `cargo run --bin som2salt` → target/infer_salt/tiny/
+
+fn decoder_prefill(h: Tensor[F32, 8, 128] on cpu, wq: Tensor[F32, 128, 128] on cpu, wk: Tensor[F32, 128, 128] on cpu, wv: Tensor[F32, 128, 128] on cpu, wo: Tensor[F32, 128, 128] on cpu, w_up: Tensor[F32, 256, 128] on cpu, w_down: Tensor[F32, 128, 256] on cpu) -> Tensor[F32, 8, 128] on cpu
+    let residual = h
+    let q = matmul(residual, wq)
+    let k = matmul(residual, wk)
+    let v = matmul(residual, wv)
+    let q1 = rope(q, 0)
+    let k1 = rope(k, 0)
+    let q4 = reshape(q1, 8, 4, 32)
+    let k4 = reshape(k1, 8, 4, 32)
+    let v4 = reshape(v, 8, 4, 32)
+    let a4 = attention(q4, k4, v4, true)
+    let a = reshape(a4, 8, 128)
+    let x1 = matmul(a, wo)
+    let x2 = x1 + residual
+    let up = matmul(x2, transpose(w_up))
+    let up2 = silu(up)
+    let x4 = matmul(up2, transpose(w_down))
+    x4 + residual
+
+fn run_benchmark() -> Int ! io, alloc
+    let p = d"target/infer_salt/tiny/"
+    let t0 = now_ns()
+    let h0 = load[Tensor[F32, 8, 128] on cpu](p + d"bench_input.salt")
+    let kc = load[Tensor[F32, ?, 4, 32] on cpu](p + d"kv_cache.salt")
+    let vc = load[Tensor[F32, ?, 4, 32] on cpu](p + d"kv_cache.salt")
+    let h1 = decoder_prefill(h0, load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_q.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_k.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_v.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L00_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L00_ffn_down.salt"))
+    let h2 = decoder_prefill(h1, load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_q.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_k.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_v.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L01_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L01_ffn_down.salt"))
+    let h3 = decoder_prefill(h2, load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_q.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_k.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_v.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L02_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L02_ffn_down.salt"))
+    let wq3 = load[Tensor[F32, 128, 128] on cpu](p + d"L03_attn_q.salt")
+    let wk3 = load[Tensor[F32, 128, 128] on cpu](p + d"L03_attn_k.salt")
+    let wv3 = load[Tensor[F32, 128, 128] on cpu](p + d"L03_attn_v.salt")
+    let wo3 = load[Tensor[F32, 128, 128] on cpu](p + d"L03_attn_output.salt")
+    let w_up3 = load[Tensor[F32, 256, 128] on cpu](p + d"L03_ffn_up.salt")
+    let w_down3 = load[Tensor[F32, 128, 256] on cpu](p + d"L03_ffn_down.salt")
+    let residual3 = h3
+    let q3 = matmul(residual3, wq3)
+    let k3 = matmul(residual3, wk3)
+    let v3 = matmul(residual3, wv3)
+    let q13 = rope(q3, 0)
+    let k13 = rope(k3, 0)
+    let q43 = reshape(q13, 8, 4, 32)
+    let k43 = reshape(k13, 8, 4, 32)
+    let v43 = reshape(v3, 8, 4, 32)
+    let a43 = attention(q43, k43, v43, true)
+    let a3 = reshape(a43, 8, 128)
+    let x13 = matmul(a3, wo3)
+    let x23 = x13 + residual3
+    let up3 = matmul(x23, transpose(w_up3))
+    let up23 = silu(up3)
+    let x43 = matmul(up23, transpose(w_down3))
+    let _h4 = x43 + residual3
+    kc = tensor_append(kc, k43)
+    vc = tensor_append(vc, v43)
+    let t1 = now_ns()
+    tok = load[Tensor[F32, 1, 128] on cpu](p + d"decode_token.salt")
+    pos = 8
+    steps = 0
+    while steps < 4
+        let residual = tok
+        let q = matmul(residual, wq3)
+        let k = matmul(residual, wk3)
+        let v = matmul(residual, wv3)
+        let q1 = rope(q, pos)
+        let k1 = rope(k, pos)
+        let v1 = rope(v, pos)
+        let k_row = reshape(k1, 4, 32)
+        let v_row = reshape(v1, 4, 32)
+        kc = tensor_append(kc, k_row)
+        vc = tensor_append(vc, v_row)
+        let q4 = reshape(q1, 1, 4, 32)
+        let a4 = attention(q4, kc, vc, true)
+        let a = reshape(a4, 1, 128)
+        let x1 = matmul(a, wo3)
+        let x2 = x1 + residual
+        let up = matmul(x2, transpose(w_up3))
+        let up2 = silu(up)
+        let x4 = matmul(up2, transpose(w_down3))
+        tok = x4 + residual
+        pos = pos + 1
+        steps = steps + 1
+    let t2 = now_ns()
+    let _w = print_str(d"sal_bench prefill_seq=8 prefill_layers=4 prefill_ns=" + int_to_str(t1 - t0) + d" decode_steps=4 decode_ns=" + int_to_str(t2 - t1) + d"\n")
+    0
+
+fn main() -> Int ! io, alloc
+    run_benchmark()

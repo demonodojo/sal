@@ -21,6 +21,8 @@ fn main() -> Int ! alloc
     0
 "#;
     let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
         release: false,
         instrument: false,
         device: "cpu".into(),

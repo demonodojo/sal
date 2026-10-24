@@ -195,14 +195,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
 
         // Two-char ops
         if i + 1 < bytes.len() {
-            let two = &source[i..i + 2];
+            let two = &bytes[i..i + 2];
             let kind = match two {
-                "->" => Some(TokenKind::Arrow),
-                "=>" => Some(TokenKind::FatArrow),
-                "==" => Some(TokenKind::EqEq),
-                "!=" => Some(TokenKind::Ne),
-                "<=" => Some(TokenKind::Le),
-                ">=" => Some(TokenKind::Ge),
+                b"->" => Some(TokenKind::Arrow),
+                b"=>" => Some(TokenKind::FatArrow),
+                b"==" => Some(TokenKind::EqEq),
+                b"!=" => Some(TokenKind::Ne),
+                b"<=" => Some(TokenKind::Le),
+                b">=" => Some(TokenKind::Ge),
                 _ => None,
             };
             if let Some(k) = kind {

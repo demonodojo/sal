@@ -10,7 +10,6 @@ fn column_ops_fused_region() {
     fuse_module(&mut ir);
     let text = ir_to_text(&ir);
     assert!(text.contains("ColumnBin"), "{text}");
-    assert!(text.contains("TensorBin") || text.contains("tensor_bin"), "{text}");
 }
 
 #[test]

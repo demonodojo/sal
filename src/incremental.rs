@@ -14,6 +14,7 @@ use crate::typed::TypedProgram;
 
 #[derive(Debug, Clone)]
 pub struct CompileFlags {
+    pub toolchain: String,
     pub release: bool,
     pub instrument: bool,
     pub device: String,
@@ -46,6 +47,7 @@ pub fn cache_key_with_deps(
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(env!("SAL_COMPILER_ID").as_bytes());
     hasher.update(serde_json::to_string(prog).unwrap_or_default());
     hasher.update(serde_json::to_string(typed).unwrap_or_default());
     hasher.update([
@@ -54,6 +56,7 @@ pub fn cache_key_with_deps(
         flags.emit_entry_main as u8,
     ]);
     hasher.update(flags.device.as_bytes());
+    hasher.update(flags.toolchain.as_bytes());
     if !deps_digest.is_empty() {
         hasher.update(deps_digest);
     }

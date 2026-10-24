@@ -925,21 +925,16 @@ fn infer_call(
         }
     }
     match name {
-        "relu" | "softmax" | "reshape" | "transpose" => {
-            let mut arg_tys = Vec::new();
-            for a in args {
-                arg_tys.push(check_expr(a, env, types, entries)?);
-            }
-            if let Some(t) = arg_tys.first() {
-                Ok(t.clone())
-            } else {
-                Err(vec![Diagnostic::new(
-                    ErrorCode::EType,
-                    "missing tensor arg",
-                    span,
-                )])
-            }
-        }
+        "relu" | "silu" | "rope" => infer_unary_tensor(args, env, types, entries, span),
+        "softmax" => infer_softmax(args, env, types, entries, span),
+        "reduce" => infer_reduce(args, env, types, entries, span),
+        "reshape" => infer_reshape(args, env, types, entries, span),
+        "transpose" => infer_transpose(args, env, types, entries, span),
+        "rms_norm" => infer_rms_norm(args, env, types, entries, span),
+        "attention" => infer_attention(args, env, types, entries, span),
+        "qmatmul" => infer_qmatmul(args, env, types, entries, span),
+        "tensor_append" => infer_tensor_append(args, env, types, entries, span),
+        "argmax" => infer_argmax(args, env, types, entries, span),
         "matmul" => {
             let mut arg_tys = Vec::new();
             for a in args {
@@ -948,7 +943,7 @@ fn infer_call(
             if arg_tys.len() != 2 {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
-                    "matmul expects two tensors",
+                    format!("matmul expects two tensors, got {}", arg_tys.len()),
                     span,
                 )]);
             }
@@ -1000,7 +995,7 @@ fn infer_call(
             })
         }
         "where" => infer_where(args, env, types, entries, span),
-        "map" | "reduce" => infer_map_like(args, env, types, entries, span),
+        "map" => infer_map_like(args, env, types, entries, span),
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
@@ -1069,6 +1064,28 @@ fn infer_call(
                     span,
                 )]);
             }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "f64_bits_to_str" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "f64_bits_to_str expects one argument",
+                    span,
+                )]);
+            }
+            check_expr(&args[0], env, types, entries)?;
+            Ok(Type::Named {
+                name: "String".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "now_ns" => {
             Ok(Type::Named {
                 name: "Int".into(),
                 args: vec![],
@@ -1500,6 +1517,471 @@ fn infer_where(
     Ok(frame_ty)
 }
 
+fn infer_unary_tensor(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.is_empty() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "missing tensor arg",
+            span,
+        )]);
+    }
+    let t = check_expr(&args[0], env, types, entries)?;
+    if tensor_dims(&t).is_none() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "expected tensor",
+            args[0].span(),
+        )]);
+    }
+    for a in args.iter().skip(1) {
+        check_expr(a, env, types, entries)?;
+    }
+    Ok(t)
+}
+
+fn infer_softmax(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.is_empty() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "softmax expects a tensor",
+            span,
+        )]);
+    }
+    let t = check_expr(&args[0], env, types, entries)?;
+    let (dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "softmax expects a tensor",
+            args[0].span(),
+        )]
+    })?;
+    if args.len() >= 2 {
+        check_int_lit(&args[1], "softmax axis")?;
+        if args[1].span().start > 0 {
+            let _ = args[1].span();
+        }
+        let axis = int_lit_value(&args[1]).unwrap_or(0) as i64;
+        if axis < 0 || axis >= dims.len() as i64 {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EShape,
+                "softmax axis out of range",
+                args[1].span(),
+            )]);
+        }
+    }
+    Ok(Type::Tensor {
+        elem,
+        dims,
+        place,
+        span,
+    })
+}
+
+fn infer_reduce(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.is_empty() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "reduce expects a tensor",
+            span,
+        )]);
+    }
+    let t = check_expr(&args[0], env, types, entries)?;
+    let (mut dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "reduce expects a tensor",
+            args[0].span(),
+        )]
+    })?;
+    if args.len() >= 2 {
+        check_int_lit(&args[1], "reduce axis")?;
+        let axis = int_lit_value(&args[1]).unwrap_or(0) as usize;
+        if axis >= dims.len() {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EShape,
+                "reduce axis out of range",
+                args[1].span(),
+            )]);
+        }
+        dims.remove(axis);
+        if dims.is_empty() {
+            dims.push(Dim::Static(1));
+        }
+    }
+    Ok(Type::Tensor {
+        elem,
+        dims,
+        place,
+        span,
+    })
+}
+
+fn infer_reshape(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.len() < 2 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "reshape expects tensor and new dimensions",
+            span,
+        )]);
+    }
+    let t = check_expr(&args[0], env, types, entries)?;
+    let (old_dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "reshape expects a tensor",
+            args[0].span(),
+        )]
+    })?;
+    let mut new_dims = Vec::new();
+    for a in &args[1..] {
+        match a {
+            Expr::Int { value: v, .. } => new_dims.push(Dim::Static(*v as u64)),
+            _ => {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "reshape dimensions must be integer literals",
+                    a.span(),
+                )])
+            }
+        }
+    }
+    if !tensor_volume_compatible(&old_dims, &new_dims) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EShape,
+            "reshape volume mismatch",
+            span,
+        )]);
+    }
+    Ok(Type::Tensor {
+        elem,
+        dims: new_dims,
+        place,
+        span,
+    })
+}
+
+fn infer_transpose(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.is_empty() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "transpose expects a tensor",
+            span,
+        )]);
+    }
+    let t = check_expr(&args[0], env, types, entries)?;
+    let (mut dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "transpose expects a tensor",
+            args[0].span(),
+        )]
+    })?;
+    if dims.len() < 2 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EShape,
+            "transpose requires rank >= 2",
+            args[0].span(),
+        )]);
+    }
+    let n = dims.len();
+    dims.swap(n - 1, n - 2);
+    Ok(Type::Tensor {
+        elem,
+        dims,
+        place,
+        span,
+    })
+}
+
+fn infer_rms_norm(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.len() != 2 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "rms_norm expects tensor and weight",
+            span,
+        )]);
+    }
+    let t = check_expr(&args[0], env, types, entries)?;
+    let w = check_expr(&args[1], env, types, entries)?;
+    let (dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "rms_norm expects a tensor",
+            args[0].span(),
+        )]
+    })?;
+    let (wd, we, wp) = tensor_dims(&w).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "rms_norm weight must be a tensor",
+            args[1].span(),
+        )]
+    })?;
+    if elem != we || !place_compatible(&place, &wp) || dims != wd {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EShape,
+            "rms_norm weight shape must match input",
+            args[1].span(),
+        )]);
+    }
+    Ok(t)
+}
+
+fn infer_attention(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.len() != 4 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "attention expects q, k, v, causal",
+            span,
+        )]);
+    }
+    let q = check_expr(&args[0], env, types, entries)?;
+    let k = check_expr(&args[1], env, types, entries)?;
+    let v = check_expr(&args[2], env, types, entries)?;
+    check_expr(&args[3], env, types, entries)?;
+    let (qd, qe, qp) = tensor_dims(&q).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EShape, "attention q must be tensor", args[0].span())]
+    })?;
+    let (kd, ke, kp) = tensor_dims(&k).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EShape, "attention k must be tensor", args[1].span())]
+    })?;
+    let (vd, ve, vp) = tensor_dims(&v).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EShape, "attention v must be tensor", args[2].span())]
+    })?;
+    if qe != ke || ke != ve || !place_compatible(&qp, &kp) || !place_compatible(&qp, &vp) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::ETensorelem,
+            "attention q/k/v element and place must match",
+            span,
+        )]);
+    }
+    if qd.len() != 3 || kd.len() != 3 || vd.len() != 3 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EShape,
+            "attention expects rank-3 q, k, v",
+            span,
+        )]);
+    }
+    Ok(q)
+}
+
+fn infer_qmatmul(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.len() != 4 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "qmatmul expects a, w, scale, group",
+            span,
+        )]);
+    }
+    let a = check_expr(&args[0], env, types, entries)?;
+    let w = check_expr(&args[1], env, types, entries)?;
+    check_expr(&args[2], env, types, entries)?;
+    check_expr(&args[3], env, types, entries)?;
+    let (a_dims, a_elem, a_place) = tensor_dims(&a).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EShape, "qmatmul left must be tensor", args[0].span())]
+    })?;
+    let (w_dims, w_elem, w_place) = tensor_dims(&w).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EShape, "qmatmul weight must be tensor", args[1].span())]
+    })?;
+    if w_elem != TensorElem::I8 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::ETensorelem,
+            "qmatmul weight must be I8",
+            args[1].span(),
+        )]);
+    }
+    if !matches!(a_elem, TensorElem::F16 | TensorElem::BF16 | TensorElem::F32) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::ETensorelem,
+            "qmatmul activation must be F16, BF16, or F32",
+            args[0].span(),
+        )]);
+    }
+    if !place_compatible(&a_place, &w_place) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EPlace,
+            "qmatmul tensors must share place",
+            span,
+        )]);
+    }
+    if a_dims.len() < 2 || w_dims.len() < 2 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EShape,
+            "qmatmul requires rank >= 2",
+            span,
+        )]);
+    }
+    let mut out_dims = a_dims[..a_dims.len() - 1].to_vec();
+    out_dims.extend_from_slice(&w_dims[w_dims.len() - 1..]);
+    Ok(Type::Tensor {
+        elem: a_elem,
+        dims: out_dims,
+        place: a_place,
+        span,
+    })
+}
+
+fn infer_tensor_append(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.len() != 2 {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "tensor_append expects cache and row",
+            span,
+        )]);
+    }
+    let cache = check_expr(&args[0], env, types, entries)?;
+    let row = check_expr(&args[1], env, types, entries)?;
+    let (mut dims, elem, place) = tensor_dims(&cache).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "tensor_append cache must be tensor",
+            args[0].span(),
+        )]
+    })?;
+    let (rd, re, rp) = tensor_dims(&row).ok_or_else(|| {
+        vec![Diagnostic::new(
+            ErrorCode::EType,
+            "tensor_append row must be tensor",
+            args[1].span(),
+        )]
+    })?;
+    if elem != re || !place_compatible(&place, &rp) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::ETensorelem,
+            "tensor_append row element/place mismatch",
+            span,
+        )]);
+    }
+    if dims.is_empty() {
+        dims.push(Dim::Dynamic);
+    } else {
+        dims[0] = Dim::Dynamic;
+    }
+    let _ = rd;
+    Ok(Type::Tensor {
+        elem,
+        dims,
+        place,
+        span,
+    })
+}
+
+fn infer_argmax(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.is_empty() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "argmax expects a tensor",
+            span,
+        )]);
+    }
+    check_expr(&args[0], env, types, entries)?;
+    if args.len() >= 2 {
+        check_int_lit(&args[1], "argmax axis")?;
+    }
+    Ok(Type::Named {
+        name: "Int".into(),
+        args: vec![],
+        span,
+    })
+}
+
+fn check_int_lit(e: &Expr, ctx: &str) -> DiagResult<()> {
+    match e {
+        Expr::Int { .. } => Ok(()),
+        _ => Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("{ctx} must be an integer literal"),
+            e.span(),
+        )]),
+    }
+}
+
+fn int_lit_value(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int { value: v, .. } => Some(*v),
+        _ => None,
+    }
+}
+
+fn tensor_volume_compatible(a: &[Dim], b: &[Dim]) -> bool {
+    fn vol(d: &[Dim]) -> Option<u64> {
+        let mut p = 1u64;
+        for x in d {
+            match x {
+                Dim::Static(n) => {
+                    p = p.saturating_mul(*n);
+                }
+                Dim::Dynamic => return None,
+            }
+        }
+        Some(p)
+    }
+    match (vol(a), vol(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => true,
+    }
+}
+
 fn infer_tensor_binary(op: BinOp, lt: &Type, rt: &Type, span: Span) -> DiagResult<Type> {
     let cmp = matches!(
         op,
@@ -1529,7 +2011,7 @@ fn infer_tensor_binary(op: BinOp, lt: &Type, rt: &Type, span: Span) -> DiagResul
         unreachable!("infer_tensor_binary without tensor");
     };
 
-    let (dims, elem, place) = tensor_dims(base).expect("tensor");
+    let (mut dims, elem, place) = tensor_dims(base).expect("tensor");
     if let Some((od, oe, op)) = tensor_dims(other) {
         if elem != oe {
             return Err(vec![Diagnostic::new(
@@ -1545,13 +2027,13 @@ fn infer_tensor_binary(op: BinOp, lt: &Type, rt: &Type, span: Span) -> DiagResul
                 span,
             )]);
         }
-        if !tensor_same_shape(&dims, &od) {
-            return Err(vec![Diagnostic::new(
+        dims = tensor_broadcast_shapes(&dims, &od).ok_or_else(|| {
+            vec![Diagnostic::new(
                 ErrorCode::EShape,
-                "tensor shapes must match for element-wise operation",
+                "tensor shapes are not broadcast-compatible",
                 span,
-            )]);
-        }
+            )]
+        })?;
     } else if !is_numeric(other) {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
@@ -1578,16 +2060,38 @@ fn infer_tensor_binary(op: BinOp, lt: &Type, rt: &Type, span: Span) -> DiagResul
 }
 
 fn tensor_same_shape(a: &[Dim], b: &[Dim]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    tensor_broadcast_shapes(a, b)
+        .is_some_and(|r| r.len() == a.len().max(b.len()))
+}
+
+fn dim_broadcast(da: &Dim, db: &Dim) -> Option<Dim> {
+    match (da, db) {
+        (Dim::Static(1), d) | (d, Dim::Static(1)) => Some(d.clone()),
+        (Dim::Static(x), Dim::Static(y)) if x == y => Some(Dim::Static(*x)),
+        (Dim::Dynamic, Dim::Dynamic) => Some(Dim::Dynamic),
+        (Dim::Static(_), Dim::Dynamic) | (Dim::Dynamic, Dim::Static(_)) => Some(Dim::Dynamic),
+        _ => None,
     }
-    a.iter()
-        .zip(b.iter())
-        .all(|(x, y)| match (x, y) {
-            (Dim::Static(n), Dim::Static(m)) => n == m,
-            (Dim::Dynamic, Dim::Dynamic) => true,
-            (Dim::Static(_), Dim::Dynamic) | (Dim::Dynamic, Dim::Static(_)) => true,
-        })
+}
+
+fn tensor_broadcast_shapes(a: &[Dim], b: &[Dim]) -> Option<Vec<Dim>> {
+    let max = a.len().max(b.len());
+    let mut out = Vec::with_capacity(max);
+    for k in 0..max {
+        let off = max - 1 - k;
+        let da = if off >= a.len() {
+            Dim::Static(1)
+        } else {
+            a[a.len() - 1 - off].clone()
+        };
+        let db = if off >= b.len() {
+            Dim::Static(1)
+        } else {
+            b[b.len() - 1 - off].clone()
+        };
+        out.push(dim_broadcast(&da, &db)?);
+    }
+    Some(out)
 }
 
 fn tensor_dims(t: &Type) -> Option<(Vec<Dim>, TensorElem, Place)> {

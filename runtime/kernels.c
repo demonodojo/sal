@@ -1,6 +1,12 @@
 #include "sal_runtime.h"
 
+#ifdef SAL_SOSO
+#include "soso/platform.h"
+#else
 #include <math.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
 
 /* Tiled F32 matmul; same numeric result as a naive triple loop. */
 #ifndef SAL_MATMUL_TILE
@@ -183,4 +189,257 @@ void sal_softmax_f32(float *data, int64_t len) {
     for (int64_t i = 0; i < len; i++) {
         data[i] /= sum;
     }
+}
+
+static float half_to_float(uint16_t h) {
+    uint32_t s = (uint32_t)(h & 0x8000u) << 16;
+    uint32_t e = (h & 0x7C00u) >> 10;
+    uint32_t f = (h & 0x03FFu);
+    if (e == 0) {
+        if (f == 0) {
+            union {
+                uint32_t u;
+                float v;
+            } x = {s};
+            return x.v;
+        }
+        e = 1;
+        while ((f & 0x0400u) == 0) {
+            f <<= 1;
+            e--;
+        }
+        f &= 0x03FFu;
+    } else if (e == 31) {
+        union {
+            uint32_t u;
+            float v;
+        } x = {s | 0x7F800000u | (f << 13)};
+        return x.v;
+    }
+    e = e + (127 - 15);
+    union {
+        uint32_t u;
+        float v;
+    } x = {s | (e << 23) | (f << 13)};
+    return x.v;
+}
+
+static float bf16_to_float(uint16_t b) {
+    union {
+        uint32_t u;
+        float v;
+    } x = {(uint32_t)b << 16};
+    return x.v;
+}
+
+void sal_matmul_f16(const uint16_t *a, const uint16_t *b, float *out, int64_t m, int64_t k,
+                    int64_t n) {
+    for (int64_t i = 0; i < m; i++) {
+        for (int64_t j = 0; j < n; j++) {
+            float sum = 0.f;
+            for (int64_t t = 0; t < k; t++) {
+                sum += half_to_float(a[i * k + t]) * half_to_float(b[t * n + j]);
+            }
+            out[i * n + j] = sum;
+        }
+    }
+}
+
+void sal_matmul_bf16(const uint16_t *a, const uint16_t *b, float *out, int64_t m, int64_t k,
+                     int64_t n) {
+    for (int64_t i = 0; i < m; i++) {
+        for (int64_t j = 0; j < n; j++) {
+            float sum = 0.f;
+            for (int64_t t = 0; t < k; t++) {
+                sum += bf16_to_float(a[i * k + t]) * bf16_to_float(b[t * n + j]);
+            }
+            out[i * n + j] = sum;
+        }
+    }
+}
+
+void sal_softmax_axis_f32(float *data, int64_t outer, int64_t axis_len) {
+    if (outer <= 0 || axis_len <= 0) {
+        return;
+    }
+    for (int64_t o = 0; o < outer; o++) {
+        float *slice = data + o * axis_len;
+        sal_softmax_f32(slice, axis_len);
+    }
+}
+
+void sal_reduce_axis_f32(const float *in, float *out, int64_t outer, int64_t axis_len) {
+    if (outer <= 0 || axis_len <= 0) {
+        return;
+    }
+    for (int64_t o = 0; o < outer; o++) {
+        float sum = 0.f;
+        for (int64_t i = 0; i < axis_len; i++) {
+            sum += in[o * axis_len + i];
+        }
+        out[o] = sum;
+    }
+}
+
+void sal_silu_f32(float *out, const float *in, int64_t len) {
+    for (int64_t i = 0; i < len; i++) {
+        float x = in[i];
+        out[i] = x / (1.f + expf(-x));
+    }
+}
+
+void sal_rms_norm_f32(float *out, const float *in, const float *weight, int64_t len, double eps) {
+    if (len <= 0) {
+        return;
+    }
+    double sumsq = 0.0;
+    for (int64_t i = 0; i < len; i++) {
+        double v = (double)in[i];
+        sumsq += v * v;
+    }
+    double inv = 1.0 / sqrt(sumsq / (double)len + eps);
+    for (int64_t i = 0; i < len; i++) {
+        out[i] = (float)((double)in[i] * inv * (double)weight[i]);
+    }
+}
+
+void sal_rope_f32(float *data, int64_t seq, int64_t dim, int64_t pos) {
+    if (seq <= 0 || dim < 2 || (dim & 1) != 0) {
+        return;
+    }
+    for (int64_t s = 0; s < seq; s++) {
+        int64_t p = pos + s;
+        for (int64_t d = 0; d < dim; d += 2) {
+            double freq = (double)p / pow(10000.0, (double)d / (double)dim);
+            float cosv = (float)cos(freq);
+            float sinv = (float)sin(freq);
+            float x0 = data[s * dim + d];
+            float x1 = data[s * dim + d + 1];
+            data[s * dim + d] = x0 * cosv - x1 * sinv;
+            data[s * dim + d + 1] = x0 * sinv + x1 * cosv;
+        }
+    }
+}
+
+void sal_attention_f32(float *out, const float *q, const float *k, const float *v, int64_t seq,
+                       int64_t heads, int64_t kv_heads, int64_t head_dim, int64_t causal) {
+    if (seq <= 0 || heads <= 0 || kv_heads <= 0 || head_dim <= 0) {
+        return;
+    }
+    int64_t h_per_kv = heads / kv_heads;
+    for (int64_t h = 0; h < heads; h++) {
+        int64_t kv_h = h / h_per_kv;
+        for (int64_t si = 0; si < seq; si++) {
+            const float *qrow = q + (si * heads + h) * head_dim;
+            float maxv = -1e30f;
+            float sum = 0.f;
+            float acc[512];
+            if (head_dim > 512) {
+                return;
+            }
+            int64_t t_end = causal ? si + 1 : seq;
+            for (int64_t tj = 0; tj < t_end; tj++) {
+                const float *krow = k + (tj * kv_heads + kv_h) * head_dim;
+                float dot = 0.f;
+                for (int64_t d = 0; d < head_dim; d++) {
+                    dot += qrow[d] * krow[d];
+                }
+                dot *= (float)(1.0 / sqrt((double)head_dim));
+                if (tj == 0 || dot > maxv) {
+                    maxv = dot;
+                }
+                acc[tj] = dot;
+            }
+            for (int64_t tj = 0; tj < t_end; tj++) {
+                float e = expf(acc[tj] - maxv);
+                acc[tj] = e;
+                sum += e;
+            }
+            float *orow = out + (si * heads + h) * head_dim;
+            for (int64_t d = 0; d < head_dim; d++) {
+                orow[d] = 0.f;
+            }
+            for (int64_t tj = 0; tj < t_end; tj++) {
+                const float *vrow = v + (tj * kv_heads + kv_h) * head_dim;
+                float w = acc[tj] / sum;
+                for (int64_t d = 0; d < head_dim; d++) {
+                    orow[d] += w * vrow[d];
+                }
+            }
+        }
+    }
+}
+
+void sal_qmatmul_f32(const float *a, const int8_t *w, const float *scale, float *out, int64_t m,
+                     int64_t k, int64_t n, int64_t group) {
+    if (group <= 0) {
+        group = k;
+    }
+    for (int64_t i = 0; i < m; i++) {
+        for (int64_t j = 0; j < n; j++) {
+            float sum = 0.f;
+            for (int64_t t = 0; t < k; t++) {
+                int64_t g = t / group;
+                float sc = scale[g];
+                sum += a[i * k + t] * ((float)w[t * n + j] * sc);
+            }
+            out[i * n + j] = sum;
+        }
+    }
+}
+
+void sal_tensor_write_row_f32(float *cache, int64_t seq, const float *row, int64_t row_elems) {
+    if (!cache || !row || row_elems <= 0 || seq < 0) {
+        return;
+    }
+    memcpy(cache + seq * row_elems, row, (size_t)row_elems * sizeof(float));
+}
+
+void sal_tensor_write_rows_f32(float *cache, int64_t seq, const float *block, int64_t n_rows,
+                               int64_t row_elems) {
+    if (!cache || !block || row_elems <= 0 || n_rows <= 0 || seq < 0) {
+        return;
+    }
+    for (int64_t i = 0; i < n_rows; i++) {
+        memcpy(cache + (seq + i) * row_elems, block + i * row_elems,
+               (size_t)row_elems * sizeof(float));
+    }
+}
+
+float *sal_tensor_append_f32(float *cache, int64_t *cap, int64_t *len, const float *row,
+                              int64_t row_elems) {
+    if (!cap || !len || row_elems <= 0) {
+        return cache;
+    }
+    int64_t need = *len + row_elems;
+    if (!cache || need > *cap) {
+        int64_t new_cap = *cap > 0 ? *cap : row_elems;
+        while (new_cap < need) {
+            new_cap *= 2;
+        }
+        float *nbuf = (float *)realloc(cache, (size_t)new_cap * sizeof(float));
+        if (!nbuf) {
+            return cache;
+        }
+        cache = nbuf;
+        *cap = new_cap;
+    }
+    memcpy(cache + *len, row, (size_t)row_elems * sizeof(float));
+    *len = need;
+    return cache;
+}
+
+int64_t sal_argmax_axis_f32(const float *data, int64_t len) {
+    if (len <= 0) {
+        return 0;
+    }
+    int64_t best = 0;
+    float bv = data[0];
+    for (int64_t i = 1; i < len; i++) {
+        if (data[i] > bv) {
+            bv = data[i];
+            best = i;
+        }
+    }
+    return best;
 }
