@@ -921,3 +921,73 @@ fn main() -> Int ! io
         ErrorCode::ETarget,
     );
 }
+
+#[test]
+fn early_return_in_if_ok() {
+    expect_ok(
+        r#"
+fn pick(x: Int) -> Int
+    if x == 0
+        return 1
+    99
+"#,
+    );
+}
+
+#[test]
+fn return_type_mismatch() {
+    expect_code(
+        r#"
+fn main() -> Int
+    return true
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn bare_return_on_non_unit_fn() {
+    expect_code(
+        r#"
+fn main() -> Int
+    return
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn unreachable_after_return() {
+    expect_code(
+        r#"
+fn main() -> Int
+    return 1
+    2
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn return_inside_on_rejected() {
+    expect_code(
+        r#"
+fn main() -> Int
+    on cpu
+        return 1
+    0
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn fn_missing_return_value() {
+    expect_code(
+        r#"
+fn main() -> Int
+    x = 1
+"#,
+        ErrorCode::EType,
+    );
+}

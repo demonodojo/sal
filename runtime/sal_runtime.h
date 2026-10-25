@@ -144,6 +144,8 @@ char *sal_bytes_to_str(void *b);
 void *sal_bytes_view(void *b, int64_t off, int64_t len);
 void *sal_bytes_view_mem(int64_t data, int64_t len);
 int64_t sal_bytes_ptr(void *b);
+/* Panic if [idx, idx+width) is not within [0, len). Used by compiled bounds checks. */
+void sal_bytes_check(int64_t idx, int64_t width, int64_t len);
 int64_t sal_os_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a3, int64_t a4,
                        int64_t a5);
 /* White RGB buffer, w*h*3 bytes stored as i64. NULL-sized empty vec if out of range. */

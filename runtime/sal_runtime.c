@@ -826,10 +826,17 @@ int64_t sal_bytes_ptr(void *vp) {
     return (int64_t)(uintptr_t)b->data;
 }
 
-static int64_t bytes_check_range(SalBytes *b, int64_t off, int64_t span) {
-    if (!b || off < 0 || span < 0 || off > b->len - span) {
+void sal_bytes_check(int64_t idx, int64_t width, int64_t len) {
+    if (idx < 0 || width < 0 || idx > len - width) {
         sal_panic("bytes: out of bounds");
     }
+}
+
+static int64_t bytes_check_range(SalBytes *b, int64_t off, int64_t span) {
+    if (!b) {
+        sal_panic("bytes: out of bounds");
+    }
+    sal_bytes_check(off, span, b->len);
     return 0;
 }
 

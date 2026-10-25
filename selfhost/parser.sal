@@ -529,18 +529,40 @@ fn parse_block_after_indent(pr: Int) -> Int ! alloc
     _a = p_skip_nls(pr)
     parse_block_go(pr, b)
 
+fn parse_return_value(pr: Int) -> Int ! alloc
+    if at_block_end(pr) == 1
+        0
+    elsif tok_kind(p_peek(pr)) == TK_NL()
+        0
+    else
+        parse_expr(pr)
+
 fn parse_block_go(pr: Int, b: Int) -> Int ! alloc
     _a = p_skip_nls(pr)
     if at_block_end(pr) == 1
         _b = p_accept(pr, TK_DEDENT())
         b
+    elsif tok_kind(p_peek(pr)) == TK_RETURN()
+        _r = p_advance(pr)
+        rex = parse_return_value(pr)
+        st = stmt_new(2, d"", rex)
+        _d = vec_push(block_stmts(b), st)
+        _e = p_skip_nls(pr)
+        parse_block_go(pr, b)
     elsif tok_kind(p_peek(pr)) == TK_IDENT()
         save = p_idx(pr)
         idt = p_advance(pr)
-        if tok_kind(p_peek(pr)) == TK_EQ()
+        nm = tok_text(idt)
+        if str_eq(nm, "return") == 1
+            rex = parse_return_value(pr)
+            st = stmt_new(2, d"", rex)
+            _d = vec_push(block_stmts(b), st)
+            _e = p_skip_nls(pr)
+            parse_block_go(pr, b)
+        elsif tok_kind(p_peek(pr)) == TK_EQ()
             _c = p_advance(pr)
             ex = parse_expr(pr)
-            st = stmt_new(1, tok_text(idt), ex)
+            st = stmt_new(1, nm, ex)
             _d = vec_push(block_stmts(b), st)
             _e = p_skip_nls(pr)
             parse_block_go(pr, b)

@@ -193,6 +193,91 @@ fn validate_builtin_type_args(name: &str, args: &[Type], span: Span) -> DiagResu
     Ok(())
 }
 
+struct ReturnCtx<'a> {
+    fn_ret: &'a Type,
+    allow_return: bool,
+}
+
+fn is_unit_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Named { name, args, .. } if name == "Unit" && args.is_empty()
+    )
+}
+
+fn unit_type(span: Span) -> Type {
+    Type::Named {
+        name: "Unit".into(),
+        args: vec![],
+        span,
+    }
+}
+
+fn stmt_span(st: &Stmt) -> Span {
+    match st {
+        Stmt::Let { span, .. } => *span,
+        Stmt::Expr(e) => e.span(),
+        Stmt::Assign { span, .. } => *span,
+        Stmt::Return { span, .. } => *span,
+        Stmt::While { span, .. } => *span,
+    }
+}
+
+fn unreachable_after_return(st: &Stmt) -> DiagResult<()> {
+    Err(vec![Diagnostic::new(
+        ErrorCode::EType,
+        "unreachable code after return",
+        stmt_span(st),
+    )])
+}
+
+fn check_block_flow(
+    b: &Block,
+    env: &mut HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+) -> DiagResult<bool> {
+    let mut diverged = false;
+    for st in &b.stmts {
+        if diverged {
+            unreachable_after_return(st)?;
+        }
+        if check_stmt(st, env, ctx, types, entries)? {
+            diverged = true;
+        }
+    }
+    Ok(diverged)
+}
+
+fn check_branch_block(
+    b: &Block,
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+) -> DiagResult<(bool, Option<Type>)> {
+    let mut local = env.clone();
+    let diverged = check_block_flow(b, &mut local, ctx, types, entries)?;
+    if diverged {
+        if b.tail.is_some() {
+            let t = b.tail.as_ref().unwrap();
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "unreachable code after return",
+                t.span(),
+            )]);
+        }
+        return Ok((true, None));
+    }
+    let ty = if let Some(t) = &b.tail {
+        check_expr(t, &local, ctx, types, entries)?
+    } else {
+        unit_type(b.span)
+    };
+    Ok((false, Some(ty)))
+}
+
 fn check_block(
     b: &Block,
     env: &mut HashMap<String, Type>,
@@ -200,11 +285,20 @@ fn check_block(
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
 ) -> DiagResult<()> {
-    for st in &b.stmts {
-        check_stmt(st, env, types, entries)?;
-    }
+    let ctx = ReturnCtx {
+        fn_ret: expected,
+        allow_return: true,
+    };
+    let diverged = check_block_flow(b, env, &ctx, types, entries)?;
     if let Some(t) = &b.tail {
-        let ty = check_expr(t, env, types, entries)?;
+        if diverged {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "unreachable code after return",
+                t.span(),
+            )]);
+        }
+        let ty = check_expr(t, env, &ctx, types, entries)?;
         if !types_compatible(&ty, expected) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -212,6 +306,15 @@ fn check_block(
                 t.span(),
             )]);
         }
+    } else if !diverged && !is_unit_type(expected) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!(
+                "function must return a value of type {}",
+                type_name(expected)
+            ),
+            b.span,
+        )]);
     }
     Ok(())
 }
@@ -219,12 +322,13 @@ fn check_block(
 fn check_stmt(
     st: &Stmt,
     env: &mut HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
-) -> DiagResult<()> {
+) -> DiagResult<bool> {
     match st {
         Stmt::Let { name, ty, init, .. } => {
-            let ity = check_expr(init, env, types, entries)?;
+            let ity = check_expr(init, env, ctx, types, entries)?;
             if let Some(decl) = ty {
                 check_type_well_formed(decl, types)?;
                 if !types_compatible(&ity, decl) {
@@ -236,45 +340,76 @@ fn check_stmt(
                 }
             }
             env.insert(name.clone(), ty.clone().unwrap_or(ity));
+            Ok(false)
         }
         Stmt::Expr(e) => {
-            check_expr(e, env, types, entries)?;
+            check_expr(e, env, ctx, types, entries)?;
+            Ok(false)
         }
         Stmt::Assign { target, value, .. } => {
-            let vty = check_expr(value, env, types, entries)?;
+            let vty = check_expr(value, env, ctx, types, entries)?;
             if let Expr::Ident { name, .. } = target {
-                // Bare `name = expr` introduces or rebinds (surface without `let`).
                 env.insert(name.clone(), vty);
             } else {
-                check_expr(target, env, types, entries)?;
+                check_expr(target, env, ctx, types, entries)?;
             }
+            Ok(false)
         }
-        Stmt::Return { value, .. } => {
-            if let Some(v) = value {
-                check_expr(v, env, types, entries)?;
+        Stmt::Return { value, span } => {
+            if !ctx.allow_return {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "return not allowed here",
+                    *span,
+                )]);
             }
+            match value {
+                Some(v) => {
+                    let vty = check_expr(v, env, ctx, types, entries)?;
+                    if !types_compatible(&vty, ctx.fn_ret) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!(
+                                "return type mismatch: expected {}, found {}",
+                                type_name(ctx.fn_ret),
+                                type_name(&vty)
+                            ),
+                            v.span(),
+                        )]);
+                    }
+                }
+                None => {
+                    if !is_unit_type(ctx.fn_ret) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            "return requires a value",
+                            *span,
+                        )]);
+                    }
+                }
+            }
+            Ok(true)
         }
         Stmt::While { cond, body, .. } => {
-            check_expr(cond, env, types, entries)?;
-            for st in &body.stmts {
-                check_stmt(st, env, types, entries)?;
-            }
+            check_expr(cond, env, ctx, types, entries)?;
+            let _ = check_block_flow(body, env, ctx, types, entries)?;
             if let Some(t) = &body.tail {
-                check_expr(t, env, types, entries)?;
+                check_expr(t, env, ctx, types, entries)?;
             }
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 fn check_expr(
     e: &Expr,
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
 ) -> DiagResult<Type> {
     let ty = match e {
-        Expr::Int { .. } => Type::Named {
+Expr::Int { .. } => Type::Named {
             name: "Int".into(),
             args: vec![],
             span: e.span(),
@@ -307,8 +442,8 @@ fn check_expr(
             right,
             span,
         } => {
-            let lt = check_expr(left, env, types, entries)?;
-            let rt = check_expr(right, env, types, entries)?;
+            let lt = check_expr(left, env, ctx, types, entries)?;
+            let rt = check_expr(right, env, ctx, types, entries)?;
             if tensor_dims(&lt).is_some() || tensor_dims(&rt).is_some() {
                 return infer_tensor_binary(*op, &lt, &rt, *span);
             }
@@ -363,7 +498,7 @@ fn check_expr(
             }
         }
         Expr::Unary { op, expr, span } => {
-            let inner = check_expr(expr, env, types, entries)?;
+            let inner = check_expr(expr, env, ctx, types, entries)?;
             if let Some((dims, elem, place)) = tensor_dims(&inner) {
                 match op {
                     UnOp::Neg => Type::Tensor {
@@ -395,25 +530,28 @@ fn check_expr(
             type_args,
             args,
             span,
-        } => infer_call(func, type_args, args, env, types, entries, *span)?,
+        } => infer_call(func, type_args, args, env, ctx, types, entries, *span)?,
         Expr::Lambda {
             params,
             body,
             span,
-        } => infer_lambda(params, body, None, env, types, entries, *span)?,
+        } => infer_lambda(params, body, None, env, ctx, types, entries, *span)?,
         Expr::Block(b) => {
             let mut local = env.clone();
-            for st in &b.stmts {
-                check_stmt(st, &mut local, types, entries)?;
-            }
+            let diverged = check_block_flow(b, &mut local, ctx, types, entries)?;
             if let Some(t) = &b.tail {
-                check_expr(t, &local, types, entries)?
-            } else {
-                Type::Named {
-                    name: "Unit".into(),
-                    args: vec![],
-                    span: b.span,
+                if diverged {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "unreachable code after return",
+                        t.span(),
+                    )]);
                 }
+                check_expr(t, &local, ctx, types, entries)?
+            } else if diverged {
+                unit_type(b.span)
+            } else {
+                unit_type(b.span)
             }
         }
         Expr::On {
@@ -421,6 +559,10 @@ fn check_expr(
             kernel_index,
             ..
         } => {
+            let on_ctx = ReturnCtx {
+                fn_ret: ctx.fn_ret,
+                allow_return: false,
+            };
             let mut local = env.clone();
             if let Some(ki) = kernel_index {
                 for n in &ki.names {
@@ -434,21 +576,24 @@ fn check_expr(
                     );
                 }
             }
-            for st in &body.stmts {
-                check_stmt(st, &mut local, types, entries)?;
-            }
+            let diverged = check_block_flow(body, &mut local, &on_ctx, types, entries)?;
             if let Some(t) = &body.tail {
-                check_expr(t, &local, types, entries)?
-            } else {
-                Type::Named {
-                    name: "Unit".into(),
-                    args: vec![],
-                    span: body.span,
+                if diverged {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "unreachable code after return",
+                        t.span(),
+                    )]);
                 }
+                check_expr(t, &local, &on_ctx, types, entries)?
+            } else if diverged {
+                unit_type(body.span)
+            } else {
+                unit_type(body.span)
             }
         }
         Expr::To { place, expr, span } => {
-            let ty = check_expr(expr, env, types, entries)?;
+            let ty = check_expr(expr, env, ctx, types, entries)?;
             match ty {
                 Type::Tensor { elem, dims, .. } => Type::Tensor {
                     elem,
@@ -464,7 +609,7 @@ fn check_expr(
             let ncols = rows.first().map(|r| r.len() as u64).unwrap_or(0);
             for row in rows {
                 for c in row {
-                    check_expr(c, env, types, entries)?;
+                    check_expr(c, env, ctx, types, entries)?;
                 }
             }
             let dims = if nrows == 0 {
@@ -482,7 +627,7 @@ fn check_expr(
             }
         }
         Expr::Field { base, field, span } => {
-            let base_ty = check_expr(base, env, types, entries)?;
+            let base_ty = check_expr(base, env, ctx, types, entries)?;
             resolve_field(&base_ty, field, types, *span)?
         }
         Expr::Match {
@@ -490,12 +635,12 @@ fn check_expr(
             arms,
             span,
         } => {
-            let scrut_ty = check_expr(scrutinee, env, types, entries)?;
+            let scrut_ty = check_expr(scrutinee, env, ctx, types, entries)?;
             let mut arm_tys = Vec::new();
             for arm in arms {
                 let mut local = env.clone();
                 bind_pattern(&arm.pattern, &scrut_ty, types, &mut local)?;
-                arm_tys.push(check_expr(&arm.body, &local, types, entries)?);
+                arm_tys.push(check_expr(&arm.body, &local, ctx, types, entries)?);
             }
             arm_tys.first().cloned().unwrap_or_else(|| Type::Named {
                 name: "Unknown".into(),
@@ -510,73 +655,54 @@ fn check_expr(
             else_block,
             span,
         } => {
-            check_expr(cond, env, types, entries)?;
-            let mut then_env = env.clone();
-            for st in &then_block.stmts {
-                check_stmt(st, &mut then_env, types, entries)?;
-            }
-            for arm in elsifs {
-                check_expr(&arm.cond, env, types, entries)?;
-                let mut arm_env = env.clone();
-                for st in &arm.body.stmts {
-                    check_stmt(st, &mut arm_env, types, entries)?;
-                }
-                if let Some(t) = &arm.body.tail {
-                    check_expr(t, &arm_env, types, entries)?;
-                }
-            }
+            check_expr(cond, env, ctx, types, entries)?;
             if let Some(else_block) = else_block {
-                let then_ty = if let Some(t) = &then_block.tail {
-                    check_expr(t, &then_env, types, entries)?
-                } else {
-                    Type::Named {
-                        name: "Int".into(),
-                        args: vec![],
-                        span: *span,
-                    }
-                };
-                let mut else_env = env.clone();
-                for st in &else_block.stmts {
-                    check_stmt(st, &mut else_env, types, entries)?;
+                let (then_div, then_ty) =
+                    check_branch_block(then_block, env, ctx, types, entries)?;
+                for arm in elsifs {
+                    check_expr(&arm.cond, env, ctx, types, entries)?;
+                    check_branch_block(&arm.body, env, ctx, types, entries)?;
                 }
-                let else_ty = if let Some(t) = &else_block.tail {
-                    check_expr(t, &else_env, types, entries)?
+                let (else_div, else_ty) =
+                    check_branch_block(else_block, env, ctx, types, entries)?;
+                if then_div && else_div {
+                    unit_type(*span)
+                } else if then_div {
+                    else_ty.unwrap_or_else(|| unit_type(*span))
+                } else if else_div {
+                    then_ty.unwrap_or_else(|| unit_type(*span))
                 } else {
-                    Type::Named {
-                        name: "Int".into(),
-                        args: vec![],
-                        span: *span,
+                    let then_ty = then_ty.unwrap();
+                    let else_ty = else_ty.unwrap();
+                    if !types_compatible(&then_ty, &else_ty) {
+                        let err_span = else_block
+                            .tail
+                            .as_ref()
+                            .map(|t| t.span())
+                            .unwrap_or(*span);
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!(
+                                "expected {}, found {}",
+                                type_name(&then_ty),
+                                type_name(&else_ty)
+                            ),
+                            err_span,
+                        )]);
                     }
-                };
-                if !types_compatible(&then_ty, &else_ty) {
-                    let err_span = else_block
-                        .tail
-                        .as_ref()
-                        .map(|t| t.span())
-                        .unwrap_or(*span);
-                    return Err(vec![Diagnostic::new(
-                        ErrorCode::EType,
-                        format!(
-                            "expected {}, found {}",
-                            type_name(&then_ty),
-                            type_name(&else_ty)
-                        ),
-                        err_span,
-                    )]);
+                    then_ty
                 }
-                then_ty
             } else {
-                if let Some(t) = &then_block.tail {
-                    check_expr(t, &then_env, types, entries)?;
+                check_branch_block(then_block, env, ctx, types, entries)?;
+                for arm in elsifs {
+                    check_expr(&arm.cond, env, ctx, types, entries)?;
+                    check_branch_block(&arm.body, env, ctx, types, entries)?;
                 }
-                Type::Named {
-                    name: "Unit".into(),
-                    args: vec![],
-                    span: *span,
-                }
+                unit_type(*span)
             }
         }
-        Expr::Try { expr, .. } => check_expr(expr, env, types, entries)?,
+        Expr::Try { expr, .. } => check_expr(expr, env, ctx, types, entries)?,
+    
     };
     entries.push(ExprTypeEntry {
         span_start: e.span().start,
@@ -797,6 +923,7 @@ fn infer_struct_constructor(
     def: &StructDef,
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -821,7 +948,7 @@ fn infer_struct_constructor(
         )]);
     }
     for (arg, field) in args.iter().zip(def.fields.iter()) {
-        let aty = check_expr(arg, env, types, entries)?;
+        let aty = check_expr(arg, env, ctx, types, entries)?;
         if !types_compatible(&aty, &field.ty) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -848,6 +975,7 @@ fn infer_enum_variant_constructor(
     variant: &EnumVariant,
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -879,7 +1007,7 @@ fn infer_enum_variant_constructor(
         })
         .collect();
     for (arg, field_ty) in args.iter().zip(variant.fields.iter()) {
-        let aty = check_expr(arg, env, types, entries)?;
+        let aty = check_expr(arg, env, ctx, types, entries)?;
         let expected = subst_type_params(field_ty, &edef.type_params, &type_args, span);
         let is_param = matches!(
             &expected,
@@ -919,6 +1047,7 @@ fn infer_call(
     type_args: &[TypeArg],
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -942,30 +1071,30 @@ fn infer_call(
     if type_args.is_empty() {
         if let Some(def) = types.structs.get(name) {
             if def.type_params.is_empty() {
-                return infer_struct_constructor(def, args, env, types, entries, span);
+                return infer_struct_constructor(def, args, env, ctx, types, entries, span);
             }
         }
         if let Some(vinfo) = find_enum_variant_call(name, types) {
             return infer_enum_variant_constructor(
-                &vinfo.0, &vinfo.1, args, env, types, entries, span,
+                &vinfo.0, &vinfo.1, args, env, ctx, types, entries, span,
             );
         }
     }
     match name {
-        "relu" | "silu" | "rope" => infer_unary_tensor(args, env, types, entries, span),
-        "softmax" => infer_softmax(args, env, types, entries, span),
-        "reduce" => infer_reduce(args, env, types, entries, span),
-        "reshape" => infer_reshape(args, env, types, entries, span),
-        "transpose" => infer_transpose(args, env, types, entries, span),
-        "rms_norm" => infer_rms_norm(args, env, types, entries, span),
-        "attention" => infer_attention(args, env, types, entries, span),
-        "qmatmul" => infer_qmatmul(args, env, types, entries, span),
-        "tensor_append" => infer_tensor_append(args, env, types, entries, span),
-        "argmax" => infer_argmax(args, env, types, entries, span),
+        "relu" | "silu" | "rope" => infer_unary_tensor(args, env, ctx, types, entries, span),
+        "softmax" => infer_softmax(args, env, ctx, types, entries, span),
+        "reduce" => infer_reduce(args, env, ctx, types, entries, span),
+        "reshape" => infer_reshape(args, env, ctx, types, entries, span),
+        "transpose" => infer_transpose(args, env, ctx, types, entries, span),
+        "rms_norm" => infer_rms_norm(args, env, ctx, types, entries, span),
+        "attention" => infer_attention(args, env, ctx, types, entries, span),
+        "qmatmul" => infer_qmatmul(args, env, ctx, types, entries, span),
+        "tensor_append" => infer_tensor_append(args, env, ctx, types, entries, span),
+        "argmax" => infer_argmax(args, env, ctx, types, entries, span),
         "matmul" => {
             let mut arg_tys = Vec::new();
             for a in args {
-                arg_tys.push(check_expr(a, env, types, entries)?);
+                arg_tys.push(check_expr(a, env, ctx, types, entries)?);
             }
             if arg_tys.len() != 2 {
                 return Err(vec![Diagnostic::new(
@@ -986,7 +1115,7 @@ fn infer_call(
             }
             let mut arg_tys = Vec::new();
             for a in args {
-                arg_tys.push(check_expr(a, env, types, entries)?);
+                arg_tys.push(check_expr(a, env, ctx, types, entries)?);
             }
             let _ = arg_tys;
             if let Some(TypeArg::Type(Type::Tensor { .. })) = type_args.first() {
@@ -1006,7 +1135,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let arg = check_expr(&args[0], env, types, entries)?;
+            let arg = check_expr(&args[0], env, ctx, types, entries)?;
             if !matches!(arg, Type::Named { name, .. } if name == "String") {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1021,8 +1150,8 @@ fn infer_call(
                 span,
             })
         }
-        "where" => infer_where(args, env, types, entries, span),
-        "map" => infer_map_like(args, env, types, entries, span),
+        "where" => infer_where(args, env, ctx, types, entries, span),
+        "map" => infer_map_like(args, env, ctx, types, entries, span),
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
@@ -1030,7 +1159,7 @@ fn infer_call(
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
             for a in args {
-                check_expr(a, env, types, entries)?;
+                check_expr(a, env, ctx, types, entries)?;
             }
             Ok(Type::Named {
                 name: "Int".into(),
@@ -1046,7 +1175,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            check_expr(&args[0], env, types, entries)?;
+            check_expr(&args[0], env, ctx, types, entries)?;
             Ok(Type::Named {
                 name: "String".into(),
                 args: vec![],
@@ -1061,7 +1190,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let t = check_expr(&args[0], env, types, entries)?;
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_string_type(&t) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1083,7 +1212,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let t = check_expr(&args[0], env, types, entries)?;
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_string_type(&t) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1105,7 +1234,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            check_expr(&args[0], env, types, entries)?;
+            check_expr(&args[0], env, ctx, types, entries)?;
             Ok(Type::Named {
                 name: "String".into(),
                 args: vec![],
@@ -1123,7 +1252,7 @@ fn infer_call(
         | "char_to_str" | "strdup" | "select_str" | "tmp_path" | "exec_capture" | "getenv"
         | "realpath" | "ir_text" => {
             for a in args {
-                check_expr(a, env, types, entries)?;
+                check_expr(a, env, ctx, types, entries)?;
             }
             Ok(Type::Named {
                 name: "String".into(),
@@ -1133,7 +1262,7 @@ fn infer_call(
         }
         "vec_new" | "image_new" | "map_new" | "lex_src" => {
             for a in args {
-                check_expr(a, env, types, entries)?;
+                check_expr(a, env, ctx, types, entries)?;
             }
             Ok(Type::Named {
                 name: "Int".into(),
@@ -1143,7 +1272,7 @@ fn infer_call(
         }
         "list_new" => {
             for a in args {
-                check_expr(a, env, types, entries)?;
+                check_expr(a, env, ctx, types, entries)?;
             }
             let elem = type_args.iter().find_map(|a| match a {
                 TypeArg::Type(t) => Some(t.clone()),
@@ -1158,11 +1287,11 @@ fn infer_call(
                 span,
             ))
         }
-        "list_push" => infer_list_push(args, env, types, entries, span),
-        "list_get" => infer_list_get(args, env, types, entries, span),
+        "list_push" => infer_list_push(args, env, ctx, types, entries, span),
+        "list_get" => infer_list_get(args, env, ctx, types, entries, span),
         "list_len" => {
             if let Some(a) = args.first() {
-                check_expr(a, env, types, entries)?;
+                check_expr(a, env, ctx, types, entries)?;
             }
             Ok(Type::Named {
                 name: "Int".into(),
@@ -1171,8 +1300,8 @@ fn infer_call(
             })
         }
         "dict_new" => infer_dict_new(type_args, span),
-        "dict_put" => infer_dict_put(args, env, types, entries, span),
-        "dict_get" => infer_dict_get(args, env, types, entries, span),
+        "dict_put" => infer_dict_put(args, env, ctx, types, entries, span),
+        "dict_get" => infer_dict_get(args, env, ctx, types, entries, span),
         "syscall" => {
             if types.target != crate::target::Target::Soso {
                 return Err(vec![Diagnostic::new(
@@ -1189,7 +1318,7 @@ fn infer_call(
                 )]);
             }
             for a in args {
-                let t = check_expr(a, env, types, entries)?;
+                let t = check_expr(a, env, ctx, types, entries)?;
                 if !is_int_type(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1212,7 +1341,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let t = check_expr(&args[0], env, types, entries)?;
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_int_type(&t) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1230,7 +1359,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let t = check_expr(&args[0], env, types, entries)?;
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_bytes_type(&t) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1261,7 +1390,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let bt = check_expr(&args[0], env, types, entries)?;
+            let bt = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_bytes_or_ptr(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1270,7 +1399,7 @@ fn infer_call(
                 )]);
             }
             for a in &args[1..] {
-                let t = check_expr(a, env, types, entries)?;
+                let t = check_expr(a, env, ctx, types, entries)?;
                 if !is_int_type(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1293,7 +1422,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let bt = check_expr(&args[0], env, types, entries)?;
+            let bt = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_bytes_or_ptr(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1302,7 +1431,7 @@ fn infer_call(
                 )]);
             }
             for a in &args[1..] {
-                let t = check_expr(a, env, types, entries)?;
+                let t = check_expr(a, env, ctx, types, entries)?;
                 if !is_int_type(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1325,7 +1454,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let bt = check_expr(&args[0], env, types, entries)?;
+            let bt = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_bytes_or_ptr(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1334,7 +1463,7 @@ fn infer_call(
                 )]);
             }
             for a in &args[1..] {
-                let t = check_expr(a, env, types, entries)?;
+                let t = check_expr(a, env, ctx, types, entries)?;
                 if !is_int_type(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1358,7 +1487,7 @@ fn infer_call(
                 )]);
             }
             for i in [0usize, 2] {
-                let t = check_expr(&args[i], env, types, entries)?;
+                let t = check_expr(&args[i], env, ctx, types, entries)?;
                 if !is_bytes_or_ptr(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1368,7 +1497,7 @@ fn infer_call(
                 }
             }
             for i in [1usize, 3, 4] {
-                let t = check_expr(&args[i], env, types, entries)?;
+                let t = check_expr(&args[i], env, ctx, types, entries)?;
                 if !is_int_type(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1391,7 +1520,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let bt = check_expr(&args[0], env, types, entries)?;
+            let bt = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_bytes_type(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1399,7 +1528,7 @@ fn infer_call(
                     args[0].span(),
                 )]);
             }
-            let off = check_expr(&args[1], env, types, entries)?;
+            let off = check_expr(&args[1], env, ctx, types, entries)?;
             if !is_int_type(&off) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1407,7 +1536,7 @@ fn infer_call(
                     args[1].span(),
                 )]);
             }
-            let st = check_expr(&args[2], env, types, entries)?;
+            let st = check_expr(&args[2], env, ctx, types, entries)?;
             if !is_string_type(&st) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1429,7 +1558,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let t = check_expr(&args[0], env, types, entries)?;
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_bytes_type(&t) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1451,7 +1580,7 @@ fn infer_call(
                     span,
                 )]);
             }
-            let bt = check_expr(&args[0], env, types, entries)?;
+            let bt = check_expr(&args[0], env, ctx, types, entries)?;
             if !is_bytes_type(&bt) && !is_int_type(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -1460,7 +1589,7 @@ fn infer_call(
                 )]);
             }
             for a in &args[1..] {
-                let t = check_expr(a, env, types, entries)?;
+                let t = check_expr(a, env, ctx, types, entries)?;
                 if !is_int_type(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1480,7 +1609,7 @@ fn infer_call(
                 )]);
             }
             for a in args {
-                let t = check_expr(a, env, types, entries)?;
+                let t = check_expr(a, env, ctx, types, entries)?;
                 if !is_int_type(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -1505,7 +1634,7 @@ fn infer_call(
                     )]);
                 }
                 for (a, pt) in args.iter().zip(params.iter()) {
-                    let aty = check_expr(a, env, types, entries)?;
+                    let aty = check_expr(a, env, ctx, types, entries)?;
                     if !types_compatible(&aty, pt) {
                         return Err(vec![Diagnostic::new(
                             ErrorCode::EType,
@@ -1521,7 +1650,7 @@ fn infer_call(
                 Ok(ret.clone())
             } else {
                 for a in args {
-                    check_expr(a, env, types, entries)?;
+                    check_expr(a, env, ctx, types, entries)?;
                 }
                 Ok(Type::Named {
                     name: "Unknown".into(),
@@ -1539,6 +1668,7 @@ fn infer_lambda(
     body: &Expr,
     param_ty_hint: Option<Type>,
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -1558,7 +1688,11 @@ fn infer_lambda(
     });
     let mut local = env.clone();
     local.insert(param_name, param_ty.clone());
-    let body_ty = check_expr(body, &local, types, entries)?;
+    let body_ctx = ReturnCtx {
+        fn_ret: ctx.fn_ret,
+        allow_return: false,
+    };
+    let body_ty = check_expr(body, &local, &body_ctx, types, entries)?;
     Ok(Type::Fn {
         params: vec![param_ty],
         ret: Box::new(body_ty),
@@ -1570,6 +1704,7 @@ fn infer_lambda(
 fn infer_map_like(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -1581,7 +1716,7 @@ fn infer_map_like(
             span,
         )]);
     }
-    let tensor_ty = check_expr(&args[0], env, types, entries)?;
+    let tensor_ty = check_expr(&args[0], env, ctx, types, entries)?;
     let elem_ty = tensor_elem_scalar(&tensor_ty, args[0].span());
     if let Some(cb) = args.get(1) {
         if let Expr::Lambda {
@@ -1590,18 +1725,18 @@ fn infer_map_like(
             span: lspan,
         } = cb
         {
-            let fty = infer_lambda(params, body, Some(elem_ty), env, types, entries, *lspan)?;
+            let fty = infer_lambda(params, body, Some(elem_ty), env, ctx, types, entries, *lspan)?;
             entries.push(ExprTypeEntry {
                 span_start: fty.span().start,
                 span_end: fty.span().end,
                 ty: fty,
             });
         } else {
-            check_expr(cb, env, types, entries)?;
+            check_expr(cb, env, ctx, types, entries)?;
         }
     }
     for a in args.iter().skip(2) {
-        check_expr(a, env, types, entries)?;
+        check_expr(a, env, ctx, types, entries)?;
     }
     Ok(tensor_ty)
 }
@@ -1794,6 +1929,7 @@ fn column_elem_type(elem: ColumnElem, place: Place, span: Span) -> Type {
 fn infer_where(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -1805,8 +1941,8 @@ fn infer_where(
             span,
         )]);
     }
-    let frame_ty = check_expr(&args[0], env, types, entries)?;
-    let mask_ty = check_expr(&args[1], env, types, entries)?;
+    let frame_ty = check_expr(&args[0], env, ctx, types, entries)?;
+    let mask_ty = check_expr(&args[1], env, ctx, types, entries)?;
     let Type::Named { name, .. } = &frame_ty else {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
@@ -1865,6 +2001,7 @@ fn infer_where(
 fn infer_unary_tensor(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -1876,7 +2013,7 @@ fn infer_unary_tensor(
             span,
         )]);
     }
-    let t = check_expr(&args[0], env, types, entries)?;
+    let t = check_expr(&args[0], env, ctx, types, entries)?;
     if tensor_dims(&t).is_none() {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
@@ -1885,7 +2022,7 @@ fn infer_unary_tensor(
         )]);
     }
     for a in args.iter().skip(1) {
-        check_expr(a, env, types, entries)?;
+        check_expr(a, env, ctx, types, entries)?;
     }
     Ok(t)
 }
@@ -1893,6 +2030,7 @@ fn infer_unary_tensor(
 fn infer_softmax(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -1904,7 +2042,7 @@ fn infer_softmax(
             span,
         )]);
     }
-    let t = check_expr(&args[0], env, types, entries)?;
+    let t = check_expr(&args[0], env, ctx, types, entries)?;
     let (dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
         vec![Diagnostic::new(
             ErrorCode::EType,
@@ -1937,6 +2075,7 @@ fn infer_softmax(
 fn infer_reduce(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -1948,7 +2087,7 @@ fn infer_reduce(
             span,
         )]);
     }
-    let t = check_expr(&args[0], env, types, entries)?;
+    let t = check_expr(&args[0], env, ctx, types, entries)?;
     let (mut dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
         vec![Diagnostic::new(
             ErrorCode::EType,
@@ -1982,6 +2121,7 @@ fn infer_reduce(
 fn infer_reshape(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -1993,7 +2133,7 @@ fn infer_reshape(
             span,
         )]);
     }
-    let t = check_expr(&args[0], env, types, entries)?;
+    let t = check_expr(&args[0], env, ctx, types, entries)?;
     let (old_dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
         vec![Diagnostic::new(
             ErrorCode::EType,
@@ -2032,6 +2172,7 @@ fn infer_reshape(
 fn infer_transpose(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -2043,7 +2184,7 @@ fn infer_transpose(
             span,
         )]);
     }
-    let t = check_expr(&args[0], env, types, entries)?;
+    let t = check_expr(&args[0], env, ctx, types, entries)?;
     let (mut dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
         vec![Diagnostic::new(
             ErrorCode::EType,
@@ -2071,6 +2212,7 @@ fn infer_transpose(
 fn infer_rms_norm(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -2082,8 +2224,8 @@ fn infer_rms_norm(
             span,
         )]);
     }
-    let t = check_expr(&args[0], env, types, entries)?;
-    let w = check_expr(&args[1], env, types, entries)?;
+    let t = check_expr(&args[0], env, ctx, types, entries)?;
+    let w = check_expr(&args[1], env, ctx, types, entries)?;
     let (dims, elem, place) = tensor_dims(&t).ok_or_else(|| {
         vec![Diagnostic::new(
             ErrorCode::EType,
@@ -2111,6 +2253,7 @@ fn infer_rms_norm(
 fn infer_attention(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -2122,10 +2265,10 @@ fn infer_attention(
             span,
         )]);
     }
-    let q = check_expr(&args[0], env, types, entries)?;
-    let k = check_expr(&args[1], env, types, entries)?;
-    let v = check_expr(&args[2], env, types, entries)?;
-    check_expr(&args[3], env, types, entries)?;
+    let q = check_expr(&args[0], env, ctx, types, entries)?;
+    let k = check_expr(&args[1], env, ctx, types, entries)?;
+    let v = check_expr(&args[2], env, ctx, types, entries)?;
+    check_expr(&args[3], env, ctx, types, entries)?;
     let (qd, qe, qp) = tensor_dims(&q).ok_or_else(|| {
         vec![Diagnostic::new(ErrorCode::EShape, "attention q must be tensor", args[0].span())]
     })?;
@@ -2155,6 +2298,7 @@ fn infer_attention(
 fn infer_qmatmul(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -2166,10 +2310,10 @@ fn infer_qmatmul(
             span,
         )]);
     }
-    let a = check_expr(&args[0], env, types, entries)?;
-    let w = check_expr(&args[1], env, types, entries)?;
-    check_expr(&args[2], env, types, entries)?;
-    check_expr(&args[3], env, types, entries)?;
+    let a = check_expr(&args[0], env, ctx, types, entries)?;
+    let w = check_expr(&args[1], env, ctx, types, entries)?;
+    check_expr(&args[2], env, ctx, types, entries)?;
+    check_expr(&args[3], env, ctx, types, entries)?;
     let (a_dims, a_elem, a_place) = tensor_dims(&a).ok_or_else(|| {
         vec![Diagnostic::new(ErrorCode::EShape, "qmatmul left must be tensor", args[0].span())]
     })?;
@@ -2217,6 +2361,7 @@ fn infer_qmatmul(
 fn infer_tensor_append(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -2228,8 +2373,8 @@ fn infer_tensor_append(
             span,
         )]);
     }
-    let cache = check_expr(&args[0], env, types, entries)?;
-    let row = check_expr(&args[1], env, types, entries)?;
+    let cache = check_expr(&args[0], env, ctx, types, entries)?;
+    let row = check_expr(&args[1], env, ctx, types, entries)?;
     let (mut dims, elem, place) = tensor_dims(&cache).ok_or_else(|| {
         vec![Diagnostic::new(
             ErrorCode::EType,
@@ -2268,6 +2413,7 @@ fn infer_tensor_append(
 fn infer_argmax(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -2279,7 +2425,7 @@ fn infer_argmax(
             span,
         )]);
     }
-    check_expr(&args[0], env, types, entries)?;
+    check_expr(&args[0], env, ctx, types, entries)?;
     if args.len() >= 2 {
         check_int_lit(&args[1], "argmax axis")?;
     }
@@ -2591,12 +2737,13 @@ fn option_type(inner: Type, span: Span) -> Type {
 fn infer_list_push(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
 ) -> DiagResult<Type> {
     let xs_ty = if let Some(a) = args.first() {
-        check_expr(a, env, types, entries)?
+        check_expr(a, env, ctx, types, entries)?
     } else {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
@@ -2612,7 +2759,7 @@ fn infer_list_push(
         )]
     })?;
     if let Some(x) = args.get(1) {
-        let xty = check_expr(x, env, types, entries)?;
+        let xty = check_expr(x, env, ctx, types, entries)?;
         if !types_compatible(&xty, &elem) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -2631,15 +2778,16 @@ fn infer_list_push(
 fn infer_list_get(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
 ) -> DiagResult<Type> {
     if let Some(a) = args.first() {
-        let xs_ty = check_expr(a, env, types, entries)?;
+        let xs_ty = check_expr(a, env, ctx, types, entries)?;
         if let Some(elem) = list_elem(&xs_ty) {
             if args.get(1).is_some() {
-                check_expr(&args[1], env, types, entries)?;
+                check_expr(&args[1], env, ctx, types, entries)?;
             }
             return Ok(elem);
         }
@@ -2707,12 +2855,13 @@ fn infer_dict_new(type_args: &[TypeArg], span: Span) -> DiagResult<Type> {
 fn infer_dict_put(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
 ) -> DiagResult<Type> {
     let dty = if let Some(a) = args.first() {
-        check_expr(a, env, types, entries)?
+        check_expr(a, env, ctx, types, entries)?
     } else {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
@@ -2728,7 +2877,7 @@ fn infer_dict_put(
         )]
     })?;
     if let Some(key) = args.get(1) {
-        let kt = check_expr(key, env, types, entries)?;
+        let kt = check_expr(key, env, ctx, types, entries)?;
         if !types_compatible(&kt, &kty) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -2738,7 +2887,7 @@ fn infer_dict_put(
         }
     }
     if let Some(val) = args.get(2) {
-        let vt = check_expr(val, env, types, entries)?;
+        let vt = check_expr(val, env, ctx, types, entries)?;
         if !types_compatible(&vt, &vty) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -2753,6 +2902,7 @@ fn infer_dict_put(
 fn infer_dict_get(
     args: &[Expr],
     env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
@@ -2765,7 +2915,7 @@ fn infer_dict_get(
         )]);
     }
     let dty = if let Some(a) = args.first() {
-        check_expr(a, env, types, entries)?
+        check_expr(a, env, ctx, types, entries)?
     } else {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
@@ -2781,7 +2931,7 @@ fn infer_dict_get(
         )]
     })?;
     if let Some(key) = args.get(1) {
-        let kt = check_expr(key, env, types, entries)?;
+        let kt = check_expr(key, env, ctx, types, entries)?;
         if !types_compatible(&kt, &kty) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,

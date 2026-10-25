@@ -778,14 +778,18 @@ fn lower_block_value(cx: Int, b: Int) -> Int ! alloc
         d
     else
         stmts = block_stmts(b)
-        _a = lower_stmts(cx, stmts, 0, vec_len(stmts))
-        tail = block_tail(b)
-        if tail == 0
+        stopped = lower_stmts(cx, stmts, 0, vec_len(stmts))
+        if stopped == 1
             d = fresh(cx)
-            _p = push_const_int(cx, d, 0)
             d
         else
-            lower_expr(cx, tail)
+            tail = block_tail(b)
+            if tail == 0
+                d = fresh(cx)
+                _p = push_const_int(cx, d, 0)
+                d
+            else
+                lower_expr(cx, tail)
 
 fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -819,9 +823,20 @@ fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
                     _s = vec_push(conc, vec_get(ex, 2))
             else
                 _x = 0
+            lower_stmts(cx, stmts, i + 1, n)
+        elsif is_as == 2
+            ex = vec_get(st, 2)
+            if ex == 0
+                d = fresh(cx)
+                _p = push_const_int(cx, d, 0)
+                _c = ir_push(cx, ir_ret(d))
+            else
+                v0 = lower_expr(cx, ex)
+                _c = ir_push(cx, ir_ret(v0))
+            1
         else
             _v = lower_expr(cx, vec_get(st, 2))
-        lower_stmts(cx, stmts, i + 1, n)
+            lower_stmts(cx, stmts, i + 1, n)
 
 fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
     cx = cx_new(fn_names, fm, struct_map, fnrets)
@@ -829,13 +844,16 @@ fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int
     _a = lower_params(cx, params, 0, vec_len(params))
     body = vec_get(f, 2)
     stmts = block_stmts(body)
-    _b = lower_stmts(cx, stmts, 0, vec_len(stmts))
-    tail = block_tail(body)
-    if tail == 0
-        _c = 0
+    stopped = lower_stmts(cx, stmts, 0, vec_len(stmts))
+    if stopped == 0
+        tail = block_tail(body)
+        if tail == 0
+            _c = 0
+        else
+            v1 = lower_expr(cx, tail)
+            _c = ir_push(cx, ir_ret(v1))
     else
-        v = lower_expr(cx, tail)
-        _c = ir_push(cx, ir_ret(v))
+        _c = 0
     out = vec_new()
     _d = vec_push(out, vec_get(f, 0))
     _e = vec_push(out, cx_dim_params(cx))

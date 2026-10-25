@@ -36,7 +36,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `tensor_bin` | `+`/`-`/`*`/`/`/cmp y `-`/`!` unarios sobre tensores de rango 1 |
 | `where` | filtro de filas de un `frame` por máscara `I8` |
 | `load` | `load[…](path)` |
-| `return` | valor de la función |
+| `return` | termina la función con el valor; no se baja ni se ejecuta lo posterior en la misma lista |
 
 Un struct grande vuelve por puntero oculto. Las formas estáticas monomorfizan la llamada. Un eje `?` es un entero de ejecución, un parámetro `nombre_dN` por eje.
 

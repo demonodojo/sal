@@ -1,0 +1,11 @@
+fn pick(flag: Int, data: Int, dlen: Int) -> Int ! alloc
+    b = bytes_view_mem(data, dlen)
+    if flag != 0
+        _a = bytes_set_u8(b, 0, 65)
+    else
+        _b = bytes_set_u8(b, 0, 66)
+    bytes_get_u8(b, 0)
+
+fn main() -> Int ! alloc
+    buf = bytes_ptr(bytes_new(8))
+    pick(1, buf, 8)

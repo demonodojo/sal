@@ -296,8 +296,9 @@ fn lower_fn(
         }
     }
 
+    let mut fn_diverged = false;
     for st in &f.body.stmts {
-        lower_stmt(
+        if lower_stmt(
             st,
             &mut instructions,
             &mut env,
@@ -307,21 +308,26 @@ fn lower_fn(
             &mut dim_params,
             fn_names,
             &mut strings,
-        );
+        ) {
+            fn_diverged = true;
+            break;
+        }
     }
-    if let Some(t) = &f.body.tail {
-        let v = lower_expr(
-            t,
-            &mut instructions,
-            &mut env,
-            &mut counter,
-            &mut regions,
-            &mut tensors,
-            &mut dim_params,
-            fn_names,
-            &mut strings,
-        );
-        instructions.push(IrInst::Return { value: v });
+    if !fn_diverged {
+        if let Some(t) = &f.body.tail {
+            let v = lower_expr(
+                t,
+                &mut instructions,
+                &mut env,
+                &mut counter,
+                &mut regions,
+                &mut tensors,
+                &mut dim_params,
+                fn_names,
+                &mut strings,
+            );
+            instructions.push(IrInst::Return { value: v });
+        }
     }
     let ret = match instructions.last() {
         Some(IrInst::Return { .. }) => instructions.pop(),
@@ -638,7 +644,7 @@ fn lower_stmt(
     dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
     strings: &mut StringEnv,
-) {
+) -> bool {
     match st {
         Stmt::Let { name, ty, init, .. } => {
             let v = lower_expr(
@@ -693,7 +699,7 @@ fn lower_stmt(
                                     strings,
                                 );
                                 env.insert(name.clone(), v);
-                                return;
+                                return false;
                             }
                             if let Some(idx) = struct_field_index(&sdef, field) {
                                 let new_val = lower_expr(
@@ -732,7 +738,7 @@ fn lower_stmt(
                                     fields: field_ssas,
                                 });
                                 env.insert(name.clone(), dest);
-                                return;
+                                return false;
                             }
                         }
                     }
@@ -800,7 +806,16 @@ fn lower_stmt(
                     strings,
                 );
                 instructions.push(IrInst::Return { value: val });
+            } else {
+                *counter += 1;
+                let z = format!("t{counter}");
+                instructions.push(IrInst::ConstInt {
+                    dest: z.clone(),
+                    value: 0,
+                });
+                instructions.push(IrInst::Return { value: z });
             }
+            return true;
         }
         Stmt::While { cond, body, .. } => {
             let mut assigned = HashSet::new();
@@ -836,8 +851,9 @@ fn lower_stmt(
             );
             let mut body_insts = Vec::new();
             let mut body_env = loop_env;
+            let mut body_diverged = false;
             for st in &body.stmts {
-                lower_stmt(
+                if lower_stmt(
                     st,
                     &mut body_insts,
                     &mut body_env,
@@ -847,20 +863,25 @@ fn lower_stmt(
                     dim_params,
                     fn_names,
                     strings,
-                );
+                ) {
+                    body_diverged = true;
+                    break;
+                }
             }
-            if let Some(t) = &body.tail {
-                lower_expr(
-                    t,
-                    &mut body_insts,
-                    &mut body_env,
-                    counter,
-                    regions,
-                    tensors,
-                    dim_params,
-                    fn_names,
-                    strings,
-                );
+            if !body_diverged {
+                if let Some(t) = &body.tail {
+                    lower_expr(
+                        t,
+                        &mut body_insts,
+                        &mut body_env,
+                        counter,
+                        regions,
+                        tensors,
+                        dim_params,
+                        fn_names,
+                        strings,
+                    );
+                }
             }
             let mut carried = Vec::new();
             for (name, incoming, dest) in specs {
@@ -892,6 +913,7 @@ fn lower_stmt(
             });
         }
     }
+    false
 }
 
 fn call_fn_tensor_ret<'a>(
@@ -1962,8 +1984,9 @@ fn lower_expr(
             let mut else_env = env.clone();
             let mut then_strings = strings.clone();
             let mut else_strings = strings.clone();
+            let mut then_diverged = false;
             for st in &then_block.stmts {
-                lower_stmt(
+                if lower_stmt(
                     st,
                     &mut then_body,
                     &mut then_env,
@@ -1973,9 +1996,15 @@ fn lower_expr(
                     dim_params,
                     fn_names,
                     &mut then_strings,
-                );
+                ) {
+                    then_diverged = true;
+                    break;
+                }
             }
-            let then_val = if let Some(t) = &then_block.tail {
+            let then_val = if then_diverged {
+                *counter += 1;
+                format!("t{counter}")
+            } else if let Some(t) = &then_block.tail {
                 lower_expr(
                     t,
                     &mut then_body,
@@ -1997,8 +2026,9 @@ fn lower_expr(
                 d
             };
             let else_val = if let Some(else_block) = else_block {
+                let mut else_diverged = false;
                 for st in &else_block.stmts {
-                    lower_stmt(
+                    if lower_stmt(
                         st,
                         &mut else_body,
                         &mut else_env,
@@ -2008,9 +2038,15 @@ fn lower_expr(
                         dim_params,
                         fn_names,
                         &mut else_strings,
-                    );
+                    ) {
+                        else_diverged = true;
+                        break;
+                    }
                 }
-                if let Some(t) = &else_block.tail {
+                if else_diverged {
+                    *counter += 1;
+                    format!("t{counter}")
+                } else if let Some(t) = &else_block.tail {
                     lower_expr(
                         t,
                         &mut else_body,

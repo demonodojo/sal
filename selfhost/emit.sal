@@ -1363,12 +1363,15 @@ fn emit_c_block(b: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     if b == 0
         d"0"
     else
-        _a = emit_c_stmts(block_stmts(b), 0, vec_len(block_stmts(b)), user, stmts, tc)
-        tail = block_tail(b)
-        if tail == 0
+        stopped = emit_c_stmts(block_stmts(b), 0, vec_len(block_stmts(b)), user, stmts, tc)
+        if stopped == 1
             d"0"
         else
-            emit_c_expr(tail, user, stmts, tc)
+            tail = block_tail(b)
+            if tail == 0
+                d"0"
+            else
+                emit_c_expr(tail, user, stmts, tc)
 
 fn emit_c_stmts(sts: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
     if i >= n
@@ -1385,11 +1388,22 @@ fn emit_c_stmts(sts: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int) -> Int
             _ns = strenv_bind(tc_strenv(tc), vec_get(st, 1), expr_type(vec_get(st, 2), tc_strenv(tc)))
             line = "  " + str_from_int(vec_get(st, 1)) + " = " + val + ";\n"
             _p = vec_push(stmts, str_as_int(line))
+            emit_c_stmts(sts, i + 1, n, user, stmts, tc)
+        elsif vec_get(st, 0) == 2
+            ex = vec_get(st, 2)
+            if ex == 0
+                line = d"  return 0;\n"
+                _p = vec_push(stmts, str_as_int(line))
+            else
+                val0 = emit_c_expr(ex, user, stmts, tc)
+                line = "  return " + val0 + ";\n"
+                _p = vec_push(stmts, str_as_int(line))
+            1
         else
-            val = emit_c_expr(vec_get(st, 2), user, stmts, tc)
-            line = "  " + val + ";\n"
+            val1 = emit_c_expr(vec_get(st, 2), user, stmts, tc)
+            line = "  " + val1 + ";\n"
             _p = vec_push(stmts, str_as_int(line))
-        emit_c_stmts(sts, i + 1, n, user, stmts, tc)
+            emit_c_stmts(sts, i + 1, n, user, stmts, tc)
 
 fn emit_params_comma(i: Int) -> String ! alloc
     if i > 0

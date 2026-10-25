@@ -28,6 +28,7 @@ fn corpus_files() -> Vec<PathBuf> {
         "corpus/string_plus.sal",
         "corpus/column_ops.sal",
         "corpus/newtypes.sal",
+        "corpus/early_return.sal",
         "examples/hello.sal",
         "examples/forward.sal",
     ]

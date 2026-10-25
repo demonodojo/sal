@@ -101,3 +101,15 @@ fn soso_syscall_and_bytes_get_lower_to_runtime() {
     assert!(art.llvm.contains("sal_panic"));
     assert!(art.llvm.contains("load i32"));
 }
+
+#[test]
+fn bytes_set_inside_if_emits_valid_llvm() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = root.join("main.sal");
+    std::fs::write(&file, include_str!("../corpus/bytes_if_phi.sal")).unwrap();
+    std::fs::create_dir(root.join("sdk")).unwrap();
+    std::fs::write(root.join("sdk/manifest.txt"), "sdk=1").unwrap();
+    let art = compile_file(&file, &options(root, Target::Soso)).expect("compile");
+    assert!(art.llvm.contains("@sal_bytes_check"));
+}

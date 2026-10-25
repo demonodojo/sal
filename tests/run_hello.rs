@@ -476,6 +476,84 @@ fn main() -> Int
 }
 
 #[test]
+fn early_return_pick_zero() {
+    let src = r#"
+fn pick(x: Int) -> Int
+    if x == 0
+        return 1
+    99
+
+fn main() -> Int
+    pick(0)
+"#;
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn early_return_pick_nonzero() {
+    let src = r#"
+fn pick(x: Int) -> Int
+    if x == 0
+        return 1
+    99
+
+fn main() -> Int
+    pick(2)
+"#;
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(99));
+}
+
+#[test]
+fn return_inside_while_exits_function() {
+    let src = r#"
+fn main() -> Int
+    i = 0
+    while i < 10
+        if i == 3
+            return 7
+        i = i + 1
+    0
+"#;
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(7));
+}
+
+#[test]
 fn while_assignment_feeds_next_iteration() {
     let src = r#"
 fn main() -> Int

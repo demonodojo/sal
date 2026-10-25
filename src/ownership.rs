@@ -95,7 +95,7 @@ fn check_block(
     env: &mut HashMap<String, Type>,
     moved: &mut HashSet<String>,
 ) -> DiagResult<()> {
-    track_block(
+    let _ = track_block(
         b,
         env,
         moved,
@@ -103,7 +103,8 @@ fn check_block(
         &mut HashSet::new(),
         &mut HashSet::new(),
         &mut HashSet::new(),
-    )
+    )?;
+    Ok(())
 }
 
 fn track_block(
@@ -114,16 +115,23 @@ fn track_block(
     taken: &mut HashSet<String>,
     used: &mut HashSet<String>,
     frozen: &mut HashSet<String>,
-) -> DiagResult<()> {
+) -> DiagResult<bool> {
+    let mut diverged = false;
     for st in &b.stmts {
-        track_stmt(st, env, moved, params, taken, used, frozen)?;
+        if diverged {
+            break;
+        }
+        diverged = track_stmt(st, env, moved, params, taken, used, frozen)?;
+    }
+    if diverged {
+        return Ok(true);
     }
     if let Some(t) = &b.tail {
         let ty = track_expr(t, env, moved, params, taken, used, frozen)?;
         // Tail value escapes the block (function result or block expr) → move unique.
         consume_if_unique(t, &ty, moved, params, taken);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn track_stmt(
@@ -134,7 +142,7 @@ fn track_stmt(
     taken: &mut HashSet<String>,
     used: &mut HashSet<String>,
     frozen: &mut HashSet<String>,
-) -> DiagResult<()> {
+) -> DiagResult<bool> {
     match st {
         Stmt::Let {
             name,
@@ -151,9 +159,11 @@ fn track_stmt(
             if *is_frozen {
                 frozen.insert(name.clone());
             }
+            Ok(false)
         }
         Stmt::Expr(e) => {
             track_expr(e, env, moved, params, taken, used, frozen)?;
+            Ok(false)
         }
         Stmt::Assign { target, value, span } => {
             if let Some(name) = frozen_assign_name(target) {
@@ -182,19 +192,33 @@ fn track_stmt(
                 track_expr(target, env, moved, params, taken, used, frozen)?;
                 let _ = span;
             }
+            Ok(false)
         }
         Stmt::Return { value, .. } => {
             if let Some(v) = value {
                 let ty = track_expr(v, env, moved, params, taken, used, frozen)?;
                 consume_if_unique(v, &ty, moved, params, taken);
             }
+            Ok(true)
         }
         Stmt::While { cond, body, .. } => {
             track_expr(cond, env, moved, params, taken, used, frozen)?;
-            track_block(body, env, moved, params, taken, used, frozen)?;
+            let mut body_moved = moved.clone();
+            let body_div = track_block(
+                body,
+                env,
+                &mut body_moved,
+                params,
+                taken,
+                used,
+                frozen,
+            )?;
+            if !body_div {
+                *moved = body_moved;
+            }
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 fn frozen_assign_name(target: &Expr) -> Option<&str> {

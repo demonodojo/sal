@@ -3,6 +3,30 @@ use sal_compiler::ir::{ir_to_text, lower_program};
 use sal_compiler::parser::parse;
 
 #[test]
+fn early_return_in_if_then_body() {
+    let src = include_str!("../corpus/early_return.sal");
+    let p = parse(src).expect("parse early_return");
+    let ir = lower_program(&p);
+    let pick = ir
+        .functions
+        .iter()
+        .find(|f| f.name == "pick")
+        .expect("pick");
+    let if_inst = pick
+        .instructions
+        .iter()
+        .find_map(|i| match i {
+            sal_compiler::ir::IrInst::If { then_body, .. } => Some(then_body),
+            _ => None,
+        })
+        .expect("if in pick");
+    assert!(
+        if_inst.iter().any(|i| matches!(i, sal_compiler::ir::IrInst::Return { .. })),
+        "return must live in then branch"
+    );
+}
+
+#[test]
 fn column_ops_fused_region() {
     let src = include_str!("../corpus/column_ops.sal");
     let p = parse(src).expect("parse column_ops");

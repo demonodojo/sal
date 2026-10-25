@@ -117,6 +117,9 @@ fn TK_STRUCT() -> Int
 fn TK_AT() -> Int
     38
 
+fn TK_RETURN() -> Int
+    39
+
 fn is_digit(c: Int) -> Int
     if c < 48
         0
@@ -188,6 +191,8 @@ fn kw_kind(text: String) -> Int ! alloc
         TK_IMPORT()
     elsif str_eq(text, "struct") == 1
         TK_STRUCT()
+    elsif str_eq(text, "return") == 1
+        TK_RETURN()
     else
         TK_IDENT()
 

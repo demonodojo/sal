@@ -269,6 +269,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("@sal_bytes_oob = private unnamed_addr constant [20 x i8] c\"bytes: out of bounds\"\n\n");
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare void @sal_panic(ptr)\n");
+    s.push_str("declare void @sal_bytes_check(i64, i64, i64)\n");
     s.push_str("declare i64 @sal_os_syscall(i64, i64, i64, i64, i64, i64, i64)\n");
     s.push_str("declare void @sal_matmul_f32(ptr, ptr, ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_matmul_f16(ptr, ptr, ptr, i64, i64, i64)\n");
@@ -2083,24 +2084,10 @@ fn emit_bytes_data_len(
     (format!("%{data}"), format!("%{len}"))
 }
 
-fn emit_bytes_bounds_ok(s: &mut String, uid: &mut u32, idx: &str, width: i64, len: &str) -> String {
-    *uid += 1;
-    let end = format!("bend{uid}");
-    let ok0 = format!("bok0{uid}");
-    let ok1 = format!("bok1{uid}");
-    let ok = format!("bok{uid}");
-    let bad = format!("bbad{uid}");
-    let cont = format!("bcont{uid}");
-    s.push_str(&format!("  %{end} = add i64 {idx}, {width}\n"));
-    s.push_str(&format!("  %{ok0} = icmp sge i64 {idx}, 0\n"));
-    s.push_str(&format!("  %{ok1} = icmp sle i64 %{end}, {len}\n"));
-    s.push_str(&format!("  %{ok} = and i1 %{ok0}, %{ok1}\n"));
-    s.push_str(&format!("  br i1 %{ok}, label %{cont}, label %{bad}\n"));
-    s.push_str(&format!("{bad}:\n"));
-    s.push_str("  call void @sal_panic(ptr @sal_bytes_oob)\n");
-    s.push_str("  unreachable\n");
-    s.push_str(&format!("{cont}:\n"));
-    cont
+fn emit_bytes_bounds_ok(s: &mut String, _uid: &mut u32, idx: &str, width: i64, len: &str) {
+    s.push_str(&format!(
+        "  call void @sal_bytes_check(i64 {idx}, i64 {width}, i64 {len})\n"
+    ));
 }
 
 fn emit_bytes_get(
@@ -2113,7 +2100,7 @@ fn emit_bytes_get(
     llvm_ty: &str,
 ) {
     let (data, len) = emit_bytes_data_len(s, uid, handle, "g");
-    let _cont = emit_bytes_bounds_ok(s, uid, idx, width, &len);
+    emit_bytes_bounds_ok(s, uid, idx, width, &len);
     *uid += 1;
     let gep = format!("bgp{uid}");
     s.push_str(&format!(
@@ -2140,7 +2127,7 @@ fn emit_bytes_set(
     llvm_ty: &str,
 ) {
     let (data, len) = emit_bytes_data_len(s, uid, handle, "s");
-    let _cont = emit_bytes_bounds_ok(s, uid, idx, width, &len);
+    emit_bytes_bounds_ok(s, uid, idx, width, &len);
     *uid += 1;
     let gep = format!("sgp{uid}");
     s.push_str(&format!(
@@ -3143,7 +3130,7 @@ fn emit_body_insts(
     let mut label_id = 0u32;
     let mut tmp = 0u32;
     let mut cur_block = "entry".to_string();
-    let (ret, _) = emit_inst_list(
+    let (ret, _, _) = emit_inst_list(
         &f.instructions,
         str_globals,
         user_fns,
@@ -3156,6 +3143,23 @@ fn emit_body_insts(
     ret
 }
 
+fn insts_through_return(instructions: &[IrInst]) -> &[IrInst] {
+    match instructions
+        .iter()
+        .position(|i| matches!(i, IrInst::Return { .. }))
+    {
+        Some(p) => &instructions[..=p],
+        None => instructions,
+    }
+}
+
+fn inst_list_ends_with_return(instructions: &[IrInst]) -> bool {
+    matches!(
+        insts_through_return(instructions).last(),
+        Some(IrInst::Return { .. })
+    )
+}
+
 fn emit_inst_list(
     instructions: &[IrInst],
     str_globals: &HashMap<String, StrLitGlobal>,
@@ -3165,10 +3169,282 @@ fn emit_inst_list(
     tmp: &mut u32,
     cur_block: &mut String,
     mut tensor: Option<&mut TensorEmitCtx<'_>>,
-) -> (String, String) {
+) -> (String, String, bool) {
     let consts = const_int_map_from(instructions);
     let mut ret = "0".to_string();
-    for inst in instructions {
+    let mut i = 0usize;
+    while i < instructions.len() {
+        if let IrInst::Return { value } = &instructions[i] {
+            ret = i64_operand(value, &consts);
+            s.push_str(&format!("  ret i64 {ret}\n"));
+            return (ret, cur_block.clone(), true);
+        }
+        if let IrInst::If {
+            cond,
+            then_body,
+            else_body,
+            then_val,
+            else_val,
+            dest,
+            carried,
+        } = &instructions[i]
+        {
+            let suffix = &instructions[i + 1..];
+            let then_body = insts_through_return(then_body);
+            let else_body = insts_through_return(else_body);
+            let then_term = inst_list_ends_with_return(then_body);
+            let else_term = inst_list_ends_with_return(else_body);
+            if !suffix.is_empty() && then_term && !else_term {
+                *label_id += 1;
+                let id = *label_id;
+                let then_l = format!("then{id}");
+                let else_l = format!("else{id}");
+                let c = i64_operand(cond, &consts);
+                s.push_str(&format!("  %ifcond{id} = icmp ne i64 {c}, 0\n"));
+                s.push_str(&format!(
+                    "  br i1 %ifcond{id}, label %{then_l}, label %{else_l}\n"
+                ));
+                s.push_str(&format!("{then_l}:\n"));
+                let mut then_block = then_l;
+                emit_inst_list(
+                    then_body,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    &mut then_block,
+                    tensor.as_deref_mut(),
+                );
+                s.push_str(&format!("{else_l}:\n"));
+                *cur_block = else_l;
+                let (_, _, _) = emit_inst_list(
+                    else_body,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    cur_block,
+                    tensor.as_deref_mut(),
+                );
+                return emit_inst_list(
+                    suffix,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    cur_block,
+                    tensor,
+                );
+            }
+            if !suffix.is_empty() && !then_term && else_term {
+                *label_id += 1;
+                let id = *label_id;
+                let then_l = format!("then{id}");
+                let else_l = format!("else{id}");
+                let c = i64_operand(cond, &consts);
+                s.push_str(&format!("  %ifcond{id} = icmp ne i64 {c}, 0\n"));
+                s.push_str(&format!(
+                    "  br i1 %ifcond{id}, label %{then_l}, label %{else_l}\n"
+                ));
+                s.push_str(&format!("{else_l}:\n"));
+                let mut else_block = else_l.clone();
+                emit_inst_list(
+                    else_body,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    &mut else_block,
+                    tensor.as_deref_mut(),
+                );
+                s.push_str(&format!("{then_l}:\n"));
+                *cur_block = then_l;
+                let (_, _, _) = emit_inst_list(
+                    then_body,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    cur_block,
+                    tensor.as_deref_mut(),
+                );
+                return emit_inst_list(
+                    suffix,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    cur_block,
+                    tensor,
+                );
+            }
+            if !suffix.is_empty() && then_term && else_term {
+                *label_id += 1;
+                let id = *label_id;
+                let then_l = format!("then{id}");
+                let else_l = format!("else{id}");
+                let c = i64_operand(cond, &consts);
+                s.push_str(&format!("  %ifcond{id} = icmp ne i64 {c}, 0\n"));
+                s.push_str(&format!(
+                    "  br i1 %ifcond{id}, label %{then_l}, label %{else_l}\n"
+                ));
+                s.push_str(&format!("{then_l}:\n"));
+                let mut then_block = then_l;
+                emit_inst_list(
+                    then_body,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    &mut then_block,
+                    tensor.as_deref_mut(),
+                );
+                s.push_str(&format!("{else_l}:\n"));
+                let mut else_block = else_l;
+                emit_inst_list(
+                    else_body,
+                    str_globals,
+                    user_fns,
+                    s,
+                    label_id,
+                    tmp,
+                    &mut else_block,
+                    tensor.as_deref_mut(),
+                );
+                return (ret, cur_block.clone(), true);
+            }
+            *label_id += 1;
+            let id = *label_id;
+            let then_l = format!("then{id}");
+            let else_l = format!("else{id}");
+            let join_l = format!("join{id}");
+            let c = i64_operand(cond, &consts);
+            s.push_str(&format!("  %ifcond{id} = icmp ne i64 {c}, 0\n"));
+            s.push_str(&format!(
+                "  br i1 %ifcond{id}, label %{then_l}, label %{else_l}\n"
+            ));
+            s.push_str(&format!("{then_l}:\n"));
+            let mut then_block = then_l.clone();
+            let then_consts = const_int_map_from(then_body);
+            let (_, _, tt) = emit_inst_list(
+                then_body,
+                str_globals,
+                user_fns,
+                s,
+                label_id,
+                tmp,
+                &mut then_block,
+                tensor.as_deref_mut(),
+            );
+            let tv = if then_consts.contains_key(then_val)
+                || then_val.chars().all(|c| c.is_ascii_digit())
+            {
+                i64_operand(then_val, &then_consts)
+            } else {
+                format!("%{then_val}")
+            };
+            if !tt {
+                s.push_str(&format!("  br label %{join_l}\n"));
+            }
+            s.push_str(&format!("{else_l}:\n"));
+            let mut else_block = else_l.clone();
+            let else_consts = const_int_map_from(else_body);
+            let (_, _, et) = emit_inst_list(
+                else_body,
+                str_globals,
+                user_fns,
+                s,
+                label_id,
+                tmp,
+                &mut else_block,
+                tensor.as_deref_mut(),
+            );
+            let ev = if else_consts.contains_key(else_val)
+                || else_val.chars().all(|c| c.is_ascii_digit())
+            {
+                i64_operand(else_val, &else_consts)
+            } else {
+                format!("%{else_val}")
+            };
+            if !et {
+                s.push_str(&format!("  br label %{join_l}\n"));
+            }
+            if !tt && !et {
+                s.push_str(&format!("{join_l}:\n"));
+                s.push_str(&format!(
+                    "  %{dest} = phi i64 [ {tv}, %{then_block} ], [ {ev}, %{else_block} ]\n"
+                ));
+                for carry in carried {
+                    let ct = if then_consts.contains_key(&carry.then_val)
+                        || carry.then_val.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(&carry.then_val, &then_consts)
+                    } else {
+                        format!("%{}", carry.then_val)
+                    };
+                    let ce = if else_consts.contains_key(&carry.else_val)
+                        || carry.else_val.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(&carry.else_val, &else_consts)
+                    } else {
+                        format!("%{}", carry.else_val)
+                    };
+                    s.push_str(&format!(
+                        "  %{} = phi i64 [ {ct}, %{then_block} ], [ {ce}, %{else_block} ]\n",
+                        carry.dest
+                    ));
+                }
+                *cur_block = join_l;
+            } else if tt && !et {
+                s.push_str(&format!("{join_l}:\n"));
+                s.push_str(&format!(
+                    "  %{dest} = phi i64 [ {ev}, %{else_block} ]\n"
+                ));
+                for carry in carried {
+                    let ce = if else_consts.contains_key(&carry.else_val)
+                        || carry.else_val.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(&carry.else_val, &else_consts)
+                    } else {
+                        format!("%{}", carry.else_val)
+                    };
+                    s.push_str(&format!(
+                        "  %{} = phi i64 [ {ce}, %{else_block} ]\n",
+                        carry.dest
+                    ));
+                }
+                *cur_block = join_l;
+            } else if !tt && et {
+                s.push_str(&format!("{join_l}:\n"));
+                s.push_str(&format!(
+                    "  %{dest} = phi i64 [ {tv}, %{then_block} ]\n"
+                ));
+                for carry in carried {
+                    let ct = if then_consts.contains_key(&carry.then_val)
+                        || carry.then_val.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(&carry.then_val, &then_consts)
+                    } else {
+                        format!("%{}", carry.then_val)
+                    };
+                    s.push_str(&format!(
+                        "  %{} = phi i64 [ {ct}, %{then_block} ]\n",
+                        carry.dest
+                    ));
+                }
+                *cur_block = join_l;
+            }
+            i += 1;
+            continue;
+        }
+        let inst = &instructions[i];
         match inst {
             IrInst::ConstInt { dest, value } => {
                 s.push_str(&format!("  %{dest} = add i64 0, {value}\n"));
@@ -3225,9 +3501,6 @@ fn emit_inst_list(
                     }
                     _ => s.push_str(&format!("  %{dest} = add i64 {l}, 0\n")),
                 }
-            }
-            IrInst::Return { value } => {
-                ret = i64_operand(value, &consts);
             }
             IrInst::Aggregate {
                 dest,
@@ -3435,93 +3708,6 @@ fn emit_inst_list(
                     );
                 }
             }
-            IrInst::If {
-                cond,
-                then_body,
-                else_body,
-                then_val,
-                else_val,
-                dest,
-                carried,
-            } => {
-                *label_id += 1;
-                let id = *label_id;
-                let then_l = format!("then{id}");
-                let else_l = format!("else{id}");
-                let join_l = format!("join{id}");
-                let c = i64_operand(cond, &consts);
-                s.push_str(&format!("  %ifcond{id} = icmp ne i64 {c}, 0\n"));
-                s.push_str(&format!(
-                    "  br i1 %ifcond{id}, label %{then_l}, label %{else_l}\n"
-                ));
-                s.push_str(&format!("{then_l}:\n"));
-                let mut then_block = then_l.clone();
-                let then_consts = const_int_map_from(then_body);
-                emit_inst_list(
-                    then_body,
-                    str_globals,
-                    user_fns,
-                    s,
-                    label_id,
-                    tmp,
-                    &mut then_block,
-                    tensor.as_deref_mut(),
-                );
-                let tv = if then_consts.contains_key(then_val)
-                    || then_val.chars().all(|c| c.is_ascii_digit())
-                {
-                    i64_operand(then_val, &then_consts)
-                } else {
-                    format!("%{then_val}")
-                };
-                s.push_str(&format!("  br label %{join_l}\n"));
-                s.push_str(&format!("{else_l}:\n"));
-                let mut else_block = else_l.clone();
-                let else_consts = const_int_map_from(else_body);
-                emit_inst_list(
-                    else_body,
-                    str_globals,
-                    user_fns,
-                    s,
-                    label_id,
-                    tmp,
-                    &mut else_block,
-                    tensor.as_deref_mut(),
-                );
-                let ev = if else_consts.contains_key(else_val)
-                    || else_val.chars().all(|c| c.is_ascii_digit())
-                {
-                    i64_operand(else_val, &else_consts)
-                } else {
-                    format!("%{else_val}")
-                };
-                s.push_str(&format!("  br label %{join_l}\n"));
-                s.push_str(&format!("{join_l}:\n"));
-                s.push_str(&format!(
-                    "  %{dest} = phi i64 [ {tv}, %{then_block} ], [ {ev}, %{else_block} ]\n"
-                ));
-                for carry in carried {
-                    let ct = if then_consts.contains_key(&carry.then_val)
-                        || carry.then_val.chars().all(|c| c.is_ascii_digit())
-                    {
-                        i64_operand(&carry.then_val, &then_consts)
-                    } else {
-                        format!("%{}", carry.then_val)
-                    };
-                    let ce = if else_consts.contains_key(&carry.else_val)
-                        || carry.else_val.chars().all(|c| c.is_ascii_digit())
-                    {
-                        i64_operand(&carry.else_val, &else_consts)
-                    } else {
-                        format!("%{}", carry.else_val)
-                    };
-                    s.push_str(&format!(
-                        "  %{} = phi i64 [ {ct}, %{then_block} ], [ {ce}, %{else_block} ]\n",
-                        carry.dest
-                    ));
-                }
-                *cur_block = join_l;
-            }
             IrInst::PlaceCopy {
                 dest,
                 from,
@@ -3699,7 +3885,8 @@ fn emit_inst_list(
                 ));
                 s.push_str(&format!("{body_l}:\n"));
                 let mut body_block = body_l.clone();
-                emit_inst_list(
+                let body = insts_through_return(body);
+                let (_, _, body_term) = emit_inst_list(
                     body,
                     str_globals,
                     user_fns,
@@ -3709,15 +3896,19 @@ fn emit_inst_list(
                     &mut body_block,
                     tensor.as_deref_mut(),
                 );
-                s.push_str(&format!("  br label %{latch}\n"));
+                if !body_term {
+                    s.push_str(&format!("  br label %{latch}\n"));
+                }
                 s.push_str(&format!("{latch}:\n"));
                 s.push_str(&format!("  br label %{head}\n"));
                 s.push_str(&format!("{end_l}:\n"));
                 *cur_block = end_l;
             }
+            IrInst::Return { .. } | IrInst::If { .. } => unreachable!("handled above"),
         }
+        i += 1;
     }
-    (ret, cur_block.clone())
+    (ret, cur_block.clone(), false)
 }
 
 fn const_int_map_from(instructions: &[IrInst]) -> HashMap<String, i64> {
@@ -3917,7 +4108,7 @@ fn emit_value_as_return(
         }
     }
     if !body.is_empty() {
-        emit_inst_list(
+        let (_, _, term) = emit_inst_list(
             body,
             str_globals,
             user_fns,
@@ -3927,6 +4118,9 @@ fn emit_value_as_return(
             cur_block,
             tensor.as_deref_mut(),
         );
+        if term {
+            return;
+        }
     }
     let consts = const_int_map_from(body);
     let op = i64_operand(val, &consts);
@@ -4032,11 +4226,36 @@ fn emit_main_general(
     } else {
         None
     };
-    let ret = emit_body_insts(f, str_globals, user_fns, s, tctx.as_mut());
-    if opts.instrument {
-        s.push_str("  call void @sal_instrument_shutdown()\n");
+    let mut label_id = 0u32;
+    let mut tmp = 0u32;
+    let mut cur_block = "entry".to_string();
+    if let Some(IrInst::Return { value }) = f.instructions.last() {
+        let prefix = &f.instructions[..f.instructions.len() - 1];
+        let (_, _, term) = emit_inst_list(
+            prefix,
+            str_globals,
+            user_fns,
+            s,
+            &mut label_id,
+            &mut tmp,
+            &mut cur_block,
+            tctx.as_mut(),
+        );
+        if opts.instrument {
+            s.push_str("  call void @sal_instrument_shutdown()\n");
+        }
+        if !term {
+            let consts = const_int_map(f);
+            let op = i64_operand(value, &consts);
+            s.push_str(&format!("  ret i64 {op}\n"));
+        }
+    } else {
+        let ret = emit_body_insts(f, str_globals, user_fns, s, tctx.as_mut());
+        if opts.instrument {
+            s.push_str("  call void @sal_instrument_shutdown()\n");
+        }
+        s.push_str(&format!("  ret i64 {ret}\n"));
     }
-    s.push_str(&format!("  ret i64 {ret}\n"));
     s.push_str("}\n");
 }
 

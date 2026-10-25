@@ -484,8 +484,13 @@ fn qualify_stmts(stmts: Int, i: Int, n: Int, ctx: Int, links: Int) -> Int ! allo
     else
         st = vec_get(stmts, i)
         ex = vec_get(st, 2)
-        qe = qualify_expr(ex, ctx, links)
-        _s = vec_set(st, 2, qe)
+        if vec_get(st, 0) == 2
+            if ex != 0
+                qe = qualify_expr(ex, ctx, links)
+                _s = vec_set(st, 2, qe)
+        else
+            qe = qualify_expr(ex, ctx, links)
+            _s = vec_set(st, 2, qe)
         qualify_stmts(stmts, i + 1, n, ctx, links)
 
 fn qualify_fn(f: Int, ctx: Int, links: Int) -> Int ! alloc
