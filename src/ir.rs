@@ -1232,6 +1232,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "str_bytes_copy"
             | "bytes_to_str"
             | "bytes_view"
+            | "bytes_view_mem"
             | "bytes_ptr"
             | "syscall"
             | "list_new"

@@ -903,6 +903,19 @@ void *sal_bytes_view(void *vp, int64_t off, int64_t len) {
     return v;
 }
 
+void *sal_bytes_view_mem(int64_t data, int64_t len) {
+    if (len < 0) {
+        sal_panic("bytes_view_mem: negative length");
+    }
+    SalBytes *v = (SalBytes *)sal_xmalloc(sizeof(SalBytes), "bytes_view_mem");
+    if (!v) {
+        return NULL;
+    }
+    v->data = (uint8_t *)(uintptr_t)data;
+    v->len = len;
+    return v;
+}
+
 #ifdef SAL_SOSO
 __attribute__((weak)) int64_t sal_os_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2,
                                              int64_t a3, int64_t a4, int64_t a5) {

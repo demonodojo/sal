@@ -132,7 +132,7 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed, strings: &mut StringEnv) {
                     }
                     "str_concat" | "str_append" | "strdup" | "select_str" | "argv" | "str_slice"
                     | "int_to_str" | "char_to_str" | "vec_new" | "image_new" | "list_new" | "dict_new"
-                    | "bytes_new" | "bytes_to_str" | "bytes_view" | "tmp_path"
+                    | "bytes_new" | "bytes_to_str" | "bytes_view" | "bytes_view_mem" | "tmp_path"
                     | "exec_capture" | "getenv" | "realpath" => {
                         used.alloc = true;
                     }

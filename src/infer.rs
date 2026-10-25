@@ -1262,10 +1262,10 @@ fn infer_call(
                 )]);
             }
             let bt = check_expr(&args[0], env, types, entries)?;
-            if !is_bytes_type(&bt) {
+            if !is_bytes_or_ptr(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
-                    format!("{name} expects Bytes as first argument"),
+                    format!("{name} expects Bytes or Int pointer"),
                     args[0].span(),
                 )]);
             }
@@ -1294,10 +1294,10 @@ fn infer_call(
                 )]);
             }
             let bt = check_expr(&args[0], env, types, entries)?;
-            if !is_bytes_type(&bt) {
+            if !is_bytes_or_ptr(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
-                    "bytes_fill expects Bytes",
+                    "bytes_fill expects Bytes or Int pointer",
                     args[0].span(),
                 )]);
             }
@@ -1326,10 +1326,10 @@ fn infer_call(
                 )]);
             }
             let bt = check_expr(&args[0], env, types, entries)?;
-            if !is_bytes_type(&bt) {
+            if !is_bytes_or_ptr(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
-                    "bytes_fill_u32 expects Bytes",
+                    "bytes_fill_u32 expects Bytes or Int pointer",
                     args[0].span(),
                 )]);
             }
@@ -1359,10 +1359,10 @@ fn infer_call(
             }
             for i in [0usize, 2] {
                 let t = check_expr(&args[i], env, types, entries)?;
-                if !is_bytes_type(&t) {
+                if !is_bytes_or_ptr(&t) {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
-                        "bytes_copy dst/src must be Bytes",
+                        "bytes_copy dst/src must be Bytes or Int pointer",
                         args[i].span(),
                     )]);
                 }
@@ -1452,10 +1452,10 @@ fn infer_call(
                 )]);
             }
             let bt = check_expr(&args[0], env, types, entries)?;
-            if !is_bytes_type(&bt) {
+            if !is_bytes_type(&bt) && !is_int_type(&bt) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
-                    "bytes_view expects Bytes",
+                    "bytes_view expects Bytes or Int pointer",
                     args[0].span(),
                 )]);
             }
@@ -1465,6 +1465,26 @@ fn infer_call(
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
                         "bytes_view offset/length must be Int",
+                        a.span(),
+                    )]);
+                }
+            }
+            Ok(bytes_type(span))
+        }
+        "bytes_view_mem" => {
+            if args.len() != 2 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_view_mem expects (data_ptr, length)",
+                    span,
+                )]);
+            }
+            for a in args {
+                let t = check_expr(a, env, types, entries)?;
+                if !is_int_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "bytes_view_mem expects Int arguments",
                         a.span(),
                     )]);
                 }
@@ -2453,6 +2473,11 @@ fn is_int_type(t: &Type) -> bool {
 
 fn is_bytes_type(t: &Type) -> bool {
     matches!(t, Type::Named { name, .. } if name == "Bytes")
+}
+
+/// Puntero crudo (`Int` desde `bytes_ptr`) o valor `Bytes` del runtime Sal.
+fn is_bytes_or_ptr(t: &Type) -> bool {
+    is_bytes_type(t) || is_int_type(t)
 }
 
 fn bytes_type(span: Span) -> Type {

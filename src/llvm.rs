@@ -357,6 +357,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_str_bytes_copy(ptr, i64, ptr)\n");
     s.push_str("declare ptr @sal_bytes_to_str(ptr)\n");
     s.push_str("declare ptr @sal_bytes_view(ptr, i64, i64)\n");
+    s.push_str("declare ptr @sal_bytes_view_mem(i64, i64)\n");
     s.push_str("declare i64 @sal_bytes_ptr(ptr)\n");
     s.push_str("declare ptr @sal_list_new()\n");
     s.push_str("declare ptr @sal_list_new_typed(i64)\n");
@@ -2716,6 +2717,16 @@ fn emit_runtime_or_user_call(
             if let Some(d) = dest {
                 s.push_str(&format!(
                     "  %{d}_p = call ptr @sal_bytes_view(ptr {a}, i64 {off}, i64 {len})\n"
+                ));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_bytes_view_mem" => {
+            let data = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let len = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d}_p = call ptr @sal_bytes_view_mem(i64 {data}, i64 {len})\n"
                 ));
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
