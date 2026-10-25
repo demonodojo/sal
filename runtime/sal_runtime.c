@@ -787,6 +787,137 @@ int64_t sal_vec_len(void *vp) {
     return v ? (int64_t)v->len : 0;
 }
 
+typedef struct {
+    uint8_t *data;
+    int64_t len;
+} SalBytes;
+
+static SalBytes *bytes_from_handle(void *vp) {
+    return (SalBytes *)vp;
+}
+
+void *sal_bytes_new(int64_t len) {
+    if (len < 0) {
+        sal_panic("bytes_new: negative length");
+    }
+    SalBytes *b = (SalBytes *)sal_xmalloc(sizeof(SalBytes), "bytes_new");
+    if (!b) {
+        return NULL;
+    }
+    size_t n = (size_t)len;
+    b->data = n ? (uint8_t *)sal_xmalloc(n, "bytes_new.data") : NULL;
+    if (n && !b->data) {
+        sal_panic("bytes_new: oom");
+    }
+    b->len = len;
+    return b;
+}
+
+int64_t sal_bytes_len(void *vp) {
+    SalBytes *b = bytes_from_handle(vp);
+    return b ? b->len : 0;
+}
+
+int64_t sal_bytes_ptr(void *vp) {
+    SalBytes *b = bytes_from_handle(vp);
+    if (!b || !b->data) {
+        return 0;
+    }
+    return (int64_t)(uintptr_t)b->data;
+}
+
+static int64_t bytes_check_range(SalBytes *b, int64_t off, int64_t span) {
+    if (!b || off < 0 || span < 0 || off > b->len - span) {
+        sal_panic("bytes: out of bounds");
+    }
+    return 0;
+}
+
+int64_t sal_bytes_fill(void *vp, int64_t off, int64_t len, int64_t byte) {
+    SalBytes *b = bytes_from_handle(vp);
+    bytes_check_range(b, off, len);
+    if (len > 0) {
+        memset(b->data + (size_t)off, (int)(byte & 0xff), (size_t)len);
+    }
+    return 0;
+}
+
+int64_t sal_bytes_fill_u32(void *vp, int64_t off, int64_t count, int64_t value) {
+    SalBytes *b = bytes_from_handle(vp);
+    int64_t span = count * 4;
+    bytes_check_range(b, off, span);
+    uint32_t v = (uint32_t)value;
+    for (int64_t i = 0; i < count; i++) {
+        size_t at = (size_t)off + (size_t)i * 4;
+        memcpy(b->data + at, &v, 4);
+    }
+    return 0;
+}
+
+int64_t sal_bytes_copy(void *dst_vp, int64_t dst_off, void *src_vp, int64_t src_off, int64_t len) {
+    SalBytes *dst = bytes_from_handle(dst_vp);
+    SalBytes *src = bytes_from_handle(src_vp);
+    bytes_check_range(dst, dst_off, len);
+    bytes_check_range(src, src_off, len);
+    if (len > 0) {
+        memcpy(dst->data + (size_t)dst_off, src->data + (size_t)src_off, (size_t)len);
+    }
+    return 0;
+}
+
+int64_t sal_str_bytes_copy(void *dst_vp, int64_t dst_off, const char *src) {
+    SalBytes *dst = bytes_from_handle(dst_vp);
+    if (!src) {
+        src = "";
+    }
+    int64_t n = sal_str_len_raw(src);
+    bytes_check_range(dst, dst_off, n);
+    if (n > 0) {
+        memcpy(dst->data + (size_t)dst_off, src, (size_t)n);
+    }
+    return n;
+}
+
+char *sal_bytes_to_str(void *vp) {
+    SalBytes *b = bytes_from_handle(vp);
+    if (!b) {
+        return sal_strdup("");
+    }
+    char *out = sal_str_alloc_size((size_t)b->len, (size_t)b->len + 1);
+    if (b->len > 0) {
+        memcpy(sal_str_base(out), b->data, (size_t)b->len);
+    }
+    sal_str_base(out)[b->len] = 0;
+    return out;
+}
+
+void *sal_bytes_view(void *vp, int64_t off, int64_t len) {
+    SalBytes *parent = bytes_from_handle(vp);
+    bytes_check_range(parent, off, len);
+    SalBytes *v = (SalBytes *)sal_xmalloc(sizeof(SalBytes), "bytes_view");
+    if (!v) {
+        return NULL;
+    }
+    v->data = parent->data + (size_t)off;
+    v->len = len;
+    return v;
+}
+
+#ifdef SAL_SOSO
+__attribute__((weak)) int64_t sal_os_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2,
+                                             int64_t a3, int64_t a4, int64_t a5) {
+    (void)nr;
+    (void)a0;
+    (void)a1;
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
+    sal_panic("sal_os_syscall not linked");
+    return -1;
+}
+#endif
+
 /* Open-addressed string map. Keys are borrowed; the compiler's arena keeps them. */
 typedef struct {
     const char *key;

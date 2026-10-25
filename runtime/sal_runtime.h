@@ -133,6 +133,18 @@ int64_t sal_vec_get(void *v, int64_t i);
 int64_t sal_vec_set(void *v, int64_t i, int64_t x);
 int64_t sal_vec_len(void *v);
 void sal_vec_free(void *v);
+
+void *sal_bytes_new(int64_t len);
+int64_t sal_bytes_len(void *b);
+int64_t sal_bytes_fill(void *b, int64_t off, int64_t len, int64_t byte);
+int64_t sal_bytes_fill_u32(void *b, int64_t off, int64_t count, int64_t value);
+int64_t sal_bytes_copy(void *dst, int64_t dst_off, void *src, int64_t src_off, int64_t len);
+int64_t sal_str_bytes_copy(void *dst, int64_t dst_off, const char *src);
+char *sal_bytes_to_str(void *b);
+void *sal_bytes_view(void *b, int64_t off, int64_t len);
+int64_t sal_bytes_ptr(void *b);
+int64_t sal_os_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a3, int64_t a4,
+                       int64_t a5);
 /* White RGB buffer, w*h*3 bytes stored as i64. NULL-sized empty vec if out of range. */
 void *sal_image_new(int64_t w, int64_t h);
 /* Write an 8-bit RGB PNG. Returns 0 on success. */

@@ -1,0 +1,8 @@
+# 1920x1080 RGBA — fill u32 + copy (medir con release).
+fn main() -> Int ! alloc
+    n = 1920 * 1080 * 4
+    src = bytes_new(n)
+    dst = bytes_new(n)
+    bytes_fill_u32(src, 0, n / 4, 16909060)
+    bytes_copy(dst, 0, src, 0, n)
+    bytes_get_u8(dst, 0) + bytes_get_u8(dst, 3)

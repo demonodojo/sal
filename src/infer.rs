@@ -10,13 +10,26 @@ pub struct InferOutput {
     pub expr_types_by_fn: Vec<(FnDef, Vec<ExprTypeEntry>)>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct TypeEnv {
     pub structs: HashMap<String, StructDef>,
     pub enums: HashMap<String, EnumDef>,
     pub frames: HashMap<String, FrameDef>,
     /// Declared function signatures (name → params + return), for user calls.
     pub fns: HashMap<String, (Vec<Type>, Type)>,
+    pub target: crate::target::Target,
+}
+
+impl Default for TypeEnv {
+    fn default() -> Self {
+        Self {
+            structs: HashMap::new(),
+            enums: HashMap::new(),
+            frames: HashMap::new(),
+            fns: HashMap::new(),
+            target: crate::target::Target::host(),
+        }
+    }
 }
 
 
@@ -151,7 +164,7 @@ fn check_type_well_formed(ty: &Type, types: &TypeEnv) -> DiagResult<()> {
 fn is_builtin_named_type(name: &str) -> bool {
     matches!(
         name,
-        "Int" | "Float" | "Bool" | "String" | "Unit" | "List" | "Dict" | "Unknown"
+        "Int" | "Float" | "Bool" | "String" | "Bytes" | "Unit" | "List" | "Dict" | "Unknown"
             | "F32" | "F16" | "BF16" | "I8"
     )
 }
@@ -322,6 +335,20 @@ fn check_expr(
                         "string concatenation requires a String on the left",
                         *span,
                     )]);
+                }
+                BinOp::Mod | BinOp::Band | BinOp::Bxor | BinOp::Bor | BinOp::Shl | BinOp::Shr => {
+                    if !is_int_type(&lt) || !is_int_type(&rt) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            "integer bitwise/shift operation requires Int",
+                            *span,
+                        )]);
+                    }
+                    Type::Named {
+                        name: "Int".into(),
+                        args: vec![],
+                        span: *span,
+                    }
                 }
                 _ => {
                     if !is_numeric(&lt) || !is_numeric(&rt) {
@@ -1146,6 +1173,304 @@ fn infer_call(
         "dict_new" => infer_dict_new(type_args, span),
         "dict_put" => infer_dict_put(args, env, types, entries, span),
         "dict_get" => infer_dict_get(args, env, types, entries, span),
+        "syscall" => {
+            if types.target != crate::target::Target::Soso {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::ETarget,
+                    "`syscall` is only available when compiling for soso",
+                    span,
+                )]);
+            }
+            if args.len() != 7 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "syscall expects seven Int arguments (nr, a0..a5)",
+                    span,
+                )]);
+            }
+            for a in args {
+                let t = check_expr(a, env, types, entries)?;
+                if !is_int_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "syscall arguments must be Int",
+                        a.span(),
+                    )]);
+                }
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "bytes_new" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_new expects one Int argument (length)",
+                    span,
+                )]);
+            }
+            let t = check_expr(&args[0], env, types, entries)?;
+            if !is_int_type(&t) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_new expects Int length",
+                    args[0].span(),
+                )]);
+            }
+            Ok(bytes_type(span))
+        }
+        "bytes_len" | "bytes_ptr" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("{name} expects one Bytes argument"),
+                    span,
+                )]);
+            }
+            let t = check_expr(&args[0], env, types, entries)?;
+            if !is_bytes_type(&t) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("{name} expects Bytes"),
+                    args[0].span(),
+                )]);
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "bytes_get_u8"
+        | "bytes_get_u16"
+        | "bytes_get_u32"
+        | "bytes_get_i64"
+        | "bytes_set_u8"
+        | "bytes_set_u16"
+        | "bytes_set_u32"
+        | "bytes_set_i64" => {
+            let set = name.starts_with("bytes_set_");
+            let expect = if set { 3 } else { 2 };
+            if args.len() != expect {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("{name} expects {expect} argument(s)"),
+                    span,
+                )]);
+            }
+            let bt = check_expr(&args[0], env, types, entries)?;
+            if !is_bytes_type(&bt) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("{name} expects Bytes as first argument"),
+                    args[0].span(),
+                )]);
+            }
+            for a in &args[1..] {
+                let t = check_expr(a, env, types, entries)?;
+                if !is_int_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("{name} index/value arguments must be Int"),
+                        a.span(),
+                    )]);
+                }
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "bytes_fill" => {
+            if args.len() != 4 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_fill expects (Bytes, offset, length, byte)",
+                    span,
+                )]);
+            }
+            let bt = check_expr(&args[0], env, types, entries)?;
+            if !is_bytes_type(&bt) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_fill expects Bytes",
+                    args[0].span(),
+                )]);
+            }
+            for a in &args[1..] {
+                let t = check_expr(a, env, types, entries)?;
+                if !is_int_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "bytes_fill offset/length/byte must be Int",
+                        a.span(),
+                    )]);
+                }
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "bytes_fill_u32" => {
+            if args.len() != 4 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_fill_u32 expects (Bytes, offset, count, value)",
+                    span,
+                )]);
+            }
+            let bt = check_expr(&args[0], env, types, entries)?;
+            if !is_bytes_type(&bt) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_fill_u32 expects Bytes",
+                    args[0].span(),
+                )]);
+            }
+            for a in &args[1..] {
+                let t = check_expr(a, env, types, entries)?;
+                if !is_int_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "bytes_fill_u32 arguments must be Int",
+                        a.span(),
+                    )]);
+                }
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "bytes_copy" => {
+            if args.len() != 5 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_copy expects (dst, dst_off, src, src_off, len)",
+                    span,
+                )]);
+            }
+            for i in [0usize, 2] {
+                let t = check_expr(&args[i], env, types, entries)?;
+                if !is_bytes_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "bytes_copy dst/src must be Bytes",
+                        args[i].span(),
+                    )]);
+                }
+            }
+            for i in [1usize, 3, 4] {
+                let t = check_expr(&args[i], env, types, entries)?;
+                if !is_int_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "bytes_copy offsets/length must be Int",
+                        args[i].span(),
+                    )]);
+                }
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "str_bytes_copy" => {
+            if args.len() != 3 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_bytes_copy expects (Bytes, offset, String)",
+                    span,
+                )]);
+            }
+            let bt = check_expr(&args[0], env, types, entries)?;
+            if !is_bytes_type(&bt) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_bytes_copy expects Bytes",
+                    args[0].span(),
+                )]);
+            }
+            let off = check_expr(&args[1], env, types, entries)?;
+            if !is_int_type(&off) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_bytes_copy offset must be Int",
+                    args[1].span(),
+                )]);
+            }
+            let st = check_expr(&args[2], env, types, entries)?;
+            if !is_string_type(&st) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "str_bytes_copy expects String",
+                    args[2].span(),
+                )]);
+            }
+            Ok(Type::Named {
+                name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "bytes_to_str" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_to_str expects one Bytes argument",
+                    span,
+                )]);
+            }
+            let t = check_expr(&args[0], env, types, entries)?;
+            if !is_bytes_type(&t) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_to_str expects Bytes",
+                    args[0].span(),
+                )]);
+            }
+            Ok(Type::Named {
+                name: "String".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "bytes_view" => {
+            if args.len() != 3 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_view expects (Bytes, offset, length)",
+                    span,
+                )]);
+            }
+            let bt = check_expr(&args[0], env, types, entries)?;
+            if !is_bytes_type(&bt) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "bytes_view expects Bytes",
+                    args[0].span(),
+                )]);
+            }
+            for a in &args[1..] {
+                let t = check_expr(a, env, types, entries)?;
+                if !is_int_type(&t) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "bytes_view offset/length must be Int",
+                        a.span(),
+                    )]);
+                }
+            }
+            Ok(bytes_type(span))
+        }
         _ => {
             if let Some((params, ret)) = types.fns.get(name) {
                 if args.len() != params.len() {
@@ -2120,6 +2445,22 @@ fn is_numeric(t: &Type) -> bool {
         t,
         Type::Named { name, .. } if name == "Int" || name == "Float"
     )
+}
+
+fn is_int_type(t: &Type) -> bool {
+    matches!(t, Type::Named { name, .. } if name == "Int")
+}
+
+fn is_bytes_type(t: &Type) -> bool {
+    matches!(t, Type::Named { name, .. } if name == "Bytes")
+}
+
+fn bytes_type(span: Span) -> Type {
+    Type::Named {
+        name: "Bytes".into(),
+        args: vec![],
+        span,
+    }
 }
 
 fn types_compatible(a: &Type, b: &Type) -> bool {

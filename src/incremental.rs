@@ -154,7 +154,7 @@ fn typed_ast_for_file(path: &Path, project_root: &Path) -> Option<TypedProgram> 
     let prog = parse(&src).ok()?;
     let entries = if let Ok(graph) = resolve_module_graph(path, project_root) {
         if let Some(m) = graph.order.iter().find(|m| m.path == path) {
-            match crate::modules::infer_module(m, &graph) {
+            match crate::modules::infer_module(m, &graph, crate::target::Target::host()) {
                 Ok(out) => out.expr_types_by_fn,
                 Err(_) => Vec::new(),
             }

@@ -20,6 +20,14 @@ fn assert_fmt_idempotent(src: &str) {
 }
 
 #[test]
+fn int_bitwise_operators_parse() {
+    assert_parse(
+        r#"fn main() -> Int
+    1 << 2 | 3 & 7 ^ 1
+"#,
+    );
+}
+
 #[test]
 fn frame_shop_parses() {
     let src = include_str!("fixtures/frame_shop.sal");

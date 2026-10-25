@@ -573,3 +573,50 @@ fn main() -> Int ! alloc
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn int_mod_and_bitwise_run() {
+    let src = r#"
+fn main() -> Int
+    17 % 5 + (8 >> 1) + (1 << 3)
+"#;
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(14));
+}
+
+#[test]
+fn bytes_fill_and_copy_run() {
+    let src = r#"
+fn main() -> Int ! alloc
+    n = 1920 * 1080 * 4
+    a = bytes_new(n)
+    b = bytes_new(n)
+    bytes_fill_u32(a, 0, n / 4, 2864434397)
+    bytes_copy(b, 0, a, 0, n)
+    bytes_get_u8(b, 0) + bytes_get_u8(b, 3)
+"#;
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: true,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_source(src, &opts).expect("compile");
+    let bin = art.binary.expect("binary");
+    let out = Command::new(bin).output().expect("run");
+    assert_eq!(out.status.code(), Some(0xDD + 0xAA)); // LE u32: byte0=0xDD, byte3=0xAA
+}

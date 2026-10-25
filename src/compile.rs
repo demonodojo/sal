@@ -130,7 +130,7 @@ fn compile_file_with_imports(
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
     let graph = resolve_module_graph(path, &opts.project_root)?;
     for m in &graph.order {
-        check_module_semantics(m, &graph)?;
+        check_module_semantics(m, &graph, opts.toolchain.target)?;
     }
 
     let root = graph
@@ -138,7 +138,7 @@ fn compile_file_with_imports(
         .last()
         .ok_or_else(|| vec![internal_diag("empty module graph".into())])?;
 
-    let infer_out = infer_module(root, &graph)?;
+    let infer_out = infer_module(root, &graph, opts.toolchain.target)?;
     let typed = TypedProgram::from_program(program.clone(), infer_out.expr_types_by_fn);
 
     let base_flags = CompileFlags {
@@ -154,7 +154,7 @@ fn compile_file_with_imports(
     let mut root_artifacts: Option<CompileArtifacts> = None;
 
     for m in &graph.order {
-        let infer_m = infer_module(m, &graph)?;
+        let infer_m = infer_module(m, &graph, opts.toolchain.target)?;
         let graph_progs: Vec<&Program> = graph.order.iter().map(|x| &x.program).collect();
         let strings_env = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_m);
         let typed_m = TypedProgram::from_program(m.program.clone(), infer_m.expr_types_by_fn);

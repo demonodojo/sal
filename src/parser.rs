@@ -689,9 +689,9 @@ impl Parser {
         Ok(left)
     }
 
-    /// `cmp → cmp cmp_op add | add`. Todas las comparaciones asocian a la izquierda.
+    /// `cmp → cmp cmp_op bor | bor`. Todas las comparaciones asocian a la izquierda.
     fn parse_cmp(&mut self) -> Result<Expr, Diagnostic> {
-        let mut left = self.parse_add()?;
+        let mut left = self.parse_bor()?;
         loop {
             self.skip_group_newlines();
             let op = match self.peek().kind {
@@ -701,6 +701,88 @@ impl Parser {
                 TokenKind::Le => BinOp::Le,
                 TokenKind::Gt => BinOp::Gt,
                 TokenKind::Ge => BinOp::Ge,
+                _ => break,
+            };
+            let sp = self.bump().span;
+            let right = self.parse_bor()?;
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: sp,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `bor → bor "|" bxor | bxor`
+    fn parse_bor(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_bxor()?;
+        loop {
+            self.skip_group_newlines();
+            if !self.at(TokenKind::Pipe) {
+                break;
+            }
+            let sp = self.bump().span;
+            let right = self.parse_bxor()?;
+            left = Expr::Binary {
+                op: BinOp::Bor,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: sp,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `bxor → bxor "^" band | band`
+    fn parse_bxor(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_band()?;
+        loop {
+            self.skip_group_newlines();
+            if !self.at(TokenKind::Caret) {
+                break;
+            }
+            let sp = self.bump().span;
+            let right = self.parse_band()?;
+            left = Expr::Binary {
+                op: BinOp::Bxor,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: sp,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `band → band "&" shift | shift`
+    fn parse_band(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_shift()?;
+        loop {
+            self.skip_group_newlines();
+            if !self.at(TokenKind::Amp) {
+                break;
+            }
+            let sp = self.bump().span;
+            let right = self.parse_shift()?;
+            left = Expr::Binary {
+                op: BinOp::Band,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: sp,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `shift → shift "<<" add | shift ">>" add | add`
+    fn parse_shift(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_add()?;
+        loop {
+            self.skip_group_newlines();
+            let op = match self.peek().kind {
+                TokenKind::Shl => BinOp::Shl,
+                TokenKind::Shr => BinOp::Shr,
                 _ => break,
             };
             let sp = self.bump().span;
@@ -745,6 +827,7 @@ impl Parser {
             let op = match self.peek().kind {
                 TokenKind::Star => BinOp::Mul,
                 TokenKind::Slash => BinOp::Div,
+                TokenKind::Percent => BinOp::Mod,
                 _ => break,
             };
             let sp = self.bump().span;
@@ -1400,6 +1483,12 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         | (Minus, Minus)
         | (Star, Star)
         | (Slash, Slash)
+        | (Percent, Percent)
+        | (Amp, Amp)
+        | (Pipe, Pipe)
+        | (Caret, Caret)
+        | (Shl, Shl)
+        | (Shr, Shr)
         | (EqEq, EqEq)
         | (Ne, Ne)
         | (Lt, Lt)

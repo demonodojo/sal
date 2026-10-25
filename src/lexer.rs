@@ -54,6 +54,12 @@ pub enum TokenKind {
     Le,
     Gt,
     Ge,
+    Percent,
+    Amp,
+    Pipe,
+    Caret,
+    Shl,
+    Shr,
     FatArrow, // =>
     Newline,
     Indent,
@@ -203,6 +209,8 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 b"!=" => Some(TokenKind::Ne),
                 b"<=" => Some(TokenKind::Le),
                 b">=" => Some(TokenKind::Ge),
+                b"<<" => Some(TokenKind::Shl),
+                b">>" => Some(TokenKind::Shr),
                 _ => None,
             };
             if let Some(k) = kind {
@@ -253,6 +261,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             b'-' => TokenKind::Minus,
             b'*' => TokenKind::Star,
             b'/' => TokenKind::Slash,
+            b'%' => TokenKind::Percent,
+            b'&' => TokenKind::Amp,
+            b'|' => TokenKind::Pipe,
+            b'^' => TokenKind::Caret,
             b'<' => TokenKind::Lt,
             b'>' => TokenKind::Gt,
             b'"' => {

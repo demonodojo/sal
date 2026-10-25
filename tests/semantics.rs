@@ -762,7 +762,8 @@ fn import_call_typechecks() {
     .expect("write");
     let graph = resolve_module_graph(&a, tmp.path()).expect("graph");
     let root = graph.order.last().expect("root");
-    check_module_semantics(root, &graph).expect("imported helper visible");
+    check_module_semantics(root, &graph, sal_compiler::target::Target::host())
+        .expect("imported helper visible");
 }
 
 #[test]
@@ -780,7 +781,8 @@ fn import_as_avoids_flat_name_clash() {
     .expect("write main");
     let graph = resolve_module_graph(&main, tmp.path()).expect("graph");
     let root = graph.order.last().expect("root");
-    check_module_semantics(root, &graph).expect("qualified imports resolve");
+    check_module_semantics(root, &graph, sal_compiler::target::Target::host())
+        .expect("qualified imports resolve");
 }
 
 #[test]
@@ -873,5 +875,49 @@ fn go(s: Shop) -> Int ! gpu
     0
 "#,
         ErrorCode::EPlace,
+    );
+}
+
+#[test]
+fn int_bitwise_and_shift_typecheck() {
+    expect_ok(
+        r#"
+fn main() -> Int
+    1 << 2 | 3 & 7 ^ 1
+"#,
+    );
+}
+
+#[test]
+fn int_mod_requires_int() {
+    expect_code(
+        r#"
+fn main() -> Int
+    1.0 % 2
+"#,
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn bytes_new_and_get_typecheck() {
+    expect_ok(
+        r#"
+fn main() -> Int ! alloc
+    b = bytes_new(4)
+    bytes_set_u8(b, 0, 10)
+    bytes_get_u8(b, 0)
+"#,
+    );
+}
+
+#[test]
+fn syscall_is_e_target_on_linux_host() {
+    expect_code(
+        r#"
+fn main() -> Int ! io
+    syscall(0, 0, 0, 0, 0, 0, 0)
+"#,
+        ErrorCode::ETarget,
     );
 }

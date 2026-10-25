@@ -489,16 +489,19 @@ pub fn callable_fn_names(module: &LoadedModule, graph: &ModuleGraph) -> HashMap<
 pub fn infer_module(
     module: &LoadedModule,
     graph: &ModuleGraph,
+    target: crate::target::Target,
 ) -> DiagResult<crate::infer::InferOutput> {
-    let env = type_env_for_module(module, graph)?;
+    let mut env = type_env_for_module(module, graph)?;
+    env.target = target;
     crate::infer::infer_program_with_env(&module.program, &env)
 }
 
 pub fn check_module_semantics(
     module: &LoadedModule,
     graph: &ModuleGraph,
+    target: crate::target::Target,
 ) -> DiagResult<()> {
-    let out = infer_module(module, graph)?;
+    let out = infer_module(module, graph, target)?;
     crate::effects::check_effects_with_infer(&module.program, &out)?;
     crate::ownership::check_ownership(&module.program)?;
     crate::device::check_devices(&module.program)?;

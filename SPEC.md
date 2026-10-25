@@ -101,18 +101,28 @@ expr         → "try" expr
              | lambda
 lambda       → cmp "=>" expr
              | cmp
-cmp          → cmp "==" add
-             | cmp "!=" add
-             | cmp "<"  add
-             | cmp "<=" add
-             | cmp ">"  add
-             | cmp ">=" add
+cmp          → cmp "==" bor
+             | cmp "!=" bor
+             | cmp "<"  bor
+             | cmp "<=" bor
+             | cmp ">"  bor
+             | cmp ">=" bor
+             | bor
+bor          → bor "|" bxor
+             | bxor
+bxor         → bxor "^" band
+             | band
+band         → band "&" shift
+             | shift
+shift        → shift "<<" add
+             | shift ">>" add
              | add
 add          → add "+" mul
              | add "-" mul
              | mul
 mul          → mul "*" unary
              | mul "/" unary
+             | mul "%" unary
              | unary
 unary        → "-" unary
              | "!" unary
@@ -236,7 +246,7 @@ parallel_expr → "parallel" suite
 |------|--------|
 | `Int` | i64 |
 | `Float` | f64 (no elemento de tensor) |
-| `Bool`, `String`, `Unit` | |
+| `Bool`, `String`, `Bytes`, `Unit` | |
 | `List[T]` | heap, límites comprobados; `T` ∈ Int, Float, Bool, String |
 | `Dict[K, V]` | heap; `K` ∈ Int, String; `V` ∈ Int, Float, Bool (copy) |
 | `Tensor[Elem, dims…] on lugar` | `Elem` ∈ F32, F16, BF16, I8; `?` eje dinámico |
@@ -284,6 +294,26 @@ Bloque alineado a 16: `[cap: i64][len: i64][bytes…][0]`. El valor `String` es 
 `len` es `*(bytes - 8)` (longitud en bytes, sin contar el NUL). La cadena vacía es un único estático compartido.
 
 `String` vive en `cpu`. `to gpu` / `to tpu` sobre un `String`, o un `String` usado dentro de `on gpu` / `on tpu`, es `E_PLACE`. Para usar bytes en dispositivo: `str_bytes(s) -> Tensor[I8, ?] on cpu` y después `to gpu` (única transferencia).
+
+### `Bytes`
+
+Bloque `{ data: ptr, len: i64 }` en heap. El valor `Bytes` es un puntero al bloque (asa `Int` en IR). Primitivas:
+
+- `bytes_new(n) -> Bytes ! alloc`
+- `bytes_len`, `bytes_ptr`
+- `bytes_get_u8/u16/u32/i64`, `bytes_set_u8/u16/u32/i64` — solo `Int`; desbordamiento en LLVM llama `sal_panic`
+- `bytes_fill`, `bytes_fill_u32`, `bytes_copy`, `str_bytes_copy`
+- `bytes_to_str -> String ! alloc`, `bytes_view -> Bytes ! alloc`
+
+`Bytes` vive en `cpu` (misma regla de lugar que `String`).
+
+### Enteros
+
+Precedencia (de menor a mayor): comparación, `|`, `^`, `&`, desplazamiento (`<<` `>>`), suma, producto (incluye `%`). `%` es resto con signo del dividendo (`srem`). `<<` y `>>` son desplazamiento lógico/aritmético sobre `Int` (`shl`/`ashr`); operadores bitwise solo `Int` (`E_TYPE` con `Float`).
+
+### `syscall`
+
+`syscall(n, a0, a1, a2, a3, a4, a5) -> Int ! io` — siete argumentos `Int`. Solo al compilar para **soso**; en host Linux es `E_TARGET`. En enlace soso baja a `sal_os_syscall`.
 
 ## Dispositivos
 

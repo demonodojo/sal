@@ -15,6 +15,7 @@ pub enum ErrorCode {
     EOom,
     EParse,
     EType,
+    ETarget,
     EInternal,
 }
 
@@ -31,6 +32,7 @@ impl ErrorCode {
             ErrorCode::EOom => "E_OOM",
             ErrorCode::EParse => "E_PARSE",
             ErrorCode::EType => "E_TYPE",
+            ErrorCode::ETarget => "E_TARGET",
             ErrorCode::EInternal => "E_INTERNAL",
         }
     }

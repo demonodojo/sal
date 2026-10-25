@@ -1216,6 +1216,24 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "vec_set"
             | "vec_len"
             | "vec_free"
+            | "bytes_new"
+            | "bytes_len"
+            | "bytes_get_u8"
+            | "bytes_get_u16"
+            | "bytes_get_u32"
+            | "bytes_get_i64"
+            | "bytes_set_u8"
+            | "bytes_set_u16"
+            | "bytes_set_u32"
+            | "bytes_set_i64"
+            | "bytes_fill"
+            | "bytes_fill_u32"
+            | "bytes_copy"
+            | "str_bytes_copy"
+            | "bytes_to_str"
+            | "bytes_view"
+            | "bytes_ptr"
+            | "syscall"
             | "list_new"
             | "list_push"
             | "list_len"
@@ -1346,6 +1364,12 @@ fn lower_expr(
                 BinOp::Sub => "sub",
                 BinOp::Mul => "mul",
                 BinOp::Div => "div",
+                BinOp::Mod => "mod",
+                BinOp::Band => "band",
+                BinOp::Bxor => "bxor",
+                BinOp::Bor => "bor",
+                BinOp::Shl => "shl",
+                BinOp::Shr => "shr",
                 BinOp::Eq => "eq",
                 BinOp::Ne => "ne",
                 BinOp::Lt => "lt",
@@ -2638,6 +2662,12 @@ fn try_tensor_bin(
         BinOp::Sub => "sub",
         BinOp::Mul => "mul",
         BinOp::Div => "div",
+        BinOp::Mod => "mod",
+        BinOp::Band => "band",
+        BinOp::Bxor => "bxor",
+        BinOp::Bor => "bor",
+        BinOp::Shl => "shl",
+        BinOp::Shr => "shr",
         BinOp::Eq => "eq",
         BinOp::Ne => "ne",
         BinOp::Lt => "lt",
@@ -2697,6 +2727,12 @@ fn collect_fused_ops(
                     BinOp::Sub => "sub",
                     BinOp::Mul => "mul",
                     BinOp::Div => "div",
+                    BinOp::Mod => "mod",
+                    BinOp::Band => "band",
+                    BinOp::Bxor => "bxor",
+                    BinOp::Bor => "bor",
+                    BinOp::Shl => "shl",
+                    BinOp::Shr => "shr",
                     BinOp::Eq => "eq",
                     BinOp::Ne => "ne",
                     BinOp::Lt => "lt",

@@ -185,7 +185,7 @@ fn main() {
                 };
                 let root_mod = graph.order.last().expect("empty module graph");
                 let callables = callable_fn_names(root_mod, &graph);
-                let infer_out = match infer_module(root_mod, &graph) {
+                let infer_out = match infer_module(root_mod, &graph, toolchain.target) {
                     Ok(o) => o,
                     Err(diags) => {
                         print_diags(&diags, "human");

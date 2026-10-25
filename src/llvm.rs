@@ -265,7 +265,11 @@ pub fn emit_llvm_with_externs(
     if !opts.struct_defs.is_empty() {
         s.push('\n');
     }
+    s.push_str("%SalBytes = type { ptr, i64 }\n");
+    s.push_str("@sal_bytes_oob = private unnamed_addr constant [20 x i8] c\"bytes: out of bounds\"\n\n");
     s.push_str("declare i64 @sal_print_i64(i64)\n");
+    s.push_str("declare void @sal_panic(ptr)\n");
+    s.push_str("declare i64 @sal_os_syscall(i64, i64, i64, i64, i64, i64, i64)\n");
     s.push_str("declare void @sal_matmul_f32(ptr, ptr, ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_matmul_f16(ptr, ptr, ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_matmul_bf16(ptr, ptr, ptr, i64, i64, i64)\n");
@@ -345,6 +349,15 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_vec_set(ptr, i64, i64)\n");
     s.push_str("declare i64 @sal_vec_len(ptr)\n");
     s.push_str("declare void @sal_vec_free(ptr)\n");
+    s.push_str("declare ptr @sal_bytes_new(i64)\n");
+    s.push_str("declare i64 @sal_bytes_len(ptr)\n");
+    s.push_str("declare i64 @sal_bytes_fill(ptr, i64, i64, i64)\n");
+    s.push_str("declare i64 @sal_bytes_fill_u32(ptr, i64, i64, i64)\n");
+    s.push_str("declare i64 @sal_bytes_copy(ptr, i64, ptr, i64, i64)\n");
+    s.push_str("declare i64 @sal_str_bytes_copy(ptr, i64, ptr)\n");
+    s.push_str("declare ptr @sal_bytes_to_str(ptr)\n");
+    s.push_str("declare ptr @sal_bytes_view(ptr, i64, i64)\n");
+    s.push_str("declare i64 @sal_bytes_ptr(ptr)\n");
     s.push_str("declare ptr @sal_list_new()\n");
     s.push_str("declare ptr @sal_list_new_typed(i64)\n");
     s.push_str("declare ptr @sal_list_push(ptr, i64)\n");
@@ -1129,6 +1142,12 @@ fn emit_host_tensor_fn(
                     "sub" => s.push_str(&format!("  %{dest} = sub i64 {l}, {r}\n")),
                     "mul" => s.push_str(&format!("  %{dest} = mul i64 {l}, {r}\n")),
                     "div" => s.push_str(&format!("  %{dest} = sdiv i64 {l}, {r}\n")),
+                    "mod" => s.push_str(&format!("  %{dest} = srem i64 {l}, {r}\n")),
+                    "band" => s.push_str(&format!("  %{dest} = and i64 {l}, {r}\n")),
+                    "bxor" => s.push_str(&format!("  %{dest} = xor i64 {l}, {r}\n")),
+                    "bor" => s.push_str(&format!("  %{dest} = or i64 {l}, {r}\n")),
+                    "shl" => s.push_str(&format!("  %{dest} = shl i64 {l}, {r}\n")),
+                    "shr" => s.push_str(&format!("  %{dest} = ashr i64 {l}, {r}\n")),
                     "eq" => {
                         s.push_str(&format!("  %{dest}_c = icmp eq i64 {l}, {r}\n"));
                         s.push_str(&format!("  %{dest} = zext i1 %{dest}_c to i64\n"));
@@ -2042,6 +2061,101 @@ fn emit_matmul_fn(f: &IrFunction, s: &mut String) {
     s.push_str("}\n");
 }
 
+fn emit_bytes_data_len(
+    s: &mut String,
+    uid: &mut u32,
+    handle: &str,
+    tag: &str,
+) -> (String, String) {
+    *uid += 1;
+    let bp = format!("{tag}bp{uid}");
+    s.push_str(&format!("  %{bp} = inttoptr i64 {handle} to ptr\n"));
+    *uid += 1;
+    let data = format!("{tag}d{uid}");
+    s.push_str(&format!("  %{data} = load ptr, ptr %{bp}\n"));
+    *uid += 1;
+    let lenp = format!("{tag}lp{uid}");
+    s.push_str(&format!("  %{lenp} = getelementptr i8, ptr %{bp}, i64 8\n"));
+    *uid += 1;
+    let len = format!("{tag}n{uid}");
+    s.push_str(&format!("  %{len} = load i64, ptr %{lenp}\n"));
+    (format!("%{data}"), format!("%{len}"))
+}
+
+fn emit_bytes_bounds_ok(s: &mut String, uid: &mut u32, idx: &str, width: i64, len: &str) -> String {
+    *uid += 1;
+    let end = format!("bend{uid}");
+    let ok0 = format!("bok0{uid}");
+    let ok1 = format!("bok1{uid}");
+    let ok = format!("bok{uid}");
+    let bad = format!("bbad{uid}");
+    let cont = format!("bcont{uid}");
+    s.push_str(&format!("  %{end} = add i64 {idx}, {width}\n"));
+    s.push_str(&format!("  %{ok0} = icmp sge i64 {idx}, 0\n"));
+    s.push_str(&format!("  %{ok1} = icmp sle i64 %{end}, {len}\n"));
+    s.push_str(&format!("  %{ok} = and i1 %{ok0}, %{ok1}\n"));
+    s.push_str(&format!("  br i1 %{ok}, label %{cont}, label %{bad}\n"));
+    s.push_str(&format!("{bad}:\n"));
+    s.push_str("  call void @sal_panic(ptr @sal_bytes_oob)\n");
+    s.push_str("  unreachable\n");
+    s.push_str(&format!("{cont}:\n"));
+    cont
+}
+
+fn emit_bytes_get(
+    s: &mut String,
+    uid: &mut u32,
+    dest: &str,
+    handle: &str,
+    idx: &str,
+    width: i64,
+    llvm_ty: &str,
+) {
+    let (data, len) = emit_bytes_data_len(s, uid, handle, "g");
+    let _cont = emit_bytes_bounds_ok(s, uid, idx, width, &len);
+    *uid += 1;
+    let gep = format!("bgp{uid}");
+    s.push_str(&format!(
+        "  %{gep} = getelementptr i8, ptr {data}, i64 {idx}\n"
+    ));
+    *uid += 1;
+    let raw = format!("br{uid}");
+    s.push_str(&format!("  %{raw} = load {llvm_ty}, ptr %{gep}\n"));
+    if llvm_ty == "i64" {
+        s.push_str(&format!("  %{dest} = add i64 %{raw}, 0\n"));
+    } else {
+        s.push_str(&format!("  %{dest} = zext {llvm_ty} %{raw} to i64\n"));
+    }
+}
+
+fn emit_bytes_set(
+    s: &mut String,
+    uid: &mut u32,
+    dest: &str,
+    handle: &str,
+    idx: &str,
+    val: &str,
+    width: i64,
+    llvm_ty: &str,
+) {
+    let (data, len) = emit_bytes_data_len(s, uid, handle, "s");
+    let _cont = emit_bytes_bounds_ok(s, uid, idx, width, &len);
+    *uid += 1;
+    let gep = format!("sgp{uid}");
+    s.push_str(&format!(
+        "  %{gep} = getelementptr i8, ptr {data}, i64 {idx}\n"
+    ));
+    if llvm_ty == "i64" {
+        s.push_str(&format!("  store i64 {val}, ptr %{gep}\n"));
+    } else {
+        *uid += 1;
+        let narrow = format!("sn{uid}");
+        s.push_str(&format!("  %{narrow} = trunc i64 {val} to {llvm_ty}\n"));
+        s.push_str(&format!("  store {llvm_ty} %{narrow}, ptr %{gep}\n"));
+    }
+    s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+}
+
 fn i64_operand(name: &str, consts: &HashMap<String, i64>) -> String {
     if let Some(v) = consts.get(name) {
         return format!("{v}");
@@ -2510,6 +2624,162 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = call i64 @sal_list_get(ptr {a}, i64 {b})\n"));
             }
         }
+        "sal_syscall" => {
+            let mut ops: Vec<String> = args
+                .iter()
+                .map(|a| i64_operand(a, consts))
+                .collect();
+            while ops.len() < 7 {
+                ops.push("0".into());
+            }
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_os_syscall(i64 {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {})\n",
+                    ops[0], ops[1], ops[2], ops[3], ops[4], ops[5], ops[6]
+                ));
+            }
+        }
+        "sal_bytes_new" => {
+            let n = args.first().map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_bytes_new(i64 {n})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_bytes_len" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_bytes_len(ptr {a})\n"));
+            }
+        }
+        "sal_bytes_ptr" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_bytes_ptr(ptr {a})\n"));
+            }
+        }
+        "sal_bytes_fill" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let off = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let len = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let byte = args.get(3).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_bytes_fill(ptr {a}, i64 {off}, i64 {len}, i64 {byte})\n"
+                ));
+            }
+        }
+        "sal_bytes_fill_u32" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let off = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let cnt = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let val = args.get(3).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_bytes_fill_u32(ptr {a}, i64 {off}, i64 {cnt}, i64 {val})\n"
+                ));
+            }
+        }
+        "sal_bytes_copy" => {
+            let dst = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let doff = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let src = args.get(2).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let soff = args.get(3).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let len = args.get(4).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_bytes_copy(ptr {dst}, i64 {doff}, ptr {src}, i64 {soff}, i64 {len})\n"
+                ));
+            }
+        }
+        "sal_str_bytes_copy" => {
+            let dst = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let off = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let src = args.get(2).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_str_bytes_copy(ptr {dst}, i64 {off}, ptr {src})\n"
+                ));
+            }
+        }
+        "sal_bytes_to_str" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_bytes_to_str(ptr {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_bytes_view" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let off = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let len = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d}_p = call ptr @sal_bytes_view(ptr {a}, i64 {off}, i64 {len})\n"
+                ));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_bytes_get_u8" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                emit_bytes_get(s, tmp, d, &h, &idx, 1, "i8");
+            }
+        }
+        "sal_bytes_get_u16" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                emit_bytes_get(s, tmp, d, &h, &idx, 2, "i16");
+            }
+        }
+        "sal_bytes_get_u32" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                emit_bytes_get(s, tmp, d, &h, &idx, 4, "i32");
+            }
+        }
+        "sal_bytes_get_i64" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                emit_bytes_get(s, tmp, d, &h, &idx, 8, "i64");
+            }
+        }
+        "sal_bytes_set_u8" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                let val = i64_operand(args.get(2).unwrap_or(&"0".into()), consts);
+                emit_bytes_set(s, tmp, d, &h, &idx, &val, 1, "i8");
+            }
+        }
+        "sal_bytes_set_u16" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                let val = i64_operand(args.get(2).unwrap_or(&"0".into()), consts);
+                emit_bytes_set(s, tmp, d, &h, &idx, &val, 2, "i16");
+            }
+        }
+        "sal_bytes_set_u32" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                let val = i64_operand(args.get(2).unwrap_or(&"0".into()), consts);
+                emit_bytes_set(s, tmp, d, &h, &idx, &val, 4, "i32");
+            }
+        }
+        "sal_bytes_set_i64" => {
+            if let Some(d) = dest {
+                let h = i64_operand(args.first().unwrap_or(&"0".into()), consts);
+                let idx = i64_operand(args.get(1).unwrap_or(&"0".into()), consts);
+                let val = i64_operand(args.get(2).unwrap_or(&"0".into()), consts);
+                emit_bytes_set(s, tmp, d, &h, &idx, &val, 8, "i64");
+            }
+        }
         "sal_dict_new" => {
             let kk = args
                 .first()
@@ -2912,6 +3182,12 @@ fn emit_inst_list(
                     "sub" => s.push_str(&format!("  %{dest} = sub i64 {l}, {r}\n")),
                     "mul" => s.push_str(&format!("  %{dest} = mul i64 {l}, {r}\n")),
                     "div" => s.push_str(&format!("  %{dest} = sdiv i64 {l}, {r}\n")),
+                    "mod" => s.push_str(&format!("  %{dest} = srem i64 {l}, {r}\n")),
+                    "band" => s.push_str(&format!("  %{dest} = and i64 {l}, {r}\n")),
+                    "bxor" => s.push_str(&format!("  %{dest} = xor i64 {l}, {r}\n")),
+                    "bor" => s.push_str(&format!("  %{dest} = or i64 {l}, {r}\n")),
+                    "shl" => s.push_str(&format!("  %{dest} = shl i64 {l}, {r}\n")),
+                    "shr" => s.push_str(&format!("  %{dest} = ashr i64 {l}, {r}\n")),
                     "eq" => {
                         s.push_str(&format!("  %{dest}_c = icmp eq i64 {l}, {r}\n"));
                         s.push_str(&format!("  %{dest} = zext i1 %{dest}_c to i64\n"));
