@@ -14,6 +14,7 @@ pub mod layout;
 pub mod lexer;
 pub mod llvm;
 pub mod ownership;
+pub mod packages;
 pub mod parser;
 pub mod qualify;
 pub mod span;

@@ -1,8 +1,10 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use sal_compiler::compile::{compile_file, device_toolchain_present, CompileOptions};
+use sal_compiler::modules::resolve_import_path_with_manifest;
+use sal_compiler::packages::{fetch_packages, read_lock, std_home};
 use sal_compiler::incremental::{
     cache_key, cache_key_with_deps, cache_path, file_mtime, import_graph_digest, is_cache_hit,
     ll_cache_path, load_cached_meta, obj_cache_path, CompileFlags,
@@ -362,6 +364,147 @@ fn import_two_modules_run() {
         .output()
         .expect("run");
     assert_eq!(out.status.code(), Some(42));
+}
+
+fn run_git(cwd: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn init_git_dep_repo(repo_dir: &Path) -> String {
+    fs::write(
+        repo_dir.join("pkg.sal"),
+        "fn dep_value() -> Int\n    7\n",
+    )
+    .expect("write pkg");
+    run_git(repo_dir, &["init"]);
+    run_git(repo_dir, &["config", "user.email", "t@test"]);
+    run_git(repo_dir, &["config", "user.name", "t"]);
+    run_git(repo_dir, &["add", "."]);
+    run_git(repo_dir, &["commit", "-m", "v1"]);
+    run_git(repo_dir, &["tag", "v0.1.0"]);
+    fs::write(
+        repo_dir.join("pkg.sal"),
+        "fn dep_value() -> Int\n    9\n",
+    )
+    .expect("write pkg2");
+    run_git(repo_dir, &["add", "."]);
+    run_git(repo_dir, &["commit", "-m", "v2"]);
+    run_git(repo_dir, &["tag", "v0.2.0"]);
+    format!(
+        "file://{}",
+        repo_dir.canonicalize().expect("canonical").display()
+    )
+}
+
+struct PackageConsumer {
+    project: PathBuf,
+    _repo: tempfile::TempDir,
+    _cache: tempfile::TempDir,
+}
+
+fn setup_package_consumer() -> PackageConsumer {
+    let repo = tempfile::tempdir().expect("repo");
+    let url = init_git_dep_repo(repo.path());
+    let cache = tempfile::tempdir().expect("cache");
+    let project = tempfile::tempdir().expect("project");
+    let project_root = project.path().to_path_buf();
+    fs::write(
+        project_root.join("Sal.toml"),
+        format!(
+            "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = {{ git = \"{url}\", version = \"0.2\" }}\n"
+        ),
+    )
+    .expect("manifest");
+    fs::write(
+        project_root.join("main.sal"),
+        "import \"dep/pkg\"\n\nfn main() -> Int\n    dep_value()\n",
+    )
+    .expect("main");
+    std::env::set_var("SAL_PACKAGES", cache.path());
+    fetch_packages(&project_root, false).expect("fetch");
+    PackageConsumer {
+        project: project_root,
+        _repo: repo,
+        _cache: cache,
+    }
+}
+
+#[test]
+fn fetch_writes_lock_and_check_resolves_git_package() {
+    let fx = setup_package_consumer();
+    let lock = read_lock(&fx.project);
+    assert_eq!(lock.package.len(), 1);
+    assert_eq!(lock.package[0].name, "dep");
+    assert_eq!(lock.package[0].version, "0.2.0");
+
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: fx.project.clone(),
+        skip_link: false,
+    };
+    let art = compile_file(&fx.project.join("main.sal"), &opts).expect("build with package");
+    let bin = art.binary.expect("binary");
+    let run = Command::new(&bin).output().expect("run");
+    assert_eq!(run.status.code(), Some(9));
+}
+
+#[test]
+fn fetch_fails_when_no_matching_tag() {
+    let repo = tempfile::tempdir().expect("repo");
+    let url = init_git_dep_repo(repo.path());
+    let cache = tempfile::tempdir().expect("cache");
+    let project = tempfile::tempdir().expect("project");
+    fs::write(
+        project.path().join("Sal.toml"),
+        format!(
+            "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = {{ git = \"{url}\", version = \"99.0\" }}\n"
+        ),
+    )
+    .expect("manifest");
+    std::env::set_var("SAL_PACKAGES", cache.path());
+    let err = fetch_packages(project.path(), false).unwrap_err();
+    assert!(err.contains("no tag matching"), "{err}");
+}
+
+#[test]
+fn import_not_found_when_lock_package_missing_from_cache() {
+    let fx = setup_package_consumer();
+    fs::remove_dir_all(
+        sal_compiler::packages::package_cache_path("dep", "0.2.0"),
+    )
+    .expect("rm cache");
+    let main = fx.project.join("main.sal");
+    let hit = resolve_import_path_with_manifest("dep/pkg", &main, &fx.project);
+    assert!(hit.is_none());
+}
+
+#[test]
+fn std_import_resolves_via_sal_home_outside_compiler_tree() {
+    let project = tempfile::tempdir().expect("project");
+    let project_root = project.path().to_path_buf();
+    fs::write(
+        project_root.join("main.sal"),
+        "import \"std/prelude.sal\"\n\nfn main() -> Int\n    0\n",
+    )
+    .expect("main");
+    let home = std_home().expect("compiler std");
+    let main = project_root.join("main.sal");
+    let hit = resolve_import_path_with_manifest("std/prelude.sal", &main, &project_root);
+    assert_eq!(hit, Some(home.join("std/prelude.sal")));
 }
 
 #[test]

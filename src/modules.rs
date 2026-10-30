@@ -30,34 +30,34 @@ pub struct ModuleGraph {
     pub order: Vec<LoadedModule>,
 }
 
-/// Extra search bases from `[dependencies]` in `Sal.toml` (`path = "..."`).
+/// Extra search bases from manifest paths and lock packages (see `packages` module).
 pub fn dependency_search_bases(project_root: &Path) -> Vec<PathBuf> {
-    let manifest = project_root.join("Sal.toml");
-    let Ok(raw) = fs::read_to_string(&manifest) else {
-        return Vec::new();
-    };
-    let mut bases = Vec::new();
-    let mut in_deps = false;
-    for line in raw.lines() {
-        let t = line.trim();
-        if t.starts_with('[') {
-            in_deps = t == "[dependencies]";
-            continue;
-        }
-        if !in_deps {
-            continue;
-        }
-        if let Some(i) = t.find("path = \"") {
-            let rest = &t[i + 7..];
-            if let Some(j) = rest.find('"') {
-                let path = &rest[..j];
-                if !path.is_empty() {
-                    bases.push(project_root.join(path));
-                }
-            }
-        }
+    crate::packages::dependency_search_bases(project_root)
+        .into_iter()
+        .map(|b| b.path)
+        .collect()
+}
+
+fn all_search_bases(project_root: &Path) -> Vec<crate::packages::DepSearchBase> {
+    let mut bases = crate::packages::dependency_search_bases(project_root);
+    if let Some(std) = crate::packages::std_search_base() {
+        bases.push(std);
     }
     bases
+}
+
+fn dep_split_matches(base: &crate::packages::DepSearchBase, dep: &str) -> bool {
+    if base
+        .dep_name
+        .as_deref()
+        .is_some_and(|n| n == dep || (n == "std" && dep == "std"))
+    {
+        return true;
+    }
+    base.path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n == dep)
 }
 
 pub fn resolve_import_path_with_manifest(
@@ -70,11 +70,14 @@ pub fn resolve_import_path_with_manifest(
         push_candidates(&mut candidates, dir, import_path);
     }
     push_candidates(&mut candidates, project_root, import_path);
-    for base in dependency_search_bases(project_root) {
-        push_candidates(&mut candidates, &base, import_path);
+    if let Some(home) = crate::packages::std_home() {
+        push_candidates(&mut candidates, &home, import_path);
+    }
+    for base in all_search_bases(project_root) {
+        push_candidates(&mut candidates, &base.path, import_path);
         if let Some((dep, rest)) = import_path.split_once('/') {
-            if base.file_name().and_then(|s| s.to_str()) == Some(dep) {
-                push_candidates(&mut candidates, &base, rest);
+            if dep_split_matches(&base, dep) {
+                push_candidates(&mut candidates, &base.path, rest);
             }
         }
     }

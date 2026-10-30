@@ -75,6 +75,21 @@ fn dep_line_in_deps(line: String, in_deps: Int) -> Int ! alloc
     else
         in_deps
 
+fn dep_line_key(line: String) -> String ! alloc
+    eq = find_char(line, 61, 0, str_len(line))
+    if eq <= 0
+        d""
+    else
+        str_slice(line, 0, eq)
+
+fn dep_bases_push(out: Int, name: String, path: String) -> Int ! alloc
+    _a = vec_push(out, str_as_int(name))
+    _b = vec_push(out, str_as_int(path))
+    out
+
+fn dep_bases_count(bases: Int) -> Int ! alloc
+    vec_len(bases) / 2
+
 fn dep_line_push_path(line: String, in_deps: Int, proot: String, out: Int) -> Int ! alloc
     if in_deps == 0
         out
@@ -83,7 +98,7 @@ fn dep_line_push_path(line: String, in_deps: Int, proot: String, out: Int) -> In
         if str_contains(line, needle) == 0
             out
         else
-            dep_extract_path(line, proot, out)
+            dep_extract_path(line, proot, dep_line_key(line), out)
 
 fn read_until_quote(line: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -96,7 +111,7 @@ fn read_until_quote(line: String, i: Int, n: Int, acc: String) -> String ! alloc
             acc2 = acc + char_to_str(c)
             read_until_quote(line, i + 1, n, acc2)
 
-fn dep_extract_path(line: String, proot: String, out: Int) -> Int ! alloc
+fn dep_extract_path(line: String, proot: String, name: String, out: Int) -> Int ! alloc
     needle = d"path = \""
     pos = find_substr(line, needle, 0)
     if pos < 0
@@ -108,8 +123,7 @@ fn dep_extract_path(line: String, proot: String, out: Int) -> Int ! alloc
             out
         else
             base = path_join(proot, rel)
-            _p = vec_push(out, str_as_int(base))
-            out
+            dep_bases_push(out, name, base)
 
 fn substr_eq_at(hay: String, hi: Int, needle: String, ni: Int, rem: Int) -> Int ! alloc
     if rem <= 0
@@ -149,11 +163,93 @@ fn find_nl(s: String, i: Int, n: Int) -> Int ! alloc
     else
         find_nl(s, i + 1, n)
 
+fn packages_cache_root() -> String ! io, alloc
+    p = getenv(d"SAL_PACKAGES")
+    if str_len(p) > 0
+        p
+    else
+        h = getenv(d"HOME")
+        path_join(path_join(h, d".sal"), d"packages")
+
+fn line_value_quoted(line: String, key: String) -> String ! alloc
+    needle = key + d" = \""
+    pos = find_substr(line, needle, 0)
+    if pos < 0
+        d""
+    else
+        start = pos + str_len(needle)
+        read_until_quote(line, start, str_len(line), d"")
+
+fn lock_bases_scan(raw: String, i: Int, n: Int, in_pkg: Int, cur_name: String, cur_ver: String, out: Int) -> Int ! io, alloc
+    if i >= n
+        out
+    else
+        j = find_nl(raw, i, n)
+        line = str_slice(raw, i, j)
+        in2 = in_pkg
+        name2 = cur_name
+        ver2 = cur_ver
+        if str_contains(line, d"[[package]]") == 1
+            in2 = 1
+            name2 = d""
+            ver2 = d""
+        elsif in2 == 1
+            nv = line_value_quoted(line, d"name")
+            if str_len(nv) > 0
+                name2 = nv
+            vv = line_value_quoted(line, d"version")
+            if str_len(vv) > 0
+                ver2 = vv
+        out3 = out
+        if in2 == 1
+            if str_len(name2) > 0
+                if str_len(ver2) > 0
+                    if str_len(line_value_quoted(line, d"version")) > 0
+                        dir = path_join(packages_cache_root(), name2 + d"-" + ver2)
+                        if path_readable(dir) == 1
+                            out3 = dep_bases_push(out, name2, dir)
+        lock_bases_scan(raw, j + 1, n, in2, name2, ver2, out3)
+
+fn lock_dependency_bases(proot: String) -> Int ! io, alloc
+    lockp = path_join(proot, d"Sal.lock")
+    raw = read_file(lockp)
+    out = vec_new()
+    lock_bases_scan(raw, 0, str_len(raw), 0, d"", d"", out)
+
+fn merge_dep_bases(into: Int, from: Int) -> Int ! alloc
+    n = vec_len(from)
+    merge_dep_bases_go(into, from, 0, n)
+
+fn merge_dep_bases_go(into: Int, from: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        into
+    else
+        _p = vec_push(into, vec_get(from, i))
+        merge_dep_bases_go(into, from, i + 1, n)
+
+fn std_dependency_bases() -> Int ! io, alloc
+    out = vec_new()
+    home = getenv(d"SAL_HOME")
+    if str_len(home) == 0
+        out
+    else
+        stdp = path_join(home, d"std")
+        pre = path_join(home, d"std/prelude.sal")
+        if path_readable(pre) == 1
+            dep_bases_push(out, d"std", stdp)
+        else
+            out
+
 fn dependency_search_bases(proot: String) -> Int ! io, alloc
     manifest = path_join(proot, d"Sal.toml")
     raw = read_file(manifest)
     out = vec_new()
     dep_bases_scan(raw, 0, str_len(raw), 0, proot, out)
+    lock_out = lock_dependency_bases(proot)
+    merge_dep_bases(out, lock_out)
+    std_out = std_dependency_bases()
+    merge_dep_bases(out, std_out)
+    out
 
 fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: String) -> String ! io, alloc
     dir = parent_dir(source_file)
@@ -167,20 +263,27 @@ fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: St
             hit2
         else
             free(hit2)
-            bases = dependency_search_bases(proot)
-            resolve_import_path_deps(imp, proot, bases, 0, vec_len(bases))
+            home = getenv(d"SAL_HOME")
+            hit3 = try_candidate(home, imp)
+            if str_len(hit3) > 0
+                hit3
+            else
+                free(hit3)
+                bases = dependency_search_bases(proot)
+                resolve_import_path_deps(imp, proot, bases, 0, dep_bases_count(bases))
 
 fn resolve_import_path_deps(imp: String, proot: String, bases: Int, i: Int, n: Int) -> String ! io, alloc
     if i >= n
         d""
     else
-        base = str_from_int(vec_get(bases, i))
+        dname = str_from_int(vec_get(bases, i * 2))
+        base = str_from_int(vec_get(bases, i * 2 + 1))
         hit = try_candidate(base, imp)
         if str_len(hit) > 0
             hit
         else
             free(hit)
-            hit3 = resolve_import_path_dep_split(imp, base)
+            hit3 = resolve_import_path_dep_split(imp, base, dname)
             if str_len(hit3) > 0
                 hit3
             else
@@ -201,7 +304,7 @@ fn basename_go(p: String, i: Int) -> String ! alloc
     else
         basename_go(p, i - 1)
 
-fn resolve_import_path_dep_split(imp: String, base: String) -> String ! io, alloc
+fn resolve_import_path_dep_split(imp: String, base: String, dep_name: String) -> String ! io, alloc
     slash = find_char(imp, 47, 0, str_len(imp))
     if slash < 0
         d""
@@ -210,6 +313,8 @@ fn resolve_import_path_dep_split(imp: String, base: String) -> String ! io, allo
         rest = str_slice(imp, slash + 1, str_len(imp))
         bname = basename_path(base)
         if str_eq(bname, dep) == 1
+            try_candidate(base, rest)
+        elsif str_eq(dep_name, dep) == 1
             try_candidate(base, rest)
         else
             d""

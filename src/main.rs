@@ -83,6 +83,19 @@ enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Download git dependencies into the global cache and write Sal.lock.
+    Fetch {
+        #[arg(long)]
+        update: bool,
+    },
+    /// Add a git dependency to Sal.toml and run fetch.
+    Add {
+        name: String,
+        #[arg(long)]
+        git: String,
+        #[arg(long, default_value = "0.1")]
+        version: String,
+    },
     /// Compile from a JSON AST (`sal emit ast` output).
     Compile {
         /// Path to a JSON-serialized `Program`.
@@ -249,6 +262,24 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Commands::Fetch { update } => {
+            if let Err(e) = sal_compiler::packages::fetch_packages(&root, update) {
+                eprintln!("sal fetch: {e}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Add {
+            name,
+            git,
+            version,
+        } => {
+            if let Err(e) =
+                sal_compiler::packages::add_git_dependency(&root, &name, &git, &version)
+            {
+                eprintln!("sal add: {e}");
+                std::process::exit(1);
+            }
+        }
         Commands::Compile {
             ast,
             release,
