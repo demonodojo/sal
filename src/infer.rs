@@ -1303,10 +1303,12 @@ fn infer_call(
         "dict_put" => infer_dict_put(args, env, ctx, types, entries, span),
         "dict_get" => infer_dict_get(args, env, ctx, types, entries, span),
         "syscall" => {
-            if types.target != crate::target::Target::Soso {
+            if types.target != crate::target::Target::Soso
+                && types.target != crate::target::Target::Linux
+            {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::ETarget,
-                    "`syscall` is only available when compiling for soso",
+                    "`syscall` is only available when compiling for soso or linux (host shim)",
                     span,
                 )]);
             }

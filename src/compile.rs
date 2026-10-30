@@ -453,8 +453,11 @@ fn link_binary_multi(
     for obj in obj_paths {
         link.arg(obj);
     }
-    link.arg(runtime.join("sal_runtime.c"))
-        .arg(runtime.join("kernels.c"))
+    link.arg(runtime.join("sal_runtime.c"));
+    if opts.toolchain.target != crate::target::Target::Soso {
+        link.arg(runtime.join("soso/linux_host_syscall.c"));
+    }
+    link.arg(runtime.join("kernels.c"))
         .arg(runtime.join("instrument.c"));
     if let Some(obj) = gpu_obj {
         link.arg(obj);
