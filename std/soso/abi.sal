@@ -1,0 +1,119 @@
+fn nr_read() -> Int
+    1
+
+fn nr_write() -> Int
+    2
+
+fn nr_open() -> Int
+    3
+
+fn nr_close() -> Int
+    4
+
+fn nr_stat() -> Int
+    6
+
+fn nr_getdents() -> Int
+    7
+
+fn nr_mkdir() -> Int
+    8
+
+fn nr_unlink() -> Int
+    9
+
+fn nr_wait() -> Int
+    11
+
+fn nr_spawn_io() -> Int
+    22
+
+fn nr_sleep_ms() -> Int
+    13
+
+fn nr_uptime_ms() -> Int
+    28
+
+fn nr_tcp_connect() -> Int
+    29
+
+fn nr_tcp_listen() -> Int
+    30
+
+fn nr_tcp_accept() -> Int
+    31
+
+fn nr_read_timeout() -> Int
+    32
+
+fn nr_dns_resolve() -> Int
+    40
+
+fn nr_kill() -> Int
+    52
+
+fn nr_rename() -> Int
+    70
+
+fn nr_getenv() -> Int
+    83
+
+fn o_RDONLY() -> Int
+    0
+
+fn o_WRONLY() -> Int
+    1
+
+fn o_CREAT() -> Int
+    64
+
+fn ft_file() -> Int
+    1
+
+fn ft_dir() -> Int
+    2
+
+fn dirent_size() -> Int
+    272
+
+fn dirent_off_ino() -> Int
+    0
+
+fn dirent_off_file_type() -> Int
+    8
+
+fn dirent_off_name_len() -> Int
+    9
+
+fn dirent_off_name() -> Int
+    10
+
+fn spawnio_size() -> Int
+    112
+
+fn spawnio_off_path_ptr() -> Int
+    0
+
+fn spawnio_off_path_len() -> Int
+    8
+
+fn spawnio_off_stdin() -> Int
+    32
+
+fn spawnio_off_stdout() -> Int
+    40
+
+fn spawnio_off_stderr() -> Int
+    48
+
+fn spawnio_off_argv_ptr() -> Int
+    56
+
+fn spawnio_off_argv_count() -> Int
+    64
+
+fn spawnio_off_log_fd() -> Int
+    88
+
+fn sockaddr_size() -> Int
+    8

@@ -1,0 +1,18 @@
+fn mod_pos(v: Int, m: Int) -> Int
+    if m <= 0
+        0
+    else
+        r = v % m
+        if r < 0
+            r + m
+        else
+            r
+
+fn u8(v: Int) -> Int
+    v & 255
+
+fn u32_b0(v: Int) -> Int
+    u8(v)
+
+fn u32_b2(v: Int) -> Int
+    u8(v >> 16)

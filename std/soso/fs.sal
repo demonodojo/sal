@@ -1,0 +1,36 @@
+import "abi.sal"
+import "io.sal"
+
+fn getdents_fd(fd: Int, buf_ptr: Int, buf_len: Int) -> Int ! io
+    syscall(nr_getdents(), fd, buf_ptr, buf_len, 0, 0, 0)
+
+fn stat_path_ptr(path_ptr: Int, path_len: Int, out_ptr: Int, out_len: Int) -> Int ! io
+    syscall(nr_stat(), path_ptr, path_len, out_ptr, out_len, 0, 0)
+
+fn mkdir_path_ptr(path_ptr: Int, path_len: Int) -> Int ! io
+    syscall(nr_mkdir(), path_ptr, path_len, 0, 0, 0, 0)
+
+fn unlink_path_ptr(path_ptr: Int, path_len: Int) -> Int ! io
+    syscall(nr_unlink(), path_ptr, path_len, 0, 0, 0, 0)
+
+fn rename_path_ptr(old_ptr: Int, old_len: Int, new_ptr: Int, new_len: Int) -> Int ! io
+    syscall(nr_rename(), old_ptr, old_len, new_ptr, new_len, 0, 0)
+
+fn path_to_buf(path: String) -> Bytes ! alloc
+    buf = bytes_new(str_len(path) + 1)
+    str_bytes_copy(buf, 0, path)
+    buf
+
+fn open_read(path: String) -> Int ! io, alloc
+    b = path_to_buf(path)
+    open_read_path_ptr(bytes_ptr(b), str_len(path))
+
+fn write_file_path(path: String, data: String) -> Int ! io, alloc
+    b = path_to_buf(path)
+    fd = open_flags(bytes_ptr(b), str_len(path), o_WRONLY() + o_CREAT())
+    if fd < 0
+        fd
+    else
+        n = write_str_fd(fd, data)
+        _c = close_fd(fd)
+        n

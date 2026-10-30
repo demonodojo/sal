@@ -1174,6 +1174,8 @@ fn emit_host_tensor_fn(
                         s.push_str(&format!("  %{dest}_c = icmp sge i64 {l}, {r}\n"));
                         s.push_str(&format!("  %{dest} = zext i1 %{dest}_c to i64\n"));
                     }
+                    "neg" => s.push_str(&format!("  %{dest} = sub i64 0, {l}\n")),
+                    "not" => s.push_str(&format!("  %{dest} = call i64 @sal_not(i64 {l})\n")),
                     _ => s.push_str(&format!("  %{dest} = add i64 {l}, 0\n")),
                 }
             }
@@ -3499,6 +3501,8 @@ fn emit_inst_list(
                         s.push_str(&format!("  %{dest}_c = icmp sge i64 {l}, {r}\n"));
                         s.push_str(&format!("  %{dest} = zext i1 %{dest}_c to i64\n"));
                     }
+                    "neg" => s.push_str(&format!("  %{dest} = sub i64 0, {l}\n")),
+                    "not" => s.push_str(&format!("  %{dest} = call i64 @sal_not(i64 {l})\n")),
                     _ => s.push_str(&format!("  %{dest} = add i64 {l}, 0\n")),
                 }
             }
@@ -4337,6 +4341,8 @@ fn emit_kernel_product(
                         "add" => s.push_str(&format!("  %{d} = add i64 {l}, {r}\n")),
                         "sub" => s.push_str(&format!("  %{d} = sub i64 {l}, {r}\n")),
                         "mul" => s.push_str(&format!("  %{d} = mul i64 {l}, {r}\n")),
+                        "neg" => s.push_str(&format!("  %{d} = sub i64 0, {l}\n")),
+                        "not" => s.push_str(&format!("  %{d} = call i64 @sal_not(i64 {l})\n")),
                         _ => s.push_str(&format!("  %{d} = add i64 {l}, 0\n")),
                     }
                 }

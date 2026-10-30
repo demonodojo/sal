@@ -924,17 +924,24 @@ void *sal_bytes_view_mem(int64_t data, int64_t len) {
 }
 
 #ifdef SAL_SOSO
-__attribute__((weak)) int64_t sal_os_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2,
-                                             int64_t a3, int64_t a4, int64_t a5) {
-    (void)nr;
+/* Puerta genérica de `syscall(...)` en Sal. Vive en runtime.o (siempre enlazado). */
+int64_t sal_os_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a3,
+                       int64_t a4, int64_t a5) {
+    int64_t ret;
+    register int64_t r10 __asm__("r10") = a3;
+    register int64_t r8 __asm__("r8") = a4;
+    register int64_t r9 __asm__("r9") = a5;
+    __asm__ volatile("syscall"
+                     : "=a"(ret), "+D"(a0), "+S"(a1), "+d"(a2), "+r"(r10), "+r"(r8), "+r"(r9)
+                     : "a"(nr)
+                     : "rcx", "r11", "memory");
     (void)a0;
     (void)a1;
     (void)a2;
-    (void)a3;
-    (void)a4;
-    (void)a5;
-    sal_panic("sal_os_syscall not linked");
-    return -1;
+    (void)r10;
+    (void)r8;
+    (void)r9;
+    return ret;
 }
 #endif
 

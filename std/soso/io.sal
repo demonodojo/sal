@@ -1,0 +1,28 @@
+import "abi.sal"
+
+fn read_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
+    syscall(nr_read(), fd, buf_ptr, len, 0, 0, 0)
+
+fn write_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
+    syscall(nr_write(), fd, buf_ptr, len, 0, 0, 0)
+
+fn write_str_fd(fd: Int, s: String) -> Int ! io, alloc
+    n = str_len(s)
+    if n <= 0
+        0
+    else
+        buf = bytes_new(n)
+        str_bytes_copy(buf, 0, s)
+        write_fd(fd, bytes_ptr(buf), n)
+
+fn close_fd(fd: Int) -> Int ! io
+    syscall(nr_close(), fd, 0, 0, 0, 0, 0)
+
+fn read_timeout_fd(fd: Int, buf_ptr: Int, len: Int, ms: Int) -> Int ! io
+    syscall(nr_read_timeout(), fd, buf_ptr, len, ms, 0, 0)
+
+fn open_flags(path_ptr: Int, path_len: Int, flags: Int) -> Int ! io
+    syscall(nr_open(), path_ptr, path_len, flags, 0, 0, 0)
+
+fn open_read_path_ptr(path_ptr: Int, path_len: Int) -> Int ! io
+    open_flags(path_ptr, path_len, o_RDONLY())

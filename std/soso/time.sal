@@ -1,0 +1,7 @@
+import "abi.sal"
+
+fn sleep_ms(ms: Int) -> Int ! io
+    syscall(nr_sleep_ms(), ms, 0, 0, 0, 0, 0)
+
+fn uptime_ms() -> Int ! io
+    syscall(nr_uptime_ms(), 0, 0, 0, 0, 0, 0)

@@ -1,0 +1,29 @@
+import "abi.sal"
+import "util.sal"
+
+fn tcp_listen(port: Int) -> Int ! io
+    syscall(nr_tcp_listen(), port, 0, 0, 0, 0, 0)
+
+fn tcp_accept(fd: Int, ms: Int) -> Int ! io
+    syscall(nr_tcp_accept(), fd, ms, 0, 0, 0, 0)
+
+fn sockaddr_loopback(port: Int) -> Int ! alloc
+    sa = bytes_new(sockaddr_size())
+    sap = bytes_ptr(sa)
+    b = bytes_view_mem(sap, sockaddr_size())
+    bytes_set_u8(b, 0, 127)
+    bytes_set_u8(b, 1, 0)
+    bytes_set_u8(b, 2, 0)
+    bytes_set_u8(b, 3, 1)
+    bytes_set_u8(b, 4, u32_b2(port))
+    bytes_set_u8(b, 5, u32_b0(port))
+    bytes_set_u8(b, 6, 0)
+    bytes_set_u8(b, 7, 0)
+    sap
+
+fn tcp_connect_loopback(port: Int, timeout_ms: Int) -> Int ! io, alloc
+    sa = sockaddr_loopback(port)
+    syscall(nr_tcp_connect(), sa, timeout_ms, 0, 0, 0, 0)
+
+fn dns_resolve_ptr(host_ptr: Int, host_len: Int, out_ptr: Int) -> Int ! io
+    syscall(nr_dns_resolve(), host_ptr, host_len, out_ptr, 0, 0, 0)

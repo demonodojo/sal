@@ -1,0 +1,78 @@
+import "abi.sal"
+import "fs.sal"
+
+fn spawn_string_buf(s: String) -> Bytes ! alloc
+    buf = bytes_new(str_len(s) + 1)
+    str_bytes_copy(buf, 0, s)
+    buf
+
+fn spawn_argv_slot_ptr(tab: Bytes, i: Int, buf: Bytes, len: Int) -> Int ! alloc
+    bytes_set_i64(tab, i * 16, bytes_ptr(buf))
+    bytes_set_i64(tab, i * 16 + 8, len)
+    0
+
+fn spawn_io_full(path: String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
+    pbuf = spawn_string_buf(path)
+    plen = str_len(path)
+    tab = bytes_new(16)
+    _a = spawn_argv_slot_ptr(tab, 0, pbuf, plen)
+    opts = bytes_new(spawnio_size())
+    bytes_set_i64(opts, spawnio_off_path_ptr(), bytes_ptr(pbuf))
+    bytes_set_i64(opts, spawnio_off_path_len(), plen)
+    bytes_set_i64(opts, spawnio_off_stdin(), stdin)
+    bytes_set_i64(opts, spawnio_off_stdout(), stdout)
+    bytes_set_i64(opts, spawnio_off_stderr(), stderr)
+    bytes_set_i64(opts, spawnio_off_argv_ptr(), bytes_ptr(tab))
+    bytes_set_i64(opts, spawnio_off_argv_count(), 1)
+    bytes_set_i64(opts, spawnio_off_log_fd(), log_fd)
+    syscall(nr_spawn_io(), bytes_ptr(opts), 0, 0, 0, 0, 0)
+
+fn spawn_io_5(path: String, a1: String, a2: String, a3: String, a4: String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
+    pbuf = spawn_string_buf(path)
+    b1 = spawn_string_buf(a1)
+    b2 = spawn_string_buf(a2)
+    b3 = spawn_string_buf(a3)
+    b4 = spawn_string_buf(a4)
+    tab = bytes_new(80)
+    _p = spawn_argv_slot_ptr(tab, 0, pbuf, str_len(path))
+    _1 = spawn_argv_slot_ptr(tab, 1, b1, str_len(a1))
+    _2 = spawn_argv_slot_ptr(tab, 2, b2, str_len(a2))
+    _3 = spawn_argv_slot_ptr(tab, 3, b3, str_len(a3))
+    _4 = spawn_argv_slot_ptr(tab, 4, b4, str_len(a4))
+    opts = bytes_new(spawnio_size())
+    bytes_set_i64(opts, spawnio_off_path_ptr(), bytes_ptr(pbuf))
+    bytes_set_i64(opts, spawnio_off_path_len(), str_len(path))
+    bytes_set_i64(opts, spawnio_off_stdin(), stdin)
+    bytes_set_i64(opts, spawnio_off_stdout(), stdout)
+    bytes_set_i64(opts, spawnio_off_stderr(), stderr)
+    bytes_set_i64(opts, spawnio_off_argv_ptr(), bytes_ptr(tab))
+    bytes_set_i64(opts, spawnio_off_argv_count(), 5)
+    bytes_set_i64(opts, spawnio_off_log_fd(), log_fd)
+    syscall(nr_spawn_io(), bytes_ptr(opts), 0, 0, 0, 0, 0)
+
+fn spawn_io_4(path: String, a1: String, a2: String, a3: String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
+    pbuf = spawn_string_buf(path)
+    b1 = spawn_string_buf(a1)
+    b2 = spawn_string_buf(a2)
+    b3 = spawn_string_buf(a3)
+    tab = bytes_new(64)
+    _p = spawn_argv_slot_ptr(tab, 0, pbuf, str_len(path))
+    _1 = spawn_argv_slot_ptr(tab, 1, b1, str_len(a1))
+    _2 = spawn_argv_slot_ptr(tab, 2, b2, str_len(a2))
+    _3 = spawn_argv_slot_ptr(tab, 3, b3, str_len(a3))
+    opts = bytes_new(spawnio_size())
+    bytes_set_i64(opts, spawnio_off_path_ptr(), bytes_ptr(pbuf))
+    bytes_set_i64(opts, spawnio_off_path_len(), str_len(path))
+    bytes_set_i64(opts, spawnio_off_stdin(), stdin)
+    bytes_set_i64(opts, spawnio_off_stdout(), stdout)
+    bytes_set_i64(opts, spawnio_off_stderr(), stderr)
+    bytes_set_i64(opts, spawnio_off_argv_ptr(), bytes_ptr(tab))
+    bytes_set_i64(opts, spawnio_off_argv_count(), 4)
+    bytes_set_i64(opts, spawnio_off_log_fd(), log_fd)
+    syscall(nr_spawn_io(), bytes_ptr(opts), 0, 0, 0, 0, 0)
+
+fn wait_pid(pid: Int) -> Int ! io
+    syscall(nr_wait(), pid, 0, 0, 0, 0, 0)
+
+fn kill_pid(pid: Int, sig: Int) -> Int ! io
+    syscall(nr_kill(), pid, sig, 0, 0, 0, 0)
