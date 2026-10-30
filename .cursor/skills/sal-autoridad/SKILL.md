@@ -35,7 +35,7 @@ Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, 
 
 Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`.
 
-Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@frozen`, `@stack`, `@layout`, `@resource`, `@shared`, `@arena`, `@no_heap`, `@copy`, diferenciación automática, registro de paquetes.
+Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@frozen`, `@stack`, `@layout`, `@resource`, `@shared`, `@arena`, `@no_heap`, `@copy`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). Las dependencias git en `Sal.toml`, `Sal.lock` y `sal fetch` / `sal add` están en el arranque; ver [SPEC.md](../../../SPEC.md) (módulos) y [docs/subplans/06-toolchain.md](../../../docs/subplans/06-toolchain.md).
 
 `Float` es f64 y no es elemento de tensor (`E_TENSOR_ELEM`). Elementos: `F32`, `F16`, `BF16`, `I8`.
 

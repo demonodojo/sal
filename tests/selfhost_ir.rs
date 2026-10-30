@@ -767,3 +767,79 @@ fn selfhost_model_package_tests_exit_zero() {
         "expected model_tests_ok, got: {stdout}"
     );
 }
+
+#[test]
+fn selfhost_resolves_git_package_import() {
+    use std::fs;
+    use std::process::Command;
+    use std::sync::Mutex;
+
+    static PACKAGE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn run_git(cwd: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}");
+    }
+
+    let repo = tempfile::tempdir().expect("repo");
+    fs::write(
+        repo.path().join("pkg.sal"),
+        "fn dep_value() -> Int\n    9\n",
+    )
+    .expect("pkg");
+    run_git(repo.path(), &["init"]);
+    run_git(repo.path(), &["config", "user.email", "t@test"]);
+    run_git(repo.path(), &["config", "user.name", "t"]);
+    run_git(repo.path(), &["add", "."]);
+    run_git(repo.path(), &["commit", "-m", "v1"]);
+    run_git(repo.path(), &["tag", "v0.2.0"]);
+    let url = format!(
+        "file://{}",
+        repo.path().canonicalize().expect("canonical").display()
+    );
+
+    let cache = tempfile::tempdir().expect("cache");
+    let project = tempfile::tempdir().expect("project");
+    let project_root = project.path().to_path_buf();
+    fs::write(
+        project_root.join("Sal.toml"),
+        format!(
+            "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n[dependencies]\ndep = {{ git = \"{url}\", version = \"0.2\" }}\n"
+        ),
+    )
+    .expect("manifest");
+    fs::write(
+        project_root.join("main.sal"),
+        "import \"dep/pkg\"\n\nfn main() -> Int\n    dep_value()\n",
+    )
+    .expect("main");
+
+    let _guard = PACKAGE_ENV_LOCK.lock().expect("package env lock");
+    std::env::set_var("SAL_PACKAGES", cache.path());
+    sal_compiler::packages::fetch_packages(&project_root, false).expect("fetch");
+
+    let stage1 = compile_selfhost(false);
+    let out = Command::new(&stage1)
+        .arg(project_root.join("main.sal"))
+        .env("SAL_SELFHOST_CACHE", unique_cache_dir("pkg-selfhost"))
+        .env("SAL_PROJECT_ROOT", &project_root)
+        .env("SAL_PACKAGES", cache.path())
+        .current_dir(&project_root)
+        .output()
+        .expect("selfhost on package consumer");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "selfhost package import failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = String::from_utf8(out.stdout).expect("utf8 ir");
+    assert!(
+        ir.contains("dep_value") || ir.contains("main"),
+        "expected lowered IR, got: {ir}"
+    );
+}

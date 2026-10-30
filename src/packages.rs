@@ -285,6 +285,49 @@ pub fn fetch_packages(project_root: &Path, update: bool) -> Result<(), String> {
     write_lock(project_root, &LockFile { package: packages })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_lock_serializes_nonempty() {
+        let text = toml::to_string_pretty(&LockFile::default()).expect("serialize");
+        assert!(!text.is_empty(), "empty lock should still serialize");
+    }
+
+    #[test]
+    fn lock_file_roundtrip() {
+        let lock = LockFile {
+            package: vec![LockPackage {
+                name: "dep".into(),
+                version: "0.2.0".into(),
+                git: "file:///tmp/x".into(),
+                rev: "abc".into(),
+            }],
+        };
+        let text = toml::to_string_pretty(&lock).expect("serialize");
+        let back: LockFile = toml::from_str(&text).expect("parse");
+        assert_eq!(back.package.len(), 1);
+    }
+
+    #[test]
+    fn manifest_parses_git_dependency() {
+        let raw = r#"
+[package]
+name = "consumer"
+version = "0.1.0"
+
+[dependencies]
+dep = { git = "file:///tmp/x", version = "0.2" }
+"#;
+        let m: ManifestFile = toml::from_str(raw).expect("parse");
+        assert_eq!(m.dependencies.len(), 1);
+        let spec = m.dependencies.get("dep").expect("dep");
+        assert_eq!(spec.git.as_deref(), Some("file:///tmp/x"));
+        assert_eq!(spec.version.as_deref(), Some("0.2"));
+    }
+}
+
 pub fn add_git_dependency(
     project_root: &Path,
     name: &str,

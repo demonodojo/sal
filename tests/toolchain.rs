@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use sal_compiler::compile::{compile_file, device_toolchain_present, CompileOptions};
 use sal_compiler::modules::resolve_import_path_with_manifest;
@@ -366,6 +367,8 @@ fn import_two_modules_run() {
     assert_eq!(out.status.code(), Some(42));
 }
 
+static PACKAGE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 fn run_git(cwd: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
@@ -408,8 +411,10 @@ fn init_git_dep_repo(repo_dir: &Path) -> String {
 
 struct PackageConsumer {
     project: PathBuf,
+    _project: tempfile::TempDir,
     _repo: tempfile::TempDir,
     _cache: tempfile::TempDir,
+    _env_guard: std::sync::MutexGuard<'static, ()>,
 }
 
 fn setup_package_consumer() -> PackageConsumer {
@@ -430,10 +435,18 @@ fn setup_package_consumer() -> PackageConsumer {
         "import \"dep/pkg\"\n\nfn main() -> Int\n    dep_value()\n",
     )
     .expect("main");
+    let _guard = PACKAGE_ENV_LOCK.lock().expect("package env lock");
     std::env::set_var("SAL_PACKAGES", cache.path());
     fetch_packages(&project_root, false).expect("fetch");
+    assert!(
+        project_root.join("Sal.lock").is_file(),
+        "Sal.lock missing under {}",
+        project_root.display()
+    );
     PackageConsumer {
+        _env_guard: _guard,
         project: project_root,
+        _project: project,
         _repo: repo,
         _cache: cache,
     }
@@ -475,8 +488,10 @@ fn fetch_fails_when_no_matching_tag() {
         ),
     )
     .expect("manifest");
+    let _guard = PACKAGE_ENV_LOCK.lock().expect("package env lock");
     std::env::set_var("SAL_PACKAGES", cache.path());
     let err = fetch_packages(project.path(), false).unwrap_err();
+    drop(_guard);
     assert!(err.contains("no tag matching"), "{err}");
 }
 
