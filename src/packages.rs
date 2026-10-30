@@ -55,21 +55,6 @@ fn dirs_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Installation root containing `std/prelude.sal`.
-pub fn std_home() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("SAL_HOME") {
-        let p = PathBuf::from(&home);
-        if p.join("std/prelude.sal").is_file() {
-            return Some(p);
-        }
-    }
-    let baked = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if baked.join("std/prelude.sal").is_file() {
-        return Some(baked);
-    }
-    None
-}
-
 fn read_manifest(project_root: &Path) -> Result<ManifestFile, String> {
     let path = project_root.join("Sal.toml");
     let raw = fs::read_to_string(&path).map_err(|e| format!("Sal.toml: {e}"))?;
@@ -118,13 +103,6 @@ pub fn dependency_search_bases(project_root: &Path) -> Vec<DepSearchBase> {
         }
     }
     out
-}
-
-pub fn std_search_base() -> Option<DepSearchBase> {
-    std_home().map(|p| DepSearchBase {
-        dep_name: Some("std".to_string()),
-        path: p.join("std"),
-    })
 }
 
 fn version_req(raw: &str) -> Result<VersionReq, String> {

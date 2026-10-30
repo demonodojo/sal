@@ -93,7 +93,7 @@ No uses `to gpu` sobre un frame que tenga columna `String` (`E_PLACE`). Pasa cad
 
 ## Proyecto, imports y paquetes
 
-Un programa con `Sal.toml` en su raíz es un **proyecto**. El preludio no se inyecta: hace falta `import "std/prelude.sal"` (o imports concretos de `std/soso/…` para la ABI de soso).
+Un programa con `Sal.toml` en su raíz es un **proyecto**. El preludio no se inyecta: hace falta `import "std/prelude.sal"`. La E/S de un proyecto externo está en `sal_modules/io/` y se importa `import "io/io.sal"`.
 
 ```toml
 [package]
@@ -101,14 +101,13 @@ name = "mi-app"
 version = "0.1.0"
 
 [dependencies]
-soso = { path = "../sal/std/soso" }
 json = { git = "https://github.com/org/sal-json", version = "0.2" }
 ```
 
 - Dependencia **local**: `path = "…"` relativo a la raíz del proyecto.
 - Dependencia **git**: `version` es requisito semver (caret); `sal fetch` escribe `Sal.lock` y deja el código en la caché global. Antes del primer `check`/`build` con deps git, ejecutar `sal fetch`.
 - Import de paquete: `import "json/mod.sal"` o `import json.mod` cuando la clave en el manifiesto es `json`.
-- Fuera del árbol de sal, definir **`SAL_HOME`** en la instalación del compilador para que `import "std/soso/io.sal"` resuelva sin `../../sal/…`.
+- Fuera del árbol de sal, los módulos están en `sal_modules/` del proyecto (`import "io/io.sal"` → `sal_modules/io/io.sal`). El import no cambia si sal está instalado en otro sitio.
 
 ## Dónde vive cada programa
 
@@ -117,7 +116,7 @@ json = { git = "https://github.com/org/sal-json", version = "0.2" }
 | `examples/` | Programas de uso y de ejecución (p. ej. `column_cpu.sal`) |
 | `corpus/` | Programas cuya IR tienen que coincidir las tres cadenas |
 | `std/prelude.sal` | `Option`, `Result`, `List` y firmas de primitivas |
-| `std/soso/` | Std de la plataforma soso (io, fs, net, …) |
+| `std/io/` | E/S (io, fs, net, …) |
 | `selfhost/` | El compilador escrito en sal |
 | `standard/` | Linter de estilo (check / fix), escrito en sal |
 

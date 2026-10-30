@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use sal_compiler::compile::{compile_file, device_toolchain_present, CompileOptions};
 use sal_compiler::modules::resolve_import_path_with_manifest;
-use sal_compiler::packages::{fetch_packages, read_lock, std_home};
+use sal_compiler::packages::{fetch_packages, read_lock};
 use sal_compiler::incremental::{
     cache_key, cache_key_with_deps, cache_path, file_mtime, import_graph_digest, is_cache_hit,
     ll_cache_path, load_cached_meta, obj_cache_path, CompileFlags,
@@ -508,18 +508,22 @@ fn import_not_found_when_lock_package_missing_from_cache() {
 }
 
 #[test]
-fn std_import_resolves_via_sal_home_outside_compiler_tree() {
+fn sal_modules_import_resolves_inside_the_project() {
     let project = tempfile::tempdir().expect("project");
     let project_root = project.path().to_path_buf();
+    let io = project_root.join("sal_modules/io");
+    fs::create_dir_all(&io).expect("sal_modules");
+    fs::write(io.join("io.sal"), "fn ping() -> Int\n    1\n").expect("io.sal");
     fs::write(
         project_root.join("main.sal"),
-        "import \"std/prelude.sal\"\n\nfn main() -> Int\n    0\n",
+        "import \"io/io.sal\"\n\nfn main() -> Int\n    ping()\n",
     )
     .expect("main");
-    let home = std_home().expect("compiler std");
     let main = project_root.join("main.sal");
-    let hit = resolve_import_path_with_manifest("std/prelude.sal", &main, &project_root);
-    assert_eq!(hit, Some(home.join("std/prelude.sal")));
+    let hit = resolve_import_path_with_manifest("io/io.sal", &main, &project_root);
+    assert_eq!(hit, Some(io.join("io.sal")));
+    let missed = resolve_import_path_with_manifest("std/prelude.sal", &main, &project_root);
+    assert!(missed.is_none());
 }
 
 #[test]

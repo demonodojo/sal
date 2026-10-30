@@ -19,9 +19,9 @@ En el parser, `parse_if` coincide con `src/parser.rs`: acumula `elsif` con `pars
 
 Las primitivas de tensor no se reimplementan en sal. Se llaman y el runtime del arranque las resuelve.
 
-`std/prelude.sal` define `Option`, `Result` y las firmas de `List`, `map`, `reduce`, `matmul`, `softmax`, `reshape`, `transpose`, `relu`, `load` y `print`. `load` se escribe `load[F32, 4, 4](path)`. La std de soso vive en `std/soso/`; en proyectos externos conviene `import "std/soso/io.sal"` (etc.) con `SAL_HOME` apuntando a la instalación de sal, no rutas relativas al repo del compilador.
+`std/prelude.sal` define `Option`, `Result` y las firmas de `List`, `map`, `reduce`, `matmul`, `softmax`, `reshape`, `transpose`, `relu`, `load` y `print`. `load` se escribe `load[F32, 4, 4](path)`. La E/S del compilador vive en `std/io/`. En un proyecto externo esa copia está en `sal_modules/io/` y el import es `import "io/io.sal"`.
 
-**Imports y paquetes (`selfhost/modules.sal`)**: debe coincidir con `src/modules.rs` y `src/packages.rs`. Escanea `Sal.toml` (`path` y nombre de dependencia), `Sal.lock` (`name` + `version` → `$SAL_PACKAGES` o `~/.sal/packages`), y `SAL_HOME` para `std/…`. No invoca git ni red; `sal fetch` materializa la caché antes de compilar con stage1/stage2. Tras cambiar la resolución, `cargo test --test selfhost_ir selfhost_resolves_git` y los tests `fetch_*` de `toolchain`.
+**Imports y paquetes (`selfhost/modules.sal`)**: debe coincidir con `src/modules.rs` y `src/packages.rs`. Escanea `sal_modules/` del proyecto, `Sal.toml` (`path` y nombre de dependencia) y `Sal.lock` (`name` + `version` → `$SAL_PACKAGES` o `~/.sal/packages`). No invoca git ni red; `sal fetch` materializa la caché antes de compilar con stage1/stage2. Tras cambiar la resolución, `cargo test --test selfhost_ir selfhost_resolves_git` y los tests `fetch_*` de `toolchain`.
 
 ## Corpus
 

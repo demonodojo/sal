@@ -32,7 +32,7 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |
 | Sondas, solo con `--instrument` | `runtime/instrument.c`, `src/llvm.rs` | `tests/instrument_events.rs`, `tests/instrument_leak.rs`, `tests/instrument_sal.rs` |
 | CLI, módulos, caché | `src/main.rs`, `src/compile.rs`, `src/incremental.rs`, `src/modules.rs` | `tests/toolchain.rs`, `tests/run_hello.rs` |
-| Paquetes git, lock, std (`SAL_HOME`) | `src/packages.rs`, `src/modules.rs` | `tests/toolchain.rs` (`fetch_*`, `std_import`, `import_not_*`), `tests/selfhost_ir.rs` (`selfhost_resolves_git_package_import`) |
+| Paquetes git, lock, `sal_modules/` | `src/packages.rs`, `src/modules.rs` | `tests/toolchain.rs` (`fetch_*`, `sal_modules_import`, `import_not_*`), `tests/selfhost_ir.rs` (`selfhost_resolves_git_package_import`) |
 | Linter `standard` (wrapper + tests) | `src/bin/standard.rs`, `standard/*.sal` | `tests/standard.rs` (`--test-threads=1`) |
 
 La extensión de VS Code llama a `sal check --error-format json`, a `sal fmt` y a `standard check` / `standard fix`. No reimplementa pases. El linter de estilo vive en `standard/` (sal). Las buenas prácticas de fuente se aplican con él, y si falta una regla que va a repetirse se le añade ahí; detalle en [sal-standard](../sal-standard/SKILL.md).
@@ -65,6 +65,6 @@ Clave: hash del AST tipado, versión del compilador y flags que cambian el binar
 
 ## Módulos y paquetes
 
-Resolución de `import` (Rust y sal): directorio del fuente → raíz del proyecto → `path` en `[dependencies]` de `Sal.toml` → entradas de `Sal.lock` en la caché global (`$SAL_PACKAGES` o `~/.sal/packages/<nombre>-<versión>/`) → std bajo `SAL_HOME` (`std/prelude.sal`, `std/soso/…`). Un path `clave/resto` enlaza por la clave del manifiesto o el `name` del lock.
+Resolución de `import` (Rust y sal): directorio del fuente → raíz del proyecto → `sal_modules/` del proyecto → `path` en `[dependencies]` de `Sal.toml` → entradas de `Sal.lock` en la caché global (`$SAL_PACKAGES` o `~/.sal/packages/<nombre>-<versión>/`). Un path `clave/resto` enlaza `sal_modules/clave/resto`, o la clave del manifiesto, o el `name` del lock. El texto del import no depende de dónde esté instalado sal.
 
 `sal fetch [--update]` resuelve tags `vX.Y.Z` (semver caret en el manifiesto), clona en la caché y escribe `Sal.lock`. `sal add <nombre> --git URL [--version REQ]` edita el manifiesto y ejecuta `fetch`. `check` y `build` no usan red; paquete ausente en caché → `E_TYPE` (`import not found`). La descarga solo la hace la CLI de Rust; `selfhost/modules.sal` lee lock y caché ya materializados.

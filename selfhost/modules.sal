@@ -227,19 +227,6 @@ fn merge_dep_bases_go(into: Int, from: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(into, vec_get(from, i))
         merge_dep_bases_go(into, from, i + 1, n)
 
-fn std_dependency_bases() -> Int ! io, alloc
-    out = vec_new()
-    home = getenv(d"SAL_HOME")
-    if str_len(home) == 0
-        out
-    else
-        stdp = path_join(home, d"std")
-        pre = path_join(home, d"std/prelude.sal")
-        if path_readable(pre) == 1
-            dep_bases_push(out, d"std", stdp)
-        else
-            out
-
 fn dependency_search_bases(proot: String) -> Int ! io, alloc
     manifest = path_join(proot, d"Sal.toml")
     raw = read_file(manifest)
@@ -247,9 +234,6 @@ fn dependency_search_bases(proot: String) -> Int ! io, alloc
     dep_bases_scan(raw, 0, str_len(raw), 0, proot, out)
     lock_out = lock_dependency_bases(proot)
     merge_dep_bases(out, lock_out)
-    std_out = std_dependency_bases()
-    merge_dep_bases(out, std_out)
-    out
 
 fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: String) -> String ! io, alloc
     dir = parent_dir(source_file)
@@ -263,8 +247,8 @@ fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: St
             hit2
         else
             free(hit2)
-            home = getenv(d"SAL_HOME")
-            hit3 = try_candidate(home, imp)
+            mods = path_join(proot, d"sal_modules")
+            hit3 = try_candidate(mods, imp)
             if str_len(hit3) > 0
                 hit3
             else

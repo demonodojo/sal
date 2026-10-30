@@ -39,11 +39,7 @@ pub fn dependency_search_bases(project_root: &Path) -> Vec<PathBuf> {
 }
 
 fn all_search_bases(project_root: &Path) -> Vec<crate::packages::DepSearchBase> {
-    let mut bases = crate::packages::dependency_search_bases(project_root);
-    if let Some(std) = crate::packages::std_search_base() {
-        bases.push(std);
-    }
-    bases
+    crate::packages::dependency_search_bases(project_root)
 }
 
 fn dep_split_matches(base: &crate::packages::DepSearchBase, dep: &str) -> bool {
@@ -70,9 +66,7 @@ pub fn resolve_import_path_with_manifest(
         push_candidates(&mut candidates, dir, import_path);
     }
     push_candidates(&mut candidates, project_root, import_path);
-    if let Some(home) = crate::packages::std_home() {
-        push_candidates(&mut candidates, &home, import_path);
-    }
+    push_candidates(&mut candidates, &project_root.join("sal_modules"), import_path);
     for base in all_search_bases(project_root) {
         push_candidates(&mut candidates, &base.path, import_path);
         if let Some((dep, rest)) = import_path.split_once('/') {

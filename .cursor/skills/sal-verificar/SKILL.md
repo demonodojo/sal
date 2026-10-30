@@ -23,7 +23,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | LLVM o enlace | `cargo test --test run_hello` |
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
 | CLI, módulos o caché | `cargo test --test toolchain --test run_hello` |
-| Paquetes git, `Sal.lock`, std vía `SAL_HOME` | `cargo test --test toolchain fetch_ std_import import_not` y `cargo test --test selfhost_ir selfhost_resolves_git` |
+| Paquetes git, `Sal.lock`, `sal_modules/` | `cargo test --test toolchain fetch_ sal_modules_import import_not` y `cargo test --test selfhost_ir selfhost_resolves_git` |
 | Un `.sal` concreto | `cargo run -- check <fichero>` y, si debe ejecutar, `cargo run -- run <fichero>` |
 | Estilo en `.sal` (no sintaxis) | `cargo run --bin standard -- check <fichero>`; opcional `fix` in situ. Ver [sal-standard](../sal-standard/SKILL.md) |
 | `standard/` o cops de estilo | `cargo test --test standard -- --test-threads=1` |
@@ -54,7 +54,7 @@ cargo run --bin standard -- fix path/to/file.sal
 - `--instrument` cambia el binario. Un programa limpio sale 0. Un evento (`LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`) sale distinto de 0.
 - `sal check` acepta un programa de GPU o TPU aunque falte el dispositivo. `sal build --device gpu` o `tpu` falla con `E_DEVICE_MISSING` si no está el toolchain.
 - Tras añadir o cambiar dependencias git en `Sal.toml`, ejecutar `sal fetch` desde la raíz del proyecto (donde está el manifiesto). Los tests de paquetes usan repos `file://` y fijan `SAL_PACKAGES` en un tempdir; no dependen de red.
-- Proyectos fuera del árbol del compilador: exportar `SAL_HOME` al directorio que contiene `std/prelude.sal` para resolver `import "std/…"`.
+- Proyectos fuera del árbol del compilador: los módulos importados están en `sal_modules/` de ese proyecto (`import "io/io.sal"` → `sal_modules/io/io.sal`).
 
 ## Hecho
 
