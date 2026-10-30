@@ -15,8 +15,8 @@ fn sockaddr_loopback(port: Int) -> Int ! alloc
     bytes_set_u8(b, 1, 0)
     bytes_set_u8(b, 2, 0)
     bytes_set_u8(b, 3, 1)
-    bytes_set_u8(b, 4, u32_b2(port))
-    bytes_set_u8(b, 5, u32_b0(port))
+    bytes_set_u8(b, 4, u32_b0(port))
+    bytes_set_u8(b, 5, u32_b1(port))
     bytes_set_u8(b, 6, 0)
     bytes_set_u8(b, 7, 0)
     sap

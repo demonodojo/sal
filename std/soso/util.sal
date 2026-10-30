@@ -14,5 +14,8 @@ fn u8(v: Int) -> Int
 fn u32_b0(v: Int) -> Int
     u8(v)
 
+fn u32_b1(v: Int) -> Int
+    u8(v >> 8)
+
 fn u32_b2(v: Int) -> Int
     u8(v >> 16)
