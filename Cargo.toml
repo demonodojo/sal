@@ -1,6 +1,6 @@
 [package]
 name = "sal"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "Bootstrap compiler for the sal language"
 

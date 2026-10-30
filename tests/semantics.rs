@@ -912,13 +912,12 @@ fn main() -> Int ! alloc
 }
 
 #[test]
-fn syscall_is_e_target_on_linux_host() {
-    expect_code(
+fn syscall_is_ok_on_linux_host() {
+    expect_ok(
         r#"
 fn main() -> Int ! io
     syscall(0, 0, 0, 0, 0, 0, 0)
 "#,
-        ErrorCode::ETarget,
     );
 }
 

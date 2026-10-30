@@ -76,7 +76,7 @@ pub fn collect_host_tensors(prog: &Program) -> HashMap<String, HostTensor> {
         let mut counter = 0u32;
         for st in &f.body.stmts {
             match st {
-                Stmt::Let { name, init, .. } => {
+                Stmt::Let { name, ty, init, .. } => {
                     if let Some((rows, cols, data)) = tensor_lit_data(init) {
                         counter += 1;
                         let ir_name = format!("t{counter}");
@@ -90,6 +90,14 @@ pub fn collect_host_tensors(prog: &Program) -> HashMap<String, HostTensor> {
                                 data,
                             },
                         );
+                        // A `?` axis on the let type is its own SSA temp after the literal.
+                        if let Some(Type::Tensor { dims, .. }) = ty {
+                            for d in dims {
+                                if matches!(d, Dim::Dynamic) {
+                                    counter += 1;
+                                }
+                            }
+                        }
                         let _ = name;
                     } else {
                         // Mimic lower_expr_simple counter bumps for other exprs we care about.
@@ -1115,6 +1123,13 @@ fn emit_host_tensor_fn(
     let mut last_out: Option<(String, DimOperand)> = None; // ptr name, elem count
     let consts = const_int_map(f);
     let floats = const_float_map(f);
+    // Dim params are names (`x_d0`), not ConstInt temps. The fused stub aliases
+    // them to %m/%k/%n; the host body still has to define the SSA before use.
+    for dp in &f.dim_params {
+        if !consts.contains_key(dp) {
+            s.push_str(&format!("  %{dp} = add i64 0, 0\n"));
+        }
+    }
 
     for inst in &f.instructions {
         match inst {

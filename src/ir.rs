@@ -274,13 +274,8 @@ fn lower_fn(
                         dim_params.push(name.clone());
                     }
                     if !env.contains_key(&name) {
-                        counter += 1;
-                        let dssa = format!("t{counter}");
-                        instructions.push(IrInst::ConstInt {
-                            dest: dssa.clone(),
-                            value: 0,
-                        });
-                        env.insert(name, dssa);
+                        // The axis is a dim_param, not a constant. Selfhost names it as-is.
+                        env.insert(name.clone(), name);
                     }
                 }
             }
@@ -3086,7 +3081,10 @@ pub fn ir_to_text(m: &IrModule) -> String {
         }
         for i in &f.instructions {
             s.push_str("  ");
-            s.push_str(&format!("{i:?}\n"));
+            // Selfhost's emitter omits an empty `carried` list. Debug always prints it.
+            let line = format!("{i:?}").replace(", carried: []", "");
+            s.push_str(&line);
+            s.push('\n');
         }
         for r in &f.regions {
             s.push_str(&format!(

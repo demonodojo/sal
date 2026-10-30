@@ -696,5 +696,6 @@ fn main() -> Int ! alloc
     let art = compile_source(src, &opts).expect("compile");
     let bin = art.binary.expect("binary");
     let out = Command::new(bin).output().expect("run");
-    assert_eq!(out.status.code(), Some(0xDD + 0xAA)); // LE u32: byte0=0xDD, byte3=0xAA
+    // LE u32: byte0=0xDD, byte3=0xAA. The process status keeps the low 8 bits.
+    assert_eq!(out.status.code(), Some((0xDD + 0xAA) & 0xFF));
 }
