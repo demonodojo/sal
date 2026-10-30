@@ -27,7 +27,7 @@ fn open_read(path: String) -> Int ! io, alloc
 
 fn write_file_path(path: String, data: String) -> Int ! io, alloc
     b = path_to_buf(path)
-    fd = open_flags(bytes_ptr(b), str_len(path), o_WRONLY() + o_CREAT())
+    fd = open_flags(bytes_ptr(b), str_len(path), o_WRONLY() + o_CREAT() + o_TRUNC())
     if fd < 0
         fd
     else

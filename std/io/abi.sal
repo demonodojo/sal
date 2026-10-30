@@ -65,7 +65,16 @@ fn o_WRONLY() -> Int
     1
 
 fn o_CREAT() -> Int
-    64
+    4
+
+fn o_APPEND() -> Int
+    2
+
+fn o_TRUNC() -> Int
+    8
+
+fn o_EXCL() -> Int
+    16
 
 fn ft_file() -> Int
     1
