@@ -1,0 +1,44 @@
+fn jsonc_skip_ws(s: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        c = str_char(s, i)
+        if c == 32
+            jsonc_skip_ws(s, i + 1, n)
+        else
+            if c == 9
+                jsonc_skip_ws(s, i + 1, n)
+            else
+                if c == 10
+                    jsonc_skip_ws(s, i + 1, n)
+                else
+                    if c == 13
+                        jsonc_skip_ws(s, i + 1, n)
+                    else
+                        i
+
+fn jsonc_skip_comment(s: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    else
+        if str_char(s, i) == 10
+            i
+        else
+            jsonc_skip_comment(s, i + 1, n)
+
+fn jsonc_skip(s: String, i: Int) -> Int ! alloc
+    n = str_len(s)
+    j = jsonc_skip_ws(s, i, n)
+    if j + 1 >= n
+        j
+    else
+        if str_char(s, j) == 35
+            jsonc_skip(jsonc_skip_comment(s, j + 1, n), j)
+        else
+            if str_char(s, j) == 47
+                if str_char(s, j + 1) == 47
+                    jsonc_skip(jsonc_skip_comment(s, j + 2, n), j)
+                else
+                    j
+            else
+                j

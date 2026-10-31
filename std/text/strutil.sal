@@ -1,0 +1,82 @@
+fn str_index_of(hay: String, needle: String) -> Int ! alloc
+    str_index_from(hay, needle, 0)
+
+fn str_index_from(hay: String, needle: String, start: Int) -> Int ! alloc
+    hlen = str_len(hay)
+    nlen = str_len(needle)
+    if nlen <= 0
+        start
+    else
+        if start + nlen > hlen
+            -1
+        else
+            if str_eq(str_slice(hay, start, start + nlen), needle) != 0
+                start
+            else
+                str_index_from(hay, needle, start + 1)
+
+fn json_quote_char() -> String ! alloc
+    char_to_str(34)
+
+fn json_lbrace() -> String ! alloc
+    char_to_str(123)
+
+fn json_rbrace() -> String ! alloc
+    char_to_str(125)
+
+fn json_lbracket() -> String ! alloc
+    char_to_str(91)
+
+fn json_rbracket() -> String ! alloc
+    char_to_str(93)
+
+fn json_esc_byte(c: Int) -> String ! alloc
+    if c == 34
+        char_to_str(92) + char_to_str(34)
+    else
+        if c == 92
+            char_to_str(92) + char_to_str(92)
+        else
+            if c == 10
+                char_to_str(92) + char_to_str(110)
+            else
+                if c == 13
+                    char_to_str(92) + char_to_str(114)
+                else
+                    char_to_str(c)
+
+fn json_esc_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        json_esc_go(s, i + 1, n, acc + json_esc_byte(str_char(s, i)))
+
+fn json_esc_content(s: String) -> String ! alloc
+    json_esc_go(s, 0, str_len(s), "")
+
+fn quote_end(body: String, end: Int, n: Int) -> Int ! alloc
+    if end >= n
+        end
+    else
+        if str_char(body, end) == 34
+            end
+        else
+            if str_char(body, end) == 92
+                quote_end(body, end + 2, n)
+            else
+                quote_end(body, end + 1, n)
+
+fn extract_quoted_after(body: String, marker: String) -> String ! alloc
+    idx = str_index_of(body, marker)
+    if idx < 0
+        ""
+    else
+        start = idx + str_len(marker)
+        if start >= str_len(body)
+            ""
+        else
+            if str_char(body, start) != 34
+                ""
+            else
+                end = quote_end(body, start + 1, str_len(body))
+                str_slice(body, start + 1, end)

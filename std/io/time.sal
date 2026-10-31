@@ -5,3 +5,24 @@ fn sleep_ms(ms: Int) -> Int ! io
 
 fn uptime_ms() -> Int ! io
     syscall(nr_uptime_ms(), 0, 0, 0, 0, 0, 0)
+
+fn clock_gettime_buf(clock_id: Int, out: Bytes) -> Int ! io
+    syscall(nr_clock_gettime(), clock_id, bytes_ptr(out), 0, 0, 0, 0)
+
+fn clock_realtime_sec() -> Int ! io, alloc
+    ts = bytes_new(timespec_size())
+    rc = clock_gettime_buf(clock_realtime(), ts)
+    if rc < 0
+        0
+    else
+        bytes_get_i64(ts, timespec_off_sec())
+
+fn clock_realtime_ms() -> Int ! io, alloc
+    ts = bytes_new(timespec_size())
+    rc = clock_gettime_buf(clock_realtime(), ts)
+    if rc < 0
+        0
+    else
+        sec = bytes_get_i64(ts, timespec_off_sec())
+        nsec = bytes_get_i64(ts, timespec_off_nsec())
+        sec * 1000 + nsec / 1000000

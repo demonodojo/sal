@@ -1,0 +1,36 @@
+import "std/io/time.sal"
+import "std/io/cwd.sal"
+import "std/io/rand.sal"
+import "std/io/fs.sal"
+import "std/io/net.sal"
+import "std/io/process.sal"
+
+fn fail_if(bad: Int, acc: Int) -> Int
+    if bad == 1
+        acc + 1
+    else
+        acc
+
+fn main() -> Int ! io, alloc
+    err = 0
+    wall = clock_realtime_sec()
+    err = fail_if(wall <= 1000000000, err)
+    mono = uptime_ms()
+    err = fail_if(mono < 0, err)
+    rnd = getrandom_u64()
+    err = fail_if(rnd == 0, err)
+    _c = chdir_path(d"/tmp")
+    cwd = getcwd_str()
+    err = fail_if(str_len(cwd) < 4, err)
+    err = fail_if(is_dir(d"/") == 0, err)
+    out = spawn_capture_stdout(d"/bin/echo", d"sal-io")
+    err = fail_if(str_len(out) < 5, err)
+    srv = tcp_listen(38447)
+    if srv >= 0
+        cli = tcp_connect_loopback(38447, 500)
+        _cs = close_fd(cli)
+        _ss = close_fd(srv)
+        err = fail_if(cli < 0, err)
+    else
+        err = err + 1
+    err

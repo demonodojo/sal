@@ -317,7 +317,9 @@ Precedencia (de menor a mayor): comparación, `|`, `^`, `&`, desplazamiento (`<<
 
 ### `syscall`
 
-`syscall(n, a0, a1, a2, a3, a4, a5) -> Int ! io` — siete argumentos `Int`. Solo al compilar para **soso**; en host Linux es `E_TARGET`. En enlace soso baja a `sal_os_syscall`.
+`syscall(n, a0, a1, a2, a3, a4, a5) -> Int ! io` — siete argumentos `Int`. Disponible al compilar para **soso** (kernel) o **`--target linux`** (shim en `runtime/soso/linux_host_syscall.c`); en otros destinos es `E_TARGET`. En enlace baja a `sal_os_syscall`.
+
+Números estables (ABI soso, ver `std/io/abi.sal`): entre otros, `PIPE` 21, `SPAWN_IO` 22, `CHDIR` 23, `GETCWD` 24, `STAT` 6, `WAIT` 11, `CLOCK_GETTIME` 72, `GETRANDOM` 78, `TCP_CONNECT` 29, `DNS_RESOLVE` 40. `PIPE` devuelve `(escritura << 32) | lectura`. `WAIT` devuelve `(pid << 8) | (código & 0xff)`. En `SpawnIo`, stdio usa `FD_INHERIT_TTY` (-1) o un fd del padre; `FD_CLOSED` (-12) deja el slot vacío.
 
 ## Dispositivos
 

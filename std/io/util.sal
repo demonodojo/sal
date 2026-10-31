@@ -19,3 +19,6 @@ fn u32_b1(v: Int) -> Int
 
 fn u32_b2(v: Int) -> Int
     u8(v >> 16)
+
+fn u32_b3(v: Int) -> Int
+    u8(v >> 24)

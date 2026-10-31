@@ -25,8 +25,17 @@ fn nr_unlink() -> Int
 fn nr_wait() -> Int
     11
 
+fn nr_pipe() -> Int
+    21
+
 fn nr_spawn_io() -> Int
     22
+
+fn nr_chdir() -> Int
+    23
+
+fn nr_getcwd() -> Int
+    24
 
 fn nr_sleep_ms() -> Int
     13
@@ -57,6 +66,48 @@ fn nr_rename() -> Int
 
 fn nr_getenv() -> Int
     83
+
+fn nr_clock_gettime() -> Int
+    72
+
+fn nr_getrandom() -> Int
+    78
+
+fn clock_realtime() -> Int
+    0
+
+fn clock_monotonic() -> Int
+    1
+
+fn stat_size() -> Int
+    32
+
+fn stat_off_ino() -> Int
+    0
+
+fn stat_off_size() -> Int
+    8
+
+fn stat_off_mtime() -> Int
+    16
+
+fn stat_off_file_type() -> Int
+    24
+
+fn timespec_size() -> Int
+    16
+
+fn timespec_off_sec() -> Int
+    0
+
+fn timespec_off_nsec() -> Int
+    8
+
+fn spawn_fd_inherit() -> Int
+    -1
+
+fn spawn_fd_closed() -> Int
+    -12
 
 fn o_RDONLY() -> Int
     0
@@ -123,6 +174,12 @@ fn spawnio_off_argv_count() -> Int
 
 fn spawnio_off_log_fd() -> Int
     88
+
+fn spawnio_off_cwd_ptr() -> Int
+    96
+
+fn spawnio_off_cwd_len() -> Int
+    104
 
 fn sockaddr_size() -> Int
     8

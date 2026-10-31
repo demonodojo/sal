@@ -1,0 +1,18 @@
+import "std/http/sse.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    chunk = d"event: ping\ndata: hello\n\n"
+    a = assert_ne(sse_has_data(chunk), 0, 1)
+    if a != 0
+        a
+    else
+        b = assert_str_eq(sse_data_payload(chunk), d"hello", 2)
+        if b != 0
+            b
+        else
+            c = assert_zero(sse_is_done(chunk), 3)
+            if c != 0
+                c
+            else
+                0

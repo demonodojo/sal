@@ -1,0 +1,20 @@
+import "abi.sal"
+import "io.sal"
+
+fn pipe_create() -> Int ! io
+    syscall(nr_pipe(), 0, 0, 0, 0, 0, 0)
+
+fn pipe_read_fd(packed: Int) -> Int
+    u32_mask(packed)
+
+fn pipe_write_fd(packed: Int) -> Int
+    u32_mask(packed >> 32)
+
+fn u32_mask(v: Int) -> Int
+    v & 4294967295
+
+fn pipe_close_read(packed: Int) -> Int ! io
+    close_fd(pipe_read_fd(packed))
+
+fn pipe_close_write(packed: Int) -> Int ! io
+    close_fd(pipe_write_fd(packed))

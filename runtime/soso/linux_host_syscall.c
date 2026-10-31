@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -31,7 +32,10 @@ enum {
     SOSO_SYS_UNLINK = 9,
     SOSO_SYS_WAIT = 11,
     SOSO_SYS_SLEEP_MS = 13,
+    SOSO_SYS_PIPE = 21,
     SOSO_SYS_SPAWN_IO = 22,
+    SOSO_SYS_CHDIR = 23,
+    SOSO_SYS_GETCWD = 24,
     SOSO_SYS_TCP_CONNECT = 29,
     SOSO_SYS_TCP_LISTEN = 30,
     SOSO_SYS_TCP_ACCEPT = 31,
@@ -40,7 +44,11 @@ enum {
     SOSO_SYS_KILL = 52,
     SOSO_SYS_RENAME = 70,
     SOSO_SYS_GETENV = 83,
+    SOSO_SYS_CLOCK_GETTIME = 72,
+    SOSO_SYS_GETRANDOM = 78,
     SOSO_SYS_UPTIME_MS = 28,
+    SOSO_CLOCK_REALTIME = 0,
+    SOSO_CLOCK_MONOTONIC = 1,
     SOSO_O_RDONLY = 0,
     SOSO_O_WRONLY = 1,
     SOSO_O_APPEND = 2,
@@ -51,6 +59,7 @@ enum {
     SOSO_DIRENT_SIZE = 272,
     SOSO_SPAWNIO_SIZE = 112,
     SOSO_FD_INHERIT = (int64_t)-1,
+    SOSO_FD_CLOSED = (int64_t)-12,
 };
 
 typedef struct {
@@ -204,6 +213,21 @@ static int64_t soso_getdents(int fd, uint64_t buf, int64_t len) {
     return SOSO_DIRENT_SIZE;
 }
 
+static void child_map_stdio(uint64_t spec, int slot) {
+    if (spec == (uint64_t)SOSO_FD_INHERIT) {
+        return;
+    }
+    if (spec == (uint64_t)SOSO_FD_CLOSED) {
+        int nullfd = open("/dev/null", O_RDWR);
+        if (nullfd >= 0) {
+            dup2(nullfd, slot);
+            close(nullfd);
+        }
+        return;
+    }
+    dup2((int)spec, slot);
+}
+
 static int read_argv_entry(uint64_t pair, char *buf, size_t cap) {
     uint64_t s_ptr = 0;
     uint64_t s_len = 0;
@@ -255,25 +279,6 @@ static int64_t soso_spawn_io(uint64_t opts_ptr) {
     }
     argv[argc] = NULL;
 
-    int pipe_in[2] = {-1, -1};
-    int pipe_out[2] = {-1, -1};
-    int pipe_err[2] = {-1, -1};
-    if (opts.stdin_fd != SOSO_FD_INHERIT && opts.stdin_fd != (uint64_t)STDIN_FILENO) {
-        if (pipe(pipe_in) != 0) {
-            return neg_errno();
-        }
-    }
-    if (opts.stdout_fd != SOSO_FD_INHERIT && opts.stdout_fd != (uint64_t)STDOUT_FILENO) {
-        if (pipe(pipe_out) != 0) {
-            return neg_errno();
-        }
-    }
-    if (opts.stderr_fd != SOSO_FD_INHERIT && opts.stderr_fd != (uint64_t)STDERR_FILENO) {
-        if (pipe(pipe_err) != 0) {
-            return neg_errno();
-        }
-    }
-
     pid_t pid = fork();
     if (pid < 0) {
         return neg_errno();
@@ -285,32 +290,11 @@ static int64_t soso_spawn_io(uint64_t opts_ptr) {
                 (void)chdir(cwd);
             }
         }
-        if (pipe_in[0] >= 0) {
-            dup2(pipe_in[0], STDIN_FILENO);
-            close(pipe_in[0]);
-            close(pipe_in[1]);
-        }
-        if (pipe_out[1] >= 0) {
-            dup2(pipe_out[1], STDOUT_FILENO);
-            close(pipe_out[0]);
-            close(pipe_out[1]);
-        }
-        if (pipe_err[1] >= 0) {
-            dup2(pipe_err[1], STDERR_FILENO);
-            close(pipe_err[0]);
-            close(pipe_err[1]);
-        }
+        child_map_stdio(opts.stdin_fd, STDIN_FILENO);
+        child_map_stdio(opts.stdout_fd, STDOUT_FILENO);
+        child_map_stdio(opts.stderr_fd, STDERR_FILENO);
         execvp(path, argv);
         _exit(127);
-    }
-    if (pipe_in[0] >= 0) {
-        close(pipe_in[0]);
-    }
-    if (pipe_out[1] >= 0) {
-        close(pipe_out[1]);
-    }
-    if (pipe_err[1] >= 0) {
-        close(pipe_err[1]);
     }
     return (int64_t)pid;
 }
@@ -451,6 +435,59 @@ int64_t sal_os_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a
             return neg_errno();
         }
         return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    }
+    case SOSO_SYS_PIPE: {
+        int fds[2];
+        if (pipe(fds) != 0) {
+            return neg_errno();
+        }
+        return ((int64_t)fds[1] << 32) | (uint32_t)fds[0];
+    }
+    case SOSO_SYS_CHDIR: {
+        char path[4096];
+        if (copy_user_str((uint64_t)a0, (uint64_t)a1, path, sizeof(path)) != 0) {
+            return neg_errno();
+        }
+        return chdir(path) == 0 ? 0 : neg_errno();
+    }
+    case SOSO_SYS_GETCWD: {
+        char path[4096];
+        if (getcwd(path, sizeof(path)) == NULL) {
+            return neg_errno();
+        }
+        size_t n = strlen(path);
+        if ((uint64_t)a1 < n + 1) {
+            errno = EINVAL;
+            return neg_errno();
+        }
+        memcpy((void *)(uintptr_t)a0, path, n + 1);
+        return (int64_t)a0;
+    }
+    case SOSO_SYS_CLOCK_GETTIME: {
+        clockid_t clk = CLOCK_REALTIME;
+        if (a0 == SOSO_CLOCK_MONOTONIC) {
+            clk = CLOCK_MONOTONIC;
+        } else if (a0 != SOSO_CLOCK_REALTIME) {
+            errno = EINVAL;
+            return neg_errno();
+        }
+        struct timespec ts;
+        if (clock_gettime(clk, &ts) != 0) {
+            return neg_errno();
+        }
+        int64_t out[2] = {ts.tv_sec, ts.tv_nsec};
+        memcpy((void *)(uintptr_t)a1, out, sizeof(out));
+        return 0;
+    }
+    case SOSO_SYS_GETRANDOM: {
+        if (a1 == 0) {
+            return 0;
+        }
+        ssize_t n = getrandom((void *)(uintptr_t)a0, (size_t)a1, 0);
+        if (n < 0) {
+            return neg_errno();
+        }
+        return (int64_t)n;
     }
     case SOSO_SYS_READ_TIMEOUT: {
         struct pollfd pfd = {.fd = (int)a0, .events = POLLIN};

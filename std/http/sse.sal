@@ -1,0 +1,42 @@
+import "../text/strutil.sal"
+
+fn sse_has_data(block: String) -> Int ! alloc
+    if str_contains(block, d"data:") != 0
+        1
+    else
+        0
+
+fn sse_is_done(block: String) -> Int ! alloc
+    if str_contains(block, d"[DONE]") != 0
+        1
+    else
+        0
+
+fn sse_data_payload(block: String) -> String ! alloc
+    idx = str_index_of(block, d"data:")
+    if idx < 0
+        d""
+    else
+        start = sse_data_start(block, idx + 5)
+        end = str_index_from(block, d"\n", start)
+        if end < 0
+            str_slice(block, start, str_len(block))
+        else
+            str_slice(block, start, end)
+
+fn sse_data_start(block: String, start: Int) -> Int ! alloc
+    if start >= str_len(block)
+        start
+    else
+        if str_char(block, start) == 32
+            start + 1
+        else
+            start
+
+fn sse_accum_tool_index(block: String) -> Int ! alloc
+    idx = str_index_of(block, d"\"index\":")
+    if idx < 0
+        -1
+    else
+        tail = str_slice(block, idx + 8, str_len(block))
+        str_as_int(tail)

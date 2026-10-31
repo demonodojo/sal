@@ -1,0 +1,128 @@
+import "std/io/io.sal"
+import "std/io/net.sal"
+import "../text/strutil.sal"
+
+fn http_bytes_to_str(b: Bytes, i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        http_bytes_to_str(b, i + 1, n, acc + char_to_str(bytes_get_u8(b, i)))
+
+fn http_read_chunk(fd: Int, cap: Int) -> String ! io, alloc
+    buf = bytes_new(cap)
+    n = read_timeout_fd(fd, bytes_ptr(buf), cap, 5000)
+    if n <= 0
+        d""
+    else
+        slice = bytes_new(n)
+        _cp = bytes_copy(slice, 0, buf, 0, n)
+        http_bytes_to_str(slice, 0, n, d"")
+
+fn http_read_all(fd: Int, max: Int) -> String ! io, alloc
+    http_read_all_go(fd, max, 4096, d"")
+
+fn http_read_all_go(fd: Int, max: Int, cap: Int, acc: String) -> String ! io, alloc
+    if str_len(acc) >= max
+        acc
+    else
+        part = http_read_chunk(fd, cap)
+        if str_len(part) <= 0
+            acc
+        else
+            http_read_all_go(fd, max, cap, acc + part)
+
+fn http_header_value(headers: String, name: String) -> String ! alloc
+    needle = name + d":"
+    idx = str_index_of(headers, needle)
+    if idx < 0
+        d""
+    else
+        start = idx + str_len(needle)
+        end = str_index_from(headers, d"\r\n", start)
+        if end < 0
+            str_slice(headers, start, str_len(headers))
+        else
+            str_slice(headers, start, end)
+
+fn http_body_offset(headers: String) -> Int ! alloc
+    idx = str_index_of(headers, d"\r\n\r\n")
+    if idx < 0
+        0
+    else
+        idx + 4
+
+fn http_split_response(raw: String) -> String ! alloc
+    off = http_body_offset(raw)
+    if off <= 0
+        raw
+    else
+        str_slice(raw, off, str_len(raw))
+
+fn http_content_length(headers: String) -> Int ! alloc
+    v = http_header_value(headers, d"Content-Length")
+    if str_len(v) <= 0
+        -1
+    else
+        str_as_int(v)
+
+fn http_read_body(fd: Int, max: Int) -> String ! io, alloc
+    raw = http_read_all(fd, max)
+    headers_end = http_body_offset(raw)
+    if headers_end <= 0
+        raw
+    else
+        headers = str_slice(raw, 0, headers_end)
+        cl = http_content_length(headers)
+        body = http_split_response(raw)
+        if cl >= 0
+            if str_len(body) > cl
+                str_slice(body, 0, cl)
+            else
+                body
+        else
+            if str_contains(headers, d"chunked") != 0
+                http_decode_chunked(body)
+            else
+                body
+
+fn http_decode_chunked(body: String) -> String ! alloc
+    http_decode_chunked_go(body, 0, str_len(body), d"")
+
+fn http_decode_chunked_go(body: String, i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        line_end = str_index_from(body, d"\r\n", i)
+        if line_end < 0
+            acc
+        else
+            hex = str_slice(body, i, line_end)
+            sz = str_as_int(hex)
+            if sz <= 0
+                acc
+            else
+                start = line_end + 2
+                end = start + sz
+                if end > n
+                    acc
+                else
+                    piece = str_slice(body, start, end)
+                    next = end + 2
+                    http_decode_chunked_go(body, next, n, acc + piece)
+
+fn http_request_loopback(port: Int, method: String, path: String, body: String, timeout_ms: Int) -> String ! io, alloc
+    fd = tcp_connect_loopback(port, timeout_ms)
+    if fd < 0
+        d""
+    else
+        req = method + d" " + path + d" HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: " + int_to_str(str_len(body)) + d"\r\nConnection: close\r\n\r\n" + body
+        _w = write_str_fd(fd, req)
+        out = http_read_body(fd, 1048576)
+        _c = close_fd(fd)
+        out
+
+fn http_post(port: Int, path: String, body: String) -> String ! io, alloc
+    http_request_loopback(port, d"POST", path, body, 5000)
+
+fn http_get(port: Int, path: String) -> String ! io, alloc
+    http_request_loopback(port, d"GET", path, d"", 5000)

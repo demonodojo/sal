@@ -1,0 +1,41 @@
+import "../text/strutil.sal"
+import "jsonc.sal"
+
+struct JsonNode
+    kind: Int
+    str: String
+    num: Int
+    first_child: Int
+    next_sibling: Int
+
+fn json_kind_null() -> Int
+    0
+
+fn json_kind_str() -> Int
+    3
+
+fn json_kind_num() -> Int
+    2
+
+fn json_node_str(s: String) -> JsonNode ! alloc
+    JsonNode(json_kind_str(), s, 0, -1, -1)
+
+fn json_node_num(v: Int) -> JsonNode ! alloc
+    JsonNode(json_kind_num(), d"", v, -1, -1)
+
+fn json_serialize_str(s: String) -> String ! alloc
+    json_quote_char() + json_esc_content(s) + json_quote_char()
+
+fn json_serialize_num(v: Int) -> String ! alloc
+    str_from_int(v)
+
+fn json_canonical_flat(s: String) -> String ! alloc
+    a = extract_quoted_after(s, d"\"a\":\"")
+    b = extract_quoted_after(s, d"\"b\":\"")
+    if str_len(a) > 0
+        json_lbrace() + json_serialize_str(d"a") + d":" + json_serialize_str(a) + d"," + json_serialize_str(d"b") + d":" + json_serialize_str(b) + json_rbrace()
+    else
+        n = extract_quoted_after(s, d"\"n\":")
+        if str_len(n) <= 0
+            n = d"0"
+        json_lbrace() + json_serialize_str(d"n") + d":" + n + json_rbrace()

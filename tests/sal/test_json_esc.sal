@@ -1,0 +1,17 @@
+import "std/text/strutil.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    a = assert_str_eq(json_esc_content(d"plain"), d"plain", 1)
+    if a != 0
+        a
+    else
+        b = assert_str_eq(json_esc_content(d"a\"b"), d"a\\\"b", 2)
+        if b != 0
+            b
+        else
+            c = assert_str_eq(json_esc_content(d"line\n"), d"line\\n", 3)
+            if c != 0
+                c
+            else
+                0

@@ -1,0 +1,21 @@
+import "std/http/client.sal"
+import "std/json/build.sal"
+import "std/io/env.sal"
+import "support/assert.sal"
+
+fn mock_port() -> Int ! io, alloc
+    raw = getenv(d"OC_MOCK_PORT")
+    if str_len(raw) <= 0
+        7422
+    else
+        str_as_int(raw)
+
+fn main() -> Int ! io, alloc
+    port = mock_port()
+    body = chat_completion_body(d"mock", d"", d"ping")
+    resp = http_post(port, d"/v1/chat/completions", body)
+    a = assert_ne(str_len(resp), 0, 1)
+    if a != 0
+        a
+    else
+        assert_contains(resp, d"choices", 2)

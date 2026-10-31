@@ -1,0 +1,15 @@
+import "../text/strutil.sal"
+
+fn chat_completion_body(model: String, system: String, user: String) -> String ! alloc
+    q = json_quote_char()
+    lb = json_lbrace()
+    rb = json_rbrace()
+    lbr = json_lbracket()
+    rbr = json_rbracket()
+    sys_part = d""
+    if str_len(system) > 0
+        sys_part = lbr + lb + q + d"role" + q + d":" + q + d"system" + q + d"," + q + d"content" + q + d":" + q + json_esc_content(system) + q + rb + d","
+    lb + q + d"model" + q + d":" + q + model + q + d"," + q + d"stream" + q + d":false," + q + d"messages" + q + d":" + lbr + sys_part + lb + q + d"role" + q + d":" + q + d"user" + q + d"," + q + d"content" + q + d":" + q + json_esc_content(user) + q + rb + rbr + rb
+
+fn json_object2(k1: String, v1: String, k2: String, v2: String) -> String ! alloc
+    json_lbrace() + json_quote_char() + k1 + json_quote_char() + d":" + v1 + d"," + json_quote_char() + k2 + json_quote_char() + d":" + v2 + json_rbrace()

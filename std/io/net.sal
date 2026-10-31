@@ -27,3 +27,45 @@ fn tcp_connect_loopback(port: Int, timeout_ms: Int) -> Int ! io, alloc
 
 fn dns_resolve_ptr(host_ptr: Int, host_len: Int, out_ptr: Int) -> Int ! io
     syscall(nr_dns_resolve(), host_ptr, host_len, out_ptr, 0, 0, 0)
+
+fn dns_resolve_host(host: String) -> Int ! io, alloc
+    b = bytes_new(4)
+    hb = bytes_new(str_len(host) + 1)
+    str_bytes_copy(hb, 0, host)
+    rc = dns_resolve_ptr(bytes_ptr(hb), str_len(host), bytes_ptr(b))
+    if rc < 0
+        rc
+    else
+        ip4_from_bytes(b)
+
+fn ip4_from_bytes(b: Bytes) -> Int ! alloc
+    a0 = bytes_get_u8(b, 0)
+    a1 = bytes_get_u8(b, 1)
+    a2 = bytes_get_u8(b, 2)
+    a3 = bytes_get_u8(b, 3)
+    a0 + (a1 << 8) + (a2 << 16) + (a3 << 24)
+
+fn sockaddr_from_ip4(ip4: Int, port: Int) -> Int ! alloc
+    sa = bytes_new(sockaddr_size())
+    sap = bytes_ptr(sa)
+    v = bytes_view_mem(sap, sockaddr_size())
+    bytes_set_u8(v, 0, u32_b0(ip4))
+    bytes_set_u8(v, 1, u32_b1(ip4))
+    bytes_set_u8(v, 2, u32_b2(ip4))
+    bytes_set_u8(v, 3, u32_b3(ip4))
+    bytes_set_u8(v, 4, u32_b0(port))
+    bytes_set_u8(v, 5, u32_b1(port))
+    bytes_set_u8(v, 6, 0)
+    bytes_set_u8(v, 7, 0)
+    sap
+
+fn tcp_connect_ip4(ip4: Int, port: Int, timeout_ms: Int) -> Int ! io, alloc
+    sa = sockaddr_from_ip4(ip4, port)
+    syscall(nr_tcp_connect(), sa, timeout_ms, 0, 0, 0, 0)
+
+fn tcp_connect_host(host: String, port: Int, timeout_ms: Int) -> Int ! io, alloc
+    ip4 = dns_resolve_host(host)
+    if ip4 < 0
+        ip4
+    else
+        tcp_connect_ip4(ip4, port, timeout_ms)

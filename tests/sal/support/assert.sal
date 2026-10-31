@@ -1,0 +1,29 @@
+import "std/io/io.sal"
+
+fn assert_fail(code: Int) -> Int ! io, alloc
+    _w = write_str_fd(2, d"assert_fail\n")
+    code
+
+fn assert_str_eq(got: String, want: String, code: Int) -> Int ! io, alloc
+    if str_eq(got, want) != 0
+        0
+    else
+        assert_fail(code)
+
+fn assert_ne(got: Int, bad: Int, code: Int) -> Int ! io, alloc
+    if got != bad
+        0
+    else
+        assert_fail(code)
+
+fn assert_zero(got: Int, code: Int) -> Int ! io, alloc
+    if got == 0
+        0
+    else
+        assert_fail(code)
+
+fn assert_contains(hay: String, needle: String, code: Int) -> Int ! io, alloc
+    if str_contains(hay, needle) != 0
+        0
+    else
+        assert_fail(code)

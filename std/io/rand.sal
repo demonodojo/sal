@@ -1,0 +1,12 @@
+import "abi.sal"
+
+fn getrandom_buf(buf: Bytes, len: Int) -> Int ! io
+    syscall(nr_getrandom(), bytes_ptr(buf), len, 0, 0, 0, 0)
+
+fn getrandom_u64() -> Int ! io, alloc
+    b = bytes_new(8)
+    n = getrandom_buf(b, 8)
+    if n < 8
+        0
+    else
+        bytes_get_i64(b, 0)

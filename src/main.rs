@@ -96,6 +96,13 @@ enum Commands {
         #[arg(long, default_value = "0.1")]
         version: String,
     },
+    /// Run `test_*.sal` under a directory (default `tests/sal`).
+    Test {
+        #[arg(default_value = "tests/sal")]
+        dir: PathBuf,
+        #[arg(long)]
+        release: bool,
+    },
     /// Compile from a JSON AST (`sal emit ast` output).
     Compile {
         /// Path to a JSON-serialized `Program`.
@@ -280,6 +287,11 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Test { dir, release } => {
+            if let Err(code) = run_sal_tests(&root, &dir, release, &toolchain) {
+                std::process::exit(code);
+            }
+        }
         Commands::Compile {
             ast,
             release,
@@ -310,6 +322,75 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+fn run_sal_tests(root: &PathBuf, dir: &PathBuf, release: bool, toolchain: &Toolchain) -> Result<(), i32> {
+    let test_dir = if dir.is_absolute() {
+        dir.clone()
+    } else {
+        root.join(dir)
+    };
+    if !test_dir.is_dir() {
+        eprintln!("sal test: not a directory: {}", test_dir.display());
+        return Err(1);
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&test_dir)
+        .map_err(|e| {
+            eprintln!("sal test: {e}");
+            1
+        })?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "sal")
+                && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("test_"))
+        })
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        eprintln!("sal test: no test_*.sal in {}", test_dir.display());
+        return Err(1);
+    }
+    let out_dir = root.join("target").join("sal-out").join("test");
+    std::fs::create_dir_all(&out_dir).map_err(|_| 1)?;
+    let mut failed = 0i32;
+    for file in &files {
+        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("test");
+        let bin = out_dir.join(stem);
+        match compile_file(
+            file,
+            &configured_opts(root, release, false, "cpu", false, toolchain, Some(bin.clone())),
+        ) {
+            Ok(art) => {
+                let bin = art.binary.unwrap_or(bin);
+                let out = Command::new(bin).output().map_err(|e| {
+                    eprintln!("sal test: run {}: {e}", file.display());
+                    1
+                })?;
+                if !out.status.success() {
+                    failed += 1;
+                    eprintln!(
+                        "sal test: FAIL {} (exit {:?})",
+                        file.display(),
+                        out.status.code()
+                    );
+                    let _ = std::io::stderr().write_all(&out.stderr);
+                } else {
+                    println!("sal test: ok {}", file.display());
+                }
+            }
+            Err(diags) => {
+                failed += 1;
+                eprintln!("sal test: compile FAIL {}", file.display());
+                print_diags(&diags, "human");
+            }
+        }
+    }
+    if failed > 0 {
+        Err(failed.min(255) as i32)
+    } else {
+        Ok(())
     }
 }
 

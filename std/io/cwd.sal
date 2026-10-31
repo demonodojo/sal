@@ -1,0 +1,63 @@
+import "abi.sal"
+import "fs.sal"
+import "io.sal"
+
+fn chdir_path(path: String) -> Int ! io, alloc
+    b = path_to_buf(path)
+    syscall(nr_chdir(), bytes_ptr(b), str_len(path), 0, 0, 0, 0)
+
+fn getcwd_buf(buf: Bytes, cap: Int) -> Int ! io
+    syscall(nr_getcwd(), bytes_ptr(buf), cap, 0, 0, 0, 0)
+
+fn cstr_len(buf: Bytes, cap: Int) -> Int
+    cstr_len_go(buf, 0, cap)
+
+fn cstr_len_go(buf: Bytes, i: Int, cap: Int) -> Int
+    if i >= cap
+        cap
+    else
+        if bytes_get_u8(buf, i) == 0
+            i
+        else
+            cstr_len_go(buf, i + 1, cap)
+
+fn getcwd_str() -> String ! io, alloc
+    buf = bytes_new(4096)
+    rc = getcwd_buf(buf, 4096)
+    if rc < 0
+        d""
+    else
+        n = cstr_len(buf, 4096)
+        bytes_to_str(bytes_view(buf, 0, n))
+
+fn find_up(name: String) -> String ! io, alloc
+    find_up_go(name, 0)
+
+fn find_up_go(name: String, depth: Int) -> String ! io, alloc
+    if depth > 64
+        d""
+    else
+        here = getcwd_str()
+        cand = path_join_file(here, name)
+        if stat_is_file(cand) == 1
+            cand
+        else
+            if chdir_path(d"..") < 0
+                d""
+            else
+                find_up_go(name, depth + 1)
+
+fn path_join_file(dir: String, name: String) -> String ! alloc
+    if str_eq(dir, d"/") == 1
+        d"/" + name
+    else
+        dir + d"/" + name
+
+fn stat_is_file(path: String) -> Int ! io, alloc
+    st = bytes_new(stat_size())
+    b = path_to_buf(path)
+    rc = stat_path_ptr(bytes_ptr(b), str_len(path), bytes_ptr(st), stat_size())
+    if rc < 0
+        0
+    else
+        1

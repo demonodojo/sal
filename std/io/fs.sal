@@ -34,3 +34,68 @@ fn write_file_path(path: String, data: String) -> Int ! io, alloc
         n = write_str_fd(fd, data)
         _c = close_fd(fd)
         n
+
+fn stat_file_size(path: String) -> Int ! io, alloc
+    st = bytes_new(stat_size())
+    b = path_to_buf(path)
+    rc = stat_path_ptr(bytes_ptr(b), str_len(path), bytes_ptr(st), stat_size())
+    if rc < 0
+        -1
+    else
+        bytes_get_i64(st, stat_off_size())
+
+fn stat_mtime(path: String) -> Int ! io, alloc
+    st = bytes_new(stat_size())
+    b = path_to_buf(path)
+    rc = stat_path_ptr(bytes_ptr(b), str_len(path), bytes_ptr(st), stat_size())
+    if rc < 0
+        -1
+    else
+        bytes_get_i64(st, stat_off_mtime())
+
+fn is_dir(path: String) -> Int ! io, alloc
+    st = bytes_new(stat_size())
+    b = path_to_buf(path)
+    rc = stat_path_ptr(bytes_ptr(b), str_len(path), bytes_ptr(st), stat_size())
+    if rc < 0
+        0
+    else
+        ft = bytes_get_u8(st, stat_off_file_type())
+        if ft == ft_dir()
+            1
+        else
+            0
+
+fn mkdir_path(path: String) -> Int ! io, alloc
+    b = path_to_buf(path)
+    mkdir_path_ptr(bytes_ptr(b), str_len(path))
+
+fn mkdir_p(path: String) -> Int ! io, alloc
+    mkdir_p_i(path, 1)
+
+fn mkdir_p_i(path: String, i: Int) -> Int ! io, alloc
+    n = str_len(path)
+    if i > n
+        mkdir_path(path)
+    else
+        seg = str_slice(path, i - 1, i)
+        if str_eq(seg, d"/") == 1
+            pref = str_slice(path, 0, i)
+            if str_len(pref) > 1
+                _m = mkdir_path(pref)
+            mkdir_p_i(path, i + 1)
+        else
+            mkdir_p_i(path, i + 1)
+
+fn path_parent(path: String) -> String ! alloc
+    path_parent_i(path, str_len(path) - 1)
+
+fn path_parent_i(path: String, i: Int) -> String ! alloc
+    if i <= 0
+        d""
+    else
+        seg = str_slice(path, i, i + 1)
+        if str_eq(seg, d"/") == 1
+            str_slice(path, 0, i)
+        else
+            path_parent_i(path, i - 1)

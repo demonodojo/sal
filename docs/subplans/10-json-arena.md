@@ -1,5 +1,7 @@
 # JSON en Sal: patrón arena (T85)
 
+Checklist completo OpenCode (runtime, librerías, compilador): [11-opencode-parity.md](11-opencode-parity.md).
+
 `Dict[K,V]` solo admite `V ∈ Int | Float | Bool`. Para árboles JSON usamos:
 
 ## JsonArena
