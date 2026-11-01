@@ -3,6 +3,7 @@ import result
 import lexer
 import ast
 import parser
+import checks
 
 # ---- Modules ----
 fn project_root() -> String ! io, alloc
@@ -664,7 +665,21 @@ fn check_all_modules_order(order: Int, i: Int, n: Int, proot: String) -> Int ! i
         if result_is_err(step) == 1
             step
         else
-            check_all_modules_order(order, i + 1, n, proot)
+            fx = check_program(mod_prog(m))
+            if result_is_err(fx) == 1
+                fx
+            else
+                check_all_modules_order(order, i + 1, n, proot)
+
+fn check_all_effects(order: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        fx = check_program(mod_prog(vec_get(order, i)))
+        if result_is_err(fx) == 1
+            fx
+        else
+            check_all_effects(order, i + 1, n)
 
 fn graph_source_digest(graph: Int) -> String ! io, alloc
     graph_source_digest_go(graph, 0, vec_len(graph), d"")

@@ -511,6 +511,41 @@ fn selfhost_instrumented_clean_on_hello() {
 }
 
 #[test]
+fn undeclared_effect_is_rejected_like_bootstrap() {
+    let stage1 = compile_selfhost(false);
+    let cases = [
+        ("io", "fn main() -> Int\n    print_str(d\"x\")\n    0\n"),
+        ("alloc", "fn main() -> Int\n    s = strdup(d\"x\")\n    0\n"),
+        ("gpu", "fn main() -> Int ! alloc\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    g = to gpu t\n    0\n"),
+    ];
+    for (effect, src) in cases {
+        let prog = write_temp_sal(src);
+        let out = Command::new(&stage1)
+            .arg(&prog)
+            .args(["-o", "/tmp/sal-fx-bad.out"])
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("fx-bad"))
+            .current_dir(root())
+            .output()
+            .expect("run stage1");
+        assert_ne!(out.status.code(), Some(0), "`{effect}` use must be rejected");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(&format!("uses effect `{effect}`")),
+            "stderr for {effect}: {stderr}"
+        );
+    }
+    let ok = write_temp_sal("fn main() -> Int ! io, alloc\n    print_str(d\"x\")\n    0\n");
+    let out = Command::new(&stage1)
+        .arg(&ok)
+        .args(["-o", "/tmp/sal-fx-ok.out"])
+        .env("SAL_SELFHOST_CACHE", unique_cache_dir("fx-ok"))
+        .current_dir(root())
+        .output()
+        .expect("run stage1");
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
 fn parse_failure_returns_result_err_nonzero() {
     let stage1 = compile_selfhost(false);
     let bad = write_temp_sal("this is not a sal program !!!\n");
@@ -842,4 +877,314 @@ fn selfhost_resolves_git_package_import() {
         ir.contains("dep_value") || ir.contains("main"),
         "expected lowered IR, got: {ir}"
     );
+}
+
+/// IR text from the bootstrap CLI, which resolves imports like the selfhost does.
+fn bootstrap_cli_ir(path: &Path) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["emit", "ir"])
+        .arg(path)
+        .current_dir(root())
+        .output()
+        .expect("run sal emit ir");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "bootstrap emit ir failed on {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("utf8 ir")
+}
+
+/// Files where the selfhost already emits the same IR as the bootstrap. Grow this
+/// list as the selfhost closes gaps; never shrink it.
+const PARITY_FILES: &[&str] = &[
+    "benches/framebuffer/fill_copy.sal",
+    "benches/speed/work.sal",
+    "corpus/bytes_if_phi.sal",
+    "corpus/column_ops.sal",
+    "corpus/early_return.sal",
+    "corpus/effects.sal",
+    "corpus/forward_fused.sal",
+    "corpus/load_salt.sal",
+    "corpus/moves.sal",
+    "corpus/newtypes.sal",
+    "corpus/places.sal",
+    "corpus/string_plus.sal",
+    "examples/column_cpu.sal",
+    "examples/column_gpu.sal",
+    "examples/cpu_matmul.sal",
+    "examples/forward.sal",
+    "examples/forward_salt.sal",
+    "examples/gpu_roundtrip.sal",
+    "examples/hello.sal",
+    "examples/import_alias_left.sal",
+    "examples/import_alias_right.sal",
+    "examples/import_alias.sal",
+    "examples/infer/tiny_decode.sal",
+    "examples/infer/tiny_prefill.sal",
+    "examples/instrument_nan.sal",
+    "examples/instrument_oob.sal",
+    "examples/plot_csv.sal",
+    "examples/salt_matmul.sal",
+    "examples/std_io_smoke.sal",
+    "examples/transformer_gpu.sal",
+    "pkg.sal",
+    "selfhost/ast.sal",
+    "selfhost/cache.sal",
+    "selfhost/effects.sal",
+    "selfhost/emit.sal",
+    "selfhost/fuse.sal",
+    "selfhost/handles.sal",
+    "selfhost/ir.sal",
+    "selfhost/lexer.sal",
+    "selfhost/main.sal",
+    "selfhost/models.sal",
+    "selfhost/modules.sal",
+    "selfhost/parser.sal",
+    "selfhost/qualify.sal",
+    "selfhost/result.sal",
+    "selfhost/tensorops.sal",
+    "standard/cop_dupstring.sal",
+    "standard/cop_elsif.sal",
+    "standard/cop_plusliteral.sal",
+    "standard/cop_stringplus.sal",
+    "standard/lexer.sal",
+    "standard/main.sal",
+    "standard/patch.sal",
+    "standard/util.sal",
+    "std/http/client.sal",
+    "std/http/sse.sal",
+    "std/io/abi.sal",
+    "std/io/cwd.sal",
+    "std/io/env.sal",
+    "std/io/fs.sal",
+    "std/io/io.sal",
+    "std/io/net.sal",
+    "std/io/pipe.sal",
+    "std/io/process.sal",
+    "std/io/rand.sal",
+    "std/io/time.sal",
+    "std/io/util.sal",
+    "std/json/build.sal",
+    "std/prelude.sal",
+    "std/text/glob.sal",
+    "std/text/pattern.sal",
+    "std/text/strutil.sal",
+    "tests/fixtures/frame_shop.sal",
+    "tests/fixtures/frame_where.sal",
+    "tests/import_graph/a.sal",
+    "tests/import_graph/b.sal",
+    "tests/sal/support/assert.sal",
+    "tests/sal/test_glob.sal",
+    "tests/sal/test_http_chunk.sal",
+    "tests/sal/test_http_mock.sal",
+    "tests/sal/test_json_esc.sal",
+    "tests/sal/test_sse.sal",
+];
+
+#[test]
+fn selfhost_ir_matches_bootstrap_on_parity_files() {
+    let stage1 = compile_selfhost(false);
+    for rel in PARITY_FILES {
+        let file = root().join(rel);
+        let boot = bootstrap_cli_ir(&file);
+        let got = run_emit_ir(&stage1, &file);
+        assert_eq!(boot, got, "selfhost IR differs from bootstrap for {rel}");
+    }
+}
+
+/// (source, moved?) pairs; the bootstrap `sal check` must agree with the selfhost.
+const OWNERSHIP_CASES: &[(&str, bool)] = &[
+    ("fn main() -> Int\n    s = \"abc\"\n    t = s\n    u = s\n    0\n", true),
+    ("fn main() -> Int\n    a = 1\n    b = a\n    c = a\n    0\n", false),
+    ("fn main() -> Int ! alloc\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    u = t\n    v = t\n    0\n", true),
+    ("fn main() -> Int\n    s = \"x\"\n    t = s\n    s = \"y\"\n    u = s\n    0\n", false),
+    ("fn f(s: String) -> String\n    return s\n    0\n", false),
+    ("fn main() -> Int\n    s = \"x\"\n    if 1 == 1\n        t = s\n        0\n    else\n        0\n    u = s\n    0\n", false),
+];
+
+#[test]
+fn use_after_move_matches_bootstrap_check() {
+    let stage1 = compile_selfhost(false);
+    for (src, moved) in OWNERSHIP_CASES {
+        let prog = write_temp_sal(src);
+        let boot = Command::new(env!("CARGO_BIN_EXE_sal"))
+            .arg("check")
+            .arg(&prog)
+            .current_dir(root())
+            .output()
+            .expect("bootstrap check");
+        let boot_moved = String::from_utf8_lossy(&boot.stderr).contains("E_MOVED");
+        assert_eq!(boot_moved, *moved, "bootstrap verdict for:\n{src}");
+        let out = Command::new(&stage1)
+            .arg(&prog)
+            .args(["-o", "/tmp/sal-own.out"])
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("own"))
+            .current_dir(root())
+            .output()
+            .expect("run stage1");
+        let self_moved = String::from_utf8_lossy(&out.stderr).contains("use of moved value");
+        assert_eq!(self_moved, *moved, "selfhost verdict for:\n{src}");
+    }
+}
+
+/// (source, is_type_error?) pairs; `sal check` must agree with the selfhost.
+const TYPE_CASES: &[(&str, bool)] = &[
+    ("fn main() -> Int\n    x = y\n    0\n", true),
+    ("fn main() -> Int\n    \"a\"\n", true),
+    ("fn main() -> Int\n    if true\n        1\n", true),
+    ("fn main() -> Int\n    if true\n        1\n    else\n        2\n", false),
+    ("fn main() -> Int\n    if true\n        1\n    else\n        \"s\"\n", true),
+    ("fn f(a: Int) -> Int\n    a\n\nfn main() -> Int\n    f(1, 2)\n", true),
+    ("fn f(a: Int) -> Int\n    a\n\nfn main() -> Int\n    f(\"s\")\n", true),
+    ("fn main() -> Int\n    return \"s\"\n", true),
+    ("fn main() -> Int\n    1 + \"s\"\n", true),
+    ("fn main() -> Int\n    \"s\" + 1\n", true),
+    ("fn main() -> Int\n    1.5 % 2\n", true),
+    ("fn main() -> Int\n    let x: String = 1\n    0\n", true),
+    ("fn main() -> Int\n    return 1\n    2\n", true),
+    ("fn main() -> Int\n    a = 1\n    b = a + 2 * 3\n    b\n", false),
+    ("fn main() -> Float\n    1.5 + 2.0\n", false),
+];
+
+#[test]
+fn scalar_type_errors_match_bootstrap_check() {
+    let stage1 = compile_selfhost(false);
+    for (src, is_err) in TYPE_CASES {
+        let prog = write_temp_sal(src);
+        let boot = Command::new(env!("CARGO_BIN_EXE_sal"))
+            .arg("check")
+            .arg(&prog)
+            .current_dir(root())
+            .output()
+            .expect("bootstrap check");
+        let boot_err = String::from_utf8_lossy(&boot.stderr).contains("E_TYPE");
+        assert_eq!(boot_err, *is_err, "bootstrap verdict for:\n{src}");
+        let out = Command::new(&stage1)
+            .arg(&prog)
+            .args(["-o", "/tmp/sal-ty.out"])
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("ty"))
+            .current_dir(root())
+            .output()
+            .expect("run stage1");
+        assert_eq!(
+            out.status.code() != Some(0),
+            *is_err,
+            "selfhost verdict for:\n{src}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// (source, device/place error?) pairs; `sal check` must agree with the selfhost.
+const DEVICE_CASES: &[(&str, bool)] = &[
+    (
+        "fn main() -> Int ! alloc, gpu\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    on gpu\n        relu(t)\n    0\n",
+        true,
+    ),
+    (
+        "fn main() -> Int ! alloc, gpu\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    g = to gpu t\n    on gpu\n        relu(g)\n    0\n",
+        false,
+    ),
+    (
+        "fn main() -> Int ! alloc, gpu, tpu\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    g = to gpu t\n    p = to tpu t\n    on gpu\n        matmul(g, p)\n    0\n",
+        true,
+    ),
+    (
+        "fn main() -> Int ! alloc, tpu\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    g = to tpu t\n    on tpu kernel\n        relu(g)\n    0\n",
+        true,
+    ),
+    (
+        "fn main() -> Int ! alloc, gpu\n    s = \"x\"\n    on gpu\n        s\n    0\n",
+        true,
+    ),
+    (
+        "fn main() -> Int ! alloc, gpu\n    s = \"x\"\n    g = to gpu s\n    0\n",
+        true,
+    ),
+];
+
+#[test]
+fn device_errors_match_bootstrap_check() {
+    let stage1 = compile_selfhost(false);
+    for (src, is_err) in DEVICE_CASES {
+        let prog = write_temp_sal(src);
+        let boot = Command::new(env!("CARGO_BIN_EXE_sal"))
+            .arg("check")
+            .arg(&prog)
+            .current_dir(root())
+            .output()
+            .expect("bootstrap check");
+        let stderr = String::from_utf8_lossy(&boot.stderr);
+        let boot_err = stderr.contains("E_PLACE") || stderr.contains("E_DEVICE");
+        assert_eq!(boot_err, *is_err, "bootstrap verdict for:\n{src}\n{stderr}");
+        let out = Command::new(&stage1)
+            .arg(&prog)
+            .args(["-o", "/tmp/sal-dev.out"])
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("dev"))
+            .current_dir(root())
+            .output()
+            .expect("run stage1");
+        assert_eq!(
+            out.status.code() != Some(0),
+            *is_err,
+            "selfhost verdict for:\n{src}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn multi_field_structs_compile_and_run() {
+    let stage1 = compile_selfhost(false);
+    let src = "struct P\n    x: Int\n    y: Int\n\nstruct Q\n    a: P\n    z: Int\n\nfn norm(p: P) -> Int\n    p.x * p.x + p.y * p.y\n\nfn main() -> Int\n    p = P(3, 4)\n    q = Q(p, 2)\n    p.x = 6\n    norm(p) + q.z + q.a.y\n";
+    let prog = write_temp_sal(src);
+    let out_bin = std::env::temp_dir().join(format!("sal-struct-{}.out", std::process::id()));
+    let out = Command::new(&stage1)
+        .arg(&prog)
+        .arg("-o")
+        .arg(&out_bin)
+        .env("SAL_SELFHOST_CACHE", unique_cache_dir("struct"))
+        .current_dir(root())
+        .output()
+        .expect("run stage1");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let run = Command::new(&out_bin).status().expect("run compiled");
+    assert_eq!(run.code(), Some(58));
+}
+
+/// (source, is_shape_error?) pairs; `sal check` must agree with the selfhost.
+const SHAPE_CASES: &[(&str, bool)] = &[
+    ("fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 2, 3] on cpu) -> Int ! alloc\n    c = matmul(a, b)\n    0\n\nfn main() -> Int\n    0\n", true),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 3, 4] on cpu) -> Int ! alloc\n    c = matmul(a, b)\n    0\n\nfn main() -> Int\n    0\n", false),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 3, 4] on cpu, d: Tensor[F32, 5, 6] on cpu) -> Int ! alloc\n    c = matmul(matmul(a, b), d)\n    0\n\nfn main() -> Int\n    0\n", true),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[I8, 3, 4] on cpu) -> Int ! alloc\n    c = matmul(a, b)\n    0\n\nfn main() -> Int\n    0\n", true),
+];
+
+#[test]
+fn shape_errors_match_bootstrap_check() {
+    let stage1 = compile_selfhost(false);
+    for (src, bad) in SHAPE_CASES {
+        let prog = write_temp_sal(src);
+        let boot = Command::new(env!("CARGO_BIN_EXE_sal"))
+            .arg("check")
+            .arg(&prog)
+            .current_dir(root())
+            .output()
+            .expect("bootstrap check");
+        let boot_bad = String::from_utf8_lossy(&boot.stderr).contains("E_SHAPE");
+        assert_eq!(boot_bad, *bad, "bootstrap verdict for:\n{src}");
+        let out = Command::new(&stage1)
+            .arg(&prog)
+            .args(["-o", "/tmp/sal-shape.out"])
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("shape"))
+            .current_dir(root())
+            .output()
+            .expect("run stage1");
+        let err = String::from_utf8_lossy(&out.stderr);
+        let self_bad = err.contains("do not match") || err.contains("matmul element") || err.contains("rank >= 2");
+        assert_eq!(self_bad, *bad, "selfhost verdict for:\n{src}\n{err}");
+    }
 }

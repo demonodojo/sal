@@ -2,6 +2,7 @@
 # lower_program calls fusion; fusion reads ir.sal. Keeping both here avoids an import cycle.
 import ast
 import ir
+import tensorops
 
 fn FO_MATMUL() -> Int
     0
@@ -208,11 +209,36 @@ fn estimate_peak_go(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int
             estimate_peak_mm(r, cx, ops, i, n, static_total, sym, saw, op)
         elsif vec_get(op, 0) == FO_COLUMN()
             estimate_peak_col(r, cx, ops, i, n, static_total, sym, saw, op)
+        elsif vec_get(op, 0) == FO_SOFTMAX()
+            estimate_peak_softmax(r, cx, ops, i, n, static_total, sym, saw, op)
         else
             estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
 
+# A binding by variable name, else by the SSA value it holds.
+fn cx_find_any(cx: Int, name: Int) -> Int ! alloc
+    b = cx_find(cx, name)
+    if b == 0
+        bind_for_ssa(cx, name)
+    else
+        b
+
+fn estimate_peak_softmax(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int, sym: String, saw: Int, op: Int) -> Int ! alloc
+    inp = cx_find_any(cx, vec_get(op, 1))
+    if inp == 0
+        piece = "softmax(" + str_from_int(vec_get(op, 1)) + "):symbolic"
+        s2 = append_sym_plus(sym, piece)
+        estimate_peak_go(r, cx, ops, i + 1, n, static_total, str_from_int(s2), saw)
+    elsif bind_is_tensor(inp) == 0
+        piece = "softmax(" + str_from_int(vec_get(op, 1)) + "):symbolic"
+        s2 = append_sym_plus(sym, piece)
+        estimate_peak_go(r, cx, ops, i + 1, n, static_total, str_from_int(s2), saw)
+    else
+        pa = peak_tensor_piece(inp, d"softmax")
+        a1 = add_peak_piece(static_total, sym, pa)
+        estimate_peak_go(r, cx, ops, i + 1, n, vec_get(a1, 0), str_from_int(vec_get(a1, 1)), 1)
+
 fn estimate_peak_col(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int, sym: String, saw: Int, op: Int) -> Int ! alloc
-    lhs = cx_find(cx, vec_get(op, 2))
+    lhs = cx_find_any(cx, vec_get(op, 2))
     if lhs == 0
         piece = str_as_int(d"column_bin(tmp):symbolic")
         s2 = append_sym_plus(sym, str_from_int(piece))
@@ -258,8 +284,8 @@ fn add_peak_piece(st: Int, sym: String, piece: Int) -> Int ! alloc
         out
 
 fn estimate_peak_mm(r: Int, cx: Int, ops: Int, i: Int, n: Int, static_total: Int, sym: String, saw: Int, op: Int) -> Int ! alloc
-    l = cx_find(cx, vec_get(op, 1))
-    w = cx_find(cx, vec_get(op, 2))
+    l = cx_find_any(cx, vec_get(op, 1))
+    w = cx_find_any(cx, vec_get(op, 2))
     if l == 0
         estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
     elsif w == 0
@@ -482,22 +508,46 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
             lower_field(cx, e)
         elsif k == EX_IF()
             lower_if(cx, e)
+        elsif k == EX_WHILE()
+            lower_while(cx, e)
+        elsif k == EX_BOOL()
+            d = fresh(cx)
+            _p = push_const_int(cx, d, vec_get(e, 1))
+            d
+        elsif k == EX_UNARY()
+            inner = lower_expr(cx, vec_get(e, 2))
+            d = fresh(cx)
+            _p = ir_push(cx, ir_bin(d, vec_get(e, 1), inner, str_as_int(d"0")))
+            d
         else
             fresh(cx)
 
 fn lower_field(cx: Int, e: Int) -> Int ! alloc
     lower_expr(cx, vec_get(e, 1))
 
+# `S(a, b)`: a single field is the field itself (newtype); more become an Aggregate.
 fn lower_struct_ctor(cx: Int, fname: Int, args: Int) -> Int ! alloc
-    if vec_len(args) == 0
-        fresh(cx)
+    arg_names = lower_args(cx, args, 0, vec_len(args), vec_new())
+    d = fresh(cx)
+    if vec_len(arg_names) == 1
+        vec_get(arg_names, 0)
     else
-        lower_expr(cx, vec_get(args, 0))
+        _p = ir_push(cx, ir_agg(d, fname, arg_names))
+        d
+
+# The result of `to <place> x` is a tensor of x's shape on that place.
+fn register_to_tensor(cx: Int, d: Int, src: Int, place: Int) -> Int ! alloc
+    b = find_tensor(cx, src)
+    if b == 0
+        0
+    else
+        reg_tensor(cx, d, bind_elem(b), place, vec_copy(bind_dims(b)), vec_copy(bind_concrete(b)))
 
 fn lower_to(cx: Int, e: Int) -> Int ! alloc
     src = lower_expr(cx, vec_get(e, 2))
     d = fresh(cx)
     _p = ir_push(cx, ir_place(d, src, vec_get(e, 1)))
+    _t = register_to_tensor(cx, d, src, vec_get(e, 1))
     dropn = drop_name_for(vec_get(e, 2))
     _q = ir_push(cx, ir_drop(dropn))
     d
@@ -631,13 +681,73 @@ fn lower_on_matmul(cx: Int, ops: Int, d: Int, i: Int, n: Int) -> Int ! alloc
         else
             lower_on_matmul(cx, ops, d, i + 1, n)
 
+fn is_struct_ctor_call(cx: Int, fname: Int, args: Int) -> Int ! alloc
+    sd = struct_find(cx_struct_map(cx), fname)
+    if sd == 0
+        0
+    elsif structdef_field_count(sd) == vec_len(args)
+        1
+    else
+        0
+
 fn lower_call(cx: Int, e: Int) -> Int ! alloc
     fname = vec_get(e, 1)
     args = vec_get(e, 2)
-    if is_transparent_struct_name(cx, fname) == 1
+    if is_struct_ctor_call(cx, fname, args) == 1
         lower_struct_ctor(cx, fname, args)
     else
         lower_call_runtime(cx, e, fname, args)
+
+# Runtime container kind: Int 0, Float 1, Bool 2, String 3.
+fn scalar_kind_text(txt: String, i: Int, j: Int) -> Int ! alloc
+    t = trim_type_piece(str_slice(txt, i, j))
+    if str_eq(t, "Float") == 1
+        1
+    elsif str_eq(t, "Bool") == 1
+        2
+    elsif str_eq(t, "String") == 1
+        3
+    else
+        0
+
+fn trim_type_piece(t: String) -> String ! alloc
+    n = str_len(t)
+    if n > 0
+        if str_char(t, n - 1) == 32
+            trim_type_piece(str_slice(t, 0, n - 1))
+        else
+            t
+    else
+        t
+
+# `list_new[T]()` passes the element kind; `dict_new[K, V]()` passes both.
+fn lower_container_new(cx: Int, e: Int, d: Int, nkinds: Int) -> Int ! alloc
+    ta = ex_call_type_args(e)
+    txt = d""
+    if ta != 0
+        txt = str_from_int(ta)
+    else
+        txt = d""
+    comma = find_char(txt, 44, 0, str_len(txt))
+    k1 = 0
+    k2 = 0
+    if comma < 0
+        k1 = scalar_kind_text(txt, 0, str_len(txt))
+    else
+        k1 = scalar_kind_text(txt, 0, comma)
+        k2 = scalar_kind_text(txt, comma + 1, str_len(txt))
+    argv = vec_new()
+    k1d = fresh(cx)
+    _a = push_const_int(cx, k1d, k1)
+    _b = vec_push(argv, k1d)
+    if nkinds == 2
+        k2d = fresh(cx)
+        _c = push_const_int(cx, k2d, k2)
+        _e = vec_push(argv, k2d)
+    else
+        _e = 0
+    _p = ir_push(cx, ir_call(d, str_as_int(d"sal_" + str_from_int(vec_get(e, 1))), argv, 1))
+    d
 
 fn lower_call_runtime(cx: Int, e: Int, fname: Int, args: Int) -> Int ! alloc
     out = vec_new()
@@ -668,10 +778,34 @@ fn lower_call_runtime(cx: Int, e: Int, fname: Int, args: Int) -> Int ! alloc
             d
     elsif str_eq(str_from_int(fname), d"where") == 1
         lower_where_call(cx, args, arg_names, d)
+    elsif lower_tensor_builtin(cx, fname, args, arg_names, d) == 1
+        d
+    elsif str_eq(fname, "list_new") == 1
+        lower_container_new(cx, e, d, 1)
+    elsif str_eq(fname, "dict_new") == 1
+        lower_container_new(cx, e, d, 2)
     else
         rname = runtime_name(cx, fname)
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
+        _r = register_ret_tensor(cx, d, fname)
         d
+
+# A user fn declared to return a tensor gives its result that shape.
+fn register_ret_tensor(cx: Int, d: Int, fname: Int) -> Int ! alloc
+    if is_user_fn(cx, fname) == 0
+        0
+    elsif strenv_fnrets(cx_strenv(cx)) == 0
+        0
+    else
+        ret = map_get(strenv_fnrets(cx_strenv(cx)), fname)
+        if ret == 0
+            0
+        elsif str_contains_tensor(str_from_int(ret)) == 0
+            0
+        else
+            b = bind_new(d, d)
+            _t = parse_tensor_type(str_from_int(ret), b)
+            vec_push(cx_binds(cx), b)
 
 fn frame_name_for_where(cx: Int, e: Int) -> Int ! alloc
     if e == 0
@@ -745,21 +879,30 @@ fn lower_call_normal(cx: Int, e: Int) -> Int ! alloc
 fn lower_if(cx: Int, e: Int) -> Int ! alloc
     c = lower_expr(cx, vec_get(e, 1))
     saved = cx_insts(cx)
-    then_env = cx_binds(cx)
+    binds = cx_binds(cx)
+    n0 = vec_len(binds)
+    base_snap = snap_binds(binds, 0, n0, vec_new())
     slen = strenv_len(cx_strenv(cx))
     _a = cx_set_insts(cx, vec_new())
     then_b = vec_get(e, 2)
     then_val = lower_block_value(cx, then_b)
     then_body = cx_insts(cx)
+    then_snap = snap_binds(binds, 0, n0, vec_new())
+    _k1 = kill_new_binds(cx, n0)
+    _r1 = restore_binds(binds, base_snap, 0, n0)
     _rs = strenv_set_len(cx_strenv(cx), slen)
     _b = cx_set_insts(cx, vec_new())
-    # restore binds shallowly - binds mutated in place; for corpus if rare
     else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
     else_val = lower_block_value(cx, else_b)
     else_body = cx_insts(cx)
+    else_snap = snap_binds(binds, 0, n0, vec_new())
+    _k2 = kill_new_binds(cx, n0)
+    _r2 = restore_binds(binds, base_snap, 0, n0)
     _rs2 = strenv_set_len(cx_strenv(cx), slen)
     _c = cx_set_insts(cx, saved)
     d = fresh(cx)
+    order = sorted_live_binds(cx, n0)
+    carried = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, vec_new())
     inst = vec_new()
     _d = vec_push(inst, II_IF())
     _e = vec_push(inst, d)
@@ -768,8 +911,310 @@ fn lower_if(cx: Int, e: Int) -> Int ! alloc
     _h = vec_push(inst, else_body)
     _i = vec_push(inst, then_val)
     _j = vec_push(inst, else_val)
+    _l = vec_push(inst, carried)
     _p = ir_push(cx, inst)
     d
+
+fn snap_binds(binds: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _p = vec_push(out, bind_ssa(vec_get(binds, i)))
+        snap_binds(binds, i + 1, n, out)
+
+fn restore_binds(binds: Int, snap: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _s = bind_set_ssa(vec_get(binds, i), vec_get(snap, i))
+        restore_binds(binds, snap, i + 1, n)
+
+# Bindings created inside a branch go out of scope with it.
+fn kill_new_binds(cx: Int, n0: Int) -> Int ! alloc
+    binds = cx_binds(cx)
+    kill_new_binds_go(cx, binds, n0, vec_len(binds))
+
+fn kill_new_binds_go(cx: Int, binds: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        b = vec_get(binds, i)
+        if cx_find(cx, bind_name(b)) == b
+            _m = map_put(cx_bind_map(cx), bind_name(b), 0)
+        else
+            _m = 0
+        kill_new_binds_go(cx, binds, i + 1, n)
+
+fn str_less_go(a: Int, b: Int, i: Int, na: Int, nb: Int) -> Int ! alloc
+    if i >= na
+        if i < nb
+            1
+        else
+            0
+    elsif i >= nb
+        0
+    elsif str_char(a, i) < str_char(b, i)
+        1
+    elsif str_char(a, i) > str_char(b, i)
+        0
+    else
+        str_less_go(a, b, i + 1, na, nb)
+
+fn str_less(a: Int, b: Int) -> Int ! alloc
+    str_less_go(a, b, 0, str_len(a), str_len(b))
+
+# Indices of the live bindings among the first n0, ordered by name.
+fn sorted_live_binds(cx: Int, n0: Int) -> Int ! alloc
+    sorted_live_binds_go(cx, cx_binds(cx), 0, n0, vec_new())
+
+fn sorted_live_binds_go(cx: Int, binds: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        b = vec_get(binds, i)
+        if cx_find(cx, bind_name(b)) == b
+            _p = sorted_insert(binds, out, i, vec_len(out))
+        else
+            _p = 0
+        sorted_live_binds_go(cx, binds, i + 1, n, out)
+
+# Insert index `idx` into `out` keeping names ascending.
+fn sorted_insert(binds: Int, out: Int, idx: Int, at: Int) -> Int ! alloc
+    _p = vec_push(out, idx)
+    sorted_bubble(binds, out, at)
+
+fn sorted_bubble(binds: Int, out: Int, j: Int) -> Int ! alloc
+    if j <= 0
+        0
+    else
+        a = vec_get(out, j - 1)
+        b = vec_get(out, j)
+        if str_less(bind_name(vec_get(binds, b)), bind_name(vec_get(binds, a))) == 1
+            _x = vec_set(out, j - 1, b)
+            _y = vec_set(out, j, a)
+            sorted_bubble(binds, out, j - 1)
+        else
+            0
+
+fn merge_if_carries(cx: Int, order: Int, k: Int, base: Int, ts: Int, es: Int, out: Int) -> Int ! alloc
+    if k >= vec_len(order)
+        out
+    else
+        i = vec_get(order, k)
+        b = vec_get(cx_binds(cx), i)
+        base_v = vec_get(base, i)
+        t = vec_get(ts, i)
+        e = vec_get(es, i)
+        if str_eq(t, base_v) == 1
+            if str_eq(e, base_v) == 1
+                _s = 0
+            else
+                _s = carry_one(cx, b, t, e, out)
+        else
+            _s = carry_one(cx, b, t, e, out)
+        merge_if_carries(cx, order, k + 1, base, ts, es, out)
+
+fn carry_one(cx: Int, b: Int, t: Int, e: Int, out: Int) -> Int ! alloc
+    if str_eq(t, e) == 1
+        bind_set_ssa(b, t)
+    else
+        dest = fresh(cx)
+        _s = bind_set_ssa(b, dest)
+        c = vec_new()
+        _a = vec_push(c, dest)
+        _b = vec_push(c, t)
+        _c = vec_push(c, e)
+        vec_push(out, c)
+
+# ---- while ----
+# Names assigned (not `let`) anywhere in a block, as the bootstrap's collect_assigned_*.
+fn assigned_add(names: Int, name: Int) -> Int ! alloc
+    if assigned_has(names, name, 0, vec_len(names)) == 0
+        vec_push(names, name)
+    else
+        0
+
+fn assigned_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(vec_get(names, i), name) == 1
+        1
+    else
+        assigned_has(names, name, i + 1, n)
+
+fn assigned_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = vec_get(stmts, i)
+        if vec_get(st, 0) == 1
+            if vec_get(st, 4) == 0
+                _a = assigned_add(names, vec_get(st, 1))
+            else
+                _a = 0
+        else
+            _a = 0
+        _b = assigned_expr(vec_get(st, 2), names)
+        assigned_stmts(stmts, i + 1, n, names)
+
+fn assigned_block(b: Int, names: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        _a = assigned_stmts(stmts, 0, vec_len(stmts), names)
+        assigned_expr(block_tail(b), names)
+
+fn assigned_args(args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = assigned_expr(vec_get(args, i), names)
+        assigned_args(args, i + 1, n, names)
+
+fn assigned_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = assigned_expr(vec_get(arm, 0), names)
+        _b = assigned_block(vec_get(arm, 1), names)
+        assigned_arms(arms, i + 1, n, names)
+
+fn assigned_expr(e: Int, names: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_IF()
+            _a = assigned_expr(vec_get(e, 1), names)
+            _b = assigned_block(vec_get(e, 2), names)
+            arms = vec_get(e, 4)
+            _c = assigned_arms(arms, 0, vec_len(arms), names)
+            assigned_block(vec_get(e, 3), names)
+        elsif k == EX_ON()
+            assigned_block(vec_get(e, 2), names)
+        elsif k == EX_WHILE()
+            _a = assigned_expr(vec_get(e, 1), names)
+            assigned_block(vec_get(e, 2), names)
+        elsif k == EX_CALL()
+            args = vec_get(e, 2)
+            assigned_args(args, 0, vec_len(args), names)
+        elsif k == EX_BINARY()
+            _a = assigned_expr(vec_get(e, 2), names)
+            assigned_expr(vec_get(e, 3), names)
+        elsif k == EX_UNARY()
+            assigned_expr(vec_get(e, 2), names)
+        elsif k == EX_TO()
+            assigned_expr(vec_get(e, 2), names)
+        elsif k == EX_TRY()
+            assigned_expr(vec_get(e, 1), names)
+        else
+            0
+
+# Assigned names that are bound at the loop head, ordered by name.
+fn while_carried_names(cx: Int, assigned: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        nm = vec_get(assigned, i)
+        if cx_find(cx, nm) != 0
+            _p = vec_push(out, nm)
+            _s = names_bubble(out, vec_len(out) - 1)
+        else
+            _s = 0
+        while_carried_names(cx, assigned, i + 1, n, out)
+
+fn names_bubble(out: Int, j: Int) -> Int ! alloc
+    if j <= 0
+        0
+    elsif str_less(vec_get(out, j), vec_get(out, j - 1)) == 1
+        a = vec_get(out, j - 1)
+        _x = vec_set(out, j - 1, vec_get(out, j))
+        _y = vec_set(out, j, a)
+        names_bubble(out, j - 1)
+    else
+        0
+
+# [name, incoming, dest] per carried binding; dests are allocated in name order.
+fn while_specs(cx: Int, names: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        nm = vec_get(names, i)
+        b = cx_find(cx, nm)
+        spec = vec_new()
+        _a = vec_push(spec, nm)
+        _b = vec_push(spec, bind_ssa(b))
+        dest = fresh(cx)
+        _c = vec_push(spec, dest)
+        _d = bind_set_ssa(b, dest)
+        _e = vec_push(out, spec)
+        while_specs(cx, names, i + 1, n, out)
+
+fn while_carries(cx: Int, specs: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        spec = vec_get(specs, i)
+        b = cx_find(cx, vec_get(spec, 0))
+        incoming = vec_get(spec, 1)
+        dest = vec_get(spec, 2)
+        updated = bind_ssa(b)
+        if str_eq(updated, dest) == 1
+            updated = incoming
+        else
+            updated = updated
+        _s = bind_set_ssa(b, dest)
+        c = vec_new()
+        _a = vec_push(c, dest)
+        _b = vec_push(c, incoming)
+        _c = vec_push(c, updated)
+        _d = vec_push(out, c)
+        while_carries(cx, specs, i + 1, n, out)
+
+fn lower_while(cx: Int, e: Int) -> Int ! alloc
+    body = vec_get(e, 2)
+    assigned = vec_new()
+    _a = assigned_block(body, assigned)
+    names = while_carried_names(cx, assigned, 0, vec_len(assigned), vec_new())
+    specs = while_specs(cx, names, 0, vec_len(names), vec_new())
+    saved = cx_insts(cx)
+    binds = cx_binds(cx)
+    n0 = vec_len(binds)
+    slen = strenv_len(cx_strenv(cx))
+    _b = cx_set_insts(cx, vec_new())
+    c = lower_expr(cx, vec_get(e, 1))
+    cond_insts = cx_insts(cx)
+    _c = cx_set_insts(cx, vec_new())
+    _v = lower_block_effects(cx, body)
+    body_insts = cx_insts(cx)
+    _k = kill_new_binds(cx, n0)
+    _rs = strenv_set_len(cx_strenv(cx), slen)
+    _d = cx_set_insts(cx, saved)
+    carried = while_carries(cx, specs, 0, vec_len(specs), vec_new())
+    inst = vec_new()
+    _e = vec_push(inst, II_WHILE())
+    _f = vec_push(inst, cond_insts)
+    _g = vec_push(inst, c)
+    _h = vec_push(inst, body_insts)
+    _i = vec_push(inst, carried)
+    _p = ir_push(cx, inst)
+    0
+
+# Statements and tail for effect only: no placeholder value when there is no tail.
+fn lower_block_effects(cx: Int, b: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        stopped = lower_stmts(cx, stmts, 0, vec_len(stmts))
+        if stopped == 1
+            0
+        elsif block_tail(b) == 0
+            0
+        else
+            lower_expr(cx, block_tail(b))
 
 fn lower_block_value(cx: Int, b: Int) -> Int ! alloc
     if b == 0
@@ -790,6 +1235,87 @@ fn lower_block_value(cx: Int, b: Int) -> Int ! alloc
                 d
             else
                 lower_expr(cx, tail)
+
+# `x = load[Tensor[...] on p](path)` binds a tensor of the declared type; any other
+# call result keeps the shape registered for its SSA value.
+fn bind_load_tensor(cx: Int, name: Int, call: Int, v: Int) -> Int ! alloc
+    ta = ex_call_type_args(call)
+    if ta == 0
+        0
+    elsif str_eq(vec_get(call, 1), "load") == 0
+        0
+    else
+        bb = cx_find(cx, name)
+        if bb == 0
+            0
+        elsif str_contains_tensor(str_from_int(ta)) == 0
+            0
+        else
+            parse_tensor_type(str_from_int(ta), bb)
+
+# `let x: Tensor[...] on p = ...` binds a tensor of the declared type.
+fn bind_declared_tensor(cx: Int, name: Int, ty: Int) -> Int ! alloc
+    bb = cx_find(cx, name)
+    if bb == 0
+        0
+    elsif str_contains_tensor(str_from_int(ty)) == 0
+        0
+    else
+        parse_tensor_type(str_from_int(ty), bb)
+
+# `y = to gpu x`: y is a tensor of x's shape on the new place.
+fn bind_to_tensor(cx: Int, name: Int, e: Int) -> Int ! alloc
+    inner = vec_get(e, 2)
+    bb = cx_find(cx, name)
+    if bb == 0
+        0
+    elsif ex_kind(inner) != EX_IDENT()
+        0
+    else
+        src = cx_find(cx, vec_get(inner, 1))
+        if src == 0
+            0
+        elsif src == bb
+            bind_set_place(bb, vec_get(e, 1))
+        elsif bind_is_tensor(src) == 0
+            0
+        else
+            _a = bind_set_tensor(bb, 1)
+            _b = bind_set_elem(bb, bind_elem(src))
+            _c = bind_set_ndims(bb, bind_ndims(src))
+            _d = bind_set_place(bb, vec_get(e, 1))
+            _e = copy_dims(bind_dims(src), bind_dims(bb), 0, vec_len(bind_dims(src)))
+            copy_dims(bind_concrete(src), bind_concrete(bb), 0, vec_len(bind_concrete(src)))
+
+# `y = <tensor value>`: y takes the shape registered for that SSA value.
+fn inherit_tensor(cx: Int, name: Int, v: Int) -> Int ! alloc
+    bb = cx_find(cx, name)
+    if bb == 0
+        0
+    elsif bind_is_tensor(bb) == 1
+        0
+    else
+        src = bind_for_ssa(cx, v)
+        if src == 0
+            0
+        elsif src == bb
+            0
+        elsif bind_is_tensor(src) == 0
+            0
+        else
+            _a = bind_set_tensor(bb, 1)
+            _b = bind_set_elem(bb, bind_elem(src))
+            _c = bind_set_ndims(bb, bind_ndims(src))
+            _d = bind_set_place(bb, bind_place(src))
+            _e = copy_dims(bind_dims(src), bind_dims(bb), 0, vec_len(bind_dims(src)))
+            copy_dims(bind_concrete(src), bind_concrete(bb), 0, vec_len(bind_concrete(src)))
+
+fn copy_dims(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(dst, vec_get(src, i))
+        copy_dims(src, dst, i + 1, n)
 
 fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -821,6 +1347,12 @@ fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
                     _q = vec_push(dims, vec_get(ex, 2))
                     _r = vec_push(conc, vec_get(ex, 1))
                     _s = vec_push(conc, vec_get(ex, 2))
+            elsif vec_get(st, 3) != 0
+                _x = bind_declared_tensor(cx, vec_get(st, 1), vec_get(st, 3))
+            elsif ex_kind(ex) == EX_CALL()
+                _x = bind_load_tensor(cx, vec_get(st, 1), ex, v)
+            elsif ex_kind(ex) == EX_TO()
+                _x = 0
             else
                 _x = 0
             lower_stmts(cx, stmts, i + 1, n)
@@ -838,6 +1370,196 @@ fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
             _v = lower_expr(cx, vec_get(st, 2))
             lower_stmts(cx, stmts, i + 1, n)
 
+# ---- struct drops ----
+# ---- moved bindings: bare identifiers that escape (bound, returned, tail) ----
+fn mv_add(names: Int, e: Int) -> Int ! alloc
+    if e == 0
+        0
+    elsif ex_kind(e) == EX_IDENT()
+        assigned_add(names, vec_get(e, 1))
+    else
+        0
+
+fn mv_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = vec_get(stmts, i)
+        k = vec_get(st, 0)
+        if k == 1
+            _a = mv_add(names, vec_get(st, 2))
+        elsif k == 2
+            _a = mv_add(names, vec_get(st, 2))
+        elsif k == 3
+            _a = mv_add(names, vec_get(st, 2))
+        else
+            _a = 0
+        _b = mv_expr(vec_get(st, 2), names)
+        mv_stmts(stmts, i + 1, n, names)
+
+fn mv_block(b: Int, names: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        _a = mv_stmts(stmts, 0, vec_len(stmts), names)
+        _b = mv_add(names, block_tail(b))
+        mv_expr(block_tail(b), names)
+
+fn mv_args(args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = mv_expr(vec_get(args, i), names)
+        mv_args(args, i + 1, n, names)
+
+fn mv_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = mv_expr(vec_get(arm, 0), names)
+        _b = mv_block(vec_get(arm, 1), names)
+        mv_arms(arms, i + 1, n, names)
+
+fn mv_expr(e: Int, names: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_CALL()
+            args = vec_get(e, 2)
+            mv_args(args, 0, vec_len(args), names)
+        elsif k == EX_BINARY()
+            _a = mv_expr(vec_get(e, 2), names)
+            mv_expr(vec_get(e, 3), names)
+        elsif k == EX_UNARY()
+            mv_expr(vec_get(e, 2), names)
+        elsif k == EX_TO()
+            mv_expr(vec_get(e, 2), names)
+        elsif k == EX_TRY()
+            mv_expr(vec_get(e, 1), names)
+        elsif k == EX_FIELD()
+            mv_expr(vec_get(e, 1), names)
+        elsif k == EX_ON()
+            mv_block(vec_get(e, 2), names)
+        elsif k == EX_WHILE()
+            _a = mv_expr(vec_get(e, 1), names)
+            mv_block(vec_get(e, 2), names)
+        elsif k == EX_IF()
+            _a = mv_expr(vec_get(e, 1), names)
+            _b = mv_block(vec_get(e, 2), names)
+            arms = vec_get(e, 4)
+            _c = mv_arms(arms, 0, vec_len(arms), names)
+            mv_block(vec_get(e, 3), names)
+        else
+            0
+
+# ---- drops ----
+fn fn_has_param(params: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(vec_get(vec_get(params, i), 0), name) == 1
+        1
+    else
+        fn_has_param(params, name, i + 1, n)
+
+# Struct definition whose name the type text `ty` spells, or 0.
+fn struct_for_type(structs: Int, ty: Int, i: Int, n: Int) -> Int ! alloc
+    if ty == 0
+        0
+    elsif i >= n
+        0
+    else
+        sd = vec_get(structs, i)
+        if ty_text_matches(ty, structdef_name(sd)) == 1
+            sd
+        else
+            struct_for_type(structs, ty, i + 1, n)
+
+# Distinct local names bound in the strenv, sorted, with struct types only.
+fn drop_candidates(cx: Int, env: Int, params: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        nm = vec_get(env, 3 + i * 2)
+        if fn_has_param(params, nm, 0, vec_len(params)) == 0
+            if assigned_has(out, nm, 0, vec_len(out)) == 0
+                ty = strenv_type(env, nm)
+                structs = cx_struct_map(cx)
+                if struct_for_type(structs, ty, 0, vec_len(structs)) != 0
+                    _p = vec_push(out, nm)
+                    _s = names_bubble(out, vec_len(out) - 1)
+                else
+                    _s = 0
+            else
+                _s = 0
+        else
+            _s = 0
+        drop_candidates(cx, env, params, i + 1, n, out)
+
+fn drop_fields(cx: Int, base: Int, sd: Int, fields: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        fld = vec_get(fields, i)
+        if ty_handle_is_string(vec_get(fld, 1)) == 1
+            if structdef_field_count(sd) == 1
+                _a = ir_push(cx, ir_call_free(base))
+            else
+                d = fresh(cx)
+                _b = ir_push(cx, ir_extract(d, base, structdef_name(sd), i))
+                _c = ir_push(cx, ir_call_free(d))
+        else
+            _d = 0
+        drop_fields(cx, base, sd, fields, i + 1, n)
+
+fn drop_locals(cx: Int, names: Int, moved: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = vec_get(names, i)
+        if assigned_has(moved, nm, 0, vec_len(moved)) == 0
+            b = cx_find(cx, nm)
+            if b != 0
+                structs = cx_struct_map(cx)
+                sd = struct_for_type(structs, strenv_type(cx_strenv(cx), nm), 0, vec_len(structs))
+                _a = drop_fields(cx, bind_ssa(b), sd, structdef_fields(sd), 0, structdef_field_count(sd))
+            else
+                _a = 0
+        else
+            _a = 0
+        drop_locals(cx, names, moved, i + 1, n)
+
+fn emit_struct_drops(cx: Int, f: Int) -> Int ! alloc
+    moved = vec_new()
+    _m = mv_block(vec_get(f, 2), moved)
+    env = cx_strenv(cx)
+    names = drop_candidates(cx, env, vec_get(f, 1), 0, strenv_len(env), vec_new())
+    drop_locals(cx, names, moved, 0, vec_len(names))
+
+# Instructions without a trailing Return, which is returned separately (0 when none).
+fn pop_final_ret(cx: Int) -> Int ! alloc
+    insts = cx_insts(cx)
+    n = vec_len(insts)
+    if n == 0
+        0
+    elsif vec_get(vec_get(insts, n - 1), 0) == II_RET()
+        keep = vec_new()
+        _c = copy_insts(insts, keep, 0, n - 1)
+        ret = vec_get(insts, n - 1)
+        _s = cx_set_insts(cx, keep)
+        ret
+    else
+        0
+
+fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(dst, vec_get(src, i))
+        copy_insts(src, dst, i + 1, n)
+
 fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
     cx = cx_new(fn_names, fm, struct_map, fnrets)
     params = vec_get(f, 1)
@@ -854,6 +1576,12 @@ fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int
             _c = ir_push(cx, ir_ret(v1))
     else
         _c = 0
+    ret = pop_final_ret(cx)
+    _dr = emit_struct_drops(cx, f)
+    if ret != 0
+        _rr = ir_push(cx, ret)
+    else
+        _rr = 0
     out = vec_new()
     _d = vec_push(out, vec_get(f, 0))
     _e = vec_push(out, cx_dim_params(cx))
@@ -872,18 +1600,39 @@ fn try_lower_tensor_bin(cx: Int, e: Int, l: Int, r: Int, d: Int) -> Int ! alloc
     else
         try_lower_tensor_bin_go(cx, e, l, r, left_e, right_e, d)
 
+# Element count operand: a 1-D tensor keeps its symbolic axis; otherwise the
+# product of the extents as a constant (1 when an extent is unknown).
+fn tensor_len_operand(cx: Int, b: Int, tensor_ssa: Int) -> Int ! alloc
+    if bind_ndims(b) == 1
+        tensor_len_ssa_name(tensor_ssa)
+    else
+        conc = bind_concrete(b)
+        prod = conc_product_go(conc, 0, vec_len(conc), 1)
+        d = fresh(cx)
+        if prod > 0
+            _p = push_const_int(cx, d, prod)
+        else
+            _p = push_const_int(cx, d, 1)
+        d
+
 fn try_lower_tensor_bin_go(cx: Int, e: Int, tensor_ssa: Int, other_ssa: Int, tensor_e: Int, other_e: Int, d: Int) -> Int ! alloc
     b = 0
     if ex_kind(tensor_e) == EX_IDENT()
         b = cx_find(cx, vec_get(tensor_e, 1))
+        if b == 0
+            b = find_tensor(cx, tensor_ssa)
+        elsif bind_is_tensor(b) == 0
+            b = find_tensor(cx, tensor_ssa)
+        else
+            b = b
     else
-        b = bind_for_ssa(cx, tensor_ssa)
+        b = find_tensor(cx, tensor_ssa)
     if b == 0
         0
     elsif bind_is_tensor(b) == 0
         0
     else
-        len = tensor_len_ssa_name(tensor_ssa)
+        len = tensor_len_operand(cx, b, tensor_ssa)
         scalar = 0
         if expr_is_tensor(cx, other_e) == 0
             scalar = 1

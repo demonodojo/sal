@@ -36,6 +36,21 @@ fn EX_WHILE() -> Int
 fn EX_FIELD() -> Int
     11
 
+fn EX_BOOL() -> Int
+    12
+
+fn EX_LAMBDA() -> Int
+    13
+
+fn EX_UNARY() -> Int
+    14
+
+fn EX_MATCH() -> Int
+    15
+
+fn EX_TRY() -> Int
+    16
+
 # ---- AST ----
 fn ex_int(v: Int) -> Int ! alloc
     e = vec_new()
@@ -75,7 +90,19 @@ fn ex_call(name: String, args: Int) -> Int ! alloc
     _a = vec_push(e, EX_CALL())
     _b = vec_push(e, str_as_int(name))
     _c = vec_push(e, args)
+    _d = vec_push(e, 0)
     e
+
+# Text of the `[...]` type arguments of a call (without the closing bracket), 0 when none.
+fn ex_call_type_args(e: Int) -> Int ! alloc
+    if vec_len(e) > 3
+        vec_get(e, 3)
+    else
+        0
+
+fn ex_call_set_type_args(e: Int, text: Int) -> Int ! alloc
+    _s = vec_set(e, 3, text)
+    0
 
 fn ex_field(base: Int, field: String) -> Int ! alloc
     e = vec_new()
@@ -89,7 +116,22 @@ fn structdef_new(name: String, fields: Int) -> Int ! alloc
     _a = vec_push(s, str_as_int(name))
     _b = vec_push(s, fields)
     _c = vec_push(s, 0)
+    _d = vec_push(s, vec_new())
+    _e = vec_push(s, 0)
     s
+
+# Type parameter names of a struct/frame, and whether it was declared `frame`.
+fn structdef_params(s: Int) -> Int ! alloc
+    vec_get(s, 3)
+
+fn structdef_set_params(s: Int, ps: Int) -> Int ! alloc
+    vec_set(s, 3, ps)
+
+fn structdef_is_frame(s: Int) -> Int ! alloc
+    vec_get(s, 4)
+
+fn structdef_set_frame(s: Int, v: Int) -> Int ! alloc
+    vec_set(s, 4, v)
 
 fn structdef_set_layout_c(s: Int, v: Int) -> Int ! alloc
     if vec_len(s) > 2
@@ -119,7 +161,14 @@ fn ex_on(place: String, body: Int) -> Int ! alloc
     _a = vec_push(e, EX_ON())
     _b = vec_push(e, str_as_int(place))
     _c = vec_push(e, body)
+    _d = vec_push(e, 0)
+    _e = vec_push(e, 0)
     e
+
+# `on <place> kernel [i, j in shape]`: slot 3 = kernel flag, slot 4 = has an index list.
+fn ex_on_set_kernel(e: Int, has_index: Int) -> Int ! alloc
+    _a = vec_set(e, 3, 1)
+    vec_set(e, 4, has_index)
 
 fn ex_tensor(nrows: Int, ncols: Int) -> Int ! alloc
     e = vec_new()
@@ -150,11 +199,71 @@ fn ex_kind(e: Int) -> Int ! alloc
     else
         vec_get(e, 0)
 
+fn ex_bool(v: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_BOOL())
+    _b = vec_push(e, v)
+    e
+
+fn ex_lambda(param: String, body: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_LAMBDA())
+    _b = vec_push(e, str_as_int(param))
+    _c = vec_push(e, body)
+    e
+
+# op is "neg" or "not"
+fn ex_unary(op: String, inner: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_UNARY())
+    _b = vec_push(e, str_as_int(op))
+    _c = vec_push(e, inner)
+    e
+
+fn ex_try(inner: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_TRY())
+    _b = vec_push(e, inner)
+    e
+
+# Match: arms are `[pattern, body]`; a pattern is `[kind, text, qual, args]` with
+# kind 0 `_`, 1 ident, 2 int (text = value), 3 variant.
+fn ex_match(scrut: Int, arms: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, EX_MATCH())
+    _b = vec_push(e, scrut)
+    _c = vec_push(e, arms)
+    e
+
+fn pat_new(kind: Int, text: Int, qual: Int, args: Int) -> Int ! alloc
+    p = vec_new()
+    _a = vec_push(p, kind)
+    _b = vec_push(p, text)
+    _c = vec_push(p, qual)
+    _d = vec_push(p, args)
+    p
+
 fn stmt_new(is_as: Int, name: String, expr: Int) -> Int ! alloc
     s = vec_new()
     _a = vec_push(s, is_as)
     _b = vec_push(s, str_as_int(name))
     _c = vec_push(s, expr)
+    _d = vec_push(s, 0)
+    _e = vec_push(s, 0)
+    _f = vec_push(s, 0)
+    s
+
+# `let name: ty = expr`; `ty` is a type text handle, 0 when omitted.
+fn stmt_let(name: String, ty: Int, expr: Int) -> Int ! alloc
+    s = stmt_new(1, name, expr)
+    _a = vec_set(s, 3, ty)
+    _b = vec_set(s, 4, 1)
+    s
+
+# `a.b = expr`: kind 3, `target` is the field expression.
+fn stmt_field_assign(target: Int, expr: Int) -> Int ! alloc
+    s = stmt_new(3, d"", expr)
+    _a = vec_set(s, 5, target)
     s
 
 fn block_new() -> Int ! alloc
@@ -187,7 +296,26 @@ fn fndef_new(name: String, params: Int, body: Int) -> Int ! alloc
     _c = vec_push(f, body)
     _d = vec_push(f, 0)
     _e = vec_push(f, 0)
+    _f = vec_push(f, fx_flags_new())
+    _g = vec_push(f, vec_new())
     f
+
+# Type parameter names of a fn.
+fn fndef_type_params(f: Int) -> Int ! alloc
+    vec_get(f, 6)
+
+# Declared effects of a fn: flags `[io, alloc, panic, gpu, tpu]`, 1 when declared.
+fn fx_flags_new() -> Int ! alloc
+    v = vec_new()
+    _a = vec_push(v, 0)
+    _b = vec_push(v, 0)
+    _c = vec_push(v, 0)
+    _d = vec_push(v, 0)
+    _e = vec_push(v, 0)
+    v
+
+fn fndef_effects(f: Int) -> Int ! alloc
+    vec_get(f, 5)
 
 fn fndef_set_no_heap(f: Int, v: Int) -> Int ! alloc
     if vec_len(f) > 4
@@ -220,7 +348,25 @@ fn prog_new() -> Int ! alloc
     _b = vec_push(pr, imps)
     _c = vec_push(pr, structs)
     _d = vec_push(pr, imp_aliases)
+    _e = vec_push(pr, vec_new())
     pr
+
+# Enums: `[name, variants, type_params]`; a variant is `[name, field_type_texts]`.
+fn prog_enums(pr: Int) -> Int ! alloc
+    vec_get(pr, 4)
+
+fn enumdef_new(name: String, params: Int, variants: Int) -> Int ! alloc
+    e = vec_new()
+    _a = vec_push(e, str_as_int(name))
+    _b = vec_push(e, variants)
+    _c = vec_push(e, params)
+    e
+
+fn variant_new(name: String, fields: Int) -> Int ! alloc
+    v = vec_new()
+    _a = vec_push(v, str_as_int(name))
+    _b = vec_push(v, fields)
+    v
 
 fn prog_fns(pr: Int) -> Int ! alloc
     vec_get(pr, 0)

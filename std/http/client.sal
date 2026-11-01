@@ -88,6 +88,23 @@ fn http_read_body(fd: Int, max: Int) -> String ! io, alloc
 fn http_decode_chunked(body: String) -> String ! alloc
     http_decode_chunked_go(body, 0, str_len(body), d"")
 
+fn hex_digit(c: Int) -> Int ! alloc
+    if c >= 97
+        c - 87
+    elsif c >= 65
+        c - 55
+    else
+        c - 48
+
+# Chunk sizes are hex; a `;ext` suffix ends the number.
+fn parse_hex(s: String, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    elsif str_char(s, i) == 59
+        acc
+    else
+        parse_hex(s, i + 1, n, acc * 16 + hex_digit(str_char(s, i)))
+
 fn http_decode_chunked_go(body: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
@@ -97,7 +114,7 @@ fn http_decode_chunked_go(body: String, i: Int, n: Int, acc: String) -> String !
             acc
         else
             hex = str_slice(body, i, line_end)
-            sz = str_as_int(hex)
+            sz = parse_hex(hex, 0, str_len(hex), 0)
             if sz <= 0
                 acc
             else

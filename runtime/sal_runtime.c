@@ -892,9 +892,9 @@ char *sal_bytes_to_str(void *vp) {
     }
     char *out = sal_str_alloc_size((size_t)b->len, (size_t)b->len + 1);
     if (b->len > 0) {
-        memcpy(sal_str_base(out), b->data, (size_t)b->len);
+        memcpy(out, b->data, (size_t)b->len);
     }
-    sal_str_base(out)[b->len] = 0;
+    out[b->len] = 0;
     return out;
 }
 

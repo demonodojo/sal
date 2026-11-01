@@ -33,6 +33,18 @@ fn II_CF() -> Int
 fn II_TBIN() -> Int
     9
 
+fn II_WHILE() -> Int
+    10
+
+fn II_AGG() -> Int
+    11
+
+fn II_EXTRACT() -> Int
+    12
+
+fn II_REBIND() -> Int
+    13
+
 # ---- Lower / IR ----
 fn cx_new(fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
     cx = vec_new()
@@ -179,6 +191,28 @@ fn ir_tbin(dest: Int, op: Int, elem: Int, place: Int, left: Int, right: Int, len
     _i = vec_push(inst, scalar)
     inst
 
+fn ir_agg(dest: Int, sname: Int, fields: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_AGG())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, sname)
+    _d = vec_push(inst, fields)
+    inst
+
+fn ir_extract(dest: Int, base: Int, sname: Int, idx: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_EXTRACT())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, base)
+    _d = vec_push(inst, sname)
+    _e = vec_push(inst, idx)
+    inst
+
+fn ir_call_free(arg: Int) -> Int ! alloc
+    args = vec_new()
+    _a = vec_push(args, arg)
+    ir_call(0, str_as_int(d"sal_free"), args, 0)
+
 fn ir_call(dest: Int, func: Int, args: Int, has_dest: Int) -> Int ! alloc
     inst = vec_new()
     _a = vec_push(inst, II_CALL())
@@ -312,8 +346,29 @@ fn is_user_fn(cx: Int, name: Int) -> Int ! alloc
     else
         1
 
+# List and dict operations always hit the runtime; prelude bodies are signatures only.
+fn is_container_op(fname: Int) -> Int ! alloc
+    if str_eq(fname, "list_new") == 1
+        1
+    elsif str_eq(fname, "list_push") == 1
+        1
+    elsif str_eq(fname, "list_len") == 1
+        1
+    elsif str_eq(fname, "list_get") == 1
+        1
+    elsif str_eq(fname, "dict_new") == 1
+        1
+    elsif str_eq(fname, "dict_put") == 1
+        1
+    elsif str_eq(fname, "dict_get") == 1
+        1
+    else
+        0
+
 fn runtime_name(cx: Int, fname: Int) -> Int ! alloc
-    if is_user_fn(cx, fname) == 1
+    if is_container_op(fname) == 1
+        str_as_int(d"sal_" + str_from_int(fname))
+    elsif is_user_fn(cx, fname) == 1
         fname
     elsif str_eq(str_from_int(fname), d"matmul") == 1
         str_as_int(d"sal_matmul_f32")
@@ -487,6 +542,10 @@ fn axis_len_from_conc(cx: Int, tname: Int, conc: Int, idx: Int) -> Int ! alloc
 fn axis_len(cx: Int, tname: Int, take_row: Int) -> Int ! alloc
     b = cx_find(cx, tname)
     if b == 0
+        b = bind_for_ssa(cx, tname)
+    else
+        b = b
+    if b == 0
         axis_len_fallback(tname, take_row)
     elsif bind_is_tensor(b) == 0
         axis_len_fallback(tname, take_row)
@@ -573,22 +632,76 @@ fn bind_for_ssa_at(binds: Int, ssa: Int, i: Int, n: Int) -> Int ! alloc
 fn bind_for_ssa(cx: Int, ssa: Int) -> Int ! alloc
     bind_for_ssa_at(cx_binds(cx), ssa, 0, vec_len(cx_binds(cx)))
 
+# A tensor registered under a key: the variable's own name, or the SSA value it
+# holds when that value is itself a registered key (a param or a pseudo binding).
+fn ident_is_tensor(cx: Int, name: Int) -> Int ! alloc
+    b = cx_find(cx, name)
+    if b == 0
+        0
+    elsif bind_is_tensor(b) == 1
+        1
+    else
+        c = cx_find(cx, bind_ssa(b))
+        if c == 0
+            ssa_key_is_tensor(cx, bind_ssa(b), 0, vec_len(cx_binds(cx)))
+        elsif bind_is_tensor(c) == 1
+            1
+        else
+            ssa_key_is_tensor(cx, bind_ssa(b), 0, vec_len(cx_binds(cx)))
+
+fn ssa_key_is_tensor(cx: Int, key: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        b = vec_get(cx_binds(cx), i)
+        if str_eq(bind_name(b), key) == 1
+            if bind_is_tensor(b) == 1
+                1
+            else
+                ssa_key_is_tensor(cx, key, i + 1, n)
+        else
+            ssa_key_is_tensor(cx, key, i + 1, n)
+
 fn expr_is_tensor(cx: Int, e: Int) -> Int ! alloc
     if e == 0
         0
     else
         k = ex_kind(e)
         if k == EX_IDENT()
-            b = cx_find(cx, vec_get(e, 1))
-            if b == 0
-                0
-            else
-                bind_is_tensor(b)
+            ident_is_tensor(cx, vec_get(e, 1))
         elsif k == EX_BINARY()
             if expr_is_tensor(cx, vec_get(e, 2)) == 1
                 1
             else
                 expr_is_tensor(cx, vec_get(e, 3))
+        else
+            0
+
+# Tensor binding for an SSA value (or a variable name): the first tensor binding
+# holding that value, as the bootstrap's tensor_info_for_ssa.
+fn find_tensor_at(cx: Int, key: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        b = vec_get(cx_binds(cx), i)
+        if bind_is_tensor(b) == 1
+            if str_eq(bind_ssa(b), key) == 1
+                b
+            else
+                find_tensor_at(cx, key, i + 1, n)
+        else
+            find_tensor_at(cx, key, i + 1, n)
+
+fn find_tensor(cx: Int, name: Int) -> Int ! alloc
+    b = find_tensor_at(cx, name, 0, vec_len(cx_binds(cx)))
+    if b != 0
+        b
+    else
+        c = cx_find(cx, name)
+        if c == 0
+            0
+        elsif bind_is_tensor(c) == 1
+            c
         else
             0
 
@@ -650,8 +763,14 @@ fn tensor_row_len_for_expr(cx: Int, e: Int, ssa: Int) -> Int ! alloc
         b = 0
         if k == EX_IDENT()
             b = cx_find(cx, vec_get(e, 1))
+            if b == 0
+                b = find_tensor(cx, ssa)
+            elsif bind_is_tensor(b) == 0
+                b = find_tensor(cx, ssa)
+            else
+                b = b
         else
-            b = bind_for_ssa(cx, ssa)
+            b = find_tensor(cx, ssa)
         if b == 0
             if k == EX_BINARY()
                 tensor_row_len_for_expr(cx, vec_get(e, 2), ssa)

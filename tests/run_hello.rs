@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sal_compiler::compile::compile_file;
 use sal_compiler::compile_source;
@@ -9,12 +10,22 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Tests run in parallel; a shared default `a.out` makes them race on
+/// "Text file busy", so each compile gets its own binary.
+fn unique_out() -> PathBuf {
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let n = N.fetch_add(1, Ordering::SeqCst);
+    root()
+        .join("target/sal-out/run_hello")
+        .join(format!("t{}_{n}", std::process::id()))
+}
+
 #[test]
 fn hello_runs_42() {
     let file = root().join("examples/hello.sal");
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -40,7 +51,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -58,7 +69,7 @@ fn incremental_cache_second_build() {
     let file = root().join("examples/hello.sal");
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -82,7 +93,7 @@ fn main() -> Int ! alloc, io
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -111,7 +122,7 @@ fn main() -> Int ! alloc, io
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -148,7 +159,7 @@ fn main() -> Int ! alloc, io
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -200,7 +211,7 @@ fn main() -> Int ! alloc
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -231,7 +242,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -259,7 +270,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -288,7 +299,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: true,
         instrument: false,
         device: "cpu".into(),
@@ -317,7 +328,7 @@ fn main() -> Int ! alloc
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -351,7 +362,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -377,7 +388,7 @@ fn main() -> Int ! alloc
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: true,
         device: "cpu".into(),
@@ -408,7 +419,7 @@ fn main() -> Int ! alloc
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: true,
         device: "cpu".into(),
@@ -436,7 +447,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -462,7 +473,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -488,7 +499,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -514,7 +525,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -540,7 +551,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -567,7 +578,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -597,7 +608,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -634,7 +645,7 @@ fn main() -> Int ! alloc
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -660,7 +671,7 @@ fn main() -> Int
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -686,7 +697,7 @@ fn main() -> Int ! alloc
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: true,
         instrument: false,
         device: "cpu".into(),

@@ -120,6 +120,54 @@ fn TK_AT() -> Int
 fn TK_RETURN() -> Int
     39
 
+fn TK_LET() -> Int
+    40
+
+fn TK_MATCH() -> Int
+    41
+
+fn TK_TRY() -> Int
+    42
+
+fn TK_TRUE() -> Int
+    43
+
+fn TK_FALSE() -> Int
+    44
+
+fn TK_ENUM() -> Int
+    45
+
+fn TK_FRAME() -> Int
+    46
+
+fn TK_KERNEL() -> Int
+    47
+
+fn TK_IN() -> Int
+    48
+
+fn TK_PERCENT() -> Int
+    49
+
+fn TK_AMP() -> Int
+    50
+
+fn TK_PIPE() -> Int
+    51
+
+fn TK_CARET() -> Int
+    52
+
+fn TK_SHL() -> Int
+    53
+
+fn TK_SHR() -> Int
+    54
+
+fn TK_FATARROW() -> Int
+    55
+
 fn is_digit(c: Int) -> Int
     if c < 48
         0
@@ -193,6 +241,24 @@ fn kw_kind(text: String) -> Int ! alloc
         TK_STRUCT()
     elsif str_eq(text, "return") == 1
         TK_RETURN()
+    elsif str_eq(text, "let") == 1
+        TK_LET()
+    elsif str_eq(text, "match") == 1
+        TK_MATCH()
+    elsif str_eq(text, "try") == 1
+        TK_TRY()
+    elsif str_eq(text, "true") == 1
+        TK_TRUE()
+    elsif str_eq(text, "false") == 1
+        TK_FALSE()
+    elsif str_eq(text, "enum") == 1
+        TK_ENUM()
+    elsif str_eq(text, "frame") == 1
+        TK_FRAME()
+    elsif str_eq(text, "kernel") == 1
+        TK_KERNEL()
+    elsif str_eq(text, "in") == 1
+        TK_IN()
     else
         TK_IDENT()
 
@@ -537,19 +603,12 @@ fn lex_tok_rest2(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 61
         if i + 1 < n
-            c2 = str_char(src, i + 1)
-            if c2 == 61
-                t = tok_new(TK_EQEQ(), d"", 0)
-                _p = vec_push(out, t)
-                lex_go(src, i + 2, n, out, st, 0)
+            if str_char(src, i + 1) == 62
+                lex_simple(src, i, n, out, st, TK_FATARROW(), 2)
             else
-                t = tok_new(TK_EQ(), d"", 0)
-                _p = vec_push(out, t)
-                lex_go(src, i + 1, n, out, st, 0)
+                lex_pair(src, i, n, out, st, 61, TK_EQ(), TK_EQEQ())
         else
-            t = tok_new(TK_EQ(), d"", 0)
-            _p = vec_push(out, t)
-            lex_go(src, i + 1, n, out, st, 0)
+            lex_simple(src, i, n, out, st, TK_EQ(), 1)
     else
         lex_tok_rest3(src, i, n, out, st, c)
 
@@ -571,38 +630,24 @@ fn lex_tok_rest3(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
             lex_go(src, i + 1, n, out, st, 0)
     elsif c == 60
         if i + 1 < n
-            c2 = str_char(src, i + 1)
-            if c2 == 61
-                t = tok_new(TK_LE(), d"", 0)
-                _p = vec_push(out, t)
-                lex_go(src, i + 2, n, out, st, 0)
+            if str_char(src, i + 1) == 60
+                lex_simple(src, i, n, out, st, TK_SHL(), 2)
             else
-                t = tok_new(TK_LT(), d"", 0)
-                _p = vec_push(out, t)
-                lex_go(src, i + 1, n, out, st, 0)
+                lex_pair(src, i, n, out, st, 61, TK_LT(), TK_LE())
         else
-            t = tok_new(TK_LT(), d"", 0)
-            _p = vec_push(out, t)
-            lex_go(src, i + 1, n, out, st, 0)
+            lex_simple(src, i, n, out, st, TK_LT(), 1)
     else
         lex_tok_rest4(src, i, n, out, st, c)
 
 fn lex_tok_rest4(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
     if c == 62
         if i + 1 < n
-            c2 = str_char(src, i + 1)
-            if c2 == 61
-                t = tok_new(TK_GE(), d"", 0)
-                _p = vec_push(out, t)
-                lex_go(src, i + 2, n, out, st, 0)
+            if str_char(src, i + 1) == 62
+                lex_simple(src, i, n, out, st, TK_SHR(), 2)
             else
-                t = tok_new(TK_GT(), d"", 0)
-                _p = vec_push(out, t)
-                lex_go(src, i + 1, n, out, st, 0)
+                lex_pair(src, i, n, out, st, 61, TK_GT(), TK_GE())
         else
-            t = tok_new(TK_GT(), d"", 0)
-            _p = vec_push(out, t)
-            lex_go(src, i + 1, n, out, st, 0)
+            lex_simple(src, i, n, out, st, TK_GT(), 1)
     elsif c == 43
         t = tok_new(TK_PLUS(), d"", 0)
         _p = vec_push(out, t)
@@ -617,6 +662,21 @@ fn lex_tok_rest4(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
         lex_go(src, i + 1, n, out, st, 0)
     else
         lex_tok_rest5(src, i, n, out, st, c)
+
+fn lex_simple(src: String, i: Int, n: Int, out: Int, st: Int, kind: Int, width: Int) -> Int ! alloc
+    t = tok_new(kind, d"", 0)
+    _p = vec_push(out, t)
+    lex_go(src, i + width, n, out, st, 0)
+
+# Operator that is `kind1` alone or `kind2` when followed by `next`.
+fn lex_pair(src: String, i: Int, n: Int, out: Int, st: Int, next: Int, kind1: Int, kind2: Int) -> Int ! alloc
+    if i + 1 < n
+        if str_char(src, i + 1) == next
+            lex_simple(src, i, n, out, st, kind2, 2)
+        else
+            lex_simple(src, i, n, out, st, kind1, 1)
+    else
+        lex_simple(src, i, n, out, st, kind1, 1)
 
 fn lex_quoted(src: String, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int ! alloc
     raw = d""
@@ -643,24 +703,19 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
         _t = push_number_tok(out, src, i, end, 0)
         lex_go(src, end, n, out, st, 0)
     elsif c == 45
-        if i + 1 < n
-            c2 = str_char(src, i + 1)
-            if is_digit(c2) == 1
-                end = read_number(src, i + 1, n)
-                _t = push_number_tok(out, src, i + 1, end, 1)
-                lex_go(src, end, n, out, st, 0)
-            else
-                t = tok_new(TK_MINUS(), d"", 0)
-                _p = vec_push(out, t)
-                lex_go(src, i + 1, n, out, st, 0)
-        else
-            t = tok_new(TK_MINUS(), d"", 0)
-            _p = vec_push(out, t)
-            lex_go(src, i + 1, n, out, st, 0)
+        lex_simple(src, i, n, out, st, TK_MINUS(), 1)
     elsif c == 46
         t = tok_new(TK_DOT(), d"", 0)
         _p = vec_push(out, t)
         lex_go(src, i + 1, n, out, st, 0)
+    elsif c == 37
+        lex_simple(src, i, n, out, st, TK_PERCENT(), 1)
+    elsif c == 38
+        lex_simple(src, i, n, out, st, TK_AMP(), 1)
+    elsif c == 124
+        lex_simple(src, i, n, out, st, TK_PIPE(), 1)
+    elsif c == 94
+        lex_simple(src, i, n, out, st, TK_CARET(), 1)
     elsif c == 64
         t = tok_new(TK_AT(), d"", 0)
         _p = vec_push(out, t)
@@ -692,7 +747,8 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
         lex_go(src, i + 1, n, out, st, 0)
 
 fn lex(src: String) -> Int ! alloc
-    lex_src(src)
+    out = vec_new()
+    lex_go(src, 0, str_len(src), out, indent_stack_new(), 1)
 
 fn preprocess_scan(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc
     if i >= n

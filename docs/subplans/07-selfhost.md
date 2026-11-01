@@ -42,3 +42,34 @@ La IR normalizada de cada programa del corpus es idéntica en las tres cadenas. 
 ## Hecho cuando
 
 `tests/selfhost_ir.rs` compara las tres IR del corpus y falla si una difiere. El binario de stage1 no es un stub que reimprime la IR del arranque: se obtiene compilando `selfhost/` con el arranque, y stage2 compilando `selfhost/` con stage1.
+
+## Estado
+
+El selfhost **no está completo**. Lo que hay hoy:
+
+| Pase | Selfhost | Notas |
+| --- | --- | --- |
+| Lexer | `lexer.sal` (en sal, ya no `lex_src` de C) | Tokens de la SPEC incl. `let`, `match`, `try`, `=>`, bit ops. |
+| Parser | `parser.sal` | Precedencias de la SPEC, `let`, lambda, `try`, `match`, `enum`, `frame`, parámetros de tipo, asignación a campos. Los tipos siguen siendo texto. |
+| Efectos | `effects.sal` | Paridad con `src/effects.rs`. |
+| Tipos | `infer.sal` | Solo escalares (`Int`/`Float`/`Bool`/`String`/`Unit`): variables, retornos, ramas de `if`, aridad y argumentos de funciones de usuario, operadores. `matmul` entre tensores con tipo declarado comprueba elemento, rango y dimensión interior (`E_SHAPE`). Resto de tensores, genéricos y builtins sin firma modelada son `Unknown`. |
+| Ownership | `ownership.sal` | `E_MOVED`; tipos de valor simplificados. |
+| Dispositivos | `device.sal` | `E_PLACE`/`E_DEVICE` con la misma lógica que `src/device.rs`; el parser reconoce `on <place> kernel`. |
+| IR | `fuse.sal`, `tensorops.sal` | `if`/`while` con carries, struct/aggregate, drops de structs con `String`, forma de `matmul`, `reshape`, `transpose`, `attention`, `rope`, `silu`, `tensor_append`, contenedores. |
+| Backend | `emit.sal` emite IR de texto y **C** | No hay LLVM ni objeto propio. |
+
+Paridad medida por `tests/selfhost_ir.rs::selfhost_ir_matches_bootstrap_on_parity_files`:
+el IR del selfhost coincide con el del arranque en todos los `.sal` del repositorio que el arranque
+lowera (incluido el propio `selfhost/`).
+
+Pendiente, por orden:
+
+1. `infer` completo: formas del resto de ops (`E_SHAPE`, `E_TENSOR_ELEM`), genéricos, enums,
+   builtins con firma. (Hecho: `matmul`; structs de varios campos en el emisor C, como puntero a
+   array de slots `int64_t`.)
+2. Los pases se aplican solo al compilar (`-o`), como `sal build`; `sal emit ir` no comprueba.
+3. `match`, lambdas y `try` en el bajado a IR (hoy se parsean y se ignoran al bajar).
+4. Tipos de verdad en el AST (hoy texto), diagnósticos con spans.
+5. Backend LLVM / objeto, `--instrument`, kernels `on gpu kernel`.
+6. Paquetes y `std` completos; `Result`/`Option` genéricos (el codegen del arranque falla con
+   `match` de varias variantes: "duplicate case value in switch").

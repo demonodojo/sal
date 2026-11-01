@@ -400,7 +400,7 @@ pub fn emit_llvm_with_externs(
         } else {
             params.join(", ")
         };
-        s.push_str(&format!("declare i64 @{name}({ps})\n"));
+        s.push_str(&format!("declare i64 @{}({ps})\n", llsym(name)));
     }
     if !extern_user_fns.is_empty() {
         s.push('\n');
@@ -1042,7 +1042,7 @@ fn emit_host_tensor_fn(
                 .collect();
             s.push_str(&format!(
                 "define i64 @{}({}) {{\n",
-                f.name,
+                llsym(&f.name),
                 params.join(", ")
             ));
             s.push_str("entry:\n");
@@ -2006,7 +2006,7 @@ fn emit_matmul_fn(f: &IrFunction, s: &mut String) {
     let place_i = place_to_i32(place);
     s.push_str(&format!(
         "define void @{}(ptr %a, ptr %b, ptr %out, i64 %m, i64 %k, i64 %n) {{\n",
-        f.name
+        llsym(&f.name)
     ));
     s.push_str("entry:\n");
     if place_i != 0 {
@@ -2937,7 +2937,7 @@ fn emit_runtime_or_user_call(
             let args_s = arg_ops.join(", ");
             if let Some(d) = dest {
                 let mark = if tail { "tail " } else { "" };
-                s.push_str(&format!("  %{d} = {mark}call i64 @{other}({args_s})\n"));
+                s.push_str(&format!("  %{d} = {mark}call i64 @{}({args_s})\n", llsym(other)));
                 if let (Some(ptrs), Some(uid)) = (ptrs, ptr_uid) {
                     *uid += 1;
                     let p = format!("pret_{uid}");
@@ -2945,7 +2945,7 @@ fn emit_runtime_or_user_call(
                     ptrs.insert(d.to_string(), p);
                 }
             } else {
-                s.push_str(&format!("  call i64 @{other}({args_s})\n"));
+                s.push_str(&format!("  call i64 @{}({args_s})\n", llsym(other)));
             }
         }
         other => {
@@ -3956,7 +3956,7 @@ fn emit_general_fn(
         .collect();
     s.push_str(&format!(
         "define i64 @{}({}) {{\n",
-        f.name,
+        llsym(&f.name),
         params.join(", ")
     ));
     s.push_str("entry:\n");
@@ -4197,6 +4197,16 @@ fn emit_if_as_return(
         tensor,
     );
     *cur_block = format!("join{id}");
+}
+
+/// LLVM symbol of a Sal function. User code must not define libc names such as
+/// `getenv` or `read`: the runtime links against libc and would call itself.
+fn llsym(name: &str) -> String {
+    if name == "main" {
+        name.to_string()
+    } else {
+        format!("sal_u_{name}")
+    }
 }
 
 fn emit_main_general(

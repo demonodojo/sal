@@ -45,6 +45,7 @@ fn sal_lib_unit_tests() {
         "test_glob.sal",
         "test_sse.sal",
         "test_http_chunk.sal",
+        "test_env.sal",
     ] {
         let path = dir.join(name);
         let code = compile_and_run(&path);
