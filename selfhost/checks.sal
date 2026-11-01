@@ -1,0 +1,22 @@
+# Semantic passes in the bootstrap's order: types, effects, ownership, devices.
+import result
+import infer
+import effects
+import ownership
+import device
+
+# Ok(0), or Err(message) for the first violation in `prog`.
+fn check_program(prog: Int) -> Int ! alloc
+    ty = infer_program(prog)
+    if result_is_err(ty) == 1
+        ty
+    else
+        fx = check_effects(prog)
+        if result_is_err(fx) == 1
+            fx
+        else
+            own = check_ownership(prog)
+            if result_is_err(own) == 1
+                own
+            else
+                check_devices(prog)

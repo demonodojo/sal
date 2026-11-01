@@ -1,3 +1,4 @@
+import tshape
 # AST constructors. Binary operators are left-associative in the parser that builds them.
 
 fn EX_INT() -> Int
@@ -176,6 +177,18 @@ fn ex_tensor(nrows: Int, ncols: Int) -> Int ! alloc
     _b = vec_push(e, nrows)
     _c = vec_push(e, ncols)
     e
+
+# Literal elements as source text, row-major (slot 3).
+fn ex_tensor_data(nrows: Int, ncols: Int, data: Int) -> Int ! alloc
+    e = ex_tensor(nrows, ncols)
+    _d = vec_push(e, data)
+    e
+
+fn tensor_lit_data(e: Int) -> Int ! alloc
+    if vec_len(e) > 3
+        vec_get(e, 3)
+    else
+        vec_new()
 
 fn ex_if(cond: Int, then_b: Int, else_b: Int, arms: Int) -> Int ! alloc
     e = vec_new()
@@ -591,16 +604,30 @@ fn struct_field_type(structs: Int, sname: Int, field: Int) -> Int ! alloc
         fields = structdef_fields(sd)
         struct_field_type_go(fields, field, 0, vec_len(fields))
 
+fn tensor_lit_type(e: Int) -> Int ! alloc
+    str_as_int("Tensor[F32, " + int_to_str(vec_get(e, 1)) + ", " + int_to_str(vec_get(e, 2)) + "] on cpu")
+
 fn call_type(e: Int, env: Int) -> Int ! alloc
     name = vec_get(e, 1)
     if call_returns_string(name) == 1
         ty_string()
+    elsif str_eq(str_from_int(name), "load") == 1
+        ex_call_type_args(e)
+    elsif str_eq(str_from_int(name), "matmul") == 1
+        matmul_call_type(e, env)
     elsif struct_find(strenv_structs(env), name) != 0
         name
     elsif strenv_fnrets(env) == 0
         0
     else
         map_get(strenv_fnrets(env), name)
+
+fn matmul_call_type(e: Int, env: Int) -> Int ! alloc
+    args = vec_get(e, 2)
+    if vec_len(args) == 2
+        tt_matmul_text(expr_type(vec_get(args, 0), env), expr_type(vec_get(args, 1), env))
+    else
+        0
 
 fn block_tail_type(b: Int, env: Int) -> Int ! alloc
     if b == 0
@@ -618,6 +645,8 @@ fn expr_type(e: Int, env: Int) -> Int ! alloc
             ty_string()
         elsif k == EX_CALL()
             call_type(e, env)
+        elsif k == EX_TENSOR()
+            tensor_lit_type(e)
         elsif k == EX_IDENT()
             strenv_type(env, vec_get(e, 1))
         elsif k == EX_BINARY()

@@ -1,0 +1,419 @@
+# Device pass, the mirror of src/device.rs: tensors keep to their place, an `on`
+# block only touches tensors on that place, `String` lives on cpu.
+import ast
+import result
+
+# Context: [env, err, has_err, expected_place (0 = none)]
+fn dc_new(prog: Int) -> Int ! alloc
+    c = vec_new()
+    env = strenv_new()
+    _g = strenv_set_globals(env, fnret_map_from_prog(prog), prog_structs(prog))
+    _a = vec_push(c, env)
+    _b = vec_push(c, 0)
+    _d = vec_push(c, 0)
+    _e = vec_push(c, 0)
+    c
+
+fn dc_env(c: Int) -> Int ! alloc
+    vec_get(c, 0)
+
+fn dc_failed(c: Int) -> Int ! alloc
+    vec_get(c, 2)
+
+fn dc_expected(c: Int) -> Int ! alloc
+    vec_get(c, 3)
+
+fn dc_fail(c: Int, msg: String) -> Int ! alloc
+    if vec_get(c, 2) == 0
+        _a = vec_set(c, 1, str_as_int(msg))
+        vec_set(c, 2, 1)
+    else
+        0
+
+# ---- places ----
+fn dv(name: String) -> Int ! alloc
+    str_as_int(name)
+
+fn dv_is_tensor(ty: Int) -> Int ! alloc
+    if ty == 0
+        0
+    else
+        str_contains(str_from_int(ty), d"Tensor")
+
+# Place word at the end of a tensor type text ("... on gpu "), 0 when none.
+fn dv_place(ty: Int) -> Int ! alloc
+    if dv_is_tensor(ty) == 0
+        0
+    else
+        s = ty_trim_end(str_from_int(ty))
+        n = str_len(s)
+        i = dv_last_space(s, n - 1)
+        str_as_int(str_slice(s, i + 1, n))
+
+fn ty_trim_end(s: String) -> String ! alloc
+    n = str_len(s)
+    if n > 0
+        if str_char(s, n - 1) == 32
+            ty_trim_end(str_slice(s, 0, n - 1))
+        else
+            s
+    else
+        s
+
+fn dv_last_space(s: String, i: Int) -> Int ! alloc
+    if i < 0
+        0 - 1
+    elsif str_char(s, i) == 32
+        i
+    else
+        dv_last_space(s, i - 1)
+
+fn dv_concrete(p: Int) -> Int ! alloc
+    if str_eq(p, "cpu") == 1
+        1
+    elsif str_eq(p, "gpu") == 1
+        1
+    elsif str_eq(p, "tpu") == 1
+        1
+    else
+        0
+
+fn places_compatible(a: Int, b: Int) -> Int ! alloc
+    if dv_concrete(a) == 1
+        if dv_concrete(b) == 1
+            str_eq(a, b)
+        else
+            1
+    elsif dv_concrete(b) == 1
+        1
+    else
+        str_eq(a, b)
+
+fn place_debug(p: Int) -> String ! alloc
+    if str_eq(p, "cpu") == 1
+        d"Cpu"
+    elsif str_eq(p, "gpu") == 1
+        d"Gpu"
+    elsif str_eq(p, "tpu") == 1
+        d"Tpu"
+    else
+        "Param(\"" + str_from_int(p) + "\")"
+
+# A tensor type with its place replaced.
+fn with_place(ty: Int, place: Int) -> Int ! alloc
+    if dv_is_tensor(ty) == 0
+        ty
+    else
+        s = ty_trim_end(str_from_int(ty))
+        i = dv_last_space(s, str_len(s) - 1)
+        str_as_int(str_slice(s, 0, i + 1) + str_from_int(place))
+
+fn dv_is_string(ty: Int) -> Int ! alloc
+    if ty == 0
+        0
+    else
+        str_eq(ty_trim_end(str_from_int(ty)), "String")
+
+fn reject_string_off_cpu(c: Int, ty: Int) -> Int ! alloc
+    if dv_is_string(ty) == 1
+        exp = dc_expected(c)
+        if exp != 0
+            if places_compatible(dv(d"cpu"), exp) == 0
+                dc_fail(c, "String lives on cpu")
+            else
+                0
+        else
+            0
+    else
+        0
+
+# ---- expressions ----
+fn dv_args(c: Int, args: Int, i: Int, n: Int, tys: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _t = vec_push(tys, dv_expr(c, vec_get(args, i)))
+        dv_args(c, args, i + 1, n, tys)
+
+fn dv_check_arg_places(c: Int, tys: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif dc_failed(c) == 1
+        0
+    else
+        pl = dv_place(vec_get(tys, i))
+        if pl != 0
+            if places_compatible(pl, dc_expected(c)) == 0
+                _f = dc_fail(c, "tensor place does not match `on` block")
+            else
+                _f = 0
+        else
+            _f = 0
+        dv_check_arg_places(c, tys, i + 1, n)
+
+fn dv_call(c: Int, e: Int) -> Int ! alloc
+    args = vec_get(e, 2)
+    tys = vec_new()
+    _a = dv_args(c, args, 0, vec_len(args), tys)
+    if dc_expected(c) != 0
+        _b = dv_check_arg_places(c, tys, 0, vec_len(tys))
+    else
+        _b = 0
+    if str_eq(vec_get(e, 1), "matmul") == 1
+        if vec_len(tys) == 2
+            pa = dv_place(vec_get(tys, 0))
+            pb = dv_place(vec_get(tys, 1))
+            if pa != 0
+                if pb != 0
+                    if places_compatible(pa, pb) == 0
+                        _f = dc_fail(c, "matmul tensors must share place")
+                    else
+                        _f = 0
+                else
+                    _f = 0
+            else
+                _f = 0
+        else
+            _f = 0
+    else
+        _f = 0
+    if vec_len(tys) > 0
+        vec_get(tys, 0)
+    else
+        dv(d"Unknown")
+
+fn dv_ident(c: Int, e: Int) -> Int ! alloc
+    name = vec_get(e, 1)
+    ty = strenv_type(dc_env(c), name)
+    if ty == 0
+        ty = dv(d"Unknown")
+    else
+        ty = ty
+    exp = dc_expected(c)
+    if exp != 0
+        pl = dv_place(ty)
+        if pl != 0
+            if places_compatible(pl, exp) == 0
+                _f = dc_fail(c, "tensor `" + str_from_int(name) + "` is on " + place_debug(pl) + ", expected " + place_debug(exp))
+            else
+                _f = 0
+        else
+            _f = 0
+    else
+        _f = 0
+    _r = reject_string_off_cpu(c, ty)
+    ty
+
+fn dv_on(c: Int, e: Int) -> Int ! alloc
+    place = vec_get(e, 1)
+    if vec_get(e, 3) == 1
+        if str_eq(place, "tpu") == 1
+            _f = dc_fail(c, "TPU does not support `on tpu kernel`")
+        elsif vec_get(e, 4) == 1
+            if str_eq(place, "gpu") == 0
+                _f = dc_fail(c, "kernel index requires `on gpu`")
+            else
+                _f = 0
+        else
+            _f = 0
+    else
+        _f = 0
+    saved = dc_expected(c)
+    mark = strenv_len(dc_env(c))
+    _a = vec_set(c, 3, place)
+    _b = dv_block(c, vec_get(e, 2))
+    _d = vec_set(c, 3, saved)
+    _s = strenv_set_len(dc_env(c), mark)
+    dv(d"Unit")
+
+fn dv_to(c: Int, e: Int) -> Int ! alloc
+    saved = dc_expected(c)
+    _a = vec_set(c, 3, 0)
+    ty = dv_expr(c, vec_get(e, 2))
+    _b = vec_set(c, 3, saved)
+    place = vec_get(e, 1)
+    if dv_is_string(ty) == 1
+        if str_eq(place, "cpu") == 0
+            _f = dc_fail(c, "String lives on cpu")
+        else
+            _f = 0
+    else
+        _f = 0
+    with_place(ty, place)
+
+fn dv_scoped_block(c: Int, b: Int) -> Int ! alloc
+    mark = strenv_len(dc_env(c))
+    r = dv_block(c, b)
+    _s = strenv_set_len(dc_env(c), mark)
+    r
+
+fn dv_arms(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = dv_expr(c, vec_get(arm, 0))
+        _b = dv_scoped_block(c, vec_get(arm, 1))
+        dv_arms(c, arms, i + 1, n)
+
+fn dv_pattern_binds(c: Int, p: Int) -> Int ! alloc
+    k = vec_get(p, 0)
+    if k == 1
+        strenv_bind(dc_env(c), vec_get(p, 1), dv(d"Unknown"))
+    elsif k == 3
+        dv_pattern_list(c, vec_get(p, 3), 0, vec_len(vec_get(p, 3)))
+    else
+        0
+
+fn dv_pattern_list(c: Int, ps: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = dv_pattern_binds(c, vec_get(ps, i))
+        dv_pattern_list(c, ps, i + 1, n)
+
+fn dv_match_arms(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        mark = strenv_len(dc_env(c))
+        _a = dv_pattern_binds(c, vec_get(arm, 0))
+        _b = dv_expr(c, vec_get(arm, 1))
+        _s = strenv_set_len(dc_env(c), mark)
+        dv_match_arms(c, arms, i + 1, n)
+
+fn dv_expr(c: Int, e: Int) -> Int ! alloc
+    if e == 0
+        dv(d"Unit")
+    elsif dc_failed(c) == 1
+        dv(d"Unknown")
+    else
+        k = ex_kind(e)
+        if k == EX_INT()
+            dv(d"Int")
+        elsif k == EX_FLOAT()
+            dv(d"Float")
+        elsif k == EX_BOOL()
+            dv(d"Bool")
+        elsif k == EX_STRING()
+            _r = reject_string_off_cpu(c, dv(d"String"))
+            dv(d"String")
+        elsif k == EX_IDENT()
+            dv_ident(c, e)
+        elsif k == EX_CALL()
+            dv_call(c, e)
+        elsif k == EX_ON()
+            dv_on(c, e)
+        elsif k == EX_TO()
+            dv_to(c, e)
+        elsif k == EX_BINARY()
+            _a = dv_expr(c, vec_get(e, 2))
+            _b = dv_expr(c, vec_get(e, 3))
+            dv(d"Int")
+        elsif k == EX_UNARY()
+            dv_expr(c, vec_get(e, 2))
+        elsif k == EX_TRY()
+            dv_expr(c, vec_get(e, 1))
+        elsif k == EX_FIELD()
+            _a = dv_expr(c, vec_get(e, 1))
+            dv(d"Unknown")
+        elsif k == EX_TENSOR()
+            exp = dc_expected(c)
+            if exp != 0
+                if places_compatible(dv(d"cpu"), exp) == 0
+                    _f = dc_fail(c, "tensor literal lives on cpu")
+                else
+                    _f = 0
+            else
+                _f = 0
+            dv(d"Tensor on cpu")
+        elsif k == EX_IF()
+            _a = dv_expr(c, vec_get(e, 1))
+            _b = dv_scoped_block(c, vec_get(e, 2))
+            arms = vec_get(e, 4)
+            _c = dv_arms(c, arms, 0, vec_len(arms))
+            _d = dv_scoped_block(c, vec_get(e, 3))
+            dv(d"Int")
+        elsif k == EX_WHILE()
+            _a = dv_expr(c, vec_get(e, 1))
+            _b = dv_block(c, vec_get(e, 2))
+            dv(d"Unit")
+        elsif k == EX_LAMBDA()
+            mark = strenv_len(dc_env(c))
+            _b = strenv_bind(dc_env(c), vec_get(e, 1), dv(d"Float"))
+            _t = dv_expr(c, vec_get(e, 2))
+            _s = strenv_set_len(dc_env(c), mark)
+            dv(d"Unknown")
+        elsif k == EX_MATCH()
+            _a = dv_expr(c, vec_get(e, 1))
+            _b = dv_match_arms(c, vec_get(e, 2), 0, vec_len(vec_get(e, 2)))
+            dv(d"Unknown")
+        else
+            dv(d"Unknown")
+
+fn dv_stmt(c: Int, st: Int) -> Int ! alloc
+    k = vec_get(st, 0)
+    ex = vec_get(st, 2)
+    if k == 1
+        ty = dv_expr(c, ex)
+        decl = vec_get(st, 3)
+        if decl != 0
+            strenv_bind(dc_env(c), vec_get(st, 1), decl)
+        else
+            strenv_bind(dc_env(c), vec_get(st, 1), ty)
+    elsif k == 3
+        _a = dv_expr(c, ex)
+        dv_expr(c, vec_get(st, 5))
+    else
+        dv_expr(c, ex)
+
+fn dv_stmts(c: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif dc_failed(c) == 1
+        0
+    else
+        _a = dv_stmt(c, vec_get(stmts, i))
+        dv_stmts(c, stmts, i + 1, n)
+
+fn dv_block(c: Int, b: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        _a = dv_stmts(c, stmts, 0, vec_len(stmts))
+        dv_expr(c, block_tail(b))
+
+fn dv_seed(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = vec_get(params, i)
+        _b = strenv_bind(dc_env(c), vec_get(pm, 0), vec_get(pm, 1))
+        dv_seed(c, params, i + 1, n)
+
+fn check_fn_devices(prog: Int, f: Int) -> Int ! alloc
+    c = dc_new(prog)
+    params = vec_get(f, 1)
+    _s = dv_seed(c, params, 0, vec_len(params))
+    _t = dv_block(c, vec_get(f, 2))
+    if dc_failed(c) == 1
+        result_err(vec_get(c, 1))
+    else
+        result_ok(0)
+
+fn check_devices_go(prog: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        r = check_fn_devices(prog, vec_get(fns, i))
+        if result_is_err(r) == 1
+            r
+        else
+            check_devices_go(prog, fns, i + 1, n)
+
+# Ok(0), or Err(message) for the first misplaced tensor or device misuse.
+fn check_devices(prog: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    check_devices_go(prog, fns, 0, vec_len(fns))

@@ -497,7 +497,12 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
                     _p = ir_push(cx, ir_bin(d, vec_get(e, 1), l, r))
                     d
         elsif k == EX_TENSOR()
-            fresh(cx)
+            d = fresh(cx)
+            lit = vec_new()
+            _l0 = vec_push(lit, d)
+            _l1 = vec_push(lit, tensor_lit_data(e))
+            _l2 = vec_push(cx_literals(cx), lit)
+            d
         elsif k == EX_TO()
             lower_to(cx, e)
         elsif k == EX_ON()
@@ -1587,6 +1592,7 @@ fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int
     _e = vec_push(out, cx_dim_params(cx))
     _f = vec_push(out, cx_insts(cx))
     _g = vec_push(out, cx_regions(cx))
+    _h = vec_push(out, cx_literals(cx))
     out
 
 fn try_lower_tensor_bin(cx: Int, e: Int, l: Int, r: Int, d: Int) -> Int ! alloc

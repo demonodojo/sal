@@ -405,12 +405,12 @@ fn skip_brackets_depth(depth: Int, k: Int) -> Int ! alloc
     else
         depth
 
-fn parse_tensor_rows(pr: Int, nrows: Int, ncols: Int) -> Int ! alloc
+fn parse_tensor_rows(pr: Int, nrows: Int, ncols: Int, data: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
         _e = p_enter_group(pr)
-        rowc = parse_tensor_cells(pr, 0)
+        rowc = parse_tensor_cells(pr, 0, data)
         _b = p_accept(pr, TK_RBRACK())
         _l = p_leave_group(pr)
         _n = p_skip_group_nls(pr)
@@ -420,11 +420,11 @@ fn parse_tensor_rows(pr: Int, nrows: Int, ncols: Int) -> Int ! alloc
             nc = rowc
         else
             nc = ncols
-        parse_tensor_rows(pr, nrows + 1, nc)
+        parse_tensor_rows(pr, nrows + 1, nc, data)
     else
-        ex_tensor(nrows, ncols)
+        ex_tensor_data(nrows, ncols, data)
 
-fn parse_tensor_cells(pr: Int, rowc: Int) -> Int ! alloc
+fn parse_tensor_cells(pr: Int, rowc: Int, data: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     k = tok_kind(p_peek(pr))
     if k == TK_RBRACK()
@@ -432,17 +432,19 @@ fn parse_tensor_cells(pr: Int, rowc: Int) -> Int ! alloc
     elsif k == TK_EOF()
         rowc
     elsif k == TK_FLOAT()
+        _d = vec_push(data, str_as_int(tok_text(p_peek(pr))))
         _a = p_advance(pr)
-        parse_tensor_cells(pr, rowc + 1)
+        parse_tensor_cells(pr, rowc + 1, data)
     elsif k == TK_INT()
+        _d = vec_push(data, str_as_int(int_to_str(tok_ival(p_peek(pr)))))
         _a = p_advance(pr)
-        parse_tensor_cells(pr, rowc + 1)
+        parse_tensor_cells(pr, rowc + 1, data)
     elsif k == TK_COMMA()
         _a = p_advance(pr)
-        parse_tensor_cells(pr, rowc)
+        parse_tensor_cells(pr, rowc, data)
     else
         _a = p_advance(pr)
-        parse_tensor_cells(pr, rowc)
+        parse_tensor_cells(pr, rowc, data)
 
 fn or_place(place: String, fallback: String) -> String ! alloc
     if str_len(place) == 0
@@ -666,7 +668,7 @@ fn parse_ident_primary(pr: Int) -> Int ! alloc
             _g = p_enter_group(pr)
             _n = p_skip_group_nls(pr)
             if tok_kind(p_peek(pr)) == TK_LBRACK()
-                te = parse_tensor_rows(pr, 0, 0)
+                te = parse_tensor_rows(pr, 0, 0, vec_new())
                 _n = p_skip_group_nls(pr)
                 _b = p_accept(pr, TK_RBRACK())
                 _h = p_leave_group(pr)

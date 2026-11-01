@@ -4,6 +4,14 @@ use std::process::Command;
 use sal_compiler::compile::{compile_file, device_toolchain_present};
 use sal_compiler::CompileOptions;
 
+/// Tests in this file run in parallel; give each compile its own binary.
+fn unique_out() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let n = N.fetch_add(1, Ordering::SeqCst);
+    root().join("target/sal-out/exec_column").join(format!("t{}_{n}", std::process::id()))
+}
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -13,7 +21,7 @@ fn exec_column_cpu_builds_and_runs() {
     let file = root().join("examples/column_cpu.sal");
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "cpu".into(),
@@ -43,7 +51,7 @@ fn exec_column_gpu_emulated_links() {
     let link = device_toolchain_present("gpu");
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(unique_out()),
         release: false,
         instrument: false,
         device: "gpu".into(),

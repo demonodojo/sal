@@ -1,0 +1,738 @@
+# Type checking for scalar code, the mirror of the Int/Float/Bool/String/Unit rules
+# of src/infer.rs. Tensors, containers and builtins whose signature is not modelled
+# here have type `Unknown`, which is compatible with everything.
+import ast
+import tshape
+import result
+
+# Context: [env, err, has_err, fn_ret, allow_return, sigs, structs, names]
+fn ic_new(prog: Int) -> Int ! alloc
+    c = vec_new()
+    env = strenv_new()
+    _g = strenv_set_globals(env, fnret_map_from_prog(prog), prog_structs(prog))
+    _a = vec_push(c, env)
+    _b = vec_push(c, 0)
+    _d = vec_push(c, 0)
+    _e = vec_push(c, 0)
+    _f = vec_push(c, 1)
+    _h = vec_push(c, infer_sigs(prog))
+    _i = vec_push(c, prog_structs(prog))
+    _j = vec_push(c, infer_global_names(prog))
+    c
+
+fn ic_env(c: Int) -> Int ! alloc
+    vec_get(c, 0)
+
+fn ic_failed(c: Int) -> Int ! alloc
+    vec_get(c, 2)
+
+fn ic_fail(c: Int, msg: String) -> Int ! alloc
+    if vec_get(c, 2) == 0
+        _a = vec_set(c, 1, str_as_int(msg))
+        vec_set(c, 2, 1)
+    else
+        0
+
+# ---- type helpers ----
+fn it(name: String) -> Int ! alloc
+    str_as_int(name)
+
+fn ty_is(t: Int, name: String) -> Int ! alloc
+    str_eq(ty_trim(t), name)
+
+fn ty_is_scalar(t: Int) -> Int ! alloc
+    if ty_is(t, d"Int") == 1
+        1
+    elsif ty_is(t, d"Float") == 1
+        1
+    elsif ty_is(t, d"Bool") == 1
+        1
+    elsif ty_is(t, d"String") == 1
+        1
+    elsif ty_is(t, d"Unit") == 1
+        1
+    else
+        0
+
+fn ty_is_tensor(t: Int) -> Int ! alloc
+    if t == 0
+        0
+    else
+        str_contains(ty_trim(t), d"Tensor")
+
+fn ty_compat(a: Int, b: Int) -> Int ! alloc
+    if ty_is_scalar(a) == 1
+        if ty_is_scalar(b) == 1
+            str_eq(ty_trim(a), ty_trim(b))
+        else
+            1
+    else
+        1
+
+fn ty_numeric(t: Int) -> Int ! alloc
+    if ty_is_scalar(t) == 0
+        1
+    elsif ty_is(t, d"Int") == 1
+        1
+    elsif ty_is(t, d"Float") == 1
+        1
+    else
+        0
+
+fn ty_unit(t: Int) -> Int ! alloc
+    ty_is(t, d"Unit")
+
+fn ty_msg(t: Int) -> String ! alloc
+    ty_trim(t)
+
+# ---- program-wide tables ----
+fn infer_sigs(prog: Int) -> Int ! alloc
+    m = map_new()
+    fns = prog_fns(prog)
+    infer_sigs_go(m, fns, 0, vec_len(fns))
+    m
+
+fn infer_sigs_go(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        sig = vec_new()
+        _a = vec_push(sig, vec_get(f, 1))
+        _b = vec_push(sig, fndef_ret(f))
+        _c = map_put(m, vec_get(f, 0), sig)
+        infer_sigs_go(m, fns, i + 1, n)
+
+# Names that may appear as bare identifiers without being locals: fns and unit variants.
+fn infer_global_names(prog: Int) -> Int ! alloc
+    m = map_new()
+    fns = prog_fns(prog)
+    _a = infer_names_fns(m, fns, 0, vec_len(fns))
+    enums = prog_enums(prog)
+    _b = infer_names_enums(m, enums, 0, vec_len(enums))
+    m
+
+fn infer_names_fns(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = map_put(m, vec_get(vec_get(fns, i), 0), 1)
+        infer_names_fns(m, fns, i + 1, n)
+
+fn infer_names_enums(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        vs = vec_get(vec_get(enums, i), 1)
+        _a = infer_names_variants(m, vs, 0, vec_len(vs))
+        infer_names_enums(m, enums, i + 1, n)
+
+fn infer_names_variants(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = map_put(m, vec_get(vec_get(vs, i), 0), 1)
+        infer_names_variants(m, vs, i + 1, n)
+
+# ---- expressions ----
+fn infer_args(c: Int, args: Int, i: Int, n: Int, tys: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _t = vec_push(tys, infer_expr(c, vec_get(args, i)))
+        infer_args(c, args, i + 1, n, tys)
+
+fn infer_user_args(c: Int, name: Int, params: Int, args: Int, tys: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif ic_failed(c) == 1
+        0
+    else
+        pt = vec_get(vec_get(params, i), 1)
+        at = vec_get(tys, i)
+        if ty_compat(at, pt) == 0
+            _f = ic_fail(c, "argument type mismatch calling `" + str_from_int(name) + "`: expected " + ty_msg(pt) + ", found " + ty_msg(at))
+        else
+            _f = 0
+        infer_user_args(c, name, params, args, tys, i + 1, n)
+
+fn infer_call(c: Int, e: Int) -> Int ! alloc
+    name = vec_get(e, 1)
+    args = vec_get(e, 2)
+    tys = vec_new()
+    sig = map_get(vec_get(c, 5), name)
+    if sig != 0
+        params = vec_get(sig, 0)
+        if vec_len(args) != vec_len(params)
+            _a = infer_args(c, args, 0, vec_len(args), tys)
+            _f = ic_fail(c, "function `" + str_from_int(name) + "` expects " + int_to_str(vec_len(params)) + " argument(s), found " + int_to_str(vec_len(args)))
+            it(d"Unknown")
+        else
+            _a = infer_args(c, args, 0, vec_len(args), tys)
+            _b = infer_user_args(c, name, params, args, tys, 0, vec_len(args))
+            r = vec_get(sig, 1)
+            if r == 0
+                it(d"Unknown")
+            else
+                r
+    else
+        _a = infer_args(c, args, 0, vec_len(args), tys)
+        if struct_find(vec_get(c, 6), name) != 0
+            name
+        elsif str_eq(str_from_int(name), d"matmul") == 1
+            if vec_len(tys) == 2
+                infer_matmul(c, vec_get(tys, 0), vec_get(tys, 1))
+            else
+                it(d"Unknown")
+        elsif str_eq(str_from_int(name), d"transpose") == 1
+            if vec_len(tys) == 1
+                infer_transpose(c, vec_get(tys, 0))
+            else
+                it(d"Unknown")
+        elsif str_eq(str_from_int(name), d"reshape") == 1
+            infer_reshape(c, args, tys)
+        elsif str_eq(str_from_int(name), d"softmax") == 1
+            infer_softmax(c, args, tys)
+        elsif infer_is_unary_tensor(name) == 1
+            if vec_len(tys) >= 1
+                if ty_is_tensor(vec_get(tys, 0)) == 1
+                    vec_get(tys, 0)
+                else
+                    it(d"Unknown")
+            else
+                it(d"Unknown")
+        elsif call_returns_string(name) == 1
+            it(d"String")
+        else
+            it(d"Unknown")
+
+fn infer_is_unary_tensor(name: Int) -> Int ! alloc
+    n = str_from_int(name)
+    if str_eq(n, d"relu") == 1
+        1
+    elsif str_eq(n, d"silu") == 1
+        1
+    elsif str_eq(n, d"rope") == 1
+        1
+    else
+        0
+
+fn infer_transpose(c: Int, t: Int) -> Int ! alloc
+    if ty_is_tensor(t) == 0
+        it(d"Unknown")
+    else
+        p = tt_split(t)
+        if vec_len(p) < 3
+            _f = ic_fail(c, "transpose requires rank >= 2")
+            it(d"Unknown")
+        else
+            n = vec_len(p)
+            head = "Tensor[" + str_from_int(vec_get(p, 0))
+            mid = tt_join_dims(p, 1, n - 2, head)
+            full = mid + ", " + str_from_int(vec_get(p, n - 1)) + ", " + str_from_int(vec_get(p, n - 2)) + "] on " + tt_place(t)
+            str_as_int(full)
+
+# Product of the static dims in parts[lo..n); -1 when one is not static.
+fn infer_volume(p: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    elsif tt_is_static(vec_get(p, i)) == 0
+        0 - 1
+    else
+        infer_volume(p, i + 1, n, acc * tt_dim_val(vec_get(p, i)))
+
+fn infer_lit_dims(args: Int, i: Int, n: Int, head: String) -> Int ! alloc
+    if i >= n
+        str_as_int(head)
+    else
+        a = vec_get(args, i)
+        if vec_get(a, 0) != EX_INT()
+            0
+        else
+            infer_lit_dims(args, i + 1, n, head + ", " + int_to_str(vec_get(a, 1)))
+
+fn infer_reshape(c: Int, args: Int, tys: Int) -> Int ! alloc
+    if vec_len(args) < 2
+        it(d"Unknown")
+    elsif ty_is_tensor(vec_get(tys, 0)) == 0
+        it(d"Unknown")
+    else
+        t = vec_get(tys, 0)
+        p = tt_split(t)
+        dims = infer_lit_dims(args, 1, vec_len(args), "Tensor[" + str_from_int(vec_get(p, 0)))
+        if dims == 0
+            it(d"Unknown")
+        else
+            full = str_as_int(str_from_int(dims) + "] on " + tt_place(t))
+            fp = tt_split(full)
+            old = infer_volume(p, 1, vec_len(p), 1)
+            nv = infer_volume(fp, 1, vec_len(fp), 1)
+            if old >= 0
+                if nv != old
+                    _f = ic_fail(c, "reshape volume mismatch")
+                else
+                    _f = 0
+            else
+                _f = 0
+            full
+
+fn infer_softmax(c: Int, args: Int, tys: Int) -> Int ! alloc
+    if vec_len(tys) < 1
+        it(d"Unknown")
+    elsif ty_is_tensor(vec_get(tys, 0)) == 0
+        it(d"Unknown")
+    else
+        t = vec_get(tys, 0)
+        if vec_len(args) >= 2
+            a = vec_get(args, 1)
+            if vec_get(a, 0) == EX_INT()
+                ax = vec_get(a, 1)
+                if ax < 0
+                    _f = ic_fail(c, "softmax axis out of range")
+                elsif ax >= vec_len(tt_split(t)) - 1
+                    _f = ic_fail(c, "softmax axis out of range")
+                else
+                    _f = 0
+            else
+                _f = 0
+        else
+            _f = 0
+        t
+
+fn infer_matmul(c: Int, ta: Int, tb: Int) -> Int ! alloc
+    if ty_is_tensor(ta) == 0
+        it(d"Unknown")
+    elsif ty_is_tensor(tb) == 0
+        it(d"Unknown")
+    else
+        pa = tt_split(ta)
+        pb = tt_split(tb)
+        if vec_len(pa) < 2
+            it(d"Unknown")
+        elsif vec_len(pb) < 2
+            it(d"Unknown")
+        elsif str_eq(str_from_int(vec_get(pa, 0)), str_from_int(vec_get(pb, 0))) == 0
+            _f = ic_fail(c, d"matmul element mismatch")
+            it(d"Unknown")
+        elsif vec_len(pa) < 3
+            _g = ic_fail(c, d"matmul requires rank >= 2")
+            it(d"Unknown")
+        elsif vec_len(pb) < 3
+            _g = ic_fail(c, d"matmul requires rank >= 2")
+            it(d"Unknown")
+        else
+            k1 = vec_get(pa, vec_len(pa) - 1)
+            k2 = vec_get(pb, vec_len(pb) - 2)
+            if tt_is_static(k1) + tt_is_static(k2) == 2
+                if str_eq(str_from_int(k1), str_from_int(k2)) == 0
+                    _h = ic_fail(c, "inner dimensions " + str_from_int(k1) + " and " + str_from_int(k2) + " do not match")
+                    it(d"Unknown")
+                else
+                    infer_matmul_type(pa, pb, ta)
+            else
+                infer_matmul_type(pa, pb, ta)
+
+fn infer_matmul_type(pa: Int, pb: Int, ta: Int) -> Int ! alloc
+    head = "Tensor[" + str_from_int(vec_get(pa, 0))
+    mid = tt_join_dims(pa, 1, vec_len(pa) - 1, head)
+    full = mid + ", " + str_from_int(vec_get(pb, vec_len(pb) - 1)) + "] on " + tt_place(ta)
+    str_as_int(full)
+
+fn infer_binary(c: Int, e: Int) -> Int ! alloc
+    lt = infer_expr(c, vec_get(e, 2))
+    rt = infer_expr(c, vec_get(e, 3))
+    op = vec_get(e, 1)
+    if ty_is_tensor(lt) == 1
+        lt
+    elsif ty_is_tensor(rt) == 1
+        rt
+    elsif str_eq(op, "add") == 1
+        if ty_is(lt, d"String") == 1
+            if ty_is_scalar(rt) == 1
+                if ty_is(rt, d"String") == 0
+                    _f = ic_fail(c, "string concatenation requires a String on the right; use str_from_int(...) or int_to_str(...)")
+                else
+                    _f = 0
+            else
+                _f = 0
+            it(d"String")
+        elsif ty_is(rt, d"String") == 1
+            if ty_is_scalar(lt) == 1
+                _f = ic_fail(c, "string concatenation requires a String on the left")
+            else
+                _f = 0
+            lt
+        else
+            infer_numeric(c, lt, rt)
+    elsif infer_is_bitop(op) == 1
+        if ty_is_scalar(lt) == 1
+            if ty_is(lt, d"Int") == 0
+                _f = ic_fail(c, "integer bitwise/shift operation requires Int")
+            else
+                _f = 0
+        else
+            _f = 0
+        if ty_is_scalar(rt) == 1
+            if ty_is(rt, d"Int") == 0
+                _g = ic_fail(c, "integer bitwise/shift operation requires Int")
+            else
+                _g = 0
+        else
+            _g = 0
+        it(d"Int")
+    else
+        infer_numeric(c, lt, rt)
+
+fn infer_numeric(c: Int, lt: Int, rt: Int) -> Int ! alloc
+    if ty_numeric(lt) == 0
+        _f = ic_fail(c, "numeric operation requires Int or Float")
+    elsif ty_numeric(rt) == 0
+        _f = ic_fail(c, "numeric operation requires Int or Float")
+    else
+        _f = 0
+    lt
+
+fn infer_is_bitop(op: Int) -> Int ! alloc
+    if str_eq(op, "mod") == 1
+        1
+    elsif str_eq(op, "band") == 1
+        1
+    elsif str_eq(op, "bxor") == 1
+        1
+    elsif str_eq(op, "bor") == 1
+        1
+    elsif str_eq(op, "shl") == 1
+        1
+    elsif str_eq(op, "shr") == 1
+        1
+    else
+        0
+
+# Whether `name` has a binding in the env, whatever its type.
+fn infer_bound(env: Int, name: Int, i: Int) -> Int ! alloc
+    if i < 0
+        0
+    elsif str_eq(vec_get(env, 3 + i * 2), name) == 1
+        1
+    else
+        infer_bound(env, name, i - 1)
+
+fn infer_ident(c: Int, e: Int) -> Int ! alloc
+    name = vec_get(e, 1)
+    if infer_bound(ic_env(c), name, strenv_len(ic_env(c)) - 1) == 1
+        t = strenv_type(ic_env(c), name)
+        if t == 0
+            it(d"Unknown")
+        else
+            t
+    elsif map_get(vec_get(c, 7), name) != 0
+        it(d"Unknown")
+    else
+        _f = ic_fail(c, "unknown variable `" + str_from_int(name) + "`")
+        it(d"Unknown")
+
+fn infer_field(c: Int, e: Int) -> Int ! alloc
+    bt = infer_expr(c, vec_get(e, 1))
+    field = vec_get(e, 2)
+    if ty_is_scalar(bt) == 1
+        _f = ic_fail(c, "type `" + ty_msg(bt) + "` has no field `" + str_from_int(field) + "`")
+        it(d"Unknown")
+    else
+        sd = struct_find(vec_get(c, 6), bt)
+        if sd == 0
+            it(d"Unknown")
+        else
+            ft = struct_field_type(vec_get(c, 6), bt, field)
+            if ft == 0
+                _f = ic_fail(c, "struct `" + ty_msg(bt) + "` has no field `" + str_from_int(field) + "`")
+                it(d"Unknown")
+            else
+                ft
+
+# A branch block in its own scope; returns [diverged, type].
+fn infer_branch(c: Int, b: Int) -> Int ! alloc
+    mark = strenv_len(ic_env(c))
+    div = infer_block_flow(c, b)
+    out = vec_new()
+    if div == 1
+        if b != 0
+            if block_tail(b) != 0
+                _f = ic_fail(c, "unreachable code after return")
+            else
+                _f = 0
+        else
+            _f = 0
+        _a = vec_push(out, 1)
+        _b = vec_push(out, it(d"Unit"))
+    else
+        _a = vec_push(out, 0)
+        _b = vec_push(out, infer_tail_type(c, b))
+    _s = strenv_set_len(ic_env(c), mark)
+    out
+
+fn infer_tail_type(c: Int, b: Int) -> Int ! alloc
+    if b == 0
+        it(d"Unit")
+    elsif block_tail(b) == 0
+        it(d"Unit")
+    elsif ex_kind(block_tail(b)) == EX_WHILE()
+        _t = infer_expr(c, block_tail(b))
+        it(d"Unit")
+    else
+        infer_expr(c, block_tail(b))
+
+fn infer_elsifs(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = infer_expr(c, vec_get(arm, 0))
+        _b = infer_branch(c, vec_get(arm, 1))
+        infer_elsifs(c, arms, i + 1, n)
+
+fn infer_if(c: Int, e: Int) -> Int ! alloc
+    _a = infer_expr(c, vec_get(e, 1))
+    arms = vec_get(e, 4)
+    if vec_get(e, 3) == 0
+        _b = infer_branch(c, vec_get(e, 2))
+        _c = infer_elsifs(c, arms, 0, vec_len(arms))
+        it(d"Unit")
+    else
+        tb = infer_branch(c, vec_get(e, 2))
+        _c = infer_elsifs(c, arms, 0, vec_len(arms))
+        eb = infer_branch(c, vec_get(e, 3))
+        if vec_get(tb, 0) == 1
+            if vec_get(eb, 0) == 1
+                it(d"Unit")
+            else
+                vec_get(eb, 1)
+        elsif vec_get(eb, 0) == 1
+            vec_get(tb, 1)
+        else
+            if ty_compat(vec_get(tb, 1), vec_get(eb, 1)) == 0
+                _f = ic_fail(c, "expected " + ty_msg(vec_get(tb, 1)) + ", found " + ty_msg(vec_get(eb, 1)))
+            else
+                _f = 0
+            vec_get(tb, 1)
+
+fn infer_expr(c: Int, e: Int) -> Int ! alloc
+    if e == 0
+        it(d"Unit")
+    elsif ic_failed(c) == 1
+        it(d"Unknown")
+    else
+        k = ex_kind(e)
+        if k == EX_INT()
+            it(d"Int")
+        elsif k == EX_FLOAT()
+            it(d"Float")
+        elsif k == EX_BOOL()
+            it(d"Bool")
+        elsif k == EX_STRING()
+            it(d"String")
+        elsif k == EX_IDENT()
+            infer_ident(c, e)
+        elsif k == EX_BINARY()
+            infer_binary(c, e)
+        elsif k == EX_UNARY()
+            infer_expr(c, vec_get(e, 2))
+        elsif k == EX_CALL()
+            infer_call(c, e)
+        elsif k == EX_FIELD()
+            infer_field(c, e)
+        elsif k == EX_IF()
+            infer_if(c, e)
+        elsif k == EX_TO()
+            infer_expr(c, vec_get(e, 2))
+        elsif k == EX_TRY()
+            infer_expr(c, vec_get(e, 1))
+        elsif k == EX_TENSOR()
+            it(d"Tensor")
+        elsif k == EX_WHILE()
+            _a = infer_expr(c, vec_get(e, 1))
+            _b = infer_block_flow(c, vec_get(e, 2))
+            _t = infer_tail_expr(c, vec_get(e, 2))
+            it(d"Unit")
+        elsif k == EX_ON()
+            mark = strenv_len(ic_env(c))
+            _a = infer_block_flow(c, vec_get(e, 2))
+            _t = infer_tail_expr(c, vec_get(e, 2))
+            _s = strenv_set_len(ic_env(c), mark)
+            it(d"Unknown")
+        elsif k == EX_LAMBDA()
+            mark = strenv_len(ic_env(c))
+            _b = strenv_bind(ic_env(c), vec_get(e, 1), it(d"Float"))
+            saved = vec_get(c, 4)
+            _r = vec_set(c, 4, 0)
+            _t = infer_expr(c, vec_get(e, 2))
+            _q = vec_set(c, 4, saved)
+            _s = strenv_set_len(ic_env(c), mark)
+            it(d"Unknown")
+        elsif k == EX_MATCH()
+            _t = infer_expr(c, vec_get(e, 1))
+            infer_match_arms(c, vec_get(e, 2), 0, vec_len(vec_get(e, 2)))
+            it(d"Unknown")
+        else
+            it(d"Unknown")
+
+fn infer_tail_expr(c: Int, b: Int) -> Int ! alloc
+    if b == 0
+        0
+    elsif block_tail(b) == 0
+        0
+    else
+        infer_expr(c, block_tail(b))
+
+fn infer_pattern_binds(c: Int, p: Int) -> Int ! alloc
+    k = vec_get(p, 0)
+    if k == 1
+        strenv_bind(ic_env(c), vec_get(p, 1), it(d"Unknown"))
+    elsif k == 3
+        args = vec_get(p, 3)
+        infer_pattern_list(c, args, 0, vec_len(args))
+    else
+        0
+
+fn infer_pattern_list(c: Int, ps: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = infer_pattern_binds(c, vec_get(ps, i))
+        infer_pattern_list(c, ps, i + 1, n)
+
+fn infer_match_arms(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        mark = strenv_len(ic_env(c))
+        _a = infer_pattern_binds(c, vec_get(arm, 0))
+        _b = infer_expr(c, vec_get(arm, 1))
+        _s = strenv_set_len(ic_env(c), mark)
+        infer_match_arms(c, arms, i + 1, n)
+
+# ---- statements ----
+# Returns 1 when the statement diverges.
+fn infer_stmt(c: Int, st: Int) -> Int ! alloc
+    k = vec_get(st, 0)
+    ex = vec_get(st, 2)
+    if k == 2
+        if vec_get(c, 4) == 0
+            _f = ic_fail(c, "return not allowed here")
+        elsif ex != 0
+            vt = infer_expr(c, ex)
+            if ty_compat(vt, vec_get(c, 3)) == 0
+                _f = ic_fail(c, "return type mismatch: expected " + ty_msg(vec_get(c, 3)) + ", found " + ty_msg(vt))
+            else
+                _f = 0
+        elsif ty_unit(vec_get(c, 3)) == 0
+            if vec_get(c, 3) != 0
+                _f = ic_fail(c, "return requires a value")
+            else
+                _f = 0
+        else
+            _f = 0
+        1
+    elsif k == 1
+        ty = infer_expr(c, ex)
+        decl = vec_get(st, 3)
+        if decl != 0
+            if ty_compat(ty, decl) == 0
+                _f = ic_fail(c, "let binding type mismatch")
+            else
+                _f = 0
+            _b = strenv_bind(ic_env(c), vec_get(st, 1), decl)
+        else
+            _b = strenv_bind(ic_env(c), vec_get(st, 1), ty)
+        0
+    elsif k == 3
+        _a = infer_expr(c, ex)
+        _b = infer_expr(c, vec_get(st, 5))
+        0
+    else
+        _a = infer_expr(c, ex)
+        0
+
+fn infer_stmts(c: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif ic_failed(c) == 1
+        0
+    elsif infer_stmt(c, vec_get(stmts, i)) == 1
+        1
+    else
+        infer_stmts(c, stmts, i + 1, n)
+
+fn infer_block_flow(c: Int, b: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        infer_stmts(c, stmts, 0, vec_len(stmts))
+
+# The fn body: its tail must have the declared type.
+fn infer_fn_body(c: Int, f: Int) -> Int ! alloc
+    b = vec_get(f, 2)
+    ret = fndef_ret(f)
+    _r = vec_set(c, 3, ret)
+    div = infer_block_flow(c, b)
+    tail = block_tail(b)
+    if ic_failed(c) == 1
+        0
+    elsif tail != 0
+        if div == 1
+            ic_fail(c, "unreachable code after return")
+        elsif ex_kind(tail) == EX_WHILE()
+            _t = infer_expr(c, tail)
+            infer_missing_value(c, ret)
+        else
+            ty = infer_expr(c, tail)
+            if ty_compat(ty, ret) == 0
+                ic_fail(c, "expected " + ty_msg(ret) + ", found " + ty_msg(ty))
+            else
+                0
+    elsif div == 0
+        infer_missing_value(c, ret)
+    else
+        0
+
+fn infer_missing_value(c: Int, ret: Int) -> Int ! alloc
+    if ret == 0
+        0
+    elsif ty_unit(ret) == 1
+        0
+    else
+        ic_fail(c, "function must return a value of type " + ty_msg(ret))
+
+fn infer_fn(prog: Int, f: Int) -> Int ! alloc
+    c = ic_new(prog)
+    params = vec_get(f, 1)
+    _s = infer_seed(c, params, 0, vec_len(params))
+    _t = infer_fn_body(c, f)
+    if ic_failed(c) == 1
+        result_err(vec_get(c, 1))
+    else
+        result_ok(0)
+
+fn infer_seed(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = vec_get(params, i)
+        _b = strenv_bind(ic_env(c), vec_get(pm, 0), vec_get(pm, 1))
+        infer_seed(c, params, i + 1, n)
+
+fn infer_program_go(prog: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        r = infer_fn(prog, vec_get(fns, i))
+        if result_is_err(r) == 1
+            r
+        else
+            infer_program_go(prog, fns, i + 1, n)
+
+# Ok(0), or Err(message) for the first type error.
+fn infer_program(prog: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    infer_program_go(prog, fns, 0, vec_len(fns))

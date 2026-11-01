@@ -62,7 +62,13 @@ fn cx_new(fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
     _i = vec_push(cx, senv)
     _j = vec_push(cx, struct_map)
     _k = vec_push(cx, 0)
+    _l = vec_push(cx, vec_new())
     cx
+
+# Tensor literals `[ssa, element texts]` seen while lowering; the IR text has no
+# instruction for them, the C backend needs the data.
+fn cx_literals(cx: Int) -> Int ! alloc
+    vec_get(cx, 11)
 
 fn cx_struct_map(cx: Int) -> Int ! alloc
     vec_get(cx, 9)

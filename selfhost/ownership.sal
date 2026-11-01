@@ -1,0 +1,399 @@
+# Ownership pass, the mirror of check_ownership in src/ownership.rs: a unique
+# value (String, tensor, struct) moves when it is bound, returned, passed to a
+# move fn or sent with `to`; using it afterwards is E_MOVED.
+import ast
+import result
+
+# Context: [moved, err_msg, has_err, env]
+fn oc_new(prog: Int) -> Int ! alloc
+    c = vec_new()
+    _a = vec_push(c, vec_new())
+    _b = vec_push(c, 0)
+    _c = vec_push(c, 0)
+    env = strenv_new()
+    _g = strenv_set_globals(env, fnret_map_from_prog(prog), prog_structs(prog))
+    _d = vec_push(c, env)
+    c
+
+fn oc_moved(c: Int) -> Int ! alloc
+    vec_get(c, 0)
+
+fn oc_set_moved(c: Int, m: Int) -> Int ! alloc
+    vec_set(c, 0, m)
+
+fn oc_env(c: Int) -> Int ! alloc
+    vec_get(c, 3)
+
+fn oc_failed(c: Int) -> Int ! alloc
+    vec_get(c, 2)
+
+fn oc_fail(c: Int, msg: String) -> Int ! alloc
+    if vec_get(c, 2) == 0
+        _a = vec_set(c, 1, str_as_int(msg))
+        vec_set(c, 2, 1)
+    else
+        0
+
+fn own_copy(src: Int) -> Int ! alloc
+    out = vec_new()
+    own_copy_go(src, out, 0, vec_len(src))
+    out
+
+fn own_copy_go(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        dst
+    else
+        _p = vec_push(dst, vec_get(src, i))
+        own_copy_go(src, dst, i + 1, n)
+
+fn own_has(set: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(vec_get(set, i), name) == 1
+        1
+    else
+        own_has(set, name, i + 1, n)
+
+fn is_moved(c: Int, name: Int) -> Int ! alloc
+    own_has(oc_moved(c), name, 0, vec_len(oc_moved(c)))
+
+fn mark_moved(c: Int, name: Int) -> Int ! alloc
+    if is_moved(c, name) == 0
+        vec_push(oc_moved(c), name)
+    else
+        0
+
+fn own_remove_go(src: Int, name: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        dst
+    elsif str_eq(vec_get(src, i), name) == 1
+        own_remove_go(src, name, dst, i + 1, n)
+    else
+        _p = vec_push(dst, vec_get(src, i))
+        own_remove_go(src, name, dst, i + 1, n)
+
+fn unmove(c: Int, name: Int) -> Int ! alloc
+    if is_moved(c, name) == 1
+        oc_set_moved(c, own_remove_go(oc_moved(c), name, vec_new(), 0, vec_len(oc_moved(c))))
+    else
+        0
+
+# ---- types: only what moves care about ----
+fn own_ty(name: String) -> Int ! alloc
+    str_as_int(name)
+
+fn own_is_copy(ty: Int) -> Int ! alloc
+    if ty == 0
+        1
+    elsif ty_text_matches(ty, str_as_int(d"Int")) == 1
+        1
+    elsif ty_text_matches(ty, str_as_int(d"Float")) == 1
+        1
+    elsif ty_text_matches(ty, str_as_int(d"Bool")) == 1
+        1
+    elsif ty_text_matches(ty, str_as_int(d"Unit")) == 1
+        1
+    elsif ty_text_matches(ty, str_as_int(d"Unknown")) == 1
+        1
+    else
+        0
+
+fn own_expr_ty(c: Int, e: Int) -> Int ! alloc
+    k = ex_kind(e)
+    if k == EX_INT()
+        own_ty(d"Int")
+    elsif k == EX_FLOAT()
+        own_ty(d"Float")
+    elsif k == EX_BOOL()
+        own_ty(d"Bool")
+    elsif k == EX_STRING()
+        own_ty(d"String")
+    elsif k == EX_IDENT()
+        t = strenv_type(oc_env(c), vec_get(e, 1))
+        if t == 0
+            own_ty(d"Unknown")
+        else
+            t
+    elsif k == EX_BINARY()
+        if str_eq(vec_get(e, 1), "add") == 1
+            if ty_handle_is_string(own_expr_ty(c, vec_get(e, 2))) == 1
+                own_ty(d"String")
+            else
+                own_ty(d"Int")
+        else
+            own_ty(d"Int")
+    elsif k == EX_UNARY()
+        own_expr_ty(c, vec_get(e, 2))
+    elsif k == EX_TO()
+        own_expr_ty(c, vec_get(e, 2))
+    elsif k == EX_TENSOR()
+        own_ty(d"Tensor")
+    elsif k == EX_IF()
+        own_ty(d"Int")
+    else
+        own_ty(d"Unknown")
+
+fn consume_if_unique(c: Int, e: Int, ty: Int) -> Int ! alloc
+    if own_is_copy(ty) == 1
+        0
+    elsif e == 0
+        0
+    elsif ex_kind(e) == EX_IDENT()
+        mark_moved(c, vec_get(e, 1))
+    else
+        0
+
+fn is_move_fn(name: Int) -> Int ! alloc
+    if str_eq(name, "save") == 1
+        1
+    elsif str_eq(name, "reshape") == 1
+        1
+    elsif str_eq(name, "transpose") == 1
+        1
+    elsif str_eq(name, "to_cpu") == 1
+        1
+    elsif str_eq(name, "to_gpu") == 1
+        1
+    else
+        0
+
+# ---- expressions ----
+fn track_args(c: Int, args: Int, i: Int, n: Int, tys: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _t = vec_push(tys, track_expr(c, vec_get(args, i)))
+        track_args(c, args, i + 1, n, tys)
+
+fn consume_args(c: Int, args: Int, tys: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = consume_if_unique(c, vec_get(args, i), vec_get(tys, i))
+        consume_args(c, args, tys, i + 1, n)
+
+# Runs `body` on a copy of the moved set and the env scope, then restores both.
+fn track_branch_block(c: Int, b: Int, base: Int) -> Int ! alloc
+    saved = oc_moved(c)
+    _s = oc_set_moved(c, own_copy(base))
+    _r = track_block_scoped(c, b)
+    oc_set_moved(c, saved)
+
+# Statements and tail of a block, with its bindings dropped at the end.
+fn track_block_scoped(c: Int, b: Int) -> Int ! alloc
+    mark = strenv_len(oc_env(c))
+    r = track_block(c, b)
+    _s = strenv_set_len(oc_env(c), mark)
+    r
+
+fn track_elsifs(c: Int, arms: Int, i: Int, n: Int, base: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = track_expr(c, vec_get(arm, 0))
+        _b = track_branch_block(c, vec_get(arm, 1), base)
+        track_elsifs(c, arms, i + 1, n, base)
+
+fn track_if(c: Int, e: Int) -> Int ! alloc
+    _a = track_expr(c, vec_get(e, 1))
+    base = own_copy(oc_moved(c))
+    _b = track_branch_block(c, vec_get(e, 2), base)
+    arms = vec_get(e, 4)
+    _c = track_elsifs(c, arms, 0, vec_len(arms), base)
+    if vec_get(e, 3) != 0
+        _d = track_branch_block(c, vec_get(e, 3), base)
+    else
+        _d = 0
+    own_ty(d"Int")
+
+fn track_call(c: Int, e: Int) -> Int ! alloc
+    args = vec_get(e, 2)
+    tys = vec_new()
+    _a = track_args(c, args, 0, vec_len(args), tys)
+    if is_move_fn(vec_get(e, 1)) == 1
+        _b = consume_args(c, args, tys, 0, vec_len(args))
+    else
+        _b = 0
+    own_ty(d"Unknown")
+
+fn track_use(c: Int, e: Int) -> Int ! alloc
+    name = vec_get(e, 1)
+    if is_moved(c, name) == 1
+        _f = oc_fail(c, "use of moved value `" + str_from_int(name) + "`")
+        own_ty(d"Unknown")
+    else
+        own_expr_ty(c, e)
+
+fn track_expr(c: Int, e: Int) -> Int ! alloc
+    if e == 0
+        own_ty(d"Unit")
+    elsif oc_failed(c) == 1
+        own_ty(d"Unknown")
+    else
+        k = ex_kind(e)
+        if k == EX_IDENT()
+            track_use(c, e)
+        elsif k == EX_CALL()
+            track_call(c, e)
+        elsif k == EX_BINARY()
+            lt = track_expr(c, vec_get(e, 2))
+            _r = track_expr(c, vec_get(e, 3))
+            if str_eq(vec_get(e, 1), "add") == 1
+                if ty_handle_is_string(lt) == 1
+                    own_ty(d"String")
+                else
+                    own_ty(d"Int")
+            else
+                own_ty(d"Int")
+        elsif k == EX_UNARY()
+            track_expr(c, vec_get(e, 2))
+        elsif k == EX_TRY()
+            track_expr(c, vec_get(e, 1))
+        elsif k == EX_TO()
+            ty = track_expr(c, vec_get(e, 2))
+            _m = consume_if_unique(c, vec_get(e, 2), ty)
+            ty
+        elsif k == EX_ON()
+            _t = track_block_scoped(c, vec_get(e, 2))
+            own_ty(d"Unit")
+        elsif k == EX_FIELD()
+            _t = track_expr(c, vec_get(e, 1))
+            own_ty(d"Unknown")
+        elsif k == EX_IF()
+            track_if(c, e)
+        elsif k == EX_WHILE()
+            track_while(c, e)
+        elsif k == EX_LAMBDA()
+            mark = strenv_len(oc_env(c))
+            _b = strenv_bind(oc_env(c), vec_get(e, 1), own_ty(d"Float"))
+            _t = track_expr(c, vec_get(e, 2))
+            _s = strenv_set_len(oc_env(c), mark)
+            own_ty(d"Unknown")
+        else
+            own_expr_ty(c, e)
+
+# The body moves persist when it does not diverge.
+fn track_while(c: Int, e: Int) -> Int ! alloc
+    _a = track_expr(c, vec_get(e, 1))
+    saved = oc_moved(c)
+    _s = oc_set_moved(c, own_copy(saved))
+    div = track_block_scoped(c, vec_get(e, 2))
+    if div == 1
+        _r = oc_set_moved(c, saved)
+    else
+        _r = 0
+    own_ty(d"Unit")
+
+# ---- statements ----
+fn assign_accumulates(value: Int, name: Int) -> Int ! alloc
+    if ex_kind(value) == EX_BINARY()
+        if str_eq(vec_get(value, 1), "add") == 1
+            leaf = add_chain_leftmost(value)
+            if ex_kind(leaf) == EX_IDENT()
+                str_eq(vec_get(leaf, 1), name)
+            else
+                0
+        else
+            0
+    else
+        0
+
+# Returns 1 when the statement diverges (return).
+fn track_stmt(c: Int, st: Int) -> Int ! alloc
+    k = vec_get(st, 0)
+    ex = vec_get(st, 2)
+    if k == 2
+        if ex != 0
+            ty = track_expr(c, ex)
+            _m = consume_if_unique(c, ex, ty)
+        else
+            _m = 0
+        1
+    elsif k == 1
+        ty = track_expr(c, ex)
+        _m = consume_if_unique(c, ex, ty)
+        name = vec_get(st, 1)
+        if ty_handle_is_string(ty) == 1
+            if assign_accumulates(ex, name) == 1
+                _x = consume_if_unique(c, add_chain_leftmost(ex), ty)
+            else
+                _x = 0
+        else
+            _x = 0
+        bound = ty
+        if vec_get(st, 3) != 0
+            bound = vec_get(st, 3)
+        else
+            bound = ty
+        _b = strenv_bind(oc_env(c), name, bound)
+        _u = unmove(c, name)
+        0
+    elsif k == 3
+        _a = track_expr(c, ex)
+        _b = track_expr(c, vec_get(st, 5))
+        0
+    else
+        _a = track_expr(c, ex)
+        0
+
+fn track_stmts(c: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif oc_failed(c) == 1
+        0
+    else
+        if track_stmt(c, vec_get(stmts, i)) == 1
+            1
+        else
+            track_stmts(c, stmts, i + 1, n)
+
+# Returns 1 when the block diverges.
+fn track_block(c: Int, b: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        stmts = block_stmts(b)
+        if track_stmts(c, stmts, 0, vec_len(stmts)) == 1
+            1
+        else
+            tail = block_tail(b)
+            if tail != 0
+                ty = track_expr(c, tail)
+                _m = consume_if_unique(c, tail, ty)
+            else
+                _m = 0
+            0
+
+fn own_seed_params(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = vec_get(params, i)
+        _b = strenv_bind(oc_env(c), vec_get(pm, 0), vec_get(pm, 1))
+        own_seed_params(c, params, i + 1, n)
+
+fn check_fn_moves(prog: Int, f: Int) -> Int ! alloc
+    c = oc_new(prog)
+    params = vec_get(f, 1)
+    _s = own_seed_params(c, params, 0, vec_len(params))
+    _t = track_block(c, vec_get(f, 2))
+    if oc_failed(c) == 1
+        result_err(vec_get(c, 1))
+    else
+        result_ok(0)
+
+fn check_ownership_go(prog: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        r = check_fn_moves(prog, vec_get(fns, i))
+        if result_is_err(r) == 1
+            r
+        else
+            check_ownership_go(prog, fns, i + 1, n)
+
+# Ok(0), or Err(message) for the first use of a moved value.
+fn check_ownership(prog: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    check_ownership_go(prog, fns, 0, vec_len(fns))

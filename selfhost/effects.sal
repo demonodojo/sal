@@ -1,0 +1,254 @@
+# Effects pass, the mirror of src/effects.rs: a fn body may only use the
+# effects its signature declares.
+import ast
+import result
+
+# Used-effect flags share the layout of fx_flags_new: io, alloc, panic, gpu, tpu.
+fn fx_mark(used: Int, i: Int) -> Int ! alloc
+    vec_set(used, i, 1)
+
+fn fx_call(name: Int, used: Int) -> Int ! alloc
+    if str_eq(name, "load") == 1
+        _a = fx_mark(used, 0)
+        fx_mark(used, 1)
+    elsif str_eq(name, "read_file") == 1
+        _a = fx_mark(used, 0)
+        fx_mark(used, 1)
+    elsif str_eq(name, "path_readable") == 1
+        _a = fx_mark(used, 0)
+        fx_mark(used, 1)
+    elsif fx_call_is_io(name) == 1
+        fx_mark(used, 0)
+    elsif fx_call_is_alloc(name) == 1
+        fx_mark(used, 1)
+    elsif str_eq(name, "syscall") == 1
+        fx_mark(used, 0)
+    elsif str_eq(name, "panic") == 1
+        fx_mark(used, 2)
+    else
+        0
+
+fn fx_call_is_io(name: Int) -> Int ! alloc
+    if str_eq(name, "write_file") == 1
+        1
+    elsif str_eq(name, "write_png") == 1
+        1
+    elsif str_eq(name, "print_str") == 1
+        1
+    elsif str_eq(name, "eprint_str") == 1
+        1
+    elsif str_eq(name, "copy_file") == 1
+        1
+    elsif str_eq(name, "copy_self") == 1
+        1
+    elsif str_eq(name, "gated_print_str") == 1
+        1
+    elsif str_eq(name, "gated_copy_self") == 1
+        1
+    elsif str_eq(name, "clang") == 1
+        1
+    elsif str_eq(name, "clang_obj") == 1
+        1
+    elsif str_eq(name, "link_objs") == 1
+        1
+    elsif str_eq(name, "exec_compile") == 1
+        1
+    elsif str_eq(name, "gated_exec_compile") == 1
+        1
+    elsif str_eq(name, "mkdir_p") == 1
+        1
+    else
+        0
+
+fn fx_call_is_alloc(name: Int) -> Int ! alloc
+    if str_eq(name, "str_concat") == 1
+        1
+    elsif str_eq(name, "str_append") == 1
+        1
+    elsif str_eq(name, "strdup") == 1
+        1
+    elsif str_eq(name, "select_str") == 1
+        1
+    elsif str_eq(name, "argv") == 1
+        1
+    elsif str_eq(name, "str_slice") == 1
+        1
+    elsif str_eq(name, "int_to_str") == 1
+        1
+    elsif str_eq(name, "char_to_str") == 1
+        1
+    elsif str_eq(name, "vec_new") == 1
+        1
+    elsif str_eq(name, "image_new") == 1
+        1
+    elsif str_eq(name, "list_new") == 1
+        1
+    elsif str_eq(name, "dict_new") == 1
+        1
+    elsif str_eq(name, "bytes_new") == 1
+        1
+    elsif str_eq(name, "bytes_to_str") == 1
+        1
+    elsif str_eq(name, "bytes_view") == 1
+        1
+    elsif str_eq(name, "bytes_view_mem") == 1
+        1
+    elsif str_eq(name, "tmp_path") == 1
+        1
+    elsif str_eq(name, "exec_capture") == 1
+        1
+    elsif str_eq(name, "getenv") == 1
+        1
+    elsif str_eq(name, "realpath") == 1
+        1
+    else
+        0
+
+fn fx_place(place: Int, used: Int) -> Int ! alloc
+    if str_eq(place, "gpu") == 1
+        fx_mark(used, 3)
+    elsif str_eq(place, "tpu") == 1
+        fx_mark(used, 4)
+    else
+        0
+
+fn fx_scan_args(args: Int, i: Int, n: Int, used: Int, env: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = fx_scan_expr(vec_get(args, i), used, env)
+        fx_scan_args(args, i + 1, n, used, env)
+
+fn fx_scan_arms(arms: Int, i: Int, n: Int, used: Int, env: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        _a = fx_scan_expr(vec_get(arm, 0), used, env)
+        _b = fx_scan_block(vec_get(arm, 1), used, env)
+        fx_scan_arms(arms, i + 1, n, used, env)
+
+fn fx_scan_expr(e: Int, used: Int, env: Int) -> Int ! alloc
+    if e == 0
+        0
+    else
+        k = ex_kind(e)
+        if k == EX_CALL()
+            _a = fx_call(vec_get(e, 1), used)
+            args = vec_get(e, 2)
+            fx_scan_args(args, 0, vec_len(args), used, env)
+        elsif k == EX_TO()
+            _a = fx_place(vec_get(e, 1), used)
+            fx_scan_expr(vec_get(e, 2), used, env)
+        elsif k == EX_ON()
+            _a = fx_place(vec_get(e, 1), used)
+            fx_scan_block(vec_get(e, 2), used, env)
+        elsif k == EX_BINARY()
+            _a = fx_scan_expr(vec_get(e, 2), used, env)
+            _b = fx_scan_expr(vec_get(e, 3), used, env)
+            if binary_add_is_string_concat(e, env) == 1
+                fx_mark(used, 1)
+            else
+                0
+        elsif k == EX_TENSOR()
+            fx_mark(used, 1)
+        elsif k == EX_FIELD()
+            fx_scan_expr(vec_get(e, 1), used, env)
+        elsif k == EX_WHILE()
+            _a = fx_scan_expr(vec_get(e, 1), used, env)
+            fx_scan_block(vec_get(e, 2), used, env)
+        elsif k == EX_IF()
+            _a = fx_scan_expr(vec_get(e, 1), used, env)
+            _b = fx_scan_block(vec_get(e, 2), used, env)
+            arms = vec_get(e, 4)
+            _c = fx_scan_arms(arms, 0, vec_len(arms), used, env)
+            fx_scan_block(vec_get(e, 3), used, env)
+        else
+            0
+
+# Statements: `[kind, name, expr]`, kind 0 = expression, 1 = binding, 2 = return.
+fn fx_scan_stmts(stmts: Int, i: Int, n: Int, used: Int, env: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = vec_get(stmts, i)
+        ex = vec_get(st, 2)
+        _a = fx_scan_expr(ex, used, env)
+        if vec_get(st, 0) == 1
+            _b = strenv_bind(env, vec_get(st, 1), expr_type(ex, env))
+        else
+            _b = 0
+        fx_scan_stmts(stmts, i + 1, n, used, env)
+
+# A block's bindings go out of scope with it.
+fn fx_scan_block(b: Int, used: Int, env: Int) -> Int ! alloc
+    if b == 0
+        0
+    else
+        mark = strenv_len(env)
+        stmts = block_stmts(b)
+        _a = fx_scan_stmts(stmts, 0, vec_len(stmts), used, env)
+        _b = fx_scan_expr(block_tail(b), used, env)
+        strenv_set_len(env, mark)
+
+fn fx_effect_name(i: Int) -> String ! alloc
+    if i == 0
+        d"io"
+    elsif i == 1
+        d"alloc"
+    elsif i == 2
+        d"panic"
+    elsif i == 3
+        d"gpu"
+    else
+        d"tpu"
+
+fn fx_first_missing(used: Int, declared: Int, i: Int) -> Int ! alloc
+    if i >= 5
+        0 - 1
+    elsif vec_get(used, i) == 1
+        if vec_get(declared, i) == 1
+            fx_first_missing(used, declared, i + 1)
+        else
+            i
+    else
+        fx_first_missing(used, declared, i + 1)
+
+fn fx_seed_params(params: Int, i: Int, n: Int, env: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = vec_get(params, i)
+        _b = strenv_bind(env, vec_get(pm, 0), vec_get(pm, 1))
+        fx_seed_params(params, i + 1, n, env)
+
+fn check_fn_effects(f: Int, env: Int) -> Int ! alloc
+    used = fx_flags_new()
+    params = vec_get(f, 1)
+    _s = fx_seed_params(params, 0, vec_len(params), env)
+    _b = fx_scan_block(vec_get(f, 2), used, env)
+    _r = strenv_set_len(env, 0)
+    miss = fx_first_missing(used, fndef_effects(f), 0)
+    if miss < 0
+        result_ok(0)
+    else
+        nm = fx_effect_name(miss)
+        fname = str_from_int(vec_get(f, 0))
+        result_err_str("function `" + fname + "` uses effect `" + nm + "` but signature does not declare it\nhint: add `! " + nm + "` to the signature")
+
+fn check_effects_go(fns: Int, i: Int, n: Int, env: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        r = check_fn_effects(vec_get(fns, i), env)
+        if result_is_err(r) == 1
+            r
+        else
+            check_effects_go(fns, i + 1, n, env)
+
+# Ok(0), or Err(message) for the first fn using an undeclared effect.
+fn check_effects(prog: Int) -> Int ! alloc
+    env = strenv_new()
+    _g = strenv_set_globals(env, fnret_map_from_prog(prog), prog_structs(prog))
+    fns = prog_fns(prog)
+    check_effects_go(fns, 0, vec_len(fns), env)

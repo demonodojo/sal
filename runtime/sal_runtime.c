@@ -2195,9 +2195,9 @@ int64_t sal_clang(const char *c_path, const char *out_path) {
     find_runtime_dir(rdir, sizeof(rdir));
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g -I%s -o %s %s %s/sal_runtime.c %s/kernels.c %s/instrument.c -lm "
-             "2>/tmp/sal-selfhost-clang.err",
-             rdir, out_path, c_path, rdir, rdir, rdir);
+             "clang -O0 -g -w -I%s -o %s %s %s/sal_runtime.c %s/soso/linux_host_syscall.c "
+             "%s/kernels.c %s/instrument.c -lm 2>/tmp/sal-selfhost-clang.err",
+             rdir, out_path, c_path, rdir, rdir, rdir, rdir);
     int rc = system(cmd);
     if (rc != 0) {
         fprintf(stderr, "sal_clang: clang failed (%d)\n", rc);
@@ -2248,7 +2248,7 @@ int64_t sal_clang_obj(const char *c_path, const char *obj_path) {
     find_runtime_dir(rdir, sizeof(rdir));
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g -I%s -c %s -o %s 2>/tmp/sal-selfhost-clang.err", rdir, c_path,
+             "clang -O0 -g -w -I%s -c %s -o %s 2>/tmp/sal-selfhost-clang.err", rdir, c_path,
              obj_path);
     int rc = system(cmd);
     if (rc != 0) {
@@ -2267,9 +2267,9 @@ int64_t sal_link_objs(const char *objs, const char *out_path) {
     char cmd[8192];
     const char *olist = objs ? objs : "";
     snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g %s %s/sal_runtime.c %s/kernels.c %s/instrument.c -o %s -lm "
-             "2>/tmp/sal-selfhost-clang.err",
-             olist, rdir, rdir, rdir, out_path);
+             "clang -O0 -g -w %s %s/sal_runtime.c %s/soso/linux_host_syscall.c %s/kernels.c "
+             "%s/instrument.c -o %s -lm 2>/tmp/sal-selfhost-clang.err",
+             olist, rdir, rdir, rdir, rdir, out_path);
     int rc = system(cmd);
     if (rc != 0) {
         sal_clang_report_err("sal_link_objs", rc);

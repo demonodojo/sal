@@ -52,11 +52,13 @@ El selfhost **no está completo**. Lo que hay hoy:
 | Lexer | `lexer.sal` (en sal, ya no `lex_src` de C) | Tokens de la SPEC incl. `let`, `match`, `try`, `=>`, bit ops. |
 | Parser | `parser.sal` | Precedencias de la SPEC, `let`, lambda, `try`, `match`, `enum`, `frame`, parámetros de tipo, asignación a campos. Los tipos siguen siendo texto. |
 | Efectos | `effects.sal` | Paridad con `src/effects.rs`. |
-| Tipos | `infer.sal` | Solo escalares (`Int`/`Float`/`Bool`/`String`/`Unit`): variables, retornos, ramas de `if`, aridad y argumentos de funciones de usuario, operadores. `matmul` entre tensores con tipo declarado comprueba elemento, rango y dimensión interior (`E_SHAPE`). Resto de tensores, genéricos y builtins sin firma modelada son `Unknown`. |
+| Tipos | `infer.sal` | Solo escalares (`Int`/`Float`/`Bool`/`String`/`Unit`): variables, retornos, ramas de `if`, aridad y argumentos de funciones de usuario, operadores. `matmul` entre tensores con tipo declarado comprueba elemento, rango y dimensión interior (`E_SHAPE`); `transpose` (rango), `reshape` (volumen con literales) y `softmax` (eje literal) también, y `relu`/`silu`/`rope` conservan el tipo. Resto de tensores (`attention`, `qmatmul`, `reduce`, `rms_norm`), genéricos y builtins sin firma modelada son `Unknown`. |
 | Ownership | `ownership.sal` | `E_MOVED`; tipos de valor simplificados. |
 | Dispositivos | `device.sal` | `E_PLACE`/`E_DEVICE` con la misma lógica que `src/device.rs`; el parser reconoce `on <place> kernel`. |
 | IR | `fuse.sal`, `tensorops.sal` | `if`/`while` con carries, struct/aggregate, drops de structs con `String`, forma de `matmul`, `reshape`, `transpose`, `attention`, `rope`, `silu`, `tensor_append`, contenedores. |
-| Backend | `emit.sal` emite IR de texto y **C** | No hay LLVM ni objeto propio. |
+| Backend | `emit.sal` emite IR de texto y **C** | No hay LLVM ni objeto propio. Dos caminos a C: desde el AST (escalares, strings, structs, bytes, `syscall`) y, para funciones con tensores, desde la IR (`cir_*`): `load`, `matmul`, `rope`, `silu`, `softmax`, `attention`, ops elemento a elemento, `to <place>`, literales. Los buffers de tensor llevan su longitud en una cabecera de 16 bytes y no se liberan. |
+
+Los ejecutables del selfhost coinciden con los del arranque (código de salida y stdout) en los ejemplos y corpus que el arranque compila, salvo `examples/infer/tiny_*` (imprimen tiempos) y los que el arranque rechaza. Se mide con `selfhost_binaries_behave_like_bootstrap_binaries`.
 
 Paridad medida por `tests/selfhost_ir.rs::selfhost_ir_matches_bootstrap_on_parity_files`:
 el IR del selfhost coincide con el del arranque en todos los `.sal` del repositorio que el arranque
@@ -64,8 +66,8 @@ lowera (incluido el propio `selfhost/`).
 
 Pendiente, por orden:
 
-1. `infer` completo: formas del resto de ops (`E_SHAPE`, `E_TENSOR_ELEM`), genéricos, enums,
-   builtins con firma. (Hecho: `matmul`; structs de varios campos en el emisor C, como puntero a
+1. `infer` completo: formas de `attention`, `qmatmul`, `reduce`, `rms_norm` y `E_TENSOR_ELEM`, genéricos, enums,
+   builtins con firma. (Hecho: `matmul`, `transpose`, `reshape`, `softmax`; structs de varios campos en el emisor C, como puntero a
    array de slots `int64_t`.)
 2. Los pases se aplican solo al compilar (`-o`), como `sal build`; `sal emit ir` no comprueba.
 3. `match`, lambdas y `try` en el bajado a IR (hoy se parsean y se ignoran al bajar).

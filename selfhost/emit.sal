@@ -9,6 +9,7 @@ import modules
 import qualify
 import cache
 import checks
+import tshape
 
 fn resolve_module_graph_qualified(source_path: String, proot: String) -> Int ! io, alloc
     g = resolve_module_graph(source_path, proot)
@@ -672,11 +673,24 @@ fn c_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
         elsif c == 9
             acc = acc + "\\t"
             c_escape_go(s, i + 1, n, acc)
+        elsif c == 13
+            acc = acc + "\\r"
+            c_escape_go(s, i + 1, n, acc)
+        elsif c < 32
+            acc = acc + c_octal(c)
+            c_escape_go(s, i + 1, n, acc)
+        elsif c >= 127
+            acc = acc + c_octal(c)
+            c_escape_go(s, i + 1, n, acc)
         else
             piece = char_to_str(c)
             acc = acc + piece
             # free(piece)
             c_escape_go(s, i + 1, n, acc)
+
+# Always three digits, so a following digit character can't extend the escape.
+fn c_octal(c: Int) -> String ! alloc
+    "\\" + int_to_str(c / 64) + int_to_str((c / 8) % 8) + int_to_str(c % 8)
 
 fn c_escape_str(s: String) -> String ! alloc
     acc = d"\""
@@ -764,7 +778,7 @@ fn ensure_sal_lit(s: Int, pool: Int) -> String ! alloc
         cast + ".b)"
 
 fn runtime_decls() -> String ! alloc
-    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\n\n"
+    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) {{ return ((int64_t *)(uintptr_t)p)[-2]; }}\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) {{ int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }}\nstatic float *sal_tn_alloc(int64_t n) {{ return sal_tn_alloc_bytes(n, 4); }}\nstatic float *sal_tn_from(int64_t raw, int64_t n) {{ float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }}\nstatic float *sal_tn_copy(int64_t p) {{ if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }}\n\n"
 
 fn user_fns_from_prog(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
@@ -861,6 +875,8 @@ fn tmp_counter_new(pool: Int) -> Int ! alloc
     _q = vec_push(v, senv)
     _r = vec_push(v, pool)
     _s = vec_push(v, 0)
+    _m = vec_push(v, 0)
+    _n = vec_push(v, 0)
     v
 
 fn tc_strenv(tc: Int) -> Int ! alloc
@@ -932,7 +948,7 @@ fn emit_c_expr(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     else
         k = ex_kind(e)
         if k == EX_INT()
-            int_to_str(vec_get(e, 1))
+            int_to_str(vec_get(e, 1)) + "LL"
         elsif k == EX_FLOAT()
             d"0"
         elsif k == EX_STRING()
@@ -945,6 +961,10 @@ fn emit_c_expr(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
             emit_c_binary(e, user, stmts, tc)
         elsif k == EX_CALL()
             emit_c_call(e, user, stmts, tc)
+        elsif k == EX_TENSOR()
+            emit_c_tensor_lit(e)
+        elsif k == EX_ON()
+            emit_c_on(e, user, stmts, tc)
         elsif k == EX_IF()
             emit_c_if(e, user, stmts, tc)
         elsif k == EX_WHILE()
@@ -1218,8 +1238,84 @@ fn emit_c_call(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
         emit_c_where(args_e, user, stmts, tc)
     elsif struct_find(strenv_structs(tc_strenv(tc)), fname) != 0
         emit_c_struct_ctor(arg_parts)
+    elsif str_eq(str_from_int(fname), d"print") == 1
+        emit_c_print(args_e, arg_parts, tc)
+    elsif str_eq(str_from_int(fname), d"load") == 1
+        emit_c_load(arg_parts, stmts)
+    elsif str_eq(str_from_int(fname), d"matmul") == 1
+        emit_c_matmul(args_e, arg_parts, stmts, tc)
     else
         emit_c_builtin(str_from_int(fname), arg_parts, stmts)
+
+# Tensors are `float *` buffers from sal_place_malloc; the value is the pointer.
+fn emit_c_tensor_lit(e: Int) -> String ! alloc
+    data = vec_get(e, 3)
+    n = vec_len(data)
+    acc = "({{ float *__t = (float *)sal_place_malloc(" + int_to_str(n * 4 + 4) + ", 0); "
+    acc = emit_c_tensor_cells(data, 0, n, acc)
+    acc + "(int64_t)(uintptr_t)__t; }})"
+
+fn emit_c_tensor_cells(data: Int, i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        acc = acc + "__t[" + int_to_str(i) + "] = " + str_from_int(vec_get(data, i)) + "f; "
+        emit_c_tensor_cells(data, i + 1, n, acc)
+
+fn emit_c_load(arg_parts: Int, stmts: Int) -> String ! alloc
+    _p = vec_push(stmts, str_as_int(d"  extern int64_t sal_load_f32();\n"))
+    "({{ int64_t __n = 0; (int64_t)(uintptr_t)sal_load_f32((const char *)(uintptr_t)(" + arg_at(arg_parts, 0) + "), &__n); }})"
+
+# `on <place> ...` runs its block inline (every place is the host here).
+fn emit_c_on(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
+    emit_c_block(vec_get(e, 2), user, stmts, tc)
+
+fn emit_c_matmul(args_e: Int, arg_parts: Int, stmts: Int, tc: Int) -> String ! alloc
+    ta = expr_type(vec_get(args_e, 0), tc_strenv(tc))
+    tb = expr_type(vec_get(args_e, 1), tc_strenv(tc))
+    pa = tt_split(ta)
+    pb = tt_split(tb)
+    if vec_len(pa) < 3
+        d"0"
+    elsif vec_len(pb) < 3
+        d"0"
+    else
+        m = tt_dim_val(vec_get(pa, vec_len(pa) - 2))
+        k = tt_dim_val(vec_get(pa, vec_len(pa) - 1))
+        n = tt_dim_val(vec_get(pb, vec_len(pb) - 1))
+        tc_n = vec_get(tc, 0) + 1
+        _u = vec_set(tc, 0, tc_n)
+        out = "__mm" + int_to_str(tc_n)
+        _e = vec_push(stmts, str_as_int(d"  extern void sal_matmul_f32();\n"))
+        _p = vec_push(stmts, str_as_int("  float *" + out + " = (float *)sal_place_malloc(" + int_to_str(m * n * 4) + ", 0);\n"))
+        _q = vec_push(stmts, str_as_int("  sal_matmul_f32((const float *)(uintptr_t)" + arg_at(arg_parts, 0) + ", (const float *)(uintptr_t)" + arg_at(arg_parts, 1) + ", " + out + ", " + int_to_str(m) + ", " + int_to_str(k) + ", " + int_to_str(n) + ");\n"))
+        if m * n <= 16
+            _r = vec_set(tc, 4, str_as_int(out))
+            _t = vec_set(tc, 5, m * n)
+        "((int64_t)(uintptr_t)" + out + ")"
+
+# The bootstrap returns the element sum of the last (small) matmul from `main`.
+fn emit_c_matmul_exit(tc: Int, is_main: Int, val: String) -> String ! alloc
+    q = vec_get(tc, 4)
+    if q == 0
+        val
+    elsif is_main == 0
+        val
+    else
+        out = str_from_int(q)
+        cnt = int_to_str(vec_get(tc, 5))
+        "({{ double __s = 0; for (int __i = 0; __i < " + cnt + "; __i++) __s += " + out + "[__i]; (int64_t)__s; }})"
+
+# `print` of a String prints its text, of anything else the integer.
+fn emit_c_print(args_e: Int, arg_parts: Int, tc: Int) -> String ! alloc
+    a0 = arg_at(arg_parts, 0)
+    if vec_len(args_e) > 0
+        if expr_produces_string(vec_get(args_e, 0), tc_strenv(tc)) == 1
+            "sal_print_str((const char*)(uintptr_t)" + a0 + ")"
+        else
+            "sal_print_i64(" + a0 + ")"
+    else
+        "sal_print_i64(0)"
 
 # One-field structs are transparent; wider ones are a heap array of int64
 # slots, so a struct value is the pointer to it.
@@ -1466,7 +1562,65 @@ fn emit_c_builtin5(fname: String, args: Int, stmts: Int) -> String ! alloc
         d = arg_at(args, 3)
         "sal_write_png((const char*)(uintptr_t)" + a + "," + b + "," + c + ",(void*)(uintptr_t)" + d + ")"
     else
+        emit_c_runtime_call(fname, args, stmts)
+
+# Any other builtin is the runtime function `sal_<name>`. Values are all
+# int64 (pointers included), which matches the x86-64 calling convention, so a
+# block-scope unprototyped declaration is enough.
+fn emit_c_runtime_call(fname: String, args: Int, stmts: Int) -> String ! alloc
+    if cir_is_stub(str_slice("sal_" + fname, 0, 4 + str_len(fname))) == 1
         d"0"
+    elsif str_eq(fname, d"syscall") == 1
+        emit_c_syscall(args, stmts)
+    elsif str_eq(fname, d"bytes_get_u8") == 1
+        emit_c_bytes_get(args, 1)
+    elsif str_eq(fname, d"bytes_get_u16") == 1
+        emit_c_bytes_get(args, 2)
+    elsif str_eq(fname, d"bytes_get_u32") == 1
+        emit_c_bytes_get(args, 4)
+    elsif str_eq(fname, d"bytes_get_i64") == 1
+        emit_c_bytes_get(args, 8)
+    elsif str_eq(fname, d"bytes_set_u8") == 1
+        emit_c_bytes_set(args, 1)
+    elsif str_eq(fname, d"bytes_set_u16") == 1
+        emit_c_bytes_set(args, 2)
+    elsif str_eq(fname, d"bytes_set_u32") == 1
+        emit_c_bytes_set(args, 4)
+    elsif str_eq(fname, d"bytes_set_i64") == 1
+        emit_c_bytes_set(args, 8)
+    else
+        emit_c_plain_runtime_call(fname, args, stmts)
+
+fn emit_c_syscall(args: Int, stmts: Int) -> String ! alloc
+    _p = vec_push(stmts, str_as_int(d"  extern int64_t sal_os_syscall();\n"))
+    padded = vec_copy(args)
+    _z = pad_args(padded, 7)
+    acc = d"sal_os_syscall("
+    acc = join_commas(padded, 0, vec_len(padded), acc)
+    acc + ")"
+
+fn pad_args(v: Int, n: Int) -> Int ! alloc
+    if vec_len(v) >= n
+        0
+    else
+        _p = vec_push(v, str_as_int(d"0"))
+        pad_args(v, n)
+
+# Bytes handles point at {uint8_t *data; int64_t len}; accesses are checked.
+fn emit_c_bytes_get(args: Int, width: Int) -> String ! alloc
+    w = int_to_str(width)
+    "({{ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); uint64_t __v = 0; __builtin_memcpy(&__v, (char *)__b[0] + __i, " + w + "); (int64_t)__v; }})"
+
+fn emit_c_bytes_set(args: Int, width: Int) -> String ! alloc
+    w = int_to_str(width)
+    "({{ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; int64_t __x = " + arg_at(args, 2) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); __builtin_memcpy((char *)__b[0] + __i, &__x, " + w + "); (int64_t)0; }})"
+
+fn emit_c_plain_runtime_call(fname: String, args: Int, stmts: Int) -> String ! alloc
+    rname = "sal_" + fname
+    _p = vec_push(stmts, str_as_int("  extern int64_t " + rname + "();\n"))
+    acc = "((int64_t)" + rname + "("
+    acc = join_commas(args, 0, vec_len(args), acc)
+    acc + "))"
 
 fn emit_c_while(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     cond_stmts = vec_new()
@@ -1687,6 +1841,7 @@ fn emit_c_fn_body(f: Int, user: Int, is_main: Int, acc: String, pool: Int) -> St
     _sp = seed_string_params(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), tc_strenv(tc))
     val = emit_c_block(body, user, stmts, tc)
     acc = append_stmt_strings(acc, stmts, 0, vec_len(stmts))
+    val = emit_c_matmul_exit(tc, is_main, val)
     foot = emit_c_fn_footer(is_main, val)
     acc = acc + foot
     acc
@@ -1737,11 +1892,19 @@ fn append_stmt_strings(acc: String, stmts: Int, i: Int, n: Int) -> String ! allo
         acc = acc + str_from_int(vec_get(stmts, i))
         append_stmt_strings(acc, stmts, i + 1, n)
 
-fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: String, allow_main: Int, linkable: Int, pool: Int) -> String ! alloc
+fn emit_c_one_fn(f: Int, irf: Int, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
+    if irf == 0
+        emit_c_fn(f, user, linkable, allow_main, pool)
+    elsif cir_is_tensor_fn(vec_get(irf, 2)) == 1
+        cir_fn(f, irf, user, linkable, allow_main, pool)
+    else
+        emit_c_fn(f, user, linkable, allow_main, pool)
+
+fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: String, allow_main: Int, linkable: Int, pool: Int, irmod: Int) -> String ! alloc
     idx = i
     out = acc
     while idx < n
-        piece = emit_c_fn(vec_get(fns, idx), user, linkable, allow_main, pool)
+        piece = emit_c_one_fn(vec_get(fns, idx), vec_get(irmod, idx), user, linkable, allow_main, pool)
         if str_len(piece) > 0
             out = out + piece
         else
@@ -1758,12 +1921,29 @@ fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: I
     fns = prog_fns(prog)
     acc = emit_forward_decls(fns, 0, vec_len(fns), acc, allow_main, linkable)
     acc = acc + "\n"
-    body = emit_c_fns(fns, 0, vec_len(fns), callables, d"", allow_main, linkable, pool)
+    irmod = lower_program_with_types(prog, callables, graph_types_structs(types), graph_types_fnrets(types))
+    body = emit_c_fns(fns, 0, vec_len(fns), callables, d"", allow_main, linkable, pool, irmod)
     lits = lit_pool_globals(pool)
     if str_len(lits) > 0
         acc = acc + lits
         acc = acc + "\n"
-    acc + body
+    acc = acc + body
+    # A library root still links as a program, like the bootstrap's entry stub.
+    if allow_main == 1
+        if fns_have_main(fns, 0, vec_len(fns)) == 0
+            acc + "int main(int argc, char **argv) {{\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n  return 0;\n}}\n"
+        else
+            acc
+    else
+        acc
+
+fn fns_have_main(fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(str_from_int(vec_get(vec_get(fns, i), 0)), d"main") == 1
+        1
+    else
+        fns_have_main(fns, i + 1, n)
 
 fn emit_c_from_ast(prog: Int) -> String ! alloc
     user = user_fns_from_prog(prog)
@@ -1821,3 +2001,593 @@ fn emit_c_compile_graph(graph_in: Int, root_key: Int, out_path: String, proot: S
 
 fn emit_c(src: String) -> Int ! alloc
     emit_c_from_prog_result(src)
+
+# ---- IR -> C (functions that touch tensors) ----
+# Context: [pool, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main]
+fn cc_new(pool: Int, user: Int, is_main: Int) -> Int ! alloc
+    c = vec_new()
+    _a = vec_push(c, pool)
+    _b = vec_push(c, user)
+    _c = vec_push(c, vec_new())
+    _d = vec_push(c, map_new())
+    _e = vec_push(c, map_new())
+    _f = vec_push(c, map_new())
+    _g = vec_push(c, vec_new())
+    _h = vec_push(c, 0)
+    _i = vec_push(c, 0)
+    _j = vec_push(c, 0)
+    _k = vec_push(c, is_main)
+    c
+
+fn cc_line(cc: Int, s: String) -> Int ! alloc
+    vec_push(vec_get(cc, 6), str_as_int(s))
+
+fn cc_uid(cc: Int) -> Int ! alloc
+    n = vec_get(cc, 9) + 1
+    _s = vec_set(cc, 9, n)
+    n
+
+fn cir_is_num(s: String) -> Int ! alloc
+    if str_len(s) == 0
+        0
+    else
+        c = str_char(s, 0)
+        if c >= 48
+            if c <= 57
+                1
+            else
+                0
+        elsif c == 45
+            if str_len(s) > 1
+                1
+            else
+                0
+        else
+            0
+
+# An IR operand as a C int64 expression.
+fn cir_op(cc: Int, a: Int) -> String ! alloc
+    s = str_from_int(a)
+    if str_len(s) == 0
+        d"0"
+    elsif str_char(s, 0) == 34
+        inner = str_slice(s, 1, str_len(s) - 1)
+        ensure_sal_lit(str_as_int(inner), vec_get(cc, 0))
+    elsif cir_is_num(s) == 1
+        s + "LL"
+    elsif names_has(vec_get(cc, 2), a, 0, vec_len(vec_get(cc, 2))) == 1
+        s
+    else
+        d"0"
+
+fn cir_ops(cc: Int, args: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _p = vec_push(out, str_as_int(cir_op(cc, vec_get(args, i))))
+        cir_ops(cc, args, i + 1, n, out)
+
+# Static value of an operand when it is a literal or a known constant.
+fn cir_const(cc: Int, a: Int) -> Int ! alloc
+    s = str_from_int(a)
+    if cir_is_num(s) == 1
+        tt_dim_val(a)
+    else
+        map_get(vec_get(cc, 3), a)
+
+fn cir_decl(cc: Int, name: String) -> Int ! alloc
+    cc_line(cc, "  extern int64_t R_" + name + "() __asm__(\"" + name + "\");\n")
+
+# Calls the runtime function `name` (symbol aliased to R_<name> so it never
+# clashes with the prototypes in the prelude).
+fn cir_rt(cc: Int, name: String, ops: Int) -> String ! alloc
+    _d = cir_decl(cc, name)
+    acc = "R_" + name + "("
+    join_commas(ops, 0, vec_len(ops), acc) + ")"
+
+fn cir_set(cc: Int, dest: Int, rhs: String) -> Int ! alloc
+    cc_line(cc, "  " + str_from_int(dest) + " = " + rhs + ";\n")
+
+# Tensor buffers: a 16-byte header holds the element count before the data.
+fn cir_tn_alloc(n: String) -> String ! alloc
+    "((int64_t)(uintptr_t)sal_tn_alloc(" + n + "))"
+
+fn cir_call(cc: Int, inst: Int) -> Int ! alloc
+    dest = vec_get(inst, 1)
+    fname = str_from_int(vec_get(inst, 2))
+    args = vec_get(inst, 3)
+    ops = cir_ops(cc, args, 0, vec_len(args), vec_new())
+    if vec_get(inst, 4) == 0
+        cir_call_free(cc, fname, ops)
+    else
+        cir_call_dest(cc, dest, fname, args, ops)
+
+fn cir_call_free(cc: Int, fname: String, ops: Int) -> Int ! alloc
+    cc_line(cc, "  " + cir_call_expr(cc, fname, ops) + ";\n")
+
+fn cir_call_expr(cc: Int, fname: String, ops: Int) -> String ! alloc
+    if names_has(vec_get(cc, 1), str_as_int(fname), 0, vec_len(vec_get(cc, 1))) == 1
+        acc = mangled(fname) + "("
+        join_commas(ops, 0, vec_len(ops), acc) + ")"
+    else
+        cir_rt(cc, fname, ops)
+
+fn cir_arg(ops: Int, i: Int) -> String ! alloc
+    arg_at(ops, i)
+
+fn cir_call_dest(cc: Int, dest: Int, fname: String, args: Int, ops: Int) -> Int ! alloc
+    d = str_from_int(dest)
+    if names_has(vec_get(cc, 1), str_as_int(fname), 0, vec_len(vec_get(cc, 1))) == 1
+        _a = cir_set(cc, dest, cir_call_expr(cc, fname, ops))
+        _b = map_put(vec_get(cc, 5), dest, 0)
+        0
+    elsif str_eq(fname, d"sal_matmul_f32") == 1
+        cir_matmul(cc, dest, args, ops)
+    elsif str_eq(fname, d"sal_rope") == 1
+        argv = vec_new()
+        _p0 = vec_push(argv, str_as_int(cir_arg(ops, 0)))
+        _p1 = vec_push(argv, str_as_int(cir_arg(ops, 1)))
+        _p2 = vec_push(argv, str_as_int(cir_arg(ops, 2)))
+        _p3 = vec_push(argv, str_as_int(cir_arg(ops, 3)))
+        _b = cc_line(cc, "  " + cir_rt(cc, d"sal_rope_f32", argv) + ";\n")
+        cir_set(cc, dest, cir_arg(ops, 0))
+    else
+        cir_call_dest2(cc, dest, fname, args, ops)
+
+fn cir_call_dest2(cc: Int, dest: Int, fname: String, args: Int, ops: Int) -> Int ! alloc
+    d = str_from_int(dest)
+    if str_eq(fname, d"sal_silu") == 1
+        n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
+        _a = cc_line(cc, "  " + d + " = " + cir_tn_alloc(n) + ";\n")
+        _b = cc_line(cc, "  " + cir_call_expr(cc, d"sal_silu_f32", cir_vec3(d, cir_arg(ops, 0), n)) + ";\n")
+        0
+    elsif str_eq(fname, d"sal_softmax") == 1
+        n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
+        _a = cc_line(cc, "  " + cir_call_expr(cc, d"sal_softmax_f32", cir_vec2(cir_arg(ops, 0), n)) + ";\n")
+        cir_set(cc, dest, cir_arg(ops, 0))
+    elsif str_eq(fname, d"sal_attention_f32") == 1
+        cir_attention(cc, dest, ops)
+    elsif str_eq(fname, d"sal_load") == 1
+        _a = cc_line(cc, "  {{ int64_t __n = 0; int64_t __b = " + cir_rt(cc, d"sal_load_f32", cir_vec2(cir_arg(ops, 0), d"(int64_t)&__n")) + "; " + d + " = (int64_t)(uintptr_t)sal_tn_from(__b, __n); }}\n")
+        0
+    elsif cir_is_stub(fname) == 1
+        cir_set(cc, dest, d"0")
+    elsif str_eq(fname, d"sal_print") == 1
+        cir_print(cc, dest, args, ops)
+    elsif str_eq(fname, d"sal_syscall") == 1
+        cir_set(cc, dest, cir_rt(cc, d"sal_os_syscall", cir_pad7(ops)))
+    elsif str_eq(fname, d"sal_bytes_get_u8") == 1
+        cir_set(cc, dest, emit_c_bytes_get(ops, 1))
+    elsif str_eq(fname, d"sal_bytes_get_u16") == 1
+        cir_set(cc, dest, emit_c_bytes_get(ops, 2))
+    elsif str_eq(fname, d"sal_bytes_get_u32") == 1
+        cir_set(cc, dest, emit_c_bytes_get(ops, 4))
+    elsif str_eq(fname, d"sal_bytes_get_i64") == 1
+        cir_set(cc, dest, emit_c_bytes_get(ops, 8))
+    elsif str_eq(fname, d"sal_bytes_set_u8") == 1
+        cir_set(cc, dest, emit_c_bytes_set(ops, 1))
+    elsif str_eq(fname, d"sal_bytes_set_u16") == 1
+        cir_set(cc, dest, emit_c_bytes_set(ops, 2))
+    elsif str_eq(fname, d"sal_bytes_set_u32") == 1
+        cir_set(cc, dest, emit_c_bytes_set(ops, 4))
+    elsif str_eq(fname, d"sal_bytes_set_i64") == 1
+        cir_set(cc, dest, emit_c_bytes_set(ops, 8))
+    else
+        cir_set(cc, dest, "(int64_t)" + cir_rt(cc, fname, ops))
+
+fn cir_vec2(a: String, b: String) -> Int ! alloc
+    v = vec_new()
+    _a = vec_push(v, str_as_int(a))
+    _b = vec_push(v, str_as_int(b))
+    v
+
+fn cir_vec3(a: String, b: String, c: String) -> Int ! alloc
+    v = cir_vec2(a, b)
+    _c = vec_push(v, str_as_int(c))
+    v
+
+fn cir_pad7(ops: Int) -> Int ! alloc
+    v = vec_copy(ops)
+    _z = pad_args(v, 7)
+    v
+
+# `print` of a value known to be a String prints text, otherwise the integer.
+fn cir_print(cc: Int, dest: Int, args: Int, ops: Int) -> Int ! alloc
+    if vec_len(args) > 0
+        if map_get(vec_get(cc, 5), vec_get(args, 0)) == 1
+            cir_set(cc, dest, "(int64_t)" + cir_rt(cc, d"sal_print_str", ops))
+        else
+            cir_set(cc, dest, "(int64_t)" + cir_rt(cc, d"sal_print_i64", ops))
+    else
+        cir_set(cc, dest, d"0")
+
+fn cir_matmul(cc: Int, dest: Int, args: Int, ops: Int) -> Int ! alloc
+    d = str_from_int(dest)
+    m = cir_arg(ops, 2)
+    k = cir_arg(ops, 3)
+    n = cir_arg(ops, 4)
+    _a = cc_line(cc, "  " + d + " = " + cir_tn_alloc("(" + m + ") * (" + n + ")") + ";\n")
+    argv = vec_new()
+    _p0 = vec_push(argv, str_as_int(cir_arg(ops, 0)))
+    _p1 = vec_push(argv, str_as_int(cir_arg(ops, 1)))
+    _p2 = vec_push(argv, str_as_int(d))
+    _p3 = vec_push(argv, str_as_int(m))
+    _p4 = vec_push(argv, str_as_int(k))
+    _p5 = vec_push(argv, str_as_int(n))
+    _b = cc_line(cc, "  " + cir_rt(cc, d"sal_matmul_f32", argv) + ";\n")
+    mv = cir_const(cc, vec_get(args, 2))
+    nv = cir_const(cc, vec_get(args, 4))
+    if mv > 0
+        if nv > 0
+            if mv * nv <= 16
+                _q = vec_set(cc, 7, dest)
+                vec_set(cc, 8, mv * nv)
+            else
+                0
+        else
+            0
+    else
+        0
+
+fn cir_attention(cc: Int, dest: Int, ops: Int) -> Int ! alloc
+    d = str_from_int(dest)
+    n = "(" + cir_arg(ops, 3) + ") * (" + cir_arg(ops, 4) + ") * (" + cir_arg(ops, 6) + ")"
+    _a = cc_line(cc, "  " + d + " = " + cir_tn_alloc(n) + ";\n")
+    argv = vec_new()
+    _p0 = vec_push(argv, str_as_int(d))
+    _p1 = vec_push(argv, str_as_int(cir_arg(ops, 0)))
+    _p2 = vec_push(argv, str_as_int(cir_arg(ops, 1)))
+    _p3 = vec_push(argv, str_as_int(cir_arg(ops, 2)))
+    _p4 = vec_push(argv, str_as_int(cir_arg(ops, 3)))
+    _p5 = vec_push(argv, str_as_int(cir_arg(ops, 4)))
+    _p6 = vec_push(argv, str_as_int(cir_arg(ops, 5)))
+    _p7 = vec_push(argv, str_as_int(cir_arg(ops, 6)))
+    _p8 = vec_push(argv, str_as_int(cir_arg(ops, 7)))
+    guard = "(" + cir_arg(ops, 0) + ") && (" + cir_arg(ops, 1) + ") && (" + cir_arg(ops, 2) + ")"
+    cc_line(cc, "  if (" + guard + ") " + cir_rt(cc, d"sal_attention_f32", argv) + ";\n")
+
+fn cir_tbin(cc: Int, inst: Int) -> Int ! alloc
+    dest = vec_get(inst, 1)
+    op = str_from_int(vec_get(inst, 2))
+    d = str_from_int(dest)
+    len = cir_op(cc, vec_get(inst, 7))
+    left = cir_op(cc, vec_get(inst, 5))
+    right = cir_op(cc, vec_get(inst, 6))
+    scalar = vec_get(inst, 8)
+    sval = d"0"
+    if scalar == 1
+        sval = cir_float_text(cc, vec_get(inst, 6))
+    code = cir_tbin_code(op)
+    is_cmp = cir_tbin_is_cmp(op)
+    elem_sz = select_str(is_cmp, d"1", d"4")
+    _a = cc_line(cc, "  " + d + " = (int64_t)(uintptr_t)sal_tn_alloc_bytes(" + len + ", " + elem_sz + ");\n")
+    argv = vec_new()
+    _p0 = vec_push(argv, str_as_int(int_to_str(code)))
+    _p1 = vec_push(argv, str_as_int(d))
+    _p2 = vec_push(argv, str_as_int(left))
+    _p3 = vec_push(argv, str_as_int(select_str(scalar == 1, d"0", right)))
+    _p4 = vec_push(argv, str_as_int(len))
+    _p5 = vec_push(argv, str_as_int(int_to_str(scalar)))
+    _p6 = vec_push(argv, str_as_int(sval))
+    fn_name = select_str(is_cmp, d"sal_tensor_cmp_f32", d"sal_tensor_bin_f32")
+    cc_line(cc, "  " + cir_rt_dbl(cc, fn_name, argv) + ";\n")
+
+# The scalar operand is a double; it goes through a typed prototype.
+fn cir_rt_dbl(cc: Int, name: String, ops: Int) -> String ! alloc
+    _d = cc_line(cc, "  extern void R_" + name + "(int, void *, void *, void *, int64_t, int, double) __asm__(\"" + name + "\");\n")
+    "R_" + name + "((int)" + arg_at(ops, 0) + ", (void *)(uintptr_t)" + arg_at(ops, 1) + ", (void *)(uintptr_t)" + arg_at(ops, 2) + ", (void *)(uintptr_t)" + arg_at(ops, 3) + ", " + arg_at(ops, 4) + ", " + arg_at(ops, 5) + ", " + arg_at(ops, 6) + ")"
+
+fn cir_float_text(cc: Int, a: Int) -> String ! alloc
+    t = map_get(vec_get(cc, 4), a)
+    if t != 0
+        str_from_int(t)
+    else
+        c = map_get(vec_get(cc, 3), a)
+        int_to_str(c)
+
+fn cir_tbin_code(op: String) -> Int ! alloc
+    if str_eq(op, d"add") == 1
+        0
+    elsif str_eq(op, d"sub") == 1
+        1
+    elsif str_eq(op, d"mul") == 1
+        2
+    elsif str_eq(op, d"div") == 1
+        3
+    elsif str_eq(op, d"eq") == 1
+        4
+    elsif str_eq(op, d"ne") == 1
+        5
+    elsif str_eq(op, d"lt") == 1
+        6
+    elsif str_eq(op, d"le") == 1
+        7
+    elsif str_eq(op, d"gt") == 1
+        8
+    elsif str_eq(op, d"ge") == 1
+        9
+    else
+        0
+
+fn cir_tbin_is_cmp(op: String) -> Int ! alloc
+    if cir_tbin_code(op) >= 4
+        1
+    else
+        0
+
+fn cir_insts(cc: Int, insts: Int, i: Int, n: Int) -> Int ! alloc
+    idx = i
+    while idx < n
+        _x = cir_inst(cc, vec_get(insts, idx))
+        idx = idx + 1
+    0
+
+fn cir_inst(cc: Int, inst: Int) -> Int ! alloc
+    k = vec_get(inst, 0)
+    dest = vec_get(inst, 1)
+    if k == II_CI()
+        _m = map_put(vec_get(cc, 3), dest, vec_get(inst, 2))
+        cir_set(cc, dest, int_to_str(vec_get(inst, 2)))
+    elsif k == II_CS()
+        _m = map_put(vec_get(cc, 5), dest, 1)
+        cir_set(cc, dest, ensure_sal_lit(vec_get(inst, 2), vec_get(cc, 0)))
+    elsif k == II_CF()
+        _m = map_put(vec_get(cc, 4), dest, vec_get(inst, 3))
+        cir_set(cc, dest, d"0")
+    elsif k == II_BIN()
+        cir_set(cc, dest, "(" + cir_op(cc, vec_get(inst, 3)) + " " + cmap_op(str_from_int(vec_get(inst, 2))) + " " + cir_op(cc, vec_get(inst, 4)) + ")")
+    elsif k == II_CALL()
+        cir_call(cc, inst)
+    elsif k == II_TBIN()
+        cir_tbin(cc, inst)
+    elsif k == II_REBIND()
+        cir_set(cc, dest, cir_op(cc, vec_get(inst, 2)))
+    elsif k == II_PLACE()
+        cir_set(cc, dest, "(int64_t)(uintptr_t)sal_tn_copy(" + cir_op(cc, vec_get(inst, 2)) + ")")
+    elsif k == II_DROP()
+        0
+    elsif k == II_RET()
+        cir_ret(cc, vec_get(inst, 1))
+    elsif k == II_IF()
+        cir_if(cc, inst)
+    elsif k == II_WHILE()
+        cir_while(cc, inst)
+    elsif k == II_AGG()
+        cir_agg(cc, inst)
+    elsif k == II_EXTRACT()
+        cir_set(cc, dest, "((int64_t *)(uintptr_t)(" + cir_op(cc, vec_get(inst, 2)) + "))[" + int_to_str(vec_get(inst, 4)) + "]")
+    else
+        0
+
+fn cir_agg(cc: Int, inst: Int) -> Int ! alloc
+    fields = vec_get(inst, 3)
+    ops = cir_ops(cc, fields, 0, vec_len(fields), vec_new())
+    cir_set(cc, vec_get(inst, 1), emit_c_struct_ctor(ops))
+
+fn cir_ret(cc: Int, v: Int) -> Int ! alloc
+    q = vec_get(cc, 7)
+    val = cir_op(cc, v)
+    if q != 0
+        if vec_get(cc, 10) == 1
+            out = str_from_int(q)
+            val = "({{ double __s = 0; float *__o = (float *)(uintptr_t)" + out + "; for (int __i = 0; __i < " + int_to_str(vec_get(cc, 8)) + "; __i++) __s += __o[__i]; (int64_t)__s; }})"
+    if vec_get(cc, 10) == 1
+        cc_line(cc, "  return (int)(" + val + ");\n")
+    else
+        cc_line(cc, "  return " + val + ";\n")
+
+fn cir_if(cc: Int, inst: Int) -> Int ! alloc
+    dest = vec_get(inst, 1)
+    _a = cc_line(cc, "  if (" + cir_op(cc, vec_get(inst, 2)) + ") {{\n")
+    tb = vec_get(inst, 3)
+    _b = cir_insts(cc, tb, 0, vec_len(tb))
+    _c = cir_if_assign(cc, dest, vec_get(inst, 5))
+    _d = cir_carry_assign(cc, vec_get(inst, 7), 0, 1)
+    _e = cc_line(cc, "  }} else {{\n")
+    eb = vec_get(inst, 4)
+    _f = cir_insts(cc, eb, 0, vec_len(eb))
+    _g = cir_if_assign(cc, dest, vec_get(inst, 6))
+    _h = cir_carry_assign(cc, vec_get(inst, 7), 0, 2)
+    cc_line(cc, "  }}\n")
+
+fn cir_if_assign(cc: Int, dest: Int, val: Int) -> Int ! alloc
+    if dest == 0
+        0
+    elsif val == 0
+        0
+    else
+        cir_set(cc, dest, cir_op(cc, val))
+
+# Carried values: `which` selects the then (1) or else (2) source slot.
+fn cir_carry_assign(cc: Int, carried: Int, i: Int, which: Int) -> Int ! alloc
+    idx = i
+    n = vec_len(carried)
+    while idx < n
+        c = vec_get(carried, idx)
+        _x = cir_set(cc, vec_get(c, 0), cir_op(cc, vec_get(c, which)))
+        idx = idx + 1
+    0
+
+fn cir_while(cc: Int, inst: Int) -> Int ! alloc
+    carried = vec_get(inst, 4)
+    _a = cir_carry_assign(cc, carried, 0, 1)
+    _b = cc_line(cc, "  while (1) {{\n")
+    ci = vec_get(inst, 1)
+    _c = cir_insts(cc, ci, 0, vec_len(ci))
+    _d = cc_line(cc, "  if (!(" + cir_op(cc, vec_get(inst, 2)) + ")) break;\n")
+    bd = vec_get(inst, 3)
+    _e = cir_insts(cc, bd, 0, vec_len(bd))
+    _f = cir_carry_assign(cc, carried, 0, 2)
+    cc_line(cc, "  }}\n")
+
+# ---- locals ----
+fn cir_add_local(cc: Int, name: Int) -> Int ! alloc
+    if name == 0
+        0
+    elsif names_has(vec_get(cc, 2), name, 0, vec_len(vec_get(cc, 2))) == 1
+        0
+    else
+        vec_push(vec_get(cc, 2), name)
+
+fn cir_collect(cc: Int, insts: Int) -> Int ! alloc
+    idx = 0
+    n = vec_len(insts)
+    while idx < n
+        inst = vec_get(insts, idx)
+        k = vec_get(inst, 0)
+        if k == II_IF()
+            _a = cir_add_local(cc, vec_get(inst, 1))
+            _b = cir_collect(cc, vec_get(inst, 3))
+            _c = cir_collect(cc, vec_get(inst, 4))
+            _d = cir_collect_carried(cc, vec_get(inst, 7))
+        elsif k == II_WHILE()
+            _e = cir_collect(cc, vec_get(inst, 1))
+            _f = cir_collect(cc, vec_get(inst, 3))
+            _g = cir_collect_carried(cc, vec_get(inst, 4))
+        elsif k == II_RET()
+            _h = 0
+        elsif k == II_DROP()
+            _h = 0
+        elsif k == II_CALL()
+            if vec_get(inst, 4) == 1
+                _i = cir_add_local(cc, vec_get(inst, 1))
+        else
+            _j = cir_add_local(cc, vec_get(inst, 1))
+        idx = idx + 1
+    0
+
+fn cir_collect_carried(cc: Int, carried: Int) -> Int ! alloc
+    idx = 0
+    n = vec_len(carried)
+    while idx < n
+        _x = cir_add_local(cc, vec_get(vec_get(carried, idx), 0))
+        idx = idx + 1
+    0
+
+fn cir_decl_locals(cc: Int, params: Int, acc: String) -> String ! alloc
+    names = vec_get(cc, 2)
+    idx = 0
+    n = vec_len(names)
+    out = acc
+    while idx < n
+        nm = vec_get(names, idx)
+        if names_has(params, nm, 0, vec_len(params)) == 0
+            out = out + "  int64_t " + str_from_int(nm) + " = 0;\n"
+        idx = idx + 1
+    out
+
+# An IR function `[name, dim_params, insts, regions]` as C; params come from the AST fn.
+fn cir_fn(f: Int, irf: Int, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
+    header = emit_c_fn_header(f, linkable, allow_main)
+    if str_len(header) == 0
+        d""
+    else
+        params = vec_get(f, 1)
+        pnames = param_names(params, 0, vec_len(params), vec_new())
+        is_main = select_main(f, allow_main)
+        cc = cc_new(pool, user, is_main)
+        _p = cir_seed_params(cc, pnames, 0, vec_len(pnames))
+        insts = vec_get(irf, 2)
+        _c = cir_collect(cc, insts)
+        _c2 = cir_collect_lits(cc, vec_get(irf, 4))
+        _l = cir_literals(cc, vec_get(irf, 4), 0, vec_len(vec_get(irf, 4)))
+        _r = cir_insts(cc, insts, 0, vec_len(insts))
+        acc = cir_decl_locals(cc, pnames, header)
+        lines = vec_get(cc, 6)
+        acc = append_stmt_strings(acc, lines, 0, vec_len(lines))
+        acc + "  return 0;\n}}\n\n"
+
+fn select_main(f: Int, allow_main: Int) -> Int ! alloc
+    if allow_main == 1
+        str_eq(str_from_int(vec_get(f, 0)), d"main")
+    else
+        0
+
+fn cir_seed_params(cc: Int, pnames: Int, i: Int, n: Int) -> Int ! alloc
+    idx = i
+    while idx < n
+        _x = cir_add_local(cc, vec_get(pnames, idx))
+        idx = idx + 1
+    0
+
+# A function goes through the IR path when it uses tensors.
+fn cir_is_tensor_fn(insts: Int) -> Int ! alloc
+    idx = 0
+    n = vec_len(insts)
+    found = 0
+    while idx < n
+        inst = vec_get(insts, idx)
+        k = vec_get(inst, 0)
+        if k == II_TBIN()
+            found = 1
+        elsif k == II_REBIND()
+            found = 1
+        elsif k == II_PLACE()
+            found = 1
+        elsif k == II_CALL()
+            if cir_tensor_call(str_from_int(vec_get(inst, 2))) == 1
+                found = 1
+        elsif k == II_IF()
+            if cir_is_tensor_fn(vec_get(inst, 3)) + cir_is_tensor_fn(vec_get(inst, 4)) > 0
+                found = 1
+        elsif k == II_WHILE()
+            if cir_is_tensor_fn(vec_get(inst, 1)) + cir_is_tensor_fn(vec_get(inst, 3)) > 0
+                found = 1
+        idx = idx + 1
+    found
+
+fn cir_tensor_call(f: String) -> Int ! alloc
+    if str_eq(f, d"sal_load") == 1
+        1
+    elsif str_eq(f, d"sal_matmul_f32") == 1
+        1
+    elsif str_eq(f, d"sal_rope") == 1
+        1
+    elsif str_eq(f, d"sal_silu") == 1
+        1
+    elsif str_eq(f, d"sal_softmax") == 1
+        1
+    elsif str_eq(f, d"sal_attention_f32") == 1
+        1
+    else
+        0
+
+fn cir_collect_lits(cc: Int, lits: Int) -> Int ! alloc
+    idx = 0
+    n = vec_len(lits)
+    while idx < n
+        _x = cir_add_local(cc, vec_get(vec_get(lits, idx), 0))
+        idx = idx + 1
+    0
+
+# Literal tensors are allocated up front, in source order.
+fn cir_literals(cc: Int, lits: Int, i: Int, n: Int) -> Int ! alloc
+    idx = i
+    while idx < n
+        lit = vec_get(lits, idx)
+        data = vec_get(lit, 1)
+        acc = "  " + str_from_int(vec_get(lit, 0)) + " = (int64_t)(uintptr_t)sal_tn_alloc(" + int_to_str(vec_len(data)) + ");\n"
+        _a = cc_line(cc, acc)
+        _b = cir_lit_cells(cc, str_from_int(vec_get(lit, 0)), data, 0, vec_len(data))
+        idx = idx + 1
+    0
+
+fn cir_lit_cells(cc: Int, name: String, data: Int, i: Int, n: Int) -> Int ! alloc
+    idx = i
+    while idx < n
+        _x = cc_line(cc, "  ((float *)(uintptr_t)" + name + ")[" + int_to_str(idx) + "] = " + str_from_int(vec_get(data, idx)) + "f;\n")
+        idx = idx + 1
+    0
+
+# List/tensor ops the bootstrap backend leaves as no-ops (the value is 0).
+fn cir_is_stub(f: String) -> Int ! alloc
+    if str_eq(f, d"sal_index") == 1
+        1
+    elsif str_eq(f, d"sal_map") == 1
+        1
+    elsif str_eq(f, d"sal_relu") == 1
+        1
+    elsif str_eq(f, d"sal_where") == 1
+        1
+    else
+        0

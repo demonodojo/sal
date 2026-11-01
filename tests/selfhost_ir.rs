@@ -914,7 +914,6 @@ const PARITY_FILES: &[&str] = &[
     "corpus/string_plus.sal",
     "examples/column_cpu.sal",
     "examples/column_gpu.sal",
-    "examples/cpu_matmul.sal",
     "examples/forward.sal",
     "examples/forward_salt.sal",
     "examples/gpu_roundtrip.sal",
@@ -1161,6 +1160,11 @@ const SHAPE_CASES: &[(&str, bool)] = &[
     ("fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 3, 4] on cpu) -> Int ! alloc\n    c = matmul(a, b)\n    0\n\nfn main() -> Int\n    0\n", false),
     ("fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 3, 4] on cpu, d: Tensor[F32, 5, 6] on cpu) -> Int ! alloc\n    c = matmul(matmul(a, b), d)\n    0\n\nfn main() -> Int\n    0\n", true),
     ("fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[I8, 3, 4] on cpu) -> Int ! alloc\n    c = matmul(a, b)\n    0\n\nfn main() -> Int\n    0\n", true),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc\n    c = transpose(a)\n    d = matmul(a, c)\n    0\n\nfn main() -> Int\n    0\n", false),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc\n    c = transpose(a)\n    d = matmul(c, a)\n    e = matmul(d, a)\n    0\n\nfn main() -> Int\n    0\n", true),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc\n    c = reshape(a, 3, 2)\n    d = matmul(a, c)\n    0\n\nfn main() -> Int\n    0\n", false),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc\n    c = reshape(a, 4, 2)\n    0\n\nfn main() -> Int\n    0\n", true),
+    ("fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc\n    c = softmax(a, 5)\n    0\n\nfn main() -> Int\n    0\n", true),
 ];
 
 #[test]
@@ -1184,7 +1188,59 @@ fn shape_errors_match_bootstrap_check() {
             .output()
             .expect("run stage1");
         let err = String::from_utf8_lossy(&out.stderr);
-        let self_bad = err.contains("do not match") || err.contains("matmul element") || err.contains("rank >= 2");
+        let self_bad = err.contains("do not match") || err.contains("matmul element") || err.contains("rank >= 2") || err.contains("volume mismatch") || err.contains("axis out of range");
         assert_eq!(self_bad, *bad, "selfhost verdict for:\n{src}\n{err}");
+    }
+}
+
+/// Programs both compilers build; the selfhost binary must behave like the
+/// bootstrap one (exit code and stdout).
+const RUN_PARITY: &[&str] = &[
+    "corpus/bytes_if_phi.sal",
+    "corpus/effects.sal",
+    "corpus/early_return.sal",
+    "corpus/forward_fused.sal",
+    "corpus/moves.sal",
+    "examples/forward.sal",
+    "examples/gpu_roundtrip.sal",
+    "examples/import_alias.sal",
+    "examples/import_alias_left.sal",
+    "examples/std_io_smoke.sal",
+    "examples/cpu_matmul.sal",
+    "corpus/places.sal",
+];
+
+#[test]
+fn selfhost_binaries_behave_like_bootstrap_binaries() {
+    let stage1 = compile_selfhost(false);
+    let dir = std::env::temp_dir().join(format!("sal-runpar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for rel in RUN_PARITY {
+        let src = root().join(rel);
+        let stem = src.file_stem().unwrap().to_string_lossy().to_string();
+        let boot_bin = dir.join(format!("{stem}.boot"));
+        let self_bin = dir.join(format!("{stem}.self"));
+        let b = Command::new(env!("CARGO_BIN_EXE_sal"))
+            .arg("build")
+            .arg(&src)
+            .arg("-o")
+            .arg(&boot_bin)
+            .current_dir(root())
+            .output()
+            .expect("bootstrap build");
+        assert!(b.status.success(), "bootstrap build {rel}: {}", String::from_utf8_lossy(&b.stderr));
+        let s = Command::new(&stage1)
+            .arg(&src)
+            .arg("-o")
+            .arg(&self_bin)
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("runpar"))
+            .current_dir(root())
+            .output()
+            .expect("selfhost build");
+        assert!(s.status.success(), "selfhost build {rel}: {}", String::from_utf8_lossy(&s.stderr));
+        let rb = Command::new(&boot_bin).output().expect("run boot");
+        let rs = Command::new(&self_bin).output().expect("run self");
+        assert_eq!(rb.status.code(), rs.status.code(), "exit code of {rel}");
+        assert_eq!(rb.stdout, rs.stdout, "stdout of {rel}");
     }
 }
