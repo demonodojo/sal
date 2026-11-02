@@ -769,39 +769,39 @@ fn preprocess_go(src: String, i: Int, n: Int, acc: String, in_str: Int) -> Strin
         j = preprocess_scan_str(src, i, n, 256)
         if j >= n
             piece = str_slice(src, i, n)
-            acc + piece
+            str_append(acc, piece)
         elsif str_char(src, j) == 34
             piece = str_slice(src, i, j + 1)
-            acc2 = acc + piece
+            acc2 = str_append(acc, piece)
             preprocess_go(src, j + 1, n, acc2, 0)
         else
             piece = str_slice(src, i, j)
-            acc2 = acc + piece
+            acc2 = str_append(acc, piece)
             preprocess_go(src, j, n, acc2, 1)
     else
         j = preprocess_scan(src, i, n, 256)
         if j > i
             piece = str_slice(src, i, j)
-            acc2 = acc + piece
+            acc2 = str_append(acc, piece)
             preprocess_go(src, j, n, acc2, 0)
         else
             c = str_char(src, i)
             if c == 34
                 piece = char_to_str(c)
-                acc2 = acc + piece
+                acc2 = str_append(acc, piece)
                 preprocess_go(src, i + 1, n, acc2, 1)
             elsif c == 63
                 prev_ok = preprocess_qdyn_ok(src, i)
                 if prev_ok == 1
-                    acc2 = acc + "QDYN"
+                    acc2 = str_append(acc, "QDYN")
                     preprocess_go(src, i + 1, n, acc2, 0)
                 else
                     piece = char_to_str(c)
-                    acc2 = acc + piece
+                    acc2 = str_append(acc, piece)
                     preprocess_go(src, i + 1, n, acc2, 0)
             else
                 piece = char_to_str(c)
-                acc2 = acc + piece
+                acc2 = str_append(acc, piece)
                 preprocess_go(src, i + 1, n, acc2, 0)
 
 fn preprocess_qdyn_ok(src: String, i: Int) -> Int ! alloc

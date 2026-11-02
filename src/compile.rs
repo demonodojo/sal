@@ -449,19 +449,30 @@ fn link_binary_multi(
         None
     };
 
+    // Runtime C sources are compiled once per (source, flags) into cached
+    // objects, so linking a program does not recompile ~3.5k lines of C.
+    let mut defs: Vec<&str> = Vec::new();
+    if gpu_obj.is_some() {
+        defs.push("-DSAL_USE_CUDA=1");
+    }
+    if opts.instrument {
+        defs.push("-DSAL_INSTRUMENT=1");
+    }
+    let mut rt_srcs = vec![runtime.join("sal_runtime.c")];
+    rt_srcs.push(runtime.join("soso/linux_host_syscall.c"));
+    rt_srcs.push(runtime.join("kernels.c"));
+    rt_srcs.push(runtime.join("instrument.c"));
+    let rt_objs = runtime_objects(&out_dir, &rt_srcs, &defs, opt_flag, &opts.toolchain.cc)?;
+
     let mut link = Command::new(&opts.toolchain.cc);
     for obj in obj_paths {
         link.arg(obj);
     }
-    link.arg(runtime.join("sal_runtime.c"));
-    if opts.toolchain.target != crate::target::Target::Soso {
-        link.arg(runtime.join("soso/linux_host_syscall.c"));
+    for obj in &rt_objs {
+        link.arg(obj);
     }
-    link.arg(runtime.join("kernels.c"))
-        .arg(runtime.join("instrument.c"));
     if let Some(obj) = gpu_obj {
         link.arg(obj);
-        link.arg("-DSAL_USE_CUDA=1");
         if let Ok(cuda_home) = std::env::var("CUDA_HOME") {
             link.arg(format!("-L{cuda_home}/lib64"));
         } else {
@@ -469,12 +480,57 @@ fn link_binary_multi(
         }
         link.arg("-lcudart");
     }
-    if opts.instrument {
-        link.arg("-DSAL_INSTRUMENT=1");
-    }
     link.arg("-o").arg(&bin).arg(opt_flag).arg("-lm");
     run_cmd(link)?;
     Ok(bin)
+}
+
+/// Compile each runtime source to a cached object (keyed by contents, flags
+/// and compiler); missing ones are built in parallel. The cache lives next to
+/// the output binary under `rt-cache/`.
+fn runtime_objects(
+    out_dir: &Path,
+    srcs: &[PathBuf],
+    defs: &[&str],
+    opt_flag: &str,
+    cc: &Path,
+) -> Result<Vec<PathBuf>, Vec<Diagnostic>> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let dir = out_dir.join("rt-cache");
+    fs::create_dir_all(&dir).map_err(|e| vec![internal_diag(e.to_string())])?;
+    let mut objs = Vec::new();
+    let mut children = Vec::new();
+    for src in srcs {
+        let text = fs::read(src).map_err(|e| vec![internal_diag(format!("{}: {e}", src.display()))])?;
+        let mut h = DefaultHasher::new();
+        text.hash(&mut h);
+        defs.hash(&mut h);
+        opt_flag.hash(&mut h);
+        cc.hash(&mut h);
+        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("rt");
+        let obj = dir.join(format!("{stem}-{:016x}.o", h.finish()));
+        if !obj.is_file() {
+            let tmp = dir.join(format!("{stem}-{:016x}.{}.tmp", h.finish(), std::process::id()));
+            let mut cmd = Command::new(cc);
+            cmd.arg("-c").arg(src).args(defs).arg(opt_flag).arg("-w").arg("-o").arg(&tmp);
+            let child = cmd
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| vec![internal_diag(e.to_string())])?;
+            children.push((child, tmp, obj.clone()));
+        }
+        objs.push(obj);
+    }
+    for (child, tmp, obj) in children {
+        let out = child.wait_with_output().map_err(|e| vec![internal_diag(e.to_string())])?;
+        if !out.status.success() {
+            return Err(vec![internal_diag(String::from_utf8_lossy(&out.stderr).into_owned())]);
+        }
+        fs::rename(&tmp, &obj).map_err(|e| vec![internal_diag(e.to_string())])?;
+    }
+    Ok(objs)
 }
 
 fn run_cmd(mut cmd: Command) -> Result<(), Vec<Diagnostic>> {

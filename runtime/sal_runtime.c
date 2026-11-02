@@ -2187,17 +2187,70 @@ static int find_runtime_dir(char *out, size_t n) {
     return 1;
 }
 
+/* Runtime sources are compiled once into /tmp/sal-rt-cache-<uid>/ (keyed by
+ * mtime and size) so each selfhost build only compiles and links its own C. */
+static int sal_rt_objects(const char *rdir, char *objs, size_t cap) {
+    static const char *srcs[] = {"sal_runtime.c", "soso/linux_host_syscall.c", "kernels.c", "instrument.c"};
+    char dir[256];
+    snprintf(dir, sizeof(dir), "/tmp/sal-rt-cache-%u", (unsigned)getuid());
+    mkdir(dir, 0700);
+    char build[4096];
+    build[0] = 0;
+    size_t used = 0;
+    objs[0] = 0;
+    for (int i = 0; i < 4; i++) {
+        char src[600];
+        snprintf(src, sizeof(src), "%s/%s", rdir, srcs[i]);
+        struct stat st;
+        if (stat(src, &st) != 0) {
+            return 1;
+        }
+        char obj[400];
+        const char *base = strrchr(srcs[i], '/');
+        base = base ? base + 1 : srcs[i];
+        snprintf(obj, sizeof(obj), "%s/%s-%lx-%lx.o", dir, base, (unsigned long)st.st_mtime, (unsigned long)st.st_size);
+        if (access(obj, R_OK) != 0) {
+            used += (size_t)snprintf(build + used, sizeof(build) - used,
+                                     "(clang -c -O0 -g -w -I%s %s -o %s.$$ && mv %s.$$ %s) & ", rdir, src, obj, obj, obj);
+        }
+        size_t n = strlen(objs);
+        snprintf(objs + n, cap - n, "%s ", obj);
+    }
+    if (used > 0) {
+        char cmd[4600];
+        snprintf(cmd, sizeof(cmd), "%swait 2>/tmp/sal-selfhost-clang.err", build);
+        if (system(cmd) != 0) {
+            return 1;
+        }
+        /* a failed background job leaves its object missing */
+        char *p = objs;
+        while (*p) {
+            char *e = strchr(p, ' ');
+            if (!e) break;
+            *e = 0;
+            int ok = access(p, R_OK) == 0;
+            *e = ' ';
+            if (!ok) return 1;
+            p = e + 1;
+        }
+    }
+    return 0;
+}
+
 int64_t sal_clang(const char *c_path, const char *out_path) {
     if (!c_path || !out_path) {
         return 1;
     }
     char rdir[512];
     find_runtime_dir(rdir, sizeof(rdir));
+    char objs[2048];
+    if (sal_rt_objects(rdir, objs, sizeof(objs)) != 0) {
+        fprintf(stderr, "sal_clang: runtime build failed\n");
+        return 1;
+    }
     char cmd[4096];
-    snprintf(cmd, sizeof(cmd),
-             "clang -O0 -g -w -I%s -o %s %s %s/sal_runtime.c %s/soso/linux_host_syscall.c "
-             "%s/kernels.c %s/instrument.c -lm 2>/tmp/sal-selfhost-clang.err",
-             rdir, out_path, c_path, rdir, rdir, rdir, rdir);
+    snprintf(cmd, sizeof(cmd), "clang -O0 -g -w -I%s -o %s %s %s -lm 2>/tmp/sal-selfhost-clang.err",
+             rdir, out_path, c_path, objs);
     int rc = system(cmd);
     if (rc != 0) {
         fprintf(stderr, "sal_clang: clang failed (%d)\n", rc);
