@@ -1,0 +1,10 @@
+# error: E_TYPE
+enum Opt[T]
+    Some(T)
+    None
+
+fn f(b: Opt[Int, Int]) -> Int
+    1
+
+fn main() -> Int
+    0

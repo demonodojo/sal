@@ -1,0 +1,6 @@
+# error: E_TYPE
+fn f() -> Result[Int, Int]
+    Ok(try 5)
+
+fn main() -> Int
+    0

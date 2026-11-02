@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{EnumDef, StructDef, Type};
-use crate::infer::subst_type_params as subst_type_params_public;
+use crate::ast::{EnumDef, StructDef};
 
 /// Single-field struct: same SSA/ABI as its field (zero-cost newtype).
 pub fn is_transparent_struct(def: &StructDef) -> bool {
@@ -10,17 +9,6 @@ pub fn is_transparent_struct(def: &StructDef) -> bool {
 
 pub fn struct_field_index(def: &StructDef, field: &str) -> Option<usize> {
     def.fields.iter().position(|f| f.name == field)
-}
-
-pub fn subst_struct_type_params(
-    def: &StructDef,
-    type_args: &[Type],
-    span: crate::span::Span,
-) -> Vec<Type> {
-    def.fields
-        .iter()
-        .map(|f| subst_type_params_public(&f.ty, &def.type_params, type_args, span))
-        .collect()
 }
 
 pub fn llvm_struct_symbol(name: &str) -> String {
@@ -56,31 +44,6 @@ pub fn collect_enum_defs(prog: &crate::ast::Program) -> HashMap<String, EnumDef>
         }
     }
     m
-}
-
-/// LLVM field slot: all user scalars and handles use i64 in the arranque ABI.
-pub fn field_slots_for_struct(def: &StructDef) -> usize {
-    if is_transparent_struct(def) {
-        1
-    } else {
-        def.fields.len()
-    }
-}
-
-/// LLVM field type for a struct field (`i64` when not `@layout(c)`).
-pub fn llvm_field_type(ty: &Type, layout_c: bool) -> &'static str {
-    if !layout_c {
-        return "i64";
-    }
-    match ty {
-        Type::Named { name, args, .. } if args.is_empty() => match name.as_str() {
-            "Int" => "i64",
-            "Float" => "double",
-            "Bool" => "i8",
-            _ => "i64",
-        },
-        _ => "i64",
-    }
 }
 
 pub fn enum_variant_index(def: &EnumDef, variant: &str) -> Option<usize> {

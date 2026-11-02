@@ -1,0 +1,10 @@
+# error: E_TYPE
+enum E
+    A(Int)
+    B
+
+fn main() -> Int
+    e = A(1)
+    match e
+        A(x, y) => x
+        B => 0

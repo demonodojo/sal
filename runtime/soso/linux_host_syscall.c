@@ -204,7 +204,15 @@ static int64_t soso_getdents(int fd, uint64_t buf, int64_t len) {
     }
     out.name_len = (uint8_t)nlen;
     memcpy(out.name, ent->d_name, nlen);
-    if (ent->d_type == DT_DIR) {
+    int is_dir_entry = ent->d_type == DT_DIR;
+    if (ent->d_type == DT_LNK || ent->d_type == DT_UNKNOWN) {
+        /* Un enlace simbólico a un directorio cuenta como directorio (stat sigue el enlace). */
+        struct stat lst;
+        if (fstatat(dirfd(d), ent->d_name, &lst, 0) == 0 && S_ISDIR(lst.st_mode)) {
+            is_dir_entry = 1;
+        }
+    }
+    if (is_dir_entry) {
         out.file_type = SOSO_FT_DIR;
     } else {
         out.file_type = SOSO_FT_FILE;

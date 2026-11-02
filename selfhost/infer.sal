@@ -19,6 +19,7 @@ fn ic_new(prog: Int) -> Int ! alloc
     _i = vec_push(c, prog_structs(prog))
     _j = vec_push(c, infer_global_names(prog))
     _k = vec_push(c, infer_type_names(prog))
+    _l = vec_push(c, infer_variant_arity(prog))
     c
 
 fn ic_env(c: Int) -> Int ! alloc
@@ -131,14 +132,14 @@ fn infer_type_names_structs(m: Int, v: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = map_put(m, structdef_name(vec_get(v, i)), 1)
+        _p = map_put(m, structdef_name(vec_get(v, i)), 1 + vec_len(structdef_params(vec_get(v, i))))
         infer_type_names_structs(m, v, i + 1, n)
 
 fn infer_type_names_enums(m: Int, v: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = map_put(m, vec_get(vec_get(v, i), 0), 1)
+        _p = map_put(m, vec_get(vec_get(v, i), 0), 1 + vec_len(vec_get(vec_get(v, i), 2)))
         infer_type_names_enums(m, v, i + 1, n)
 
 # Base identifier of a type text: `List[Int]` -> `List`.
@@ -195,13 +196,61 @@ fn infer_check_known(c: Int, t: Int) -> Int ! alloc
         elsif str_contains(base, d".") == 1
             0
         elsif infer_builtin_type(base) == 1
-            0
+            infer_check_builtin_targs(c, base, txt)
         elsif map_get(vec_get(c, 8), str_as_int(base)) != 0
-            0
+            infer_check_targs(c, base, txt, map_get(vec_get(c, 8), str_as_int(base)) - 1)
         elsif map_get(vec_get(c, 8), str_as_int(d"*")) != 0
             0
         else
             ic_fail(c, "unknown type `" + base + "`")
+
+# Number of top-level type arguments in a type text (`Box [ Int , Int ]` -> 2).
+fn infer_targ_count(txt: String, i: Int, n: Int, depth: Int, commas: Int, open: Int) -> Int ! alloc
+    if i >= n
+        if open == 0
+            0
+        else
+            commas + 1
+    else
+        ch = str_char(txt, i)
+        if ch == 91
+            infer_targ_count(txt, i + 1, n, depth + 1, commas, 1)
+        elsif ch == 93
+            infer_targ_count(txt, i + 1, n, depth - 1, commas, open)
+        elsif ch == 44
+            if depth == 1
+                infer_targ_count(txt, i + 1, n, depth, commas + 1, open)
+            else
+                infer_targ_count(txt, i + 1, n, depth, commas, open)
+        else
+            infer_targ_count(txt, i + 1, n, depth, commas, open)
+
+fn infer_check_targs(c: Int, base: String, txt: String, want: Int) -> Int ! alloc
+    got = infer_targ_count(txt, 0, str_len(txt), 0, 0, 0)
+    if got == want
+        0
+    else
+        ic_fail(c, "`" + base + "` expects " + int_to_str(want) + " type argument(s), found " + int_to_str(got))
+
+fn infer_check_builtin_targs(c: Int, base: String, txt: String) -> Int ! alloc
+    if str_eq(base, d"Int") == 1
+        infer_check_not_generic(c, base, txt)
+    elsif str_eq(base, d"Float") == 1
+        infer_check_not_generic(c, base, txt)
+    elsif str_eq(base, d"Bool") == 1
+        infer_check_not_generic(c, base, txt)
+    elsif str_eq(base, d"String") == 1
+        infer_check_not_generic(c, base, txt)
+    elsif str_eq(base, d"Unit") == 1
+        infer_check_not_generic(c, base, txt)
+    else
+        0
+
+fn infer_check_not_generic(c: Int, base: String, txt: String) -> Int ! alloc
+    if infer_targ_count(txt, 0, str_len(txt), 0, 0, 0) > 0
+        ic_fail(c, "`" + base + "` is not generic")
+    else
+        0
 
 fn infer_names_fns(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -224,6 +273,29 @@ fn infer_names_variants(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
     else
         _p = map_put(m, vec_get(vec_get(vs, i), 0), 1)
         infer_names_variants(m, vs, i + 1, n)
+
+# Variant name -> payload field count + 1 (slot 9 of the context).
+fn infer_variant_arity(prog: Int) -> Int ! alloc
+    m = map_new()
+    enums = prog_enums(prog)
+    _a = infer_variant_arity_enums(m, enums, 0, vec_len(enums))
+    m
+
+fn infer_variant_arity_enums(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        vs = vec_get(vec_get(enums, i), 1)
+        _a = infer_variant_arity_vs(m, vs, 0, vec_len(vs))
+        infer_variant_arity_enums(m, enums, i + 1, n)
+
+fn infer_variant_arity_vs(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = vec_get(vs, i)
+        _p = map_put(m, vec_get(v, 0), 1 + vec_len(vec_get(v, 1)))
+        infer_variant_arity_vs(m, vs, i + 1, n)
 
 # ---- expressions ----
 fn infer_args(c: Int, args: Int, i: Int, n: Int, tys: Int) -> Int ! alloc
@@ -273,11 +345,20 @@ fn infer_call(c: Int, e: Int) -> Int ! alloc
             if structdef_is_frame(sd) == 0
                 if vec_len(args) != structdef_field_count(sd)
                     _f = ic_fail(c, "struct `" + str_from_int(name) + "` expects " + int_to_str(structdef_field_count(sd)) + " field(s), found " + int_to_str(vec_len(args)))
+                elsif vec_len(structdef_params(sd)) == 0
+                    _f = infer_struct_fields(c, sd, tys, 0, vec_len(tys))
                 else
                     _f = 0
             else
                 _f = 0
             name
+        elsif map_get(vec_get(c, 9), name) != 0
+            want = map_get(vec_get(c, 9), name) - 1
+            if vec_len(args) != want
+                _f = ic_fail(c, "variant `" + str_from_int(name) + "` expects " + int_to_str(want) + " payload field(s), found " + int_to_str(vec_len(args)))
+            else
+                _f = 0
+            it(d"Unknown")
         elsif str_eq(str_from_int(name), d"matmul") == 1
             if vec_len(tys) == 2
                 infer_matmul(c, vec_get(tys, 0), vec_get(tys, 1))
@@ -323,6 +404,19 @@ fn infer_call(c: Int, e: Int) -> Int ! alloc
             it(d"String")
         else
             it(d"Unknown")
+
+fn infer_struct_fields(c: Int, sd: Int, tys: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        fld = vec_get(structdef_fields(sd), i)
+        ft = vec_get(fld, 1)
+        at = vec_get(tys, i)
+        if ty_compat(at, ft) == 0
+            _f = ic_fail(c, "struct `" + str_from_int(structdef_name(sd)) + "` field `" + str_from_int(vec_get(fld, 0)) + "`: expected " + ty_msg(ft) + ", found " + ty_msg(at))
+            0
+        else
+            infer_struct_fields(c, sd, tys, i + 1, n)
 
 # A type that is known and is not a tensor (Unknown stays undecided).
 fn infer_known_scalar(t: Int) -> Int ! alloc
@@ -935,7 +1029,12 @@ fn infer_expr(c: Int, e: Int) -> Int ! alloc
         elsif k == EX_BINARY()
             infer_binary(c, e)
         elsif k == EX_UNARY()
-            infer_expr(c, vec_get(e, 2))
+            ut = infer_expr(c, vec_get(e, 2))
+            if str_eq(str_from_int(vec_get(e, 1)), d"not") == 1
+                _u = infer_check_not_tensor(c, ut)
+            else
+                _u = 0
+            ut
         elsif k == EX_CALL()
             infer_call(c, e)
         elsif k == EX_FIELD()
@@ -989,6 +1088,14 @@ fn infer_pattern_binds(c: Int, p: Int) -> Int ! alloc
         strenv_bind(ic_env(c), vec_get(p, 1), it(d"Unknown"))
     elsif k == 3
         args = vec_get(p, 3)
+        want = map_get(vec_get(c, 9), vec_get(p, 1))
+        if want != 0
+            if vec_len(args) != want - 1
+                _f = ic_fail(c, "variant `" + str_from_int(vec_get(p, 1)) + "` expects " + int_to_str(want - 1) + " field(s), found " + int_to_str(vec_len(args)))
+            else
+                _f = 0
+        else
+            _f = 0
         infer_pattern_list(c, args, 0, vec_len(args))
     else
         0
@@ -1128,6 +1235,17 @@ fn infer_seed(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
         infer_seed(c, params, i + 1, n)
 
 # `Tensor[Float, 2] on cpu`: the element must be F32, F16, BF16 or I8.
+# `!` on a tensor needs I8 elements.
+fn infer_check_not_tensor(c: Int, t: Int) -> Int ! alloc
+    if t == 0
+        0
+    elsif ty_is_tensor(t) == 0
+        0
+    elsif str_eq(str_from_int(vec_get(tt_split(t), 0)), d"I8") == 1
+        0
+    else
+        ic_fail(c, "! on a tensor expects Tensor[I8, …]")
+
 fn infer_check_elem(c: Int, t: Int) -> Int ! alloc
     if t == 0
         0

@@ -1,0 +1,8 @@
+# error: E_TYPE
+enum E
+    A(Int)
+    B
+
+fn main() -> Int
+    e = A(1, 2)
+    0

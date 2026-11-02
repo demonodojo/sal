@@ -1,0 +1,9 @@
+# xfail: module-qualified types (`one.Pt`) are not resolved in signatures
+# exit: 3
+import "mods/ty1.sal" as one
+
+fn f(p: one.Pt) -> Int
+    p.x + p.y
+
+fn main() -> Int
+    f(one.mk1())

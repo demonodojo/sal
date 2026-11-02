@@ -1,0 +1,9 @@
+# error: E_TYPE
+struct Box[T]
+    v: T
+
+fn f(b: Box[Int, Int]) -> Int
+    1
+
+fn main() -> Int
+    0

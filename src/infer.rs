@@ -2755,11 +2755,6 @@ fn infer_tensor_binary(op: BinOp, lt: &Type, rt: &Type, span: Span) -> DiagResul
     }
 }
 
-fn tensor_same_shape(a: &[Dim], b: &[Dim]) -> bool {
-    tensor_broadcast_shapes(a, b)
-        .is_some_and(|r| r.len() == a.len().max(b.len()))
-}
-
 fn dim_broadcast(da: &Dim, db: &Dim) -> Option<Dim> {
     match (da, db) {
         (Dim::Static(1), d) | (d, Dim::Static(1)) => Some(d.clone()),

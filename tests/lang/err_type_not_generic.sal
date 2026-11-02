@@ -1,0 +1,6 @@
+# error: E_TYPE
+fn f(b: Int[Int]) -> Int
+    1
+
+fn main() -> Int
+    0

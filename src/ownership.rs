@@ -383,7 +383,7 @@ fn track_expr(
             track_expr(cond, env, moved, params, taken, used, frozen)?;
             let branch_base = moved.clone();
             let mut merged = branch_base.clone();
-            let mut run_branch = |block: &Block,
+            let run_branch = |block: &Block,
                                   env: &HashMap<String, Type>,
                                   taken: &mut HashSet<String>,
                                   used: &mut HashSet<String>,
