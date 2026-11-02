@@ -1,0 +1,4 @@
+# error: E_PARSE
+@bogus
+fn main() -> Int
+    1

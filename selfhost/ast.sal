@@ -141,6 +141,9 @@ fn structdef_set_layout_c(s: Int, v: Int) -> Int ! alloc
         _x = vec_push(s, v)
     0
 
+fn structdef_layout_c(s: Int) -> Int ! alloc
+    vec_get(s, 2)
+
 fn structdef_name(s: Int) -> Int ! alloc
     vec_get(s, 0)
 
@@ -264,7 +267,14 @@ fn stmt_new(is_as: Int, name: String, expr: Int) -> Int ! alloc
     _d = vec_push(s, 0)
     _e = vec_push(s, 0)
     _f = vec_push(s, 0)
+    _g = vec_push(s, 0)
+    _h = vec_push(s, 0)
     s
+
+# `@frozen` / `@stack` markers of a `let` (slots 6 and 7).
+fn stmt_set_attrs(s: Int, frozen: Int, stack: Int) -> Int ! alloc
+    _a = vec_set(s, 6, frozen)
+    vec_set(s, 7, stack)
 
 # `let name: ty = expr`; `ty` is a type text handle, 0 when omitted.
 fn stmt_let(name: String, ty: Int, expr: Int) -> Int ! alloc
@@ -336,6 +346,9 @@ fn fndef_set_no_heap(f: Int, v: Int) -> Int ! alloc
     else
         _x = vec_push(f, v)
     0
+
+fn fndef_no_heap(f: Int) -> Int ! alloc
+    vec_get(f, 4)
 
 # Handle of the declared return type text, 0 when the signature has none.
 fn fndef_ret(f: Int) -> Int ! alloc

@@ -1,0 +1,6 @@
+# exit: 15
+import "mods/ty1.sal" as one
+import "mods/ty2.sal" as two
+
+fn main() -> Int
+    one.sum1(one.mk1()) + two.sum2(two.mk2())

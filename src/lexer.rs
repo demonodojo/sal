@@ -4,6 +4,8 @@ use crate::span::Span;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Ident(String),
+    /// `@name`, an attribute marker; the parser decides where it may appear.
+    Attr(String),
     Int(i64),
     Float(f64),
     String(String),
@@ -95,19 +97,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             return Err(Diagnostic::new(
                 ErrorCode::EParse,
                 "tab is not allowed",
-                Span {
-                    start: i as u32,
-                    end: i as u32 + 1,
-                    line,
-                    col,
-                },
-            ));
-        }
-
-        if bytes[i] == b'@' {
-            return Err(Diagnostic::new(
-                ErrorCode::EParse,
-                "attributes are not in this version",
                 Span {
                     start: i as u32,
                     end: i as u32 + 1,
@@ -267,6 +256,28 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             b'^' => TokenKind::Caret,
             b'<' => TokenKind::Lt,
             b'>' => TokenKind::Gt,
+            b'@' => {
+                i += 1;
+                col += 1;
+                let name_start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                    col += 1;
+                }
+                if name_start == i {
+                    return Err(Diagnostic::new(
+                        ErrorCode::EParse,
+                        "expected attribute name after @",
+                        Span {
+                            start: start as u32,
+                            end: start as u32 + 1,
+                            line: start_line,
+                            col: start_col,
+                        },
+                    ));
+                }
+                TokenKind::Attr(source[name_start..i].to_string())
+            }
             b'"' => {
                 let s = read_quoted_string(
                     bytes,
@@ -336,7 +347,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
 
         if !matches!(
             single,
-            TokenKind::String(_) | TokenKind::DupString(_) | TokenKind::Int(_) | TokenKind::Float(_)
+            TokenKind::String(_)
+                | TokenKind::DupString(_)
+                | TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::Attr(_)
         ) {
             if let TokenKind::Ident(ref name) = single {
                 let kw = match name.as_str() {

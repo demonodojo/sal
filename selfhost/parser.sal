@@ -798,22 +798,58 @@ fn parse_block_go(pr: Int, b: Int) -> Int ! alloc
         _e = p_skip_nls(pr)
         parse_block_go(pr, b)
     elsif tok_kind(p_peek(pr)) == TK_LET()
-        _l = p_advance(pr)
-        nt = p_advance(pr)
-        nm = tok_text(nt)
-        ty = 0
-        if p_accept(pr, TK_COLON()) == 1
-            ty = str_as_int(parse_type_text(pr))
+        parse_let(pr, b, 0)
+    elsif tok_kind(p_peek(pr)) == TK_AT()
+        flags = parse_stmt_attrs(pr, 0)
+        if flags < 0
+            b
+        elsif tok_kind(p_peek(pr)) != TK_LET()
+            _e = p_set_err(pr, d"parse error: @frozen and @stack apply to let only")
+            b
         else
-            ty = 0
-        _q = p_accept(pr, TK_EQ())
-        ex = parse_expr(pr)
-        st = stmt_let(nm, ty, ex)
-        _d = vec_push(block_stmts(b), st)
-        _e = p_skip_nls(pr)
-        parse_block_go(pr, b)
+            parse_let(pr, b, flags)
     else
         parse_block_expr(pr, b)
+
+# `@frozen` (1) and `@stack` (2) before a `let`; -1 on error.
+fn parse_stmt_attrs(pr: Int, flags: Int) -> Int ! alloc
+    if tok_kind(p_peek(pr)) != TK_AT()
+        flags
+    else
+        _at = p_accept(pr, TK_AT())
+        nt = p_peek(pr)
+        if tok_kind(nt) != TK_IDENT()
+            _e = p_set_err(pr, d"parse error: expected attribute name")
+            -1
+        else
+            nt = p_advance(pr)
+            name = tok_text(nt)
+            if str_eq(name, d"frozen") == 1
+                _s = p_skip_nls(pr)
+                parse_stmt_attrs(pr, flags | 1)
+            elsif str_eq(name, d"stack") == 1
+                _s = p_skip_nls(pr)
+                parse_stmt_attrs(pr, flags | 2)
+            else
+                _e = p_set_err(pr, d"parse error: unknown attribute")
+                -1
+
+fn parse_let(pr: Int, b: Int, flags: Int) -> Int ! alloc
+    _l = p_advance(pr)
+    nt = p_advance(pr)
+    nm = tok_text(nt)
+    ty = 0
+    if p_accept(pr, TK_COLON()) == 1
+        ty = str_as_int(parse_type_text(pr))
+    else
+        ty = 0
+    _q = p_accept(pr, TK_EQ())
+    ex = parse_expr(pr)
+    st = stmt_let(nm, ty, ex)
+    _at = stmt_set_attrs(st, flags & 1, (flags & 2) / 2)
+    _d = vec_push(block_stmts(b), st)
+    _e = p_skip_nls(pr)
+    parse_block_go(pr, b)
 
 fn parse_block_expr(pr: Int, b: Int) -> Int ! alloc
     ex = parse_expr(pr)
@@ -1149,6 +1185,7 @@ fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
         prog
     elsif k == TK_AT()
         ak = parse_item_attr_kind(pr)
+        _n = p_skip_nls(pr)
         if ak == 1
             f = parse_fn(pr)
             _h = fndef_set_no_heap(f, 1)

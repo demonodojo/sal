@@ -1,0 +1,4 @@
+# error: E_TYPE
+fn main() -> Int
+    @stack let s: String = "a"
+    1

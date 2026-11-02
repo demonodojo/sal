@@ -1,0 +1,295 @@
+# Attribute checks, the mirror of src/attrs.rs plus the `@frozen` rule of
+# src/ownership.rs: `@layout(c)` fields, `@no_heap` fns, `@stack` types and
+# assignments to `@frozen` bindings. (`@stack` initializers that allocate are
+# caught by the effects pass.)
+import ast
+import result
+import effects
+
+# End of the first word of a type text (`Int ` -> 3).
+fn at_word_end(text: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        n
+    elsif str_char(text, i) == 32
+        i
+    else
+        at_word_end(text, i + 1, n)
+
+# A type text trimmed to its first word, leaving the rest (`[…]`, `on …`) out
+# unless a bracket makes the head generic.
+fn at_head(text: String) -> String ! alloc
+    n = str_len(text)
+    e = at_word_end(text, 0, n)
+    str_slice(text, 0, e)
+
+fn at_find_struct(structs: Int, name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        s = vec_get(structs, i)
+        if str_eq(str_from_int(vec_get(s, 0)), name) == 1
+            s
+        else
+            at_find_struct(structs, name, i + 1, n)
+
+fn at_fields_stack(structs: Int, fields: Int, i: Int, n: Int, depth: Int) -> Int ! alloc
+    if i >= n
+        1
+    else
+        fld = vec_get(fields, i)
+        if at_is_stack(structs, str_from_int(vec_get(fld, 1)), depth + 1) == 1
+            at_fields_stack(structs, fields, i + 1, n, depth)
+        else
+            0
+
+# Whether a type (by its text) lives on the stack: scalars and structs of them.
+fn at_is_stack(structs: Int, raw: String, depth: Int) -> Int ! alloc
+    text = at_head(raw)
+    if str_contains(raw, d"[") == 1
+        0
+    elsif str_eq(text, "Int") == 1
+        1
+    elsif str_eq(text, "Float") == 1
+        1
+    elsif str_eq(text, "Bool") == 1
+        1
+    elsif str_eq(text, "Unit") == 1
+        1
+    elsif depth > 8
+        0
+    else
+        s = at_find_struct(structs, text, 0, vec_len(structs))
+        if s == 0
+            0
+        else
+            fields = structdef_fields(s)
+            at_fields_stack(structs, fields, 0, vec_len(fields), depth)
+
+fn at_ty_heap(structs: Int, ty: Int) -> Int ! alloc
+    if ty == 0
+        0
+    elsif at_is_stack(structs, str_from_int(ty), 0) == 1
+        0
+    else
+        1
+
+fn at_layout_fields(fields: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        ty = at_head(str_from_int(vec_get(vec_get(fields, i), 1)))
+        if str_eq(ty, "Int") == 1
+            at_layout_fields(fields, i + 1, n)
+        elsif str_eq(ty, "Float") == 1
+            at_layout_fields(fields, i + 1, n)
+        elsif str_eq(ty, "Bool") == 1
+            at_layout_fields(fields, i + 1, n)
+        else
+            result_err_str("@layout(c) struct fields must be Int, Float or Bool")
+
+fn at_layout(structs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        s = vec_get(structs, i)
+        r = result_ok(0)
+        if structdef_layout_c(s) == 1
+            fields = structdef_fields(s)
+            r = at_layout_fields(fields, 0, vec_len(fields))
+        else
+            r = result_ok(0)
+        if result_is_err(r) == 1
+            r
+        else
+            at_layout(structs, i + 1, n)
+
+fn at_no_heap_params(structs: Int, params: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        pm = vec_get(params, i)
+        if at_ty_heap(structs, vec_get(pm, 1)) == 1
+            result_err_str("@no_heap function cannot take heap parameter `" + str_from_int(vec_get(pm, 0)) + "`")
+        else
+            at_no_heap_params(structs, params, i + 1, n)
+
+# Walk the lets of a block (and nested `while` bodies): declared heap types are
+# rejected for `@no_heap` fns (mode 0) and `@stack` lets (mode 1).
+fn at_block_lets(structs: Int, b: Int, mode: Int) -> Int ! alloc
+    if b == 0
+        result_ok(0)
+    else
+        stmts = block_stmts(b)
+        r = at_stmt_lets(structs, stmts, 0, vec_len(stmts), mode)
+        if result_is_err(r) == 1
+            r
+        else
+            at_expr_lets(structs, block_tail(b), mode)
+
+fn at_expr_lets(structs: Int, e: Int, mode: Int) -> Int ! alloc
+    if e == 0
+        result_ok(0)
+    elsif ex_kind(e) == EX_WHILE()
+        at_block_lets(structs, vec_get(e, 2), mode)
+    else
+        result_ok(0)
+
+fn at_stmt_lets(structs: Int, stmts: Int, i: Int, n: Int, mode: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        st = vec_get(stmts, i)
+        bad = 0
+        if vec_get(st, 0) == 1
+            if vec_get(st, 4) == 1
+                if mode == 0
+                    bad = at_ty_heap(structs, vec_get(st, 3))
+                elsif vec_get(st, 7) == 1
+                    bad = at_ty_heap(structs, vec_get(st, 3))
+                else
+                    bad = 0
+            else
+                bad = 0
+        else
+            bad = 0
+        if bad == 1
+            if mode == 0
+                result_err_str("@no_heap function cannot bind a heap type")
+            else
+                result_err_str("@stack `" + str_from_int(vec_get(st, 1)) + "` cannot hold a heap value")
+        else
+            r = at_expr_lets(structs, vec_get(st, 2), mode)
+            if result_is_err(r) == 1
+                r
+            else
+                at_stmt_lets(structs, stmts, i + 1, n, mode)
+
+fn at_no_heap_fn(structs: Int, f: Int, env: Int) -> Int ! alloc
+    ret = fndef_ret(f)
+    if at_ty_heap(structs, ret) == 1
+        result_err_str("@no_heap function cannot return a heap type")
+    else
+        params = vec_get(f, 1)
+        r = at_no_heap_params(structs, params, 0, vec_len(params))
+        if result_is_err(r) == 1
+            r
+        else
+            used = fx_flags_new()
+            _m = vec_push(used, map_new())
+            _s = fx_seed_params(params, 0, vec_len(params), env)
+            _b = fx_scan_block(vec_get(f, 2), used, env)
+            _z = strenv_set_len(env, 0)
+            if vec_get(used, 1) == 1
+                result_err_str("@no_heap function body cannot allocate")
+            else
+                at_block_lets(structs, vec_get(f, 2), 0)
+
+# `names`: the `@frozen` bindings seen so far in the fn.
+fn at_frozen_block(b: Int, names: Int) -> Int ! alloc
+    if b == 0
+        result_ok(0)
+    else
+        stmts = block_stmts(b)
+        r = at_frozen_stmts(stmts, 0, vec_len(stmts), names)
+        if result_is_err(r) == 1
+            r
+        else
+            at_frozen_expr(block_tail(b), names)
+
+fn at_frozen_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        r = at_frozen_block(vec_get(vec_get(arms, i), 1), names)
+        if result_is_err(r) == 1
+            r
+        else
+            at_frozen_arms(arms, i + 1, n, names)
+
+fn at_frozen_expr(e: Int, names: Int) -> Int ! alloc
+    if e == 0
+        result_ok(0)
+    elsif ex_kind(e) == EX_WHILE()
+        at_frozen_block(vec_get(e, 2), names)
+    elsif ex_kind(e) == EX_ON()
+        at_frozen_block(vec_get(e, 2), names)
+    elsif ex_kind(e) == EX_IF()
+        r = at_frozen_block(vec_get(e, 2), names)
+        if result_is_err(r) == 1
+            r
+        else
+            arms = vec_get(e, 4)
+            r2 = at_frozen_arms(arms, 0, vec_len(arms), names)
+            if result_is_err(r2) == 1
+                r2
+            else
+                at_frozen_block(vec_get(e, 3), names)
+    else
+        result_ok(0)
+
+fn at_name_in(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(str_from_int(vec_get(names, i)), str_from_int(name)) == 1
+        1
+    else
+        at_name_in(names, name, i + 1, n)
+
+fn at_frozen_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        st = vec_get(stmts, i)
+        if vec_get(st, 0) == 1
+            if vec_get(st, 4) == 1
+                if vec_get(st, 6) == 1
+                    _p = vec_push(names, vec_get(st, 1))
+                    at_frozen_stmts(stmts, i + 1, n, names)
+                else
+                    at_frozen_stmts(stmts, i + 1, n, names)
+            elsif at_name_in(names, vec_get(st, 1), 0, vec_len(names)) == 1
+                result_err_str("`" + str_from_int(vec_get(st, 1)) + "` is @frozen and cannot be mutated")
+            else
+                at_frozen_stmts(stmts, i + 1, n, names)
+        else
+            r = at_frozen_expr(vec_get(st, 2), names)
+            if result_is_err(r) == 1
+                r
+            else
+                at_frozen_stmts(stmts, i + 1, n, names)
+
+fn at_check_fns(prog: Int, fns: Int, i: Int, n: Int, env: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        f = vec_get(fns, i)
+        structs = prog_structs(prog)
+        r = result_ok(0)
+        if fndef_no_heap(f) == 1
+            r = at_no_heap_fn(structs, f, env)
+        else
+            r = result_ok(0)
+        if result_is_err(r) == 1
+            r
+        else
+            r2 = at_block_lets(structs, vec_get(f, 2), 1)
+            if result_is_err(r2) == 1
+                r2
+            else
+                r3 = at_frozen_block(vec_get(f, 2), vec_new())
+                if result_is_err(r3) == 1
+                    r3
+                else
+                    at_check_fns(prog, fns, i + 1, n, env)
+
+# Ok(0), or Err(message) for the first attribute violation in `prog`.
+fn check_attrs(prog: Int) -> Int ! alloc
+    structs = prog_structs(prog)
+    r = at_layout(structs, 0, vec_len(structs))
+    if result_is_err(r) == 1
+        r
+    else
+        env = strenv_new()
+        _g = strenv_set_globals(env, fnret_map_from_prog(prog), structs)
+        fns = prog_fns(prog)
+        at_check_fns(prog, fns, 0, vec_len(fns), env)

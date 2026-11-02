@@ -1,0 +1,10 @@
+# exit: 12
+@layout(c)
+struct P
+    a: Int
+    b: Float
+    c: Bool
+
+fn main() -> Int
+    p = P(5, 1.5, true)
+    p.a + 7

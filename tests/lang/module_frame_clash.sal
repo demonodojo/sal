@@ -1,0 +1,6 @@
+# exit: 3
+import "mods/fr1.sal" as one
+import "mods/fr2.sal" as two
+
+fn main() -> Int
+    one.mkr1() + two.mkr2()

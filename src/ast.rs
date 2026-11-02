@@ -184,6 +184,8 @@ pub enum Stmt {
         init: Expr,
         #[serde(default)]
         frozen: bool,
+        #[serde(default)]
+        stack: bool,
         span: Span,
     },
     Expr(Expr),

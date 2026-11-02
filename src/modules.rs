@@ -520,6 +520,10 @@ pub fn check_module_semantics(
 ) -> DiagResult<()> {
     let out = infer_module(module, graph, target)?;
     let programs: Vec<&Program> = graph.order.iter().map(|m| &m.program).collect();
+    let strings = crate::string_expr::StringEnv::from_program(&module.program).with_infer(&out);
+    crate::attrs::check_layout_structs(&module.program)?;
+    crate::attrs::check_stack_lets(&module.program, &strings)?;
+    crate::attrs::check_no_heap_fns(&module.program, &strings)?;
     crate::effects::check_effects_with_graph(&module.program, &out, &programs)?;
     crate::ownership::check_ownership(&module.program)?;
     crate::device::check_devices(&module.program)?;

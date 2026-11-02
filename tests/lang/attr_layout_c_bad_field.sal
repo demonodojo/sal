@@ -1,0 +1,7 @@
+# error: E_TYPE
+@layout(c)
+struct P
+    s: String
+
+fn main() -> Int
+    1

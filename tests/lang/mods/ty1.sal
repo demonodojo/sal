@@ -1,0 +1,9 @@
+struct Pt
+    x: Int
+    y: Int
+
+fn mk1() -> Pt
+    Pt(1, 2)
+
+fn sum1(p: Pt) -> Int
+    p.x + p.y

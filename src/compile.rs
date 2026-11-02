@@ -83,6 +83,8 @@ fn compile_program_at(
 
     let infer_out = infer_program(program)?;
     let strings_for_attrs = StringEnv::from_program(program).with_infer(&infer_out);
+    crate::attrs::check_layout_structs(program)?;
+    crate::attrs::check_stack_lets(program, &strings_for_attrs)?;
     crate::attrs::check_no_heap_fns(program, &strings_for_attrs)?;
     check_effects_with_infer(program, &infer_out)?;
     check_ownership(program)?;

@@ -1,0 +1,6 @@
+# error: E_TYPE
+import "mods/dup1.sal" as a
+import "mods/dup2.sal" as a
+
+fn main() -> Int
+    a.same()

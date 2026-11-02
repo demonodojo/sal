@@ -1,0 +1,9 @@
+# error: E_TYPE
+# selfhost-xfail: selfhost does not resolve module-qualified patterns
+import "mods/en1.sal" as one
+
+fn main() -> Int
+    c = one.pick1()
+    match c
+        zz.Red => 5
+        one.Green(n) => n

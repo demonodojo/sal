@@ -1,0 +1,4 @@
+# error: E_TYPE
+fn main() -> Int ! alloc
+    @stack let xs = list_new[Int]()
+    1

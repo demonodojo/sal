@@ -33,7 +33,11 @@ fn format_program_raw(p: &Program) -> String {
 }
 
 fn format_struct(s: &StructDef) -> String {
-    let mut out = format!("struct {}", s.name);
+    let mut out = String::new();
+    if s.layout_c {
+        out.push_str("@layout(c)\n");
+    }
+    out.push_str(&format!("struct {}", s.name));
     if !s.type_params.is_empty() {
         out.push('[');
         out.push_str(&s.type_params.join(", "));
@@ -98,7 +102,11 @@ fn format_frame(f: &FrameDef) -> String {
 }
 
 fn format_fn(f: &FnDef) -> String {
-    let mut s = format!("fn {}", f.name);
+    let mut s = String::new();
+    if f.no_heap {
+        s.push_str("@no_heap\n");
+    }
+    s.push_str(&format!("fn {}", f.name));
     if !f.type_params.is_empty() {
         s.push('[');
         s.push_str(&f.type_params.join(", "));
@@ -162,12 +170,21 @@ fn format_block(b: &Block, indent: usize) -> String {
 
 fn format_stmt(st: &Stmt, indent: usize) -> String {
     match st {
-        Stmt::Let { name, ty, init, .. } => {
-            let mut s = if let Some(t) = ty {
+        Stmt::Let { name, ty, init, frozen, stack, .. } => {
+            let mut s = String::new();
+            if *frozen {
+                s.push_str("@frozen ");
+            }
+            if *stack {
+                s.push_str("@stack ");
+            }
+            s.push_str(&if let Some(t) = ty {
                 format!("let {name}: {} = ", format_type(t))
+            } else if *frozen || *stack {
+                format!("let {name} = ")
             } else {
                 format!("{name} = ")
-            };
+            });
             s.push_str(&format_expr(init, indent));
             s
         }

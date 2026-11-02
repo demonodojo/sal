@@ -1,0 +1,10 @@
+struct Pt
+    a: Int
+    b: Int
+    c: Int
+
+fn mk2() -> Pt
+    Pt(3, 4, 5)
+
+fn sum2(p: Pt) -> Int
+    p.a + p.b + p.c

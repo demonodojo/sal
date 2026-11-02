@@ -1,0 +1,6 @@
+# exit: 14
+import "mods/en1.sal" as one
+import "mods/en2.sal" as two
+
+fn main() -> Int
+    one.val1(one.pick1()) + two.val2(two.pick2())

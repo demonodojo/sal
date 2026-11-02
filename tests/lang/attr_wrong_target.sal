@@ -1,0 +1,4 @@
+# error: E_PARSE
+@frozen
+fn main() -> Int
+    1

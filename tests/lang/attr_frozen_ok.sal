@@ -1,0 +1,4 @@
+# exit: 5
+fn main() -> Int
+    @frozen let x = 5
+    x

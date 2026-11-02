@@ -2,6 +2,7 @@
 import result
 import infer
 import effects
+import attrs
 import ownership
 import device
 
@@ -15,12 +16,16 @@ fn check_program_with(prog: Int, progs: Int) -> Int ! alloc
     if result_is_err(ty) == 1
         ty
     else
-        fx = check_effects_with(prog, progs)
-        if result_is_err(fx) == 1
-            fx
+        at = check_attrs(prog)
+        if result_is_err(at) == 1
+            at
         else
-            own = check_ownership(prog)
-            if result_is_err(own) == 1
-                own
+            fx = check_effects_with(prog, progs)
+            if result_is_err(fx) == 1
+                fx
             else
-                check_devices(prog)
+                own = check_ownership(prog)
+                if result_is_err(own) == 1
+                    own
+                else
+                    check_devices(prog)

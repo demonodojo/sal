@@ -70,7 +70,71 @@ impl Parser {
         }
     }
 
+    /// Leading `@name` markers (and `(arg)` for `@layout`), each with its span.
+    fn parse_attrs(&mut self) -> Result<Vec<(String, Span)>, Diagnostic> {
+        let mut attrs = Vec::new();
+        while let TokenKind::Attr(name) = self.peek().kind.clone() {
+            let sp = self.bump().span;
+            match name.as_str() {
+                "layout" => {
+                    self.expect(TokenKind::LParen, "expected (c) after @layout")?;
+                    let arg = self.parse_ident()?;
+                    if arg != "c" {
+                        return Err(Diagnostic::new(
+                            ErrorCode::EParse,
+                            "only @layout(c) is supported",
+                            sp,
+                        ));
+                    }
+                    self.expect(TokenKind::RParen, "expected ) after @layout(c")?;
+                }
+                "frozen" | "stack" | "no_heap" => {}
+                _ => {
+                    return Err(Diagnostic::new(
+                        ErrorCode::EParse,
+                        format!("unknown attribute @{name}"),
+                        sp,
+                    ))
+                }
+            }
+            attrs.push((name, sp));
+            self.skip_newlines();
+        }
+        Ok(attrs)
+    }
+
+    fn reject_attrs(attrs: &[(String, Span)], allowed: &str) -> Result<(), Diagnostic> {
+        match attrs.iter().find(|(n, _)| n != allowed) {
+            Some((n, sp)) => Err(Diagnostic::new(
+                ErrorCode::EParse,
+                format!("@{n} is not allowed here"),
+                *sp,
+            )),
+            None => Ok(()),
+        }
+    }
+
     fn parse_item(&mut self) -> Result<Item, Diagnostic> {
+        if matches!(self.peek().kind, TokenKind::Attr(_)) {
+            let attrs = self.parse_attrs()?;
+            return match self.parse_item()? {
+                Item::Fn(mut f) => {
+                    Self::reject_attrs(&attrs, "no_heap")?;
+                    f.no_heap = !attrs.is_empty();
+                    Ok(Item::Fn(f))
+                }
+                Item::Struct(mut st) => {
+                    Self::reject_attrs(&attrs, "layout")?;
+                    st.layout_c = !attrs.is_empty();
+                    Ok(Item::Struct(st))
+                }
+                _ => Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    "attributes apply to fn, struct or let only",
+                    attrs[0].1,
+                )),
+            };
+        }
         if self.at(TokenKind::Parallel) {
             return Err(Diagnostic::new(
                 ErrorCode::EParse,
@@ -551,9 +615,28 @@ impl Parser {
                 self.skip_newlines();
                 continue;
             }
+            let attrs = if matches!(self.peek().kind, TokenKind::Attr(_)) {
+                self.parse_attrs()?
+            } else {
+                Vec::new()
+            };
+            if !attrs.is_empty() && !self.at(TokenKind::Let) {
+                return Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    "@frozen and @stack apply to let only",
+                    attrs[0].1,
+                ));
+            }
             if self.at(TokenKind::Let) {
                 if let Some(e) = pending_expr.take() {
                     stmts.push(Stmt::Expr(e));
+                }
+                if let Some((n, sp)) = attrs.iter().find(|(n, _)| n != "frozen" && n != "stack") {
+                    return Err(Diagnostic::new(
+                        ErrorCode::EParse,
+                        format!("@{n} is not allowed on let"),
+                        *sp,
+                    ));
                 }
                 let sp = self.bump().span;
                 let name = self.parse_ident()?;
@@ -569,7 +652,8 @@ impl Parser {
                     name,
                     ty,
                     init,
-                    frozen: false,
+                    frozen: attrs.iter().any(|(n, _)| n == "frozen"),
+                    stack: attrs.iter().any(|(n, _)| n == "stack"),
                     span: sp,
                 });
                 self.skip_newlines();
@@ -1442,7 +1526,7 @@ fn split_interpolation(s: &str, span: Span) -> Result<Vec<StringPart>, Diagnosti
 fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
     use TokenKind::*;
     match (a, b) {
-        (Ident(x), Ident(y)) => x == y,
+        (Ident(x), Ident(y)) | (Attr(x), Attr(y)) => x == y,
         (Int(x), Int(y)) => x == y,
         (Float(x), Float(y)) => (x - y).abs() < f64::EPSILON,
         (String(x), String(y)) => x == y,

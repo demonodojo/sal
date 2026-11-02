@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
-use crate::effects::fn_body_uses_alloc;
+use crate::effects::{expr_uses_alloc, fn_body_uses_alloc};
 use crate::string_expr::StringEnv;
 
 pub fn is_stack_type(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
@@ -67,6 +67,41 @@ pub fn check_layout_structs(prog: &Program) -> DiagResult<()> {
                     )]);
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// `@stack let` must bind a stack type and must not allocate to build it.
+pub fn check_stack_lets(prog: &Program, env: &StringEnv) -> DiagResult<()> {
+    let structs = collect_structs(prog);
+    for item in &prog.items {
+        if let Item::Fn(f) = item {
+            check_block_stack_lets(&f.body, &structs, env)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_block_stack_lets(
+    b: &Block,
+    structs: &HashMap<String, StructDef>,
+    env: &StringEnv,
+) -> DiagResult<()> {
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { name, ty, init, stack: true, span, .. } => {
+                let heap_ty = ty.as_ref().is_some_and(|t| type_uses_heap(t, structs));
+                if heap_ty || expr_uses_alloc(init, env) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("@stack `{name}` cannot hold a heap value"),
+                        *span,
+                    )]);
+                }
+            }
+            Stmt::While { body, .. } => check_block_stack_lets(body, structs, env)?,
+            _ => {}
         }
     }
     Ok(())

@@ -1,0 +1,5 @@
+# error: E_TYPE
+fn main() -> Int
+    @frozen let x = 5
+    x = 6
+    x

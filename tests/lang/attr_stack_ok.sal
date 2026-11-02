@@ -1,0 +1,4 @@
+# exit: 9
+fn main() -> Int
+    @stack let x = 4 + 5
+    x

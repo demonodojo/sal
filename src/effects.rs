@@ -60,6 +60,14 @@ pub fn fn_body_uses_alloc(f: &FnDef, env: &StringEnv) -> bool {
     used.alloc
 }
 
+/// Whether evaluating `e` allocates (for `@stack`).
+pub fn expr_uses_alloc(e: &Expr, env: &StringEnv) -> bool {
+    let mut used = EffectsUsed::default();
+    let mut strings = env.clone();
+    scan_expr(e, &mut used, &mut strings);
+    used.alloc
+}
+
 fn check_fn_effects(f: &FnDef, env: &StringEnv, callees: &CalleeEffects) -> DiagResult<()> {
     let mut used = EffectsUsed::default();
     used.callees = callees.clone();

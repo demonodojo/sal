@@ -189,6 +189,23 @@ fn fx_scan_expr(e: Int, used: Int, env: Int) -> Int ! alloc
         else
             0
 
+# An `@stack let` must not allocate while evaluating its initializer; the
+# violation is recorded in slot 6 of `used`.
+fn fx_stack_check(st: Int, used: Int, env: Int) -> Int ! alloc
+    if vec_get(st, 7) == 1
+        if vec_len(used) > 6
+            u = fx_flags_new()
+            _c = vec_push(u, vec_get(used, 5))
+            _s = fx_scan_expr(vec_get(st, 2), u, env)
+            if vec_get(u, 1) == 1
+                vec_set(used, 6, 1)
+            else
+                0
+        else
+            0
+    else
+        0
+
 # Statements: `[kind, name, expr]`, kind 0 = expression, 1 = binding, 2 = return.
 fn fx_scan_stmts(stmts: Int, i: Int, n: Int, used: Int, env: Int) -> Int ! alloc
     if i >= n
@@ -197,6 +214,7 @@ fn fx_scan_stmts(stmts: Int, i: Int, n: Int, used: Int, env: Int) -> Int ! alloc
         st = vec_get(stmts, i)
         ex = vec_get(st, 2)
         _a = fx_scan_expr(ex, used, env)
+        _k = fx_stack_check(st, used, env)
         if vec_get(st, 0) == 1
             _b = strenv_bind(env, vec_get(st, 1), expr_type(ex, env))
         else
@@ -248,12 +266,15 @@ fn fx_seed_params(params: Int, i: Int, n: Int, env: Int) -> Int ! alloc
 fn check_fn_effects(f: Int, env: Int, callees: Int) -> Int ! alloc
     used = fx_flags_new()
     _m = vec_push(used, callees)
+    _z = vec_push(used, 0)
     params = vec_get(f, 1)
     _s = fx_seed_params(params, 0, vec_len(params), env)
     _b = fx_scan_block(vec_get(f, 2), used, env)
     _r = strenv_set_len(env, 0)
     miss = fx_first_missing(used, fndef_effects(f), 0)
-    if miss < 0
+    if vec_get(used, 6) == 1
+        result_err_str("@stack let cannot hold a heap value")
+    elsif miss < 0
         result_ok(0)
     else
         nm = fx_effect_name(miss)
