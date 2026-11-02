@@ -1,0 +1,9 @@
+# exit: 9
+struct P
+    x: Int
+    y: Int
+
+fn main() -> Int
+    p = P(3, 4)
+    p.y = 6
+    p.x + p.y

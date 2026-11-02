@@ -1,0 +1,8 @@
+# exit: 11
+fn f(x: Int) -> Int
+    if x > 3
+        return 9
+    x
+
+fn main() -> Int
+    f(5) + f(2)

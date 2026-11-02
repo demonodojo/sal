@@ -7,6 +7,7 @@ pub mod effects;
 pub mod fmt;
 pub mod fuse;
 pub mod incremental;
+pub mod interp;
 pub mod infer;
 pub mod modules;
 pub mod ir;

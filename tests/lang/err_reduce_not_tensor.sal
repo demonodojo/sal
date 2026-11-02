@@ -1,0 +1,7 @@
+# error: E_TYPE
+fn f(a: Int) -> Int ! alloc
+    c = reduce(a, 0)
+    0
+
+fn main() -> Int
+    0

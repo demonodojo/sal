@@ -1,0 +1,15 @@
+# exit: 9
+struct In
+    a: Int
+    b: Int
+
+struct Out
+    i: In
+    c: Int
+
+fn mk() -> Out
+    Out(In(2, 3), 4)
+
+fn main() -> Int
+    o = mk()
+    o.i.a + o.i.b + o.c

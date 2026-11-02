@@ -1,0 +1,4 @@
+# exit: 255
+# -7 % 3 = -1 (sign of the dividend)
+fn main() -> Int
+    (0 - 7) % 3

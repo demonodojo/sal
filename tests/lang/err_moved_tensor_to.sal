@@ -1,0 +1,8 @@
+# error: E_MOVED
+fn f(a: Tensor[F32, 2, 2] on cpu) -> Int ! alloc, gpu
+    g = to gpu a
+    h = to gpu a
+    0
+
+fn main() -> Int
+    0

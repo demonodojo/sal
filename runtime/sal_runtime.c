@@ -694,6 +694,20 @@ int64_t sal_str_as_int(const char *s) {
     return (int64_t)(uintptr_t)s;
 }
 
+/* Float scalars travel as the bit pattern of an f64 in an int64. */
+int64_t sal_float_to_int(int64_t bits) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return (int64_t)d;
+}
+
+int64_t sal_int_to_float(int64_t v) {
+    double d = (double)v;
+    int64_t bits;
+    memcpy(&bits, &d, sizeof bits);
+    return bits;
+}
+
 int64_t sal_str_to_f64_bits(const char *s) {
     double fv = 0.0;
     if (s) {

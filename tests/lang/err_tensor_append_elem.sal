@@ -1,0 +1,7 @@
+# error: E_TENSOR_ELEM
+fn f(c: Tensor[F32, ?, 4] on cpu, r: Tensor[F16, 1, 4] on cpu) -> Int ! alloc
+    d = tensor_append(c, r)
+    0
+
+fn main() -> Int
+    0

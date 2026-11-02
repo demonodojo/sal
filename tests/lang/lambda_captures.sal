@@ -1,0 +1,5 @@
+# exit: 17
+fn main() -> Int
+    k = 10
+    add = x => x + k
+    add(7)

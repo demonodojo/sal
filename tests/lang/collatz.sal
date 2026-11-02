@@ -1,0 +1,14 @@
+# exit: 111
+fn steps(n: Int) -> Int
+    c = 0
+    x = n
+    while x != 1
+        if x % 2 == 0
+            x = x / 2
+        else
+            x = 3 * x + 1
+        c = c + 1
+    c
+
+fn main() -> Int
+    steps(27)

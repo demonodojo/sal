@@ -1,0 +1,7 @@
+# exit: 0
+fn f(q: Tensor[F32, 4, 2, 8] on cpu, k: Tensor[F32, 4, 2, 8] on cpu, v: Tensor[F32, 4, 2, 8] on cpu) -> Int ! alloc
+    c = attention(q, k, v, 1)
+    0
+
+fn main() -> Int
+    0

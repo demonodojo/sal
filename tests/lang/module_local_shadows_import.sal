@@ -1,0 +1,8 @@
+# exit: 9
+import "mods/dup1.sal" as one
+
+fn same() -> Int
+    9
+
+fn main() -> Int
+    same()

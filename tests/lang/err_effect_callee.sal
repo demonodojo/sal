@@ -1,0 +1,7 @@
+# error: E_EFFECT
+fn f() -> Int ! io, alloc
+    print(d"x")
+    0
+
+fn main() -> Int
+    f()

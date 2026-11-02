@@ -1,0 +1,9 @@
+# exit: 7
+fn main() -> Int
+    if 1 < 2
+        if !(3 == 4)
+            7
+        else
+            1
+    else
+        0

@@ -1,0 +1,11 @@
+# exit: 6
+struct P
+    a: Int
+    b: Int
+
+fn pass[T](x: T) -> T
+    x
+
+fn main() -> Int
+    p = pass(P(2, 4))
+    p.a + p.b

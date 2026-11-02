@@ -1,0 +1,4 @@
+# exit: 16
+fn main() -> Int
+    f = x => x * 2 + 1
+    f(3) + f(4)

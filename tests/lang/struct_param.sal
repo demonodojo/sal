@@ -1,0 +1,10 @@
+# exit: 7
+struct P
+    x: Int
+    y: Int
+
+fn sum(p: P) -> Int
+    p.x + p.y
+
+fn main() -> Int
+    sum(P(3, 4))

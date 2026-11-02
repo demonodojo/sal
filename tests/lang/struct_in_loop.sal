@@ -1,0 +1,15 @@
+# exit: 10
+struct Acc
+    n: Int
+    total: Int
+
+fn step(a: Acc, v: Int) -> Acc
+    Acc(a.n + 1, a.total + v)
+
+fn main() -> Int
+    a = Acc(0, 0)
+    i = 1
+    while i <= 4
+        a = step(a, i)
+        i = i + 1
+    a.total

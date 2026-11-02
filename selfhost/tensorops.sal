@@ -175,9 +175,56 @@ fn lower_reshape_op(cx: Int, d: Int, args: Int, arg_names: Int) -> Int ! alloc
         _r = 0
     ir_push(cx, ir_rebind(d, src))
 
+# Extent of axis `i`: the dim when static, else the concrete length (-1 if unknown).
+fn tdim(b: Int, i: Int) -> Int ! alloc
+    dv = dim_at(bind_dims(b), i)
+    if dv >= 0
+        dv
+    else
+        dim_at(bind_concrete(b), i)
+
+# A static rank-2 F32 tensor is really transposed into a new buffer.
+fn transpose_is_copy(b: Int) -> Int ! alloc
+    if b == 0
+        0
+    elsif bind_ndims(b) != 2
+        0
+    elsif bind_elem(b) != 4
+        0
+    elsif tdim(b, 0) < 0
+        0
+    elsif tdim(b, 1) < 0
+        0
+    else
+        1
+
+fn lower_transpose_copy(cx: Int, d: Int, src: Int, b: Int) -> Int ! alloc
+    r = fresh(cx)
+    _a = push_const_int(cx, r, tdim(b, 0))
+    c = fresh(cx)
+    _b = push_const_int(cx, c, tdim(b, 1))
+    dims = vec_copy(bind_dims(b))
+    _x = vec_set(dims, 0, dim_at(bind_dims(b), 1))
+    _y = vec_set(dims, 1, dim_at(bind_dims(b), 0))
+    conc = vec_copy(bind_concrete(b))
+    _cx = vec_set(conc, 0, dim_at(bind_concrete(b), 1))
+    _cy = vec_set(conc, 1, dim_at(bind_concrete(b), 0))
+    _t = reg_tensor(cx, d, bind_elem(b), bind_place(b), dims, conc)
+    args = vec_new()
+    _p = vec_push(args, src)
+    _q = vec_push(args, r)
+    _w = vec_push(args, c)
+    push_call(cx, d, d"sal_transpose_f32", args, 1)
+
 fn lower_transpose_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
     src = vec_get(arg_names, 0)
     b = find_tensor(cx, src)
+    if transpose_is_copy(b) == 1
+        lower_transpose_copy(cx, d, src, b)
+    else
+        lower_transpose_view(cx, d, src, b)
+
+fn lower_transpose_view(cx: Int, d: Int, src: Int, b: Int) -> Int ! alloc
     if b != 0
         dims = vec_copy(bind_dims(b))
         n = vec_len(dims)

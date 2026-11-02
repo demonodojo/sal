@@ -494,7 +494,7 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
                 if try_lower_tensor_bin(cx, e, l, r, d) == 1
                     d
                 else
-                    _p = ir_push(cx, ir_bin(d, vec_get(e, 1), l, r))
+                    _p = ir_push(cx, ir_bin(d, binary_ir_op(e, cx_strenv(cx)), l, r))
                     d
         elsif k == EX_TENSOR()
             d = fresh(cx)
@@ -522,7 +522,14 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
         elsif k == EX_UNARY()
             inner = lower_expr(cx, vec_get(e, 2))
             d = fresh(cx)
-            _p = ir_push(cx, ir_bin(d, vec_get(e, 1), inner, str_as_int(d"0")))
+            uop = if str_eq(vec_get(e, 1), "neg") == 1
+                if expr_is_float(vec_get(e, 2), cx_strenv(cx)) == 1
+                    str_as_int(d"fneg")
+                else
+                    vec_get(e, 1)
+            else
+                vec_get(e, 1)
+            _p = ir_push(cx, ir_bin(d, uop, inner, str_as_int(d"0")))
             d
         else
             fresh(cx)

@@ -1,0 +1,8 @@
+# exit: 1
+# i64 max + 1 wraps to min (negative)
+fn main() -> Int
+    m = 9223372036854775807
+    if m + 1 < 0
+        1
+    else
+        0

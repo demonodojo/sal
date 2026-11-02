@@ -16,6 +16,8 @@ pub struct StringEnv {
     pub enums: HashMap<String, EnumDef>,
     /// Local/param names bound to a struct type (for `.field` lowering).
     pub struct_types: HashMap<String, String>,
+    /// Locals bound to a lambda (`f = x => body`): parameter and body, inlined at calls.
+    pub lambdas: HashMap<String, (String, Expr)>,
     /// User functions whose return type is a nominal struct (for assign/init typing).
     pub fn_struct_rets: HashMap<String, String>,
     /// User functions that return `Tensor[…]` (for IR shape on call results).
@@ -57,6 +59,7 @@ impl StringEnv {
             structs,
             enums,
             struct_types: HashMap::new(),
+            lambdas: HashMap::new(),
             fn_struct_rets,
             fn_tensor_rets,
             accumulate: None,
@@ -104,6 +107,11 @@ impl StringEnv {
             if let Some(sn) = self.struct_types.get(src).cloned() {
                 self.struct_types.insert(name.to_string(), sn);
             }
+        } else if let Some(Type::Named { name: sn, args, .. }) = self.expr_type(init).cloned() {
+            // e.g. the result of a generic call instantiated with a struct
+            if args.is_empty() && self.structs.contains_key(&sn) {
+                self.struct_types.insert(name.to_string(), sn);
+            }
         }
     }
 
@@ -118,6 +126,10 @@ impl StringEnv {
     pub fn expr_type(&self, e: &Expr) -> Option<&Type> {
         let sp = e.span();
         self.types.get(&(sp.start, sp.end))
+    }
+
+    pub fn expr_is_float(&self, e: &Expr) -> bool {
+        matches!(self.expr_type(e), Some(Type::Named { name, args, .. }) if args.is_empty() && name == "Float")
     }
 
     pub fn expr_is_string(&self, e: &Expr) -> bool {

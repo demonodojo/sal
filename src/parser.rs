@@ -1225,11 +1225,13 @@ impl Parser {
                     self.bump();
                     let member = self.parse_ident()?;
                     if !self.at(TokenKind::LParen) {
-                        return Err(Diagnostic::new(
-                            ErrorCode::EParse,
-                            "expected ( after qualified variant pattern",
-                            self.peek().span,
-                        ));
+                        // `Enum.Variant` without payload
+                        return Ok(Pattern::Variant {
+                            qual: Some(name),
+                            name: member,
+                            args: Vec::new(),
+                            span: sp,
+                        });
                     }
                     self.bump();
                     let mut args = Vec::new();

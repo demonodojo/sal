@@ -172,12 +172,30 @@ fn consume_args(c: Int, args: Int, tys: Int, i: Int, n: Int) -> Int ! alloc
         _a = consume_if_unique(c, vec_get(args, i), vec_get(tys, i))
         consume_args(c, args, tys, i + 1, n)
 
-# Runs `body` on a copy of the moved set and the env scope, then restores both.
-fn track_branch_block(c: Int, b: Int, base: Int) -> Int ! alloc
+# Runs `body` on a copy of the moved set and the env scope, then restores
+# both. What a branch that falls through moved is added to `acc`; the caller
+# applies it after the whole `if` (later conditions must not see it).
+fn track_branch_block(c: Int, b: Int, base: Int, acc: Int) -> Int ! alloc
     saved = oc_moved(c)
     _s = oc_set_moved(c, own_copy(base))
-    _r = track_block_scoped(c, b)
-    oc_set_moved(c, saved)
+    div = track_block_scoped(c, b)
+    after = oc_moved(c)
+    _r = oc_set_moved(c, saved)
+    if div == 1
+        0
+    else
+        own_union(acc, after, 0, vec_len(after))
+
+fn own_union(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = vec_get(src, i)
+        if own_has(dst, nm, 0, vec_len(dst)) == 0
+            _p = vec_push(dst, nm)
+            own_union(dst, src, i + 1, n)
+        else
+            own_union(dst, src, i + 1, n)
 
 # Statements and tail of a block, with its bindings dropped at the end.
 fn track_block_scoped(c: Int, b: Int) -> Int ! alloc
@@ -186,25 +204,28 @@ fn track_block_scoped(c: Int, b: Int) -> Int ! alloc
     _s = strenv_set_len(oc_env(c), mark)
     r
 
-fn track_elsifs(c: Int, arms: Int, i: Int, n: Int, base: Int) -> Int ! alloc
+fn track_elsifs(c: Int, arms: Int, i: Int, n: Int, base: Int, acc: Int) -> Int ! alloc
     if i >= n
         0
     else
         arm = vec_get(arms, i)
         _a = track_expr(c, vec_get(arm, 0))
-        _b = track_branch_block(c, vec_get(arm, 1), base)
-        track_elsifs(c, arms, i + 1, n, base)
+        _b = track_branch_block(c, vec_get(arm, 1), base, acc)
+        track_elsifs(c, arms, i + 1, n, base, acc)
 
 fn track_if(c: Int, e: Int) -> Int ! alloc
     _a = track_expr(c, vec_get(e, 1))
     base = own_copy(oc_moved(c))
-    _b = track_branch_block(c, vec_get(e, 2), base)
+    acc = vec_new()
+    _b = track_branch_block(c, vec_get(e, 2), base, acc)
     arms = vec_get(e, 4)
-    _c = track_elsifs(c, arms, 0, vec_len(arms), base)
+    _c = track_elsifs(c, arms, 0, vec_len(arms), base, acc)
     if vec_get(e, 3) != 0
-        _d = track_branch_block(c, vec_get(e, 3), base)
+        _d = track_branch_block(c, vec_get(e, 3), base, acc)
     else
         _d = 0
+    cur = oc_moved(c)
+    _u = own_union(cur, acc, 0, vec_len(acc))
     own_ty(d"Int")
 
 fn track_call(c: Int, e: Int) -> Int ! alloc
@@ -215,7 +236,27 @@ fn track_call(c: Int, e: Int) -> Int ! alloc
         _b = consume_args(c, args, tys, 0, vec_len(args))
     else
         _b = 0
-    own_ty(d"Unknown")
+    if returns_owned_string(vec_get(e, 1)) == 1
+        own_ty(d"String")
+    else
+        own_ty(d"Unknown")
+
+# Builtins whose result is a fresh heap String (moved on use).
+fn returns_owned_string(name: Int) -> Int ! alloc
+    if str_eq(name, "strdup") == 1
+        1
+    elsif str_eq(name, "str_concat") == 1
+        1
+    elsif str_eq(name, "int_to_str") == 1
+        1
+    elsif str_eq(name, "char_to_str") == 1
+        1
+    elsif str_eq(name, "str_slice") == 1
+        1
+    elsif str_eq(name, "read_file") == 1
+        1
+    else
+        0
 
 fn track_use(c: Int, e: Int) -> Int ! alloc
     name = vec_get(e, 1)

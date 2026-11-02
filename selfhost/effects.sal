@@ -7,7 +7,30 @@ import result
 fn fx_mark(used: Int, i: Int) -> Int ! alloc
     vec_set(used, i, 1)
 
+# A call to a user fn performs the effects that fn declares (slot 5 of `used`
+# holds the name -> declared flags map).
+fn fx_call_user(name: Int, used: Int) -> Int ! alloc
+    if vec_len(used) > 5
+        declared = map_get(vec_get(used, 5), name)
+        if declared != 0
+            fx_merge(used, declared, 0)
+        else
+            0
+    else
+        0
+
+fn fx_merge(used: Int, declared: Int, i: Int) -> Int ! alloc
+    if i >= 5
+        0
+    else
+        if vec_get(declared, i) == 1
+            _a = fx_mark(used, i)
+            fx_merge(used, declared, i + 1)
+        else
+            fx_merge(used, declared, i + 1)
+
 fn fx_call(name: Int, used: Int) -> Int ! alloc
+    _u = fx_call_user(name, used)
     if str_eq(name, "load") == 1
         _a = fx_mark(used, 0)
         fx_mark(used, 1)
@@ -222,8 +245,9 @@ fn fx_seed_params(params: Int, i: Int, n: Int, env: Int) -> Int ! alloc
         _b = strenv_bind(env, vec_get(pm, 0), vec_get(pm, 1))
         fx_seed_params(params, i + 1, n, env)
 
-fn check_fn_effects(f: Int, env: Int) -> Int ! alloc
+fn check_fn_effects(f: Int, env: Int, callees: Int) -> Int ! alloc
     used = fx_flags_new()
+    _m = vec_push(used, callees)
     params = vec_get(f, 1)
     _s = fx_seed_params(params, 0, vec_len(params), env)
     _b = fx_scan_block(vec_get(f, 2), used, env)
@@ -236,19 +260,52 @@ fn check_fn_effects(f: Int, env: Int) -> Int ! alloc
         fname = str_from_int(vec_get(f, 0))
         result_err_str("function `" + fname + "` uses effect `" + nm + "` but signature does not declare it\nhint: add `! " + nm + "` to the signature")
 
-fn check_effects_go(fns: Int, i: Int, n: Int, env: Int) -> Int ! alloc
+fn check_effects_go(fns: Int, i: Int, n: Int, env: Int, callees: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        r = check_fn_effects(vec_get(fns, i), env)
+        r = check_fn_effects(vec_get(fns, i), env, callees)
         if result_is_err(r) == 1
             r
         else
-            check_effects_go(fns, i + 1, n, env)
+            check_effects_go(fns, i + 1, n, env, callees)
+
+# name -> declared effect flags for the fns of `prog`.
+fn fx_callees_add(m: Int, prog: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    fx_callees_go(m, fns, 0, vec_len(fns))
+
+fn fx_callees_go(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        if map_get(m, vec_get(f, 0)) == 0
+            _p = map_put(m, vec_get(f, 0), fndef_effects(f))
+            fx_callees_go(m, fns, i + 1, n)
+        else
+            fx_callees_go(m, fns, i + 1, n)
+
+fn fx_callees_progs(m: Int, progs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = fx_callees_add(m, vec_get(progs, i))
+        fx_callees_progs(m, progs, i + 1, n)
 
 # Ok(0), or Err(message) for the first fn using an undeclared effect.
 fn check_effects(prog: Int) -> Int ! alloc
+    check_effects_with(prog, 0)
+
+# Same, counting the fns of `progs` (every module of the graph; 0 for none).
+fn check_effects_with(prog: Int, progs: Int) -> Int ! alloc
     env = strenv_new()
     _g = strenv_set_globals(env, fnret_map_from_prog(prog), prog_structs(prog))
+    callees = map_new()
+    _a = fx_callees_add(callees, prog)
+    if progs != 0
+        _b = fx_callees_progs(callees, progs, 0, vec_len(progs))
+    else
+        _b = 0
     fns = prog_fns(prog)
-    check_effects_go(fns, 0, vec_len(fns), env)
+    check_effects_go(fns, 0, vec_len(fns), env, callees)

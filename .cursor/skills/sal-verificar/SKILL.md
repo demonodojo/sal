@@ -23,7 +23,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | LLVM o enlace | `cargo test --test run_hello` |
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
 | CLI, módulos o caché | `cargo test --test toolchain --test run_hello` |
-| Paquetes git, `Sal.lock`, `sal_modules/` | `cargo test --test toolchain fetch_ sal_modules_import import_not` y `cargo test --test selfhost_ir selfhost_resolves_git` |
+| Paquetes git, `Sal.lock`, `sal_modules/` | `cargo test --test toolchain fetch_ sal_modules_import import_not install_` y `cargo test --test selfhost_ir selfhost_resolves_git` |
 | Un `.sal` concreto | `cargo run -- check <fichero>` y, si debe ejecutar, `cargo run -- run <fichero>` |
 | Estilo en `.sal` (no sintaxis) | `cargo run --bin standard -- check <fichero>`; opcional `fix` in situ. Ver [sal-standard](../sal-standard/SKILL.md) |
 | `standard/` o cops de estilo | `cargo test --test standard -- --test-threads=1` |

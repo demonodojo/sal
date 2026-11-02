@@ -1,0 +1,9 @@
+# exit: 100
+fn count(n: Int) -> Int
+    if n == 0
+        0
+    else
+        1 + count(n - 1)
+
+fn main() -> Int
+    count(100)

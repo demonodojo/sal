@@ -1,0 +1,6 @@
+# error: E_TYPE
+fn f(a: Int) -> Int
+    a
+
+fn main() -> Int ! alloc
+    f(d"s")

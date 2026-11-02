@@ -1,0 +1,7 @@
+# error: E_TYPE
+fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+    c = rms_norm(a)
+    0
+
+fn main() -> Int
+    0

@@ -1,0 +1,4 @@
+# exit: 253
+# -7 / 2 truncates toward zero: -3
+fn main() -> Int
+    (0 - 7) / 2

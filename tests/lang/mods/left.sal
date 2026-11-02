@@ -1,0 +1,4 @@
+import "common.sal"
+
+fn left() -> Int
+    base() + 1

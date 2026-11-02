@@ -138,7 +138,8 @@ fn load_module_recursive(
             Default::default(),
         )]
     })?;
-    let program = parse(&src).map_err(|d| vec![d])?;
+    let mut program = parse(&crate::interp::with_prelude_enums(&src)).map_err(|d| vec![d])?;
+    crate::interp::expand_interpolation(&mut program);
 
     for item in &program.items {
         let Item::Import(imp) = item else {
@@ -395,8 +396,25 @@ pub fn type_env_for_module(
     env.enums = imports.enums.clone();
     env.frames = imports.frames.clone();
     for f in imports.fns.values() {
-        let params: Vec<_> = f.params.iter().map(|p| p.ty.clone()).collect();
-        env.fns.insert(f.name.clone(), (params, f.ret.clone()));
+        env.fns.insert(f.name.clone(), crate::infer::fn_signature(f));
+        if let Some(i) = crate::infer::generic_ret_index(f) {
+            env.generic_ret.insert(f.name.clone(), i);
+        }
+    }
+    // Functions reached through an aliased import (`alias.f()`, rewritten to a
+    // plain call by `qualify`) are not flat exports but still have a signature.
+    for dep in &graph.order {
+        if path_key(&dep.path) == path_key(&module.path) {
+            continue;
+        }
+        for item in &dep.program.items {
+            if let Item::Fn(f) = item {
+                env.fns.entry(f.name.clone()).or_insert_with(|| crate::infer::fn_signature(f));
+                if let Some(i) = crate::infer::generic_ret_index(f) {
+                    env.generic_ret.entry(f.name.clone()).or_insert(i);
+                }
+            }
+        }
     }
     for item in &module.program.items {
         match item {
@@ -454,8 +472,10 @@ pub fn type_env_for_module(
                         f.span,
                     )]);
                 }
-                let params: Vec<_> = f.params.iter().map(|p| p.ty.clone()).collect();
-                env.fns.insert(f.name.clone(), (params, f.ret.clone()));
+                env.fns.insert(f.name.clone(), crate::infer::fn_signature(f));
+                if let Some(i) = crate::infer::generic_ret_index(f) {
+                    env.generic_ret.insert(f.name.clone(), i);
+                }
             }
             Item::Import(_) => {}
         }
@@ -499,7 +519,8 @@ pub fn check_module_semantics(
     target: crate::target::Target,
 ) -> DiagResult<()> {
     let out = infer_module(module, graph, target)?;
-    crate::effects::check_effects_with_infer(&module.program, &out)?;
+    let programs: Vec<&Program> = graph.order.iter().map(|m| &m.program).collect();
+    crate::effects::check_effects_with_graph(&module.program, &out, &programs)?;
     crate::ownership::check_ownership(&module.program)?;
     crate::device::check_devices(&module.program)?;
     Ok(())

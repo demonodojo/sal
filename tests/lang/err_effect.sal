@@ -1,0 +1,4 @@
+# error: E_EFFECT
+fn main() -> Int
+    print(d"x")
+    0

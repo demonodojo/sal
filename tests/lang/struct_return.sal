@@ -1,0 +1,11 @@
+# exit: 6
+struct P
+    x: Int
+    y: Int
+
+fn mk(a: Int) -> P
+    P(a, a * 2)
+
+fn main() -> Int
+    p = mk(2)
+    p.x + p.y

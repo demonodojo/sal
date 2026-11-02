@@ -1,0 +1,7 @@
+# exit: 9
+fn main() -> Int
+    x = if 3 > 2
+        9
+    else
+        1
+    x

@@ -1,0 +1,8 @@
+# exit: 5
+struct Named
+    name: String
+    n: Int
+
+fn main() -> Int ! alloc
+    v = Named(d"abc", 2)
+    str_len(v.name) + v.n

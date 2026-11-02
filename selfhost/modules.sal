@@ -654,9 +654,18 @@ fn extern_fn_arity_go(callables: Int, i: Int, n: Int, prog: Int, graph: Int, out
                 extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
 
 fn check_all_modules(graph: Int, proot: String) -> Int ! io, alloc
-    check_all_modules_order(module_order_vec(graph), 0, vec_len(module_order_vec(graph)), proot)
+    order = module_order_vec(graph)
+    progs = module_progs(order, 0, vec_len(order), vec_new())
+    check_all_modules_order(order, 0, vec_len(order), proot, progs)
 
-fn check_all_modules_order(order: Int, i: Int, n: Int, proot: String) -> Int ! io, alloc
+fn module_progs(order: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _p = vec_push(out, mod_prog(vec_get(order, i)))
+        module_progs(order, i + 1, n, out)
+
+fn check_all_modules_order(order: Int, i: Int, n: Int, proot: String, progs: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
@@ -665,11 +674,11 @@ fn check_all_modules_order(order: Int, i: Int, n: Int, proot: String) -> Int ! i
         if result_is_err(step) == 1
             step
         else
-            fx = check_program(mod_prog(m))
+            fx = check_program_with(mod_prog(m), progs)
             if result_is_err(fx) == 1
                 fx
             else
-                check_all_modules_order(order, i + 1, n, proot)
+                check_all_modules_order(order, i + 1, n, proot, progs)
 
 fn check_all_effects(order: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n

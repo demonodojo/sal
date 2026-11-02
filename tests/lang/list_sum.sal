@@ -1,0 +1,9 @@
+# exit: 6
+fn main() -> Int ! alloc
+    xs = list_push(list_push(list_push(list_new(), 1), 2), 3)
+    s = 0
+    i = 0
+    while i < list_len(xs)
+        s = s + list_get(xs, i)
+        i = i + 1
+    s

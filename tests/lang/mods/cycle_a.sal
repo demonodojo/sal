@@ -1,0 +1,4 @@
+import "cycle_b.sal"
+
+fn a() -> Int
+    1

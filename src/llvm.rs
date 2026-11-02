@@ -276,6 +276,8 @@ pub fn emit_llvm_with_externs(
     s.push_str("%SalBytes = type { ptr, i64 }\n");
     s.push_str("@sal_bytes_oob = private unnamed_addr constant [20 x i8] c\"bytes: out of bounds\"\n\n");
     s.push_str("declare i64 @sal_print_i64(i64)\n");
+    s.push_str("declare i64 @sal_float_to_int(i64)\n");
+    s.push_str("declare i64 @sal_int_to_float(i64)\n");
     s.push_str("declare void @sal_panic(ptr)\n");
     s.push_str("declare void @sal_bytes_check(i64, i64, i64)\n");
     s.push_str("declare i64 @sal_os_syscall(i64, i64, i64, i64, i64, i64, i64)\n");
@@ -288,6 +290,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_tensor_write_rows_f32(ptr, i64, ptr, i64, i64)\n");
     s.push_str("declare void @sal_softmax_f32(ptr, i64)\n");
     s.push_str("declare void @sal_softmax_axis_f32(ptr, i64, i64)\n");
+    s.push_str("declare void @sal_transpose_f32(ptr, ptr, i64, i64)\n");
     s.push_str("declare void @sal_silu_f32(ptr, ptr, i64)\n");
     s.push_str("declare void @sal_rope_f32(ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_rms_norm_f32(ptr, ptr, ptr, i64, double)\n");
@@ -1075,6 +1078,19 @@ fn emit_host_tensor_fn(
     for inst in &f.instructions {
         match inst {
             IrInst::Call { func, args, .. }
+                if matches!(
+                    func.as_str(),
+                    "sal_transpose_f32" | "sal_silu" | "sal_softmax" | "sal_softmax_axis_f32" | "sal_softmax_f32" | "sal_silu_f32" | "sal_transpose" | "sal_reshape" | "sal_rope"
+                        | "sal_relu" | "sal_rms_norm" | "sal_reduce"
+                ) =>
+            {
+                if let Some(a) = args.first() {
+                    if !needed.contains(a) {
+                        needed.push(a.clone());
+                    }
+                }
+            }
+            IrInst::Call { func, args, .. }
                 if func == "sal_matmul_f32" || func == "sal_matmul" =>
             {
                 for a in args.iter().take(2) {
@@ -1086,6 +1102,27 @@ fn emit_host_tensor_fn(
             IrInst::PlaceCopy { from, .. } => {
                 if !needed.contains(from) {
                     needed.push(from.clone());
+                }
+            }
+            IrInst::TensorBin { left, right, right_scalar, .. } => {
+                let mut ops = vec![left];
+                if !*right_scalar {
+                    ops.push(right);
+                }
+                for a in ops {
+                    if !needed.contains(a) {
+                        needed.push(a.clone());
+                    }
+                }
+            }
+            IrInst::TensorUnary { input, .. } => {
+                if !needed.contains(input) {
+                    needed.push(input.clone());
+                }
+            }
+            IrInst::TensorRebind { src, .. } => {
+                if !needed.contains(src) {
+                    needed.push(src.clone());
                 }
             }
             _ => {}
@@ -1138,6 +1175,7 @@ fn emit_host_tensor_fn(
             }
             IrInst::ConstFloat { dest, value } => {
                 s.push_str(&format!("  ; float const %{dest} = {value}\n"));
+                s.push_str(&format!("  %{dest} = add i64 0, {}\n", (*value).to_bits() as i64));
             }
             IrInst::ConstString { dest, value } => {
                 if let Some(g) = str_globals.get(value) {
@@ -1189,6 +1227,8 @@ fn emit_host_tensor_fn(
                         s.push_str(&format!("  %{dest}_c = icmp sge i64 {l}, {r}\n"));
                         s.push_str(&format!("  %{dest} = zext i1 %{dest}_c to i64\n"));
                     }
+                    "fadd" | "fsub" | "fmul" | "fdiv" | "feq" | "fne" | "flt" | "fle" | "fgt" | "fge"
+                    | "fneg" => s.push_str(&float_op_text(dest, op, &l, &r)),
                     "neg" => s.push_str(&format!("  %{dest} = sub i64 0, {l}\n")),
                     "not" => s.push_str(&format!("  %{dest} = call i64 @sal_not(i64 {l})\n")),
                     _ => s.push_str(&format!("  %{dest} = add i64 {l}, 0\n")),
@@ -1506,13 +1546,35 @@ fn emit_host_tensor_fn(
                             s.push_str(&format!("  %{d} = add i64 0, 0\n"));
                         }
                     }
+                } else if func == "sal_transpose_f32" && args.len() == 3 {
+                    let rows = i64_operand(&args[1], &consts);
+                    let cols = i64_operand(&args[2], &consts);
+                    let src = ptrs.get(&args[0]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                    uid += 1;
+                    let out = format!("tr_{uid}");
+                    s.push_str(&format!("  %{out}_n = mul i64 {rows}, {cols}\n"));
+                    s.push_str(&format!("  %{out}_b = mul i64 %{out}_n, 4\n"));
+                    s.push_str(&format!("  %{out} = call ptr @sal_place_malloc(i64 %{out}_b, i32 0)\n"));
+                    s.push_str(&format!(
+                        "  call void @sal_transpose_f32(ptr %{out}, ptr {src}, i64 {rows}, i64 {cols})\n"
+                    ));
+                    owned.push(out.clone());
+                    if let Some(d) = dest {
+                        ptrs.insert(d.clone(), out.clone());
+                        s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+                    }
                 } else if func == "sal_softmax_axis_f32" && args.len() >= 2 {
                     let input = args[0].as_str();
                     let axis = i64_operand(&args[1], &consts);
                     if let Some(p) = ptrs.get(input).cloned() {
-                        let outer = ssa_elems.get(input).copied().unwrap_or(1);
+                        // IR carries the axis index; the kernel wants (rows, row length).
+                        let (outer, axis_len) = match tensors.get(input) {
+                            Some(t) if t.cols > 0 => (t.rows.max(1) as i64, t.cols as i64),
+                            _ => (ssa_elems.get(input).copied().unwrap_or(1) as i64, 0),
+                        };
+                        let axis_len_op = if axis_len > 0 { axis_len.to_string() } else { axis.clone() };
                         s.push_str(&format!(
-                            "  call void @sal_softmax_axis_f32(ptr %{p}, i64 {outer}, i64 {axis})\n"
+                            "  call void @sal_softmax_axis_f32(ptr %{p}, i64 {outer}, i64 {axis_len_op})\n"
                         ));
                         if let Some(d) = dest {
                             ptrs.insert(d.clone(), p.clone());
@@ -2161,6 +2223,75 @@ fn emit_bytes_set(
     s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
 }
 
+/// `Float` scalars are f64 values carried in `i64` slots (bit patterns): an
+/// operation casts to `double`, computes and casts back (comparisons give 0/1).
+fn float_op_text(dest: &str, op: &str, l: &str, r: &str) -> String {
+    let mut t = String::new();
+    t.push_str(&format!("  %{dest}_fa = bitcast i64 {l} to double\n"));
+    if op == "fneg" {
+        t.push_str(&format!("  %{dest}_fr = fneg double %{dest}_fa\n"));
+        t.push_str(&format!("  %{dest} = bitcast double %{dest}_fr to i64\n"));
+        return t;
+    }
+    t.push_str(&format!("  %{dest}_fb = bitcast i64 {r} to double\n"));
+    let arith = match op {
+        "fadd" => Some("fadd"),
+        "fsub" => Some("fsub"),
+        "fmul" => Some("fmul"),
+        "fdiv" => Some("fdiv"),
+        _ => None,
+    };
+    if let Some(inst) = arith {
+        t.push_str(&format!("  %{dest}_fr = {inst} double %{dest}_fa, %{dest}_fb\n"));
+        t.push_str(&format!("  %{dest} = bitcast double %{dest}_fr to i64\n"));
+    } else {
+        let cc = match op {
+            "feq" => "oeq",
+            "fne" => "une",
+            "flt" => "olt",
+            "fle" => "ole",
+            "fgt" => "ogt",
+            _ => "oge",
+        };
+        t.push_str(&format!("  %{dest}_c = fcmp {cc} double %{dest}_fa, %{dest}_fb\n"));
+        t.push_str(&format!("  %{dest} = zext i1 %{dest}_c to i64\n"));
+    }
+    t
+}
+
+/// A multi-field struct value is an `i64` handle to `malloc`ed memory holding
+/// its fields as consecutive `i64` slots (like strings and tensors, it is
+/// never freed). That keeps parameters, returns and nested fields uniform.
+fn emit_agg_alloc(dest: &str, ops: &[String], s: &mut String, tmp: &mut u32) {
+    *tmp += 1;
+    let buf = format!("agb{tmp}");
+    let bytes = (ops.len().max(1)) * 8;
+    s.push_str(&format!("  %{buf} = call ptr @malloc(i64 {bytes})\n"));
+    if ops.is_empty() {
+        s.push_str(&format!("  store i64 0, ptr %{buf}\n"));
+    }
+    for (i, op) in ops.iter().enumerate() {
+        *tmp += 1;
+        let slot = format!("ags{tmp}");
+        s.push_str(&format!(
+            "  %{slot} = getelementptr inbounds i64, ptr %{buf}, i64 {i}\n"
+        ));
+        s.push_str(&format!("  store i64 {op}, ptr %{slot}\n"));
+    }
+    s.push_str(&format!("  %{dest} = ptrtoint ptr %{buf} to i64\n"));
+}
+
+fn emit_agg_load(dest: &str, base: &str, index: usize, s: &mut String, tmp: &mut u32) {
+    *tmp += 1;
+    let ptr = format!("agp{tmp}");
+    let slot = format!("agl{tmp}");
+    s.push_str(&format!("  %{ptr} = inttoptr i64 {base} to ptr\n"));
+    s.push_str(&format!(
+        "  %{slot} = getelementptr inbounds i64, ptr %{ptr}, i64 {index}\n"
+    ));
+    s.push_str(&format!("  %{dest} = load i64, ptr %{slot}\n"));
+}
+
 fn i64_operand(name: &str, consts: &HashMap<String, i64>) -> String {
     if let Some(v) = consts.get(name) {
         return format!("{v}");
@@ -2324,6 +2455,15 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!(
                     "  %{d} = call i64 @sal_str_contains(ptr {a}, ptr {b})\n"
                 ));
+            }
+        }
+        "sal_float_to_int" | "sal_int_to_float" => {
+            let a = args
+                .first()
+                .map(|x| i64_operand(x, consts))
+                .unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @{func}(i64 {a})\n"));
             }
         }
         "sal_str_len" => {
@@ -3012,11 +3152,7 @@ fn emit_where_frame(
         return;
     };
     let frame_base = &args[0];
-    let frame_ref = if EMIT_AGG.with(|a| a.borrow().contains_key(frame_base)) {
-        format!("%{frame_base}")
-    } else {
-        format!("%{frame_base}")
-    };
+    let frame_ref = i64_operand(frame_base, consts);
     let len_op = i64_operand(&args[2], consts);
     let mask_ptr = emit_ptr_from_i64_ssa(&args[1], consts, ptrs, s, uid);
     *uid += 1;
@@ -3024,14 +3160,11 @@ fn emit_where_frame(
     s.push_str(&format!(
         "  %{count} = call i64 @sal_mask_select_count(ptr {mask_ptr}, i64 {len_op})\n"
     ));
-    let struct_ty = llvm_struct_symbol(frame_name);
     let mut field_ssas: Vec<String> = Vec::new();
     for (i, field) in def.fields.iter().enumerate() {
         *tmp += 1;
         let raw = format!("wf{tmp}");
-        s.push_str(&format!(
-            "  %{raw} = extractvalue {struct_ty} {frame_ref}, {i}\n"
-        ));
+        emit_agg_load(&raw, &frame_ref, i, s, tmp);
         *uid += 1;
         let col_ptr = format!("wcp{uid}");
         s.push_str(&format!("  %{col_ptr} = inttoptr i64 %{raw} to ptr\n"));
@@ -3048,30 +3181,8 @@ fn emit_where_frame(
             &mut field_ssas,
         );
     }
-    if field_ssas.is_empty() {
-        s.push_str(&format!("  %{dest} = insertvalue {struct_ty} undef, i64 0, 0\n"));
-    } else {
-        let mut agg = String::new();
-        for (i, f) in field_ssas.iter().enumerate() {
-            let op = i64_operand(f, consts);
-            let next = if i + 1 == field_ssas.len() {
-                dest.to_string()
-            } else {
-                *tmp += 1;
-                format!("wag{tmp}")
-            };
-            if i == 0 {
-                s.push_str(&format!(
-                    "  %{next} = insertvalue {struct_ty} undef, i64 {op}, 0\n"
-                ));
-            } else {
-                s.push_str(&format!(
-                    "  %{next} = insertvalue {struct_ty} %{agg}, i64 {op}, {i}\n"
-                ));
-            }
-            agg = next;
-        }
-    }
+    let ops: Vec<String> = field_ssas.iter().map(|f| i64_operand(f, consts)).collect();
+    emit_agg_alloc(dest, &ops, s, tmp);
     EMIT_AGG.with(|a| {
         a.borrow_mut()
             .insert(dest.to_string(), frame_name.to_string());
@@ -3516,6 +3627,8 @@ fn emit_inst_list(
                         s.push_str(&format!("  %{dest}_c = icmp sge i64 {l}, {r}\n"));
                         s.push_str(&format!("  %{dest} = zext i1 %{dest}_c to i64\n"));
                     }
+                    "fadd" | "fsub" | "fmul" | "fdiv" | "feq" | "fne" | "flt" | "fle" | "fgt" | "fge"
+                    | "fneg" => s.push_str(&float_op_text(dest, op, &l, &r)),
                     "neg" => s.push_str(&format!("  %{dest} = sub i64 0, {l}\n")),
                     "not" => s.push_str(&format!("  %{dest} = call i64 @sal_not(i64 {l})\n")),
                     _ => s.push_str(&format!("  %{dest} = add i64 {l}, 0\n")),
@@ -3526,31 +3639,8 @@ fn emit_inst_list(
                 struct_name,
                 fields,
             } => {
-                let ty = llvm_struct_symbol(struct_name);
-                if fields.is_empty() {
-                    s.push_str(&format!("  %{dest} = insertvalue {ty} undef, i64 0, 0\n"));
-                } else {
-                    let mut agg = String::new();
-                    for (i, f) in fields.iter().enumerate() {
-                        let op = i64_operand(f, &consts);
-                        let next = if i + 1 == fields.len() {
-                            dest.clone()
-                        } else {
-                            *tmp += 1;
-                            format!("agg{tmp}")
-                        };
-                        if i == 0 {
-                            s.push_str(&format!(
-                                "  %{next} = insertvalue {ty} undef, i64 {op}, 0\n"
-                            ));
-                        } else {
-                            s.push_str(&format!(
-                                "  %{next} = insertvalue {ty} %{agg}, i64 {op}, {i}\n"
-                            ));
-                        }
-                        agg = next;
-                    }
-                }
+                let ops: Vec<String> = fields.iter().map(|f| i64_operand(f, &consts)).collect();
+                emit_agg_alloc(dest, &ops, s, tmp);
                 EMIT_AGG.with(|a| {
                     a.borrow_mut()
                         .insert(dest.clone(), struct_name.clone());
@@ -3559,18 +3649,11 @@ fn emit_inst_list(
             IrInst::Extract {
                 dest,
                 base,
-                struct_name,
                 field_index,
+                ..
             } => {
-                let ty = llvm_struct_symbol(struct_name);
-                let b = if EMIT_AGG.with(|a| a.borrow().contains_key(base)) {
-                    format!("%{base}")
-                } else {
-                    i64_operand(base, &consts)
-                };
-                s.push_str(&format!(
-                    "  %{dest} = extractvalue {ty} {b}, {field_index}\n"
-                ));
+                let b = i64_operand(base, &consts);
+                emit_agg_load(dest, &b, *field_index as usize, s, tmp);
             }
             IrInst::EnumMake {
                 dest,
@@ -3604,6 +3687,8 @@ fn emit_inst_list(
                     s.push_str(&format!("  ; float const %{dest} = {value}\n"));
                     let _ = te;
                 }
+                // Scalar floats travel as the i64 bit pattern of the f64.
+                s.push_str(&format!("  %{dest} = add i64 0, {}\n", (*value).to_bits() as i64));
             }
             IrInst::TensorBin {
                 dest,

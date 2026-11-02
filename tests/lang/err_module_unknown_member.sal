@@ -1,0 +1,5 @@
+# error: E_TYPE
+import "mods/dup1.sal" as one
+
+fn main() -> Int
+    one.nothing()

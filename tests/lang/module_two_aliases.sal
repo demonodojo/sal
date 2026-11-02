@@ -1,0 +1,6 @@
+# exit: 3
+import "mods/dup1.sal" as one
+import "mods/dup2.sal" as two
+
+fn main() -> Int
+    one.same() + two.same()

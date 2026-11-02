@@ -1,0 +1,5 @@
+# exit: 15
+import "mods/util.sal" as u
+
+fn main() -> Int
+    u.triple(5)

@@ -1,0 +1,5 @@
+# error: E_PARSE
+fn main() -> Int
+    x = 1
+      y = 2
+    x

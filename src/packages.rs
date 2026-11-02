@@ -24,6 +24,8 @@ struct DepSpec {
     path: Option<String>,
     git: Option<String>,
     version: Option<String>,
+    /// Subdirectory of the compiler's `std/` (e.g. `"io"`), linked as `sal_modules/<name>`.
+    std: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -261,6 +263,94 @@ pub fn fetch_packages(project_root: &Path, update: bool) -> Result<(), String> {
 
     packages.sort_by(|a, b| a.name.cmp(&b.name));
     write_lock(project_root, &LockFile { package: packages })
+}
+
+/// Compiler `std/` directory (`SAL_STD` overrides the build-time location).
+pub fn std_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("SAL_STD") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std")
+}
+
+#[cfg(unix)]
+fn link_dir(target: &Path, link: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(link) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            fs::remove_file(link).map_err(|e| format!("{}: {e}", link.display()))?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "{} exists and is not a symlink; remove it or rename the dependency",
+                link.display()
+            ));
+        }
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(target, link)
+        .map_err(|e| format!("{} -> {}: {e}", link.display(), target.display()))
+}
+
+#[cfg(not(unix))]
+fn link_dir(_target: &Path, _link: &Path) -> Result<(), String> {
+    Err("sal install needs symlinks (unix only)".into())
+}
+
+/// Fetch git dependencies, then link every dependency under `sal_modules/<name>`.
+/// Returns the installed `(name, target)` pairs, sorted by name.
+pub fn install_packages(
+    project_root: &Path,
+    update: bool,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    fetch_packages(project_root, update)?;
+    let manifest = read_manifest(project_root)?;
+    let lock = read_lock(project_root);
+    let modules = project_root.join("sal_modules");
+    fs::create_dir_all(&modules).map_err(|e| format!("sal_modules: {e}"))?;
+    let mut installed = Vec::new();
+    for (name, spec) in manifest.dependencies {
+        let target = if let Some(rel) = spec.path {
+            let p = project_root.join(rel);
+            p.canonicalize()
+                .map_err(|e| format!("dependency `{name}`: path {}: {e}", p.display()))?
+        } else if spec.git.is_some() {
+            let pkg = lock
+                .package
+                .iter()
+                .find(|p| p.name == name)
+                .ok_or_else(|| format!("dependency `{name}` missing from Sal.lock"))?;
+            package_cache_path(&pkg.name, &pkg.version)
+        } else if let Some(sub) = spec.std {
+            let sub = sub.trim_matches('/');
+            if sub.is_empty() || sub.contains("..") {
+                return Err(format!("dependency `{name}`: invalid std subdirectory"));
+            }
+            let p = std_dir().join(sub);
+            if !p.is_dir() {
+                return Err(format!(
+                    "dependency `{name}`: {} is not a directory (set SAL_STD)",
+                    p.display()
+                ));
+            }
+            p
+        } else {
+            return Err(format!(
+                "dependency `{name}` needs `path`, `git` + `version`, or `std`"
+            ));
+        };
+        if !target.is_dir() {
+            return Err(format!(
+                "dependency `{name}`: {} is not a directory",
+                target.display()
+            ));
+        }
+        link_dir(&target, &modules.join(&name))?;
+        installed.push((name, target));
+    }
+    installed.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(installed)
 }
 
 #[cfg(test)]

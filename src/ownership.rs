@@ -300,6 +300,9 @@ fn track_expr(
                     }
                 }
                 // borrow_fn: args already counted as uses, not taken
+                if returns_owned_string(name) {
+                    return Ok(named("String", *span));
+                }
             }
             Ok(named("Unknown", *span))
         }
@@ -379,59 +382,37 @@ fn track_expr(
         } => {
             track_expr(cond, env, moved, params, taken, used, frozen)?;
             let branch_base = moved.clone();
-            let mut then_moved = branch_base.clone();
-            let mut then_env = env.clone();
-            for st in &then_block.stmts {
-                track_stmt(
-                    st,
-                    &mut then_env,
-                    &mut then_moved,
-                    params,
-                    taken,
-                    used,
-                    frozen,
-                )?;
-            }
-            if let Some(t) = &then_block.tail {
-                track_expr(t, &then_env, &mut then_moved, params, taken, used, frozen)?;
-            }
+            let mut merged = branch_base.clone();
+            let mut run_branch = |block: &Block,
+                                  env: &HashMap<String, Type>,
+                                  taken: &mut HashSet<String>,
+                                  used: &mut HashSet<String>,
+                                  frozen: &mut HashSet<String>|
+             -> DiagResult<HashSet<String>> {
+                let mut br_moved = branch_base.clone();
+                let mut br_env = env.clone();
+                let mut diverged = false;
+                for st in &block.stmts {
+                    if track_stmt(st, &mut br_env, &mut br_moved, params, taken, used, frozen)? {
+                        diverged = true;
+                    }
+                }
+                if let Some(t) = &block.tail {
+                    track_expr(t, &br_env, &mut br_moved, params, taken, used, frozen)?;
+                }
+                // A branch that returns never reaches the code after the `if`.
+                Ok(if diverged { branch_base.clone() } else { br_moved })
+            };
+            merged.extend(run_branch(then_block, env, taken, used, frozen)?);
             for arm in elsifs {
                 track_expr(&arm.cond, env, moved, params, taken, used, frozen)?;
-                let mut arm_moved = branch_base.clone();
-                let mut arm_env = env.clone();
-                for st in &arm.body.stmts {
-                    track_stmt(
-                        st,
-                        &mut arm_env,
-                        &mut arm_moved,
-                        params,
-                        taken,
-                        used,
-                        frozen,
-                    )?;
-                }
-                if let Some(t) = &arm.body.tail {
-                    track_expr(t, &arm_env, &mut arm_moved, params, taken, used, frozen)?;
-                }
+                merged.extend(run_branch(&arm.body, env, taken, used, frozen)?);
             }
             if let Some(else_block) = else_block {
-                let mut else_moved = branch_base.clone();
-                let mut else_env = env.clone();
-                for st in &else_block.stmts {
-                    track_stmt(
-                        st,
-                        &mut else_env,
-                        &mut else_moved,
-                        params,
-                        taken,
-                        used,
-                        frozen,
-                    )?;
-                }
-                if let Some(t) = &else_block.tail {
-                    track_expr(t, &else_env, &mut else_moved, params, taken, used, frozen)?;
-                }
+                merged.extend(run_branch(else_block, env, taken, used, frozen)?);
             }
+            // Moved in any branch that falls through: moved afterwards.
+            *moved = merged;
             Ok(named("Int", *span))
         }
         Expr::Try { expr, .. } => track_expr(expr, env, moved, params, taken, used, frozen),
@@ -490,6 +471,14 @@ fn consume_if_unique(
             taken.insert(name.clone());
         }
     }
+}
+
+/// Builtins whose result is a fresh heap `String` (one owner, moved on use).
+fn returns_owned_string(name: &str) -> bool {
+    matches!(
+        name,
+        "strdup" | "str_concat" | "int_to_str" | "char_to_str" | "str_slice" | "read_file"
+    )
 }
 
 fn is_copy_type(ty: &Type) -> bool {

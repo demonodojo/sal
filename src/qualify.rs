@@ -399,22 +399,172 @@ fn rename_clashing_defs(
         .get(&path_key(path))
         .cloned()
         .unwrap_or_else(|| "mod".into());
+    let mut renames: HashMap<String, String> = HashMap::new();
     for item in &mut prog.items {
         match item {
             Item::Fn(f) if clashes.contains(&f.name) => {
-                f.name = link_name(&modid, &f.name, true);
+                let new = link_name(&modid, &f.name, true);
+                renames.insert(f.name.clone(), new.clone());
+                f.name = new;
             }
             Item::Struct(s) if clashes.contains(&s.name) => {
-                s.name = link_name(&modid, &s.name, true);
+                let new = link_name(&modid, &s.name, true);
+                renames.insert(s.name.clone(), new.clone());
+                s.name = new;
             }
             Item::Enum(e) if clashes.contains(&e.name) => {
-                e.name = link_name(&modid, &e.name, true);
+                let new = link_name(&modid, &e.name, true);
+                renames.insert(e.name.clone(), new.clone());
+                e.name = new;
             }
             Item::Frame(f) if clashes.contains(&f.name) => {
-                f.name = link_name(&modid, &f.name, true);
+                let new = link_name(&modid, &f.name, true);
+                renames.insert(f.name.clone(), new.clone());
+                f.name = new;
             }
             _ => {}
         }
+    }
+    if renames.is_empty() {
+        return;
+    }
+    // References inside this module to a definition that was just renamed.
+    for item in &mut prog.items {
+        match item {
+            Item::Fn(f) => {
+                rename_type_refs(&mut f.ret, &renames);
+                for p in &mut f.params {
+                    rename_type_refs(&mut p.ty, &renames);
+                }
+                rename_block_refs(&mut f.body, &renames);
+            }
+            Item::Struct(s) => {
+                for field in &mut s.fields {
+                    rename_type_refs(&mut field.ty, &renames);
+                }
+            }
+            Item::Enum(e) => {
+                for v in &mut e.variants {
+                    for t in &mut v.fields {
+                        rename_type_refs(t, &renames);
+                    }
+                }
+            }
+            Item::Frame(_) | Item::Import(_) => {}
+        }
+    }
+}
+
+fn rename_type_refs(ty: &mut Type, renames: &HashMap<String, String>) {
+    match ty {
+        Type::Named { name, args, .. } => {
+            if let Some(n) = renames.get(name.as_str()) {
+                *name = n.clone();
+            }
+            for a in args {
+                rename_type_refs(a, renames);
+            }
+        }
+        Type::Qualified { args, .. } => {
+            for a in args {
+                rename_type_refs(a, renames);
+            }
+        }
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                rename_type_refs(p, renames);
+            }
+            rename_type_refs(ret, renames);
+        }
+        Type::Tensor { .. } => {}
+    }
+}
+
+fn rename_block_refs(block: &mut Block, renames: &HashMap<String, String>) {
+    for st in &mut block.stmts {
+        match st {
+            Stmt::Let { ty, init, .. } => {
+                if let Some(t) = ty {
+                    rename_type_refs(t, renames);
+                }
+                rename_expr_refs(init, renames);
+            }
+            Stmt::Expr(e) => rename_expr_refs(e, renames),
+            Stmt::Assign { target, value, .. } => {
+                rename_expr_refs(target, renames);
+                rename_expr_refs(value, renames);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    rename_expr_refs(v, renames);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                rename_expr_refs(cond, renames);
+                rename_block_refs(body, renames);
+            }
+        }
+    }
+    if let Some(t) = &mut block.tail {
+        rename_expr_refs(t, renames);
+    }
+}
+
+fn rename_expr_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
+    match expr {
+        Expr::Call { func, type_args, args, .. } => {
+            if let Expr::Ident { name, .. } = &mut **func {
+                if let Some(n) = renames.get(name.as_str()) {
+                    *name = n.clone();
+                }
+            } else {
+                rename_expr_refs(func, renames);
+            }
+            for a in type_args {
+                if let TypeArg::Type(t) = a {
+                    rename_type_refs(t, renames);
+                }
+            }
+            for a in args {
+                rename_expr_refs(a, renames);
+            }
+        }
+        Expr::Field { base, .. } => rename_expr_refs(base, renames),
+        Expr::Binary { left, right, .. } => {
+            rename_expr_refs(left, renames);
+            rename_expr_refs(right, renames);
+        }
+        Expr::Unary { expr: inner, .. }
+        | Expr::To { expr: inner, .. }
+        | Expr::Try { expr: inner, .. } => rename_expr_refs(inner, renames),
+        Expr::Block(b) => rename_block_refs(b, renames),
+        Expr::On { body, .. } => rename_block_refs(body, renames),
+        Expr::TensorLit { rows, .. } => {
+            for row in rows {
+                for c in row {
+                    rename_expr_refs(c, renames);
+                }
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            rename_expr_refs(scrutinee, renames);
+            for arm in arms {
+                rename_expr_refs(&mut arm.body, renames);
+            }
+        }
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            rename_expr_refs(cond, renames);
+            rename_block_refs(then_block, renames);
+            for e in elsifs {
+                rename_expr_refs(&mut e.cond, renames);
+                rename_block_refs(&mut e.body, renames);
+            }
+            if let Some(b) = else_block {
+                rename_block_refs(b, renames);
+            }
+        }
+        Expr::Lambda { body, .. } => rename_expr_refs(body, renames),
+        _ => {}
     }
 }
 

@@ -1,0 +1,6 @@
+# error: E_TYPE
+fn f() -> Int
+    x = 1
+
+fn main() -> Int
+    f()

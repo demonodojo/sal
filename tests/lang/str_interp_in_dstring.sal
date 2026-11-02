@@ -1,0 +1,5 @@
+# exit: 6
+fn main() -> Int ! alloc
+    n = d"xyz"
+    s = d"<{n}>"
+    str_len(s) + 1

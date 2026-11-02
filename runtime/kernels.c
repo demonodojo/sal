@@ -258,6 +258,15 @@ void sal_matmul_bf16(const uint16_t *a, const uint16_t *b, float *out, int64_t m
     }
 }
 
+/* out[c][r] = in[r][c] for a rows x cols row-major matrix. */
+void sal_transpose_f32(float *out, const float *in, int64_t rows, int64_t cols) {
+    for (int64_t r = 0; r < rows; r++) {
+        for (int64_t c = 0; c < cols; c++) {
+            out[c * rows + r] = in[r * cols + c];
+        }
+    }
+}
+
 void sal_softmax_axis_f32(float *data, int64_t outer, int64_t axis_len) {
     if (outer <= 0 || axis_len <= 0) {
         return;

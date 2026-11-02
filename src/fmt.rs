@@ -16,10 +16,11 @@ fn format_program_raw(p: &Program) -> String {
         first = false;
         match item {
             Item::Import(imp) => {
+                let path = format_import_path(&imp.path);
                 if let Some(alias) = &imp.alias {
-                    out.push_str(&format!("import {} as {}\n", imp.path, alias));
+                    out.push_str(&format!("import {} as {}\n", path, alias));
                 } else {
-                    out.push_str(&format!("import {}\n", imp.path));
+                    out.push_str(&format!("import {}\n", path));
                 }
             }
             Item::Fn(f) => out.push_str(&format_fn(f)),
@@ -163,7 +164,7 @@ fn format_stmt(st: &Stmt, indent: usize) -> String {
     match st {
         Stmt::Let { name, ty, init, .. } => {
             let mut s = if let Some(t) = ty {
-                format!("{name}: {} = ", format_type(t))
+                format!("let {name}: {} = ", format_type(t))
             } else {
                 format!("{name} = ")
             };
@@ -198,7 +199,7 @@ fn format_expr(e: &Expr, indent: usize) -> String {
         Expr::Int { value, .. } => value.to_string(),
         Expr::Float { value, .. } => format_float(*value),
         Expr::Bool { value, .. } => value.to_string(),
-        Expr::String { value, .. } => format!("\"{value}\""),
+        Expr::String { value, parts, .. } => format_string_literal(value, parts),
         Expr::Ident { name, .. } => name.clone(),
         Expr::Lambda { params, body, .. } => {
             let p = params.first().map(|s| s.as_str()).unwrap_or("_");
@@ -232,15 +233,14 @@ fn format_expr(e: &Expr, indent: usize) -> String {
             s
         }
         Expr::Binary { op, left, right, .. } => {
-            format!(
-                "{} {} {}",
-                format_expr(left, indent),
-                format_binop(op),
-                format_expr(right, indent)
-            )
+            let p = binop_prec(op);
+            // Left associative: the right operand needs parentheses at equal precedence.
+            let l = format_operand(left, p, indent);
+            let r = format_operand(right, p + 1, indent);
+            format!("{} {} {}", l, format_binop(op), r)
         }
         Expr::Unary { op, expr, .. } => {
-            format!("{}{}", format_unop(op), format_expr(expr, indent))
+            format!("{}{}", format_unop(op), format_operand(expr, ATOM_PREC, indent))
         }
         Expr::Block(b) => {
             let body = format_block(b, indent + 1);
@@ -277,7 +277,7 @@ fn format_expr(e: &Expr, indent: usize) -> String {
             s
         }
         Expr::To { place, expr, .. } => {
-            format!("to {} {}", format_place(place), format_expr(expr, indent))
+            format!("to {} {}", format_place(place), format_operand(expr, ATOM_PREC, indent))
         }
         Expr::TensorLit { rows, .. } => {
             let mut s = "tensor[".to_string();
@@ -494,7 +494,7 @@ fn format_pattern(p: &Pattern) -> String {
                 Some(q) => format!("{q}.{name}"),
                 None => name.clone(),
             };
-            if args.is_empty() {
+            if args.is_empty() && qual.is_none() {
                 head
             } else {
                 format!(
@@ -507,5 +507,92 @@ fn format_pattern(p: &Pattern) -> String {
                 )
             }
         }
+    }
+}
+
+/// `std.io` stays a dotted path; anything that is a file path (`"a/b.sal"`)
+/// goes back between quotes so it parses again.
+fn format_import_path(path: &str) -> String {
+    let dotted = !path.is_empty()
+        && !path.ends_with(".sal")
+        && path
+            .split('.')
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_alphanumeric() || c == '_'));
+    if dotted {
+        path.to_string()
+    } else {
+        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
+fn escape_string_text(text: &str, out: &mut String) {
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '{' => out.push_str("{{"),
+            '}' => out.push_str("}}"),
+            c => out.push(c),
+        }
+    }
+}
+
+/// A string literal back to source: escapes, literal braces and `{name}` parts.
+fn format_string_literal(value: &str, parts: &[StringPart]) -> String {
+    let mut out = String::from("\"");
+    if parts.is_empty() {
+        escape_string_text(value, &mut out);
+    } else {
+        for part in parts {
+            match part {
+                StringPart::Lit(t) => escape_string_text(t, &mut out),
+                StringPart::Interp(n) => {
+                    out.push('{');
+                    out.push_str(n);
+                    out.push('}');
+                }
+            }
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Precedence levels of the SPEC grammar, loosest first.
+const ATOM_PREC: u8 = 10;
+
+fn binop_prec(op: &BinOp) -> u8 {
+    match op {
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 2,
+        BinOp::Bor => 3,
+        BinOp::Bxor => 4,
+        BinOp::Band => 5,
+        BinOp::Shl | BinOp::Shr => 6,
+        BinOp::Add | BinOp::Sub => 7,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 8,
+    }
+}
+
+fn expr_prec(e: &Expr) -> u8 {
+    match e {
+        Expr::Binary { op, .. } => binop_prec(op),
+        // `try` and lambdas bind looser than every binary operator; `to` and
+        // blocks that span lines are wrapped too so they stay one operand.
+        Expr::Lambda { .. } | Expr::Try { .. } => 0,
+        Expr::To { .. } | Expr::Match { .. } | Expr::If { .. } | Expr::On { .. } | Expr::Block(_) => 1,
+        _ => ATOM_PREC,
+    }
+}
+
+/// `e` as an operand that needs at least precedence `min`.
+fn format_operand(e: &Expr, min: u8, indent: usize) -> String {
+    let s = format_expr(e, indent);
+    if expr_prec(e) < min {
+        format!("({s})")
+    } else {
+        s
     }
 }

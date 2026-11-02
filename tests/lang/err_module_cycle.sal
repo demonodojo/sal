@@ -1,0 +1,5 @@
+# error: E_TYPE
+import "mods/cycle_a.sal"
+
+fn main() -> Int
+    0

@@ -1,0 +1,10 @@
+# exit: 9
+# silu(1..4) = 0.731 + 1.762 + 2.858 + 3.928 = 9.28 -> 9
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    i = tensor[[1.0, 0.0], [0.0, 1.0]]
+    e = tensor[[1.0, 0.0], [0.0, 0.0]]
+    b = silu(a)
+    on cpu
+        matmul(b, i)
+    0

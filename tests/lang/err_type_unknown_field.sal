@@ -1,0 +1,7 @@
+# error: E_TYPE
+struct P
+    x: Int
+
+fn main() -> Int
+    p = P(1)
+    p.z

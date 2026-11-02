@@ -17,6 +17,9 @@ pub struct TypeEnv {
     pub frames: HashMap<String, FrameDef>,
     /// Declared function signatures (name → params + return), for user calls.
     pub fns: HashMap<String, (Vec<Type>, Type)>,
+    /// Generic fns whose return type is a bare type parameter: the index of the
+    /// first parameter declared with that same type (the call's result type).
+    pub generic_ret: HashMap<String, usize>,
     pub target: crate::target::Target,
 }
 
@@ -27,6 +30,7 @@ impl Default for TypeEnv {
             enums: HashMap::new(),
             frames: HashMap::new(),
             fns: HashMap::new(),
+            generic_ret: HashMap::new(),
             target: crate::target::Target::host(),
         }
     }
@@ -50,8 +54,10 @@ pub fn infer_program(prog: &Program) -> DiagResult<InferOutput> {
                 types.enums.insert(e.name.clone(), e.clone());
             }
             Item::Fn(f) => {
-                let params: Vec<Type> = f.params.iter().map(|p| p.ty.clone()).collect();
-                types.fns.insert(f.name.clone(), (params, f.ret.clone()));
+                types.fns.insert(f.name.clone(), fn_signature(f));
+                if let Some(i) = generic_ret_index(f) {
+                    types.generic_ret.insert(f.name.clone(), i);
+                }
             }
             _ => {}
         }
@@ -72,15 +78,65 @@ pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<Inf
     })
 }
 
+/// A generic fn is checked once, with its type parameters erased to `Unknown`
+/// (every value shares one representation, so there is nothing to specialize).
+fn erase_type_params(ty: &Type, params: &[String]) -> Type {
+    match ty {
+        Type::Named { name, args, span } => {
+            if args.is_empty() && params.contains(name) {
+                Type::Named { name: "Unknown".into(), args: vec![], span: *span }
+            } else {
+                Type::Named {
+                    name: name.clone(),
+                    args: args.iter().map(|a| erase_type_params(a, params)).collect(),
+                    span: *span,
+                }
+            }
+        }
+        Type::Qualified { qual, name, args, span } => Type::Qualified {
+            qual: qual.clone(),
+            name: name.clone(),
+            args: args.iter().map(|a| erase_type_params(a, params)).collect(),
+            span: *span,
+        },
+        Type::Fn { params: ps, ret, effects, span } => Type::Fn {
+            params: ps.iter().map(|p| erase_type_params(p, params)).collect(),
+            ret: Box::new(erase_type_params(ret, params)),
+            effects: effects.clone(),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+pub fn generic_ret_index(f: &FnDef) -> Option<usize> {
+    let Type::Named { name, args, .. } = &f.ret else { return None };
+    if !args.is_empty() || !f.type_params.contains(name) {
+        return None;
+    }
+    f.params.iter().position(|p| {
+        matches!(&p.ty, Type::Named { name: n, args, .. } if n == name && args.is_empty())
+    })
+}
+
+/// Parameter and return types of `f` as callers see them.
+pub fn fn_signature(f: &FnDef) -> (Vec<Type>, Type) {
+    (
+        f.params.iter().map(|p| erase_type_params(&p.ty, &f.type_params)).collect(),
+        erase_type_params(&f.ret, &f.type_params),
+    )
+}
+
 fn infer_fn(f: &FnDef, types: &TypeEnv) -> DiagResult<Vec<ExprTypeEntry>> {
     let mut env: HashMap<String, Type> = HashMap::new();
-    for p in &f.params {
-        check_type_well_formed(&p.ty, types)?;
-        env.insert(p.name.clone(), p.ty.clone());
+    let (ptys, ret) = fn_signature(f);
+    for (p, ty) in f.params.iter().zip(ptys) {
+        check_type_well_formed(&ty, types)?;
+        env.insert(p.name.clone(), ty);
     }
-    check_type_well_formed(&f.ret, types)?;
+    check_type_well_formed(&ret, types)?;
     let mut entries = Vec::new();
-    check_block(&f.body, &mut env, &f.ret, types, &mut entries)?;
+    check_block(&f.body, &mut env, &ret, types, &mut entries)?;
     Ok(entries)
 }
 
@@ -348,7 +404,20 @@ fn check_stmt(
         }
         Stmt::Assign { target, value, .. } => {
             let vty = check_expr(value, env, ctx, types, entries)?;
-            if let Expr::Ident { name, .. } = target {
+            if let Expr::Ident { name, span, .. } = target {
+                if let Some(old) = env.get(name) {
+                    if !name.starts_with('_') && scalar_kinds_clash(old, &vty) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!(
+                                "cannot assign {} to `{name}`, which holds {}",
+                                type_name(&vty),
+                                type_name(old)
+                            ),
+                            *span,
+                        )]);
+                    }
+                }
                 env.insert(name.clone(), vty);
             } else {
                 check_expr(target, env, ctx, types, entries)?;
@@ -391,7 +460,8 @@ fn check_stmt(
             Ok(true)
         }
         Stmt::While { cond, body, .. } => {
-            check_expr(cond, env, ctx, types, entries)?;
+            let cty = check_expr(cond, env, ctx, types, entries)?;
+            check_condition(cond, &cty)?;
             let _ = check_block_flow(body, env, ctx, types, entries)?;
             if let Some(t) = &body.tail {
                 check_expr(t, env, ctx, types, entries)?;
@@ -429,13 +499,28 @@ Expr::Int { .. } => Type::Named {
             args: vec![],
             span: e.span(),
         },
-        Expr::Ident { name, span } => env.get(name).cloned().ok_or_else(|| {
-            vec![Diagnostic::new(
-                ErrorCode::EType,
-                format!("unknown variable `{name}`"),
-                *span,
-            )]
-        })?,
+        Expr::Ident { name, span } => match env.get(name) {
+            Some(t) => t.clone(),
+            None => match find_enum_variant_call(name, types) {
+                // A payload-free variant used as a value.
+                Some((edef, v)) if v.fields.is_empty() => Type::Named {
+                    name: edef.name.clone(),
+                    args: edef
+                        .type_params
+                        .iter()
+                        .map(|_| Type::Named { name: "Unknown".into(), args: vec![], span: *span })
+                        .collect(),
+                    span: *span,
+                },
+                _ => {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("unknown variable `{name}`"),
+                        *span,
+                    )])
+                }
+            },
+        },
         Expr::Binary {
             op,
             left,
@@ -486,7 +571,8 @@ Expr::Int { .. } => Type::Named {
                     }
                 }
                 _ => {
-                    if !is_numeric(&lt) || !is_numeric(&rt) {
+                    let ok = |t: &Type| is_numeric(t) || is_unknown_type(t);
+                    if !ok(&lt) || !ok(&rt) {
                         return Err(vec![Diagnostic::new(
                             ErrorCode::EType,
                             "numeric operation requires Int or Float",
@@ -655,12 +741,14 @@ Expr::Int { .. } => Type::Named {
             else_block,
             span,
         } => {
-            check_expr(cond, env, ctx, types, entries)?;
+            let cty = check_expr(cond, env, ctx, types, entries)?;
+            check_condition(cond, &cty)?;
             if let Some(else_block) = else_block {
                 let (then_div, then_ty) =
                     check_branch_block(then_block, env, ctx, types, entries)?;
                 for arm in elsifs {
-                    check_expr(&arm.cond, env, ctx, types, entries)?;
+                    let aty = check_expr(&arm.cond, env, ctx, types, entries)?;
+                    check_condition(&arm.cond, &aty)?;
                     check_branch_block(&arm.body, env, ctx, types, entries)?;
                 }
                 let (else_div, else_ty) =
@@ -701,7 +789,45 @@ Expr::Int { .. } => Type::Named {
                 unit_type(*span)
             }
         }
-        Expr::Try { expr, .. } => check_expr(expr, env, ctx, types, entries)?,
+        Expr::Try { expr, span } => {
+            let t = check_expr(expr, env, ctx, types, entries)?;
+            match &t {
+                Type::Named { name, args, .. } if types.enums.contains_key(name) => {
+                    let fails = types.enums[name]
+                        .variants
+                        .iter()
+                        .any(|v| v.name == "Err" || v.name == "None");
+                    let ret_same = matches!(ctx.fn_ret, Type::Named { name: rn, .. } if rn == name);
+                    if !fails {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!("`try` needs a Result or Option, found {name}"),
+                            *span,
+                        )]);
+                    }
+                    if !ret_same {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!("`try` on {name} needs the function to return {name}"),
+                            *span,
+                        )]);
+                    }
+                    args.first().cloned().unwrap_or(Type::Named {
+                        name: "Unknown".into(),
+                        args: vec![],
+                        span: *span,
+                    })
+                }
+                Type::Named { name, .. } if name == "Unknown" => t.clone(),
+                other => {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("`try` needs a Result or Option, found {}", type_name(other)),
+                        *span,
+                    )])
+                }
+            }
+        }
     
     };
     entries.push(ExprTypeEntry {
@@ -998,30 +1124,24 @@ fn infer_enum_variant_constructor(
     let mut type_args: Vec<Type> = edef
         .type_params
         .iter()
-        .map(|p| {
-            Type::Named {
-                name: p.clone(),
-                args: vec![],
-                span,
-            }
+        .map(|_| Type::Named {
+            name: "Unknown".into(),
+            args: vec![],
+            span,
         })
         .collect();
     for (arg, field_ty) in args.iter().zip(variant.fields.iter()) {
         let aty = check_expr(arg, env, ctx, types, entries)?;
         let expected = subst_type_params(field_ty, &edef.type_params, &type_args, span);
-        let is_param = matches!(
-            &expected,
-            Type::Named { name, args, .. } if args.is_empty()
-                && edef.type_params.iter().any(|p| p == name)
-        );
-        if is_param {
-            if let Some(i) = edef
-                .type_params
-                .iter()
-                .position(|p| matches!(&expected, Type::Named { name, .. } if name == p))
-            {
-                type_args[i] = aty.clone();
+        // A payload typed as a bare type parameter fixes that parameter.
+        let param_idx = match field_ty {
+            Type::Named { name, args, .. } if args.is_empty() => {
+                edef.type_params.iter().position(|p| p == name)
             }
+            _ => None,
+        };
+        if let Some(i) = param_idx {
+            type_args[i] = aty.clone();
         } else if !types_compatible(&aty, &expected) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -1163,6 +1283,21 @@ fn infer_call(
             }
             Ok(Type::Named {
                 name: "Int".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "float_to_int" | "int_to_float" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("{name} expects one argument"),
+                    span,
+                )]);
+            }
+            check_expr(&args[0], env, ctx, types, entries)?;
+            Ok(Type::Named {
+                name: if name == "float_to_int" { "Int" } else { "Float" }.into(),
                 args: vec![],
                 span,
             })
@@ -1635,8 +1770,10 @@ fn infer_call(
                         span,
                     )]);
                 }
+                let mut arg_tys: Vec<Type> = Vec::new();
                 for (a, pt) in args.iter().zip(params.iter()) {
                     let aty = check_expr(a, env, ctx, types, entries)?;
+                    arg_tys.push(aty.clone());
                     if !types_compatible(&aty, pt) {
                         return Err(vec![Diagnostic::new(
                             ErrorCode::EType,
@@ -1649,8 +1786,33 @@ fn infer_call(
                         )]);
                     }
                 }
+                if let Some(i) = types.generic_ret.get(name) {
+                    return Ok(arg_tys[*i].clone());
+                }
                 Ok(ret.clone())
+            } else if let Some(Type::Fn { ret, params, .. }) = env.get(name).cloned() {
+                if args.len() != params.len() {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("`{name}` expects {} argument(s), found {}", params.len(), args.len()),
+                        span,
+                    )]);
+                }
+                for a in args {
+                    check_expr(a, env, ctx, types, entries)?;
+                }
+                // The lambda is checked with a stand-in parameter type; its
+                // result at a real call site is whatever the argument makes it.
+                let _ = ret;
+                Ok(Type::Named { name: "Unknown".into(), args: vec![], span })
             } else {
+                if !is_runtime_builtin(name) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("unknown function `{name}`"),
+                        span,
+                    )]);
+                }
                 for a in args {
                     check_expr(a, env, ctx, types, entries)?;
                 }
@@ -1662,6 +1824,40 @@ fn infer_call(
             }
         }
     }
+}
+
+/// A call to an undeclared name is only valid when the runtime provides
+/// `sal_<name>`; anything else is a typo or a missing import.
+fn is_runtime_builtin(name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        let mut set = HashSet::new();
+        for src in [
+            include_str!("../runtime/sal_runtime.c"),
+            include_str!("../runtime/kernels.c"),
+            include_str!("../runtime/instrument.c"),
+            include_str!("../runtime/gpu_driver.c"),
+        ] {
+            let bytes = src.as_bytes();
+            let mut i = 0;
+            while let Some(pos) = src[i..].find("sal_") {
+                let start = i + pos + 4;
+                let mut end = start;
+                while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                    end += 1;
+                }
+                if end > start {
+                    set.insert(src[start..end].to_string());
+                }
+                i = end.max(start);
+            }
+        }
+        set
+    });
+    // Language-level builtins that lower without a `sal_*` runtime symbol.
+    names.contains(name) || matches!(name, "index")
 }
 
 /// One-parameter lambda `x => body`.
@@ -1684,7 +1880,7 @@ fn infer_lambda(
     }
     let param_name = params[0].clone();
     let param_ty = param_ty_hint.unwrap_or_else(|| Type::Named {
-        name: "Float".into(),
+        name: "Unknown".into(),
         args: vec![],
         span,
     });
@@ -2427,7 +2623,14 @@ fn infer_argmax(
             span,
         )]);
     }
-    check_expr(&args[0], env, ctx, types, entries)?;
+    let t = check_expr(&args[0], env, ctx, types, entries)?;
+    if tensor_dims(&t).is_none() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "argmax expects a tensor",
+            args[0].span(),
+        )]);
+    }
     if args.len() >= 2 {
         check_int_lit(&args[1], "argmax axis")?;
     }
@@ -2608,6 +2811,10 @@ fn place_compatible(a: &Place, b: &Place) -> bool {
     }
 }
 
+fn is_unknown_type(t: &Type) -> bool {
+    matches!(t, Type::Named { name, .. } if name == "Unknown")
+}
+
 fn is_numeric(t: &Type) -> bool {
     matches!(
         t,
@@ -2634,6 +2841,33 @@ fn bytes_type(span: Span) -> Type {
         args: vec![],
         span,
     }
+}
+
+/// Both are plain scalars of different kinds (`Int` and `Bool` interchange).
+fn scalar_kinds_clash(a: &Type, b: &Type) -> bool {
+    fn kind(t: &Type) -> Option<&'static str> {
+        match t {
+            Type::Named { name, args, .. } if args.is_empty() => match name.as_str() {
+                "Int" | "Bool" => Some("int"),
+                "Float" => Some("float"),
+                "String" => Some("string"),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    matches!((kind(a), kind(b)), (Some(x), Some(y)) if x != y)
+}
+
+fn check_condition(cond: &Expr, ty: &Type) -> DiagResult<()> {
+    if matches!(ty, Type::Named { name, args, .. } if args.is_empty() && name == "String") {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "condition must be Bool or Int, found String",
+            cond.span(),
+        )]);
+    }
+    Ok(())
 }
 
 fn types_compatible(a: &Type, b: &Type) -> bool {

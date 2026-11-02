@@ -3,6 +3,7 @@ import result
 import ast
 import modules
 import lexer
+import tshape
 
 fn str_replace_chr(s: String, ch: Int, rep: String) -> String ! alloc
     str_replace_chr_go(s, 0, str_len(s), ch, rep, d"")
@@ -380,7 +381,11 @@ fn qualify_type_handle(ty: Int, ctx: Int, links: Int) -> Int ! alloc
         s = str_from_int(ty)
         pair = split_qual_member(s)
         if pair == 0
-            ty
+            renamed = map_get(vec_get(ctx, 2), str_as_int(ty_trim_go(s)))
+            if renamed != 0
+                renamed
+            else
+                ty
         else
             qual = vec_get(pair, 0)
             member = vec_get(pair, 1)
@@ -415,7 +420,11 @@ fn qualify_expr(e: Int, ctx: Int, links: Int) -> Int ! alloc
             args2 = qualify_args(args, 0, vec_len(args), ctx, links)
             pair = split_qual_member(str_from_int(nm))
             if pair == 0
-                ex_call(str_from_int(nm), args2)
+                renamed = map_get(vec_get(ctx, 2), nm)
+                if renamed != 0
+                    ex_call(str_from_int(renamed), args2)
+                else
+                    ex_call(str_from_int(nm), args2)
             else
                 qual = vec_get(pair, 0)
                 member = vec_get(pair, 1)
@@ -625,46 +634,155 @@ fn merge_struct_names_seen(sts: Int, i: Int, n: Int, seen: Int) -> Int ! alloc
             _p = vec_push(seen, nm)
             merge_struct_names_seen(sts, i + 1, n, seen)
 
-fn qualify_one_module(m: Int, graph: Int, n: Int, proot: String, links: Int) -> Int ! io, alloc
+# Names defined in more than one module, judged before anything is renamed.
+fn build_clash_map(order: Int, n: Int) -> Int ! alloc
+    clash = map_new()
+    _a = clash_map_modules(order, 0, n, n, clash)
+    clash
+
+fn clash_map_modules(order: Int, i: Int, n: Int, total: Int, clash: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        prog = mod_prog(vec_get(order, i))
+        fns = prog_fns(prog)
+        _f = clash_map_fns(order, total, fns, 0, vec_len(fns), clash)
+        sts = prog_structs(prog)
+        _s = clash_map_structs(order, total, sts, 0, vec_len(sts), clash)
+        clash_map_modules(order, i + 1, n, total, clash)
+
+fn clash_map_fns(order: Int, total: Int, fns: Int, i: Int, n: Int, clash: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = vec_get(vec_get(fns, i), 0)
+        if name_is_clashing(order, total, nm) == 1
+            _p = map_put(clash, nm, 1)
+            clash_map_fns(order, total, fns, i + 1, n, clash)
+        else
+            clash_map_fns(order, total, fns, i + 1, n, clash)
+
+fn clash_map_structs(order: Int, total: Int, sts: Int, i: Int, n: Int, clash: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = structdef_name(vec_get(sts, i))
+        if name_is_clashing(order, total, nm) == 1
+            _p = map_put(clash, nm, 1)
+            clash_map_structs(order, total, sts, i + 1, n, clash)
+        else
+            clash_map_structs(order, total, sts, i + 1, n, clash)
+
+# name -> link name for the clashing definitions of one module.
+fn local_renames(prog: Int, clash: Int, modid: String) -> Int ! alloc
+    r = map_new()
+    fns = prog_fns(prog)
+    _a = local_renames_fns(fns, 0, vec_len(fns), clash, modid, r)
+    sts = prog_structs(prog)
+    _b = local_renames_structs(sts, 0, vec_len(sts), clash, modid, r)
+    r
+
+fn local_renames_fns(fns: Int, i: Int, n: Int, clash: Int, modid: String, r: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = vec_get(vec_get(fns, i), 0)
+        if map_get(clash, nm) != 0
+            _p = map_put(r, nm, str_as_int(link_name(modid, str_from_int(nm), 1)))
+            local_renames_fns(fns, i + 1, n, clash, modid, r)
+        else
+            local_renames_fns(fns, i + 1, n, clash, modid, r)
+
+fn local_renames_structs(sts: Int, i: Int, n: Int, clash: Int, modid: String, r: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = structdef_name(vec_get(sts, i))
+        if map_get(clash, nm) != 0
+            _p = map_put(r, nm, str_as_int(link_name(modid, str_from_int(nm), 1)))
+            local_renames_structs(sts, i + 1, n, clash, modid, r)
+        else
+            local_renames_structs(sts, i + 1, n, clash, modid, r)
+
+fn apply_renames_fns(fns: Int, i: Int, n: Int, r: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        lk = map_get(r, vec_get(f, 0))
+        if lk != 0
+            _s = vec_set(f, 0, lk)
+            apply_renames_fns(fns, i + 1, n, r)
+        else
+            apply_renames_fns(fns, i + 1, n, r)
+
+fn apply_renames_structs(sts: Int, i: Int, n: Int, r: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        sd = vec_get(sts, i)
+        lk = map_get(r, structdef_name(sd))
+        if lk != 0
+            _s = vec_set(sd, 0, lk)
+            apply_renames_structs(sts, i + 1, n, r)
+        else
+            apply_renames_structs(sts, i + 1, n, r)
+
+fn qualify_one_module(m: Int, graph: Int, n: Int, proot: String, links: Int, clash: Int) -> Int ! io, alloc
     ctx_step = module_qualifiers(m, graph, proot)
     if result_is_err(ctx_step) == 1
         ctx_step
     else
         ctx = result_unwrap(ctx_step)
         prog = mod_prog(m)
-        qualify_prog(prog, ctx, links)
         path = str_from_int(mod_path(m))
         modid = modid_from_path(path, proot)
-        rename_clashing_fns(prog, graph, n, modid)
-        rename_clashing_structs(prog, graph, n, modid)
+        renames = local_renames(prog, clash, modid)
+        _c = vec_push(ctx, renames)
+        qualify_prog(prog, ctx, links)
+        _f = apply_renames_fns(prog_fns(prog), 0, vec_len(prog_fns(prog)), renames)
+        _s = apply_renames_structs(prog_structs(prog), 0, vec_len(prog_structs(prog)), renames)
         result_ok(0)
 
 fn qualify_all_modules(order: Int, n: Int, proot: String, links: Int) -> Int ! io, alloc
-    qualify_all_go(order, 0, n, proot, links)
+    clash = build_clash_map(order, n)
+    qualify_all_go(order, 0, n, proot, links, clash)
 
-fn qualify_all_go(order: Int, i: Int, n: Int, proot: String, links: Int) -> Int ! io, alloc
+fn qualify_all_go(order: Int, i: Int, n: Int, proot: String, links: Int, clash: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
         m = vec_get(order, i)
-        step = check_flat_import_clashes(m, order, proot)
+        step2 = qualify_one_module(m, order, n, proot, links, clash)
+        if result_is_err(step2) == 1
+            step2
+        else
+            qualify_all_go(order, i + 1, n, proot, links, clash)
+
+# Flat-import clashes are judged on the original names, before any module is
+# renamed (renaming makes the clashing exports distinct).
+fn check_all_flat_clashes(order: Int, i: Int, n: Int, proot: String) -> Int ! io, alloc
+    if i >= n
+        result_ok(0)
+    else
+        step = check_flat_import_clashes(vec_get(order, i), order, proot)
         if result_is_err(step) == 1
             step
         else
-            step2 = qualify_one_module(m, order, n, proot, links)
-            if result_is_err(step2) == 1
-                step2
-            else
-                qualify_all_go(order, i + 1, n, proot, links)
+            check_all_flat_clashes(order, i + 1, n, proot)
 
 fn qualify_module_graph(order: Int, proot: String) -> Int ! io, alloc
     n = vec_len(order)
     if needs_qualify(order, n) == 0
         result_ok(order)
     else
-        links = build_export_links(order, n, proot)
-        step = qualify_all_modules(order, n, proot, links)
-        if result_is_err(step) == 1
-            step
+        clash = check_all_flat_clashes(order, 0, n, proot)
+        if result_is_err(clash) == 1
+            clash
         else
-            result_ok(order)
+            links = build_export_links(order, n, proot)
+            step = qualify_all_modules(order, n, proot, links)
+            if result_is_err(step) == 1
+                step
+            else
+                result_ok(order)

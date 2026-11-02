@@ -1,0 +1,6 @@
+# exit: 5
+fn main() -> Int
+    i = 5
+    while i < 0
+        i = i + 1
+    i

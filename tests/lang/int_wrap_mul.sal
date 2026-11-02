@@ -1,0 +1,5 @@
+# exit: 0
+# 2^32 * 2^32 = 2^64 wraps to 0
+fn main() -> Int
+    a = 4294967296
+    a * a

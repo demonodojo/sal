@@ -1,0 +1,14 @@
+# exit: 21
+struct In
+    a: Int
+    b: Int
+
+struct Out
+    i: In
+    c: Int
+
+fn total(o: Out) -> Int
+    o.i.a + o.i.b + o.c
+
+fn main() -> Int
+    total(Out(In(5, 6), 10))

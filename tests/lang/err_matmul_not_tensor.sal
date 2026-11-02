@@ -1,0 +1,7 @@
+# error: E_SHAPE
+fn f(a: Int, b: Int) -> Int ! alloc
+    c = matmul(a, b)
+    0
+
+fn main() -> Int
+    0

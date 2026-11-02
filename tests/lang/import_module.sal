@@ -1,0 +1,5 @@
+# exit: 12
+import "mods/util.sal"
+
+fn main() -> Int
+    triple(4)

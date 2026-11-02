@@ -1,0 +1,4 @@
+# exit: 250
+# (10 - 2 - 3) * 50 = 250 (left associative)
+fn main() -> Int
+    (10 - 2 - 3) * 50

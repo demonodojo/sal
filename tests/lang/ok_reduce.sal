@@ -1,0 +1,7 @@
+# exit: 0
+fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+    c = reduce(a, 1)
+    0
+
+fn main() -> Int
+    0

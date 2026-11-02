@@ -1,0 +1,9 @@
+# exit: 123
+struct T
+    a: Int
+    b: Int
+    c: Int
+
+fn main() -> Int
+    t = T(1, 2, 3)
+    t.a * 100 + t.b * 10 + t.c

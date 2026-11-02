@@ -1,0 +1,19 @@
+# exit: 0
+fn t(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+    b = transpose(a)
+    0
+
+fn r(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+    b = reshape(a, 3, 2)
+    0
+
+fn s(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+    b = softmax(a, 1)
+    0
+
+fn m(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 3, 2] on cpu) -> Int ! alloc
+    c = matmul(a, b)
+    0
+
+fn main() -> Int
+    0

@@ -1,0 +1,10 @@
+# exit: 2
+fn main() -> Int ! alloc
+    a = d"abc"
+    b = d"ab" + d"c"
+    r = 0
+    if str_eq(a, b) == 1
+        r = r + 1
+    if str_eq(a, d"abd") == 0
+        r = r + 1
+    r

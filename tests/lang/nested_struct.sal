@@ -1,0 +1,12 @@
+# exit: 12
+struct In
+    a: Int
+    b: Int
+
+struct Out
+    i: In
+    c: Int
+
+fn main() -> Int
+    o = Out(In(3, 4), 5)
+    o.i.a + o.i.b + o.c

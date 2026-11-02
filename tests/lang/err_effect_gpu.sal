@@ -1,0 +1,7 @@
+# error: E_EFFECT
+fn f(a: Tensor[F32, 2, 2] on cpu) -> Int ! alloc
+    g = to gpu a
+    0
+
+fn main() -> Int
+    0

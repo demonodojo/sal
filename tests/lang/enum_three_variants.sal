@@ -1,0 +1,14 @@
+# exit: 23
+enum Shape
+    Circle(Int)
+    Square(Int)
+    Empty
+
+fn area(s: Shape) -> Int
+    match s
+        Circle(r) => r * r * 3
+        Square(a) => a * a
+        Empty => 0
+
+fn main() -> Int
+    area(Circle(2)) + area(Square(3)) + area(Empty) + 2

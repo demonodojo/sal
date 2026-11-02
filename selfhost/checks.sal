@@ -7,11 +7,15 @@ import device
 
 # Ok(0), or Err(message) for the first violation in `prog`.
 fn check_program(prog: Int) -> Int ! alloc
+    check_program_with(prog, 0)
+
+# `progs`: every program of the module graph (0 when single-file).
+fn check_program_with(prog: Int, progs: Int) -> Int ! alloc
     ty = infer_program(prog)
     if result_is_err(ty) == 1
         ty
     else
-        fx = check_effects(prog)
+        fx = check_effects_with(prog, progs)
         if result_is_err(fx) == 1
             fx
         else

@@ -1,0 +1,5 @@
+# exit: 5
+import "mods/sub/deep.sal" as d
+
+fn main() -> Int
+    d.deep()

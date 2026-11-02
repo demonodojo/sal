@@ -194,7 +194,8 @@ static int64_t soso_getdents(int fd, uint64_t buf, int64_t len) {
         closedir(d);
         return 0;
     }
-    (*cookie)++;
+    /* seekdir() solo admite cookies opacos de telldir(), no un contador de entradas. */
+    *cookie = telldir(d);
     SosoDirent out = {0};
     out.ino = (uint64_t)ent->d_ino;
     size_t nlen = strlen(ent->d_name);

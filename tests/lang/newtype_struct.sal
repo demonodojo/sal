@@ -1,0 +1,7 @@
+# exit: 5
+struct Meters
+    v: Int
+
+fn main() -> Int
+    m = Meters(5)
+    m.v

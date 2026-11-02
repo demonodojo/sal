@@ -1,0 +1,4 @@
+# error: E_PARSE
+fn main() -> Int
+    f(1) = 2
+    0

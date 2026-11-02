@@ -1,0 +1,9 @@
+# exit: 3
+# leading comment
+
+fn main() -> Int
+    # inside a body
+    x = 1
+
+    y = 2   # trailing
+    x + y

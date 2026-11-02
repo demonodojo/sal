@@ -1,0 +1,10 @@
+# error: E_TYPE
+fn f() -> Result[Int, Int]
+    Ok(1)
+
+fn g() -> Int
+    v = try f()
+    v
+
+fn main() -> Int
+    g()

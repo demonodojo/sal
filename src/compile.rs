@@ -47,7 +47,8 @@ pub struct CompileArtifacts {
 }
 
 pub fn compile_source(source: &str, opts: &CompileOptions) -> Result<CompileArtifacts, Vec<Diagnostic>> {
-    let program = parse(source).map_err(|d| vec![d])?;
+    let mut program = parse(&crate::interp::with_prelude_enums(source)).map_err(|d| vec![d])?;
+    crate::interp::expand_interpolation(&mut program);
     compile_program(&program, opts)
 }
 
@@ -59,7 +60,8 @@ pub fn compile_file(path: &Path, opts: &CompileOptions) -> Result<CompileArtifac
             Default::default(),
         )]
     })?;
-    let program = parse(&source).map_err(|d| vec![d])?;
+    let mut program = parse(&crate::interp::with_prelude_enums(&source)).map_err(|d| vec![d])?;
+    crate::interp::expand_interpolation(&mut program);
     compile_program_at(&program, opts, Some(path))
 }
 

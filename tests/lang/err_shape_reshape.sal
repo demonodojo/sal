@@ -1,0 +1,7 @@
+# error: E_SHAPE
+fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+    c = reshape(a, 4, 2)
+    0
+
+fn main() -> Int
+    0

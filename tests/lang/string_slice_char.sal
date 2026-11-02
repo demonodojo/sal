@@ -1,0 +1,5 @@
+# exit: 99
+fn main() -> Int ! alloc
+    s = d"abcdef"
+    t = str_slice(s, 1, 4)
+    str_char(t, 1)

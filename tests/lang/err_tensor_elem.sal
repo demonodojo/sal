@@ -1,0 +1,6 @@
+# error: E_TENSOR_ELEM
+fn f(x: Tensor[Float, 2, 2] on cpu) -> Int
+    0
+
+fn main() -> Int
+    0

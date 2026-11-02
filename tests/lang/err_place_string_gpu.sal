@@ -1,0 +1,5 @@
+# error: E_PLACE
+fn main() -> Int ! gpu, alloc
+    s = d"x"
+    t = to gpu s
+    0

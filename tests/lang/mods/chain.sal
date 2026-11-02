@@ -1,0 +1,4 @@
+import "common.sal" as c
+
+fn via() -> Int
+    c.base() * 2

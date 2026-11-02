@@ -1,0 +1,9 @@
+# exit: 12
+fn dbl(x: Int) -> Int
+    x * 2
+
+fn add3(a: Int, b: Int, c: Int) -> Int
+    a + b + c
+
+fn main() -> Int
+    add3(dbl(1), dbl(2), dbl(3))

@@ -1,0 +1,11 @@
+# exit: 4
+fn find(n: Int) -> Int
+    i = 0
+    while i < 100
+        if i * i >= n
+            return i
+        i = i + 1
+    0 - 1
+
+fn main() -> Int
+    find(16)

@@ -1,0 +1,13 @@
+# exit: 16
+struct P
+    x: Int
+    y: Int
+
+fn swap(p: P) -> P
+    P(p.y, p.x)
+
+fn sum(p: P) -> Int
+    p.x * 2 + p.y
+
+fn main() -> Int
+    sum(swap(P(4, 6)))

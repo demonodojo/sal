@@ -1,0 +1,4 @@
+# error: E_TYPE
+fn main() -> Int ! alloc
+    s = d"a" + 1
+    0

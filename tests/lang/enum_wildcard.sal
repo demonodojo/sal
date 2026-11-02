@@ -1,0 +1,13 @@
+# exit: 9
+enum E
+    A(Int)
+    B
+    C
+
+fn f(e: E) -> Int
+    match e
+        A(n) => n
+        _ => 4
+
+fn main() -> Int
+    f(A(5)) + f(C) - 0

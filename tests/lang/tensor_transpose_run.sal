@@ -1,0 +1,10 @@
+# exit: 3
+# transpose(A) x E11 keeps A's first row: 1 + 2
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    i = tensor[[1.0, 0.0], [0.0, 1.0]]
+    e = tensor[[1.0, 0.0], [0.0, 0.0]]
+    b = transpose(a)
+    on cpu
+        matmul(b, e)
+    0

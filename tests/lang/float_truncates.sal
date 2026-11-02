@@ -1,0 +1,3 @@
+# exit: 2
+fn main() -> Int
+    float_to_int(2.9)

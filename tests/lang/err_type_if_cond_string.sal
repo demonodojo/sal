@@ -1,0 +1,6 @@
+# error: E_TYPE
+fn main() -> Int ! alloc
+    if d"x"
+        1
+    else
+        2

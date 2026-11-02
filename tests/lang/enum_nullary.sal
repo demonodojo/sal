@@ -1,0 +1,12 @@
+# exit: 5
+enum Shape
+    Circle(Int)
+    Empty
+
+fn area(s: Shape) -> Int
+    match s
+        Circle(r) => r
+        Empty => 5
+
+fn main() -> Int
+    area(Empty) + area(Circle(0))

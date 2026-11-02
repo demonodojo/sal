@@ -1,0 +1,6 @@
+# exit: 7
+fn id[T](x: T) -> T
+    x
+
+fn main() -> Int
+    id(7)

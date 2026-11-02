@@ -1,0 +1,8 @@
+# error: E_MOVED
+fn main() -> String
+    s = "hi"
+    i = 0
+    while i < 2
+        t = s
+        i = i + 1
+    s

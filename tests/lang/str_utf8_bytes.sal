@@ -1,0 +1,4 @@
+# exit: 2
+# length is in bytes: e-acute is 2 bytes
+fn main() -> Int ! alloc
+    str_len(d"é")

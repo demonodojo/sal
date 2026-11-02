@@ -1,0 +1,12 @@
+# exit: 7
+enum Dir
+    Up
+    Down(Int)
+
+fn f(d: Dir) -> Int
+    match d
+        Dir.Up => 1
+        Dir.Down(n) => n
+
+fn main() -> Int
+    f(Up) + f(Down(6))

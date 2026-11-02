@@ -88,6 +88,11 @@ enum Commands {
         #[arg(long)]
         update: bool,
     },
+    /// Fetch dependencies and link each one under `sal_modules/<name>`.
+    Install {
+        #[arg(long)]
+        update: bool,
+    },
     /// Add a git dependency to Sal.toml and run fetch.
     Add {
         name: String,
@@ -222,7 +227,8 @@ fn main() {
                 return;
             }
             let src = std::fs::read_to_string(&file).expect("read");
-            let prog = parse(&src).expect("parse");
+            let mut prog = parse(&src).expect("parse");
+            sal_compiler::interp::expand_interpolation(&mut prog);
             match kind.as_str() {
                 "ast" => println!("{}", serde_json::to_string_pretty(&prog).expect("json")),
                 "typed" => {
@@ -273,6 +279,19 @@ fn main() {
             if let Err(e) = sal_compiler::packages::fetch_packages(&root, update) {
                 eprintln!("sal fetch: {e}");
                 std::process::exit(1);
+            }
+        }
+        Commands::Install { update } => {
+            match sal_compiler::packages::install_packages(&root, update) {
+                Ok(list) => {
+                    for (name, target) in list {
+                        println!("sal_modules/{name} -> {}", target.display());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("sal install: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Commands::Add {

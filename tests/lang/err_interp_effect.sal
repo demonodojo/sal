@@ -1,0 +1,7 @@
+# error: E_EFFECT
+fn f(n: String) -> Int
+    s = "v={n}"
+    0
+
+fn main() -> Int
+    0

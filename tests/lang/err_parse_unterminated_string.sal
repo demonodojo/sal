@@ -1,0 +1,4 @@
+# error: E_PARSE
+fn main() -> Int ! alloc
+    s = d"abc
+    0

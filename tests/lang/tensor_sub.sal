@@ -1,0 +1,9 @@
+# exit: 0
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    i = tensor[[1.0, 0.0], [0.0, 1.0]]
+    e = tensor[[1.0, 0.0], [0.0, 0.0]]
+    b = a - a
+    on cpu
+        matmul(b, i)
+    0

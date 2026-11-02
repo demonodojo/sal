@@ -1,0 +1,7 @@
+# error: E_SHAPE
+fn f(a: Tensor[F32, 3] on cpu) -> Int ! alloc
+    c = transpose(a)
+    0
+
+fn main() -> Int
+    0

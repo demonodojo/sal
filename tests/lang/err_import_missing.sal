@@ -1,0 +1,5 @@
+# error: E_TYPE
+import "mods/missing.sal"
+
+fn main() -> Int
+    0

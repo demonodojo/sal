@@ -1,0 +1,11 @@
+# exit: 18
+fn main() -> Int
+    s = 0
+    i = 0
+    while i < 3
+        j = 0
+        while j < 3
+            s = s + i + j
+            j = j + 1
+        i = i + 1
+    s

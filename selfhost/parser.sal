@@ -464,12 +464,20 @@ fn parse_primary(pr: Int) -> Int ! alloc
         ex_float(tok_ival(t), tok_text(t))
     elsif k == TK_STRING()
         _a = p_advance(pr)
-        ex_string(tok_text(t))
+        if tok_ival(t) == 1
+            _e = p_set_err(pr, d"parse error: invalid string interpolation")
+        else
+            _e = 0
+        string_literal_expr(t)
     elsif k == TK_DSTRING()
         s = tok_text(t)
         _a = p_advance(pr)
+        if tok_ival(t) == 1
+            _e = p_set_err(pr, d"parse error: invalid string interpolation")
+        else
+            _e = 0
         args = vec_new()
-        _b = vec_push(args, ex_string(s))
+        _b = vec_push(args, string_literal_expr(t))
         ex_call(d"strdup", args)
     elsif k == TK_IF()
         parse_if(pr)
@@ -516,7 +524,10 @@ fn parse_primary(pr: Int) -> Int ! alloc
         _g = p_enter_group(pr)
         e = parse_expr(pr)
         _n = p_skip_group_nls(pr)
-        _b = p_accept(pr, TK_RPAREN())
+        if p_accept(pr, TK_RPAREN()) == 0
+            _x = p_set_err(pr, d"parse error: expected )")
+        else
+            _x = 0
         _h = p_leave_group(pr)
         e
     else
@@ -557,6 +568,53 @@ fn parse_if(pr: Int) -> Int ! alloc
         ex_if(cond, then_b, 0, arms)
 
 # pattern -> "_" | INT | IDENT "." IDENT "(" patterns ")" | IDENT "(" patterns ")" | IDENT
+# A string literal; `"a{x}b"` becomes the chain `"a" + x + "b"` (the chain
+# starts with a literal so `+` concatenates and copies `x`).
+fn string_literal_expr(t: Int) -> Int ! alloc
+    if tok_ival(t) == 2
+        raw = tok_text(t)
+        interp_chain(raw, 0, str_len(raw), d"", 0)
+    else
+        ex_string(tok_text(t))
+
+# `left` is the chain so far (0 before the first piece); `lit` the pending text.
+fn interp_chain(raw: String, i: Int, n: Int, lit: String, left: Int) -> Int ! alloc
+    if i >= n
+        interp_flush(left, lit, 1)
+    else
+        c = str_char(raw, i)
+        if c == 123
+            if i + 1 < n
+                if str_char(raw, i + 1) == 123
+                    interp_chain(raw, i + 2, n, lit + char_to_str(123), left)
+                else
+                    close = find_char(raw, 125, i + 1, n)
+                    name = str_slice(raw, i + 1, close)
+                    l1 = interp_flush(left, lit, 0)
+                    interp_chain(raw, close + 1, n, d"", ex_binary(d"add", l1, ex_ident(name)))
+            else
+                interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
+        elsif c == 125
+            if i + 1 < n
+                if str_char(raw, i + 1) == 125
+                    interp_chain(raw, i + 2, n, lit + char_to_str(125), left)
+                else
+                    interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
+            else
+                interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
+        else
+            interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
+
+# Append the pending literal to the chain. `last`: end of the string, so an
+# empty tail adds nothing.
+fn interp_flush(left: Int, lit: String, last: Int) -> Int ! alloc
+    if left == 0
+        ex_string(lit)
+    elsif str_len(lit) == 0
+        left
+    else
+        ex_binary(d"add", left, ex_string(lit))
+
 fn parse_pattern(pr: Int) -> Int ! alloc
     t = p_advance(pr)
     k = tok_kind(t)
@@ -1010,6 +1068,7 @@ fn parse_fn_ret(pr: Int) -> Int ! alloc
     if p_accept(pr, TK_ARROW()) == 1
         str_as_int(parse_type_text(pr))
     else
+        _e = p_set_err(pr, d"parse error: expected -> after parameters")
         0
 
 fn parse_fn(pr: Int) -> Int ! alloc

@@ -1,0 +1,9 @@
+# error: E_MOVED
+fn f(c: Int) -> String
+    s = "hi"
+    if c == 1
+        t = s
+    s
+
+fn main() -> Int
+    0

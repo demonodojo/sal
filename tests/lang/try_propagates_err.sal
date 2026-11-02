@@ -1,0 +1,15 @@
+# exit: 42
+fn f(x: Int) -> Result[Int, Int]
+    if x > 0
+        Ok(x)
+    else
+        Err(42)
+
+fn g(x: Int) -> Result[Int, Int]
+    v = try f(x)
+    Ok(v + 1)
+
+fn main() -> Int
+    match g(0)
+        Ok(v) => v
+        Err(e) => e

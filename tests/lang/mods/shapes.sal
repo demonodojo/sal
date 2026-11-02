@@ -1,0 +1,6 @@
+struct Pt
+    x: Int
+    y: Int
+
+fn mk(a: Int) -> Int
+    a

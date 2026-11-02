@@ -1,0 +1,9 @@
+# exit: 2
+fn main() -> Int ! alloc
+    s = d"hello world"
+    r = 0
+    if str_contains(s, d"lo wo") == 1
+        r = r + 1
+    if str_contains(s, d"xyz") == 0
+        r = r + 1
+    r

@@ -1,0 +1,6 @@
+# exit: 12
+import "mods/left.sal" as l
+import "mods/right.sal" as r
+
+fn main() -> Int
+    r.right()

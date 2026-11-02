@@ -1,0 +1,4 @@
+# exit: 8
+fn main() -> Int
+    f = x => x * 2
+    f(4)

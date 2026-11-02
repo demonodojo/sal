@@ -1,0 +1,5 @@
+# error: E_MOVED
+fn main() -> String
+    s = "hi"
+    t = s
+    s

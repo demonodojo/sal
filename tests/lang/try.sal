@@ -1,0 +1,12 @@
+# exit: 4
+fn f(x: Int) -> Result[Int, Int]
+    Ok(x)
+
+fn g() -> Result[Int, Int]
+    v = try f(3)
+    Ok(v + 1)
+
+fn main() -> Int
+    match g()
+        Ok(v) => v
+        Err(e) => 0

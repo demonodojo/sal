@@ -1,0 +1,8 @@
+# exit: 0
+fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+    c = a + b
+    d = a * b
+    0
+
+fn main() -> Int
+    0

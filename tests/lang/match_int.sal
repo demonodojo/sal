@@ -1,0 +1,9 @@
+# exit: 30
+fn f(x: Int) -> Int
+    match x
+        1 => 10
+        2 => 20
+        _ => 0
+
+fn main() -> Int
+    f(1) + f(2) + f(3)

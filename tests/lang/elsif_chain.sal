@@ -1,0 +1,11 @@
+# exit: 123
+fn pick(x: Int) -> Int
+    if x < 0
+        1
+    elsif x == 0
+        2
+    else
+        3
+
+fn main() -> Int
+    pick(0 - 5) * 100 + pick(0) * 10 + pick(7)

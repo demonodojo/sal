@@ -1,0 +1,10 @@
+# exit: 6
+fn add3(a: Int, b: Int, c: Int) -> Int
+    a + b + c
+
+fn main() -> Int
+    add3(
+        1,
+        2,
+        3
+    )

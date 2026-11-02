@@ -1,0 +1,5 @@
+# exit: 0
+# stdout: hi
+fn main() -> Int ! io, alloc
+    print(d"hi")
+    0

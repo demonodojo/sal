@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use sal_compiler::compile::{compile_file, device_toolchain_present, CompileOptions};
 use sal_compiler::modules::resolve_import_path_with_manifest;
-use sal_compiler::packages::{fetch_packages, read_lock};
+use sal_compiler::packages::{fetch_packages, install_packages, read_lock};
 use sal_compiler::incremental::{
     cache_key, cache_key_with_deps, cache_path, file_mtime, import_graph_digest, is_cache_hit,
     ll_cache_path, load_cached_meta, obj_cache_path, CompileFlags,
@@ -524,6 +524,91 @@ fn sal_modules_import_resolves_inside_the_project() {
     assert_eq!(hit, Some(io.join("io.sal")));
     let missed = resolve_import_path_with_manifest("std/prelude.sal", &main, &project_root);
     assert!(missed.is_none());
+}
+
+#[test]
+fn install_git_dep_links_cache_into_sal_modules() {
+    let fx = setup_package_consumer();
+    let list = install_packages(&fx.project, false).expect("install");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].0, "dep");
+    let link = fx.project.join("sal_modules/dep");
+    assert!(link.symlink_metadata().expect("meta").file_type().is_symlink());
+    assert!(link.join("pkg.sal").is_file());
+    // Re-running replaces the symlink instead of failing.
+    install_packages(&fx.project, false).expect("reinstall");
+    let main = fx.project.join("main.sal");
+    let hit = resolve_import_path_with_manifest("dep/pkg", &main, &fx.project);
+    assert!(hit.is_some());
+}
+
+#[test]
+fn install_path_dep_links_directory() {
+    let lib = tempfile::tempdir().expect("lib");
+    fs::write(lib.path().join("pkg.sal"), "fn lib_value() -> Int\n    5\n").expect("pkg");
+    let project = tempfile::tempdir().expect("project");
+    fs::write(
+        project.path().join("Sal.toml"),
+        format!(
+            "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n[dependencies]\nlibx = {{ path = \"{}\" }}\n",
+            lib.path().display()
+        ),
+    )
+    .expect("manifest");
+    fs::write(
+        project.path().join("main.sal"),
+        "import \"libx/pkg\"\n\nfn main() -> Int\n    lib_value()\n",
+    )
+    .expect("main");
+    let list = install_packages(project.path(), false).expect("install");
+    assert_eq!(list[0].0, "libx");
+    assert!(project.path().join("sal_modules/libx/pkg.sal").is_file());
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: project.path().to_path_buf(),
+        skip_link: false,
+    };
+    let art = compile_file(&project.path().join("main.sal"), &opts).expect("build");
+    let run = Command::new(art.binary.expect("binary")).output().expect("run");
+    assert_eq!(run.status.code(), Some(5));
+}
+
+#[test]
+fn install_std_dep_links_compiler_std() {
+    let project = tempfile::tempdir().expect("project");
+    fs::write(
+        project.path().join("Sal.toml"),
+        "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n[dependencies]\nio = { std = \"io\" }\n",
+    )
+    .expect("manifest");
+    let _guard = PACKAGE_ENV_LOCK.lock().expect("package env lock");
+    std::env::remove_var("SAL_STD");
+    install_packages(project.path(), false).expect("install");
+    assert!(project.path().join("sal_modules/io/io.sal").is_file());
+}
+
+#[test]
+fn install_rejects_real_directory_and_bad_spec() {
+    let project = tempfile::tempdir().expect("project");
+    fs::create_dir_all(project.path().join("sal_modules/io")).expect("real dir");
+    fs::write(
+        project.path().join("Sal.toml"),
+        "[package]\nname = \"c\"\nversion = \"0.1.0\"\n\n[dependencies]\nio = { std = \"io\" }\n",
+    )
+    .expect("manifest");
+    let err = install_packages(project.path(), false).unwrap_err();
+    assert!(err.contains("not a symlink"), "{err}");
+    fs::write(
+        project.path().join("Sal.toml"),
+        "[package]\nname = \"c\"\nversion = \"0.1.0\"\n\n[dependencies]\nx = {}\n",
+    )
+    .expect("manifest2");
+    let err = install_packages(project.path(), false).unwrap_err();
+    assert!(err.contains("needs `path`"), "{err}");
 }
 
 #[test]

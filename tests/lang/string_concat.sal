@@ -1,0 +1,4 @@
+# exit: 5
+fn main() -> Int ! alloc
+    s = d"ab" + d"cde"
+    str_len(s)

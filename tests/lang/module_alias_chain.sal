@@ -1,0 +1,5 @@
+# exit: 20
+import "mods/chain.sal" as ch
+
+fn main() -> Int
+    ch.via()

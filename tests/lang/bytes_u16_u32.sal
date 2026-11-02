@@ -1,0 +1,6 @@
+# exit: 5
+# set_u32 66051 = 0x010203 little-endian -> bytes 3,2,1,0; 3+2
+fn main() -> Int ! alloc
+    b = bytes_new(8)
+    bytes_set_u32(b, 0, 66051)
+    bytes_get_u8(b, 0) + bytes_get_u8(b, 1) - 0

@@ -1,0 +1,7 @@
+# error: E_PLACE
+fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 3, 2] on gpu) -> Int ! alloc, gpu
+    c = matmul(a, b)
+    0
+
+fn main() -> Int
+    0

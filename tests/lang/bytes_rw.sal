@@ -1,0 +1,5 @@
+# exit: 7
+fn main() -> Int ! alloc
+    b = bytes_new(4)
+    bytes_set_u8(b, 2, 7)
+    bytes_get_u8(b, 2)

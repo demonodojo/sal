@@ -1,0 +1,6 @@
+# exit: 36
+fn f(a: Int, b: Int, c: Int, d: Int, e: Int, g: Int, h: Int, i: Int) -> Int
+    a + b + c + d + e + g + h + i
+
+fn main() -> Int
+    f(1, 2, 3, 4, 5, 6, 7, 8)

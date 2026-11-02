@@ -1001,7 +1001,8 @@ const OWNERSHIP_CASES: &[(&str, bool)] = &[
     ("fn main() -> Int ! alloc\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    u = t\n    v = t\n    0\n", true),
     ("fn main() -> Int\n    s = \"x\"\n    t = s\n    s = \"y\"\n    u = s\n    0\n", false),
     ("fn f(s: String) -> String\n    return s\n    0\n", false),
-    ("fn main() -> Int\n    s = \"x\"\n    if 1 == 1\n        t = s\n        0\n    else\n        0\n    u = s\n    0\n", false),
+    ("fn main() -> Int\n    s = \"x\"\n    if 1 == 1\n        t = s\n        0\n    else\n        0\n    u = s\n    0\n", true),
+    ("fn f(c: Int) -> Int\n    s = \"x\"\n    if c == 1\n        t = s\n        return 0\n    u = s\n    0\n\nfn main() -> Int\n    0\n", false),
 ];
 
 #[test]
@@ -1243,4 +1244,147 @@ fn selfhost_binaries_behave_like_bootstrap_binaries() {
         assert_eq!(rb.status.code(), rs.status.code(), "exit code of {rel}");
         assert_eq!(rb.stdout, rs.stdout, "stdout of {rel}");
     }
+}
+
+/// The hand-written conformance corpus of `tests/lang` (see `tests/lang.rs`)
+/// must also hold for the selfhost compiler: same exit code and stdout for
+/// valid programs, a rejection for `# error:` programs. `# xfail:` files are
+/// skipped (they document gaps of the bootstrap).
+#[test]
+fn selfhost_meets_language_conformance() {
+    let stage1 = compile_selfhost(false);
+    let dir = root().join("tests/lang");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("tests/lang")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.extension().is_some_and(|e| e == "sal"))
+        .collect();
+    files.sort();
+    let mut failures = Vec::new();
+    for path in files {
+        let src = std::fs::read_to_string(&path).expect("read");
+        let header: Vec<&str> = src.lines().take_while(|l| l.starts_with('#')).collect();
+        let field = |key: &str| -> Option<String> {
+            header
+                .iter()
+                .find_map(|l| l.trim_start_matches('#').trim().strip_prefix(key).map(|v| v.trim().to_string()))
+        };
+        if field("xfail:").is_some() || field("selfhost-xfail:").is_some() {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let out = std::env::temp_dir().join(format!("sal-lang-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_file(&out);
+        let built = Command::new(&stage1)
+            .arg(&path)
+            .arg("-o")
+            .arg(&out)
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("lang"))
+            .current_dir(root())
+            .output()
+            .expect("run stage1");
+        if field("error:").is_some() {
+            if built.status.success() && out.is_file() {
+                failures.push(format!("{name}: selfhost compiled a program that must be rejected"));
+            }
+            continue;
+        }
+        if !built.status.success() || !out.is_file() {
+            failures.push(format!("{name}: selfhost failed to build:\n{}", String::from_utf8_lossy(&built.stderr)));
+            continue;
+        }
+        let run = Command::new(&out).output().expect("run");
+        let _ = std::fs::remove_file(&out);
+        let want: i32 = field("exit:").expect("exit header").parse().expect("exit code");
+        let got = run.status.code().unwrap_or(-1);
+        if got != want & 0xff {
+            failures.push(format!("{name}: exit {got}, expected {}", want & 0xff));
+        }
+        if let Some(text) = field("stdout:") {
+            let got = String::from_utf8_lossy(&run.stdout);
+            if got.trim_end() != text {
+                failures.push(format!("{name}: stdout {got:?}, expected {text:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// Every program under `examples/`, `corpus/`, `tests/fixtures/` and `benches/`
+/// that the bootstrap builds must also build with the selfhost compiler and
+/// behave the same (exit code and stdout). Programs that print timings are
+/// excluded; programs the bootstrap rejects are skipped.
+#[test]
+fn selfhost_matches_bootstrap_on_every_repo_program() {
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect(&p, out);
+            } else if p.extension().is_some_and(|x| x == "sal") {
+                out.push(p);
+            }
+        }
+    }
+    let stage1 = compile_selfhost(false);
+    let mut files = Vec::new();
+    for d in ["examples", "corpus", "tests/fixtures", "tests/sal", "benches", "std", "packages"] {
+        collect(&root().join(d), &mut files);
+    }
+    files.sort();
+    let dir = std::env::temp_dir().join(format!("sal-repopar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut compared = 0;
+    let mut failures = Vec::new();
+    for src in files {
+        let rel = src.strip_prefix(root()).unwrap().display().to_string();
+        let stem = rel.replace(['/', '.'], "_");
+        if stem.contains("tiny_prefill") || stem.contains("tiny_decode") || rel.contains("/support/") {
+            continue;
+        }
+        let boot_bin = dir.join(format!("{stem}.boot"));
+        let self_bin = dir.join(format!("{stem}.self"));
+        let b = Command::new(env!("CARGO_BIN_EXE_sal"))
+            .arg("build")
+            .arg(&src)
+            .arg("-o")
+            .arg(&boot_bin)
+            .current_dir(root())
+            .output()
+            .expect("bootstrap build");
+        if !b.status.success() {
+            continue;
+        }
+        let s = Command::new(&stage1)
+            .arg(&src)
+            .arg("-o")
+            .arg(&self_bin)
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("repopar"))
+            .current_dir(root())
+            .output()
+            .expect("selfhost build");
+        if !s.status.success() {
+            failures.push(format!("{rel}: selfhost build failed: {}", String::from_utf8_lossy(&s.stderr).lines().next().unwrap_or("")));
+            continue;
+        }
+        let run = |bin: &Path| {
+            Command::new("timeout")
+                .args(["10"])
+                .arg(bin)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("run")
+        };
+        let rb = run(&boot_bin);
+        let rs = run(&self_bin);
+        compared += 1;
+        if rb.status.code() != rs.status.code() || rb.stdout != rs.stdout {
+            failures.push(format!("{rel}: boot={:?} self={:?}", rb.status.code(), rs.status.code()));
+        }
+        let _ = std::fs::remove_file(&boot_bin);
+        let _ = std::fs::remove_file(&self_bin);
+    }
+    assert!(compared >= 40, "only {compared} programs compared");
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

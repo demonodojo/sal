@@ -1,0 +1,4 @@
+# exit: 10
+fn main() -> Int
+    let g = n => n + 5
+    g(5)

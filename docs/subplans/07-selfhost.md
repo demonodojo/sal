@@ -60,6 +60,8 @@ El selfhost **no está completo**. Lo que hay hoy:
 
 Los ejecutables del selfhost coinciden con los del arranque (código de salida y stdout) en los ejemplos y corpus que el arranque compila, salvo `examples/infer/tiny_*` (imprimen tiempos) y los que el arranque rechaza. Se mide con `selfhost_binaries_behave_like_bootstrap_binaries`.
 
+Conformidad del lenguaje: `tests/lang/*.sal` lleva el resultado esperado escrito a mano (`# exit:`, `# stdout:`, `# error:`, `# xfail:` para huecos conocidos). `tests/lang.rs` lo comprueba con el arranque y `selfhost_meets_language_conformance` con el selfhost. `match` sobre enteros se baja en el emisor C del selfhost; enums, lambdas y `try` siguen pendientes. `selfhost_matches_bootstrap_on_every_repo_program` compara los dos compiladores sobre todos los `.sal` de `examples/`, `corpus/`, `tests/`, `std/` y `benches/` que el arranque compila. `tests/lang` ya no tiene huecos del arranque marcados con `# xfail:`. Enums con `match`, genéricos (tipos borrados a `Unknown`), lambdas (se inlinean en cada llamada), `try`/`Result`/`Option` (el preludio se añade si el programa los usa), `Float`, structs de varios campos, interpolación, propagación de efectos y `transpose` rank 2 estático (copia real vía `sal_transpose_f32`) funcionan en los dos compiladores. `# selfhost-xfail:` marca huecos solo del selfhost (`softmax` por filas, aridad de lambdas locales).
+
 Paridad medida por `tests/selfhost_ir.rs::selfhost_ir_matches_bootstrap_on_parity_files`:
 el IR del selfhost coincide con el del arranque en todos los `.sal` del repositorio que el arranque
 lowera (incluido el propio `selfhost/`).

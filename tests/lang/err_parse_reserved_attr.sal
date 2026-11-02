@@ -1,0 +1,7 @@
+# error: E_PARSE
+@frozen
+struct P
+    x: Int
+
+fn main() -> Int
+    0

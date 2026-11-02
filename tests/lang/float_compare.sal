@@ -1,0 +1,18 @@
+# exit: 5
+fn main() -> Int
+    a = 1.5
+    b = 2.5
+    r = 0
+    if a < b
+        r = r + 1
+    if a <= a
+        r = r + 1
+    if b > a
+        r = r + 1
+    if b >= b
+        r = r + 1
+    if a != b
+        r = r + 1
+    if a == b
+        r = r + 100
+    r

@@ -469,6 +469,12 @@ fn strenv_type(env: Int, name: Int) -> Int ! alloc
     else
         strenv_type_go(env, name, strenv_len(env) - 1)
 
+fn strenv_has_binding(env: Int, name: Int) -> Int ! alloc
+    if strenv_type(env, name) != 0
+        1
+    else
+        0
+
 fn strenv_has(env: Int, name: Int) -> Int ! alloc
     ty_handle_is_string(strenv_type(env, name))
 
@@ -486,6 +492,26 @@ fn ty_handle_is_string(ty: Int) -> Int ! alloc
 
 fn ty_string() -> Int ! alloc
     str_as_int("String")
+
+fn ty_float() -> Int ! alloc
+    str_as_int("Float")
+
+fn ty_handle_is_float(t: Int) -> Int ! alloc
+    if t == 0
+        0
+    else
+        str_eq(ty_trim_go(str_from_int(t)), d"Float")
+
+# `e` is a Float under `env`.
+fn expr_is_float(e: Int, env: Int) -> Int ! alloc
+    ty_handle_is_float(expr_type(e, env))
+
+# IR name of a binary op: `fadd` for Float operands, `add` otherwise.
+fn binary_ir_op(e: Int, env: Int) -> Int ! alloc
+    if expr_is_float(vec_get(e, 2), env) + expr_is_float(vec_get(e, 3), env) > 0
+        str_as_int("f" + str_from_int(vec_get(e, 1)))
+    else
+        vec_get(e, 1)
 
 fn call_returns_string(name: Int) -> Int ! alloc
     if str_eq(name, "argv") == 1
@@ -611,6 +637,8 @@ fn call_type(e: Int, env: Int) -> Int ! alloc
     name = vec_get(e, 1)
     if call_returns_string(name) == 1
         ty_string()
+    elsif str_eq(str_from_int(name), "int_to_float") == 1
+        ty_float()
     elsif str_eq(str_from_int(name), "load") == 1
         ex_call_type_args(e)
     elsif str_eq(str_from_int(name), "matmul") == 1
@@ -619,6 +647,12 @@ fn call_type(e: Int, env: Int) -> Int ! alloc
         name
     elsif strenv_fnrets(env) == 0
         0
+    elsif map_get(strenv_fnrets(env), str_as_int("$g:" + str_from_int(name))) != 0
+        gi = map_get(strenv_fnrets(env), str_as_int("$g:" + str_from_int(name))) - 1
+        if gi < vec_len(vec_get(e, 2))
+            expr_type(vec_get(vec_get(e, 2), gi), env)
+        else
+            0
     else
         map_get(strenv_fnrets(env), name)
 
@@ -649,12 +683,24 @@ fn expr_type(e: Int, env: Int) -> Int ! alloc
             tensor_lit_type(e)
         elsif k == EX_IDENT()
             strenv_type(env, vec_get(e, 1))
+        elsif k == EX_FLOAT()
+            ty_float()
+        elsif k == EX_UNARY()
+            if str_eq(vec_get(e, 1), "neg") == 1
+                expr_type(vec_get(e, 2), env)
+            else
+                0
         elsif k == EX_BINARY()
             if str_eq(vec_get(e, 1), "add") == 1
-                if expr_produces_string(vec_get(e, 2), env) == 1
+                lt = expr_type(vec_get(e, 2), env)
+                if ty_handle_is_string(lt) == 1
                     ty_string()
+                elsif ty_handle_is_float(lt) == 1
+                    ty_float()
                 else
                     0
+            elsif binary_arith_is_float(e, env) == 1
+                ty_float()
             else
                 0
         elsif k == EX_FIELD()
@@ -663,6 +709,18 @@ fn expr_type(e: Int, env: Int) -> Int ! alloc
             block_tail_type(vec_get(e, 2), env)
         else
             0
+
+# sub, mul or div with a Float operand.
+fn binary_arith_is_float(e: Int, env: Int) -> Int ! alloc
+    op = vec_get(e, 1)
+    if str_eq(op, "sub") + str_eq(op, "mul") + str_eq(op, "div") == 0
+        0
+    elsif expr_is_float(vec_get(e, 2), env) == 1
+        1
+    elsif expr_is_float(vec_get(e, 3), env) == 1
+        1
+    else
+        0
 
 fn expr_produces_string(e: Int, env: Int) -> Int ! alloc
     ty_handle_is_string(expr_type(e, env))
@@ -726,8 +784,42 @@ fn fnret_map_fill(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
         0
     else
         f = vec_get(fns, i)
-        if fndef_ret(f) != 0
+        gi = generic_ret_param(f)
+        if gi >= 0
+            # generic `-> T`: remember which argument carries the result type
+            _g = map_put(m, str_as_int("$g:" + str_from_int(vec_get(f, 0))), gi + 1)
+            _p = map_put(m, vec_get(f, 0), str_as_int(d"Unknown"))
+        elsif fndef_ret(f) != 0
             _p = map_put(m, vec_get(f, 0), fndef_ret(f))
         else
             _p = 0
         fnret_map_fill(m, fns, i + 1, n)
+
+# Index of the first param whose type is the bare type parameter `f` returns, or -1.
+fn generic_ret_param(f: Int) -> Int ! alloc
+    ret = fndef_ret(f)
+    tps = fndef_type_params(f)
+    if ret == 0
+        0 - 1
+    elsif vec_len(tps) == 0
+        0 - 1
+    elsif ty_in_names(ret, tps, 0, vec_len(tps)) == 0
+        0 - 1
+    else
+        generic_ret_param_go(vec_get(f, 1), ret, 0, vec_len(vec_get(f, 1)))
+
+fn ty_in_names(ty: Int, names: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif ty_text_matches(ty, vec_get(names, i)) == 1
+        1
+    else
+        ty_in_names(ty, names, i + 1, n)
+
+fn generic_ret_param_go(params: Int, ret: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif ty_text_matches(vec_get(vec_get(params, i), 1), ret) == 1
+        i
+    else
+        generic_ret_param_go(params, ret, i + 1, n)

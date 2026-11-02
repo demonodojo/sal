@@ -1,0 +1,3 @@
+# exit: 16
+fn main() -> Int ! alloc
+    bytes_len(bytes_new(16))

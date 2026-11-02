@@ -640,6 +640,18 @@ fn lower_stmt(
     fn_names: &HashMap<String, ()>,
     strings: &mut StringEnv,
 ) -> bool {
+    // `f = x => body` / `let f = x => body`: calls of `f` inline the body.
+    match st {
+        Stmt::Let { name, init, .. }
+        | Stmt::Assign { target: Expr::Ident { name, .. }, value: init, .. } => {
+            if let Expr::Lambda { params, body, .. } = init {
+                if let Some(p) = params.first() {
+                    strings.lambdas.insert(name.clone(), (p.clone(), (**body).clone()));
+                }
+            }
+        }
+        _ => {}
+    }
     match st {
         Stmt::Let { name, ty, init, .. } => {
             let v = lower_expr(
@@ -1320,7 +1332,26 @@ fn lower_expr(
             });
             dest
         }
-        Expr::Ident { name, .. } => env.get(name).cloned().unwrap_or_else(|| name.clone()),
+        Expr::Ident { name, .. } => {
+            if let Some(v) = env.get(name) {
+                return v.clone();
+            }
+            if let Some((edef, vdef)) = find_variant_in_enums(name, &strings.enums) {
+                if vdef.fields.is_empty() {
+                    *counter += 1;
+                    let dest = format!("t{counter}");
+                    let vidx = enum_variant_index(edef, &vdef.name).unwrap_or(0) as u32;
+                    instructions.push(IrInst::EnumMake {
+                        dest: dest.clone(),
+                        enum_name: edef.name.clone(),
+                        variant_index: vidx,
+                        payload: None,
+                    });
+                    return dest;
+                }
+            }
+            name.clone()
+        }
         Expr::Binary {
             op,
             left,
@@ -1395,9 +1426,11 @@ fn lower_expr(
                 BinOp::Gt => "gt",
                 BinOp::Ge => "ge",
             };
+            let is_float = strings.expr_is_float(left) || strings.expr_is_float(right);
+            let op_s = if is_float { format!("f{op_s}") } else { op_s.to_string() };
             instructions.push(IrInst::Binary {
                 dest: dest.clone(),
-                op: op_s.into(),
+                op: op_s,
                 left: l,
                 right: r,
             });
@@ -1439,6 +1472,11 @@ fn lower_expr(
                 UnOp::Neg => "neg",
                 UnOp::Not => "not",
             };
+            let op_s = if matches!(op, UnOp::Neg) && strings.expr_is_float(expr) {
+                "fneg"
+            } else {
+                op_s
+            };
             instructions.push(IrInst::Binary {
                 dest: dest.clone(),
                 op: op_s.into(),
@@ -1468,6 +1506,15 @@ fn lower_expr(
                     fn_names,
                     strings,
                 ));
+            }
+            if let Some((param, lbody)) = strings.lambdas.get(&fname).cloned() {
+                if let Some(a) = arg_names.first() {
+                    let mut lenv = env.clone();
+                    lenv.insert(param, a.clone());
+                    return lower_expr_simple(
+                        &lbody, instructions, &mut lenv, counter, tensors, fn_names, strings,
+                    );
+                }
             }
             *counter += 1;
             let dest = format!("t{counter}");
@@ -1581,6 +1628,29 @@ fn lower_expr(
                 let src = arg_names[0].clone();
                 if let Some(mut info) = tensor_info_for_ssa(&src, env, tensors) {
                     let n = info.dims.len();
+                    // A static rank-2 F32 tensor is really transposed (new buffer).
+                    if let (2, Some(Dim::Static(r)), Some(Dim::Static(c))) =
+                        (n, info.dims.first().cloned(), info.dims.get(1).cloned())
+                    {
+                        if info.elem == TensorElem::F32 {
+                            let mut dim_ssa = |v: u64, instructions: &mut Vec<IrInst>| {
+                                *counter += 1;
+                                let d = format!("t{counter}");
+                                instructions.push(IrInst::ConstInt { dest: d.clone(), value: v as i64 });
+                                d
+                            };
+                            let rows = dim_ssa(r, instructions);
+                            let cols = dim_ssa(c, instructions);
+                            info.dims.swap(0, 1);
+                            tensors.insert(dest.clone(), info);
+                            instructions.push(IrInst::Call {
+                                dest: Some(dest.clone()),
+                                func: "sal_transpose_f32".into(),
+                                args: vec![src, rows, cols],
+                            });
+                            return dest;
+                        }
+                    }
                     if n >= 2 {
                         info.dims.swap(n - 1, n - 2);
                     }
@@ -2086,6 +2156,44 @@ fn lower_expr(
             });
             dest
         }
+        Expr::Try { expr: inner, .. } => {
+            let v = lower_expr_simple(inner, instructions, env, counter, tensors, fn_names, strings);
+            // Failing variant (`Err` / `None`) of the operand's enum.
+            let fail_tag = match strings.expr_type(inner) {
+                Some(crate::ast::Type::Named { name, .. }) => strings.enums.get(name).and_then(|ed| {
+                    ed.variants
+                        .iter()
+                        .find(|x| x.name == "Err" || x.name == "None")
+                        .map(|x| enum_variant_tag(ed, x))
+                }),
+                _ => None,
+            };
+            let Some(tag) = fail_tag else { return v };
+            *counter += 1;
+            let low = format!("t{counter}");
+            instructions.push(IrInst::BitAnd { dest: low.clone(), left: v.clone(), right: "255".into() });
+            *counter += 1;
+            let tagc = format!("t{counter}");
+            instructions.push(IrInst::ConstInt { dest: tagc.clone(), value: tag });
+            *counter += 1;
+            let cond = format!("t{counter}");
+            instructions.push(IrInst::Binary { dest: cond.clone(), op: "eq".into(), left: low, right: tagc });
+            *counter += 1;
+            let join = format!("t{counter}");
+            instructions.push(IrInst::If {
+                cond,
+                then_body: vec![IrInst::Return { value: v.clone() }],
+                else_body: Vec::new(),
+                then_val: v.clone(),
+                else_val: v.clone(),
+                dest: join,
+                carried: Vec::new(),
+            });
+            *counter += 1;
+            let payload = format!("t{counter}");
+            instructions.push(IrInst::Binary { dest: payload.clone(), op: "div".into(), left: v, right: "256".into() });
+            payload
+        }
         Expr::Field { base, field, .. } => {
             let base_ssa = lower_expr_simple(
                 base,
@@ -2161,6 +2269,24 @@ fn find_variant_in_enums<'a>(
 fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
     match base {
         Expr::Ident { name, .. } => strings.struct_types.get(name).cloned(),
+        // `o.i.a`: the struct type of `o.i` is the declared type of field `i`.
+        Expr::Field { base: inner, field, .. } => {
+            let outer = struct_name_of_base(inner, strings)?;
+            let sdef = strings.structs.get(&outer)?;
+            let f = sdef.fields.iter().find(|f| &f.name == field)?;
+            match &f.ty {
+                crate::ast::Type::Named { name, args, .. }
+                    if args.is_empty() && strings.structs.contains_key(name) =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            }
+        }
+        Expr::Call { func, .. } => match func.as_ref() {
+            Expr::Ident { name, .. } if strings.structs.contains_key(name) => Some(name.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -2313,6 +2439,24 @@ fn lower_match_switch(
                     strings,
                 );
             }
+            Pattern::Ident(vname, _) if find_variant_in_enums(vname, &strings.enums).is_some() => {
+                let (edef, vdef) = find_variant_in_enums(vname, &strings.enums).unwrap();
+                let tag = enum_variant_tag(edef, vdef);
+                let mut arm_env = env.clone();
+                let mut body = Vec::new();
+                let value = lower_expr(
+                    &arm.body,
+                    &mut body,
+                    &mut arm_env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    strings,
+                );
+                switch_arms.push(SwitchArm { tag, body, value });
+            }
             Pattern::Ident(_, _) => {
                 let mut arm_env = env.clone();
                 let mut body = Vec::new();
@@ -2334,7 +2478,10 @@ fn lower_match_switch(
                 });
             }
             Pattern::Variant { name, args, .. } => {
-                let tag = variant_tag_for_name(name) + 1;
+                let tag = match find_variant_in_enums(name, &strings.enums) {
+                    Some((edef, vdef)) => enum_variant_tag(edef, vdef),
+                    None => variant_tag_for_name(name) + 1,
+                };
                 let mut body = Vec::new();
                 let mut arm_env = env.clone();
                 if let Some(Pattern::Ident(bind, _)) = args.first() {
@@ -2447,6 +2594,17 @@ fn match_arm_cond(
             }
             (tag_tmp, env)
         }
+    }
+}
+
+/// Low-byte tag `EnumMake` gives a variant: `index + 1`, except a payload-free
+/// first variant, which is 0.
+fn enum_variant_tag(edef: &crate::ast::EnumDef, vdef: &crate::ast::EnumVariant) -> i64 {
+    let idx = enum_variant_index(edef, &vdef.name).unwrap_or(0) as i64;
+    if vdef.fields.is_empty() && idx == 0 {
+        0
+    } else {
+        idx + 1
     }
 }
 

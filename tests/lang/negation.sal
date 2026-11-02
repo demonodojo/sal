@@ -1,0 +1,3 @@
+# exit: 253
+fn main() -> Int
+    -(3)

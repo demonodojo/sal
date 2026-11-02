@@ -1,0 +1,4 @@
+# exit: 253
+fn main() -> Int
+    x = -3.5
+    float_to_int(x)

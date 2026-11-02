@@ -1,0 +1,6 @@
+# exit: 3
+fn same[T](x: T) -> T
+    x
+
+fn main() -> Int ! alloc
+    str_len(same(d"abc"))

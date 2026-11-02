@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::infer::InferOutput;
@@ -5,18 +8,45 @@ use crate::string_expr::StringEnv;
 
 /// Effects with the types `infer_program` gives this program on its own.
 pub fn check_effects(prog: &Program) -> DiagResult<()> {
-    check_effects_typed(prog, &StringEnv::from_program_inferred(prog))
+    let callees = callee_effects(&[prog]);
+    check_effects_typed(prog, &StringEnv::from_program_inferred(prog), callees)
 }
 
 /// Effects with the types infer already produced (module graphs included).
 pub fn check_effects_with_infer(prog: &Program, out: &InferOutput) -> DiagResult<()> {
-    check_effects_typed(prog, &StringEnv::from_program(prog).with_infer(out))
+    let callees = callee_effects(&[prog]);
+    check_effects_typed(prog, &StringEnv::from_program(prog).with_infer(out), callees)
 }
 
-fn check_effects_typed(prog: &Program, env: &StringEnv) -> DiagResult<()> {
+/// Same, with the declared effects of every function of `programs` (the whole
+/// module graph) so a call to an imported function counts too.
+pub fn check_effects_with_graph(
+    prog: &Program,
+    out: &InferOutput,
+    programs: &[&Program],
+) -> DiagResult<()> {
+    let callees = callee_effects(programs);
+    check_effects_typed(prog, &StringEnv::from_program(prog).with_infer(out), callees)
+}
+
+type CalleeEffects = Rc<HashMap<String, Vec<Effect>>>;
+
+fn callee_effects(programs: &[&Program]) -> CalleeEffects {
+    let mut table = HashMap::new();
+    for p in programs {
+        for item in &p.items {
+            if let Item::Fn(f) = item {
+                table.entry(f.name.clone()).or_insert_with(|| f.effects.clone());
+            }
+        }
+    }
+    Rc::new(table)
+}
+
+fn check_effects_typed(prog: &Program, env: &StringEnv, callees: CalleeEffects) -> DiagResult<()> {
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            check_fn_effects(f, env)?;
+            check_fn_effects(f, env, &callees)?;
         }
     }
     Ok(())
@@ -30,8 +60,9 @@ pub fn fn_body_uses_alloc(f: &FnDef, env: &StringEnv) -> bool {
     used.alloc
 }
 
-fn check_fn_effects(f: &FnDef, env: &StringEnv) -> DiagResult<()> {
+fn check_fn_effects(f: &FnDef, env: &StringEnv, callees: &CalleeEffects) -> DiagResult<()> {
     let mut used = EffectsUsed::default();
+    used.callees = callees.clone();
     let mut strings = env.clone();
     scan_block(&f.body, &mut used, &mut strings);
     for need in used.into_list() {
@@ -53,6 +84,8 @@ fn check_fn_effects(f: &FnDef, env: &StringEnv) -> DiagResult<()> {
 
 #[derive(Default)]
 struct EffectsUsed {
+    /// Declared effects of user functions: calling one performs them too.
+    callees: CalleeEffects,
     io: bool,
     alloc: bool,
     panic: bool,
@@ -120,6 +153,17 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed, strings: &mut StringEnv) {
     match e {
         Expr::Call { func, args, .. } => {
             if let Expr::Ident { name, .. } = func.as_ref() {
+                if let Some(effs) = used.callees.get(name.as_str()).cloned() {
+                    for e in effs {
+                        match e {
+                            Effect::Io => used.io = true,
+                            Effect::Alloc => used.alloc = true,
+                            Effect::Panic => used.panic = true,
+                            Effect::Gpu => used.gpu = true,
+                            Effect::Tpu => used.tpu = true,
+                        }
+                    }
+                }
                 match name.as_str() {
                     "load" | "read_file" | "path_readable" => {
                         used.io = true;

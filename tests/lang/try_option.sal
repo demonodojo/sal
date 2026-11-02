@@ -1,0 +1,15 @@
+# exit: 8
+fn find(x: Int) -> Option[Int]
+    if x > 0
+        Some(x * 2)
+    else
+        None
+
+fn twice(x: Int) -> Option[Int]
+    v = try find(x)
+    Some(v + 0)
+
+fn main() -> Int
+    match twice(4)
+        Some(v) => v
+        None => 0

@@ -1,0 +1,9 @@
+# exit: 4
+# main returns the element sum of the last matmul: A x E11 keeps column 0 -> 1 + 3
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    i = tensor[[1.0, 0.0], [0.0, 1.0]]
+    e = tensor[[1.0, 0.0], [0.0, 0.0]]
+    on cpu
+        matmul(a, e)
+    0
