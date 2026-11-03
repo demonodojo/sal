@@ -1,0 +1,9 @@
+# exit: 1
+# selfhost-xfail: selfhost has no lowering for relu
+# a shape only known at run time aborts instead of silently returning 0
+fn f(a: Tensor[F32, ?, 3] on cpu) -> Int ! alloc
+    argmax(relu(a), 3)
+
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0, 3.0]]
+    f(a)

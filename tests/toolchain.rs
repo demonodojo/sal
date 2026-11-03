@@ -634,3 +634,67 @@ fn sal_selfhost_builds_stage2() {
         "stage2 must not link legacy sal_emit_ir"
     );
 }
+
+/// Fake GitHub API served from a `file://` root: releases list plus one tarball per tag.
+fn fake_github(api: &Path, repo: &str, releases: &[(&str, bool, &str)]) {
+    let base = api.join("repos").join(repo);
+    fs::create_dir_all(base.join("tarball")).expect("api dirs");
+    let mut list = Vec::new();
+    for (tag, prerelease, marker) in releases {
+        let src = tempfile::tempdir().expect("src");
+        let top = src.path().join(format!("owner-repo-{tag}"));
+        fs::create_dir_all(&top).expect("top");
+        fs::write(top.join("pkg.sal"), format!("fn lib_value() -> Int\n    {marker}\n")).expect("pkg");
+        let st = Command::new("tar")
+            .arg("czf")
+            .arg(base.join("tarball").join(tag))
+            .arg("-C")
+            .arg(src.path())
+            .arg(top.file_name().unwrap())
+            .status()
+            .expect("tar");
+        assert!(st.success());
+        list.push(format!(
+            "{{\"tag_name\":\"{tag}\",\"draft\":false,\"prerelease\":{prerelease}}}"
+        ));
+    }
+    fs::write(base.join("releases"), format!("[{}]", list.join(","))).expect("releases");
+}
+
+#[test]
+fn install_github_release_dep_picks_highest_matching_release() {
+    let api = tempfile::tempdir().expect("api");
+    fake_github(
+        api.path(),
+        "owner/repo",
+        &[("v0.1.0", false, "1"), ("v0.1.4", false, "14"), ("v0.2.0", false, "20"), ("v0.1.9", true, "19")],
+    );
+    let cache = tempfile::tempdir().expect("cache");
+    let project = tempfile::tempdir().expect("project");
+    fs::write(
+        project.path().join("Sal.toml"),
+        "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n[dependencies]\nlibx = { github = \"owner/repo\", version = \"0.1\" }\n",
+    )
+    .expect("manifest");
+    let _guard = PACKAGE_ENV_LOCK.lock().expect("package env lock");
+    std::env::set_var("SAL_PACKAGES", cache.path());
+    std::env::set_var("SAL_GITHUB_API", format!("file://{}", api.path().display()));
+    install_packages(project.path(), false).expect("install");
+    let pkg = fs::read_to_string(project.path().join("sal_modules/libx/pkg.sal")).expect("pkg");
+    assert!(pkg.contains("14"), "expected 0.1.4 (not the prerelease 0.1.9 or 0.2.0): {pkg}");
+    let lock = fs::read_to_string(project.path().join("Sal.lock")).expect("lock");
+    assert!(lock.contains("github:owner/repo") && lock.contains("sha256"), "{lock}");
+
+    // A cache wipe re-downloads the same release and verifies the locked checksum.
+    fs::remove_dir_all(cache.path().join("libx-0.1.4")).expect("wipe");
+    install_packages(project.path(), false).expect("reinstall from lock");
+    assert!(project.path().join("sal_modules/libx/pkg.sal").is_file());
+
+    // A tampered tarball is rejected.
+    fs::remove_dir_all(cache.path().join("libx-0.1.4")).expect("wipe");
+    fake_github(api.path(), "owner/repo", &[("v0.1.4", false, "666")]);
+    let err = install_packages(project.path(), false).unwrap_err();
+    std::env::remove_var("SAL_GITHUB_API");
+    drop(_guard);
+    assert!(err.contains("checksum mismatch"), "{err}");
+}

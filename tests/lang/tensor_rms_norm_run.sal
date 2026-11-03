@@ -1,0 +1,7 @@
+# exit: 2
+# selfhost-xfail: selfhost has no lowering for rms_norm
+# unit weights keep the order of the input
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0, 3.0]]
+    w = tensor[[1.0, 1.0, 1.0]]
+    argmax(rms_norm(a, w), 3)

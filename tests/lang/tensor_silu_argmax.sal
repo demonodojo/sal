@@ -1,0 +1,6 @@
+# selfhost-xfail: selfhost does not lower unary minus on tensors (it negates the handle)
+# exit: 2
+# silu is increasing, so the order of -a is kept: -0.5 stays the largest
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0, 0.5]]
+    argmax(silu(-a), 3)

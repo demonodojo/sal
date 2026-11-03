@@ -233,6 +233,7 @@ fn expr_as_f32(e: &Expr) -> Option<f32> {
     match e {
         Expr::Float { value, .. } => Some(*value as f32),
         Expr::Int { value, .. } => Some(*value as f32),
+        Expr::Unary { op: crate::ast::UnOp::Neg, expr, .. } => expr_as_f32(expr).map(|v| -v),
         _ => None,
     }
 }
@@ -274,7 +275,8 @@ pub fn emit_llvm_with_externs(
         s.push('\n');
     }
     s.push_str("%SalBytes = type { ptr, i64 }\n");
-    s.push_str("@sal_bytes_oob = private unnamed_addr constant [20 x i8] c\"bytes: out of bounds\"\n\n");
+    s.push_str("@sal_bytes_oob = private unnamed_addr constant [20 x i8] c\"bytes: out of bounds\"\n");
+    s.push_str("@sal_tensor_shape_unknown = private unnamed_addr constant [46 x i8] c\"tensor op needs a shape known at compile time\\00\"\n\n");
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare i64 @sal_float_to_int(i64)\n");
     s.push_str("declare i64 @sal_int_to_float(i64)\n");
@@ -292,6 +294,8 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_softmax_axis_f32(ptr, i64, i64)\n");
     s.push_str("declare void @sal_transpose_f32(ptr, ptr, i64, i64)\n");
     s.push_str("declare void @sal_silu_f32(ptr, ptr, i64)\n");
+    s.push_str("declare void @sal_relu_f32(ptr, ptr, i64)\n");
+    s.push_str("declare void @sal_reduce_strided_f32(ptr, ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_rope_f32(ptr, i64, i64, i64)\n");
     s.push_str("declare void @sal_rms_norm_f32(ptr, ptr, ptr, i64, double)\n");
     s.push_str("declare i64 @sal_argmax_axis_f32(ptr, i64)\n");
@@ -595,7 +599,8 @@ fn fn_has_tensor_call(f: &IrFunction) -> bool {
                 func.as_str(),
                 "sal_softmax" | "sal_softmax_f32" | "sal_softmax_axis_f32" | "sal_silu"
                     | "sal_silu_f32" | "sal_rope" | "sal_attention_f32" | "sal_qmatmul_f32"
-                    | "sal_argmax" | "sal_argmax_axis_f32"
+                    | "sal_argmax" | "sal_argmax_axis_f32" | "sal_relu" | "sal_rms_norm"
+                    | "sal_reduce"
             )
         )
     })
@@ -1099,7 +1104,8 @@ fn emit_host_tensor_fn(
                         | "sal_argmax" | "sal_relu" | "sal_rms_norm" | "sal_reduce"
                 ) =>
             {
-                if let Some(a) = args.first() {
+                let operands = if func == "sal_rms_norm" { 2 } else { 1 };
+                for a in args.iter().take(operands) {
                     if !needed.contains(a) {
                         needed.push(a.clone());
                     }
@@ -1658,8 +1664,91 @@ fn emit_host_tensor_fn(
                             ssa_elems.insert(d.clone(), len);
                             s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
                         }
-                    } else if let Some(d) = dest {
-                        s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+                    } else {
+                        s.push_str("  call void @sal_panic(ptr @sal_tensor_shape_unknown)\n");
+                        if let Some(d) = dest {
+                            s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+                        }
+                    }
+                } else if (func == "sal_relu" || func == "sal_rms_norm") && !args.is_empty() {
+                    let input = args[0].as_str();
+                    let len = ssa_elems.get(input).copied().unwrap_or_else(|| {
+                        tensors
+                            .get(input)
+                            .map(|t| t.rows.saturating_mul(t.cols))
+                            .unwrap_or(0)
+                    });
+                    uid += 1;
+                    let out = format!("elt_{uid}");
+                    if len > 0 {
+                        let nbytes = len.saturating_mul(4);
+                        emit_alloc_place(opts, &out, nbytes, 0, "elt", s);
+                        owned.push(out.clone());
+                        let in_ptr = ptrs.get(input).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                        if func == "sal_relu" {
+                            s.push_str(&format!(
+                                "  call void @sal_relu_f32(ptr %{out}, ptr {in_ptr}, i64 {len})\n"
+                            ));
+                        } else {
+                            let w_ptr = args
+                                .get(1)
+                                .and_then(|w| ptrs.get(w))
+                                .map(|p| format!("%{p}"))
+                                .unwrap_or_else(|| "null".into());
+                            s.push_str(&format!(
+                                "  call void @sal_rms_norm_f32(ptr %{out}, ptr {in_ptr}, ptr {w_ptr}, i64 {len}, double 0x3EE4F8B588E368F1)\n"
+                            ));
+                        }
+                        if let Some(d) = dest {
+                            ptrs.insert(d.clone(), out.clone());
+                            ssa_elems.insert(d.clone(), len);
+                            s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+                        }
+                    } else {
+                        s.push_str("  call void @sal_panic(ptr @sal_tensor_shape_unknown)\n");
+                        if let Some(d) = dest {
+                            s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+                        }
+                    }
+                } else if func == "sal_reduce" && !args.is_empty() {
+                    let input = args[0].as_str();
+                    let shape = tensors.get(input).map(|t| (t.rows, t.cols));
+                    let total = ssa_elems
+                        .get(input)
+                        .copied()
+                        .or_else(|| shape.map(|(r, c)| r.saturating_mul(c)))
+                        .unwrap_or(0);
+                    // (outer, axis_len, inner) of the reduced axis; no axis folds everything.
+                    let axis = args.get(1).and_then(|a| consts.get(a)).copied();
+                    let dims = match (axis, shape) {
+                        (None, _) => Some((1, total, 1)),
+                        (Some(0), Some((r, c))) if c > 0 => Some((1, r, c)),
+                        (Some(1), Some((r, c))) if c > 0 => Some((r, c, 1)),
+                        _ => None,
+                    };
+                    uid += 1;
+                    let out = format!("red_{uid}");
+                    match dims {
+                        Some((outer, axis_len, inner)) if total > 0 => {
+                            let n = outer.saturating_mul(inner);
+                            emit_alloc_place(opts, &out, n.saturating_mul(4), 0, "red", s);
+                            owned.push(out.clone());
+                            let in_ptr = ptrs.get(input).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
+                            s.push_str(&format!(
+                                "  call void @sal_reduce_strided_f32(ptr {in_ptr}, ptr %{out}, i64 {outer}, i64 {axis_len}, i64 {inner})\n"
+                            ));
+                            if let Some(d) = dest {
+                                ptrs.insert(d.clone(), out.clone());
+                                ssa_elems.insert(d.clone(), n);
+                                s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+                            }
+                        }
+                        _ => {
+                            s.push_str("  call void @sal_panic(ptr @sal_tensor_shape_unknown)\n");
+                            if let Some(d) = dest {
+                                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+                            }
+                        }
                     }
                 } else if func == "sal_attention_f32" && args.len() >= 8 {
                     let q = ptrs.get(&args[0]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());

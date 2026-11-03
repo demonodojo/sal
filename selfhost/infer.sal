@@ -776,6 +776,16 @@ fn infer_binary(c: Int, e: Int) -> Int ! alloc
     rt = infer_expr(c, vec_get(e, 3))
     op = vec_get(e, 1)
     if ty_is_tensor(lt) + ty_is_tensor(rt) > 0
+        if ty_is_tensor(lt) == 0
+            if ty_is_tensor(rt) == 1
+                if infer_scalar_left_unsupported(op) == 1
+                    _f = ic_fail(c, "a scalar on the left of / % << >> with a tensor is not supported; put the tensor on the left")
+                else
+                    _f = 0
+            else
+                _f = 0
+        else
+            _f = 0
         infer_tensor_binary(c, op, lt, rt)
     elsif str_eq(op, "add") == 1
         if ty_is(lt, d"String") == 1
@@ -813,6 +823,18 @@ fn infer_binary(c: Int, e: Int) -> Int ! alloc
         it(d"Int")
     else
         infer_numeric(c, lt, rt)
+
+fn infer_scalar_left_unsupported(op: Int) -> Int ! alloc
+    if str_eq(op, "div") == 1
+        1
+    elsif str_eq(op, "mod") == 1
+        1
+    elsif str_eq(op, "shl") == 1
+        1
+    elsif str_eq(op, "shr") == 1
+        1
+    else
+        0
 
 fn infer_numeric(c: Int, lt: Int, rt: Int) -> Int ! alloc
     if ty_numeric(lt) == 0

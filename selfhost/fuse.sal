@@ -764,6 +764,40 @@ fn lower_container_new(cx: Int, e: Int, d: Int, nkinds: Int) -> Int ! alloc
 fn lower_call_runtime(cx: Int, e: Int, fname: Int, args: Int) -> Int ! alloc
     out = vec_new()
     arg_names = lower_args(cx, args, 0, vec_len(args), out)
+    src = map_lambda_source(cx, fname, args, arg_names)
+    if src != 0
+        lower_map_lambda(cx, src, vec_get(arg_names, 0), vec_get(args, 1))
+    else
+        lower_call_runtime_go(cx, e, fname, args, arg_names)
+
+# `map(t, x => body)` over a tensor: the tensor bind it reads, or 0.
+fn map_lambda_source(cx: Int, fname: Int, args: Int, arg_names: Int) -> Int ! alloc
+    if str_eq(fname, "map") == 0
+        0
+    elsif vec_len(args) != 2
+        0
+    elsif ex_kind(vec_get(args, 1)) != EX_LAMBDA()
+        0
+    else
+        find_tensor(cx, vec_get(arg_names, 0))
+
+# The body is lowered with the parameter bound to the tensor, so its operators
+# become tensor ops.
+fn lower_map_lambda(cx: Int, src: Int, arg: Int, lam: Int) -> Int ! alloc
+    param = vec_get(lam, 1)
+    prev = cx_find(cx, param)
+    b = bind_new(param, arg)
+    _t = bind_set_tensor(b, 1)
+    _e = bind_set_elem(b, bind_elem(src))
+    _p = bind_set_place(b, bind_place(src))
+    _n = bind_set_ndims(b, bind_ndims(src))
+    _g = register_tensor_ssa_go(b, bind_dims(src), bind_concrete(src), 0, bind_ndims(src))
+    _m = map_put(cx_bind_map(cx), param, b)
+    r = lower_expr(cx, vec_get(lam, 2))
+    _u = map_put(cx_bind_map(cx), param, prev)
+    r
+
+fn lower_call_runtime_go(cx: Int, e: Int, fname: Int, args: Int, arg_names: Int) -> Int ! alloc
     d = fresh(cx)
     if str_eq(str_from_int(fname), d"load") == 1
         if vec_len(args) > 0
@@ -1615,9 +1649,21 @@ fn try_lower_tensor_bin(cx: Int, e: Int, l: Int, r: Int, d: Int) -> Int ! alloc
 
 # Element count operand: a 1-D tensor keeps its symbolic axis; otherwise the
 # product of the extents as a constant (1 when an extent is unknown).
+# A 1-D tensor with a known extent gets a constant; otherwise its symbolic axis.
+fn tensor_len_axis0(cx: Int, b: Int, tensor_ssa: Int) -> Int ! alloc
+    conc = bind_concrete(b)
+    if vec_len(conc) == 0
+        tensor_len_ssa_name(tensor_ssa)
+    elsif vec_get(conc, 0) < 0
+        tensor_len_ssa_name(tensor_ssa)
+    else
+        d = fresh(cx)
+        _p = push_const_int(cx, d, vec_get(conc, 0))
+        d
+
 fn tensor_len_operand(cx: Int, b: Int, tensor_ssa: Int) -> Int ! alloc
     if bind_ndims(b) == 1
-        tensor_len_ssa_name(tensor_ssa)
+        tensor_len_axis0(cx, b, tensor_ssa)
     else
         conc = bind_concrete(b)
         prod = conc_product_go(conc, 0, vec_len(conc), 1)

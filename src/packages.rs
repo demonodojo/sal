@@ -23,6 +23,8 @@ struct ManifestFile {
 struct DepSpec {
     path: Option<String>,
     git: Option<String>,
+    /// GitHub repository `owner/repo`; `version` selects a release (tag `vX.Y.Z`).
+    github: Option<String>,
     version: Option<String>,
     /// Subdirectory of the compiler's `std/` (e.g. `"io"`), linked as `sal_modules/<name>`.
     std: Option<String>,
@@ -40,6 +42,9 @@ pub struct LockPackage {
     pub version: String,
     pub git: String,
     pub rev: String,
+    /// SHA-256 of the release tarball (GitHub release dependencies only).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha256: String,
 }
 
 pub fn packages_cache_dir() -> PathBuf {
@@ -180,6 +185,7 @@ fn resolve_git_dep(name: &str, url: &str, req: &str) -> Result<LockPackage, Stri
         version: tag.version.to_string(),
         git: url.to_string(),
         rev: tag.rev.clone(),
+        sha256: String::new(),
     })
 }
 
@@ -230,7 +236,111 @@ fn ensure_package_checkout(pkg: &LockPackage) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve git dependencies, update cache, write `Sal.lock`.
+// ---------------------------------------------------------------- GitHub releases
+
+const GITHUB_PREFIX: &str = "github:";
+
+/// API root (`SAL_GITHUB_API` overrides it; `file://` roots are used by the tests).
+fn github_api() -> String {
+    match std::env::var("SAL_GITHUB_API") {
+        Ok(v) if !v.is_empty() => v.trim_end_matches('/').to_string(),
+        _ => "https://api.github.com".to_string(),
+    }
+}
+
+fn http_get(url: &str) -> Result<Vec<u8>, String> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["-fsSL", "-H", "Accept: application/vnd.github+json", "-H", "User-Agent: sal"]);
+    if let Ok(tok) = std::env::var("GITHUB_TOKEN") {
+        if !tok.is_empty() {
+            cmd.args(["-H", &format!("Authorization: Bearer {tok}")]);
+        }
+    }
+    let out = cmd.arg(url).output().map_err(|e| format!("curl failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "download failed for {url}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(out.stdout)
+}
+
+/// Highest published (non-draft, non-prerelease) release of `repo` matching `req`.
+fn resolve_github_dep(name: &str, repo: &str, req: &str) -> Result<LockPackage, String> {
+    let requirement = version_req(req)?;
+    let url = format!("{}/repos/{repo}/releases?per_page=100", github_api());
+    let body = http_get(&url)?;
+    let releases: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("releases of {repo}: invalid JSON: {e}"))?;
+    let mut best: Option<(Version, String)> = None;
+    for r in releases.as_array().into_iter().flatten() {
+        if r["draft"].as_bool().unwrap_or(false) || r["prerelease"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let Some(tag) = r["tag_name"].as_str() else { continue };
+        let Some(v) = parse_tag_version(tag) else { continue };
+        if requirement.matches(&v) && best.as_ref().map_or(true, |(b, _)| v > *b) {
+            best = Some((v, tag.to_string()));
+        }
+    }
+    let Some((version, tag)) = best else {
+        return Err(format!(
+            "dependency `{name}`: no GitHub release matching `{req}` in {repo}"
+        ));
+    };
+    Ok(LockPackage {
+        name: name.to_string(),
+        version: version.to_string(),
+        git: format!("{GITHUB_PREFIX}{repo}"),
+        rev: tag,
+        sha256: String::new(),
+    })
+}
+
+/// Download the release tarball into the cache (if missing) and verify/record its SHA-256.
+fn ensure_github_package(pkg: &mut LockPackage) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let dest = package_cache_path(&pkg.name, &pkg.version);
+    if dest.is_dir() {
+        return Ok(());
+    }
+    let repo = pkg.git.trim_start_matches(GITHUB_PREFIX);
+    let bytes = http_get(&format!("{}/repos/{repo}/tarball/{}", github_api(), pkg.rev))?;
+    let sum = hex::encode(Sha256::digest(&bytes));
+    if !pkg.sha256.is_empty() && pkg.sha256 != sum {
+        return Err(format!(
+            "package `{}` {}: checksum mismatch (Sal.lock {}, downloaded {sum})",
+            pkg.name, pkg.version, pkg.sha256
+        ));
+    }
+    pkg.sha256 = sum;
+    let cache = packages_cache_dir();
+    fs::create_dir_all(&cache).map_err(|e| format!("{}: {e}", cache.display()))?;
+    let tmp = cache.join(format!(".{}-{}.tmp", pkg.name, pkg.version));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let tgz = tmp.join("release.tar.gz");
+    fs::write(&tgz, &bytes).map_err(|e| e.to_string())?;
+    let out = tmp.join("src");
+    fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let st = Command::new("tar")
+        .args(["xzf"])
+        .arg(&tgz)
+        .args(["--strip-components=1", "-C"])
+        .arg(&out)
+        .status()
+        .map_err(|e| format!("tar failed: {e}"))?;
+    if !st.success() {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(format!("could not extract the release of `{}`", pkg.name));
+    }
+    fs::rename(&out, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    let _ = fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+/// Resolve git and GitHub-release dependencies, update cache, write `Sal.lock`.
 pub fn fetch_packages(project_root: &Path, update: bool) -> Result<(), String> {
     let manifest = read_manifest(project_root)?;
     let old_lock = read_lock(project_root);
@@ -243,6 +353,17 @@ pub fn fetch_packages(project_root: &Path, update: bool) -> Result<(), String> {
     let mut packages: Vec<LockPackage> = Vec::new();
 
     for (name, spec) in manifest.dependencies {
+        if let (Some(repo), Some(ver)) = (spec.github.clone(), spec.version.clone()) {
+            let src = format!("{GITHUB_PREFIX}{repo}");
+            let reuse = if update { None } else { old_by_name.remove(&name) };
+            let mut pkg = match reuse {
+                Some(e) if e.git == src && version_req(&ver)?.matches(&Version::parse(&e.version).unwrap_or(Version::new(0, 0, 0))) => e,
+                _ => resolve_github_dep(&name, &repo, &ver)?,
+            };
+            ensure_github_package(&mut pkg)?;
+            packages.push(pkg);
+            continue;
+        }
         let (Some(url), Some(ver)) = (spec.git, spec.version) else {
             continue;
         };
@@ -315,7 +436,7 @@ pub fn install_packages(
             let p = project_root.join(rel);
             p.canonicalize()
                 .map_err(|e| format!("dependency `{name}`: path {}: {e}", p.display()))?
-        } else if spec.git.is_some() {
+        } else if spec.git.is_some() || spec.github.is_some() {
             let pkg = lock
                 .package
                 .iter()
@@ -337,7 +458,7 @@ pub fn install_packages(
             p
         } else {
             return Err(format!(
-                "dependency `{name}` needs `path`, `git` + `version`, or `std`"
+                "dependency `{name}` needs `path`, `git` + `version`, `github` + `version`, or `std`"
             ));
         };
         if !target.is_dir() {
@@ -371,6 +492,7 @@ mod tests {
                 version: "0.2.0".into(),
                 git: "file:///tmp/x".into(),
                 rev: "abc".into(),
+                sha256: String::new(),
             }],
         };
         let text = toml::to_string_pretty(&lock).expect("serialize");

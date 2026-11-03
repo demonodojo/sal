@@ -290,6 +290,27 @@ void sal_reduce_axis_f32(const float *in, float *out, int64_t outer, int64_t axi
     }
 }
 
+void sal_relu_f32(float *out, const float *in, int64_t len) {
+    for (int64_t i = 0; i < len; i++) {
+        float x = in[i];
+        out[i] = x > 0.f ? x : 0.f;
+    }
+}
+
+/* Sum over the middle axis of an [outer, axis_len, inner] tensor, ascending index. */
+void sal_reduce_strided_f32(const float *in, float *out, int64_t outer, int64_t axis_len,
+                            int64_t inner) {
+    for (int64_t o = 0; o < outer; o++) {
+        for (int64_t k = 0; k < inner; k++) {
+            float sum = 0.f;
+            for (int64_t i = 0; i < axis_len; i++) {
+                sum += in[(o * axis_len + i) * inner + k];
+            }
+            out[o * inner + k] = sum;
+        }
+    }
+}
+
 void sal_silu_f32(float *out, const float *in, int64_t len) {
     for (int64_t i = 0; i < len; i++) {
         float x = in[i];

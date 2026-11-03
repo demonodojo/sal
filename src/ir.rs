@@ -1516,6 +1516,22 @@ fn lower_expr(
                     );
                 }
             }
+            if fname == "map" && arg_names.len() == 2 {
+                // Elementwise lambda: bind the parameter to the tensor and lower the
+                // body with the tensor operators.
+                if let Expr::Lambda { params, body, .. } = &args[1] {
+                    if let (Some(p), true) = (
+                        params.first(),
+                        tensor_info_for_ssa(&arg_names[0], env, tensors).is_some(),
+                    ) {
+                        let mut lenv = env.clone();
+                        lenv.insert(p.clone(), arg_names[0].clone());
+                        return lower_expr_simple(
+                            body, instructions, &mut lenv, counter, tensors, fn_names, strings,
+                        );
+                    }
+                }
+            }
             *counter += 1;
             let dest = format!("t{counter}");
             if fname == "load" {
@@ -2706,6 +2722,9 @@ fn axis_len_ssa(
         return name;
     };
     if t.dims.len() < 2 {
+        if let Some(d) = t.dims.first() {
+            return axis_len_ssa_for_dim(t, tensor, 0, d, dim_params, instructions, counter);
+        }
         let name = format!("{tensor}_d0");
         return name;
     }
@@ -2847,6 +2866,41 @@ fn try_tensor_bin(
     let info = tensor_info_for_ssa(tensor_side, env, tensors)?;
     let len = tensor_len_operand(&info, tensor_side, dim_params, instructions, counter);
     let place = tensor_place_name(&info, env);
+    // `scalar op tensor`: the kernel takes the scalar on the right, so swap the
+    // operands (flipping order comparisons) or rewrite `s - t` as `-t + s`.
+    let scalar_left = !expr_has_tensor(left, env, tensors);
+    let mut op = op.clone();
+    let mut sub_neg: Option<String> = None;
+    if scalar_left {
+        op = match op {
+            BinOp::Lt => BinOp::Gt,
+            BinOp::Le => BinOp::Ge,
+            BinOp::Gt => BinOp::Lt,
+            BinOp::Ge => BinOp::Le,
+            BinOp::Sub => {
+                *counter += 1;
+                let neg = format!("t{counter}");
+                instructions.push(IrInst::TensorUnary {
+                    dest: neg.clone(),
+                    op: "neg".into(),
+                    elem: info.elem,
+                    place: place.clone(),
+                    input: tensor_side.to_string(),
+                    len: len.clone(),
+                });
+                tensors.insert(neg.clone(), info.clone());
+                sub_neg = Some(neg);
+                BinOp::Add
+            }
+            other => other,
+        };
+    }
+    let op = &op;
+    let (l_ssa, other_ssa) = match (scalar_left, sub_neg.as_deref()) {
+        (false, _) => (l_ssa, other_ssa),
+        (true, Some(neg)) => (neg, l_ssa),
+        (true, None) => (r_ssa, l_ssa),
+    };
     let op_s = match op {
         BinOp::Add => "add",
         BinOp::Sub => "sub",

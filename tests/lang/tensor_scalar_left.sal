@@ -1,0 +1,6 @@
+# selfhost-xfail: selfhost has no tensor negate, so scalar - tensor is wrong
+# exit: 6
+# scalar on the left: 10 - a reverses the order, 2 * a keeps it
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 3.0, 2.0]]
+    argmax(10.0 - a, 3) + argmax(2.0 * a, 3) * 4 + argmax(2.0 + a, 3) * 2

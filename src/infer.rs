@@ -529,6 +529,16 @@ Expr::Int { .. } => Type::Named {
         } => {
             let lt = check_expr(left, env, ctx, types, entries)?;
             let rt = check_expr(right, env, ctx, types, entries)?;
+            if tensor_dims(&lt).is_none()
+                && tensor_dims(&rt).is_some()
+                && matches!(op, BinOp::Div | BinOp::Mod | BinOp::Shl | BinOp::Shr)
+            {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "a scalar on the left of / % << >> with a tensor is not supported; put the tensor on the left",
+                    *span,
+                )]);
+            }
             if tensor_dims(&lt).is_some() || tensor_dims(&rt).is_some() {
                 return infer_tensor_binary(*op, &lt, &rt, *span);
             }

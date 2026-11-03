@@ -1,0 +1,5 @@
+# exit: 1
+# index of the largest of 1.0, 2.0, 0.5
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0, 0.5]]
+    argmax(a, 3)

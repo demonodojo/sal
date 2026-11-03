@@ -1,0 +1,10 @@
+# exit: 0
+fn scale(v: Tensor[F32, 4] on gpu) -> Tensor[F32, 4] on gpu ! gpu
+    on gpu
+        v * 2.0 + v
+
+fn main() -> Int ! alloc, gpu
+    x = tensor[[1.0, 2.0, 3.0, 4.0]]
+    xg = to gpu x
+    _ = scale(xg)
+    0

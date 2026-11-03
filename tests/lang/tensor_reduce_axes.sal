@@ -1,0 +1,8 @@
+# exit: 7
+# selfhost-xfail: selfhost has no lowering for reduce
+# rows sum to 3 and 12, columns to 5, 7, 3: argmax over rows = 1, over columns = 1
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0, 0.0], [4.0, 5.0, 3.0]]
+    r = reduce(a, 1)
+    c = reduce(a, 0)
+    argmax(r, 2) + argmax(c, 3) * 3 + 3

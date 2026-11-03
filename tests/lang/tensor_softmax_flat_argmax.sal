@@ -1,0 +1,6 @@
+# selfhost-xfail: selfhost does not lower unary minus on tensors (it negates the handle)
+# exit: 2
+# softmax keeps the order of its input
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0, 0.5]]
+    argmax(softmax(-a), 3)

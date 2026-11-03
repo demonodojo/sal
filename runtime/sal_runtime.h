@@ -16,6 +16,9 @@ void sal_gpu_matmul_f32(const float *a, const float *b, float *out, int64_t m, i
 void sal_softmax_f32(float *data, int64_t len);
 void sal_softmax_axis_f32(float *data, int64_t outer, int64_t axis_len);
 void sal_reduce_axis_f32(const float *in, float *out, int64_t outer, int64_t axis_len);
+void sal_relu_f32(float *out, const float *in, int64_t len);
+void sal_reduce_strided_f32(const float *in, float *out, int64_t outer, int64_t axis_len,
+                            int64_t inner);
 void sal_silu_f32(float *out, const float *in, int64_t len);
 void sal_rms_norm_f32(float *out, const float *in, const float *weight, int64_t len,
                       double eps);

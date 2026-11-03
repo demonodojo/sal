@@ -1,0 +1,6 @@
+# exit: 2
+# selfhost-xfail: selfhost has no lowering for relu
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 0.0, 5.0]]
+    b = a
+    argmax(relu(b), 3)

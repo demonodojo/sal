@@ -1,0 +1,5 @@
+# error: E_TYPE
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0]]
+    b = 1.0 / a
+    0
