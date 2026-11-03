@@ -480,7 +480,7 @@ pub fn emit_llvm_with_externs(
 
     for f in &m.functions {
         if f.name == "main" {
-            if fn_has_matmul(f) || fn_has_load(f) {
+            if fn_has_matmul(f) || fn_has_load(f) || fn_has_tensor_call(f) {
                 emit_host_tensor_fn(
                     f,
                     opts,
@@ -495,7 +495,7 @@ pub fn emit_llvm_with_externs(
             }
         } else if fn_is_fused_matmul_stub(f) {
             emit_matmul_fn(f, &mut s);
-        } else if fn_has_matmul(f) || fn_has_load(f) {
+        } else if fn_has_matmul(f) || fn_has_load(f) || fn_has_tensor_call(f) {
             emit_host_tensor_fn(
                 f,
                 opts,
@@ -582,6 +582,21 @@ fn fn_has_load(f: &IrFunction) -> bool {
         matches!(
             i,
             IrInst::Call { func, .. } if func == "sal_load" || func == "sal_load_f32"
+        )
+    })
+}
+
+/// Calls only the host-tensor emitter lowers (the general emitter would drop them).
+fn fn_has_tensor_call(f: &IrFunction) -> bool {
+    f.instructions.iter().any(|i| {
+        matches!(
+            i,
+            IrInst::Call { func, .. } if matches!(
+                func.as_str(),
+                "sal_softmax" | "sal_softmax_f32" | "sal_softmax_axis_f32" | "sal_silu"
+                    | "sal_silu_f32" | "sal_rope" | "sal_attention_f32" | "sal_qmatmul_f32"
+                    | "sal_argmax" | "sal_argmax_axis_f32"
+            )
         )
     })
 }
@@ -1081,7 +1096,7 @@ fn emit_host_tensor_fn(
                 if matches!(
                     func.as_str(),
                     "sal_transpose_f32" | "sal_silu" | "sal_softmax" | "sal_softmax_axis_f32" | "sal_softmax_f32" | "sal_silu_f32" | "sal_transpose" | "sal_reshape" | "sal_rope"
-                        | "sal_relu" | "sal_rms_norm" | "sal_reduce"
+                        | "sal_argmax" | "sal_relu" | "sal_rms_norm" | "sal_reduce"
                 ) =>
             {
                 if let Some(a) = args.first() {
@@ -1262,6 +1277,9 @@ fn emit_host_tensor_fn(
                     *right_scalar,
                     *elem,
                 );
+                if let Some(n) = consts.get(len.as_str()).filter(|n| **n > 0) {
+                    ssa_elems.insert(dest.clone(), *n as u64);
+                }
             }
             IrInst::TensorUnary {
                 dest,
@@ -1286,6 +1304,9 @@ fn emit_host_tensor_fn(
                     len,
                     *elem,
                 );
+                if let Some(n) = consts.get(len.as_str()).filter(|n| **n > 0) {
+                    ssa_elems.insert(dest.clone(), *n as u64);
+                }
             }
             IrInst::Return { value } => {
                 if value.starts_with('t') {
@@ -1691,7 +1712,7 @@ fn emit_host_tensor_fn(
                         ptrs.insert(d.clone(), out.clone());
                         s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
                     }
-                } else if func == "sal_argmax_axis_f32" && !args.is_empty() {
+                } else if (func == "sal_argmax_axis_f32" || func == "sal_argmax") && !args.is_empty() {
                     let p = ptrs.get(&args[0]).map(|x| format!("%{x}")).unwrap_or_else(|| "null".into());
                     let len = args.get(1).map(|a| i64_operand(a, &consts)).unwrap_or_else(|| "1".into());
                     if let Some(d) = dest {

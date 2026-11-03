@@ -2397,6 +2397,8 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: String, args: Int, ops: Int) -> Int
         n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
         _a = cc_line(cc, "  " + cir_call_expr(cc, d"sal_softmax_f32", cir_vec2(cir_arg(ops, 0), n)) + ";\n")
         cir_set(cc, dest, cir_arg(ops, 0))
+    elsif str_eq(fname, d"sal_argmax") == 1
+        cir_set(cc, dest, cir_call_expr(cc, d"sal_argmax_axis_f32", cir_vec2(cir_arg(ops, 0), cir_arg(ops, 1))))
     elsif str_eq(fname, d"sal_attention_f32") == 1
         cir_attention(cc, dest, ops)
     elsif str_eq(fname, d"sal_load") == 1
@@ -2798,6 +2800,8 @@ fn cir_tensor_call(f: String) -> Int ! alloc
     elsif str_eq(f, d"sal_silu") == 1
         1
     elsif str_eq(f, d"sal_softmax") == 1
+        1
+    elsif str_eq(f, d"sal_argmax") == 1
         1
     elsif str_eq(f, d"sal_transpose_f32") == 1
         1
