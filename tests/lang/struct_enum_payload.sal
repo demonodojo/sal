@@ -1,0 +1,19 @@
+# exit: 9
+# selfhost-xfail: selfhost does not know the struct type of a match-bound payload
+enum Opt
+    Non
+    Som(P)
+
+struct P
+    x: Int
+    y: Int
+
+fn find(n: Int) -> Opt ! alloc
+    if n > 0
+        return Som(P(n, n + 1))
+    Non
+
+fn main() -> Int ! alloc
+    match find(4)
+        Som(p) => p.x + p.y
+        Non => 0

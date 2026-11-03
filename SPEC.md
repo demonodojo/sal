@@ -25,10 +25,13 @@ program      → item_list
 item_list    → item_list item
              | ε
 item         → import_def
-             | struct_def
+             | attr_list struct_def
              | enum_def
              | frame_def
-             | fn_def
+             | attr_list fn_def
+attr_list    → attr_list attr
+             | ε
+attr         → "@" IDENT ("(" IDENT ")" | ε)
 
 import_def   → "import" path import_as
 import_as    → "as" IDENT
@@ -86,7 +89,7 @@ effect       → "io" | "alloc" | "panic" | "gpu" | "tpu"
 block        → line_list
 line_list    → line_list line
              | ε
-line         → "let" IDENT (":" type | ε) "=" expr
+line         → attr_list "let" IDENT (":" type | ε) "=" expr
              | "return" (expr | ε)
              | "while" expr suite
              | expr ("=" expr | ε)
@@ -231,16 +234,28 @@ expr ⇒ lambda ⇒ cmp ⇒ add
 
 El árbol es `Binary(Sub, Binary(Sub, 1, 2), 3)`.
 
+### Atributos
+
+El arranque admite cuatro atributos, cada uno en un solo sitio. Pueden ir en líneas propias antes del item o del `let`. Cualquier otro nombre, un atributo en otro sitio, un argumento que no sea el indicado o un `@` suelto es `E_PARSE`.
+
+| Atributo | Va delante de | Regla (la violación es `E_TYPE`) |
+|----------|---------------|----------------------------------|
+| `@frozen` | `let` | El binding no se reasigna |
+| `@stack` | `let` | El tipo es de stack y construirlo no asigna |
+| `@no_heap` | `fn` | La función no asigna, no recibe ni devuelve un tipo de heap y no tiene `let` de heap |
+| `@layout(c)` | `struct` | Los campos son solo `Int`, `Float` o `Bool`; `@layout(otro)` es `E_PARSE` |
+
+Un tipo es de stack si es `Int`, `Float`, `Bool`, `Unit` o un `struct` sin argumentos de tipo cuyos campos lo son. `String`, `List`, `Dict`, `Tensor`, funciones y genéricos son de heap.
+
 ### Reservado
 
 No forman parte del arranque. El parser que las ve emite `E_PARSE` hasta su fase:
 
 ```text
-attr         → "@" IDENT ("(" IDENT ")" | ε)
 parallel_expr → "parallel" suite
 ```
 
-`@frozen`, `@stack`, `@layout`, `@resource`, `@shared`, `@arena`, `@no_heap` y `@copy` usan `attr`. `any Protocol` no tiene producción propia: cuando exista, será un `named_type`.
+`@resource`, `@shared`, `@arena`, `@copy`, `@unique` y `@no_gc` usan `attr` pero no están admitidos. `any Protocol` no tiene producción propia: cuando exista, será un `named_type`.
 
 ## Tipos
 
@@ -257,7 +272,7 @@ parallel_expr → "parallel" suite
 
 Los tipos nominales no se mezclan: `Int`, `String` y un `struct`/`enum` distinto son incompatibles salvo conversión explícita (p. ej. `.campo` en un newtype de un solo campo). `+` con `String` a la izquierda no es una excepción: exige `String` también a la derecha, y un asa `Int` se convierte explícitamente con `str_from_int` (o se formatea con `int_to_str`).
 
-Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos. Un `struct` de un solo campo es un **newtype transparente**: misma representación que el campo en IR/LLVM. Un enum se construye con el nombre de variante (`None`, `Some(x)`, …); en ejecución vale un `i64` con tag en el byte bajo y payload desplazado 8 bits cuando aplica.
+Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos. Un `struct` de un solo campo es un **newtype transparente**: misma representación que el campo en IR/LLVM. Un `struct` de dos o más campos es un **valor**: se copia al asignarlo, al pasarlo y al devolverlo, y `p.x = v` actualiza solo esa copia. El compilador lo reparte en un registro por campo (los structs anidados, aplanados), sin reservar memoria: un parámetro struct son sus campos como parámetros, y un resultado struct se escribe en un búfer de pila del llamador. Solo se encajona en el heap (un bloque de `i64`, uno por campo) cuando entra en algo que guarda `i64` sin tipo: contenedores (`List`, `Dict`), el payload de un enum y las funciones del runtime. Quedan fuera del reparto los structs genéricos y los que tienen un campo `Tensor` (los `frame`). Un enum se construye con el nombre de variante (`None`, `Some(x)`, …); en ejecución vale un `i64` con tag en el byte bajo y payload desplazado 8 bits cuando aplica.
 
 Lugar: `cpu`, `gpu`, `tpu` o parámetro `p`.
 
@@ -281,10 +296,11 @@ Ruta inexistente, choque de nombre entre importados aplanados o con items locale
 
 ## Memoria
 
-- Stack por defecto; heap para `String`, `List`, tensores.
+- Stack por defecto; heap para `String`, `List`, tensores. Un `struct` de varios campos va en registros (ver «Un `struct` se construye…»).
 - Move por defecto; copy solo tipos triviales.
 - Préstamo solo en argumento de llamada.
-- `@frozen`, `@stack`, `@layout(c)`, `@resource` (fase posterior parcial).
+- Atributos admitidos: `@frozen`, `@stack`, `@no_heap`, `@layout(c)` (ver Atributos). `@resource` y el resto, reservados.
+- Un `struct` es un valor: asignar un campo en una copia o dentro de una función llamada no cambia el original.
 
 ### `String`
 
@@ -362,7 +378,9 @@ Little-endian: magic `SALT`, versión u16, elem u8, rank u8, dims u64[], payload
 
 ## Errores de compilación
 
-`E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_PARSE`, `E_TYPE`.
+`E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_PARSE`, `E_TYPE`, `E_TARGET`.
+
+`E_TARGET`: la construcción no existe en el destino de compilación (`--target`), p. ej. `syscall` fuera de `soso` y `linux`. `E_INTERNAL` es un fallo del compilador, no de un programa.
 
 ## Instrumentación (`--instrument`)
 

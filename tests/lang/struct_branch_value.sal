@@ -1,0 +1,15 @@
+# exit: 13
+struct P
+    x: Int
+    y: Int
+
+fn pick(c: Int) -> P
+    if c > 0
+        P(c, 10)
+    else
+        P(0, 20)
+
+fn main() -> Int ! alloc
+    a = pick(3)
+    b = pick(0 - 1)
+    a.x + a.y + b.x

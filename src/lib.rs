@@ -18,6 +18,7 @@ pub mod ownership;
 pub mod packages;
 pub mod parser;
 pub mod qualify;
+pub mod scalarize;
 pub mod span;
 pub mod som_export;
 pub mod string_expr;

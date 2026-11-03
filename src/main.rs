@@ -250,6 +250,11 @@ fn main() {
                                 extern_user_fns: HashMap::new(),
                                 emit_entry_main: true,
                                 struct_defs: sal_compiler::layout::collect_struct_defs(&prog),
+                                agg_structs: sal_compiler::layout::collect_layout_structs(&prog),
+                                fn_sigs: sal_compiler::scalarize::sigs_for_programs(
+                                    &[&prog],
+                                    &sal_compiler::layout::collect_layout_structs(&prog),
+                                ),
                             },
                             &tensors
                         )

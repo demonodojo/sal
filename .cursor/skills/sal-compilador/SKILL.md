@@ -5,7 +5,8 @@ description: >-
   orden de pases, archivo dueño y test que cierra el cambio. Usar al editar
   src/, runtime/ o tests/, al binario standard, o al implementar lexer, parser,
   inferencia, ownership, efectos, lugares, IR, fusión, LLVM, frame, operadores
-  columnares sobre tensores, instrumentación, caché o la CLI.
+  columnares sobre tensores, atributos, módulos y paquetes, destinos
+  (linux/soso), instrumentación, caché o la CLI.
 ---
 
 # Compilador bootstrap
@@ -14,7 +15,9 @@ El arranque está en Rust (`src/`, binario `sal`, lib `sal_compiler`). Clang com
 
 ## Orden de pases
 
-`parse` → `infer_program` → `check_effects` → `check_ownership` → `check_devices` → `TypedProgram` → `lower_program` → `fuse_module` → LLVM → Clang.
+`parse` → `expand_interpolation` (`src/interp.rs`) → `infer_program` → `attrs` (`check_layout_structs`, `check_stack_lets`, `check_no_heap_fns`) → `check_effects` → `check_ownership` → `check_devices` → `TypedProgram` → `lower_program` → `fuse_module` → LLVM → Clang.
+
+Con módulos, `src/compile.rs` resuelve el grafo (`resolve_module_graph`), pasa `check_module_semantics` / `infer_module` por módulo y enlaza un objeto por módulo con el runtime. El destino (`--target linux|soso`, `src/target.rs`) entra en la inferencia: `syscall` fuera de soso/linux es `E_TARGET`.
 
 No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 
@@ -27,13 +30,20 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Texto canónico, JSON del AST | `src/fmt.rs`, `src/ast.rs` | `tests/parse_and_fmt.rs` |
 | Tipos, formas, lugares, `borrow`/`take`; tensores en binops; `frame`→struct; `where` | `src/infer.rs`, `src/typed.rs`, `src/modules.rs` | `tests/semantics.rs` |
 | Moves, efectos, dispositivos; frame con `String` y `to` | `src/ownership.rs`, `src/effects.rs`, `src/device.rs`, `src/diag.rs` | `tests/semantics.rs` |
+| Atributos `@frozen`/`@stack`/`@no_heap`/`@layout(c)` | `src/attrs.rs`, `src/layout.rs`, `src/lexer.rs`, `src/parser.rs` | `tests/lang/attr_*.sal` vía `tests/lang.rs` |
+| Interpolación `"a{x}"` | `src/interp.rs`, `src/string_expr.rs` | `tests/lang/*.sal`, `tests/run_hello.rs` |
+| Calificadores, alias, símbolos `modid__nombre` | `src/qualify.rs`, `src/modules.rs` | `tests/lang/mods/`, `tests/toolchain.rs` |
+| Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |
+| Destino linux/soso, `syscall` | `src/target.rs`, `runtime/soso/linux_host_syscall.c`, `src/llvm.rs` | `tests/soso_target.rs`, `tests/cli_target.rs`, `tests/std_io_linux.rs` |
+| Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
 | SSA, `TensorBin`/`TensorUnary`, `ColumnBin`, fusión, `peak_bytes` | `src/ir.rs`, `src/fuse.rs` | `tests/forward_ir.rs` |
 | Heaps, kernels, `load`, `.salt`; `sal_tensor_bin_f32`, `sal_tensor_cmp_f32`, … | `runtime/sal_runtime.c`, `runtime/sal_runtime.h`, `runtime/kernels.c`, `src/llvm.rs` | `tests/kernels.rs`, `tests/exec_matmul.rs`, `tests/exec_column.rs`, `tests/exec_salt.rs` |
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |
 | Sondas, solo con `--instrument` | `runtime/instrument.c`, `src/llvm.rs` | `tests/instrument_events.rs`, `tests/instrument_leak.rs`, `tests/instrument_sal.rs` |
 | CLI, módulos, caché | `src/main.rs`, `src/compile.rs`, `src/incremental.rs`, `src/modules.rs` | `tests/toolchain.rs`, `tests/run_hello.rs` |
 | Paquetes git, lock, `sal_modules/` | `src/packages.rs`, `src/modules.rs` | `tests/toolchain.rs` (`fetch_*`, `install_*`, `sal_modules_import`, `import_not_*`), `tests/selfhost_ir.rs` (`selfhost_resolves_git_package_import`) |
-| Linter `standard` (wrapper + tests) | `src/bin/standard.rs`, `standard/*.sal` | `tests/standard.rs` (`--test-threads=1`) |
+| Linter `standard` (wrapper + tests) | `src/bin/standard.rs`, `standard/*.sal` | `tests/standard.rs`, `tests/bins.rs` (`--test-threads=1`) |
+| `som2salt` (export de modelos `.som` → `.salt`) | `src/bin/som2salt.rs`, `src/som_export.rs` | `tests/som_export_errors.rs`, `tests/bins.rs` |
 
 La extensión de VS Code llama a `sal check --error-format json`, a `sal fmt` y a `standard check` / `standard fix`. No reimplementa pases. El linter de estilo vive en `standard/` (sal). Las buenas prácticas de fuente se aplican con él, y si falta una regla que va a repetirse se le añade ahí; detalle en [sal-standard](../sal-standard/SKILL.md).
 
@@ -67,4 +77,8 @@ Clave: hash del AST tipado, versión del compilador y flags que cambian el binar
 
 Resolución de `import` (Rust y sal): directorio del fuente → raíz del proyecto → `sal_modules/` del proyecto → `path` en `[dependencies]` de `Sal.toml` → entradas de `Sal.lock` en la caché global (`$SAL_PACKAGES` o `~/.sal/packages/<nombre>-<versión>/`). Un path `clave/resto` enlaza `sal_modules/clave/resto`, o la clave del manifiesto, o el `name` del lock. El texto del import no depende de dónde esté instalado sal.
 
-`sal fetch [--update]` resuelve tags `vX.Y.Z` (semver caret en el manifiesto), clona en la caché y escribe `Sal.lock`. `sal add <nombre> --git URL [--version REQ]` edita el manifiesto y ejecuta `fetch`. `check` y `build` no usan red; paquete ausente en caché → `E_TYPE` (`import not found`). La descarga solo la hace la CLI de Rust; `selfhost/modules.sal` lee lock y caché ya materializados.
+`sal fetch [--update]` resuelve tags `vX.Y.Z` (semver caret en el manifiesto), clona en la caché y escribe `Sal.lock`. `sal install [--update]` hace `fetch` y enlaza cada dependencia en `sal_modules/<nombre>`. `sal add <nombre> --git URL [--version REQ]` edita el manifiesto y ejecuta `fetch`. `check` y `build` no usan red; paquete ausente en caché → `E_TYPE` (`import not found`). La descarga solo la hace la CLI de Rust; `selfhost/modules.sal` lee lock y caché ya materializados. Detalle en [sal-paquetes](../sal-paquetes/SKILL.md).
+
+## Otras órdenes de la CLI
+
+`sal test [dir]` compila y ejecuta cada `test_*.sal` (por defecto `tests/sal`); ver [sal-stdlib](../sal-stdlib/SKILL.md). `sal selfhost` compila `selfhost/` con el arranque y luego con ese binario (stage2); no está soportado con `--target soso`. `sal compile --ast` acepta el JSON de `sal emit ast`.

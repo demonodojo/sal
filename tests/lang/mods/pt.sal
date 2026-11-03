@@ -1,0 +1,12 @@
+struct Pt
+    x: Int
+    y: Int
+
+fn pt_make(a: Int) -> Pt
+    Pt(a, a * 2)
+
+fn pt_swap(p: Pt) -> Pt
+    Pt(p.y, p.x)
+
+fn pt_sum(p: Pt) -> Int
+    p.x + p.y

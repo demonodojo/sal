@@ -1,0 +1,7 @@
+# exit: 16
+# a struct crosses a module boundary by value, in both directions
+import "mods/pt.sal"
+
+fn main() -> Int
+    p = pt_swap(pt_make(3))
+    pt_sum(p) + p.x + 1

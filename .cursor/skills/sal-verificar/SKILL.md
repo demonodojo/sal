@@ -24,12 +24,20 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
 | CLI, módulos o caché | `cargo test --test toolchain --test run_hello` |
 | Paquetes git, `Sal.lock`, `sal_modules/` | `cargo test --test toolchain fetch_ sal_modules_import import_not install_` y `cargo test --test selfhost_ir selfhost_resolves_git` |
+| Comportamiento del lenguaje (programa, salida, error) | `cargo test --test lang` y, si el selfhost lo implementa, `cargo test --test selfhost_ir selfhost_meets_language_conformance`; ver [sal-conformidad](../sal-conformidad/SKILL.md) |
+| Atributos (`@frozen`, `@stack`, `@no_heap`, `@layout`) | `cargo test --test lang attr_` |
+| Builtins mal usados | `cargo test --test builtin_errors` |
+| Destino linux/soso, `syscall`, `std/io` | `cargo test --test soso_target --test cli_target --test std_io_linux` |
+| `std/` (http, json, text, io) | `cargo run -- test` (ejecuta `tests/sal/test_*.sal`); ver [sal-stdlib](../sal-stdlib/SKILL.md) |
+| Binarios auxiliares `som2salt` / `standard` | `cargo test --test bins --test som_export_errors` |
 | Un `.sal` concreto | `cargo run -- check <fichero>` y, si debe ejecutar, `cargo run -- run <fichero>` |
 | Estilo en `.sal` (no sintaxis) | `cargo run --bin standard -- check <fichero>`; opcional `fix` in situ. Ver [sal-standard](../sal-standard/SKILL.md) |
 | `standard/` o cops de estilo | `cargo test --test standard -- --test-threads=1` |
 | `selfhost/`, preludio o `corpus/` | `cargo test --test selfhost_ir` y la skill [sal-autohospedaje](../sal-autohospedaje/SKILL.md) |
 
-Si el test nuevo afirma un diagnóstico, el código tiene que ser el de la lista cerrada (`E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`).
+Si el test nuevo afirma un diagnóstico, el código tiene que ser el de la lista cerrada (`E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`; `E_TARGET` solo para destino).
+
+`cargo test` completo compila y ejecuta muchos programas y puede tardar; `selfhost_ir` compila el selfhost varias veces. Para un cambio acotado, ejecuta primero el test del pase y deja la suite entera para el cierre o el release.
 
 ## CLI
 
@@ -42,6 +50,10 @@ cargo run -- emit ir corpus/column_ops.sal
 cargo run -- run examples/hello.sal
 cargo run -- fetch
 cargo run -- fetch --update
+cargo run -- install
+cargo run -- test                       # tests/sal/test_*.sal
+cargo run -- selfhost                   # stage1 y stage2
+cargo run -- --target soso check x.sal  # destino soso (kernel)
 cargo run -- add mylib --git https://github.com/org/mylib --version 0.1
 cargo run --bin standard -- check examples/hello.sal
 cargo run --bin standard -- fix path/to/file.sal
@@ -54,6 +66,7 @@ cargo run --bin standard -- fix path/to/file.sal
 - `--instrument` cambia el binario. Un programa limpio sale 0. Un evento (`LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`) sale distinto de 0.
 - `sal check` acepta un programa de GPU o TPU aunque falte el dispositivo. `sal build --device gpu` o `tpu` falla con `E_DEVICE_MISSING` si no está el toolchain.
 - Tras añadir o cambiar dependencias git en `Sal.toml`, ejecutar `sal fetch` desde la raíz del proyecto (donde está el manifiesto). Los tests de paquetes usan repos `file://` y fijan `SAL_PACKAGES` en un tempdir; no dependen de red.
+- `--target linux|soso` (global). `syscall` solo existe en esos dos; en otro destino es `E_TARGET`.
 - Proyectos fuera del árbol del compilador: los módulos importados están en `sal_modules/` de ese proyecto (`import "io/io.sal"` → `sal_modules/io/io.sal`).
 
 ## Hecho

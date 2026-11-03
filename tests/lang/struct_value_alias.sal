@@ -1,0 +1,16 @@
+# exit: 1
+# a struct is a value: assigning a field in a callee or in a copy never changes the original
+struct P
+    x: Int
+    y: Int
+
+fn set(p: P) -> Int
+    p.x = 100
+    0
+
+fn main() -> Int ! alloc
+    p = P(1, 2)
+    q = p
+    q.x = 50
+    _ = set(p)
+    p.x

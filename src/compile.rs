@@ -171,7 +171,7 @@ fn compile_file_with_imports(
         };
         let key_m = cache_key_with_deps(&m.program, &typed_m, &flags_m, &deps_m);
         let callables = callable_fn_names(m, &graph);
-        let externs = extern_fn_arity(m, &graph, &callables);
+        let externs = extern_fn_arity(m, &graph, &callables, &strings_env);
         let artifacts = compile_single_module(
             &m.program,
             &typed_m,
@@ -217,6 +217,7 @@ fn extern_fn_arity(
     module: &LoadedModule,
     graph: &ModuleGraph,
     callables: &HashMap<String, ()>,
+    strings_env: &StringEnv,
 ) -> HashMap<String, usize> {
     let local: HashSet<String> = module
         .program
@@ -236,7 +237,13 @@ fn extern_fn_arity(
             for item in &m.program.items {
                 if let Item::Fn(f) = item {
                     if &f.name == name {
-                        out.insert(name.clone(), f.params.len());
+                        // Flattened: struct parameters are passed slot by slot and a struct
+                        // result adds the hidden `sret` pointer.
+                        let arity = match strings_env.fn_sigs.get(name) {
+                            Some(sig) => crate::scalarize::flat_arity(sig, &strings_env.structs),
+                            None => f.params.len(),
+                        };
+                        out.insert(name.clone(), arity);
                     }
                 }
             }
@@ -293,6 +300,8 @@ fn compile_single_module(
                 extern_user_fns: externs.clone(),
                 emit_entry_main,
                 struct_defs: collect_layout_structs(program),
+                agg_structs: strings_env.structs.clone(),
+                fn_sigs: strings_env.fn_sigs.clone(),
             },
             &tensors,
             externs,

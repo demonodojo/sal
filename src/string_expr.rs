@@ -22,6 +22,8 @@ pub struct StringEnv {
     pub fn_struct_rets: HashMap<String, String>,
     /// User functions that return `Tensor[…]` (for IR shape on call results).
     pub fn_tensor_rets: HashMap<String, Type>,
+    /// Scalarised signature of every function in the graph (see `scalarize`).
+    pub fn_sigs: HashMap<String, crate::scalarize::FnSig>,
     /// Name of the binding an `x = x + ...` chain accumulates into, while its
     /// left spine is being lowered.
     pub accumulate: Option<String>,
@@ -54,8 +56,10 @@ impl StringEnv {
                 }
             }
         }
+        let fn_sigs = crate::scalarize::sigs_for_programs(progs, &structs);
         Self {
             types: Rc::new(HashMap::new()),
+            fn_sigs,
             structs,
             enums,
             struct_types: HashMap::new(),

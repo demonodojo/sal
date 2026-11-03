@@ -20,6 +20,9 @@ La superficie aceptada está en [SPEC.md](../../../SPEC.md). Un programa que el 
 - `fn nombre(params) -> Tipo` y, si hace falta, `!` con efectos `io`, `alloc`, `panic`, `gpu`, `tpu`.
 - `if` con `elsif` y `else` opcionales, al mismo nivel de sangría. Sin `else`, el `if` es `Unit` aunque haya `elsif` (efecto secundario, no valor). Con `else`, el valor es el de la rama then. `let` con tipo opcional.
 - Items del arranque: `import`, `struct`, `enum`, `frame`, `fn`.
+- `match expr` con brazos `patrón => expr` (`_`, enteros, `Variante(x)`, `modulo.Variante(x)`).
+- `return` anticipado vale en cuerpo, `if`, `while` y `match`; no dentro de `on` ni de una lambda.
+- Interpolación `"a{x}"` (`x` tiene que ser `String`; `{{` y `}}` son llaves literales).
 
 Ejemplo mínimo:
 
@@ -39,9 +42,29 @@ fn main() -> Int
 
 Un `if` sin `else` como única cola de una función `-> T` con `T` distinto de `Unit` es `E_TYPE`.
 
+## Atributos
+
+Solo cuatro, y cada uno en su sitio; cualquier otro `@…` es `E_PARSE`:
+
+```sal
+@layout(c)
+struct P
+    a: Int
+    b: Int
+
+@no_heap
+fn add(a: Int, b: Int) -> Int
+    @stack let s = a + b
+    @frozen let t = s
+    t
+```
+
+`@frozen let` no se reasigna; `@stack let` exige tipo de stack y no asignar; `@no_heap fn` no asigna ni usa heap; `@layout(c)` solo con `Int`, `Float`, `Bool`. Las violaciones son `E_TYPE`. Ver [sal-autoridad](../sal-autoridad/SKILL.md).
+
 ## Memoria y efectos
 
 - Move por defecto. Copy solo en `Int`, `Float`, `Bool` y structs triviales.
+- Un `struct` es un valor: asignar un campo en una copia o en un callee no cambia el original (`tests/lang/struct_value_alias.sal`). Un struct de un solo campo es un newtype transparente.
 - Un valor único se usa una vez. El segundo uso es `E_MOVED`.
 - El préstamo dura el argumento de la llamada. No hay locales de tipo referencia.
 - `load` exige `! io, alloc` y deja el tensor en `cpu`.
@@ -106,7 +129,11 @@ json = { git = "https://github.com/org/sal-json", version = "0.2" }
 
 - Dependencia **local**: `path = "…"` relativo a la raíz del proyecto.
 - Dependencia **git**: `version` es requisito semver (caret); `sal fetch` escribe `Sal.lock` y deja el código en la caché global. Antes del primer `check`/`build` con deps git, ejecutar `sal fetch`.
-- Import de paquete: `import "json/mod.sal"` o `import json.mod` cuando la clave en el manifiesto es `json`.
+- Dependencia **GitHub**: `libx = { github = "owner/repo", version = "0.1" }` (usa releases publicadas).
+- Dependencia **std**: `io = { std = "io" }` enlaza `std/io` del compilador.
+- `sal install` enlaza todo en `sal_modules/<nombre>` (symlinks); un directorio real ahí se rechaza.
+- `import ruta as alias` deja los items accesibles solo como `alias.nombre` (llamadas, tipos y patrones). Sin `as`, se aplanan y el último segmento del path es un calificador implícito.
+- Import de paquete: `import "json/mod.sal"` o `import json.mod` cuando la clave en el manifiesto es `json`. Detalle de resolución y lock en [sal-paquetes](../sal-paquetes/SKILL.md).
 - Fuera del árbol de sal, los módulos están en `sal_modules/` del proyecto (`import "io/io.sal"` → `sal_modules/io/io.sal`). El import no cambia si sal está instalado en otro sitio.
 
 ## Dónde vive cada programa
@@ -116,7 +143,9 @@ json = { git = "https://github.com/org/sal-json", version = "0.2" }
 | `examples/` | Programas de uso y de ejecución (p. ej. `column_cpu.sal`) |
 | `corpus/` | Programas cuya IR tienen que coincidir las tres cadenas |
 | `std/prelude.sal` | `Option`, `Result`, `List` y firmas de primitivas |
-| `std/io/` | E/S (io, fs, net, …) |
+| `std/io/`, `std/http/`, `std/json/`, `std/text/` | Biblioteca estándar; ver [sal-stdlib](../sal-stdlib/SKILL.md) |
+| `tests/lang/` | Conformidad con resultado esperado en cabecera; ver [sal-conformidad](../sal-conformidad/SKILL.md) |
+| `tests/sal/` | Pruebas `test_*.sal` de `std/`, las ejecuta `sal test` |
 | `selfhost/` | El compilador escrito en sal |
 | `standard/` | Linter de estilo (check / fix), escrito en sal |
 

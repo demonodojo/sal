@@ -53,6 +53,10 @@ pub struct LlvmOptions {
     /// When false, do not synthesize `@main` if the module has no `main` (dependency `.o`).
     pub emit_entry_main: bool,
     pub struct_defs: HashMap<String, StructDef>,
+    /// Structs of the whole module graph and the signatures of its functions: they
+    /// decide which struct values are passed as scalars (see `scalarize`).
+    pub agg_structs: HashMap<String, StructDef>,
+    pub fn_sigs: HashMap<String, crate::scalarize::FnSig>,
 }
 
 /// Static host tensor materialised from a `tensor[[…]]` literal (or param shape).
@@ -238,6 +242,97 @@ fn expr_as_f32(e: &Expr) -> Option<f32> {
     }
 }
 
+/// `ptr %sret` is the hidden buffer of a function returning a scalarised struct.
+fn param_decl(p: &str) -> String {
+    if p == "sret" {
+        "ptr %sret".to_string()
+    } else {
+        format!("i64 %{p}")
+    }
+}
+
+static SRET_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn sret_id() -> u32 {
+    SRET_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Callee side: write the returned struct's slots through `%sret`.
+fn emit_sret_store(values: &[String], consts: &HashMap<String, i64>, s: &mut String) {
+    let id = sret_id();
+    for (i, v) in values.iter().enumerate() {
+        let op = i64_operand(v, consts);
+        s.push_str(&format!(
+            "  %ssp{id}_{i} = getelementptr inbounds i64, ptr %sret, i64 {i}\n  store i64 {op}, ptr %ssp{id}_{i}\n"
+        ));
+    }
+}
+
+/// Caller side: the buffer is a stack slot (hoisted to the entry block afterwards, so a
+/// call in a loop does not grow the stack) and the slots are read back as plain `i64`s.
+fn emit_call_sret(
+    dests: &[String],
+    func: &str,
+    args: &[String],
+    consts: &HashMap<String, i64>,
+    s: &mut String,
+) {
+    let id = sret_id();
+    let n = dests.len();
+    s.push_str(&format!("  %srb{id} = alloca [{n} x i64] ;;hoist\n"));
+    let mut ops = vec![format!("ptr %srb{id}")];
+    for a in args {
+        ops.push(format!("i64 {}", i64_operand(a, consts)));
+    }
+    s.push_str(&format!("  call i64 @{}({})\n", llsym(func), ops.join(", ")));
+    for (i, d) in dests.iter().enumerate() {
+        s.push_str(&format!(
+            "  %srg{id}_{i} = getelementptr inbounds i64, ptr %srb{id}, i64 {i}\n  %{d} = load i64, ptr %srg{id}_{i}\n"
+        ));
+    }
+}
+
+/// Move every `;;hoist` alloca to the entry block of its function.
+fn hoist_allocas(text: &str) -> String {
+    if !text.contains(";;hoist") {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+    while i < lines.len() {
+        out.push(lines[i].to_string());
+        if lines[i].starts_with("define ") {
+            let mut j = i + 1;
+            let mut hoisted = Vec::new();
+            let mut body = Vec::new();
+            while j < lines.len() && lines[j] != "}" {
+                if lines[j].contains(";;hoist") {
+                    hoisted.push(lines[j].replace(" ;;hoist", ""));
+                } else {
+                    body.push(lines[j].to_string());
+                }
+                j += 1;
+            }
+            let mut placed = hoisted.is_empty();
+            for l in body {
+                let is_entry = l == "entry:";
+                out.push(l);
+                if is_entry && !placed {
+                    out.extend(hoisted.drain(..));
+                    placed = true;
+                }
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    let mut r = out.join("\n");
+    r.push('\n');
+    r
+}
+
 pub fn emit_llvm(m: &IrModule, opts: &LlvmOptions) -> String {
     emit_llvm_with_tensors(m, opts, &HashMap::new())
 }
@@ -256,6 +351,13 @@ pub fn emit_llvm_with_externs(
     tensors: &HashMap<String, HostTensor>,
     extern_user_fns: &HashMap<String, usize>,
 ) -> String {
+    let scalarized;
+    let m = if opts.agg_structs.is_empty() {
+        m
+    } else {
+        scalarized = crate::scalarize::scalarize_module(m, &opts.agg_structs, &opts.fn_sigs);
+        &scalarized
+    };
     let mut s = String::new();
     s.push_str(&format!("target triple = \"{}\"\n\n", opts.target.triple()));
     if opts.instrument {
@@ -401,7 +503,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_dict_get(ptr, ptr)\n\n");
 
     for (name, nparams) in extern_user_fns {
-        let params: Vec<String> = (0..*nparams).map(|i| format!("i64 %arg{i}")).collect();
+        let sret = opts.fn_sigs.get(name).map_or(false, |g| g.ret.is_some());
+        let params: Vec<String> = (0..*nparams)
+            .map(|i| if sret && i == 0 { "ptr %arg0".to_string() } else { format!("i64 %arg{i}") })
+            .collect();
         let ps = if params.is_empty() {
             String::new()
         } else {
@@ -528,7 +633,7 @@ pub fn emit_llvm_with_externs(
         s.push_str("  ret i64 0\n}\n");
     }
 
-    s
+    hoist_allocas(&s)
 }
 
 fn walk_insts_for_strings<F>(
@@ -1061,7 +1166,7 @@ fn emit_host_tensor_fn(
             let params: Vec<String> = f
                 .params
                 .iter()
-                .map(|p| format!("i64 %{p}"))
+                .map(|p| param_decl(p))
                 .collect();
             s.push_str(&format!(
                 "define i64 @{}({}) {{\n",
@@ -1959,6 +2064,10 @@ fn emit_host_tensor_fn(
                     str_globals,
                 );
             }
+            IrInst::CallSret { dests, func, args } => {
+                emit_call_sret(dests, func, args, &consts, s);
+            }
+            IrInst::SretStore { values } => emit_sret_store(values, &consts, s),
             IrInst::Aggregate { .. }
             | IrInst::Extract { .. }
             | IrInst::EnumMake { .. }
@@ -3744,6 +3853,10 @@ fn emit_inst_list(
                     _ => s.push_str(&format!("  %{dest} = add i64 {l}, 0\n")),
                 }
             }
+            IrInst::CallSret { dests, func, args } => {
+                emit_call_sret(dests, func, args, &consts, s);
+            }
+            IrInst::SretStore { values } => emit_sret_store(values, &consts, s),
             IrInst::Aggregate {
                 dest,
                 struct_name,
@@ -4147,7 +4260,7 @@ fn emit_general_fn(
     let params: Vec<String> = f
         .params
         .iter()
-        .map(|p| format!("i64 %{p}"))
+        .map(|p| param_decl(p))
         .collect();
     s.push_str(&format!(
         "define i64 @{}({}) {{\n",

@@ -1500,6 +1500,24 @@ fn emit_c_field(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
         idx = field_index_go(structdef_fields(sd), vec_get(e, 2), 0, structdef_field_count(sd))
         "(((int64_t *)(" + base + "))[" + int_to_str(idx) + "])"
 
+# A struct is a value: `p.x = v` writes into a private copy of `p`, so a caller
+# that still holds the original (or another name for it) never sees the update.
+fn emit_c_field_copy(target: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+    b = vec_get(target, 1)
+    if ex_kind(b) != EX_IDENT()
+        0
+    else
+        sd = struct_find(strenv_structs(tc_strenv(tc)), expr_type(b, tc_strenv(tc)))
+        if sd == 0
+            0
+        elsif structdef_field_count(sd) < 2
+            0
+        else
+            name = emit_c_expr(b, user, stmts, tc)
+            bytes = int_to_str(structdef_field_count(sd) * 8)
+            line = "  " + name + " = ({{ int64_t *__d = (int64_t *)malloc(" + bytes + "); __builtin_memcpy(__d, (int64_t *)(" + name + "), " + bytes + "); (int64_t)__d; }});\n"
+            vec_push(stmts, str_as_int(line))
+
 fn arg_at(args: Int, i: Int) -> String ! alloc
     if i < vec_len(args)
         str_from_int(vec_get(args, i))
@@ -1955,6 +1973,7 @@ fn emit_c_stmts(sts: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int) -> Int
                 _p = vec_push(stmts, str_as_int(line))
             1
         elsif vec_get(st, 0) == 3
+            _cp = emit_c_field_copy(vec_get(st, 5), user, stmts, tc)
             lhs = emit_c_expr(vec_get(st, 5), user, stmts, tc)
             val3 = emit_c_expr(vec_get(st, 2), user, stmts, tc)
             line = "  " + lhs + " = " + val3 + ";\n"

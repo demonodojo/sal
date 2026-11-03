@@ -4,8 +4,9 @@ description: >-
   Aplica la autoridad cerrada del lenguaje sal: SPEC.md manda sobre los
   subplanes y sobre el código, la gramática es recursiva por la izquierda, y
   el arranque rechaza lo reservado. Usar al cambiar gramática, tipos, memoria,
-  efectos, lugares, tensores, frame, operadores columnares, where, códigos de
-  error, o al proponer una construcción nueva del lenguaje.
+  efectos, lugares, tensores, frame, operadores columnares, where, atributos
+  (@frozen, @stack, @no_heap, @layout), imports, códigos de error, o al
+  proponer una construcción nueva del lenguaje.
 ---
 
 # Autoridad del lenguaje sal
@@ -14,6 +15,8 @@ description: >-
 
 1. [SPEC.md](../../../SPEC.md) es la gramática. Si un subplan diverge, manda la SPEC.
 2. [docs/subplans/](../../../docs/subplans/) fija archivos, algoritmo y tests de cada pase. Si un pase de `src/` está incompleto, manda el subplan, no el stub.
+
+Si la SPEC y el código divergen, no «arregles» uno a ojo: avisa al usuario y cierra la divergencia en el mismo cambio. Los atributos admitidos (`@frozen`, `@stack`, `@no_heap`, `@layout(c)`) y `E_TARGET` ya están en la SPEC; el subplan `01-spec-surface.md` los detalla.
 3. No ampliar la superficie «porque el diseño maestro la menciona». Lo reservado es `E_PARSE` hasta su fase.
 
 ## Gramática
@@ -25,17 +28,31 @@ Recursiva por la izquierda en listas, operadores binarios y postfijos. Esa recur
 - Prefijos (`try`, `-`, `!`, `to`) y la lambda asocian a la derecha: `x => y => z` es `x => (y => z)`.
 - `load[F32, 4, 4]("w.salt")` es `postfix` con `type_arg` (tipo, `INT` o `?`). `4` no es un tipo de nombre `"4"`.
 - `if_expr` → `"if" expr suite elsif_list ("else" suite | ε)`, con `elsif_list` recursiva por la izquierda. Sin `else`, tipo `Unit` aunque haya `elsif`; con `else`, el tipo es el de la rama then. `elsif` y `else` se asocian al `if` interno que acaba de cerrar su suite. Dentro de `match`, `=>` es un brazo, no una lambda.
+- `match expr` con brazos `patrón => expr`. Patrones: `_`, `INT`, `IDENT`, `Variante(p, …)` y `modulo.Variante(p, …)`.
+- `return expr` / `return`: vale en el cuerpo y anidado en `if`, `elsif`, `else`, `while`, `match`; dentro de `on` o de una lambda, o con código alcanzable detrás, es `E_TYPE`.
+- Dentro de `(…)` y `[…]` el salto de línea no cierra la sentencia ni abre bloque; fuera sí.
 - Sangría con espacios. Un tabulador es `E_PARSE`. `#` no tiene producción.
 
 Una reescritura recursiva por la derecha de `add`, `mul`, `cmp` o `postfix` no es esta gramática.
 
 ## Cerrado en el arranque
 
-Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`. `E_INTERNAL` solo para fallos del compilador, no para programas.
+Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`. `E_TARGET` (en la SPEC): la construcción no existe en el destino, p. ej. `syscall` fuera de soso y linux; úsalo solo para eso. `E_INTERNAL` solo para fallos del compilador, no para programas.
 
 Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`.
 
-Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@frozen`, `@stack`, `@layout`, `@resource`, `@shared`, `@arena`, `@no_heap`, `@copy`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). Las dependencias git en `Sal.toml`, `Sal.lock` y `sal fetch` / `sal add` están en el arranque; ver [SPEC.md](../../../SPEC.md) (módulos) y [docs/subplans/06-toolchain.md](../../../docs/subplans/06-toolchain.md).
+Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@resource`, `@shared`, `@arena`, `@copy`, `@unique`, `@no_gc`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). Las dependencias `path`, `git` y `github` de `Sal.toml`, `Sal.lock` y `sal fetch` / `sal install` / `sal add` están en el arranque; ver [sal-paquetes](../sal-paquetes/SKILL.md).
+
+## Atributos (arranque)
+
+`@frozen let` y `@stack let` delante de `let`; `@no_heap` delante de `fn`; `@layout(c)` delante de `struct`. Cualquier otro `@…`, o un atributo en un objetivo que no le corresponde, es `E_PARSE`. Las violaciones semánticas de un atributo admitido son `E_TYPE`:
+
+- `@frozen`: asignar al binding después.
+- `@stack`: el tipo no es de stack (`String`, `List`, `Dict`, `Tensor`, genéricos) o construirlo asigna.
+- `@no_heap`: la función asigna, recibe o devuelve un tipo de heap, o tiene un `let` de heap.
+- `@layout(c)`: campos solo `Int`, `Float` o `Bool`.
+
+Dueño: `src/attrs.rs` y su espejo `selfhost/attrs.sal`. Tests: `tests/lang/attr_*.sal`.
 
 `Float` es f64 y no es elemento de tensor (`E_TENSOR_ELEM`). Elementos: `F32`, `F16`, `BF16`, `I8`.
 

@@ -132,6 +132,16 @@ pub enum IrInst {
         default_val: String,
         dest: String,
     },
+    /// Call of a function that returns a scalarised struct (see `scalarize`): the callee
+    /// writes its slots through a hidden buffer and `dests` receive them. Only produced
+    /// just before LLVM emission, never by lowering.
+    CallSret {
+        dests: Vec<String>,
+        func: String,
+        args: Vec<String>,
+    },
+    /// Store the slots of the struct a function returns into its hidden `sret` buffer.
+    SretStore { values: Vec<String> },
 }
 
 /// One `match` arm lowered to a switch case.
@@ -2301,6 +2311,7 @@ fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
         }
         Expr::Call { func, .. } => match func.as_ref() {
             Expr::Ident { name, .. } if strings.structs.contains_key(name) => Some(name.clone()),
+            Expr::Ident { name, .. } => strings.fn_struct_rets.get(name).cloned(),
             _ => None,
         },
         _ => None,
@@ -2369,6 +2380,7 @@ fn lower_match_chain(
     let arm = &arms[0];
     let rest = &arms[1..];
     let (cond_ssa, mut arm_env) = match_arm_cond(&scrut, &arm.pattern, counter, instructions);
+    note_variant_binding(&arm.pattern, strings);
     for (k, v) in env.iter() {
         arm_env.entry(k.clone()).or_insert_with(|| v.clone());
     }
@@ -2500,6 +2512,7 @@ fn lower_match_switch(
                 };
                 let mut body = Vec::new();
                 let mut arm_env = env.clone();
+                note_variant_binding(&arm.pattern, strings);
                 if let Some(Pattern::Ident(bind, _)) = args.first() {
                     *counter += 1;
                     let payload = format!("t{counter}");
@@ -2537,6 +2550,21 @@ fn lower_match_switch(
         dest: dest.clone(),
     });
     dest
+}
+
+/// `Some(p)` over a struct payload: `p.field` needs to know `p` is that struct.
+fn note_variant_binding(pat: &Pattern, strings: &mut StringEnv) {
+    if let Pattern::Variant { name, args, .. } = pat {
+        if let (Some(Pattern::Ident(bind, _)), Some((_, vdef))) =
+            (args.first(), find_variant_in_enums(name, &strings.enums))
+        {
+            if let Some(Type::Named { name: sn, args: targs, .. }) = vdef.fields.first() {
+                if targs.is_empty() && strings.structs.contains_key(sn) {
+                    strings.struct_types.insert(bind.clone(), sn.clone());
+                }
+            }
+        }
+    }
 }
 
 fn match_arm_cond(

@@ -1,0 +1,22 @@
+# Structs por valor en un bucle caliente (misma lógica que benches/speed/struct_work.rs).
+
+struct P
+    x: Int
+    y: Int
+    z: Int
+
+fn step(p: P, k: Int) -> P
+    a = (p.x + k) * 31 + p.y
+    b = (p.y ^ a) + p.z
+    P(b & 1048575, a & 1048575, (p.z + k) & 1048575)
+
+fn work(n: Int) -> Int
+    p = P(1, 2, 3)
+    i = 0
+    while i < n
+        p = step(p, i)
+        i = i + 1
+    (p.x + p.y + p.z) & 255
+
+fn main() -> Int
+    work(200000000)

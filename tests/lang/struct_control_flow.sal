@@ -1,0 +1,29 @@
+# exit: 37
+# structs as loop variables, if-carries and early returns
+struct V
+    a: Int
+    b: Int
+
+fn add(u: V, w: V) -> V
+    V(u.a + w.a, u.b + w.b)
+
+fn clamp(v: V, hi: Int) -> V
+    if v.a > hi
+        return V(hi, v.b)
+    v
+
+fn run(n: Int) -> V
+    acc = V(0, 0)
+    i = 0
+    while i < n
+        step = V(i, 1)
+        if i % 2 == 0
+            acc = add(acc, step)
+        else
+            acc = clamp(add(acc, step), 6)
+        i = i + 1
+    acc
+
+fn main() -> Int
+    r = run(10)
+    r.a * 4 + r.b + 3

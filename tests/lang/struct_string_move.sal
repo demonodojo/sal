@@ -1,0 +1,13 @@
+# exit: 5
+struct R
+    ok: Int
+    msg: String
+
+fn parse(s: String) -> R ! alloc
+    if str_len(s) > 2
+        return R(1, s)
+    R(0, "short")
+
+fn main() -> Int ! alloc
+    r = parse("hello")
+    r.ok + str_len(r.msg) - 1

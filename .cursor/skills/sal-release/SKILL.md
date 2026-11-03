@@ -16,7 +16,7 @@ No hay workflow de release. Publicar es commit en `main`, tag y `gh release crea
 
 La versión publicada es el tag git `vX.Y.Z` más alto (`git tag -l 'v*'`). `sal --version` imprime la de [`Cargo.toml`](../../../Cargo.toml) (`version` de clap). Las dos tienen que ser la misma `X.Y.Z` en el commit del tag.
 
-Los tags `v0.1.0` y `v0.2.0` no subieron `Cargo.toml` (sigue en `0.1.0`). La siguiente versión es **posterior a `v0.2.0`**, no un bump de ese `0.1.0`.
+Los tags `v0.1.0` y `v0.2.0` no subieron `Cargo.toml`; desde `v0.3.0` (commit «Release sal 0.3.0.») `Cargo.toml` y el tag coinciden. Comprueba siempre con `git tag -l 'v*'` y `grep '^version' Cargo.toml` antes de decidir: la siguiente versión es posterior al **tag** más alto, y si `Cargo.toml` no coincide con él, algo se ha desincronizado y hay que decírselo al usuario.
 
 `std/io/Sal.toml` es el paquete de E/S, no el compilador. No lo cambies en un release de sal.
 
@@ -24,10 +24,10 @@ Los tags `v0.1.0` y `v0.2.0` no subieron `Cargo.toml` (sigue en `0.1.0`). La sig
 
 ### 1. Elegir versión
 
-Desde el último tag, no desde el `0.1.0` atrasado de `Cargo.toml`:
+Desde el último tag (hoy `v0.3.0`):
 
-- **Patch** (0.2.0 → 0.2.1): correcciones.
-- **Minor** (0.2.0 → 0.3.0): lenguaje o compilador compatible.
+- **Patch** (0.3.0 → 0.3.1): correcciones.
+- **Minor** (0.3.0 → 0.4.0): lenguaje o compilador compatible.
 - **Major**: ruptura de SPEC o de un binario ya publicado.
 
 Si el usuario no da número, propone el bump según el diff desde el último tag y confirma antes de editar.
@@ -111,6 +111,6 @@ Ese cambio es un commit aparte en `soso`.
 |---------|--------|
 | `sal --version` no es `sal X.Y.Z` | `Cargo.toml` no está en esa versión, o el binario es de antes del bump |
 | `cargo test --locked` rechaza el lock | `Cargo.lock` no se regeneró tras cambiar `version` |
-| La versión nueva es 0.1.1 | Se bumpeó el `Cargo.toml` atrasado; el último tag es `v0.2.0` |
+| La versión nueva no es posterior al último tag | Se partió de `Cargo.toml` en vez de `git tag -l 'v*'` |
 | `cargo publish` | No aplica: dependencia `path` a `sosomodel` |
 | Release de opencode-sal | Skill equivocada; esa publicación no es esta |

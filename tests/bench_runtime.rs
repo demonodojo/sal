@@ -25,7 +25,7 @@ fn speed_work_sal_matches_rust_output() {
 
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(out_dir.join("work-sal")),
         release: true,
         instrument: false,
         device: "cpu".into(),
@@ -42,5 +42,60 @@ fn speed_work_sal_matches_rust_output() {
         rust_out.status.code(),
         sal_out.status.code(),
         "exit codes must match (sync OUTER/INNER in work.rs and work.sal)"
+    );
+}
+
+/// A struct is a value: the hot loop of `struct_work.sal` must not touch the heap, and
+/// it must agree with the same loop in Rust and stay in the same speed class.
+#[test]
+fn speed_struct_work_is_heap_free_and_matches_rust() {
+    let rust_src = root().join("benches/speed/struct_work.rs");
+    let sal_src = root().join("benches/speed/struct_work.sal");
+    let out_dir = root().join("target/test-bench-runtime");
+    std::fs::create_dir_all(&out_dir).expect("mkdir");
+    let rust_bin = out_dir.join("struct-work-rust");
+
+    let rustc = Command::new("rustc")
+        .args(["-C", "opt-level=3", rust_src.to_str().unwrap(), "-o"])
+        .arg(&rust_bin)
+        .status()
+        .expect("rustc");
+    assert!(rustc.success(), "rustc failed to build benches/speed/struct_work.rs");
+
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: Some(out_dir.join("struct-work-sal")),
+        release: true,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_file(&sal_src, &opts).expect("compile struct_work.sal");
+    for f in ["@sal_u_step", "@sal_u_work"] {
+        let body: String = art
+            .llvm
+            .split("define ")
+            .filter(|b| b.contains(f))
+            .collect();
+        assert!(!body.contains("malloc"), "{f} allocates:\n{body}");
+    }
+    let sal_bin = art.binary.expect("sal binary");
+
+    let t = std::time::Instant::now();
+    let rust_out = Command::new(&rust_bin).output().expect("run rust");
+    let rust_time = t.elapsed();
+    let t = std::time::Instant::now();
+    let sal_out = Command::new(&sal_bin).output().expect("run sal");
+    let sal_time = t.elapsed();
+
+    assert_eq!(
+        rust_out.status.code(),
+        sal_out.status.code(),
+        "exit codes must match (sync N in struct_work.rs and struct_work.sal)"
+    );
+    assert!(
+        sal_time.as_secs_f64() < rust_time.as_secs_f64() * 3.0 + 0.05,
+        "sal {sal_time:?} vs rust {rust_time:?}"
     );
 }

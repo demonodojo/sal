@@ -71,6 +71,7 @@ Pendiente, por orden:
 1. `infer` completo: formas de `attention`, `qmatmul`, `reduce`, `rms_norm` y `E_TENSOR_ELEM`, genéricos, enums,
    builtins con firma. (Hecho: `matmul`, `transpose`, `reshape`, `softmax`; structs de varios campos en el emisor C, como puntero a
    array de slots `int64_t`.)
+   Structs por valor: el arranque los reparte en registros antes de emitir LLVM (`src/scalarize.rs`) y no cambia la IR de texto, así que la paridad no se ve afectada. El selfhost los sigue emitiendo como puntero a un array de slots; `p.x = v` copia antes de escribir, para que un struct se comporte como valor. Huecos del selfhost: un struct dentro de una `List` y como payload de un enum (`tests/lang/struct_in_list.sal`, `struct_enum_payload.sal` llevan `# selfhost-xfail:`), y la copia en `a.b.c = v` anidado.
 2. Los pases se aplican solo al compilar (`-o`), como `sal build`; `sal emit ir` no comprueba.
 3. `match`, lambdas y `try` en el bajado a IR (hoy se parsean y se ignoran al bajar).
 4. Tipos de verdad en el AST (hoy texto), diagnósticos con spans.

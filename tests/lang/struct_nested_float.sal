@@ -1,0 +1,15 @@
+# exit: 4
+struct P
+    x: Int
+    y: Float
+
+struct L
+    a: P
+    b: P
+
+fn first(l: L) -> P
+    l.a
+
+fn main() -> Int ! alloc
+    l = L(P(1, 2.5), P(3, 4.5))
+    first(l).x + l.b.x
