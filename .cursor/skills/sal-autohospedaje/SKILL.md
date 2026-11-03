@@ -26,7 +26,7 @@ No describas el selfhost como equivalente al arranque en lo que el subplan lista
 
 ## Cortes
 
-Los módulos de `selfhost/` siguen los cortes del arranque: lexer, parser, tipos, ownership, efectos, lugares, IR, fusión, emisión. `1 - 2 - 3` tiene el mismo árbol que en `src/parser.rs`. En **`selfhost/fuse.sal`**, `FO_COLUMN` y `collect_fused_binary` reflejan `FusedOp::ColumnBin` del arranque. El parser escrito en sal debe reconocer `frame` cuando el arranque lo haga.
+Los módulos de `selfhost/` siguen los cortes del arranque: lexer, parser, tipos, ownership, efectos, lugares, IR, fusión, emisión. `1 - 2 - 3` tiene el mismo árbol que en `src/parser.rs`. `selfhost/drops.sal` es el espejo de `src/drops.rs` (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free` de locales; `drops_body(f, variants)` recibe el mapa de variantes que arma `fuse.sal`); `lower_fn` de `fuse.sal` lo aplica al cuerpo antes de bajar, y cualquier cambio en un lado exige el mismo en el otro (la IR de `PARITY_FILES` lo comprueba). En **`selfhost/fuse.sal`**, `FO_COLUMN` y `collect_fused_binary` reflejan `FusedOp::ColumnBin` del arranque. El parser escrito en sal debe reconocer `frame` cuando el arranque lo haga.
 
 Módulos de `selfhost/` hoy: `lexer`, `parser`, `ast`, `attrs`, `checks`, `effects`, `device`, `infer`, `tshape`, `ownership`, `qualify`, `modules`, `ir`, `fuse`, `tensorops`, `emit`, `main` (más `cache`, `handles`, `models`, `result`). Un pase nuevo del arranque en `src/<x>.rs` debería tener su `selfhost/<x>.sal`; atributos (`src/attrs.rs` ↔ `selfhost/attrs.sal`), calificadores (`src/qualify.rs` ↔ `selfhost/qualify.sal`) y dispositivos (`src/device.rs` ↔ `selfhost/device.sal`) ya son pares.
 
@@ -77,3 +77,5 @@ Un hueco que solo es del selfhost se marca en el `.sal` de `tests/lang/` con `# 
 Cada ampliación del lenguaje que este compilador implementa lleva tests de ese funcionamiento en el mismo cambio. El corpus o un test del pase tiene que ejercitar la construcción nueva; coincidir la IR de programas que no la usan no cuenta como prueba.
 
 `selfhost/` también pasa por `standard check` / `fix`. Esa limpieza no sustituye el test de IR. Si una práctica del compilador escrito en sal se repite y `standard` no la cubre, se amplía el linter en el mismo cambio; ver [sal-standard](../sal-standard/SKILL.md).
+
+Los enums del selfhost salen por el camino AST→C de `emit.sal` (`emit_c_match`, `emit_c_variant_make`), no por el IR de `fuse.sal`, que todavía no baja `match` ni constructores de variante; usan la misma caja `[tag, campos…]` del runtime.

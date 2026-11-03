@@ -310,7 +310,15 @@ fn param_new(name: String, ty: String) -> Int ! alloc
     pr = vec_new()
     _a = vec_push(pr, str_as_int(name))
     _b = vec_push(pr, str_as_int(ty))
+    _c = vec_push(pr, 0)
     pr
+
+# Ownership mode of a parameter: 0 inferred, 1 `borrow`, 2 `take`.
+fn param_mode(pr: Int) -> Int ! alloc
+    vec_get(pr, 2)
+
+fn param_set_mode(pr: Int, mode: Int) -> Int ! alloc
+    vec_set(pr, 2, mode)
 
 fn fndef_new(name: String, params: Int, body: Int) -> Int ! alloc
     f = vec_new()
@@ -643,6 +651,14 @@ fn struct_field_type(structs: Int, sname: Int, field: Int) -> Int ! alloc
         fields = structdef_fields(sd)
         struct_field_type_go(fields, field, 0, vec_len(fields))
 
+fn field_index_go(fields: Int, field: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(str_from_int(vec_get(vec_get(fields, i), 0)), str_from_int(field)) == 1
+        i
+    else
+        field_index_go(fields, field, i + 1, n)
+
 fn tensor_lit_type(e: Int) -> Int ! alloc
     str_as_int("Tensor[F32, " + int_to_str(vec_get(e, 1)) + ", " + int_to_str(vec_get(e, 2)) + "] on cpu")
 
@@ -658,6 +674,16 @@ fn call_type(e: Int, env: Int) -> Int ! alloc
         matmul_call_type(e, env)
     elsif struct_find(strenv_structs(env), name) != 0
         name
+    elsif str_eq(str_from_int(name), "list_new") == 1
+        list_new_type(e)
+    elsif str_eq(str_from_int(name), "list_get") == 1
+        list_elem_type(expr_type(vec_get(vec_get(e, 2), 0), env))
+    elsif str_eq(str_from_int(name), "list_pop") == 1
+        list_elem_type(expr_type(vec_get(vec_get(e, 2), 0), env))
+    elsif str_eq(str_from_int(name), "dict_new") == 1
+        dict_new_type(e)
+    elsif str_eq(str_from_int(name), "dict_get") == 1
+        dict_get_type(e, env)
     elsif strenv_fnrets(env) == 0
         0
     elsif map_get(strenv_fnrets(env), str_as_int("$g:" + str_from_int(name))) != 0
@@ -668,6 +694,111 @@ fn call_type(e: Int, env: Int) -> Int ! alloc
             0
     else
         map_get(strenv_fnrets(env), name)
+
+# `list_new[T]()` has type `List[T]`; without a type argument it stays untyped.
+fn list_new_type(e: Int) -> Int ! alloc
+    ta = ex_call_type_args(e)
+    if ta == 0
+        0
+    else
+        str_as_int("List[" + str_from_int(ta) + "]")
+
+# `dict_new[K, V]()` has type `Dict[K, V]`.
+fn dict_new_type(e: Int) -> Int ! alloc
+    ta = ex_call_type_args(e)
+    if ta == 0
+        0
+    else
+        str_as_int("Dict[" + str_from_int(ta) + "]")
+
+# `dict_get(d, k)` has type `Option[V]`.
+fn dict_get_type(e: Int, env: Int) -> Int ! alloc
+    dt = expr_type(vec_get(vec_get(e, 2), 0), env)
+    if dt == 0
+        0
+    else
+        v = nth_type_arg(str_from_int(dt), 1)
+        if v == 0
+            0
+        else
+            str_as_int("Option[" + str_from_int(v) + "]")
+
+# `i`-th top-level type argument of `Name[A, B]`, or 0. Nested brackets are kept whole.
+fn nth_type_arg(t: String, i: Int) -> Int ! alloc
+    open = ty_find_open(t, 0)
+    if open < 0
+        0
+    else
+        nth_type_arg_go(str_slice(t, open + 1, str_len(t) - 1), i, 0, 0, 0)
+
+fn nth_type_arg_go(s: String, want: Int, pos: Int, start: Int, k: Int) -> Int ! alloc
+    n = str_len(s)
+    if pos >= n
+        if k == want
+            str_as_int(trim_spaces(str_slice(s, start, n)))
+        else
+            0
+    else
+        c = str_char(s, pos)
+        if c == 91
+            nth_type_arg_go(s, want, ty_skip_brackets(s, pos + 1, 1), start, k)
+        elsif c == 44
+            if k == want
+                str_as_int(trim_spaces(str_slice(s, start, pos)))
+            else
+                nth_type_arg_go(s, want, pos + 1, pos + 1, k + 1)
+        else
+            nth_type_arg_go(s, want, pos + 1, start, k)
+
+fn ty_find_open(t: String, i: Int) -> Int ! alloc
+    if i >= str_len(t)
+        0 - 1
+    elsif str_char(t, i) == 91
+        i
+    else
+        ty_find_open(t, i + 1)
+
+# Position after the `]` that closes the bracket opened before `pos` (depth 1).
+fn ty_skip_brackets(s: String, pos: Int, depth: Int) -> Int ! alloc
+    if pos >= str_len(s)
+        pos
+    else
+        c = str_char(s, pos)
+        if c == 91
+            ty_skip_brackets(s, pos + 1, depth + 1)
+        elsif c == 93
+            if depth == 1
+                pos + 1
+            else
+                ty_skip_brackets(s, pos + 1, depth - 1)
+        else
+            ty_skip_brackets(s, pos + 1, depth)
+
+fn trim_spaces(s: String) -> String ! alloc
+    n = str_len(s)
+    if n > 0
+        if str_char(s, 0) == 32
+            trim_spaces(str_slice(s, 1, n))
+        elsif str_char(s, n - 1) == 32
+            trim_spaces(str_slice(s, 0, n - 1))
+        else
+            s
+    else
+        s
+
+# `T` of a `List[T]` type text, or 0.
+fn list_elem_type(t: Int) -> Int ! alloc
+    if t == 0
+        0
+    else
+        s = str_from_int(t)
+        n = str_len(s)
+        if n < 7
+            0
+        elsif str_eq(str_slice(s, 0, 5), "List[") == 1
+            str_as_int(str_slice(s, 5, n - 1))
+        else
+            0
 
 fn matmul_call_type(e: Int, env: Int) -> Int ! alloc
     args = vec_get(e, 2)
@@ -777,6 +908,14 @@ fn assign_accumulates_string(name: Int, value: Int, env: Int) -> Int ! alloc
             0
 
 # The right operand of a string `+` is a temporary this expression owns.
+# A left operand that is a fresh-string call: the first `str_concat` of a chain copies
+# from it and must release it.
+fn add_left_is_fresh_call(left: Int) -> Int ! alloc
+    if ex_kind(left) == EX_CALL()
+        call_allocates_fresh_string(vec_get(left, 1))
+    else
+        0
+
 fn add_right_is_fresh_temp(right: Int, env: Int) -> Int ! alloc
     k = ex_kind(right)
     if k == EX_BINARY()

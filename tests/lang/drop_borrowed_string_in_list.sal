@@ -1,0 +1,10 @@
+# exit: 6
+fn f(s: String) -> Int ! alloc
+    names = list_new[String]()
+    _a = list_push(names, s)
+    list_len(names)
+
+fn main() -> Int ! alloc
+    s = int_to_str(12345)
+    n = f(s)
+    n + str_len(s)

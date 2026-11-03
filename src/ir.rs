@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::*;
 use crate::layout::{enum_variant_index, is_transparent_struct, struct_field_index};
 use crate::string_expr::{
-    add_chain_leftmost, add_right_is_fresh_temp, is_string_type, StringEnv,
+    add_chain_leftmost, add_left_is_fresh_call, add_right_is_fresh_temp, is_string_type, StringEnv,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -112,17 +112,26 @@ pub enum IrInst {
         struct_name: String,
         field_index: u32,
     },
-    /// Enum as one i64: unit variants use the tag alone; payloads use `(payload << 8) | tag`.
+    /// Enum as one i64: a unit variant is its tag alone; a variant with fields is
+    /// a heap box `[tag, field0, field1, …]` and the i64 is its address.
     EnumMake {
         dest: String,
         enum_name: String,
         variant_index: u32,
-        payload: Option<String>,
+        payload: Vec<String>,
+        /// Two bits per field: 1 owned `String`, 2 owned enum box; `enum_free` follows them.
+        owned: u64,
     },
-    BitAnd {
+    /// Tag of an enum value, whether unit (the i64 itself) or boxed.
+    EnumTag {
         dest: String,
-        left: String,
-        right: String,
+        value: String,
+    },
+    /// Field `index` of a boxed enum value.
+    EnumField {
+        dest: String,
+        value: String,
+        index: u32,
     },
     /// `match` on an enum: dispatch on the low tag byte.
     Switch {
@@ -237,6 +246,8 @@ pub fn lower_program_with_callables_env(
     strings: StringEnv,
 ) -> IrModule {
     let fn_names = callable_fns;
+    let dropped = crate::drops::insert_drops(prog);
+    let prog = &dropped;
     let mut param_modes: HashMap<String, Vec<ParamMode>> = HashMap::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
@@ -1172,7 +1183,8 @@ fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     // List ops always hit the runtime; prelude bodies are signatures only.
     if matches!(
         fname,
-        "list_new" | "list_push" | "list_len" | "list_get" | "dict_new" | "dict_put" | "dict_get"
+        "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
+            | "dict_put" | "dict_get" | "dict_has" | "list_free" | "dict_free" | "enum_free"
     ) {
         return format!("sal_{fname}");
     }
@@ -1255,6 +1267,10 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "vec_set"
             | "vec_len"
             | "vec_free"
+            | "list_free"
+            | "dict_free"
+            | "enum_free"
+            | "bytes_free"
             | "bytes_new"
             | "bytes_len"
             | "bytes_get_u8"
@@ -1281,6 +1297,9 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "dict_new"
             | "dict_put"
             | "dict_get"
+            | "dict_has"
+            | "list_set"
+            | "list_pop"
             | "clang"
             | "clang_obj"
             | "link_objs"
@@ -1355,7 +1374,8 @@ fn lower_expr(
                         dest: dest.clone(),
                         enum_name: edef.name.clone(),
                         variant_index: vidx,
-                        payload: None,
+                        payload: Vec::new(),
+                        owned: 0,
                     });
                     return dest;
                 }
@@ -1392,13 +1412,22 @@ fn lower_expr(
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),
                     func: func.into(),
-                    args: vec![l, r.clone()],
+                    args: vec![l.clone(), r.clone()],
                 });
                 if add_right_is_fresh_temp(right, strings) {
                     instructions.push(IrInst::Call {
                         dest: None,
                         func: "sal_free".into(),
                         args: vec![r],
+                    });
+                }
+                // `str_concat` copies both operands into a new buffer; `str_append` keeps
+                // the left one as the result.
+                if func == "sal_str_concat" && add_left_is_fresh_call(left) {
+                    instructions.push(IrInst::Call {
+                        dest: None,
+                        func: "sal_free".into(),
+                        args: vec![l],
                     });
                 }
                 return dest;
@@ -1588,16 +1617,12 @@ fn lower_expr(
             }
             if let Some((edef, vdef)) = find_variant_in_enums(&fname, &strings.enums) {
                 let vidx = enum_variant_index(edef, &vdef.name).unwrap_or(0) as u32;
-                let payload = if arg_names.is_empty() {
-                    None
-                } else {
-                    Some(arg_names[0].clone())
-                };
                 instructions.push(IrInst::EnumMake {
                     dest: dest.clone(),
                     enum_name: edef.name.clone(),
                     variant_index: vidx,
-                    payload,
+                    payload: arg_names.clone(),
+                    owned: enum_owned_mask(args, &strings.enums),
                 });
                 return dest;
             }
@@ -2197,7 +2222,7 @@ fn lower_expr(
             let Some(tag) = fail_tag else { return v };
             *counter += 1;
             let low = format!("t{counter}");
-            instructions.push(IrInst::BitAnd { dest: low.clone(), left: v.clone(), right: "255".into() });
+            instructions.push(IrInst::EnumTag { dest: low.clone(), value: v.clone() });
             *counter += 1;
             let tagc = format!("t{counter}");
             instructions.push(IrInst::ConstInt { dest: tagc.clone(), value: tag });
@@ -2217,7 +2242,7 @@ fn lower_expr(
             });
             *counter += 1;
             let payload = format!("t{counter}");
-            instructions.push(IrInst::Binary { dest: payload.clone(), op: "div".into(), left: v, right: "256".into() });
+            instructions.push(IrInst::EnumField { dest: payload.clone(), value: v, index: 0 });
             payload
         }
         Expr::Field { base, field, .. } => {
@@ -2260,8 +2285,10 @@ fn lower_expr(
                 fn_names,
                 strings,
             );
+            let scrut_ty = strings.expr_type(scrutinee).cloned();
             lower_match_chain(
                 scrut,
+                scrut_ty,
                 arms,
                 instructions,
                 env,
@@ -2278,6 +2305,31 @@ fn lower_expr(
             format!("t{counter}")
         }
     }
+}
+
+/// Fields of a variant constructor that the new box owns: fresh strings and fresh
+/// boxes of enums with fields. Anything else (names, user calls) may be someone
+/// else's value, so the box leaves it alone.
+fn enum_owned_mask(args: &[Expr], enums: &HashMap<String, crate::ast::EnumDef>) -> u64 {
+    let mut mask = 0u64;
+    for (i, a) in args.iter().enumerate().take(28) {
+        let kind = if crate::drops::is_fresh_value(a) {
+            1
+        } else if let Expr::Call { func, args: inner, .. } = a {
+            match func.as_ref() {
+                Expr::Ident { name, .. }
+                    if !inner.is_empty() && find_variant_in_enums(name, enums).is_some() =>
+                {
+                    2
+                }
+                _ => 0,
+            }
+        } else {
+            0
+        };
+        mask |= kind << (2 * i);
+    }
+    mask
 }
 
 fn find_variant_in_enums<'a>(
@@ -2344,6 +2396,7 @@ fn frame_name_for_where(expr: &Expr, strings: &StringEnv) -> Option<String> {
 
 fn lower_match_chain(
     scrut: String,
+    scrut_ty: Option<Type>,
     arms: &[MatchArm],
     instructions: &mut Vec<IrInst>,
     env: &mut HashMap<String, String>,
@@ -2366,6 +2419,7 @@ fn lower_match_chain(
     }) {
         return lower_match_switch(
             scrut,
+            scrut_ty,
             arms,
             instructions,
             env,
@@ -2380,7 +2434,7 @@ fn lower_match_chain(
     let arm = &arms[0];
     let rest = &arms[1..];
     let (cond_ssa, mut arm_env) = match_arm_cond(&scrut, &arm.pattern, counter, instructions);
-    note_variant_binding(&arm.pattern, strings);
+    note_variant_binding(&arm.pattern, scrut_ty.as_ref(), strings);
     for (k, v) in env.iter() {
         arm_env.entry(k.clone()).or_insert_with(|| v.clone());
     }
@@ -2412,6 +2466,7 @@ fn lower_match_chain(
     }
     let else_val = lower_match_chain(
         scrut.clone(),
+        scrut_ty.clone(),
         rest,
         instructions,
         env,
@@ -2438,6 +2493,7 @@ fn lower_match_chain(
 
 fn lower_match_switch(
     scrut: String,
+    scrut_ty: Option<Type>,
     arms: &[MatchArm],
     instructions: &mut Vec<IrInst>,
     env: &mut HashMap<String, String>,
@@ -2512,17 +2568,18 @@ fn lower_match_switch(
                 };
                 let mut body = Vec::new();
                 let mut arm_env = env.clone();
-                note_variant_binding(&arm.pattern, strings);
-                if let Some(Pattern::Ident(bind, _)) = args.first() {
-                    *counter += 1;
-                    let payload = format!("t{counter}");
-                    body.push(IrInst::Binary {
-                        dest: payload.clone(),
-                        op: "div".into(),
-                        left: scrut.clone(),
-                        right: "256".into(),
-                    });
-                    arm_env.insert(bind.clone(), payload);
+                note_variant_binding(&arm.pattern, scrut_ty.as_ref(), strings);
+                for (i, a) in args.iter().enumerate() {
+                    if let Pattern::Ident(bind, _) = a {
+                        *counter += 1;
+                        let payload = format!("t{counter}");
+                        body.push(IrInst::EnumField {
+                            dest: payload.clone(),
+                            value: scrut.clone(),
+                            index: i as u32,
+                        });
+                        arm_env.insert(bind.clone(), payload);
+                    }
                 }
                 let value = lower_expr(
                     &arm.body,
@@ -2552,18 +2609,41 @@ fn lower_match_switch(
     dest
 }
 
-/// `Some(p)` over a struct payload: `p.field` needs to know `p` is that struct.
-fn note_variant_binding(pat: &Pattern, strings: &mut StringEnv) {
-    if let Pattern::Variant { name, args, .. } = pat {
-        if let (Some(Pattern::Ident(bind, _)), Some((_, vdef))) =
-            (args.first(), find_variant_in_enums(name, &strings.enums))
-        {
-            if let Some(Type::Named { name: sn, args: targs, .. }) = vdef.fields.first() {
-                if targs.is_empty() && strings.structs.contains_key(sn) {
-                    strings.struct_types.insert(bind.clone(), sn.clone());
+/// `Some(p)` over a struct payload: `p.field` needs to know `p` is that struct. A
+/// generic field (`Option[T]`) takes its type from the scrutinee's type arguments.
+fn note_variant_binding(pat: &Pattern, scrut_ty: Option<&Type>, strings: &mut StringEnv) {
+    let Pattern::Variant { name, args, .. } = pat else {
+        return;
+    };
+    let Some((edef, vdef)) = find_variant_in_enums(name, &strings.enums) else {
+        return;
+    };
+    let scrut_args: &[Type] = match scrut_ty {
+        Some(Type::Named { args, .. }) => args,
+        _ => &[],
+    };
+    let mut named = Vec::new();
+    for (arg, fty) in args.iter().zip(vdef.fields.iter()) {
+        let Pattern::Ident(bind, _) = arg else {
+            continue;
+        };
+        let resolved = match fty {
+            Type::Named { name: tn, args: targs, .. } if targs.is_empty() => {
+                match edef.type_params.iter().position(|p| p == tn) {
+                    Some(i) => scrut_args.get(i).cloned(),
+                    None => Some(fty.clone()),
                 }
             }
+            _ => None,
+        };
+        if let Some(Type::Named { name: sn, args: targs, .. }) = resolved {
+            if targs.is_empty() && strings.structs.contains_key(&sn) {
+                named.push((bind.clone(), sn));
+            }
         }
+    }
+    for (bind, sn) in named {
+        strings.struct_types.insert(bind, sn);
     }
 }
 
@@ -2612,10 +2692,9 @@ fn match_arm_cond(
             let vtag = variant_tag_for_name(name) + 1;
             *counter += 1;
             let low = format!("t{counter}");
-            instructions.push(IrInst::BitAnd {
+            instructions.push(IrInst::EnumTag {
                 dest: low.clone(),
-                left: scrut.to_string(),
-                right: "255".into(),
+                value: scrut.to_string(),
             });
             *counter += 1;
             let tag_tmp = format!("t{counter}");
@@ -2625,16 +2704,17 @@ fn match_arm_cond(
                 left: low,
                 right: vtag.to_string(),
             });
-            if let Some(Pattern::Ident(bind, _)) = args.first() {
-                *counter += 1;
-                let payload = format!("t{counter}");
-                instructions.push(IrInst::Binary {
-                    dest: payload.clone(),
-                    op: "div".into(),
-                    left: scrut.to_string(),
-                    right: "256".into(),
-                });
-                env.insert(bind.clone(), payload);
+            for (i, a) in args.iter().enumerate() {
+                if let Pattern::Ident(bind, _) = a {
+                    *counter += 1;
+                    let payload = format!("t{counter}");
+                    instructions.push(IrInst::EnumField {
+                        dest: payload.clone(),
+                        value: scrut.to_string(),
+                        index: i as u32,
+                    });
+                    env.insert(bind.clone(), payload);
+                }
             }
             (tag_tmp, env)
         }

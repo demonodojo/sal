@@ -932,6 +932,7 @@ const PARITY_FILES: &[&str] = &[
     "pkg.sal",
     "selfhost/ast.sal",
     "selfhost/cache.sal",
+    "selfhost/drops.sal",
     "selfhost/effects.sal",
     "selfhost/emit.sal",
     "selfhost/fuse.sal",

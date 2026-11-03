@@ -717,6 +717,8 @@ fn lit_pool_new() -> Int ! alloc
     _e = vec_push(v, 0)
     _f = vec_push(v, 0)
     _g = vec_push(v, map_new())
+    _h = vec_push(v, map_new())
+    _i = vec_push(v, map_new())
     v
 
 # Variant name -> (tag + 1) * 2 + nullary, as `EnumMake` tags them: `index + 1`,
@@ -724,15 +726,19 @@ fn lit_pool_new() -> Int ! alloc
 fn lit_pool_variants(pool: Int) -> Int ! alloc
     vec_get(pool, 6)
 
-fn variants_register(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+# Variant name -> its field types, for typing pattern bindings.
+fn lit_pool_variant_fields(pool: Int) -> Int ! alloc
+    vec_get(pool, 7)
+
+fn variants_register(m: Int, ft: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         vs = vec_get(vec_get(enums, i), 1)
-        _a = variants_register_go(m, vs, 0, vec_len(vs))
-        variants_register(m, enums, i + 1, n)
+        _a = variants_register_go(m, ft, vec_get(vec_get(enums, i), 2), vs, 0, vec_len(vs))
+        variants_register(m, ft, enums, i + 1, n)
 
-fn variants_register_go(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+fn variants_register_go(m: Int, ft: Int, params: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -749,7 +755,11 @@ fn variants_register_go(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
         else
             i + 1
         _p = map_put(m, vec_get(v, 0), (tag + 1) * 2 + nullary)
-        variants_register_go(m, vs, i + 1, n)
+        entry = vec_new()
+        _q1 = vec_push(entry, v)
+        _q2 = vec_push(entry, params)
+        _q = map_put(ft, vec_get(v, 0), entry)
+        variants_register_go(m, ft, params, vs, i + 1, n)
 
 fn variant_code(tc: Int, name: Int) -> Int ! alloc
     map_get(lit_pool_variants(tc_lit_pool(tc)), name)
@@ -817,7 +827,7 @@ fn ensure_sal_lit(s: Int, pool: Int) -> String ! alloc
         cast + ".b)"
 
 fn runtime_decls() -> String ! alloc
-    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) {{ return ((int64_t *)(uintptr_t)p)[-2]; }}\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) {{ int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }}\nstatic float *sal_tn_alloc(int64_t n) {{ return sal_tn_alloc_bytes(n, 4); }}\nstatic float *sal_tn_from(int64_t raw, int64_t n) {{ float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }}\nstatic float *sal_tn_copy(int64_t p) {{ if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }}\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) {{ double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) {{ case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; }} int64_t o; __builtin_memcpy(&o, &r, 8); return o; }}\n\n"
+    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_enum_new(int64_t tag, int64_t n);\nint64_t sal_enum_set(int64_t v, int64_t i, int64_t x);\nint64_t sal_enum_tag(int64_t v);\nint64_t sal_enum_field(int64_t v, int64_t i);\nvoid sal_list_free(void *v);\nvoid sal_dict_free(void *v);\nvoid sal_enum_free(int64_t v);\nvoid sal_bytes_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) {{ return ((int64_t *)(uintptr_t)p)[-2]; }}\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) {{ int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }}\nstatic float *sal_tn_alloc(int64_t n) {{ return sal_tn_alloc_bytes(n, 4); }}\nstatic float *sal_tn_from(int64_t raw, int64_t n) {{ float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }}\nstatic float *sal_tn_copy(int64_t p) {{ if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }}\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) {{ double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) {{ case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; }} int64_t o; __builtin_memcpy(&o, &r, 8); return o; }}\n\n"
 
 fn user_fns_from_prog(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
@@ -1050,7 +1060,16 @@ fn emit_c_str_add(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     r = emit_c_expr(right, user, stmts, tc)
     fname = c_str_add_fname(e, tc_strenv(tc), add_left_is_acc(left, acc))
     args = vec_new()
-    _a = vec_push(args, l)
+    free_left = 0
+    if str_eq(fname, d"str_concat") == 1
+        free_left = add_left_is_fresh_call(left)
+    if free_left == 1
+        # Materialize the left temp so it can be freed after the copy.
+        lt = tmp_fresh(tc)
+        _lp = vec_push(stmts, str_as_int("  int64_t " + lt + " = " + l + ";\n"))
+        _a = vec_push(args, lt)
+    else
+        _a = vec_push(args, l)
     if add_right_is_fresh_temp(right, tc_strenv(tc)) == 1
         # Materialize the temp so it can be freed after the copy.
         rt = tmp_fresh(tc)
@@ -1060,6 +1079,15 @@ fn emit_c_str_add(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
         dt = tmp_fresh(tc)
         _q = vec_push(stmts, str_as_int("  int64_t " + dt + " = " + call + ";\n"))
         _f = vec_push(stmts, str_as_int("  sal_free((void*)(uintptr_t)" + rt + ");\n"))
+        if free_left == 1
+            _fl = vec_push(stmts, str_as_int("  sal_free((void*)(uintptr_t)" + str_from_int(vec_get(args, 0)) + ");\n"))
+        dt
+    elsif free_left == 1
+        _b = vec_push(args, r)
+        call = emit_c_builtin2(fname, args, stmts)
+        dt = tmp_fresh(tc)
+        _q = vec_push(stmts, str_as_int("  int64_t " + dt + " = " + call + ";\n"))
+        _fl = vec_push(stmts, str_as_int("  sal_free((void*)(uintptr_t)" + str_from_int(vec_get(args, 0)) + ");\n"))
         dt
     else
         _b = vec_push(args, r)
@@ -1335,7 +1363,7 @@ fn emit_c_call(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     elsif map_get(tc_lambdas(tc), fname) != 0
         emit_c_lambda_call(map_get(tc_lambdas(tc), fname), arg_parts, user, stmts, tc)
     elsif variant_code(tc, fname) != 0
-        emit_c_variant_make(variant_tag(variant_code(tc, fname)), arg_parts)
+        emit_c_variant_make(variant_tag(variant_code(tc, fname)) + emit_c_owned_mask(tc, args_e, 0, vec_len(args_e), 0, 1) * 256, arg_parts)
     elsif str_eq(str_from_int(fname), d"float_to_int") == 1
         "sal_fop(11, " + str_from_int(vec_get(arg_parts, 0)) + ", 0LL)"
     elsif str_eq(str_from_int(fname), d"int_to_float") == 1
@@ -1379,16 +1407,43 @@ fn emit_c_try(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     else
         none
     if code != 0
-        _b = vec_push(stmts, str_as_int("  if ((" + tname + " & 255LL) == " + int_to_str(variant_tag(code)) + "LL) return " + tname + ";\n"))
-        "(" + tname + " / 256LL)"
+        _b = vec_push(stmts, str_as_int("  if (sal_enum_tag(" + tname + ") == " + int_to_str(variant_tag(code)) + "LL) return " + tname + ";\n"))
+        "sal_enum_field(" + tname + ", 0)"
     else
         tname
+
+# Two bits per field, as the bootstrap's `enum_owned_mask`: 1 a fresh String, 2 a fresh
+# box of a variant with fields. `mul` is 4^i.
+fn emit_c_owned_mask(tc: Int, args_e: Int, i: Int, n: Int, acc: Int, mul: Int) -> Int ! alloc
+    if i >= n
+        acc
+    elsif i >= 28
+        acc
+    else
+        a = vec_get(args_e, i)
+        kind = 0
+        if dr_is_fresh_value(a) == 1
+            kind = 1
+        elsif ex_kind(a) == EX_CALL()
+            if vec_len(vec_get(a, 2)) > 0
+                if variant_code(tc, vec_get(a, 1)) != 0
+                    kind = 2
+        emit_c_owned_mask(tc, args_e, i + 1, n, acc + kind * mul, mul * 4)
 
 fn emit_c_variant_make(tag: Int, arg_parts: Int) -> String ! alloc
     if vec_len(arg_parts) == 0
         int_to_str(tag) + "LL"
     else
-        "((" + str_from_int(vec_get(arg_parts, 0)) + ") * 256LL + " + int_to_str(tag) + "LL)"
+        pref = "({{ int64_t __e = sal_enum_new(" + int_to_str(tag) + "LL, " + int_to_str(vec_len(arg_parts)) + "LL); "
+        sets = emit_c_variant_sets(arg_parts, 0, pref)
+        sets + "__e; }})"
+
+fn emit_c_variant_sets(arg_parts: Int, i: Int, acc: String) -> String ! alloc
+    if i >= vec_len(arg_parts)
+        acc
+    else
+        acc = acc + "sal_enum_set(__e, " + int_to_str(i) + "LL, " + str_from_int(vec_get(arg_parts, i)) + "); "
+        emit_c_variant_sets(arg_parts, i + 1, acc)
 
 # Tensors are `float *` buffers from sal_place_malloc; the value is the pointer.
 fn emit_c_tensor_lit(e: Int) -> String ! alloc
@@ -1479,14 +1534,6 @@ fn emit_c_ctor_slots(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
     else
         acc = acc + "__s[" + int_to_str(i) + "] = " + str_from_int(vec_get(parts, i)) + "; "
         emit_c_ctor_slots(parts, i + 1, n, acc)
-
-fn field_index_go(fields: Int, field: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    elsif str_eq(str_from_int(vec_get(vec_get(fields, i), 0)), str_from_int(field)) == 1
-        i
-    else
-        field_index_go(fields, field, i + 1, n)
 
 # C lvalue/rvalue for `base.field`, or just the base for a one-field struct.
 fn emit_c_field(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
@@ -1683,6 +1730,26 @@ fn emit_c_builtin5(fname: String, args: Int, stmts: Int) -> String ! alloc
         line = "  sal_vec_free((void*)(uintptr_t)" + a0 + ");\n"
         _p = vec_push(stmts, line)
         d"0"
+    elsif str_eq(fname, d"list_free") == 1
+        a0 = arg_at(args, 0)
+        line = "  sal_list_free((void*)(uintptr_t)" + a0 + ");\n"
+        _p = vec_push(stmts, line)
+        d"0"
+    elsif str_eq(fname, d"enum_free") == 1
+        a0 = arg_at(args, 0)
+        line = "  sal_enum_free(" + a0 + ");\n"
+        _p = vec_push(stmts, line)
+        d"0"
+    elsif str_eq(fname, d"dict_free") == 1
+        a0 = arg_at(args, 0)
+        line = "  sal_dict_free((void*)(uintptr_t)" + a0 + ");\n"
+        _p = vec_push(stmts, line)
+        d"0"
+    elsif str_eq(fname, d"bytes_free") == 1
+        a0 = arg_at(args, 0)
+        line = "  sal_bytes_free((void*)(uintptr_t)" + a0 + ");\n"
+        _p = vec_push(stmts, line)
+        d"0"
     elsif str_eq(fname, d"not") == 1
         a0 = arg_at(args, 0)
         "sal_not(" + a0 + ")"
@@ -1830,7 +1897,8 @@ fn emit_c_match(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
     _a = vec_push(stmts, str_as_int("  int64_t " + sname + " = " + scrut + ";\n"))
     _b = vec_push(stmts, str_as_int("  int64_t " + tname + " = 0;\n"))
     arms = vec_get(e, 2)
-    opens = emit_c_match_arms(arms, 0, vec_len(arms), sname, tname, user, stmts, tc)
+    sty = expr_type(vec_get(e, 1), tc_strenv(tc))
+    opens = emit_c_match_arms(arms, 0, vec_len(arms), sname, sty, tname, user, stmts, tc)
     _c = emit_c_match_close(stmts, opens)
     tname
 
@@ -1842,7 +1910,7 @@ fn emit_c_match_close(stmts: Int, n: Int) -> Int ! alloc
         emit_c_match_close(stmts, n - 1)
 
 # Returns the number of `else {{` blocks still open.
-fn emit_c_match_arms(arms: Int, i: Int, n: Int, sname: String, tname: String, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+fn emit_c_match_arms(arms: Int, i: Int, n: Int, sname: String, sty: Int, tname: String, user: Int, stmts: Int, tc: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1858,30 +1926,30 @@ fn emit_c_match_arms(arms: Int, i: Int, n: Int, sname: String, tname: String, us
             _m = append_stmts(stmts, body_stmts)
             _s = vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
             _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
-            1 + emit_c_match_arms(arms, i + 1, n, sname, tname, user, stmts, tc)
+            1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif kind == 3
             code = variant_code(tc, vec_get(pat, 1))
             cond = if code == 0
                 d"0"
             else
-                "(" + sname + " & 255LL) == " + int_to_str(variant_tag(code)) + "LL"
+                "sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL"
             _h = vec_push(stmts, str_as_int("  if (" + cond + ") {{\n"))
-            _pb = emit_c_variant_binds(vec_get(pat, 3), 0, sname, stmts)
+            _pb = emit_c_variant_binds(vec_get(pat, 3), 0, sname, stmts, tc, vec_get(pat, 1), sty)
             val = emit_c_expr(vec_get(arm, 1), user, body_stmts, tc)
             _r = strenv_set_len(tc_strenv(tc), slen)
             _m = append_stmts(stmts, body_stmts)
             _s = vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
             _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
-            1 + emit_c_match_arms(arms, i + 1, n, sname, tname, user, stmts, tc)
+            1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif ident_pat_is_variant(pat, tc) == 1
             code = variant_code(tc, vec_get(pat, 1))
-            _h = vec_push(stmts, str_as_int("  if ((" + sname + " & 255LL) == " + int_to_str(variant_tag(code)) + "LL) {{\n"))
+            _h = vec_push(stmts, str_as_int("  if (sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL) {{\n"))
             val = emit_c_expr(vec_get(arm, 1), user, body_stmts, tc)
             _r = strenv_set_len(tc_strenv(tc), slen)
             _m = append_stmts(stmts, body_stmts)
             _s = vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
             _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
-            1 + emit_c_match_arms(arms, i + 1, n, sname, tname, user, stmts, tc)
+            1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         else
             _h = vec_push(stmts, str_as_int(d"  {{\n"))
             if kind == 1
@@ -1904,19 +1972,48 @@ fn ident_pat_is_variant(pat: Int, tc: Int) -> Int ! alloc
     else
         0
 
-# Binds the first sub-pattern name to the payload (`scrut / 256`).
-fn emit_c_variant_binds(args: Int, i: Int, sname: String, stmts: Int) -> Int ! alloc
+# Binds each identifier sub-pattern to its field of the variant box.
+# Type of field `i` of variant `vname`; a type parameter of its enum is replaced
+# by the matching argument of the scrutinee type `sty` (`Option[P]` -> `P`).
+fn variant_field_type(tc: Int, vname: Int, i: Int, sty: Int) -> Int ! alloc
+    entry = map_get(lit_pool_variant_fields(tc_lit_pool(tc)), vname)
+    if entry == 0
+        0
+    else
+        v = vec_get(entry, 0)
+        if i < vec_len(vec_get(v, 1))
+            fty = vec_get(vec_get(v, 1), i)
+            pi = type_param_index(vec_get(entry, 1), str_as_int(trim_spaces(str_from_int(fty))), 0)
+            if pi < 0
+                fty
+            elsif sty == 0
+                0
+            else
+                nth_type_arg(str_from_int(sty), pi)
+        else
+            0
+
+fn type_param_index(params: Int, name: Int, i: Int) -> Int ! alloc
+    if params == 0
+        0 - 1
+    elsif i >= vec_len(params)
+        0 - 1
+    elsif str_eq(str_from_int(vec_get(params, i)), str_from_int(name)) == 1
+        i
+    else
+        type_param_index(params, name, i + 1)
+
+fn emit_c_variant_binds(args: Int, i: Int, sname: String, stmts: Int, tc: Int, vname: Int, sty: Int) -> Int ! alloc
     if i >= vec_len(args)
         0
     else
         sub = vec_get(args, i)
-        if i == 0
-            if vec_get(sub, 0) == 1
-                vec_push(stmts, str_as_int("    int64_t " + str_from_int(vec_get(sub, 1)) + " = " + sname + " / 256LL;\n"))
-            else
-                0
+        if vec_get(sub, 0) == 1
+            _b = vec_push(stmts, str_as_int("    int64_t " + str_from_int(vec_get(sub, 1)) + " = sal_enum_field(" + sname + ", " + int_to_str(i) + "LL);\n"))
+            _t = strenv_bind(tc_strenv(tc), vec_get(sub, 1), variant_field_type(tc, vname, i, sty))
+            emit_c_variant_binds(args, i + 1, sname, stmts, tc, vname, sty)
         else
-            0
+            emit_c_variant_binds(args, i + 1, sname, stmts, tc, vname, sty)
 
 fn append_stmts(dst: Int, src: Int) -> Int ! alloc
     append_stmts_go(dst, src, 0, vec_len(src))
@@ -2094,7 +2191,8 @@ fn emit_c_fn(f: Int, user: Int, linkable: Int, allow_main: Int, pool: Int) -> St
 
 fn emit_c_fn_body(f: Int, user: Int, is_main: Int, acc: String, pool: Int) -> String ! alloc
     name = vec_get(f, 0)
-    body = vec_get(f, 2)
+    # Scope-end frees, the same pass the IR path applies.
+    body = drops_body(f, vec_get(pool, 8))
     names = vec_new()
     _c = collect_assigns_block(body, names)
     skip = param_names(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), vec_new())
@@ -2178,7 +2276,8 @@ fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: String, allow_main: Int,
 fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: Int, linkable: Int, types: Int) -> String ! alloc
     pool = lit_pool_new()
     _ty = lit_pool_set_types(pool, graph_types_fnrets(types), graph_types_structs(types))
-    _vr = variants_register(lit_pool_variants(pool), prog_enums(prog), 0, vec_len(prog_enums(prog)))
+    _vr = variants_register(lit_pool_variants(pool), lit_pool_variant_fields(pool), prog_enums(prog), 0, vec_len(prog_enums(prog)))
+    _dv = vec_set(pool, 8, drop_env_from_prog(prog))
     acc = runtime_decls()
     acc = acc + "#include <stdint.h>\n"
     acc = emit_extern_decls(externs, 0, vec_len(externs), acc)
@@ -2528,8 +2627,10 @@ fn cir_tbin(cc: Int, inst: Int) -> Int ! alloc
     right = cir_op(cc, vec_get(inst, 6))
     scalar = vec_get(inst, 8)
     sval = d"0"
+    rarg = right
     if scalar == 1
         sval = cir_float_text(cc, vec_get(inst, 6))
+        rarg = d"0"
     code = cir_tbin_code(op)
     is_cmp = cir_tbin_is_cmp(op)
     elem_sz = select_str(is_cmp, d"1", d"4")
@@ -2538,7 +2639,7 @@ fn cir_tbin(cc: Int, inst: Int) -> Int ! alloc
     _p0 = vec_push(argv, str_as_int(int_to_str(code)))
     _p1 = vec_push(argv, str_as_int(d))
     _p2 = vec_push(argv, str_as_int(left))
-    _p3 = vec_push(argv, str_as_int(select_str(scalar == 1, d"0", right)))
+    _p3 = vec_push(argv, str_as_int(rarg))
     _p4 = vec_push(argv, str_as_int(len))
     _p5 = vec_push(argv, str_as_int(int_to_str(scalar)))
     _p6 = vec_push(argv, str_as_int(sval))

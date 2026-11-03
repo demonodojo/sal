@@ -136,6 +136,17 @@ int64_t sal_vec_get(void *v, int64_t i);
 int64_t sal_vec_set(void *v, int64_t i, int64_t x);
 int64_t sal_vec_len(void *v);
 void sal_vec_free(void *v);
+void *sal_list_set(void *vp, int64_t i, int64_t x);
+int64_t sal_list_pop(void *vp);
+int64_t sal_dict_has(void *dp, const char *key);
+int64_t sal_enum_new(int64_t tag, int64_t n);
+int64_t sal_enum_set(int64_t v, int64_t i, int64_t x);
+void sal_enum_free(int64_t v);
+int64_t sal_enum_tag(int64_t v);
+int64_t sal_enum_field(int64_t v, int64_t i);
+void sal_list_free(void *v);
+void sal_dict_free(void *v);
+void sal_bytes_free(void *v);
 
 void *sal_bytes_new(int64_t len);
 int64_t sal_bytes_len(void *b);

@@ -1,0 +1,21 @@
+# exit: 37
+struct P
+    x: Int
+    y: Int
+
+fn main() -> Int ! alloc
+    xs = list_new[Int]()
+    _a = list_push(xs, 1)
+    _b = list_push(xs, 2)
+    _c = list_push(xs, 3)
+    _d = list_set(xs, 1, 20)
+    top = list_pop(xs)
+    ps = list_new[P]()
+    _e = list_push(ps, P(4, 5))
+    _f = list_set(ps, 0, P(6, 7))
+    q = list_pop(ps)
+    names = list_new[String]()
+    _g = list_push(names, "ab")
+    _h = list_set(names, 0, "xyz")
+    n = list_pop(names)
+    top + list_get(xs, 1) + list_len(xs) + q.x + q.y + str_len(n) - 3 - 1

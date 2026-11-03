@@ -465,8 +465,16 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_vec_push(ptr, i64)\n");
     s.push_str("declare i64 @sal_vec_get(ptr, i64)\n");
     s.push_str("declare i64 @sal_vec_set(ptr, i64, i64)\n");
+    s.push_str("declare i64 @sal_enum_new(i64, i64)\n");
+    s.push_str("declare i64 @sal_enum_set(i64, i64, i64)\n");
+    s.push_str("declare void @sal_enum_free(i64)\n");
+    s.push_str("declare i64 @sal_enum_tag(i64)\n");
+    s.push_str("declare i64 @sal_enum_field(i64, i64)\n");
     s.push_str("declare i64 @sal_vec_len(ptr)\n");
     s.push_str("declare void @sal_vec_free(ptr)\n");
+    s.push_str("declare void @sal_list_free(ptr)\n");
+    s.push_str("declare void @sal_dict_free(ptr)\n");
+    s.push_str("declare void @sal_bytes_free(ptr)\n");
     s.push_str("declare ptr @sal_bytes_new(i64)\n");
     s.push_str("declare i64 @sal_bytes_len(ptr)\n");
     s.push_str("declare i64 @sal_bytes_fill(ptr, i64, i64, i64)\n");
@@ -500,7 +508,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_instrument_check_index(i64, i64, ptr)\n");
     s.push_str("declare ptr @sal_dict_new(i64, i64)\n");
     s.push_str("declare ptr @sal_dict_put(ptr, ptr, i64)\n");
-    s.push_str("declare i64 @sal_dict_get(ptr, ptr)\n\n");
+    s.push_str("declare i64 @sal_dict_get(ptr, ptr)\n");
+    s.push_str("declare i64 @sal_dict_has(ptr, ptr)\n");
+    s.push_str("declare ptr @sal_list_set(ptr, i64, i64)\n");
+    s.push_str("declare i64 @sal_list_pop(ptr)\n\n");
 
     for (name, nparams) in extern_user_fns {
         let sret = opts.fn_sigs.get(name).map_or(false, |g| g.ret.is_some());
@@ -2071,7 +2082,8 @@ fn emit_host_tensor_fn(
             IrInst::Aggregate { .. }
             | IrInst::Extract { .. }
             | IrInst::EnumMake { .. }
-            | IrInst::BitAnd { .. }
+            | IrInst::EnumTag { .. }
+            | IrInst::EnumField { .. }
             | IrInst::Switch { .. } => {}
         }
     }
@@ -2953,6 +2965,34 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
         }
+        "sal_enum_free" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            s.push_str(&format!("  call void @sal_enum_free(i64 {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_dict_free" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            s.push_str(&format!("  call void @sal_dict_free(ptr {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_list_free" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            s.push_str(&format!("  call void @sal_list_free(ptr {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_bytes_free" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            s.push_str(&format!("  call void @sal_bytes_free(ptr {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
         "sal_list_new" => {
             let kind = args
                 .first()
@@ -3181,6 +3221,32 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             } else {
                 s.push_str(&format!("  call ptr @sal_dict_put(ptr {a}, ptr {k}, i64 {v})\n"));
+            }
+        }
+        "sal_list_set" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let c = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_list_set(ptr {a}, i64 {b}, i64 {c})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            } else {
+                s.push_str(&format!("  call ptr @sal_list_set(ptr {a}, i64 {b}, i64 {c})\n"));
+            }
+        }
+        "sal_list_pop" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_list_pop(ptr {a})\n"));
+            } else {
+                s.push_str(&format!("  call i64 @sal_list_pop(ptr {a})\n"));
+            }
+        }
+        "sal_dict_has" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let k = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_dict_has(ptr {a}, ptr {k})\n"));
             }
         }
         "sal_dict_get" => {
@@ -3882,28 +3948,40 @@ fn emit_inst_list(
                 dest,
                 variant_index,
                 payload,
+                owned,
                 ..
             } => {
-                if let Some(p) = payload {
-                    let pop = i64_operand(p, &consts);
-                    *tmp += 1;
-                    let sh = format!("em{tmp}");
-                    s.push_str(&format!("  %{sh} = shl i64 {pop}, 8\n"));
-                    let tag = variant_index + 1;
-                    s.push_str(&format!(
-                        "  %{dest} = or i64 %{sh}, {tag}\n"
-                    ));
-                } else if *variant_index == 0 {
-                    s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+                let base: i64 = if payload.is_empty() && *variant_index == 0 {
+                    0
                 } else {
-                    let tag = variant_index + 1;
+                    *variant_index as i64 + 1
+                };
+                let tag = base + ((*owned as i64) << 8);
+                if payload.is_empty() {
                     s.push_str(&format!("  %{dest} = add i64 0, {tag}\n"));
+                } else {
+                    s.push_str(&format!(
+                        "  %{dest} = call i64 @sal_enum_new(i64 {tag}, i64 {})\n",
+                        payload.len()
+                    ));
+                    for (i, p) in payload.iter().enumerate() {
+                        let pop = i64_operand(p, &consts);
+                        *tmp += 1;
+                        s.push_str(&format!(
+                            "  %em{tmp} = call i64 @sal_enum_set(i64 %{dest}, i64 {i}, i64 {pop})\n"
+                        ));
+                    }
                 }
             }
-            IrInst::BitAnd { dest, left, right } => {
-                let l = i64_operand(left, &consts);
-                let r = i64_operand(right, &consts);
-                s.push_str(&format!("  %{dest} = and i64 {l}, {r}\n"));
+            IrInst::EnumTag { dest, value } => {
+                let v = i64_operand(value, &consts);
+                s.push_str(&format!("  %{dest} = call i64 @sal_enum_tag(i64 {v})\n"));
+            }
+            IrInst::EnumField { dest, value, index } => {
+                let v = i64_operand(value, &consts);
+                s.push_str(&format!(
+                    "  %{dest} = call i64 @sal_enum_field(i64 {v}, i64 {index})\n"
+                ));
             }
             IrInst::ConstFloat { dest, value } => {
                 if let Some(te) = tensor.as_deref_mut() {
@@ -4105,7 +4183,7 @@ fn emit_inst_list(
                 let scrut_op = i64_operand(scrut, &consts);
                 *tmp += 1;
                 let tag = format!("swtag{tmp}");
-                s.push_str(&format!("  %{tag} = and i64 {scrut_op}, 255\n"));
+                s.push_str(&format!("  %{tag} = call i64 @sal_enum_tag(i64 {scrut_op})\n"));
                 let join = format!("swjoin{id}");
                 let def_l = format!("swdef{id}");
                 s.push_str(&format!("  switch i64 %{tag}, label %{def_l} [\n"));

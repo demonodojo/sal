@@ -1,5 +1,4 @@
 # exit: 2
-# selfhost-xfail: selfhost stores the struct handle without boxing
 struct P
     x: Int
     y: Int

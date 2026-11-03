@@ -564,8 +564,15 @@ fn is_borrow_fn(name: &str) -> bool {
             | "vec_set"
             | "vec_len"
             | "vec_free"
+            | "list_free"
+            | "dict_free"
+            | "enum_free"
+            | "bytes_free"
             | "list_push"
             | "list_get"
+            | "list_set"
+            | "list_pop"
+            | "dict_has"
             | "list_len"
     )
 }

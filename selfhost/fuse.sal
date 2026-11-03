@@ -3,6 +3,8 @@
 import ast
 import ir
 import tensorops
+import drops
+import ownership
 
 fn FO_MATMUL() -> Int
     0
@@ -461,6 +463,11 @@ fn lower_str_add(cx: Int, e: Int) -> Int ! alloc
         _q = ir_push(cx, ir_call(0, str_as_int(d"sal_free"), fargs, 0))
     else
         _q = 0
+    if str_eq(fnm, "sal_str_concat") == 1
+        if add_left_is_fresh_call(left) == 1
+            largs = vec_new()
+            _g = vec_push(largs, l)
+            _h = ir_push(cx, ir_call(0, str_as_int(d"sal_free"), largs, 0))
     d
 
 fn lower_expr(cx: Int, e: Int) -> Int ! alloc
@@ -535,7 +542,21 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
             fresh(cx)
 
 fn lower_field(cx: Int, e: Int) -> Int ! alloc
-    lower_expr(cx, vec_get(e, 1))
+    base = lower_expr(cx, vec_get(e, 1))
+    sname = expr_type(vec_get(e, 1), cx_strenv(cx))
+    sd = struct_find(cx_struct_map(cx), sname)
+    if sd == 0
+        base
+    elsif structdef_field_count(sd) == 1
+        base
+    else
+        idx = field_index_go(structdef_fields(sd), vec_get(e, 2), 0, structdef_field_count(sd))
+        if idx < 0
+            base
+        else
+            d = fresh(cx)
+            _p = ir_push(cx, ir_extract(d, base, structdef_name(sd), idx))
+            d
 
 # `S(a, b)`: a single field is the field itself (newtype); more become an Aggregate.
 fn lower_struct_ctor(cx: Int, fname: Int, args: Int) -> Int ! alloc
@@ -1417,7 +1438,8 @@ fn lower_stmts(cx: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
             lower_stmts(cx, stmts, i + 1, n)
 
 # ---- struct drops ----
-# ---- moved bindings: bare identifiers that escape (bound, returned, tail) ----
+# ---- moved bindings: bare identifiers that escape (bound, returned, tail, or passed to a
+# user fn parameter that takes ownership) ----
 fn mv_add(names: Int, e: Int) -> Int ! alloc
     if e == 0
         0
@@ -1426,7 +1448,7 @@ fn mv_add(names: Int, e: Int) -> Int ! alloc
     else
         0
 
-fn mv_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+fn mv_stmts(stmts: Int, i: Int, n: Int, names: Int, md: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1440,64 +1462,93 @@ fn mv_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
             _a = mv_add(names, vec_get(st, 2))
         else
             _a = 0
-        _b = mv_expr(vec_get(st, 2), names)
-        mv_stmts(stmts, i + 1, n, names)
+        _b = mv_expr(vec_get(st, 2), names, md)
+        mv_stmts(stmts, i + 1, n, names, md)
 
-fn mv_block(b: Int, names: Int) -> Int ! alloc
+fn mv_block(b: Int, names: Int, md: Int) -> Int ! alloc
     if b == 0
         0
     else
         stmts = block_stmts(b)
-        _a = mv_stmts(stmts, 0, vec_len(stmts), names)
+        _a = mv_stmts(stmts, 0, vec_len(stmts), names, md)
         _b = mv_add(names, block_tail(b))
-        mv_expr(block_tail(b), names)
+        mv_expr(block_tail(b), names, md)
 
-fn mv_args(args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+fn mv_args(args: Int, i: Int, n: Int, names: Int, md: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = mv_expr(vec_get(args, i), names)
-        mv_args(args, i + 1, n, names)
+        _a = mv_expr(vec_get(args, i), names, md)
+        mv_args(args, i + 1, n, names, md)
 
-fn mv_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+# Arguments passed to a `take` parameter of a user fn are moved into the callee.
+fn mv_take_args(params: Int, args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif i >= vec_len(params)
+        0
+    else
+        if param_mode(vec_get(params, i)) == 2
+            _a = mv_add(names, vec_get(args, i))
+        else
+            _a = 0
+        mv_take_args(params, args, i + 1, n, names)
+
+fn mv_arms(arms: Int, i: Int, n: Int, names: Int, md: Int) -> Int ! alloc
     if i >= n
         0
     else
         arm = vec_get(arms, i)
-        _a = mv_expr(vec_get(arm, 0), names)
-        _b = mv_block(vec_get(arm, 1), names)
-        mv_arms(arms, i + 1, n, names)
+        _a = mv_expr(vec_get(arm, 0), names, md)
+        _b = mv_block(vec_get(arm, 1), names, md)
+        mv_arms(arms, i + 1, n, names, md)
 
-fn mv_expr(e: Int, names: Int) -> Int ! alloc
+fn mv_match_arms(arms: Int, i: Int, n: Int, names: Int, md: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = mv_expr(vec_get(vec_get(arms, i), 1), names, md)
+        mv_match_arms(arms, i + 1, n, names, md)
+
+fn mv_expr(e: Int, names: Int, md: Int) -> Int ! alloc
     if e == 0
         0
     else
         k = ex_kind(e)
         if k == EX_CALL()
             args = vec_get(e, 2)
-            mv_args(args, 0, vec_len(args), names)
+            params = map_get(md, vec_get(e, 1))
+            if params != 0
+                _t = mv_take_args(params, args, 0, vec_len(args), names)
+            else
+                _t = 0
+            mv_args(args, 0, vec_len(args), names, md)
         elsif k == EX_BINARY()
-            _a = mv_expr(vec_get(e, 2), names)
-            mv_expr(vec_get(e, 3), names)
+            _a = mv_expr(vec_get(e, 2), names, md)
+            mv_expr(vec_get(e, 3), names, md)
         elsif k == EX_UNARY()
-            mv_expr(vec_get(e, 2), names)
+            mv_expr(vec_get(e, 2), names, md)
         elsif k == EX_TO()
-            mv_expr(vec_get(e, 2), names)
+            mv_expr(vec_get(e, 2), names, md)
         elsif k == EX_TRY()
-            mv_expr(vec_get(e, 1), names)
+            mv_expr(vec_get(e, 1), names, md)
         elsif k == EX_FIELD()
-            mv_expr(vec_get(e, 1), names)
+            mv_expr(vec_get(e, 1), names, md)
         elsif k == EX_ON()
-            mv_block(vec_get(e, 2), names)
+            mv_block(vec_get(e, 2), names, md)
         elsif k == EX_WHILE()
-            _a = mv_expr(vec_get(e, 1), names)
-            mv_block(vec_get(e, 2), names)
+            _a = mv_expr(vec_get(e, 1), names, md)
+            mv_block(vec_get(e, 2), names, md)
+        elsif k == EX_MATCH()
+            _a = mv_expr(vec_get(e, 1), names, md)
+            arms = vec_get(e, 2)
+            mv_match_arms(arms, 0, vec_len(arms), names, md)
         elsif k == EX_IF()
-            _a = mv_expr(vec_get(e, 1), names)
-            _b = mv_block(vec_get(e, 2), names)
+            _a = mv_expr(vec_get(e, 1), names, md)
+            _b = mv_block(vec_get(e, 2), names, md)
             arms = vec_get(e, 4)
-            _c = mv_arms(arms, 0, vec_len(arms), names)
-            mv_block(vec_get(e, 3), names)
+            _c = mv_arms(arms, 0, vec_len(arms), names, md)
+            mv_block(vec_get(e, 3), names, md)
         else
             0
 
@@ -1509,6 +1560,18 @@ fn fn_has_param(params: Int, name: Int, i: Int, n: Int) -> Int ! alloc
         1
     else
         fn_has_param(params, name, i + 1, n)
+
+# 1 when `name` is a parameter whose mode is not `take`.
+fn param_not_taken(params: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(vec_get(vec_get(params, i), 0), name) == 1
+        if param_mode(vec_get(params, i)) == 2
+            0
+        else
+            1
+    else
+        param_not_taken(params, name, i + 1, n)
 
 # Struct definition whose name the type text `ty` spells, or 0.
 fn struct_for_type(structs: Int, ty: Int, i: Int, n: Int) -> Int ! alloc
@@ -1529,7 +1592,8 @@ fn drop_candidates(cx: Int, env: Int, params: Int, i: Int, n: Int, out: Int) -> 
         out
     else
         nm = vec_get(env, 3 + i * 2)
-        if fn_has_param(params, nm, 0, vec_len(params)) == 0
+        # A parameter is dropped here only when it takes ownership.
+        if param_not_taken(params, nm, 0, vec_len(params)) == 0
             if assigned_has(out, nm, 0, vec_len(out)) == 0
                 ty = strenv_type(env, nm)
                 structs = cx_struct_map(cx)
@@ -1577,9 +1641,9 @@ fn drop_locals(cx: Int, names: Int, moved: Int, i: Int, n: Int) -> Int ! alloc
             _a = 0
         drop_locals(cx, names, moved, i + 1, n)
 
-fn emit_struct_drops(cx: Int, f: Int) -> Int ! alloc
+fn emit_struct_drops(cx: Int, f: Int, md: Int) -> Int ! alloc
     moved = vec_new()
-    _m = mv_block(vec_get(f, 2), moved)
+    _m = mv_block(vec_get(f, 2), moved, md)
     env = cx_strenv(cx)
     names = drop_candidates(cx, env, vec_get(f, 1), 0, strenv_len(env), vec_new())
     drop_locals(cx, names, moved, 0, vec_len(names))
@@ -1606,11 +1670,11 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(dst, vec_get(src, i))
         copy_insts(src, dst, i + 1, n)
 
-fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
+fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int, denv: Int) -> Int ! alloc
     cx = cx_new(fn_names, fm, struct_map, fnrets)
     params = vec_get(f, 1)
     _a = lower_params(cx, params, 0, vec_len(params))
-    body = vec_get(f, 2)
+    body = drops_body(f, denv)
     stmts = block_stmts(body)
     stopped = lower_stmts(cx, stmts, 0, vec_len(stmts))
     if stopped == 0
@@ -1623,7 +1687,7 @@ fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int
     else
         _c = 0
     ret = pop_final_ret(cx)
-    _dr = emit_struct_drops(cx, f)
+    _dr = emit_struct_drops(cx, f, vec_get(denv, 1))
     if ret != 0
         _rr = ir_push(cx, ret)
     else
@@ -1718,12 +1782,70 @@ fn lower_program_with_types(prog: Int, extra: Int, sm: Int, fr: Int) -> Int ! al
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
-    lower_fns(fns, names, fm, sm, fr, 0, vec_len(fns), out)
+    _im = infer_param_modes(prog)
+    denv = drop_env_from_prog(prog)
+    lower_fns(fns, names, fm, sm, fr, denv, 0, vec_len(fns), out)
 
-fn lower_fns(fns: Int, names: Int, fm: Int, sm: Int, fr: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+# `[variants, modes]`: the variant table and, per fn name, its parameters (with their modes).
+fn drop_env_from_prog(prog: Int) -> Int ! alloc
+    denv = vec_new()
+    _a = vec_push(denv, variant_map_from_prog(prog))
+    modes = map_new()
+    fns = prog_fns(prog)
+    _m = modes_fill(modes, fns, 0, vec_len(fns))
+    _b = vec_push(denv, modes)
+    denv
+
+fn modes_fill(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        _p = map_put(m, vec_get(f, 0), vec_get(f, 1))
+        modes_fill(m, fns, i + 1, n)
+
+# Variant name -> [1 when it has fields or 2 when unit, per-field "may own heap" flags].
+fn variant_map_from_prog(prog: Int) -> Int ! alloc
+    m = map_new()
+    enums = prog_enums(prog)
+    _a = variant_map_enums(m, enums, 0, vec_len(enums))
+    m
+
+fn variant_map_enums(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        vs = vec_get(vec_get(enums, i), 1)
+        _a = variant_map_go(m, vs, 0, vec_len(vs))
+        variant_map_enums(m, enums, i + 1, n)
+
+fn variant_map_go(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = vec_get(vs, i)
+        rec = vec_new()
+        if vec_len(vec_get(v, 1)) == 0
+            _k = vec_push(rec, 2)
+        else
+            _k = vec_push(rec, 1)
+        flags = vec_new()
+        _f = variant_field_flags(vec_get(v, 1), 0, vec_len(vec_get(v, 1)), flags)
+        _g = vec_push(rec, flags)
+        _p = map_put(m, vec_get(v, 0), rec)
+        variant_map_go(m, vs, i + 1, n)
+
+fn variant_field_flags(fields: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(out, dr_field_owned(vec_get(fields, i)))
+        variant_field_flags(fields, i + 1, n, out)
+
+fn lower_fns(fns: Int, names: Int, fm: Int, sm: Int, fr: Int, denv: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        irf = lower_fn(vec_get(fns, i), names, fm, sm, fr)
+        irf = lower_fn(vec_get(fns, i), names, fm, sm, fr, denv)
         _p = vec_push(out, irf)
-        lower_fns(fns, names, fm, sm, fr, i + 1, n, out)
+        lower_fns(fns, names, fm, sm, fr, denv, i + 1, n, out)

@@ -1,0 +1,18 @@
+# Exits 0 only if every string was built correctly. With no frees the loop needs
+# several hundred MB and strings turn into NULL under a small address-space cap.
+fn work(i: Int) -> Int ! alloc
+    a = int_to_str(i)
+    b = a + "-payload-payload-payload-payload"
+    str_len(b) - str_len(a) - 32
+
+fn main() -> Int ! alloc
+    i = 0
+    bad = 0
+    while i < 3000000
+        s = str_slice("hello world, hello world", 0, 20)
+        bad = bad + (str_len(s) - 20) + work(i)
+        i = i + 1
+    if bad == 0
+        0
+    else
+        1

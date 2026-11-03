@@ -207,6 +207,17 @@ pub fn call_allocates_fresh_string(name: &str) -> bool {
     )
 }
 
+/// A left operand that is itself a fresh-string call is a temporary the first
+/// `str_concat` of a chain copies from and must release.
+pub fn add_left_is_fresh_call(left: &Expr) -> bool {
+    match left {
+        Expr::Call { func, .. } => {
+            matches!(func.as_ref(), Expr::Ident { name, .. } if call_allocates_fresh_string(name))
+        }
+        _ => false,
+    }
+}
+
 /// The right operand of a string `+` is a temporary this expression owns.
 pub fn add_right_is_fresh_temp(right: &Expr, env: &StringEnv) -> bool {
     match right {

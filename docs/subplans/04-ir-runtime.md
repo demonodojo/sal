@@ -25,7 +25,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `const` entero, float o cadena | literales |
 | `copy` | tipo trivial |
 | `move` | último uso de un único |
-| `drop` | fin de ámbito de un único que sigue vivo |
+| `drop` | fin de ámbito de un único que sigue vivo. Hoy: `String`, `List` (Copy o `String`), `Dict` (valores escalares o `String`), caja de enum y `Bytes` locales frescos que no escapan, como `sal_free` / `sal_list_free` / `sal_dict_free` / `sal_enum_free` / `sal_bytes_free` (`src/drops.rs`, espejo `selfhost/drops.sal`); el pase reescribe el AST con `free(x)` justo antes de bajar |
 | `borrow` | argumento prestado; el alcance es la llamada |
 | `alloca` | local de pila |
 | binario y unario | operadores de la gramática. `+` con izquierdo `String` es `sal_str_concat` (primer paso, o izquierdo `IDENT`) o `sal_str_append` (paso siguiente de la misma cadena). El derecho se pasa como el segundo argumento de esa llamada, aunque no sea `String` |
@@ -59,7 +59,7 @@ Sobre las instrucciones de un solo `on`, en orden:
 
 El programa sal no importa este runtime. Clang lo enlaza porque el compilador lo pide.
 
-Heaps distintos para `cpu`, `gpu` y `tpu`, aunque la máquina no tenga GPU ni TPU: `sal run` ejecuta el bloque en el heap de ese actor. Con `sal build --device gpu` y `nvcc` disponible, el enlace define `SAL_USE_CUDA`: reservas y `to gpu` usan memoria de dispositivo, y `sal_matmul_f32` en el heap gpu llama al núcleo CUDA (`runtime/gpu_matmul.cu`). Sin CUDA, el mismo contrato se emula en host.
+El asignador de `String`, `vec` y `map` es `malloc`/`free` (en soso, el `malloc` de la plataforma); no hay arena. Heaps distintos para `cpu`, `gpu` y `tpu`, aunque la máquina no tenga GPU ni TPU: `sal run` ejecuta el bloque en el heap de ese actor. Con `sal build --device gpu` y `nvcc` disponible, el enlace define `SAL_USE_CUDA`: reservas y `to gpu` usan memoria de dispositivo, y `sal_matmul_f32` en el heap gpu llama al núcleo CUDA (`runtime/gpu_matmul.cu`). Sin CUDA, el mismo contrato se emula en host.
 
 `on gpu kernel i, j in …` baja a `KernelGrid` en la IR (bucles sobre la forma estática) y a `sal_on_enter` en dispositivo. `@shared` en el fuente sigue fuera del arranque; el mosaico gpu usa shared internamente. Hace falta reserva y liberación por lugar, `String`, `List[T]` con índice comprobado (`T` ∈ Int, Float, Bool, String), `Dict[K, V]` (`sal_dict_*`, distinto de `sal_map_*` del autohospedaje), `Tensor` con elemento y forma, `print` y `panic`.
 
@@ -79,3 +79,8 @@ Heaps distintos para `cpu`, `gpu` y `tpu`, aunque la máquina no tenga GPU ni TP
 - Un producto 2×2 conocido coincide con el número esperado, también leído de un `.salt`.
 - `sal run examples/hello.sal` termina en 42.
 - El LLVM del forward declara y llama a `sal_matmul_f32` y, si hay `to`, a `sal_place_copy`.
+
+
+**Enums.** Una variante sin campos es su tag (`i64` < 4096); una con campos es un puntero a una caja `[tag, campo0, …]` (`sal_enum_new/set/tag/field`). IR: `EnumMake { payload: Vec, owned }` (`owned`: dos bits por campo, 1 `String` fresco, 2 caja de enum fresca, guardados en la cabecera de la caja junto al tag), `EnumTag`, `EnumField`, `Switch` sobre `EnumTag`. `list_set`, `list_pop`, `dict_has` y `dict_get` (devuelve el `Option` del preludio) son builtins del runtime.
+
+**Instrumentación.** `SAL_INSTRUMENT_STRICT=1` hace que `sal_instrument_shutdown` informe de todo bloque vivo (por defecto se omiten los sitios de cadenas y asas que el selfhost aún deja vivos a propósito). `tests/instrument_sal.rs` comprueba que un programa cuyos locales libera el compilador sale limpio en modo estricto y que una cadena pasada a una función de usuario se informa como `LEAK`.

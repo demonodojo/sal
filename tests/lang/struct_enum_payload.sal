@@ -1,5 +1,4 @@
 # exit: 9
-# selfhost-xfail: selfhost does not know the struct type of a match-bound payload
 enum Opt
     Non
     Som(P)

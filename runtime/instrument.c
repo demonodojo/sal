@@ -203,11 +203,14 @@ void sal_instrument_shutdown(void) {
     if (!enabled) {
         return;
     }
-    /* Drop string/file buffers the selfhost compiler leaves live; keep
-     * tensor/vec leaks detectable for instrument_sal tests. */
+    /* The selfhost compiler still keeps strings and handles alive on purpose, so
+     * by default those sites are not reported (tensor and container leaks are).
+     * SAL_INSTRUMENT_STRICT=1 reports every live block: a program whose locals
+     * the compiler frees must come out clean. */
+    int strict = getenv("SAL_INSTRUMENT_STRICT") != NULL;
     while (live) {
         const char *s = live->site;
-        int ephemeral = s && (
+        int ephemeral = !strict && s && (
             strcmp(s, "concat") == 0 || strcmp(s, "strdup") == 0 ||
             strcmp(s, "str_slice") == 0 || strcmp(s, "read_file") == 0 ||
             strcmp(s, "tmp_path") == 0 || strcmp(s, "vec_new") == 0 ||

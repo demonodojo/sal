@@ -3,6 +3,7 @@ pub mod attrs;
 pub mod compile;
 pub mod device;
 pub mod diag;
+pub mod drops;
 pub mod effects;
 pub mod fmt;
 pub mod fuse;

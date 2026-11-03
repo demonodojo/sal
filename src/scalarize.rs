@@ -316,13 +316,19 @@ impl<'a> Pass<'a> {
                     right: r,
                 });
             }
-            IrInst::BitAnd { dest, left, right } => {
-                let l = self.plain(left, scope, out);
-                let r = self.plain(right, scope, out);
-                out.push(IrInst::BitAnd {
+            IrInst::EnumTag { dest, value } => {
+                let v = self.plain(value, scope, out);
+                out.push(IrInst::EnumTag {
                     dest: dest.clone(),
-                    left: l,
-                    right: r,
+                    value: v,
+                });
+            }
+            IrInst::EnumField { dest, value, index } => {
+                let v = self.plain(value, scope, out);
+                out.push(IrInst::EnumField {
+                    dest: dest.clone(),
+                    value: v,
+                    index: *index,
                 });
             }
             IrInst::TensorBin { dest, op, elem, place, left, right, len, right_scalar } => {
@@ -365,13 +371,14 @@ impl<'a> Pass<'a> {
                     src: s,
                 });
             }
-            IrInst::EnumMake { dest, enum_name, variant_index, payload } => {
-                let payload = payload.as_ref().map(|p| self.plain(p, scope, out));
+            IrInst::EnumMake { dest, enum_name, variant_index, payload, owned } => {
+                let payload = payload.iter().map(|p| self.plain(p, scope, out)).collect();
                 out.push(IrInst::EnumMake {
                     dest: dest.clone(),
                     enum_name: enum_name.clone(),
                     variant_index: *variant_index,
                     payload,
+                    owned: *owned,
                 });
             }
             IrInst::Aggregate { dest, struct_name, fields } => {

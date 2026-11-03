@@ -929,6 +929,21 @@ fn parse_param_ty(pr: Int) -> String ! alloc
     else
         d"Int"
 
+# Explicit `borrow` / `take` after a parameter type.
+fn parse_param_mode(pr: Int, prm: Int) -> Int ! alloc
+    t = p_peek(pr)
+    if tok_kind(t) == TK_IDENT()
+        if str_eq(tok_text(t), "borrow") == 1
+            _a = p_advance(pr)
+            param_set_mode(prm, 1)
+        elsif str_eq(tok_text(t), "take") == 1
+            _b = p_advance(pr)
+            param_set_mode(prm, 2)
+        else
+            0
+    else
+        0
+
 fn parse_params(pr: Int, params: Int) -> Int ! alloc
     _s = p_skip_nls(pr)
     if tok_kind(p_peek(pr)) == TK_RPAREN()
@@ -937,7 +952,9 @@ fn parse_params(pr: Int, params: Int) -> Int ! alloc
         pn_t = p_advance(pr)
         pn = or_arg_name(tok_text(pn_t))
         ty = parse_param_ty(pr)
-        _a = vec_push(params, param_new(pn, ty))
+        prm = param_new(pn, ty)
+        _m = parse_param_mode(pr, prm)
+        _a = vec_push(params, prm)
         if p_accept(pr, TK_COMMA()) == 1
             parse_params(pr, params)
         else

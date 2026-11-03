@@ -1,0 +1,26 @@
+# exit: 28
+enum Shape
+    Dot
+    Rect(Int, Int)
+    Tag(String, Int)
+
+fn area(n: Int) -> Int ! alloc
+    r = Rect(n, 2)
+    t = Tag("abc", n)
+    a = match r
+        Rect(w, h) => w * h
+        Dot => 0
+        Tag(s, k) => k
+    b = match t
+        Tag(s, k) => str_len(s) + k
+        Dot => 0
+        Rect(w, h) => 0
+    a + b
+
+fn main() -> Int ! alloc
+    total = 0
+    i = 0
+    while i < 3
+        total = total + area(i + 1)
+        i = i + 1
+    total + 1

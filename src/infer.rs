@@ -1285,7 +1285,7 @@ fn infer_call(
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
-        | "vec_len" | "vec_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
+        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
             for a in args {
@@ -1434,6 +1434,9 @@ fn infer_call(
         }
         "list_push" => infer_list_push(args, env, ctx, types, entries, span),
         "list_get" => infer_list_get(args, env, ctx, types, entries, span),
+        "list_set" => infer_list_set(args, env, ctx, types, entries, span),
+        "list_pop" => infer_list_pop(args, env, ctx, types, entries, span),
+        "dict_has" => infer_dict_has(args, env, ctx, types, entries, span),
         "list_len" => {
             if let Some(a) = args.first() {
                 check_expr(a, env, ctx, types, entries)?;
@@ -2953,13 +2956,6 @@ fn dict_kv(ty: &Type) -> Option<(Type, Type)> {
     }
 }
 
-fn is_copy_val_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Named { name, .. } if name == "Int" || name == "Float" || name == "Bool"
-    )
-}
-
 fn is_dict_key_type(ty: &Type) -> bool {
     matches!(
         ty,
@@ -3040,6 +3036,93 @@ fn infer_list_get(
     )])
 }
 
+fn infer_list_set(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let xs_ty = match args.first() {
+        Some(a) if args.len() == 3 => check_expr(a, env, ctx, types, entries)?,
+        _ => {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "list_set expects a list, an index and an element",
+                span,
+            )])
+        }
+    };
+    let elem = list_elem(&xs_ty).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EType, "list_set expects a List", span)]
+    })?;
+    check_expr(&args[1], env, ctx, types, entries)?;
+    let xty = check_expr(&args[2], env, ctx, types, entries)?;
+    if !types_compatible(&xty, &elem) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!(
+                "list element type mismatch: expected {}, found {}",
+                type_name(&elem),
+                type_name(&xty)
+            ),
+            args[2].span(),
+        )]);
+    }
+    Ok(xs_ty)
+}
+
+/// `list_pop(xs)`: removes the last element and moves it to the caller.
+fn infer_list_pop(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if let Some(a) = args.first() {
+        let xs_ty = check_expr(a, env, ctx, types, entries)?;
+        if let Some(elem) = list_elem(&xs_ty) {
+            return Ok(elem);
+        }
+    }
+    Err(vec![Diagnostic::new(ErrorCode::EType, "list_pop expects a List", span)])
+}
+
+fn infer_dict_has(
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let dty = match args.first() {
+        Some(a) if args.len() == 2 => check_expr(a, env, ctx, types, entries)?,
+        _ => {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "dict_has expects a dict and a key",
+                span,
+            )])
+        }
+    };
+    let (kty, _) = dict_kv(&dty).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EType, "dict_has expects a Dict", span)]
+    })?;
+    let kt = check_expr(&args[1], env, ctx, types, entries)?;
+    if !types_compatible(&kt, &kty) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "dict key type mismatch",
+            args[1].span(),
+        )]);
+    }
+    Ok(Type::Named { name: "Bool".into(), args: vec![], span })
+}
+
 fn infer_dict_new(type_args: &[TypeArg], span: Span) -> DiagResult<Type> {
     if type_args.len() >= 2 {
         let k = match &type_args[0] {
@@ -3057,15 +3140,15 @@ fn infer_dict_new(type_args: &[TypeArg], span: Span) -> DiagResult<Type> {
             TypeArg::Dim(_) => {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
-                    "Dict value type must be copy",
+                    "Dict value type must be a type",
                     span,
                 )])
             }
         };
-        if !is_dict_key_type(&k) || !is_copy_val_type(&v) {
+        if !is_dict_key_type(&k) || matches!(v, Type::Tensor { .. } | Type::Fn { .. }) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
-                "Dict[K, V]: K is Int or String; V is Int, Float or Bool",
+                "Dict[K, V]: K is Int or String; V is not a Tensor or a function",
                 span,
             )]);
         }
@@ -3148,10 +3231,18 @@ fn infer_dict_get(
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
 ) -> DiagResult<Type> {
-    if !types.enums.contains_key("Option") {
+    // The runtime builds the value: `None` is variant 0 and `Some(v)` variant 1.
+    let option_ok = types.enums.get("Option").is_some_and(|e| {
+        e.variants.len() == 2
+            && e.variants[0].name == "None"
+            && e.variants[0].fields.is_empty()
+            && e.variants[1].name == "Some"
+            && e.variants[1].fields.len() == 1
+    });
+    if !option_ok {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
-            "dict_get requires Option (import std/prelude.sal or define Option)",
+            "dict_get requires Option with variants None and Some, in that order (import std/prelude.sal or define it)",
             span,
         )]);
     }

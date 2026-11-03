@@ -1,0 +1,20 @@
+# exit: 31
+fn pick(n: Int) -> Int ! alloc
+    s = str_slice("hello world", 0, 5)
+    if n > 0
+        t = s + int_to_str(n)
+        return str_len(t)
+    str_len(s)
+
+fn main() -> Int ! alloc
+    acc = ""
+    i = 0
+    total = 0
+    while i < 4
+        w = int_to_str(i)
+        acc = acc + w
+        total = total + str_len(w)
+        i = i + 1
+    a = pick(3)
+    b = pick(0)
+    total + str_len(acc) + a + b + 12

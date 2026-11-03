@@ -127,3 +127,37 @@ fn instrument_sal_nan() {
         "stderr missing NAN: {stderr}"
     );
 }
+
+fn run_strict(src: &str, tag: &str) -> std::process::Output {
+    let file = PathBuf::from(format!("/tmp/sal-strict-{}-{tag}.sal", std::process::id()));
+    std::fs::write(&file, src).expect("write source");
+    let (_llvm, bin) = compile_instrumented(&file);
+    Command::new(&bin)
+        .env("SAL_INSTRUMENT_STRICT", "1")
+        .current_dir(root())
+        .output()
+        .expect("run")
+}
+
+/// Locals the compiler frees at scope end leave no live block, even in strict mode.
+#[test]
+fn instrument_strict_freed_locals_are_clean() {
+    let out = run_strict(
+        "enum Shape\n    Dot\n    Rect(Int, Int)\n    Tag(String, Int)\n\nfn main() -> Int ! alloc\n    s = int_to_str(12345) + \"x\"\n    xs = list_new[String]()\n    _a = list_push(xs, int_to_str(7))\n    d = dict_new[String, String]()\n    _b = dict_put(d, \"k\", int_to_str(9))\n    e = Tag(int_to_str(3), 4)\n    n = match e\n        Tag(t, k) => str_len(t) + k\n        Dot => 0\n        Rect(w, h) => w\n    str_len(s) + list_len(xs) + n\n",
+        "clean",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+}
+
+/// A string handed to a user function is not freed by the caller, and strict
+/// mode reports it.
+#[test]
+fn instrument_strict_reports_unfreed_string() {
+    let out = run_strict(
+        "fn len_of(s: String) -> Int\n    str_len(s)\n\nfn main() -> Int ! alloc\n    s = int_to_str(12345)\n    len_of(s)\n",
+        "leak",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("LEAK"), "expected a leak report: {stderr}");
+}

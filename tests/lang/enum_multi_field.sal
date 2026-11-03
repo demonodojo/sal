@@ -1,0 +1,14 @@
+# exit: 17
+enum Shape
+    Dot
+    Rect(Int, Int)
+    Tag(String, Int)
+
+fn area(s: Shape) -> Int ! alloc
+    match s
+        Dot => 0
+        Rect(w, h) => w * h
+        Tag(name, n) => str_len(name) + n
+
+fn main() -> Int ! alloc
+    area(Rect(3, 4)) + area(Tag("ab", 3)) + area(Dot)

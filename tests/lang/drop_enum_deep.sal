@@ -1,0 +1,35 @@
+# exit: 0
+enum Tree
+    Leaf(Int)
+    Name(String, Int)
+    Pair(Tree, Tree)
+
+fn once(n: Int) -> Int ! alloc
+    t = Pair(Name(int_to_str(n), n), Pair(Leaf(n), Name("lit", 1)))
+    match t
+        Pair(a, b) => n
+        Leaf(k) => k
+        Name(s, k) => k
+
+fn keep(n: Int) -> Int ! alloc
+    t = Name(int_to_str(n), 1)
+    r = match t
+        Name(s, k) => s
+        Leaf(k) => int_to_str(k)
+        Pair(a, b) => int_to_str(0)
+    str_len(r)
+
+fn read(n: Int) -> Int ! alloc
+    t = Name(int_to_str(n * 1000), n)
+    match t
+        Name(s, k) => str_len(s) + k
+        Leaf(k) => k
+        Pair(a, b) => 0
+
+fn main() -> Int ! alloc
+    total = 0
+    i = 0
+    while i < 3
+        total = total + once(i + 10) + keep(i + 100) + read(i + 1)
+        i = i + 1
+    total - 60

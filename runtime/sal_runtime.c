@@ -34,50 +34,21 @@ static void sal_xfree(void *p) {
     sal_instrument_free(p);
 }
 #else
-/* One compile allocates hundreds of thousands of tiny strings and vectors.
- * A bump arena makes those allocations a pointer add. Freed blocks stay live
- * until the process exits; the compiler does not reuse them.
- */
-typedef struct SalArena {
-    struct SalArena *next;
-    size_t used;
-    size_t cap;
-    char data[];
-} SalArena;
-
-#ifdef SAL_SOSO
-/* CPU runtime is single-threaded; no ELF TLS dependency. */
-static SalArena *g_arena;
-#else
-static _Thread_local SalArena *g_arena;
-#endif
-
+/* Real allocator: every owned block is returned with free(). */
 static void *sal_xmalloc(size_t n, const char *site) {
     (void)site;
     if (n == 0) {
         n = 1;
     }
     n = (n + 15u) & ~15u;
-    if (!g_arena || g_arena->used + n > g_arena->cap) {
-        size_t cap = (size_t)1 << 20;
-        if (n > cap) {
-            cap = n;
-        }
-        SalArena *b = (SalArena *)malloc(sizeof(SalArena) + cap);
-        if (!b) {
-            return NULL;
-        }
-        b->next = g_arena;
-        b->used = 0;
-        b->cap = cap;
-        g_arena = b;
-    }
-    void *p = g_arena->data + g_arena->used;
-    g_arena->used += n;
-    return p;
+#ifdef SAL_SOSO
+    return malloc(n);
+#else
+    return aligned_alloc(16, n);
+#endif
 }
 static void sal_xfree(void *p) {
-    (void)p;
+    free(p);
 }
 #endif
 
@@ -825,6 +796,18 @@ void *sal_bytes_new(int64_t len) {
     }
     b->len = len;
     return b;
+}
+
+/* Frees a block made by bytes_new (not a view). */
+void sal_bytes_free(void *vp) {
+    SalBytes *b = bytes_from_handle(vp);
+    if (!b) {
+        return;
+    }
+    if (b->data) {
+        sal_xfree(b->data);
+    }
+    sal_xfree(b);
 }
 
 int64_t sal_bytes_len(void *vp) {
@@ -1842,18 +1825,54 @@ char *sal_ir_text(void *modp) {
     }
 }
 
+/* Enum values: a unit variant is its tag (< 4096); a variant with fields is the
+ * address of a box [tag, field0, field1, ...]. */
+int64_t sal_enum_new(int64_t tag, int64_t n) {
+    int64_t *b = (int64_t *)sal_xmalloc((size_t)(n + 1) * sizeof(int64_t), "enum_new");
+    b[0] = tag;
+    return (int64_t)(intptr_t)b;
+}
+
+int64_t sal_enum_set(int64_t v, int64_t i, int64_t x) {
+    ((int64_t *)(intptr_t)v)[i + 1] = x;
+    return x;
+}
+
+/* Releases the box of an enum value; a unit variant (the bare tag) has none.
+ * The header records which fields the box owns (fresh strings, fresh boxes); the rest are borrowed or owned elsewhere. */
+void sal_enum_free(int64_t v) {
+    if (v < 4096) {
+        return;
+    }
+    int64_t *b = (int64_t *)(intptr_t)v;
+    int64_t kinds = (int64_t)((uint64_t)b[0] >> 8);
+    for (int i = 0; i < 28 && (kinds >> (2 * i)) != 0; i++) {
+        int64_t k = (kinds >> (2 * i)) & 3;
+        if (k == 1) {
+            sal_free((void *)(intptr_t)b[1 + i]);
+        } else if (k == 2) {
+            sal_enum_free(b[1 + i]);
+        }
+    }
+    sal_xfree(b);
+}
+
+int64_t sal_enum_tag(int64_t v) {
+    if (v >= 0 && v < 4096) return v;
+    return ((int64_t *)(intptr_t)v)[0] & 255;
+}
+
+int64_t sal_enum_field(int64_t v, int64_t i) {
+    return ((int64_t *)(intptr_t)v)[i + 1];
+}
+
 void sal_vec_free(void *vp) {
     SalVec *v = (SalVec *)vp;
     if (!v) {
         return;
     }
-#ifdef SAL_INSTRUMENT
     free(v->data);
     sal_xfree(v);
-#else
-    /* Vector storage lives in the bump arena. */
-    (void)v;
-#endif
 }
 
 void *sal_image_new(int64_t w, int64_t h) {
@@ -2055,6 +2074,22 @@ void *sal_list_new_typed(int64_t elem_kind) {
     return l;
 }
 
+/* Frees a list. A String list owns its elements and releases them; Copy
+ * elements (Int/Float/Bool) need nothing. */
+void sal_list_free(void *vp) {
+    SalList *l = (SalList *)vp;
+    if (!l) {
+        return;
+    }
+    if (l->elem_kind == 3) {
+        for (size_t i = 0; i < l->vec.len; i++) {
+            sal_free((void *)(uintptr_t)l->vec.data[i]);
+        }
+    }
+    free(l->vec.data);
+    sal_xfree(l);
+}
+
 void *sal_list_push(void *vp, int64_t x) {
     SalList *l = (SalList *)vp;
     if (!l) {
@@ -2082,6 +2117,30 @@ void *sal_list_select(void *in_list, const int8_t *mask, int64_t len) {
         }
     }
     return out;
+}
+
+/* Replaces element i (bounds checked) and returns the list. A String list owns
+ * its elements, so the old one is released. */
+void *sal_list_set(void *vp, int64_t i, int64_t x) {
+    SalList *l = (SalList *)vp;
+    int64_t len = l ? (int64_t)l->vec.len : 0;
+    if (!l || i < 0 || (size_t)i >= (size_t)len) {
+        sal_panic("list_set: out of bounds");
+    }
+    if (l->elem_kind == 3) {
+        sal_free((void *)(uintptr_t)l->vec.data[i]);
+    }
+    l->vec.data[i] = x;
+    return l;
+}
+
+/* Removes and returns the last element; ownership moves to the caller. */
+int64_t sal_list_pop(void *vp) {
+    SalList *l = (SalList *)vp;
+    if (!l || l->vec.len == 0) {
+        sal_panic("list_pop: empty list");
+    }
+    return l->vec.data[--l->vec.len];
 }
 
 int64_t sal_list_len(void *vp) {
@@ -2131,32 +2190,81 @@ void *sal_dict_new(int64_t key_kind, int64_t val_kind) {
     return d;
 }
 
+int64_t sal_dict_has(void *dp, const char *key);
+
+/* Frees a dict. Keys are borrowed (never released); String values are owned. */
+void sal_dict_free(void *dp) {
+    SalDict *d = (SalDict *)dp;
+    if (!d) {
+        return;
+    }
+    if (d->val_kind == 3) {
+        for (size_t i = 0; i < d->map.nslots; i++) {
+            if (d->map.slots[i].key) {
+                sal_free((void *)(uintptr_t)d->map.slots[i].val);
+            }
+        }
+    }
+    sal_xfree(d->map.slots);
+    sal_xfree(d);
+}
+
 void *sal_dict_put(void *dp, const char *key, int64_t val) {
     SalDict *d = (SalDict *)dp;
     if (!d || !key) {
         return dp;
     }
+    if (d->val_kind == 3 && sal_dict_has(dp, key)) {
+        sal_free((void *)(uintptr_t)sal_map_get(&d->map, key));
+    }
     (void)sal_map_put(&d->map, key, val);
     return d;
 }
 
-int64_t sal_dict_get(void *dp, const char *key) {
+int64_t sal_dict_has(void *dp, const char *key) {
     SalDict *d = (SalDict *)dp;
     if (!d || !key || !d->map.nslots) {
-        return -1;
+        return 0;
     }
     size_t mask = d->map.nslots - 1;
     size_t i = sal_map_hash(key) & mask;
     for (size_t step = 0; step < d->map.nslots; step++) {
         if (!d->map.slots[i].key) {
-            return -1;
+            return 0;
         }
         if (strcmp(d->map.slots[i].key, key) == 0) {
-            return d->map.slots[i].val;
+            return 1;
         }
         i = (i + 1) & mask;
     }
-    return -1;
+    return 0;
+}
+
+/* Returns the prelude `Option[V]`: `None` (variant 0, no fields) is the tag 0 and
+ * `Some(v)` (variant 1) the box [2, v]. A String value is copied out. */
+int64_t sal_dict_get(void *dp, const char *key) {
+    SalDict *d = (SalDict *)dp;
+    if (!d || !key || !d->map.nslots) {
+        return 0;
+    }
+    size_t mask = d->map.nslots - 1;
+    size_t i = sal_map_hash(key) & mask;
+    for (size_t step = 0; step < d->map.nslots; step++) {
+        if (!d->map.slots[i].key) {
+            return 0;
+        }
+        if (strcmp(d->map.slots[i].key, key) == 0) {
+            int64_t raw = d->map.slots[i].val;
+            if (d->val_kind == 3) {
+                raw = (int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)raw);
+            }
+            int64_t some = sal_enum_new(2, 1);
+            sal_enum_set(some, 0, raw);
+            return some;
+        }
+        i = (i + 1) & mask;
+    }
+    return 0;
 }
 
 #ifndef SAL_SOSO
