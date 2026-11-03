@@ -246,7 +246,8 @@ pub fn lower_program_with_callables_env(
     strings: StringEnv,
 ) -> IrModule {
     let fn_names = callable_fns;
-    let dropped = crate::drops::insert_drops(prog);
+    let moded = crate::ownership::infer_param_modes(prog);
+    let dropped = crate::drops::insert_drops(&moded);
     let prog = &dropped;
     let mut param_modes: HashMap<String, Vec<ParamMode>> = HashMap::new();
     for item in &prog.items {

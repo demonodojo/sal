@@ -975,3 +975,16 @@ fn generic_ret_param_go(params: Int, ret: Int, i: Int, n: Int) -> Int ! alloc
         i
     else
         generic_ret_param_go(params, ret, i + 1, n)
+
+fn assign_accumulates(value: Int, name: Int) -> Int ! alloc
+    if ex_kind(value) == EX_BINARY()
+        if str_eq(vec_get(value, 1), "add") == 1
+            leaf = add_chain_leftmost(value)
+            if ex_kind(leaf) == EX_IDENT()
+                str_eq(vec_get(leaf, 1), name)
+            else
+                0
+        else
+            0
+    else
+        0

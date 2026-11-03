@@ -37,9 +37,9 @@ fn run_semantics(src: &str) -> Result<(), Vec<sal_compiler::diag::Diagnostic>> {
         Ok(p) => p,
         Err(d) => return Err(vec![d]),
     };
-    infer_program(&prog)?;
+    let infer = infer_program(&prog)?;
     check_effects(&prog)?;
-    check_ownership(&prog)?;
+    check_ownership(&prog, &infer)?;
     check_devices(&prog)?;
     Ok(())
 }
@@ -579,7 +579,7 @@ fn lambda_string_handle_stays_usable() {
     expect_ok(
         r#"
 fn consume(s: String) -> Int
-    0
+    str_len(s)
 
 fn main() -> String
     s = "hi"
@@ -590,7 +590,7 @@ fn main() -> String
 }
 
 #[test]
-fn string_param_passed_to_consumer_is_borrow() {
+fn string_param_passed_to_consumer_is_take() {
     let src = r#"
 fn sink(s: String) -> Int
     0
@@ -607,11 +607,11 @@ fn give(s: String) -> Int
             _ => None,
         })
         .expect("give");
-    assert_eq!(give.params[0].mode, ParamMode::Borrow);
+    assert_eq!(give.params[0].mode, ParamMode::Take);
     let formatted = format_program(&prog);
     assert!(
-        formatted.contains("s: String borrow"),
-        "expected borrow in formatted give, got:\n{formatted}"
+        formatted.contains("s: String take"),
+        "expected take in formatted give, got:\n{formatted}"
     );
 }
 
@@ -991,5 +991,87 @@ fn main() -> Int
     x = 1
 "#,
         ErrorCode::EType,
+    );
+}
+
+#[test]
+fn string_passed_to_taking_fn_is_moved() {
+    expect_code(
+        r#"
+fn consume(s: String) -> Int
+    0
+
+fn main() -> Int
+    s = "hi"
+    n = consume(s)
+    n + str_len(s)
+"#,
+        ErrorCode::EMoved,
+    );
+}
+
+#[test]
+fn string_pushed_into_list_is_moved() {
+    expect_code(
+        r#"
+fn main() -> Int ! alloc
+    xs = list_new[String]()
+    s = int_to_str(7)
+    _a = list_push(xs, s)
+    str_len(s)
+"#,
+        ErrorCode::EMoved,
+    );
+}
+
+#[test]
+fn argument_of_a_constructor_is_moved() {
+    expect_code(
+        r#"
+struct Tag
+    name: String
+    n: Int
+
+fn main() -> Int ! alloc
+    s = int_to_str(7)
+    t = Tag(s, 1)
+    str_len(s)
+"#,
+        ErrorCode::EMoved,
+    );
+}
+
+#[test]
+fn take_mode_flows_through_a_forwarding_fn() {
+    expect_code(
+        r#"
+fn eat(s: String) -> Int
+    0
+
+fn forward(s: String) -> Int
+    eat(s)
+
+fn main() -> Int
+    s = "hi"
+    n = forward(s)
+    n + str_len(s)
+"#,
+        ErrorCode::EMoved,
+    );
+}
+
+#[test]
+fn copy_struct_stays_usable_after_a_move_position() {
+    expect_ok(
+        r#"
+struct P
+    x: Int
+    y: Int
+
+fn main() -> Int
+    p = P(1, 2)
+    q = p
+    p.x + q.y
+"#,
     );
 }

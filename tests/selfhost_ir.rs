@@ -20,7 +20,9 @@ fn corpus_files() -> Vec<PathBuf> {
     [
         "corpus/moves.sal",
         "corpus/effects.sal",
-        "corpus/places.sal",
+        "corpus/drop_ro_params.sal",
+    "corpus/param_modes.sal",
+    "corpus/places.sal",
         "corpus/forward_fused.sal",
         "corpus/load_salt.sal",
         "corpus/instrument_oob.sal",
@@ -910,6 +912,8 @@ const PARITY_FILES: &[&str] = &[
     "corpus/load_salt.sal",
     "corpus/moves.sal",
     "corpus/newtypes.sal",
+    "corpus/drop_ro_params.sal",
+    "corpus/param_modes.sal",
     "corpus/places.sal",
     "corpus/string_plus.sal",
     "examples/column_cpu.sal",
@@ -997,6 +1001,12 @@ fn selfhost_ir_matches_bootstrap_on_parity_files() {
 
 /// (source, moved?) pairs; the bootstrap `sal check` must agree with the selfhost.
 const OWNERSHIP_CASES: &[(&str, bool)] = &[
+    ("fn eat(s: String) -> Int\n    0\n\nfn main() -> Int\n    s = \"a\"\n    n = eat(s)\n    n + str_len(s)\n", true),
+    ("fn eat(s: String) -> Int\n    str_len(s)\n\nfn main() -> Int\n    s = \"a\"\n    n = eat(s)\n    n + str_len(s)\n", false),
+    ("fn eat(s: String) -> Int\n    0\n\nfn fwd(s: String) -> Int\n    eat(s)\n\nfn main() -> Int\n    s = \"a\"\n    n = fwd(s)\n    n + str_len(s)\n", true),
+    ("fn main() -> Int ! alloc\n    xs = list_new[String]()\n    s = int_to_str(7)\n    _a = list_push(xs, s)\n    str_len(s)\n", true),
+    ("struct Tag\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    s = int_to_str(7)\n    t = Tag(s, 1)\n    str_len(s)\n", true),
+    ("struct P\n    x: Int\n    y: Int\n\nfn main() -> Int\n    p = P(1, 2)\n    q = p\n    p.x + q.y\n", false),
     ("fn main() -> Int\n    s = \"abc\"\n    t = s\n    u = s\n    0\n", true),
     ("fn main() -> Int\n    a = 1\n    b = a\n    c = a\n    0\n", false),
     ("fn main() -> Int ! alloc\n    t = tensor[[1.0, 2.0], [3.0, 4.0]]\n    u = t\n    v = t\n    0\n", true),
@@ -1209,6 +1219,8 @@ const RUN_PARITY: &[&str] = &[
     "examples/import_alias_left.sal",
     "examples/std_io_smoke.sal",
     "examples/cpu_matmul.sal",
+    "corpus/drop_ro_params.sal",
+    "corpus/param_modes.sal",
     "corpus/places.sal",
 ];
 

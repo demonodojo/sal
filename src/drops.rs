@@ -20,6 +20,10 @@ use crate::string_expr::add_chain_leftmost;
 /// `Float` or `Bool` is Copy; anything else, including a type parameter, may not be).
 type Variants = HashMap<String, Vec<bool>>;
 
+/// Per user fn, per parameter: the fn only reads it (never lets it escape), so a caller
+/// keeps ownership of a value passed there.
+type ReadOnly = HashMap<String, Vec<bool>>;
+
 pub fn insert_drops(prog: &Program) -> Program {
     let mut variants = Variants::new();
     for item in &prog.items {
@@ -30,13 +34,52 @@ pub fn insert_drops(prog: &Program) -> Program {
             }
         }
     }
+    let ro = read_only_params(prog, &variants);
     let mut out = prog.clone();
     for item in &mut out.items {
         if let Item::Fn(f) = item {
-            drop_fn(f, &variants);
+            drop_fn(f, &variants, &ro);
         }
     }
     out
+}
+
+/// Optimistic fixpoint: every parameter starts read-only and loses that when its fn lets
+/// it escape under the current assumptions about the other fns.
+fn read_only_params(prog: &Program, variants: &Variants) -> ReadOnly {
+    let mut ro = ReadOnly::new();
+    for item in &prog.items {
+        if let Item::Fn(f) = item {
+            ro.insert(f.name.clone(), vec![true; f.params.len()]);
+        }
+    }
+    loop {
+        let mut changed = false;
+        for item in &prog.items {
+            let Item::Fn(f) = item else { continue };
+            let facts = fn_facts(f, variants, &ro);
+            let flags = ro.get_mut(&f.name).unwrap();
+            for (i, p) in f.params.iter().enumerate() {
+                if flags[i] && facts.escaped.contains(&p.name) {
+                    flags[i] = false;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return ro;
+        }
+    }
+}
+
+fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly) -> Facts {
+    let mut facts = Facts { variants: variants.clone(), ro: ro.clone(), ..Facts::default() };
+    for p in &f.params {
+        facts.bind(&p.name);
+    }
+    block(&f.body, &mut facts);
+    propagate_payload_escapes(&mut facts);
+    facts
 }
 
 /// Builtins whose `String` arguments are only read.
@@ -200,6 +243,7 @@ struct Facts {
     tainted: HashSet<String>,
     /// `match x` over a local: the names its variant patterns bind.
     matches: Vec<(String, Vec<String>)>,
+    ro: ReadOnly,
 }
 
 impl Facts {
@@ -229,8 +273,13 @@ fn expr(e: &Expr, f: &mut Facts) {
             if !matches!(func.as_ref(), Expr::Ident { .. }) {
                 expr(func, f);
             }
-            for a in args {
-                arg(a, borrow, f);
+            let ro = match func.as_ref() {
+                Expr::Ident { name, .. } => f.ro.get(name).cloned(),
+                _ => None,
+            };
+            for (i, a) in args.iter().enumerate() {
+                let reads = ro.as_ref().and_then(|r| r.get(i)).copied().unwrap_or(false);
+                arg(a, borrow || reads, f);
             }
         }
         Expr::Lambda { params, body, .. } => {
@@ -449,13 +498,8 @@ fn is_copy_scalar(t: &Type) -> bool {
     matches!(t, Type::Named { name, args, .. } if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool"))
 }
 
-fn drop_fn(f: &mut FnDef, variants: &Variants) {
-    let mut facts = Facts { variants: variants.clone(), ..Facts::default() };
-    for p in &f.params {
-        facts.bind(&p.name);
-    }
-    block(&f.body, &mut facts);
-    propagate_payload_escapes(&mut facts);
+fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
+    let facts = fn_facts(f, variants, ro);
     let mut cx = Ctx {
         facts,
         params: f.params.iter().map(|p| p.name.clone()).collect(),

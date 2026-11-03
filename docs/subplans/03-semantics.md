@@ -61,7 +61,7 @@ Pase léxico, sentencia a sentencia, después de tipar. No hay lifetimes en el f
 - Un préstamo dura el argumento de la llamada. No hay un local de tipo referencia.
 - Mutar un campo (`user.name = …`) exige ser el dueño único.
 - `to` de un valor único consume el origen. Volver a usarlo es `E_MOVED`.
-- El modo del parámetro sale del cuerpo. Si solo se lee para pasarlo a una llamada, `borrow`. Si el cuerpo lo mueve, lo guarda o lo devuelve, `take`. El AST tipado publica ese modo.
+- El modo del parámetro sale del cuerpo. Si solo se lee para pasarlo a una llamada, `borrow`. Si el cuerpo lo mueve, lo guarda o lo devuelve, `take`. El AST tipado publica ese modo. El selfhost lo infiere con la misma regla (`selfhost/ownership.sal`), y la bajada a IR lo infiere también en el bootstrap antes de decidir qué argumentos quedan movidos. El pase `check_ownership` recibe la salida de `infer_program`: el tipo de cada expresión sale de ahí, los argumentos en posición `take` de funciones de usuario, el valor de `list_push`/`list_set`/`dict_put` y los argumentos de constructores se mueven, y los modos se infieren por punto fijo entre funciones (`selfhost/ownership.sal` lo espeja con `own_mode_table`). Sigue pendiente el movimiento parcial de campos y las banderas de drop por rama o bucle. El pase de drops añade un análisis aparte de «parámetro de solo lectura» (punto fijo optimista, `src/drops.rs`) que decide si un valor pasado a una función de usuario sigue siendo del llamante.
 
 `@shared` no se infiere. Si el programa necesitaría guardar un préstamo, el error pide devolver por movimiento. No se inventa un lifetime.
 

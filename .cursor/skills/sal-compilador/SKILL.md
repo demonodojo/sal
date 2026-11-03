@@ -36,7 +36,7 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |
 | Destino linux/soso, `syscall` | `src/target.rs`, `runtime/soso/linux_host_syscall.c`, `src/llvm.rs` | `tests/soso_target.rs`, `tests/cli_target.rs`, `tests/std_io_linux.rs` |
 | Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
-| `free` / `list_free` / `dict_free` / `enum_free` / `bytes_free` de locales al salir de ámbito (se inserta antes de `lower_program`) | `src/drops.rs`, `src/ir.rs` | `tests/drops.rs`, `tests/lang/drop_*.sal`; espejo en `selfhost/drops.sal` |
+| `free` / `list_free` / `dict_free` / `enum_free` / `bytes_free` de locales al salir de ámbito (se inserta antes de `lower_program`; un valor pasado a una función de usuario se libera si su parámetro es de solo lectura, `read_only_params`; `lower_program` infiere antes los modos `borrow`/`take`) | `src/drops.rs`, `src/ir.rs` | `tests/drops.rs`, `tests/lang/drop_*.sal`; espejo en `selfhost/drops.sal` |
 | SSA, `TensorBin`/`TensorUnary`, `ColumnBin`, fusión, `peak_bytes` | `src/ir.rs`, `src/fuse.rs` | `tests/forward_ir.rs` |
 | Heaps, kernels, `load`, `.salt`; `sal_tensor_bin_f32`, `sal_tensor_cmp_f32`, … | `runtime/sal_runtime.c`, `runtime/sal_runtime.h`, `runtime/kernels.c`, `src/llvm.rs` | `tests/kernels.rs`, `tests/exec_matmul.rs`, `tests/exec_column.rs`, `tests/exec_salt.rs` |
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |

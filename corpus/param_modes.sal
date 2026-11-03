@@ -1,0 +1,21 @@
+struct Tag
+    name: String
+    n: Int
+
+fn consume(t: Tag) -> Int
+    t.n
+
+fn peek(t: Tag) -> Int
+    str_len(t.name) + t.n
+
+fn keep(t: Tag) -> Tag
+    t
+
+fn main() -> Int ! alloc
+    a = Tag("alpha", 1)
+    b = Tag("beta", 2)
+    c = Tag("gamma", 3)
+    x = peek(a)
+    y = consume(b)
+    d = keep(c)
+    x + y + d.n

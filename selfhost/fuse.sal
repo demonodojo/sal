@@ -1794,6 +1794,7 @@ fn drop_env_from_prog(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
     _m = modes_fill(modes, fns, 0, vec_len(fns))
     _b = vec_push(denv, modes)
+    _c = vec_push(denv, dr_read_only(prog, vec_get(denv, 0)))
     denv
 
 fn modes_fill(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc

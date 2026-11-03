@@ -1,13 +1,99 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::string_expr::{add_chain_leftmost, is_string_type};
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::span::Span;
+use crate::typed::ExprTypeEntry;
 
-pub fn check_ownership(prog: &Program) -> DiagResult<()> {
-    for item in &prog.items {
+/// What the tracker knows beyond the syntax of one fn: the inferred type of each
+/// expression, each user fn's parameter modes, and the names that build a value
+/// (struct and enum constructors), whose arguments move into it.
+#[derive(Default)]
+struct Typed {
+    types: HashMap<(u32, u32), Type>,
+    modes: HashMap<String, Vec<ParamMode>>,
+    ctors: HashSet<String>,
+    structs: HashMap<String, StructDef>,
+}
+
+thread_local! {
+    static TYPED: RefCell<Typed> = RefCell::new(Typed::default());
+}
+
+fn load_program(prog: &Program) {
+    TYPED.with(|t| {
+        let mut t = t.borrow_mut();
+        t.modes.clear();
+        t.ctors.clear();
+        t.types.clear();
+        t.structs = collect_structs(prog);
+        for item in &prog.items {
+            match item {
+                Item::Fn(f) => {
+                    t.modes.insert(f.name.clone(), f.params.iter().map(|p| p.mode).collect());
+                }
+                Item::Struct(sd) => {
+                    t.ctors.insert(sd.name.clone());
+                }
+                Item::Enum(e) => {
+                    for v in &e.variants {
+                        if !v.fields.is_empty() {
+                            t.ctors.insert(v.name.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+fn load_fn_types(entries: &[ExprTypeEntry]) {
+    TYPED.with(|t| {
+        let mut t = t.borrow_mut();
+        t.types.clear();
+        for e in entries {
+            t.types.insert((e.span_start, e.span_end), e.ty.clone());
+        }
+    });
+}
+
+/// The inferred type of `e` when the syntactic guess `guess` is `Unknown`.
+fn typed_or(e: &Expr, guess: Type) -> Type {
+    let unknown = matches!(&guess, Type::Named { name, .. } if name == "Unknown");
+    if !unknown {
+        return guess;
+    }
+    let sp = e.span();
+    TYPED.with(|t| t.borrow().types.get(&(sp.start, sp.end)).cloned()).unwrap_or(guess)
+}
+
+fn call_moves_arg(name: &str, i: usize, nargs: usize) -> bool {
+    match name {
+        "list_push" => i == 1,
+        "list_set" | "dict_put" => i == 2,
+        _ => TYPED.with(|t| {
+            let t = t.borrow();
+            t.ctors.contains(name)
+                || t.modes.get(name).is_some_and(|m| m.get(i) == Some(&ParamMode::Take))
+        }) && i < nargs,
+    }
+}
+
+pub fn check_ownership(prog: &Program, infer: &crate::infer::InferOutput) -> DiagResult<()> {
+    let modded = infer_param_modes(prog);
+    load_program(&modded);
+    for item in &modded.items {
         if let Item::Fn(f) = item {
+            let entries = infer
+                .expr_types_by_fn
+                .iter()
+                .find(|(fd, _)| fd.name == f.name)
+                .map(|(_, e)| e.as_slice())
+                .unwrap_or(&[]);
+            load_fn_types(entries);
             check_fn_moves(f)?;
         }
     }
@@ -26,12 +112,32 @@ pub fn check_ownership(prog: &Program) -> DiagResult<()> {
 pub fn infer_param_modes(prog: &Program) -> Program {
     let structs = collect_structs(prog);
     let mut out = prog.clone();
-    for item in &mut out.items {
-        if let Item::Fn(f) = item {
-            infer_fn_modes(f, &structs);
+    // A fn that hands a parameter to a `take` position of another fn takes it too. Each
+    // round re-infers from the source modes, reading the callee modes of the previous
+    // round, until nothing changes.
+    for _ in 0..16 {
+        load_program(&out);
+        let mut next = prog.clone();
+        for item in &mut next.items {
+            if let Item::Fn(f) = item {
+                infer_fn_modes(f, &structs);
+            }
+        }
+        let done = fn_modes(&next) == fn_modes(&out);
+        out = next;
+        if done {
+            break;
         }
     }
     out
+}
+
+fn fn_modes(prog: &Program) -> Vec<ParamMode> {
+    prog.items
+        .iter()
+        .filter_map(|i| if let Item::Fn(f) = i { Some(f) } else { None })
+        .flat_map(|f| f.params.iter().map(|p| p.mode))
+        .collect()
 }
 
 fn collect_structs(prog: &Program) -> HashMap<String, StructDef> {
@@ -289,6 +395,12 @@ fn track_expr(
                     for (a, ty) in args.iter().zip(arg_tys.iter()) {
                         consume_if_unique(a, ty, moved, params, taken);
                     }
+                } else if (0..args.len()).any(|i| call_moves_arg(name, i, args.len())) {
+                    for (i, (a, ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
+                        if call_moves_arg(name, i, args.len()) {
+                            consume_if_unique(a, ty, moved, params, taken);
+                        }
+                    }
                 } else if !is_borrow_fn(name) {
                     // Unknown callees: count args as uses only (selfhost passes String handles).
                     for a in args {
@@ -304,7 +416,7 @@ fn track_expr(
                     return Ok(named("String", *span));
                 }
             }
-            Ok(named("Unknown", *span))
+            Ok(typed_or(e, named("Unknown", *span)))
         }
         Expr::Lambda {
             params: lp,
@@ -359,7 +471,7 @@ fn track_expr(
         }
         Expr::Field { base, span, .. } => {
             track_expr(base, env, moved, params, taken, used, frozen)?;
-            Ok(named("Unknown", *span))
+            Ok(typed_or(e, named("Unknown", *span)))
         }
         Expr::Match {
             scrutinee, arms, span, ..
@@ -370,7 +482,7 @@ fn track_expr(
                 bind_pattern_names(&arm.pattern, &mut local);
                 track_expr(&arm.body, &local, moved, params, taken, used, frozen)?;
             }
-            Ok(named("Unknown", *span))
+            Ok(typed_or(e, named("Unknown", *span)))
         }
         Expr::If {
             cond,
@@ -413,7 +525,7 @@ fn track_expr(
             }
             // Moved in any branch that falls through: moved afterwards.
             *moved = merged;
-            Ok(named("Int", *span))
+            Ok(typed_or(e, named("Unknown", *span)))
         }
         Expr::Try { expr, .. } => track_expr(expr, env, moved, params, taken, used, frozen),
     }
@@ -462,7 +574,7 @@ fn consume_if_unique(
     params: &HashSet<String>,
     taken: &mut HashSet<String>,
 ) {
-    if is_copy_type(ty) {
+    if is_copy_type(ty) || TYPED.with(|t| is_copy_type_ext(ty, &t.borrow().structs)) {
         return;
     }
     if let Expr::Ident { name, .. } = e {

@@ -4,10 +4,11 @@
 import ast
 import result
 
-# Context: [moved, err_msg, has_err, env, params, taken, used]; `params` are the names of
-# the function's parameters, `taken` those moved out of and `used` those read (for
-# `infer_param_modes`).
-fn oc_new(prog: Int) -> Int ! alloc
+# Context: [moved, err_msg, has_err, env, params, taken, used, modes, ctors]; `params` are the
+# names of the function's parameters, `taken` those moved out of and `used` those read (for
+# `infer_param_modes`); `modes` maps a fn name to its parameter modes and `ctors` holds the
+# struct and enum-variant constructor names, whose arguments move into the value.
+fn oc_new(prog: Int, modes: Int) -> Int ! alloc
     c = vec_new()
     _a = vec_push(c, vec_new())
     _b = vec_push(c, 0)
@@ -18,7 +19,53 @@ fn oc_new(prog: Int) -> Int ! alloc
     _e = vec_push(c, vec_new())
     _f = vec_push(c, vec_new())
     _h = vec_push(c, vec_new())
+    _m = vec_push(c, modes)
+    _k = vec_push(c, own_ctors(prog))
     c
+
+fn own_ctors(prog: Int) -> Int ! alloc
+    m = map_new()
+    structs = prog_structs(prog)
+    _a = own_ctor_structs(m, structs, 0, vec_len(structs))
+    enums = prog_enums(prog)
+    _b = own_ctor_enums(m, enums, 0, vec_len(enums))
+    m
+
+fn own_ctor_structs(m: Int, structs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        sd = vec_get(structs, i)
+        if structdef_is_frame(sd) == 0
+            _a = map_put(m, structdef_name(sd), 1)
+        else
+            _a = 0
+        own_ctor_structs(m, structs, i + 1, n)
+
+fn own_ctor_enums(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        vs = vec_get(vec_get(enums, i), 1)
+        _a = own_ctor_variants(m, vs, 0, vec_len(vs))
+        own_ctor_enums(m, enums, i + 1, n)
+
+fn own_ctor_variants(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = vec_get(vs, i)
+        if vec_len(vec_get(v, 1)) == 0
+            _a = 0
+        else
+            _a = map_put(m, vec_get(v, 0), 1)
+        own_ctor_variants(m, vs, i + 1, n)
+
+fn oc_modes(c: Int) -> Int ! alloc
+    vec_get(c, 7)
+
+fn oc_ctors(c: Int) -> Int ! alloc
+    vec_get(c, 8)
 
 fn oc_params(c: Int) -> Int ! alloc
     vec_get(c, 4)
@@ -158,7 +205,7 @@ fn own_expr_ty(c: Int, e: Int) -> Int ! alloc
         own_ty(d"Unknown")
 
 fn consume_if_unique(c: Int, e: Int, ty: Int) -> Int ! alloc
-    if own_is_copy(ty) == 1
+    if own_is_copy_ext(ty, strenv_structs(oc_env(c)), 0) == 1
         0
     elsif e == 0
         0
@@ -203,7 +250,9 @@ fn consume_args(c: Int, args: Int, tys: Int, i: Int, n: Int) -> Int ! alloc
 fn track_branch_block(c: Int, b: Int, base: Int, acc: Int) -> Int ! alloc
     saved = oc_moved(c)
     _s = oc_set_moved(c, own_copy(base))
-    div = track_block_scoped(c, b)
+    mark = strenv_len(oc_env(c))
+    div = track_block_tail(c, b, 0)
+    _m = strenv_set_len(oc_env(c), mark)
     after = oc_moved(c)
     _r = oc_set_moved(c, saved)
     if div == 1
@@ -257,14 +306,55 @@ fn track_call(c: Int, e: Int) -> Int ! alloc
     args = vec_get(e, 2)
     tys = vec_new()
     _a = track_args(c, args, 0, vec_len(args), tys)
-    if is_move_fn(vec_get(e, 1)) == 1
+    name = vec_get(e, 1)
+    if is_move_fn(name) == 1
         _b = consume_args(c, args, tys, 0, vec_len(args))
     else
-        _b = 0
-    if returns_owned_string(vec_get(e, 1)) == 1
+        _b = consume_moved_args(c, name, args, tys, 0, vec_len(args), map_get(oc_modes(c), name))
+    if returns_owned_string(name) == 1
         own_ty(d"String")
     else
         own_ty(d"Unknown")
+
+# 1 when the call moves its argument at position `i`: the value stored by `list_push`,
+# `list_set` and `dict_put`, any constructor argument, or an argument at a `take` parameter.
+fn call_moves_arg(c: Int, name: Int, i: Int, modes: Int) -> Int ! alloc
+    if str_eq(name, "list_push") == 1
+        if i == 1
+            1
+        else
+            0
+    elsif str_eq(name, "list_set") == 1
+        if i == 2
+            1
+        else
+            0
+    elsif str_eq(name, "dict_put") == 1
+        if i == 2
+            1
+        else
+            0
+    elsif map_get(oc_ctors(c), name) != 0
+        1
+    elsif modes == 0
+        0
+    elsif i < vec_len(modes)
+        if vec_get(modes, i) == 2
+            1
+        else
+            0
+    else
+        0
+
+fn consume_moved_args(c: Int, name: Int, args: Int, tys: Int, i: Int, n: Int, modes: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        if call_moves_arg(c, name, i, modes) == 1
+            _a = consume_if_unique(c, vec_get(args, i), vec_get(tys, i))
+        else
+            _a = 0
+        consume_moved_args(c, name, args, tys, i + 1, n, modes)
 
 # Builtins whose result is a fresh heap String (moved on use).
 fn returns_owned_string(name: Int) -> Int ! alloc
@@ -391,19 +481,6 @@ fn track_while(c: Int, e: Int) -> Int ! alloc
     own_ty(d"Unit")
 
 # ---- statements ----
-fn assign_accumulates(value: Int, name: Int) -> Int ! alloc
-    if ex_kind(value) == EX_BINARY()
-        if str_eq(vec_get(value, 1), "add") == 1
-            leaf = add_chain_leftmost(value)
-            if ex_kind(leaf) == EX_IDENT()
-                str_eq(vec_get(leaf, 1), name)
-            else
-                0
-        else
-            0
-    else
-        0
-
 # Returns 1 when the statement diverges (return).
 fn track_stmt(c: Int, st: Int) -> Int ! alloc
     k = vec_get(st, 0)
@@ -456,6 +533,10 @@ fn track_stmts(c: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
 
 # Returns 1 when the block diverges.
 fn track_block(c: Int, b: Int) -> Int ! alloc
+    track_block_tail(c, b, 1)
+
+# `consume` is 0 for the arm of an `if`, whose tail value is not moved (as in Rust).
+fn track_block_tail(c: Int, b: Int, consume: Int) -> Int ! alloc
     if b == 0
         0
     else
@@ -466,7 +547,10 @@ fn track_block(c: Int, b: Int) -> Int ! alloc
             tail = block_tail(b)
             if tail != 0
                 ty = track_expr(c, tail)
-                _m = consume_if_unique(c, tail, ty)
+                if consume == 1
+                    _m = consume_if_unique(c, tail, ty)
+                else
+                    _m = 0
             else
                 _m = 0
             0
@@ -479,8 +563,8 @@ fn own_seed_params(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
         _b = strenv_bind(oc_env(c), vec_get(pm, 0), vec_get(pm, 1))
         own_seed_params(c, params, i + 1, n)
 
-fn check_fn_moves(prog: Int, f: Int) -> Int ! alloc
-    c = oc_new(prog)
+fn check_fn_moves(prog: Int, modes: Int, f: Int) -> Int ! alloc
+    c = oc_new(prog, modes)
     params = vec_get(f, 1)
     _s = own_seed_params(c, params, 0, vec_len(params))
     _t = track_block(c, vec_get(f, 2))
@@ -489,20 +573,20 @@ fn check_fn_moves(prog: Int, f: Int) -> Int ! alloc
     else
         result_ok(0)
 
-fn check_ownership_go(prog: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+fn check_ownership_go(prog: Int, modes: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        r = check_fn_moves(prog, vec_get(fns, i))
+        r = check_fn_moves(prog, modes, vec_get(fns, i))
         if result_is_err(r) == 1
             r
         else
-            check_ownership_go(prog, fns, i + 1, n)
+            check_ownership_go(prog, modes, fns, i + 1, n)
 
 # Ok(0), or Err(message) for the first use of a moved value.
 fn check_ownership(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
-    check_ownership_go(prog, fns, 0, vec_len(fns))
+    check_ownership_go(prog, own_mode_table(prog), fns, 0, vec_len(fns))
 
 # ---- parameter modes (the mirror of `infer_param_modes` in src/ownership.rs) ----
 
@@ -527,7 +611,7 @@ fn own_fields_copy(fields: Int, i: Int, n: Int, structs: Int, depth: Int) -> Int
     else
         own_fields_copy(fields, i + 1, n, structs, depth)
 
-# The leading identifier of a type text (`Option[Int]` -> `Option`).
+# The leading identifier of a type text (a generic type yields its bare name).
 fn ty_base_name(ty: Int) -> Int ! alloc
     s = str_from_int(ty)
     n = str_len(s)
@@ -548,41 +632,120 @@ fn own_seed_names(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
         _a = vec_push(oc_params(c), vec_get(vec_get(params, i), 0))
         own_seed_names(c, params, i + 1, n)
 
-fn own_set_modes(c: Int, params: Int, structs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
+# The mode of parameter `pm` once the body has been tracked in `c` (as `infer_fn_modes` in Rust).
+fn own_param_mode(c: Int, pm: Int, structs: Int) -> Int ! alloc
+    name = vec_get(pm, 0)
+    if param_mode(pm) != 0
+        param_mode(pm)
+    elsif own_is_copy_ext(vec_get(pm, 1), structs, 0) == 1
         0
+    elsif own_has(oc_taken(c), name, 0, vec_len(oc_taken(c))) == 1
+        2
+    elsif own_has(oc_used(c), name, 0, vec_len(oc_used(c))) == 1
+        1
     else
-        pm = vec_get(params, i)
-        name = vec_get(pm, 0)
-        if param_mode(pm) == 0
-            if own_is_copy_ext(vec_get(pm, 1), structs, 0) == 1
-                _m = 0
-            elsif own_has(oc_taken(c), name, 0, vec_len(oc_taken(c))) == 1
-                _m = param_set_mode(pm, 2)
-            elsif own_has(oc_used(c), name, 0, vec_len(oc_used(c))) == 1
-                _m = param_set_mode(pm, 1)
-            else
-                _m = param_set_mode(pm, 2)
-        else
-            _m = 0
-        own_set_modes(c, params, structs, i + 1, n)
+        2
 
-fn infer_fn_modes(prog: Int, f: Int) -> Int ! alloc
-    c = oc_new(prog)
+fn own_mode_vec(c: Int, params: Int, structs: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _a = vec_push(out, own_param_mode(c, vec_get(params, i), structs))
+        own_mode_vec(c, params, structs, i + 1, n, out)
+
+# Modes of `f` given the callee modes in `table`.
+fn infer_fn_modes(prog: Int, table: Int, f: Int) -> Int ! alloc
+    c = oc_new(prog, table)
     params = vec_get(f, 1)
     _s = own_seed_params(c, params, 0, vec_len(params))
     _n = own_seed_names(c, params, 0, vec_len(params))
     _t = track_block(c, vec_get(f, 2))
-    own_set_modes(c, params, prog_structs(prog), 0, vec_len(params))
+    own_mode_vec(c, params, prog_structs(prog), 0, vec_len(params), vec_new())
 
-fn infer_modes_go(prog: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+fn own_vec_eq(a: Int, b: Int, i: Int, n: Int) -> Int ! alloc
+    if b == 0
+        0
+    elsif vec_len(a) != vec_len(b)
+        0
+    elsif i >= n
+        1
+    elsif vec_get(a, i) != vec_get(b, i)
+        0
+    else
+        own_vec_eq(a, b, i + 1, n)
+
+# One round over every fn; returns 1 when some fn's modes differ from `table`.
+fn own_table_round(prog: Int, table: Int, next: Int, fns: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
+    if i >= n
+        changed
+    else
+        f = vec_get(fns, i)
+        v = infer_fn_modes(prog, table, f)
+        _p = map_put(next, vec_get(f, 0), v)
+        same = own_vec_eq(v, map_get(table, vec_get(f, 0)), 0, vec_len(v))
+        any = if same == 1
+            changed
+        else
+            1
+        own_table_round(prog, table, next, fns, i + 1, n, any)
+
+fn own_table_explicit(table: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = infer_fn_modes(prog, vec_get(fns, i))
-        infer_modes_go(prog, fns, i + 1, n)
+        f = vec_get(fns, i)
+        params = vec_get(f, 1)
+        v = vec_new()
+        _a = own_explicit_vec(params, 0, vec_len(params), v)
+        _b = map_put(table, vec_get(f, 0), v)
+        own_table_explicit(table, fns, i + 1, n)
+
+fn own_explicit_vec(params: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, param_mode(vec_get(params, i)))
+        own_explicit_vec(params, i + 1, n, out)
+
+fn own_table_fix(prog: Int, table: Int, fns: Int, round: Int) -> Int ! alloc
+    if round >= 16
+        table
+    else
+        next = map_new()
+        ch = own_table_round(prog, table, next, fns, 0, vec_len(fns), 0)
+        if ch == 0
+            next
+        else
+            own_table_fix(prog, next, fns, round + 1)
+
+# Fn name -> parameter modes (0 inferred/copy, 1 borrow, 2 take), as a fixpoint: a fn that hands
+# a parameter to a `take` position of another fn takes it too.
+fn own_mode_table(prog: Int) -> Int ! alloc
+    fns = prog_fns(prog)
+    table = map_new()
+    _a = own_table_explicit(table, fns, 0, vec_len(fns))
+    own_table_fix(prog, table, fns, 0)
+
+fn own_apply_modes(params: Int, modes: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = vec_get(params, i)
+        if param_mode(pm) == 0
+            _m = param_set_mode(pm, vec_get(modes, i))
+        else
+            _m = 0
+        own_apply_modes(params, modes, i + 1, n)
+
+fn infer_modes_go(table: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        _a = own_apply_modes(vec_get(f, 1), map_get(table, vec_get(f, 0)), 0, vec_len(vec_get(f, 1)))
+        infer_modes_go(table, fns, i + 1, n)
 
 # Fills in `borrow` / `take` on each parameter that does not spell one. Idempotent.
 fn infer_param_modes(prog: Int) -> Int ! alloc
     fns = prog_fns(prog)
-    infer_modes_go(prog, fns, 0, vec_len(fns))
+    infer_modes_go(own_mode_table(prog), fns, 0, vec_len(fns))

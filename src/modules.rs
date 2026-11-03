@@ -525,7 +525,7 @@ pub fn check_module_semantics(
     crate::attrs::check_stack_lets(&module.program, &strings)?;
     crate::attrs::check_no_heap_fns(&module.program, &strings)?;
     crate::effects::check_effects_with_graph(&module.program, &out, &programs)?;
-    crate::ownership::check_ownership(&module.program)?;
+    crate::ownership::check_ownership(&module.program, &out)?;
     crate::device::check_devices(&module.program)?;
     Ok(())
 }

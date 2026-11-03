@@ -20,6 +20,7 @@ fn dr_new() -> Int ! alloc
     _g = vec_push(c, map_new())
     _h = vec_push(c, map_new())
     _i = vec_push(c, vec_new())
+    _j = vec_push(c, map_new())
     c
 
 fn dr_escape(c: Int, name: Int) -> Int ! alloc
@@ -296,19 +297,6 @@ fn dr_fresh_kind(c: Int, e: Int) -> Int ! alloc
 fn dr_is_accumulate(name: Int, value: Int) -> Int ! alloc
     assign_accumulates(value, name)
 
-fn assign_accumulates(value: Int, name: Int) -> Int ! alloc
-    if ex_kind(value) == EX_BINARY()
-        if str_eq(vec_get(value, 1), "add") == 1
-            leaf = add_chain_leftmost(value)
-            if ex_kind(leaf) == EX_IDENT()
-                str_eq(vec_get(leaf, 1), name)
-            else
-                0
-        else
-            0
-    else
-        0
-
 # ---- escape facts ----
 fn dr_arg(c: Int, a: Int, safe: Int) -> Int ! alloc
     if a == 0
@@ -327,6 +315,25 @@ fn dr_args(c: Int, args: Int, i: Int, n: Int, safe: Int) -> Int ! alloc
     else
         _a = dr_arg(c, vec_get(args, i), safe)
         dr_args(c, args, i + 1, n, safe)
+
+# Arguments of a call: bare identifiers are only read when the callee borrows them
+# (`safe`) or its parameter at that position is read-only (`ro`, 0 when not a user fn).
+fn dr_call_args(c: Int, args: Int, i: Int, n: Int, safe: Int, ro: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        reads = if ro == 0
+            0
+        elsif i < vec_len(ro)
+            vec_get(ro, i)
+        else
+            0
+        mode = if safe == 1
+            1
+        else
+            reads
+        _a = dr_arg(c, vec_get(args, i), mode)
+        dr_call_args(c, args, i + 1, n, safe, ro)
 
 fn dr_pattern(c: Int, p: Int) -> Int ! alloc
     k = vec_get(p, 0)
@@ -478,7 +485,7 @@ fn dr_expr(c: Int, e: Int) -> Int ! alloc
             dr_escape(c, vec_get(e, 1))
         elsif k == EX_CALL()
             args = vec_get(e, 2)
-            dr_args(c, args, 0, vec_len(args), dr_borrows(vec_get(e, 1)))
+            dr_call_args(c, args, 0, vec_len(args), dr_borrows(vec_get(e, 1)), map_get(vec_get(c, 9), vec_get(e, 1)))
         elsif k == EX_LAMBDA()
             _b = dr_bind(c, vec_get(e, 1))
             dr_expr(c, vec_get(e, 2))
@@ -838,14 +845,85 @@ fn dr_seed_params(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
         _b = map_put(vec_get(c, 2), nm, 1)
         dr_seed_params(c, params, i + 1, n)
 
-# The body of `f` with scope-end frees inserted.
-# `denv` is `[variants, modes]` as `drop_env_from_prog` builds it.
-fn drops_body(f: Int, denv: Int) -> Int ! alloc
-    body = vec_get(f, 2)
+# Escape facts of `f` under the read-only assumptions `ro`.
+fn dr_facts(f: Int, variants: Int, ro: Int) -> Int ! alloc
     c = dr_new()
-    _v = vec_set(c, 6, vec_get(denv, 0))
+    _v = vec_set(c, 6, variants)
+    _r = vec_set(c, 9, ro)
     params = vec_get(f, 1)
     _s = dr_seed_params(c, params, 0, vec_len(params))
-    _w = dr_block(c, body)
+    _w = dr_block(c, vec_get(f, 2))
     _p = dr_propagate(c)
+    c
+
+# Per fn, per parameter: 1 when the fn only reads it. Optimistic fixpoint, as `drops.rs`.
+fn dr_read_only(prog: Int, variants: Int) -> Int ! alloc
+    ro = map_new()
+    fns = prog_fns(prog)
+    _i = dr_ro_init(ro, fns, 0, vec_len(fns))
+    _l = dr_ro_loop(ro, fns, variants)
+    ro
+
+fn dr_ro_init(ro: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(fns, i)
+        flags = vec_new()
+        _a = dr_ro_ones(flags, vec_len(vec_get(f, 1)))
+        _b = map_put(ro, vec_get(f, 0), flags)
+        dr_ro_init(ro, fns, i + 1, n)
+
+fn dr_ro_ones(flags: Int, n: Int) -> Int ! alloc
+    if n == 0
+        0
+    else
+        _a = vec_push(flags, 1)
+        dr_ro_ones(flags, n - 1)
+
+fn dr_ro_loop(ro: Int, fns: Int, variants: Int) -> Int ! alloc
+    if dr_ro_pass(ro, fns, variants, 0, vec_len(fns), 0) == 1
+        dr_ro_loop(ro, fns, variants)
+    else
+        0
+
+# One sweep; returns 1 when some parameter lost its read-only flag.
+fn dr_ro_pass(ro: Int, fns: Int, variants: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
+    if i >= n
+        changed
+    else
+        f = vec_get(fns, i)
+        c = dr_facts(f, variants, ro)
+        flags = map_get(ro, vec_get(f, 0))
+        params = vec_get(f, 1)
+        ch = dr_ro_params(c, flags, params, 0, vec_len(params))
+        any = if ch == 1
+            1
+        else
+            changed
+        dr_ro_pass(ro, fns, variants, i + 1, n, any)
+
+fn dr_ro_params(c: Int, flags: Int, params: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ch = if vec_get(flags, i) == 1
+            if map_get(vec_get(c, 0), vec_get(vec_get(params, i), 0)) != 0
+                _s = vec_set(flags, i, 0)
+                1
+            else
+                0
+        else
+            0
+        rest = dr_ro_params(c, flags, params, i + 1, n)
+        if ch == 1
+            1
+        else
+            rest
+
+# The body of `f` with scope-end frees inserted.
+# `denv` is `[variants, modes, read-only params]` as `drop_env_from_prog` builds it.
+fn drops_body(f: Int, denv: Int) -> Int ! alloc
+    body = vec_get(f, 2)
+    c = dr_facts(f, vec_get(denv, 0), vec_get(denv, 2))
     dr_xform_block(c, body)

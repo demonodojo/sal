@@ -87,7 +87,7 @@ fn compile_program_at(
     crate::attrs::check_stack_lets(program, &strings_for_attrs)?;
     crate::attrs::check_no_heap_fns(program, &strings_for_attrs)?;
     check_effects_with_infer(program, &infer_out)?;
-    check_ownership(program)?;
+    check_ownership(program, &infer_out)?;
     check_devices(program)?;
 
     let strings_env = StringEnv::from_program(program).with_infer(&infer_out);

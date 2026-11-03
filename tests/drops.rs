@@ -60,10 +60,10 @@ fn local_stored_as_handle_is_not_freed() {
 }
 
 #[test]
-fn local_passed_to_user_function_is_not_freed() {
+fn local_passed_to_escaping_user_function_is_not_freed() {
     let ir = ir_of(
         "user_call",
-        "fn eat(s: String) -> Int ! alloc\n    str_len(s)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    eat(s)\n",
+        "fn eat(s: String) -> Int ! alloc\n    t = s\n    str_len(t)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    eat(s)\n",
     );
     assert_eq!(frees(&ir), 0, "{ir}");
 }
@@ -211,12 +211,13 @@ fn enum_box_local_matched_in_place_is_freed() {
 }
 
 #[test]
-fn enum_box_returned_or_passed_is_not_freed() {
+fn enum_box_returned_is_not_freed_but_read_only_arg_is() {
     let ir = ir_of(
         "enum_escape",
         "enum Shape\n    Dot\n    Rect(Int, Int)\n\nfn g(s: Shape) -> Int\n    0\n\nfn f() -> Int ! alloc\n    s = Rect(3, 4)\n    g(s)\n\nfn h() -> Shape ! alloc\n    s = Rect(1, 2)\n    s\n",
     );
-    assert!(!ir.contains("sal_enum_free"), "{ir}");
+    // `f` keeps `s` (g only reads it); `h` returns its box.
+    assert_eq!(ir.matches("sal_enum_free").count(), 1, "{ir}");
 }
 
 #[test]
@@ -235,4 +236,41 @@ fn string_list_of_fresh_values_is_freed() {
         "fn f(n: Int) -> Int ! alloc\n    names = list_new[String]()\n    _a = list_push(names, int_to_str(n))\n    _b = list_push(names, \"lit\")\n    list_len(names)\n",
     );
     assert_eq!(ir.matches("sal_list_free").count(), 1, "{ir}");
+}
+
+#[test]
+fn string_passed_to_read_only_user_fn_is_freed() {
+    let ir = ir_of(
+        "ro_param",
+        "fn size(s: String) -> Int\n    str_len(s)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    size(s)\n",
+    );
+    assert_eq!(frees(&ir), 1, "{ir}");
+}
+
+#[test]
+fn string_passed_to_escaping_user_fn_is_not_freed() {
+    let ir = ir_of(
+        "escaping_param",
+        "fn id(s: String) -> String\n    s\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    t = id(s)\n    str_len(t)\n",
+    );
+    // `t` is the result of a user call (unknown provenance); `s` moved into `id`.
+    assert_eq!(frees(&ir), 0, "{ir}");
+}
+
+#[test]
+fn read_only_flows_through_a_chain_of_calls() {
+    let ir = ir_of(
+        "ro_chain",
+        "fn inner(s: String) -> Int\n    str_len(s)\n\nfn outer(s: String) -> Int\n    inner(s)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    outer(s)\n",
+    );
+    assert_eq!(frees(&ir), 1, "{ir}");
+}
+
+#[test]
+fn recursion_keeps_read_only_optimistic() {
+    let ir = ir_of(
+        "ro_rec",
+        "fn count(s: String, n: Int) -> Int\n    if n == 0\n        str_len(s)\n    else\n        count(s, n - 1)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    count(s, 3)\n",
+    );
+    assert_eq!(frees(&ir), 1, "{ir}");
 }

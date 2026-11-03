@@ -150,12 +150,12 @@ fn instrument_strict_freed_locals_are_clean() {
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
 }
 
-/// A string handed to a user function is not freed by the caller, and strict
-/// mode reports it.
+/// A string handed to a user function that returns it is not freed by the caller
+/// (the result has unknown provenance), and strict mode reports it.
 #[test]
 fn instrument_strict_reports_unfreed_string() {
     let out = run_strict(
-        "fn len_of(s: String) -> Int\n    str_len(s)\n\nfn main() -> Int ! alloc\n    s = int_to_str(12345)\n    len_of(s)\n",
+        "fn keep(s: String) -> String\n    s\n\nfn main() -> Int ! alloc\n    s = int_to_str(12345)\n    t = keep(s)\n    str_len(t)\n",
         "leak",
     );
     let stderr = String::from_utf8_lossy(&out.stderr);

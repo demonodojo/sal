@@ -12,9 +12,9 @@ fn run_semantics(src: &str) -> Result<(), Vec<sal_compiler::diag::Diagnostic>> {
         Ok(p) => p,
         Err(d) => return Err(vec![d]),
     };
-    infer_program(&prog)?;
+    let infer = infer_program(&prog)?;
     check_effects(&prog)?;
-    check_ownership(&prog)?;
+    check_ownership(&prog, &infer)?;
     check_devices(&prog)?;
     Ok(())
 }

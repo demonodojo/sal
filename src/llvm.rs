@@ -1292,6 +1292,8 @@ fn emit_host_tensor_fn(
     }
 
     let mut ret = "0".to_string();
+    // Buffer handed back to the caller: it must outlive this function.
+    let mut returned: Option<String> = None;
     let mut matmul_ordinal = 0usize;
     let mut region_open: HashMap<i32, bool> = HashMap::new();
     let mut last_out: Option<(String, DimOperand)> = None; // ptr name, elem count
@@ -1431,6 +1433,7 @@ fn emit_host_tensor_fn(
                 }
             }
             IrInst::Return { value } => {
+                returned = ptrs.get(value.as_str()).cloned();
                 if value.starts_with('t') {
                     ret = format!("%{value}");
                 } else {
@@ -2123,6 +2126,9 @@ fn emit_host_tensor_fn(
     // live so shutdown can report LEAK when the source never Drop'd them.
     if !opts.instrument {
         for p in &owned {
+            if returned.as_deref() == Some(p.as_str()) {
+                continue;
+            }
             emit_free(opts, p, s);
         }
     }
