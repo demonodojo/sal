@@ -1,5 +1,5 @@
 # exit: 3
-# selfhost-xfail: break is Rust bootstrap only for now
+# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     # After a `break` the loop condition does not run again: `xs.get(i)` would
     # be out of bounds at i = 3.

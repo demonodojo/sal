@@ -168,6 +168,9 @@ fn TK_SHR() -> Int
 fn TK_FATARROW() -> Int
     55
 
+fn TK_BREAK() -> Int
+    56
+
 fn is_digit(c: Int) -> Int
     if c < 48
         0
@@ -259,6 +262,8 @@ fn kw_kind(text: String) -> Int ! alloc
         TK_KERNEL()
     elsif str_eq(text, "in") == 1
         TK_IN()
+    elsif str_eq(text, "break") == 1
+        TK_BREAK()
     else
         TK_IDENT()
 

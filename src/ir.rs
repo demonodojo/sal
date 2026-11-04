@@ -252,9 +252,16 @@ pub fn lower_program_with_callables_env(
     let mut param_modes: HashMap<String, Vec<ParamMode>> = HashMap::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
+            // A function that releases the fields of a struct parameter owns them from
+            // then on: for the callers' struct glue it takes the argument, even though
+            // the parameter is only borrowed (the callee's own glue stays as it is).
+            let releasing = releases_param_fields(f);
             param_modes.insert(
                 f.name.clone(),
-                f.params.iter().map(|p| p.mode).collect(),
+                f.params
+                    .iter()
+                    .map(|p| if releasing.contains(&p.name) { ParamMode::Take } else { p.mode })
+                    .collect(),
             );
         }
     }
@@ -265,6 +272,98 @@ pub fn lower_program_with_callables_env(
         }
     }
     IrModule { functions }
+}
+
+/// The parameters of `f` whose fields it passes to a releasing builtin
+/// (`list_free(p.xs)`, `free(p.name)`, ...).
+fn releases_param_fields(f: &FnDef) -> HashSet<String> {
+    fn root(e: &Expr) -> Option<&str> {
+        let Expr::Field { base, .. } = e else { return None };
+        match base.as_ref() {
+            Expr::Ident { name, .. } => Some(name),
+            other => root(other),
+        }
+    }
+    fn blk(b: &Block, out: &mut HashSet<String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Break { .. } => {}
+                Stmt::Let { init, .. } => ex(init, out),
+                Stmt::Assign { target, value, .. } => {
+                    ex(target, out);
+                    ex(value, out);
+                }
+                Stmt::Return { value, .. } => {
+                    if let Some(v) = value {
+                        ex(v, out);
+                    }
+                }
+                Stmt::Expr(e) => ex(e, out),
+                Stmt::While { cond, body, .. } => {
+                    ex(cond, out);
+                    blk(body, out);
+                }
+            }
+        }
+        if let Some(t) = &b.tail {
+            ex(t, out);
+        }
+    }
+    fn ex(e: &Expr, out: &mut HashSet<String>) {
+        match e {
+            Expr::Call { func, args, .. } => {
+                if let Expr::Ident { name, .. } = func.as_ref() {
+                    if matches!(
+                        name.as_str(),
+                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free"
+                    ) {
+                        for a in args {
+                            if let Some(r) = root(a) {
+                                out.insert(r.to_string());
+                            }
+                        }
+                    }
+                }
+                ex(func, out);
+                for a in args {
+                    ex(a, out);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                ex(left, out);
+                ex(right, out);
+            }
+            Expr::Unary { expr, .. }
+            | Expr::To { expr, .. }
+            | Expr::Try { expr, .. }
+            | Expr::Field { base: expr, .. } => ex(expr, out),
+            Expr::Block(b) | Expr::On { body: b, .. } => blk(b, out),
+            Expr::If { cond, then_block, elsifs, else_block, .. } => {
+                ex(cond, out);
+                blk(then_block, out);
+                for a in elsifs {
+                    ex(&a.cond, out);
+                    blk(&a.body, out);
+                }
+                if let Some(b) = else_block {
+                    blk(b, out);
+                }
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                ex(scrutinee, out);
+                for a in arms {
+                    ex(&a.body, out);
+                }
+            }
+            Expr::Lambda { body, .. } => ex(body, out),
+            _ => {}
+        }
+    }
+    let params: HashSet<&str> = f.params.iter().map(|p| p.name.as_str()).collect();
+    let mut all = HashSet::new();
+    blk(&f.body, &mut all);
+    all.retain(|n| params.contains(n.as_str()));
+    all
 }
 
 fn lower_fn(

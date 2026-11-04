@@ -1,5 +1,4 @@
 # exit: 12
-# selfhost-xfail: break is Rust bootstrap only for now
 fn main() -> Int
     # `break` leaves only the inner loop: 4 outer rounds, 3 inner steps each.
     n = 0

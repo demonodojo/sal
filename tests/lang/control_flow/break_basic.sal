@@ -1,5 +1,4 @@
 # exit: 14
-# selfhost-xfail: break is Rust bootstrap only for now
 fn main() -> Int
     i = 0
     while true

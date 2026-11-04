@@ -1,5 +1,4 @@
 # exit: 5
-# selfhost-xfail: break is Rust bootstrap only for now
 fn main() -> Int
     # `break` in an `elsif` and in an `else`.
     n = 0

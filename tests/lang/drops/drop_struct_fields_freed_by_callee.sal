@@ -1,0 +1,19 @@
+# exit: 0
+# A function that releases the fields of a struct it was given takes it: the caller
+# must not release those fields again when the struct goes out of scope.
+struct P
+    xs: List[Int]
+    ys: List[Int]
+
+fn pfree(p: P) -> Int ! alloc
+    _a = list_free(p.xs)
+    _b = list_free(p.ys)
+    0
+
+fn mk() -> P ! alloc
+    P(list_new[Int](), list_new[Int]())
+
+fn main() -> Int ! alloc
+    p = mk()
+    _f = pfree(p)
+    0

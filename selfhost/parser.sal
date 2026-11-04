@@ -2,6 +2,7 @@
 import result
 import lexer
 import tast
+import loops
 
 # Parser state: the token lists plus `st = [index, has_err, group depth, last statement id]` and `msg = [error text]`.
 # The lists are shared by every copy of the struct, so `list_set` on them is the mutation.
@@ -866,6 +867,11 @@ fn parse_block_go(pr: Parser, stmts: List[TStmt]) -> TBlock ! alloc
         _d = list_push(stmts, mk_stmt(pr, 2, d"", rex))
         _e = p_skip_nls(pr)
         parse_block_go(pr, stmts)
+    elsif tok_kind(pr, p_peek(pr)) == TK_BREAK()
+        _r = p_advance(pr)
+        _d = list_push(stmts, mk_stmt(pr, 4, d"", XNone))
+        _e = p_skip_nls(pr)
+        parse_block_go(pr, stmts)
     elsif tok_kind(pr, p_peek(pr)) == TK_LET()
         parse_let(pr, stmts, 0)
     elsif tok_kind(pr, p_peek(pr)) == TK_AT()
@@ -1351,8 +1357,21 @@ fn errs_take(errs: List[String]) -> String ! alloc
         msg
 
 # The parsed program. A parse error leaves its message in `errs` (empty otherwise) and the
-# program is then whatever was read before it.
+# program is then whatever was read before it. `break` is rewritten away (see `loops.sal`).
 fn parse_program(src: String, errs: List[String]) -> TProgram ! alloc
+    tp = parse_program_raw(src, errs)
+    if str_contains(src, "break") == 1
+        parse_program_breaks(tp, errs)
+    else
+        tp
+
+fn parse_program_breaks(tp: TProgram, errs: List[String]) -> TProgram ! alloc
+    if list_len(errs) == 0
+        desugar_break(tp, errs)
+    else
+        tp
+
+fn parse_program_raw(src: String, errs: List[String]) -> TProgram ! alloc
     pr = parser_new(lex(src))
     it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[String](), list_new[String]())
     _a = p_skip_nls(pr)
