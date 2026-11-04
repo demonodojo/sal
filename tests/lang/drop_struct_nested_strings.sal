@@ -1,0 +1,31 @@
+# exit: 20
+# selfhost-xfail: nested struct drops and methods are Rust bootstrap only for now
+struct P
+    name: String
+    tag: String
+
+struct W
+    p: P
+    n: Int
+
+struct V
+    w: W
+    label: String
+
+method W.size() -> Int ! alloc
+    self.p.name.len()
+
+fn round(i: Int) -> Int ! alloc
+    v = V(W(P("a" + "b", "c" + "d"), i), "e" + "f")
+    w = W(P("g" + "h", "i" + "j"), 2)
+    s = w.size()
+    q = w.p
+    s + v.w.p.tag.len() + q.name.len() + v.w.n - i
+
+fn main() -> Int ! alloc
+    i = 0
+    total = 0
+    while i < 3
+        total = total + round(i)
+        i = i + 1
+    total + 2

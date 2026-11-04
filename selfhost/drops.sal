@@ -1213,28 +1213,10 @@ fn dr_hoist_block(h: List[Int], b: TBlock) -> TBlock ! alloc
     tail = dr_hoist_expr(h, b.tail, out)
     TBlock(out, tail)
 
-# The body of `f` with scope-end releases inserted, as a handle block.
-# `denv` is `[variants, modes, read-only params]` as `drop_env_from_prog` builds it.
-fn drops_body(f: Int, denv: Int) -> Int ! alloc
-    params = list_new[TParam]()
-    _pp = tt_params(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), params)
-    body = tt_block(vec_get(f, 2))
-    h = list_new[Int]()
-    _h = list_push(h, 0)
-    hoisted = dr_hoist_block(h, body)
-    c = dr_facts(params, hoisted, vec_get(denv, 0), vec_get(denv, 2))
-    res = dr_xform_block(c, hoisted)
-    out = fh_block(res)
-    _a = dr_free(c)
-    _b = tp_free_block(res)
-    _d = tp_free_block(hoisted)
-    _e = tp_free_block(body)
-    _g = list_free(h)
-    _p = list_free(params)
-    out
-
-# `drops_body` over a typed fn: the transformed body as an tree whose texts are handle strings (not owned by its boxes),
-# so `tp_free_block` releases the boxes and the IR can keep the texts. The fn itself is only read.
+# The body of the typed fn `f` with scope-end releases inserted. `denv` is
+# `[variants, modes, read-only params]` as `drop_env_from_prog` builds it. The result goes back
+# through `fh_block`/`tt_block`, so its texts are handle strings the boxes do not own:
+# `tp_free_block` releases the boxes and the IR can keep the texts. The fn itself is only read.
 fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
     body = tc_block(f.body)
     h = list_new[Int]()

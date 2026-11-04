@@ -155,18 +155,37 @@ fn parse_type_text_go(pr: Parser, depth: Int, acc: String) -> String ! alloc
     else
         parse_type_text_cont(pr, depth, acc, t, k)
 
+# `borrow` / `take` after a parameter type are its mode, not part of the type text.
+fn parse_type_text_ident(pr: Parser, depth: Int, acc: String, t: Int) -> String ! alloc
+    tx = tok_text(pr, t)
+    if depth == 0
+        if type_text_is_mode(tx) == 1
+            acc
+        else
+            parse_type_text_word(pr, depth, acc, tx)
+    else
+        parse_type_text_word(pr, depth, acc, tx)
+
+fn type_text_is_mode(tx: String) -> Int ! alloc
+    if str_eq(tx, "borrow") == 1
+        1
+    else
+        str_eq(tx, "take")
+
+fn parse_type_text_word(pr: Parser, depth: Int, acc: String, tx: String) -> String ! alloc
+    _a = p_advance(pr)
+    acc2 = acc + tx
+    sp = d" "
+    acc3 = acc2 + sp
+    free(sp)
+    parse_type_text_go(pr, depth, acc3)
+
 fn parse_type_text_cont(pr: Parser, depth: Int, acc: String, t: Int, k: Int) -> String ! alloc
     if k == TK_NL()
         _a = p_advance(pr)
         parse_type_text_go(pr, depth, acc)
     elsif k == TK_IDENT()
-        tx = tok_text(pr, t)
-        _a = p_advance(pr)
-        acc2 = acc + tx
-        sp = d" "
-        acc3 = acc2 + sp
-        free(sp)
-        parse_type_text_go(pr, depth, acc3)
+        parse_type_text_ident(pr, depth, acc, t)
     elsif k == TK_ON()
         _a = p_advance(pr)
         piece = d"on "

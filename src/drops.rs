@@ -243,7 +243,7 @@ fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly) -> Facts {
 }
 
 /// Builtins whose `String` arguments are only read.
-fn borrows_args(name: &str) -> bool {
+pub(crate) fn borrows_args(name: &str) -> bool {
     matches!(
         name,
         "str_len"

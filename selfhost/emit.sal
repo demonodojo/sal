@@ -803,7 +803,7 @@ fn variants_register_go(m: Int, ft: Int, params: Int, vs: Int, i: Int, n: Int) -
         _q = map_put(ft, vec_get(v, 0), entry)
         variants_register_go(m, ft, params, vs, i + 1, n)
 
-fn variant_code(tc: Int, name: Int) -> Int ! alloc
+fn variant_code(tc: Tc, name: Int) -> Int ! alloc
     map_get(lit_pool_variants(tc_lit_pool(tc)), name)
 
 fn variant_tag(code: Int) -> Int ! alloc
@@ -883,70 +883,64 @@ fn names_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     else
         names_has(names, name, i + 1, n)
 
-fn collect_assigns_block(b: Int, names: Int) -> Int ! alloc
-    if b == 0
-        0
-    else
-        stmts = block_stmts(b)
-        _a = collect_assigns_stmts(stmts, 0, vec_len(stmts), names)
-        collect_assigns_expr(block_tail(b), names)
+fn collect_assigns_block(b: TBlock, names: Int) -> Int ! alloc
+    _a = collect_assigns_stmts(b.stmts, 0, list_len(b.stmts), names)
+    collect_assigns_expr(b.tail, names)
 
-fn collect_assigns_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+fn collect_assigns_stmts(stmts: List[TStmt], i: Int, n: Int, names: Int) -> Int ! alloc
     if i >= n
         0
     else
-        st = vec_get(stmts, i)
-        if vec_get(st, 0) == 1
-            nm = vec_get(st, 1)
+        st = list_get(stmts, i)
+        if st.kind == 1
+            nm = str_as_int(st.name)
             if names_has(names, nm, 0, vec_len(names)) == 0
                 _p = vec_push(names, nm)
             else
                 _p = 0
         else
             _p = 0
-        _c = collect_assigns_expr(vec_get(st, 2), names)
+        _c = collect_assigns_expr(st.expr, names)
         collect_assigns_stmts(stmts, i + 1, n, names)
 
-fn collect_assigns_expr(e: Int, names: Int) -> Int ! alloc
-    if e == 0
-        0
-    else
-        k = ex_kind(e)
-        if k == EX_IF()
-            _a = collect_assigns_expr(vec_get(e, 1), names)
-            _b = collect_assigns_block(vec_get(e, 2), names)
-            _c = collect_assigns_arms(vec_get(e, 4), 0, vec_len(vec_get(e, 4)), names)
-            collect_assigns_block(vec_get(e, 3), names)
-        elsif k == EX_WHILE()
-            _a = collect_assigns_expr(vec_get(e, 1), names)
-            collect_assigns_block(vec_get(e, 2), names)
-        elsif k == EX_BINARY()
-            _a = collect_assigns_expr(vec_get(e, 2), names)
-            collect_assigns_expr(vec_get(e, 3), names)
-        elsif k == EX_CALL()
-            args = vec_get(e, 2)
-            collect_assigns_args(args, 0, vec_len(args), names)
-        elsif k == EX_TO()
-            collect_assigns_expr(vec_get(e, 2), names)
-        elsif k == EX_ON()
-            collect_assigns_block(vec_get(e, 2), names)
-        else
-            0
+fn collect_assigns_if(cond: Expr, then_b: TBlock, else_b: TBlock, arms: List[TElsif], names: Int) -> Int ! alloc
+    _a = collect_assigns_expr(cond, names)
+    _b = collect_assigns_block(then_b, names)
+    _c = collect_assigns_arms(arms, 0, list_len(arms), names)
+    collect_assigns_block(else_b, names)
 
-fn collect_assigns_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+fn collect_assigns_while(cond: Expr, body: TBlock, names: Int) -> Int ! alloc
+    _a = collect_assigns_expr(cond, names)
+    collect_assigns_block(body, names)
+
+fn collect_assigns_bin(l: Expr, r: Expr, names: Int) -> Int ! alloc
+    _a = collect_assigns_expr(l, names)
+    collect_assigns_expr(r, names)
+
+fn collect_assigns_expr(e: Expr, names: Int) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => collect_assigns_if(cond, then_b, else_b, elsifs, names)
+        XWhile(cond, body) => collect_assigns_while(cond, body, names)
+        XBin(op, l, r) => collect_assigns_bin(l, r, names)
+        XCall(name, args, targs) => collect_assigns_args(args, 0, list_len(args), names)
+        XTo(place, inner) => collect_assigns_expr(inner, names)
+        XOn(place, body, is_kern, has_index) => collect_assigns_block(body, names)
+        _ => 0
+
+fn collect_assigns_arms(arms: List[TElsif], i: Int, n: Int, names: Int) -> Int ! alloc
     if i >= n
         0
     else
-        arm = vec_get(arms, i)
-        _a = collect_assigns_expr(vec_get(arm, 0), names)
-        _b = collect_assigns_block(vec_get(arm, 1), names)
+        arm = list_get(arms, i)
+        _a = collect_assigns_expr(arm.cond, names)
+        _b = collect_assigns_block(arm.body, names)
         collect_assigns_arms(arms, i + 1, n, names)
 
-fn collect_assigns_args(args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+fn collect_assigns_args(args: List[Expr], i: Int, n: Int, names: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = collect_assigns_expr(vec_get(args, i), names)
+        _a = collect_assigns_expr(list_get(args, i), names)
         collect_assigns_args(args, i + 1, n, names)
 
 fn emit_decl_names(names: Int, i: Int, n: Int, acc: String) -> String ! alloc
@@ -958,48 +952,83 @@ fn emit_decl_names(names: Int, i: Int, n: Int, acc: String) -> String ! alloc
         acc = acc + " = 0;\n"
         emit_decl_names(names, i + 1, n, acc)
 
-fn tmp_counter_new(pool: Int) -> Int ! alloc
-    v = vec_new()
-    _p = vec_push(v, 0)
-    senv = strenv_new()
-    _g = strenv_set_globals(senv, lit_pool_fnrets(pool), lit_pool_structs(pool))
-    _q = vec_push(v, senv)
-    _r = vec_push(v, pool)
-    _s = vec_push(v, 0)
-    _m = vec_push(v, 0)
-    _n = vec_push(v, 0)
-    _l = vec_push(v, map_new())
-    v
+# Emission state of one function. The counter, the accumulator name and the small-matmul quirk live
+# in lists so callees can update them; `env` is the typed local environment shared by the program;
+# `lam_*` are the locals bound to a lambda (`f = x => body`), searched newest first.
+struct Tc
+    ctr: List[Int]
+    acc: List[Int]
+    mm_out: List[Int]
+    mm_n: List[Int]
+    lam_names: List[String]
+    lam_params: List[String]
+    lam_bodies: List[Expr]
+    pool: Int
+    env: TEnv
 
-# Locals bound to a lambda (`f = x => body`): name -> lambda expression.
-fn tc_lambdas(tc: Int) -> Int ! alloc
-    vec_get(tc, 6)
+fn tc_new(pool: Int, env: TEnv borrow) -> Tc ! alloc
+    ctr = list_new[Int]()
+    _a = list_push(ctr, 0)
+    acc = list_new[Int]()
+    _b = list_push(acc, 0)
+    mm_out = list_new[Int]()
+    _c = list_push(mm_out, 0)
+    mm_n = list_new[Int]()
+    _d = list_push(mm_n, 0)
+    _t = tenv_truncate(env, 0)
+    Tc(ctr, acc, mm_out, mm_n, list_new[String](), list_new[String](), list_new[Expr](), pool, env)
 
-fn tc_strenv(tc: Int) -> Int ! alloc
-    vec_get(tc, 1)
+# Releases the lists; the env and the pool are the caller's.
+fn tc_free(tc: Tc) -> Int ! alloc
+    _a = list_free(tc.ctr)
+    _b = list_free(tc.acc)
+    _c = list_free(tc.mm_out)
+    _d = list_free(tc.mm_n)
+    _e = list_free(tc.lam_names)
+    _f = list_free(tc.lam_params)
+    list_free(tc.lam_bodies)
 
-fn tc_lit_pool(tc: Int) -> Int ! alloc
-    vec_get(tc, 2)
+fn tc_lit_pool(tc: Tc) -> Int ! alloc
+    tc.pool
 
 # Name of the binding an `x = x + ...` chain accumulates into (0 when none).
-fn tc_acc(tc: Int) -> Int ! alloc
-    vec_get(tc, 3)
+fn tc_acc(tc: Tc) -> Int ! alloc
+    list_get(tc.acc, 0)
 
-fn tc_set_acc(tc: Int, name: Int) -> Int ! alloc
-    _s = vec_set(tc, 3, name)
+fn tc_set_acc(tc: Tc, name: Int) -> Int ! alloc
+    _s = list_set(tc.acc, 0, name)
     0
 
-fn seed_string_params(params: Int, i: Int, n: Int, env: Int) -> Int ! alloc
+fn tc_lam_find(tc: Tc, name: String, i: Int) -> Int ! alloc
+    if i < 0
+        0 - 1
+    elsif str_eq(list_get(tc.lam_names, i), name) == 1
+        i
+    else
+        tc_lam_find(tc, name, i - 1)
+
+fn tc_lam_add(tc: Tc, name: String, lam: Expr) -> Int ! alloc
+    match lam
+        XLambda(param, body) => tc_lam_push(tc, name, param, body)
+        _ => 0
+
+fn tc_lam_push(tc: Tc, name: String, param: String, body: Expr) -> Int ! alloc
+    _a = list_push(tc.lam_names, strdup(name))
+    _b = list_push(tc.lam_params, strdup(param))
+    _c = list_push(tc.lam_bodies, body)
+    0
+
+fn seed_string_params(params: List[TParam], i: Int, n: Int, env: TEnv) -> Int ! alloc
     if i >= n
         0
     else
-        pm = vec_get(params, i)
-        _b = strenv_bind(env, vec_get(pm, 0), vec_get(pm, 1))
+        pm = list_get(params, i)
+        _b = tenv_bind(env, pm.name, pm.ty)
         seed_string_params(params, i + 1, n, env)
 
-fn tmp_fresh(tc: Int) -> String ! alloc
-    n = vec_get(tc, 0) + 1
-    _s = vec_set(tc, 0, n)
+fn tmp_fresh(tc: Tc) -> String ! alloc
+    n = list_get(tc.ctr, 0) + 1
+    _s = list_set(tc.ctr, 0, n)
     "__t" + int_to_str(n)
 
 fn cmap_op(op: String) -> String ! alloc
@@ -1038,73 +1067,57 @@ fn cmap_op(op: String) -> String ! alloc
     else
         d"+"
 
-fn emit_c_expr(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    if e == 0
-        d"0"
-    else
-        k = ex_kind(e)
-        if k == EX_INT()
-            int_to_str(vec_get(e, 1)) + "LL"
-        elsif k == EX_FLOAT()
-            int_to_str(vec_get(e, 1)) + "LL"
-        elsif k == EX_STRING()
-            ensure_sal_lit(vec_get(e, 1), tc_lit_pool(tc))
-        elsif k == EX_IDENT()
-            emit_c_ident(e, tc)
-        elsif k == EX_FIELD()
-            emit_c_field(e, user, stmts, tc)
-        elsif k == EX_BINARY()
-            emit_c_binary(e, user, stmts, tc)
-        elsif k == EX_CALL()
-            emit_c_call(e, user, stmts, tc)
-        elsif k == EX_TENSOR()
-            emit_c_tensor_lit(e)
-        elsif k == EX_ON()
-            emit_c_on(e, user, stmts, tc)
-        elsif k == EX_IF()
-            emit_c_if(e, user, stmts, tc)
-        elsif k == EX_WHILE()
-            emit_c_while(e, user, stmts, tc)
-        elsif k == EX_MATCH()
-            emit_c_match(e, user, stmts, tc)
-        elsif k == EX_TRY()
-            emit_c_try(e, user, stmts, tc)
-        elsif k == EX_BOOL()
-            int_to_str(vec_get(e, 1))
-        elsif k == EX_UNARY()
-            inner = emit_c_expr(vec_get(e, 2), user, stmts, tc)
-            if str_eq(vec_get(e, 1), "neg") == 1
-                if expr_is_float(vec_get(e, 2), tc_strenv(tc)) == 1
-                    "sal_fop(10, " + inner + ", 0LL)"
-                else
-                    "(-(" + inner + "))"
-            else
-                "(!(" + inner + "))"
-        else
-            d"0"
+fn emit_c_expr(e: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    match e
+        XNone => d"0"
+        XInt(v) => int_to_str(v) + "LL"
+        XFloat(bits, txt) => int_to_str(bits) + "LL"
+        XStr(s) => ensure_sal_lit(str_as_int(s), tc_lit_pool(tc))
+        XIdent(name) => emit_c_ident(name, tc)
+        XField(base, field) => emit_c_field(base, field, user, stmts, tc)
+        XBin(op, l, r) => emit_c_binary(op, l, r, user, stmts, tc)
+        XCall(name, args, targs) => emit_c_call(name, args, user, stmts, tc)
+        XTensor(nr, nc, data) => emit_c_tensor_lit(data)
+        XOn(place, body, is_kern, has_index) => emit_c_block(body, user, stmts, tc)
+        XIf(cond, then_b, else_b, has_else, elsifs) => emit_c_if(cond, then_b, else_b, elsifs, user, stmts, tc)
+        XWhile(cond, body) => emit_c_while(cond, body, user, stmts, tc)
+        XMatch(scrut, arms) => emit_c_match(scrut, arms, user, stmts, tc)
+        XTry(inner) => emit_c_try(inner, user, stmts, tc)
+        XBool(v) => int_to_str(v)
+        XUnary(op, inner) => emit_c_unary(op, inner, user, stmts, tc)
+        _ => d"0"
 
-fn c_str_add_fname(e: Int, env: Int, into_acc: Int) -> String ! alloc
+fn emit_c_unary(op: String, operand: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    inner = emit_c_expr(operand, user, stmts, tc)
+    if str_eq(op, "neg") == 1
+        if tt_is_float(texpr_type(tc.env, operand)) == 1
+            "sal_fop(10, " + inner + ", 0LL)"
+        else
+            "(-(" + inner + "))"
+    else
+        "(!(" + inner + "))"
+
+# `left` is the left operand of a string `+`; its own left chain makes the append form.
+fn c_str_add_fname(env: TEnv, left: Expr, into_acc: Int) -> String ! alloc
     if into_acc == 1
         d"str_append"
-    elsif binary_add_uses_append(e, env) == 1
+    elsif tbinary_is_string_concat(env, left) == 1
         d"str_append"
     else
         d"str_concat"
 
-fn emit_c_str_add(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
+fn emit_c_str_add(left: Expr, right: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     # Only the left spine of the chain may see the accumulator.
     acc = tc_acc(tc)
-    left = vec_get(e, 2)
-    right = vec_get(e, 3)
-    _s = tc_set_acc(tc, spine_acc(left, acc))
+    _s = tc_set_acc(tc, tspine_acc(left, acc))
     l = emit_c_expr(left, user, stmts, tc)
     _z = tc_set_acc(tc, 0)
     r = emit_c_expr(right, user, stmts, tc)
-    fname = c_str_add_fname(e, tc_strenv(tc), add_left_is_acc(left, acc))
+    fname = c_str_add_fname(tc.env, left, tadd_left_is_acc(left, acc))
     args = vec_new()
     free_left = 0
     if str_eq(fname, d"str_concat") == 1
-        free_left = add_left_is_fresh_call(left)
+        free_left = tadd_left_is_fresh_call(left)
     if free_left == 1
         # Materialize the left temp so it can be freed after the copy.
         lt = tmp_fresh(tc)
@@ -1112,7 +1125,7 @@ fn emit_c_str_add(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
         _a = vec_push(args, lt)
     else
         _a = vec_push(args, l)
-    if add_right_is_fresh_temp(right, tc_strenv(tc)) == 1
+    if tadd_right_is_fresh_temp(tc.env, right) == 1
         # Materialize the temp so it can be freed after the copy.
         rt = tmp_fresh(tc)
         _b = vec_push(args, rt)
@@ -1135,20 +1148,22 @@ fn emit_c_str_add(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
         _b = vec_push(args, r)
         emit_c_builtin2(fname, args, stmts)
 
-fn emit_c_binary(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    if binary_add_is_string_concat(e, tc_strenv(tc)) == 1
-        emit_c_str_add(e, user, stmts, tc)
+fn emit_c_binary(op: String, l: Expr, r: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    if str_eq(op, "add") == 1
+        if texpr_is_string(tc.env, l) == 1
+            emit_c_str_add(l, r, user, stmts, tc)
+        else
+            emit_c_binary_num(op, l, r, user, stmts, tc)
     else
-        emit_c_binary_num(e, user, stmts, tc)
+        emit_c_binary_num(op, l, r, user, stmts, tc)
 
-fn emit_c_binary_num(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    l = emit_c_expr(vec_get(e, 2), user, stmts, tc)
-    r = emit_c_expr(vec_get(e, 3), user, stmts, tc)
-    if expr_is_float(vec_get(e, 2), tc_strenv(tc)) + expr_is_float(vec_get(e, 3), tc_strenv(tc)) > 0
-        "sal_fop(" + int_to_str(float_op_code(str_from_int(vec_get(e, 1)))) + ", " + l + ", " + r + ")"
+fn emit_c_binary_num(op: String, left: Expr, right: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    l = emit_c_expr(left, user, stmts, tc)
+    r = emit_c_expr(right, user, stmts, tc)
+    if tt_is_float(texpr_type(tc.env, left)) + tt_is_float(texpr_type(tc.env, right)) > 0
+        "sal_fop(" + int_to_str(float_op_code(op)) + ", " + l + ", " + r + ")"
     else
-        op = cmap_op(str_from_int(vec_get(e, 1)))
-        "(" + l + " " + op + " " + r + ")"
+        "(" + l + " " + cmap_op(op) + " " + r + ")"
 
 # Code understood by `sal_fop` in the C prelude (`op` without the `f` prefix).
 fn float_op_code(op: String) -> Int ! alloc
@@ -1176,25 +1191,24 @@ fn float_op_code(op: String) -> Int ! alloc
         10
 
 # A payload-free enum variant used as a value is its tag.
-fn emit_c_ident(e: Int, tc: Int) -> String ! alloc
-    name = vec_get(e, 1)
-    code = variant_code(tc, name)
+fn emit_c_ident(name: String, tc: Tc) -> String ! alloc
+    code = variant_code(tc, str_as_int(name))
     if code != 0
-        if strenv_has_binding(tc_strenv(tc), name) == 0
+        if str_len(tenv_type(tc.env, name)) == 0
             if code % 2 == 1
                 int_to_str(variant_tag(code)) + "LL"
             else
-                str_from_int(name)
+                name
         else
-            str_from_int(name)
+            name
     else
-        str_from_int(name)
+        name
 
-fn emit_c_args(args: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int, out: Int) -> Int ! alloc
+fn emit_c_args(args: List[Expr], i: Int, n: Int, user: Int, stmts: Int, tc: Tc, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        a = emit_c_expr(vec_get(args, i), user, stmts, tc)
+        a = emit_c_expr(list_get(args, i), user, stmts, tc)
         _p = vec_push(out, str_as_int(a))
         emit_c_args(args, i + 1, n, user, stmts, tc, out)
 
@@ -1213,21 +1227,18 @@ fn join_commas(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
         acc = acc + str_from_int(vec_get(parts, i))
         join_commas(parts, i + 1, n, acc)
 
-fn c_row_len_spine(e: Int, env: Int) -> Int ! alloc
-    if e == 0
-        0
-    else
-        k = ex_kind(e)
-        if k == EX_BINARY()
-            c_row_len_spine(vec_get(e, 2), env)
-        else
-            expr_type(e, env)
+# Type text of the leftmost operand of a `+` chain ("" when unknown).
+fn c_row_len_spine(e: Expr, env: TEnv) -> String ! alloc
+    match e
+        XBin(op, l, r) => c_row_len_spine(l, env)
+        XNone => d""
+        _ => texpr_type(env, e)
 
-fn type_row_len_from_handle(ty: Int) -> String ! alloc
-    if ty == 0
+fn type_row_len_from_text(ty: String) -> String ! alloc
+    if str_len(ty) == 0
         d"1"
     else
-        prod = type_concrete_row_len(str_from_int(ty))
+        prod = type_concrete_row_len(ty)
         if prod > 0
             int_to_str(prod)
         else
@@ -1274,52 +1285,44 @@ fn type_dim_token_end(s: String, i: Int, n: Int) -> Int ! alloc
         else
             type_dim_token_end(s, i + 1, n)
 
-fn emit_c_where_frame_ty(args_e: Int, env: Int) -> Int ! alloc
-    if vec_len(args_e) == 0
-        0
+# Name of the frame struct `where` filters, "" when it is not one.
+fn emit_c_where_struct(ty: String, env: TEnv) -> String ! alloc
+    if tt_struct_find(env.structs, ty) >= 0
+        ty
     else
-        frame_e = vec_get(args_e, 0)
-        k = ex_kind(frame_e)
-        if k == EX_IDENT()
-            ty = strenv_type(env, vec_get(frame_e, 1))
-            if struct_find(strenv_structs(env), ty) != 0
-                ty
-            else
-                0
-        elsif k == EX_CALL()
-            callee = vec_get(frame_e, 1)
-            if struct_find(strenv_structs(env), callee) != 0
-                callee
-            else
-                ty = expr_type(frame_e, env)
-                if struct_find(strenv_structs(env), ty) != 0
-                    ty
-                else
-                    0
-        else
-            ty = expr_type(frame_e, env)
-            if struct_find(strenv_structs(env), ty) != 0
-                ty
-            else
-                0
+        d""
 
-fn emit_c_where(args_e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    env = tc_strenv(tc)
-    frame_ty = emit_c_where_frame_ty(args_e, env)
-    if frame_ty == 0
+fn emit_c_where_frame_ty(args_e: List[Expr], env: TEnv) -> String ! alloc
+    if list_len(args_e) == 0
+        d""
+    else
+        where_frame_of(list_get(args_e, 0), env)
+
+fn where_frame_of(frame_e: Expr, env: TEnv) -> String ! alloc
+    match frame_e
+        XIdent(name) => emit_c_where_struct(tenv_type(env, name), env)
+        XCall(callee, cargs, targs) => where_frame_call(frame_e, callee, env)
+        _ => emit_c_where_struct(texpr_type(env, frame_e), env)
+
+fn where_frame_call(frame_e: Expr, callee: String, env: TEnv) -> String ! alloc
+    if tt_struct_find(env.structs, callee) >= 0
+        callee
+    else
+        emit_c_where_struct(texpr_type(env, frame_e), env)
+
+fn emit_c_where(args_e: List[Expr], user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    frame_ty = emit_c_where_frame_ty(args_e, tc.env)
+    if str_len(frame_ty) == 0
         d"0"
     else
-        frame_e = vec_get(args_e, 0)
-        mask_e = vec_get(args_e, 1)
-        emit_c_where_body(frame_e, mask_e, frame_ty, user, stmts, tc)
+        emit_c_where_body(list_get(args_e, 0), list_get(args_e, 1), frame_ty, user, stmts, tc)
 
-fn emit_c_where_body(frame_e: Int, mask_e: Int, frame_ty: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
+fn emit_c_where_body(frame_e: Expr, mask_e: Expr, frame_ty: String, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     frame_v = emit_c_expr(frame_e, user, stmts, tc)
     mask_v = emit_c_expr(mask_e, user, stmts, tc)
-    len_v = type_row_len_from_handle(c_row_len_spine(mask_e, tc_strenv(tc)))
-    sd = struct_find(strenv_structs(tc_strenv(tc)), frame_ty)
-    fields = structdef_fields(sd)
-    nfields = vec_len(fields)
+    len_v = type_row_len_from_text(c_row_len_spine(mask_e, tc.env))
+    sd = list_get(tc.env.structs, tt_struct_find(tc.env.structs, frame_ty))
+    nfields = list_len(sd.fields)
     cnt = tmp_fresh(tc)
     line = "  int64_t " + cnt + " = sal_mask_select_count((const int8_t *)(uintptr_t)" + mask_v + ", " + len_v + ");\n"
     _p = vec_push(stmts, str_as_int(line))
@@ -1327,18 +1330,16 @@ fn emit_c_where_body(frame_e: Int, mask_e: Int, frame_ty: Int, user: Int, stmts:
     mv = str_as_int(mask_v)
     lv = str_as_int(len_v)
     cv = str_as_int(cnt)
-    emit_c_where_fields(fields, 0, nfields, fv, mv, lv, cv, stmts, tc, d"0")
+    emit_c_where_fields(sd.fields, 0, nfields, fv, mv, lv, cv, stmts, tc, d"0")
 
-fn emit_c_where_fields(fields: Int, i: Int, n: Int, frame_v: Int, mask_v: Int, len_v: Int, cnt: Int, stmts: Int, tc: Int, last_out: String) -> String ! alloc
+fn emit_c_where_fields(fields: List[TField], i: Int, n: Int, frame_v: Int, mask_v: Int, len_v: Int, cnt: Int, stmts: Int, tc: Tc, last_out: String) -> String ! alloc
     if i >= n
         if str_eq(last_out, d"0") == 1
             d"0"
         else
             last_out
     else
-        fd = vec_get(fields, i)
-        fty = vec_get(fd, 1)
-        fty_s = str_from_int(fty)
+        fty_s = list_get(fields, i).ty
         out = tmp_fresh(tc)
         fv_s = str_from_int(frame_v)
         mv_s = str_from_int(mask_v)
@@ -1357,7 +1358,7 @@ fn emit_c_where_fields(fields: Int, i: Int, n: Int, frame_v: Int, mask_v: Int, l
             _e = 0
         emit_c_where_fields(fields, i + 1, n, frame_v, mask_v, len_v, cnt, stmts, tc, out)
 
-fn emit_c_where_f32(out: String, col: String, mask_v: String, len_v: String, cnt: String, stmts: Int, tc: Int) -> Int ! alloc
+fn emit_c_where_f32(out: String, col: String, mask_v: String, len_v: String, cnt: String, stmts: Int, tc: Tc) -> Int ! alloc
     heap = tmp_fresh(tc)
     bline = "  int64_t " + heap + "_bytes = " + cnt + " * 4;\n"
     _a = vec_push(stmts, str_as_int(bline))
@@ -1369,7 +1370,7 @@ fn emit_c_where_f32(out: String, col: String, mask_v: String, len_v: String, cnt
     _d = vec_push(stmts, str_as_int(oline))
     0
 
-fn emit_c_where_i8(out: String, col: String, mask_v: String, len_v: String, cnt: String, stmts: Int, tc: Int) -> Int ! alloc
+fn emit_c_where_i8(out: String, col: String, mask_v: String, len_v: String, cnt: String, stmts: Int, tc: Tc) -> Int ! alloc
     heap = tmp_fresh(tc)
     bline = "  int64_t " + heap + "_bytes = " + cnt + ";\n"
     _a = vec_push(stmts, str_as_int(bline))
@@ -1381,7 +1382,7 @@ fn emit_c_where_i8(out: String, col: String, mask_v: String, len_v: String, cnt:
     _d = vec_push(stmts, str_as_int(oline))
     0
 
-fn emit_c_where_list(out: String, col: String, mask_v: String, len_v: String, stmts: Int, tc: Int) -> Int ! alloc
+fn emit_c_where_list(out: String, col: String, mask_v: String, len_v: String, stmts: Int, tc: Tc) -> Int ! alloc
     heap = tmp_fresh(tc)
     mline = "  void *" + heap + " = sal_list_select((void *)(uintptr_t)" + col + ", (const int8_t *)(uintptr_t)" + mask_v + ", " + len_v + ");\n"
     _b = vec_push(stmts, str_as_int(mline))
@@ -1389,57 +1390,56 @@ fn emit_c_where_list(out: String, col: String, mask_v: String, len_v: String, st
     _d = vec_push(stmts, str_as_int(oline))
     0
 
-fn emit_c_call(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    fname = vec_get(e, 1)
-    args_e = vec_get(e, 2)
-    arg_parts = emit_c_args(args_e, 0, vec_len(args_e), user, stmts, tc, vec_new())
-    if names_has(user, fname, 0, vec_len(user)) == 1
-        m = mangled(str_from_int(fname))
+fn emit_c_call(fname: String, args_e: List[Expr], user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    hname = str_as_int(fname)
+    arg_parts = emit_c_args(args_e, 0, list_len(args_e), user, stmts, tc, vec_new())
+    if names_has(user, hname, 0, vec_len(user)) == 1
+        m = mangled(fname)
         acc = m + "("
         acc = join_commas(arg_parts, 0, vec_len(arg_parts), acc)
         acc + ")"
-    elsif str_eq(str_from_int(fname), d"where") == 1
+    elsif str_eq(fname, d"where") == 1
         emit_c_where(args_e, user, stmts, tc)
-    elsif struct_find(strenv_structs(tc_strenv(tc)), fname) != 0
+    elsif tt_struct_find(tc.env.structs, fname) >= 0
         emit_c_struct_ctor(arg_parts)
-    elsif map_get(tc_lambdas(tc), fname) != 0
-        emit_c_lambda_call(map_get(tc_lambdas(tc), fname), arg_parts, user, stmts, tc)
-    elsif variant_code(tc, fname) != 0
-        emit_c_variant_make(variant_tag(variant_code(tc, fname)) + emit_c_owned_mask(tc, args_e, 0, vec_len(args_e), 0, 1) * 256, arg_parts)
-    elsif str_eq(str_from_int(fname), d"float_to_int") == 1
+    elsif tc_lam_find(tc, fname, list_len(tc.lam_names) - 1) >= 0
+        emit_c_lambda_call(tc_lam_find(tc, fname, list_len(tc.lam_names) - 1), arg_parts, user, stmts, tc)
+    elsif variant_code(tc, hname) != 0
+        emit_c_variant_make(variant_tag(variant_code(tc, hname)) + emit_c_owned_mask(tc, args_e, 0, list_len(args_e), 0, 1) * 256, arg_parts)
+    elsif str_eq(fname, d"float_to_int") == 1
         "sal_fop(11, " + str_from_int(vec_get(arg_parts, 0)) + ", 0LL)"
-    elsif str_eq(str_from_int(fname), d"int_to_float") == 1
+    elsif str_eq(fname, d"int_to_float") == 1
         "sal_fop(12, " + str_from_int(vec_get(arg_parts, 0)) + ", 0LL)"
-    elsif str_eq(str_from_int(fname), d"print") == 1
+    elsif str_eq(fname, d"print") == 1
         emit_c_print(args_e, arg_parts, tc)
-    elsif str_eq(str_from_int(fname), d"load") == 1
+    elsif str_eq(fname, d"load") == 1
         emit_c_load(arg_parts, stmts)
-    elsif str_eq(str_from_int(fname), d"matmul") == 1
+    elsif str_eq(fname, d"matmul") == 1
         emit_c_matmul(args_e, arg_parts, stmts, tc)
     else
-        emit_c_builtin(str_from_int(fname), arg_parts, stmts)
+        emit_c_builtin(fname, arg_parts, stmts)
 
 # Inline a lambda call: the parameter is a fresh C local in its own block.
-fn emit_c_lambda_call(lam: Int, arg_parts: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
+fn emit_c_lambda_call(idx: Int, arg_parts: Int, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     tname = tmp_fresh(tc)
     _a = vec_push(stmts, str_as_int("  int64_t " + tname + " = 0;\n"))
     arg = if vec_len(arg_parts) > 0
         str_from_int(vec_get(arg_parts, 0))
     else
         d"0"
-    _b = vec_push(stmts, str_as_int("  {{ int64_t " + str_from_int(vec_get(lam, 1)) + " = " + arg + ";\n"))
-    slen = strenv_len(tc_strenv(tc))
+    _b = vec_push(stmts, str_as_int("  {{ int64_t " + list_get(tc.lam_params, idx) + " = " + arg + ";\n"))
+    slen = tenv_len(tc.env)
     body_stmts = vec_new()
-    val = emit_c_expr(vec_get(lam, 2), user, body_stmts, tc)
-    _r = strenv_set_len(tc_strenv(tc), slen)
+    val = emit_c_expr(list_get(tc.lam_bodies, idx), user, body_stmts, tc)
+    _r = tenv_truncate(tc.env, slen)
     _c = append_stmts(stmts, body_stmts)
     _d = vec_push(stmts, str_as_int("  " + tname + " = " + val + "; }}\n"))
     tname
 
 # `try x`: return the operand unchanged when it is the failing variant
 # (`Err` / `None`), else continue with its payload.
-fn emit_c_try(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    inner = emit_c_expr(vec_get(e, 1), user, stmts, tc)
+fn emit_c_try(operand: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    inner = emit_c_expr(operand, user, stmts, tc)
     tname = tmp_fresh(tc)
     _a = vec_push(stmts, str_as_int("  int64_t " + tname + " = " + inner + ";\n"))
     err = variant_code(tc, str_as_int(d"Err"))
@@ -1456,21 +1456,31 @@ fn emit_c_try(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
 
 # Two bits per field, as the bootstrap's `enum_owned_mask`: 1 a fresh String, 2 a fresh
 # box of a variant with fields. `mul` is 4^i.
-fn emit_c_owned_mask(tc: Int, args_e: Int, i: Int, n: Int, acc: Int, mul: Int) -> Int ! alloc
+fn emit_c_owned_mask(tc: Tc, args_e: List[Expr], i: Int, n: Int, acc: Int, mul: Int) -> Int ! alloc
     if i >= n
         acc
     elsif i >= 28
         acc
     else
-        a = vec_get(args_e, i)
-        kind = 0
-        if dr_is_fresh_value(a) == 1
-            kind = 1
-        elsif ex_kind(a) == EX_CALL()
-            if vec_len(vec_get(a, 2)) > 0
-                if variant_code(tc, vec_get(a, 1)) != 0
-                    kind = 2
+        kind = emit_c_owned_kind(tc, list_get(args_e, i))
         emit_c_owned_mask(tc, args_e, i + 1, n, acc + kind * mul, mul * 4)
+
+fn emit_c_owned_kind(tc: Tc, a: Expr) -> Int ! alloc
+    if dx_is_fresh_value(a) == 1
+        1
+    else
+        match a
+            XCall(name, cargs, targs) => emit_c_owned_variant_kind(tc, name, cargs)
+            _ => 0
+
+fn emit_c_owned_variant_kind(tc: Tc, name: String, cargs: List[Expr]) -> Int ! alloc
+    if list_len(cargs) > 0
+        if variant_code(tc, str_as_int(name)) != 0
+            2
+        else
+            0
+    else
+        0
 
 fn emit_c_variant_make(tag: Int, arg_parts: Int) -> String ! alloc
     if vec_len(arg_parts) == 0
@@ -1488,31 +1498,26 @@ fn emit_c_variant_sets(arg_parts: Int, i: Int, acc: String) -> String ! alloc
         emit_c_variant_sets(arg_parts, i + 1, acc)
 
 # Tensors are `float *` buffers from sal_place_malloc; the value is the pointer.
-fn emit_c_tensor_lit(e: Int) -> String ! alloc
-    data = vec_get(e, 3)
-    n = vec_len(data)
+fn emit_c_tensor_lit(data: List[String]) -> String ! alloc
+    n = list_len(data)
     acc = "({{ float *__t = (float *)sal_place_malloc(" + int_to_str(n * 4 + 4) + ", 0); "
     acc = emit_c_tensor_cells(data, 0, n, acc)
     acc + "(int64_t)(uintptr_t)__t; }})"
 
-fn emit_c_tensor_cells(data: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_c_tensor_cells(data: List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        acc = acc + "__t[" + int_to_str(i) + "] = " + str_from_int(vec_get(data, i)) + "f; "
+        acc = acc + "__t[" + int_to_str(i) + "] = " + list_get(data, i) + "f; "
         emit_c_tensor_cells(data, i + 1, n, acc)
 
 fn emit_c_load(arg_parts: Int, stmts: Int) -> String ! alloc
     _p = vec_push(stmts, str_as_int(d"  extern int64_t sal_load_f32();\n"))
     "({{ int64_t __n = 0; (int64_t)(uintptr_t)sal_load_f32((const char *)(uintptr_t)(" + arg_at(arg_parts, 0) + "), &__n); }})"
 
-# `on <place> ...` runs its block inline (every place is the host here).
-fn emit_c_on(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    emit_c_block(vec_get(e, 2), user, stmts, tc)
-
-fn emit_c_matmul(args_e: Int, arg_parts: Int, stmts: Int, tc: Int) -> String ! alloc
-    ta = expr_type(vec_get(args_e, 0), tc_strenv(tc))
-    tb = expr_type(vec_get(args_e, 1), tc_strenv(tc))
+fn emit_c_matmul(args_e: List[Expr], arg_parts: Int, stmts: Int, tc: Tc) -> String ! alloc
+    ta = str_as_int(texpr_type(tc.env, list_get(args_e, 0)))
+    tb = str_as_int(texpr_type(tc.env, list_get(args_e, 1)))
     pa = tt_split(ta)
     pb = tt_split(tb)
     if vec_len(pa) < 3
@@ -1523,34 +1528,34 @@ fn emit_c_matmul(args_e: Int, arg_parts: Int, stmts: Int, tc: Int) -> String ! a
         m = tt_dim_val(vec_get(pa, vec_len(pa) - 2))
         k = tt_dim_val(vec_get(pa, vec_len(pa) - 1))
         n = tt_dim_val(vec_get(pb, vec_len(pb) - 1))
-        tc_n = vec_get(tc, 0) + 1
-        _u = vec_set(tc, 0, tc_n)
+        tc_n = list_get(tc.ctr, 0) + 1
+        _u = list_set(tc.ctr, 0, tc_n)
         out = "__mm" + int_to_str(tc_n)
         _e = vec_push(stmts, str_as_int(d"  extern void sal_matmul_f32();\n"))
         _p = vec_push(stmts, str_as_int("  float *" + out + " = (float *)sal_place_malloc(" + int_to_str(m * n * 4) + ", 0);\n"))
         _q = vec_push(stmts, str_as_int("  sal_matmul_f32((const float *)(uintptr_t)" + arg_at(arg_parts, 0) + ", (const float *)(uintptr_t)" + arg_at(arg_parts, 1) + ", " + out + ", " + int_to_str(m) + ", " + int_to_str(k) + ", " + int_to_str(n) + ");\n"))
         if m * n <= 16
-            _r = vec_set(tc, 4, str_as_int(out))
-            _t = vec_set(tc, 5, m * n)
+            _r = list_set(tc.mm_out, 0, str_as_int(out))
+            _t = list_set(tc.mm_n, 0, m * n)
         "((int64_t)(uintptr_t)" + out + ")"
 
 # The bootstrap returns the element sum of the last (small) matmul from `main`.
-fn emit_c_matmul_exit(tc: Int, is_main: Int, val: String) -> String ! alloc
-    q = vec_get(tc, 4)
+fn emit_c_matmul_exit(tc: Tc, is_main: Int, val: String) -> String ! alloc
+    q = list_get(tc.mm_out, 0)
     if q == 0
         val
     elsif is_main == 0
         val
     else
         out = str_from_int(q)
-        cnt = int_to_str(vec_get(tc, 5))
+        cnt = int_to_str(list_get(tc.mm_n, 0))
         "({{ double __s = 0; for (int __i = 0; __i < " + cnt + "; __i++) __s += " + out + "[__i]; (int64_t)__s; }})"
 
 # `print` of a String prints its text, of anything else the integer.
-fn emit_c_print(args_e: Int, arg_parts: Int, tc: Int) -> String ! alloc
+fn emit_c_print(args_e: List[Expr], arg_parts: Int, tc: Tc) -> String ! alloc
     a0 = arg_at(arg_parts, 0)
-    if vec_len(args_e) > 0
-        if expr_produces_string(vec_get(args_e, 0), tc_strenv(tc)) == 1
+    if list_len(args_e) > 0
+        if texpr_is_string(tc.env, list_get(args_e, 0)) == 1
             "sal_print_str((const char*)(uintptr_t)" + a0 + ")"
         else
             "sal_print_i64(" + a0 + ")"
@@ -1578,34 +1583,42 @@ fn emit_c_ctor_slots(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
         emit_c_ctor_slots(parts, i + 1, n, acc)
 
 # C lvalue/rvalue for `base.field`, or just the base for a one-field struct.
-fn emit_c_field(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    base = emit_c_expr(vec_get(e, 1), user, stmts, tc)
-    sd = struct_find(strenv_structs(tc_strenv(tc)), expr_type(vec_get(e, 1), tc_strenv(tc)))
-    if sd == 0
-        base
-    elsif structdef_field_count(sd) < 2
+fn emit_c_field(base_e: Expr, field: String, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    base = emit_c_expr(base_e, user, stmts, tc)
+    si = tt_struct_find(tc.env.structs, texpr_type(tc.env, base_e))
+    if si < 0
         base
     else
-        idx = field_index_go(structdef_fields(sd), vec_get(e, 2), 0, structdef_field_count(sd))
-        "(((int64_t *)(" + base + "))[" + int_to_str(idx) + "])"
+        sd = list_get(tc.env.structs, si)
+        if list_len(sd.fields) < 2
+            base
+        else
+            idx = tt_field_index(sd.fields, field, 0, list_len(sd.fields))
+            "(((int64_t *)(" + base + "))[" + int_to_str(idx) + "])"
 
 # A struct is a value: `p.x = v` writes into a private copy of `p`, so a caller
 # that still holds the original (or another name for it) never sees the update.
-fn emit_c_field_copy(target: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
-    b = vec_get(target, 1)
-    if ex_kind(b) != EX_IDENT()
+fn emit_c_field_copy(target: Expr, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
+    match target
+        XField(b, field) => emit_c_field_copy_base(b, user, stmts, tc)
+        _ => 0
+
+fn emit_c_field_copy_base(b: Expr, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
+    match b
+        XIdent(nm) => emit_c_field_copy_ident(b, user, stmts, tc)
+        _ => 0
+
+fn emit_c_field_copy_ident(b: Expr, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
+    si = tt_struct_find(tc.env.structs, texpr_type(tc.env, b))
+    if si < 0
+        0
+    elsif list_len(list_get(tc.env.structs, si).fields) < 2
         0
     else
-        sd = struct_find(strenv_structs(tc_strenv(tc)), expr_type(b, tc_strenv(tc)))
-        if sd == 0
-            0
-        elsif structdef_field_count(sd) < 2
-            0
-        else
-            name = emit_c_expr(b, user, stmts, tc)
-            bytes = int_to_str(structdef_field_count(sd) * 8)
-            line = "  " + name + " = ({{ int64_t *__d = (int64_t *)malloc(" + bytes + "); __builtin_memcpy(__d, (int64_t *)(" + name + "), " + bytes + "); (int64_t)__d; }});\n"
-            vec_push(stmts, str_as_int(line))
+        name = emit_c_expr(b, user, stmts, tc)
+        bytes = int_to_str(list_len(list_get(tc.env.structs, si).fields) * 8)
+        line = "  " + name + " = ({{ int64_t *__d = (int64_t *)malloc(" + bytes + "); __builtin_memcpy(__d, (int64_t *)(" + name + "), " + bytes + "); (int64_t)__d; }});\n"
+        vec_push(stmts, str_as_int(line))
 
 fn arg_at(args: Int, i: Int) -> String ! alloc
     if i < vec_len(args)
@@ -1894,38 +1907,38 @@ fn emit_c_plain_runtime_call(fname: String, args: Int, stmts: Int) -> String ! a
     acc = join_commas(args, 0, vec_len(args), acc)
     acc + "))"
 
-fn emit_c_while(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
+fn emit_c_while(cond: Expr, body: TBlock, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     cond_stmts = vec_new()
-    c = emit_c_expr(vec_get(e, 1), user, cond_stmts, tc)
+    c = emit_c_expr(cond, user, cond_stmts, tc)
     _q = vec_push(stmts, str_as_int(d"  while (1) {{\n"))
     _a = append_stmts(stmts, cond_stmts)
     line = "    if (!(" + c + ")) break;\n"
     _b = vec_push(stmts, str_as_int(line))
     body_stmts = vec_new()
-    _tv = emit_c_block(vec_get(e, 2), user, body_stmts, tc)
+    _tv = emit_c_block(body, user, body_stmts, tc)
     _c = append_stmts(stmts, body_stmts)
     _d = vec_push(stmts, str_as_int(d"  }}\n"))
     d"0"
 
-fn emit_c_if(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    c = emit_c_expr(vec_get(e, 1), user, stmts, tc)
+fn emit_c_if(cond: Expr, then_b: TBlock, else_in: TBlock, elsifs: List[TElsif], user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    c = emit_c_expr(cond, user, stmts, tc)
     tname = tmp_fresh(tc)
     line = "  int64_t " + tname + ";\n"
     _p = vec_push(stmts, str_as_int(line))
     line2 = "  if (" + c + ") {{\n"
     _q = vec_push(stmts, str_as_int(line2))
-    slen = strenv_len(tc_strenv(tc))
+    slen = tenv_len(tc.env)
     then_stmts = vec_new()
-    then_val = emit_c_block(vec_get(e, 2), user, then_stmts, tc)
-    _rs = strenv_set_len(tc_strenv(tc), slen)
+    then_val = emit_c_block(then_b, user, then_stmts, tc)
+    _rs = tenv_truncate(tc.env, slen)
     _a = append_stmts(stmts, then_stmts)
     line3 = "    " + tname + " = " + then_val + ";\n"
     _r = vec_push(stmts, str_as_int(line3))
     _s = vec_push(stmts, str_as_int(d"  }} else {{\n"))
     else_stmts = vec_new()
-    else_b = else_block_for_elsifs(vec_get(e, 3), vec_get(e, 4))
+    else_b = elsifs_else_block(else_in, elsifs)
     else_val = emit_c_block(else_b, user, else_stmts, tc)
-    _rs2 = strenv_set_len(tc_strenv(tc), slen)
+    _rs2 = tenv_truncate(tc.env, slen)
     _b = append_stmts(stmts, else_stmts)
     line4 = "    " + tname + " = " + else_val + ";\n"
     _t = vec_push(stmts, str_as_int(line4))
@@ -1934,15 +1947,14 @@ fn emit_c_if(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
 
 # `match` over Int: integer literals, `_` and a binding name. Variant patterns
 # never match (enums are not lowered by the selfhost yet).
-fn emit_c_match(e: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    scrut = emit_c_expr(vec_get(e, 1), user, stmts, tc)
+fn emit_c_match(scrut_e: Expr, arms: List[TArm], user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    scrut = emit_c_expr(scrut_e, user, stmts, tc)
     sname = tmp_fresh(tc)
     tname = tmp_fresh(tc)
     _a = vec_push(stmts, str_as_int("  int64_t " + sname + " = " + scrut + ";\n"))
     _b = vec_push(stmts, str_as_int("  int64_t " + tname + " = 0;\n"))
-    arms = vec_get(e, 2)
-    sty = expr_type(vec_get(e, 1), tc_strenv(tc))
-    opens = emit_c_match_arms(arms, 0, vec_len(arms), sname, sty, tname, user, stmts, tc)
+    sty = texpr_type(tc.env, scrut_e)
+    opens = emit_c_match_arms(arms, 0, list_len(arms), sname, sty, tname, user, stmts, tc)
     _c = emit_c_match_close(stmts, opens)
     tname
 
@@ -1953,89 +1965,82 @@ fn emit_c_match_close(stmts: Int, n: Int) -> Int ! alloc
         _p = vec_push(stmts, str_as_int(d"  }}\n"))
         emit_c_match_close(stmts, n - 1)
 
+# Emits the arm body into the then-block; returns the C name of nothing.
+fn emit_c_arm_body(arm: TArm, tname: String, user: Int, stmts: Int, tc: Tc, slen: Int) -> Int ! alloc
+    body_stmts = vec_new()
+    val = emit_c_expr(arm.body, user, body_stmts, tc)
+    _r = tenv_truncate(tc.env, slen)
+    _m = append_stmts(stmts, body_stmts)
+    vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
+
 # Returns the number of `else {{` blocks still open.
-fn emit_c_match_arms(arms: Int, i: Int, n: Int, sname: String, sty: Int, tname: String, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+fn emit_c_match_arms(arms: List[TArm], i: Int, n: Int, sname: String, sty: String, tname: String, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
     if i >= n
         0
     else
-        arm = vec_get(arms, i)
-        pat = vec_get(arm, 0)
-        kind = vec_get(pat, 0)
-        slen = strenv_len(tc_strenv(tc))
-        body_stmts = vec_new()
+        arm = list_get(arms, i)
+        kind = arm.pat.kind
+        slen = tenv_len(tc.env)
         if kind == 2
-            _h = vec_push(stmts, str_as_int("  if (" + sname + " == " + int_to_str(vec_get(pat, 1)) + "LL) {{\n"))
-            val = emit_c_expr(vec_get(arm, 1), user, body_stmts, tc)
-            _r = strenv_set_len(tc_strenv(tc), slen)
-            _m = append_stmts(stmts, body_stmts)
-            _s = vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
+            _h = vec_push(stmts, str_as_int("  if (" + sname + " == " + int_to_str(arm.pat.ival) + "LL) {{\n"))
+            _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
             _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif kind == 3
-            code = variant_code(tc, vec_get(pat, 1))
+            code = variant_code(tc, str_as_int(arm.pat.name))
             cond = if code == 0
                 d"0"
             else
                 "sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL"
             _h = vec_push(stmts, str_as_int("  if (" + cond + ") {{\n"))
-            _pb = emit_c_variant_binds(vec_get(pat, 3), 0, sname, stmts, tc, vec_get(pat, 1), sty)
-            val = emit_c_expr(vec_get(arm, 1), user, body_stmts, tc)
-            _r = strenv_set_len(tc_strenv(tc), slen)
-            _m = append_stmts(stmts, body_stmts)
-            _s = vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
+            _pb = emit_c_variant_binds(arm.pat.args, 0, sname, stmts, tc, arm.pat.name, sty)
+            _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
             _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
-        elsif ident_pat_is_variant(pat, tc) == 1
-            code = variant_code(tc, vec_get(pat, 1))
+        elsif ident_pat_is_variant(arm.pat, tc) == 1
+            code = variant_code(tc, str_as_int(arm.pat.name))
             _h = vec_push(stmts, str_as_int("  if (sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL) {{\n"))
-            val = emit_c_expr(vec_get(arm, 1), user, body_stmts, tc)
-            _r = strenv_set_len(tc_strenv(tc), slen)
-            _m = append_stmts(stmts, body_stmts)
-            _s = vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
+            _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
             _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         else
             _h = vec_push(stmts, str_as_int(d"  {{\n"))
             if kind == 1
-                _bind = vec_push(stmts, str_as_int("  int64_t " + str_from_int(vec_get(pat, 1)) + " = " + sname + ";\n"))
+                _bind = vec_push(stmts, str_as_int("  int64_t " + arm.pat.name + " = " + sname + ";\n"))
             else
                 _bind = 0
-            val = emit_c_expr(vec_get(arm, 1), user, body_stmts, tc)
-            _r = strenv_set_len(tc_strenv(tc), slen)
-            _m = append_stmts(stmts, body_stmts)
-            _s = vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
+            _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
             _e = vec_push(stmts, str_as_int(d"  }}\n"))
             0
 
-fn ident_pat_is_variant(pat: Int, tc: Int) -> Int ! alloc
-    if vec_get(pat, 0) == 1
-        if variant_code(tc, vec_get(pat, 1)) != 0
+fn ident_pat_is_variant(pat: TPat, tc: Tc) -> Int ! alloc
+    if pat.kind == 1
+        if variant_code(tc, str_as_int(pat.name)) != 0
             1
         else
             0
     else
         0
 
-# Binds each identifier sub-pattern to its field of the variant box.
 # Type of field `i` of variant `vname`; a type parameter of its enum is replaced
 # by the matching argument of the scrutinee type `sty` (`Option[P]` -> `P`).
-fn variant_field_type(tc: Int, vname: Int, i: Int, sty: Int) -> Int ! alloc
-    entry = map_get(lit_pool_variant_fields(tc_lit_pool(tc)), vname)
+fn variant_field_type(tc: Tc, vname: String, i: Int, sty: String) -> String ! alloc
+    entry = map_get(lit_pool_variant_fields(tc_lit_pool(tc)), str_as_int(vname))
     if entry == 0
-        0
+        d""
     else
         v = vec_get(entry, 0)
         if i < vec_len(vec_get(v, 1))
             fty = vec_get(vec_get(v, 1), i)
             pi = type_param_index(vec_get(entry, 1), str_as_int(trim_spaces(str_from_int(fty))), 0)
             if pi < 0
-                fty
-            elsif sty == 0
-                0
+                strdup(str_from_int(fty))
+            elsif str_len(sty) == 0
+                d""
             else
-                nth_type_arg(str_from_int(sty), pi)
+                strdup(str_from_int(nth_type_arg(sty, pi)))
         else
-            0
+            d""
 
 fn type_param_index(params: Int, name: Int, i: Int) -> Int ! alloc
     if params == 0
@@ -2047,14 +2052,14 @@ fn type_param_index(params: Int, name: Int, i: Int) -> Int ! alloc
     else
         type_param_index(params, name, i + 1)
 
-fn emit_c_variant_binds(args: Int, i: Int, sname: String, stmts: Int, tc: Int, vname: Int, sty: Int) -> Int ! alloc
-    if i >= vec_len(args)
+fn emit_c_variant_binds(args: List[TPat], i: Int, sname: String, stmts: Int, tc: Tc, vname: String, sty: String) -> Int ! alloc
+    if i >= list_len(args)
         0
     else
-        sub = vec_get(args, i)
-        if vec_get(sub, 0) == 1
-            _b = vec_push(stmts, str_as_int("    int64_t " + str_from_int(vec_get(sub, 1)) + " = sal_enum_field(" + sname + ", " + int_to_str(i) + "LL);\n"))
-            _t = strenv_bind(tc_strenv(tc), vec_get(sub, 1), variant_field_type(tc, vname, i, sty))
+        sub = list_get(args, i)
+        if sub.kind == 1
+            _b = vec_push(stmts, str_as_int("    int64_t " + sub.name + " = sal_enum_field(" + sname + ", " + int_to_str(i) + "LL);\n"))
+            _t = tenv_bind(tc.env, sub.name, variant_field_type(tc, vname, i, sty))
             emit_c_variant_binds(args, i + 1, sname, stmts, tc, vname, sty)
         else
             emit_c_variant_binds(args, i + 1, sname, stmts, tc, vname, sty)
@@ -2069,59 +2074,55 @@ fn append_stmts_go(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(dst, vec_get(src, i))
         append_stmts_go(dst, src, i + 1, n)
 
-fn emit_c_block(b: Int, user: Int, stmts: Int, tc: Int) -> String ! alloc
-    if b == 0
+fn emit_c_block(b: TBlock, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    stopped = emit_c_stmts(b.stmts, 0, list_len(b.stmts), user, stmts, tc)
+    if stopped == 1
         d"0"
     else
-        stopped = emit_c_stmts(block_stmts(b), 0, vec_len(block_stmts(b)), user, stmts, tc)
-        if stopped == 1
-            d"0"
-        else
-            tail = block_tail(b)
-            if tail == 0
-                d"0"
-            else
-                emit_c_expr(tail, user, stmts, tc)
+        emit_c_expr(b.tail, user, stmts, tc)
 
-fn emit_c_stmts(sts: Int, i: Int, n: Int, user: Int, stmts: Int, tc: Int) -> Int ! alloc
+fn tc_assign_accumulates(env: TEnv, name: String, value: Expr) -> Int ! alloc
+    if tbinary_is_string_concat(env, value) == 0
+        0
+    else
+        str_eq(dx_leftmost(value), name)
+
+fn emit_c_lambda_reg(tc: Tc, name: String, value: Expr) -> Int ! alloc
+    match value
+        XLambda(param, body) => tc_lam_push(tc, name, param, body)
+        _ => 0
+
+fn emit_c_stmts(sts: List[TStmt], i: Int, n: Int, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
     if i >= n
         0
     else
-        st = vec_get(sts, i)
-        if vec_get(st, 0) == 1
-            if assign_accumulates_string(vec_get(st, 1), vec_get(st, 2), tc_strenv(tc)) == 1
-                _sa = tc_set_acc(tc, vec_get(st, 1))
+        st = list_get(sts, i)
+        if st.kind == 1
+            if tc_assign_accumulates(tc.env, st.name, st.expr) == 1
+                _sa = tc_set_acc(tc, str_as_int(st.name))
             else
                 _sa = tc_set_acc(tc, 0)
-            val = emit_c_expr(vec_get(st, 2), user, stmts, tc)
+            val = emit_c_expr(st.expr, user, stmts, tc)
             _za = tc_set_acc(tc, 0)
-            _lm = if ex_kind(vec_get(st, 2)) == EX_LAMBDA()
-                map_put(tc_lambdas(tc), vec_get(st, 1), vec_get(st, 2))
-            else
-                0
-            _ns = strenv_bind(tc_strenv(tc), vec_get(st, 1), expr_type(vec_get(st, 2), tc_strenv(tc)))
-            line = "  " + str_from_int(vec_get(st, 1)) + " = " + val + ";\n"
+            _lm = emit_c_lambda_reg(tc, st.name, st.expr)
+            _ns = tenv_bind(tc.env, st.name, texpr_type(tc.env, st.expr))
+            line = "  " + st.name + " = " + val + ";\n"
             _p = vec_push(stmts, str_as_int(line))
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
-        elsif vec_get(st, 0) == 2
-            ex = vec_get(st, 2)
-            if ex == 0
-                line = d"  return 0;\n"
-                _p = vec_push(stmts, str_as_int(line))
-            else
-                val0 = emit_c_expr(ex, user, stmts, tc)
-                line = "  return " + val0 + ";\n"
-                _p = vec_push(stmts, str_as_int(line))
+        elsif st.kind == 2
+            val0 = emit_c_expr(st.expr, user, stmts, tc)
+            line = "  return " + val0 + ";\n"
+            _p = vec_push(stmts, str_as_int(line))
             1
-        elsif vec_get(st, 0) == 3
-            _cp = emit_c_field_copy(vec_get(st, 5), user, stmts, tc)
-            lhs = emit_c_expr(vec_get(st, 5), user, stmts, tc)
-            val3 = emit_c_expr(vec_get(st, 2), user, stmts, tc)
+        elsif st.kind == 3
+            _cp = emit_c_field_copy(st.target, user, stmts, tc)
+            lhs = emit_c_expr(st.target, user, stmts, tc)
+            val3 = emit_c_expr(st.expr, user, stmts, tc)
             line = "  " + lhs + " = " + val3 + ";\n"
             _p = vec_push(stmts, str_as_int(line))
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
         else
-            val1 = emit_c_expr(vec_get(st, 2), user, stmts, tc)
+            val1 = emit_c_expr(st.expr, user, stmts, tc)
             line = "  " + val1 + ";\n"
             _p = vec_push(stmts, str_as_int(line))
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
@@ -2223,33 +2224,39 @@ fn emit_decl_names_filtered(names: Int, i: Int, n: Int, skip: Int, acc: String) 
             acc = acc + " = 0;\n"
             emit_decl_names_filtered(names, i + 1, n, skip, acc)
 
-fn emit_c_fn(f: Int, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
-    name = vec_get(f, 0)
-    body = vec_get(f, 2)
-    is_main = str_eq(str_from_int(name), d"main")
+fn emit_c_fn(f: Int, tf: TFn, user: Int, linkable: Int, allow_main: Int, pool: Int, env: TEnv) -> String ! alloc
+    is_main = str_eq(str_from_int(vec_get(f, 0)), d"main")
     acc = emit_c_fn_header(f, linkable, allow_main)
     if str_len(acc) == 0
         d""
     else
-        emit_c_fn_body(f, user, is_main, acc, pool)
+        emit_c_fn_body(tf, user, is_main, acc, pool, env)
 
-fn emit_c_fn_body(f: Int, user: Int, is_main: Int, acc: String, pool: Int) -> String ! alloc
-    name = vec_get(f, 0)
+fn emit_c_fn_body(tf: TFn, user: Int, is_main: Int, acc: String, pool: Int, env: TEnv) -> String ! alloc
     # Scope-end frees, the same pass the IR path applies.
-    body = drops_body(f, vec_get(pool, 8))
+    body = drops_body_t(tf, vec_get(pool, 8))
     names = vec_new()
     _c = collect_assigns_block(body, names)
-    skip = param_names(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), vec_new())
+    skip = tparam_names(tf.params, 0, list_len(tf.params), vec_new())
     acc = emit_decl_names_filtered(names, 0, vec_len(names), skip, acc)
     stmts = vec_new()
-    tc = tmp_counter_new(pool)
-    _sp = seed_string_params(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), tc_strenv(tc))
+    tc = tc_new(pool, env)
+    _sp = seed_string_params(tf.params, 0, list_len(tf.params), tc.env)
     val = emit_c_block(body, user, stmts, tc)
     acc = append_stmt_strings(acc, stmts, 0, vec_len(stmts))
     val = emit_c_matmul_exit(tc, is_main, val)
     foot = emit_c_fn_footer(is_main, val)
     acc = acc + foot
+    _fb = tp_free_block(body)
+    _fc = tc_free(tc)
     acc
+
+fn tparam_names(params: List[TParam], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _p = vec_push(out, str_as_int(list_get(params, i).name))
+        tparam_names(params, i + 1, n, out)
 
 fn emit_forward_params(params: Int) -> String ! alloc
     if vec_len(params) == 0
@@ -2297,32 +2304,27 @@ fn append_stmt_strings(acc: String, stmts: Int, i: Int, n: Int) -> String ! allo
         acc = acc + str_from_int(vec_get(stmts, i))
         append_stmt_strings(acc, stmts, i + 1, n)
 
-fn emit_c_one_fn(f: Int, irf: Int, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
+fn emit_c_one_fn(f: Int, tf: TFn, irf: Int, user: Int, linkable: Int, allow_main: Int, pool: Int, env: TEnv) -> String ! alloc
     if irf == 0
-        emit_c_fn(f, user, linkable, allow_main, pool)
+        emit_c_fn(f, tf, user, linkable, allow_main, pool, env)
     else
-        emit_c_one_ir_fn(f, ti_fn(irf), user, linkable, allow_main, pool)
+        emit_c_one_ir_fn(f, tf, ti_fn(irf), user, linkable, allow_main, pool, env)
 
-fn emit_c_one_ir_fn(f: Int, tf: IrFn, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
+fn emit_c_one_ir_fn(f: Int, tf: TFn, irf: IrFn, user: Int, linkable: Int, allow_main: Int, pool: Int, env: TEnv) -> String ! alloc
     text = d""
-    if cir_is_tensor_fn(tf.insts) == 1
-        text = cir_fn(f, tf, user, linkable, allow_main, pool)
+    if cir_is_tensor_fn(irf.insts) == 1
+        text = cir_fn(f, irf, user, linkable, allow_main, pool)
     else
-        text = emit_c_fn(f, user, linkable, allow_main, pool)
-    _x = ti_free_fn_parts(tf)
+        text = emit_c_fn(f, tf, user, linkable, allow_main, pool, env)
+    _x = ti_free_fn_parts(irf)
     text
 
-fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: String, allow_main: Int, linkable: Int, pool: Int, irmod: Int) -> String ! alloc
-    idx = i
-    out = acc
-    while idx < n
-        piece = emit_c_one_fn(vec_get(fns, idx), vec_get(irmod, idx), user, linkable, allow_main, pool)
-        if str_len(piece) > 0
-            out = out + piece
-        else
-            out = out
-        idx = idx + 1
-    out
+fn emit_c_fns(fns: Int, tfns: List[TFn], i: Int, n: Int, user: Int, acc: String, allow_main: Int, linkable: Int, pool: Int, irmod: Int, env: TEnv) -> String ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_c_one_fn(vec_get(fns, i), list_get(tfns, i), vec_get(irmod, i), user, linkable, allow_main, pool, env)
+        emit_c_fns(fns, tfns, i + 1, n, user, acc + piece, allow_main, linkable, pool, irmod, env)
 
 fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: Int, linkable: Int, types: Int, env: TEnv) -> String ! alloc
     pool = lit_pool_new()
@@ -2337,7 +2339,9 @@ fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: I
     acc = emit_forward_decls(fns, 0, vec_len(fns), acc, allow_main, linkable)
     acc = acc + "\n"
     irmod = lower_program_with_types(prog, callables, env, graph_types_enums(types))
-    body = emit_c_fns(fns, 0, vec_len(fns), callables, d"", allow_main, linkable, pool, irmod)
+    tp = to_typed(prog)
+    body = emit_c_fns(fns, tp.fns, 0, vec_len(fns), callables, d"", allow_main, linkable, pool, irmod, env)
+    _tf = tp_free(tp)
     lits = lit_pool_globals(pool)
     if str_len(lits) > 0
         acc = acc + lits

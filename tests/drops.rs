@@ -347,3 +347,69 @@ fn dict_keys_list_that_escapes_is_not_freed() {
     );
     assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 0, "{ir}");
 }
+
+const NESTED_DECLS: &str = "struct P\n    name: String\n    tag: String\n\nstruct W\n    p: P\n    n: Int\n\nstruct V\n    w: W\n    label: String\n\n";
+
+#[test]
+fn nested_struct_string_fields_are_freed() {
+    let ir = ir_of(
+        "nested_struct_strings",
+        &format!("{NESTED_DECLS}fn main() -> Int ! alloc\n    w = W(P(\"a\" + \"b\", \"c\" + \"d\"), 1)\n    w.n\n"),
+    );
+    assert_eq!(frees(&ir), 2, "{ir}");
+}
+
+#[test]
+fn two_levels_of_nesting_are_freed() {
+    let ir = ir_of(
+        "nested_struct_two_levels",
+        &format!("{NESTED_DECLS}fn main() -> Int ! alloc\n    v = V(W(P(\"a\" + \"b\", \"c\" + \"d\"), 1), \"e\" + \"f\")\n    v.w.n\n"),
+    );
+    // name, tag and label.
+    assert_eq!(frees(&ir), 3, "{ir}");
+}
+
+#[test]
+fn nested_struct_read_by_value_is_not_freed_twice() {
+    let ir = ir_of(
+        "nested_struct_read",
+        &format!("{NESTED_DECLS}fn main() -> Int ! alloc\n    w = W(P(\"a\" + \"b\", \"c\" + \"d\"), 1)\n    q = w.p\n    str_len(q.name)\n"),
+    );
+    // Only `q` frees the strings; `w` gave them up when `w.p` was read.
+    assert_eq!(frees(&ir), 2, "{ir}");
+}
+
+const CONTAINER_DECLS: &str = "struct B\n    xs: List[Int]\n    raw: Bytes\n    d: Dict[String, Int]\n    n: Int\n\nstruct O\n    b: B\n    tag: String\n\n";
+
+#[test]
+fn struct_glue_releases_flat_containers_and_bytes() {
+    let ir = ir_of(
+        "glue_containers",
+        &format!("{CONTAINER_DECLS}fn main() -> Int ! alloc\n    xs = List.new[Int]()\n    xs.push(1)\n    d = Dict.new[String, Int]()\n    d.put(\"a\", 2)\n    o = O(B(xs, Bytes.new(8), d, 3), \"t\" + \"u\")\n    o.b.n\n"),
+    );
+    // The struct releases what was moved into it, through the nested `B` too. The
+    // locals `xs` and `d` keep their own release behind a moved flag.
+    assert_eq!(ir.matches("func: \"sal_bytes_free\"").count(), 1, "{ir}");
+    assert_eq!(ir.matches("func: \"sal_free\"").count(), 1, "{ir}");
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 2, "{ir}");
+    assert_eq!(ir.matches("func: \"sal_dict_free\"").count(), 2, "{ir}");
+}
+
+#[test]
+fn struct_glue_leaves_a_container_field_that_was_handed_on() {
+    let ir = ir_of(
+        "glue_handed_on",
+        "struct B\n    xs: List[Int]\n    n: Int\n\nfn take_list() -> List[Int] ! alloc\n    xs = List.new[Int]()\n    xs.push(1)\n    b = B(xs, 3)\n    b.xs\n",
+    );
+    // Only the guarded release of the local `xs`; the struct must not free `b.xs`.
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 1, "{ir}");
+}
+
+#[test]
+fn struct_glue_skips_containers_of_strings() {
+    let ir = ir_of(
+        "glue_string_list",
+        "struct B\n    names: List[String]\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = List.new[String]()\n    xs.push(\"a\" + \"b\")\n    b = B(xs, 3)\n    b.n\n",
+    );
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 1, "{ir}");
+}

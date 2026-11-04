@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::*;
 use crate::layout::{enum_variant_index, is_transparent_struct, struct_field_index};
 use crate::string_expr::{
-    add_chain_leftmost, add_left_is_fresh_call, add_right_is_fresh_temp, is_string_type, StringEnv,
+    add_chain_leftmost, add_left_is_fresh_call, add_right_is_fresh_temp, StringEnv,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -380,6 +380,7 @@ fn emit_struct_string_drops(
     param_modes: &HashMap<String, Vec<ParamMode>>,
 ) {
     let moved = moved_bindings(f, param_modes);
+    let reads = field_reads(f, strings, param_modes);
     let own_mode: HashMap<&str, ParamMode> = f
         .params
         .iter()
@@ -405,31 +406,285 @@ fn emit_struct_string_drops(
         let Some(base) = env.get(&name).cloned() else {
             continue;
         };
-        let transparent = is_transparent_struct(sdef);
-        for (i, field) in sdef.fields.iter().enumerate() {
-            if !is_string_type(&field.ty) {
-                continue;
-            }
-            let ssa = if transparent {
-                base.clone()
-            } else {
-                *counter += 1;
-                let d = format!("t{counter}");
-                instructions.push(IrInst::Extract {
-                    dest: d.clone(),
-                    base: base.clone(),
-                    struct_name: sn.clone(),
-                    field_index: i as u32,
-                });
-                d
-            };
-            instructions.push(IrInst::Call {
-                dest: None,
-                func: "sal_free".into(),
-                args: vec![ssa],
+        // A struct-valued field read by value (`q = w.p`) hands those strings to
+        // someone else: leave that local's nested structs alone (a leak, never a
+        // double free).
+        let glue = Glue {
+            nested: !reads.struct_valued.contains(&name),
+            containers: !reads.heap_moved.contains(&name),
+        };
+        free_struct_strings(&base, sdef, strings, glue, 0, counter, instructions);
+    }
+}
+
+/// Which fields of a struct local the glue may release.
+#[derive(Clone, Copy)]
+struct Glue {
+    /// Descend into struct-typed fields.
+    nested: bool,
+    /// Release `List` / `Dict` / `Bytes` fields.
+    containers: bool,
+}
+
+/// How a field of a struct is released when the struct goes out of scope.
+enum FieldDrop<'a> {
+    /// `sal_free`, `sal_list_free`, `sal_dict_free` or `sal_bytes_free` on the field.
+    Call(&'static str),
+    /// A nested struct: its own fields, recursively.
+    Struct(&'a crate::ast::StructDef),
+}
+
+/// The glue of one field type. A struct owns what was moved into it, so its
+/// `String`, `Bytes` and flat `List` / `Dict` fields are released with it.
+/// Containers of `String` are left alone: the compiler cannot tell whether every
+/// element was a fresh value, and a double free is worse than a leak.
+fn field_drop<'a>(
+    ty: &crate::ast::Type,
+    strings: &'a StringEnv,
+    glue: Glue,
+    depth: u32,
+) -> Option<FieldDrop<'a>> {
+    let flat = |t: &crate::ast::Type| {
+        matches!(t, crate::ast::Type::Named { name, args, .. }
+            if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool"))
+    };
+    let crate::ast::Type::Named { name, args, .. } = ty else {
+        return None;
+    };
+    match (name.as_str(), args.as_slice()) {
+        ("String", []) => Some(FieldDrop::Call("sal_free")),
+        ("Bytes", []) if glue.containers => Some(FieldDrop::Call("sal_bytes_free")),
+        ("List", [e]) if glue.containers && flat(e) => Some(FieldDrop::Call("sal_list_free")),
+        ("Dict", [k, v])
+            if glue.containers
+                && flat(v)
+                && matches!(k, crate::ast::Type::Named { name, args, .. }
+                    if args.is_empty() && matches!(name.as_str(), "Int" | "String")) =>
+        {
+            Some(FieldDrop::Call("sal_dict_free"))
+        }
+        (_, []) if glue.nested && depth < 8 => strings
+            .structs
+            .get(name)
+            .filter(|d| d.type_params.is_empty() && struct_has_heap(d, strings, glue, depth + 1))
+            .map(FieldDrop::Struct),
+        _ => None,
+    }
+}
+
+/// Frees the heap fields of the struct value `base` (of type `sdef`) and, when
+/// `glue.nested`, those of the structs held in its fields, recursively. A field of a
+/// transparent (single-field) struct is the value itself; otherwise it is read
+/// with `Extract`.
+fn free_struct_strings(
+    base: &str,
+    sdef: &crate::ast::StructDef,
+    strings: &StringEnv,
+    glue: Glue,
+    depth: u32,
+    counter: &mut u32,
+    instructions: &mut Vec<IrInst>,
+) {
+    let transparent = is_transparent_struct(sdef);
+    for (i, field) in sdef.fields.iter().enumerate() {
+        let Some(action) = field_drop(&field.ty, strings, glue, depth) else {
+            continue;
+        };
+        let ssa = if transparent {
+            base.to_string()
+        } else {
+            *counter += 1;
+            let d = format!("t{counter}");
+            instructions.push(IrInst::Extract {
+                dest: d.clone(),
+                base: base.to_string(),
+                struct_name: sdef.name.clone(),
+                field_index: i as u32,
             });
+            d
+        };
+        match action {
+            FieldDrop::Call(func) => instructions.push(IrInst::Call {
+                dest: None,
+                func: func.into(),
+                args: vec![ssa],
+            }),
+            FieldDrop::Struct(inner) => {
+                free_struct_strings(&ssa, inner, strings, glue, depth + 1, counter, instructions)
+            }
         }
     }
+}
+
+/// Does a struct hold anything its glue releases, directly or in a nested struct?
+fn struct_has_heap(def: &crate::ast::StructDef, strings: &StringEnv, glue: Glue, depth: u32) -> bool {
+    depth < 8
+        && def
+            .fields
+            .iter()
+            .any(|f| field_drop(&f.ty, strings, glue, depth).is_some())
+}
+
+/// What a function does with the fields of its struct locals, for the glue.
+#[derive(Default)]
+struct FieldReads {
+    /// Locals read as a whole nested struct: `q = w.p`, `f(w.p)`, `return w.p`…
+    /// (a field chain that ends in a struct-typed field and is not itself the
+    /// base of another field access).
+    struct_valued: HashSet<String>,
+    /// Locals whose `List` / `Dict` / `Bytes` field is handed on: let value,
+    /// assignment value, `return`, block tail, or an argument of a call that may
+    /// keep it. The new owner releases it, so the local must not.
+    heap_moved: HashSet<String>,
+}
+
+fn field_reads(
+    f: &FnDef,
+    strings: &StringEnv,
+    param_modes: &HashMap<String, Vec<ParamMode>>,
+) -> FieldReads {
+    struct Walk<'a> {
+        strings: &'a StringEnv,
+        modes: &'a HashMap<String, Vec<ParamMode>>,
+        out: FieldReads,
+    }
+    /// `a.f1.f2…`: the root local and the type of the last field.
+    fn chain<'a>(e: &'a Expr, fields: &mut Vec<&'a str>) -> Option<&'a str> {
+        match e {
+            Expr::Field { base, field, .. } => {
+                let root = chain(base, fields)?;
+                fields.push(field);
+                Some(root)
+            }
+            Expr::Ident { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+    impl Walk<'_> {
+        fn note(&mut self, e: &Expr, moving: bool) {
+            let mut fields = Vec::new();
+            let Some(root) = chain(e, &mut fields) else {
+                return;
+            };
+            let strings = self.strings;
+            let Some(mut cur) = strings.struct_types.get(root).and_then(|n| strings.structs.get(n)) else {
+                return;
+            };
+            for (k, fname) in fields.iter().enumerate() {
+                let Some(fd) = cur.fields.iter().find(|x| x.name == *fname) else {
+                    return;
+                };
+                let last = k + 1 == fields.len();
+                if let crate::ast::Type::Named { name, args, .. } = &fd.ty {
+                    if last && moving && matches!(name.as_str(), "List" | "Dict" | "Bytes") {
+                        self.out.heap_moved.insert(root.to_string());
+                    }
+                    if let Some(next) = strings.structs.get(name).filter(|_| args.is_empty()) {
+                        if last {
+                            self.out.struct_valued.insert(root.to_string());
+                        }
+                        cur = next;
+                        continue;
+                    }
+                }
+                return;
+            }
+        }
+        fn ex(&mut self, e: &Expr, moving: bool) {
+            match e {
+                Expr::Field { base, .. } => {
+                    self.note(e, moving);
+                    // The root of the chain has nothing more to visit unless it is a call.
+                    let mut b: &Expr = base;
+                    while let Expr::Field { base, .. } = b {
+                        b = base;
+                    }
+                    if !matches!(b, Expr::Ident { .. }) {
+                        self.ex(b, false);
+                    }
+                }
+                Expr::Call { func, args, .. } => {
+                    self.ex(func, false);
+                    let callee = match func.as_ref() {
+                        Expr::Ident { name, .. } => Some(name.as_str()),
+                        _ => None,
+                    };
+                    for (i, a) in args.iter().enumerate() {
+                        let keeps = match callee {
+                            Some(n) => match self.modes.get(n) {
+                                Some(m) => m.get(i) == Some(&ParamMode::Take),
+                                None => !crate::drops::borrows_args(n),
+                            },
+                            None => true,
+                        };
+                        self.ex(a, keeps);
+                    }
+                }
+                Expr::Binary { left, right, .. } => {
+                    self.ex(left, false);
+                    self.ex(right, false);
+                }
+                Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => {
+                    self.ex(expr, moving)
+                }
+                Expr::Block(b) | Expr::On { body: b, .. } => self.blk(b),
+                Expr::If { cond, then_block, elsifs, else_block, .. } => {
+                    self.ex(cond, false);
+                    self.blk(then_block);
+                    for a in elsifs {
+                        self.ex(&a.cond, false);
+                        self.blk(&a.body);
+                    }
+                    if let Some(b) = else_block {
+                        self.blk(b);
+                    }
+                }
+                Expr::Match { scrutinee, arms, .. } => {
+                    self.ex(scrutinee, false);
+                    for a in arms {
+                        self.ex(&a.body, true);
+                    }
+                }
+                Expr::Lambda { body, .. } => self.ex(body, true),
+                Expr::TensorLit { rows, .. } => {
+                    for r in rows {
+                        for c in r {
+                            self.ex(c, false);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn blk(&mut self, b: &Block) {
+            for st in &b.stmts {
+                match st {
+                    Stmt::Let { init, .. } => self.ex(init, true),
+                    Stmt::Expr(e) => self.ex(e, false),
+                    Stmt::Assign { target, value, .. } => {
+                        self.ex(target, false);
+                        self.ex(value, true);
+                    }
+                    Stmt::Return { value, .. } => {
+                        if let Some(v) = value {
+                            self.ex(v, true);
+                        }
+                    }
+                    Stmt::While { cond, body, .. } => {
+                        self.ex(cond, false);
+                        self.blk(body);
+                    }
+                    Stmt::Break { .. } => {}
+                }
+            }
+            if let Some(t) = &b.tail {
+                self.ex(t, true);
+            }
+        }
+    }
+    let mut w = Walk { strings, modes: param_modes, out: FieldReads::default() };
+    w.blk(&f.body);
+    w.out
 }
 
 fn moved_bindings(f: &FnDef, param_modes: &HashMap<String, Vec<ParamMode>>) -> HashSet<String> {
