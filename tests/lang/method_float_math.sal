@@ -1,0 +1,11 @@
+# exit: 83
+# selfhost-xfail: methods are Rust bootstrap only for now
+fn main() -> Int ! alloc
+    x = 16.0
+    r = x.sqrt()
+    p = r.pow(3.0)
+    a = (0.0 - 7.0).abs()
+    f = (x / 3.0).floor()
+    c = (x / 3.0).ceil()
+    s = r.to_str().len()
+    p.to_int() + a.to_int() + f.to_int() + c.to_int() + s

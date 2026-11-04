@@ -19,6 +19,8 @@ export const LEXER_WORDS = [
   "while",
   "struct",
   "enum",
+  "frame",
+  "in",
   "parallel",
   "cpu",
   "gpu",

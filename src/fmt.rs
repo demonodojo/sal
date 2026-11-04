@@ -244,7 +244,7 @@ fn format_expr(e: &Expr, indent: usize) -> String {
             args,
             ..
         } => {
-            let mut s = format_expr(func, indent);
+            let mut s = format_postfix_base(func, indent);
             if !type_args.is_empty() {
                 s.push('[');
                 for (i, t) in type_args.iter().enumerate() {
@@ -331,7 +331,7 @@ fn format_expr(e: &Expr, indent: usize) -> String {
             s
         }
         Expr::Field { base, field, .. } => {
-            format!("{}.{}", format_expr(base, indent), field)
+            format!("{}.{}", format_postfix_base(base, indent), field)
         }
         Expr::Match {
             scrutinee, arms, ..
@@ -617,6 +617,18 @@ fn expr_prec(e: &Expr) -> u8 {
         Expr::Lambda { .. } | Expr::Try { .. } => 0,
         Expr::To { .. } | Expr::Match { .. } | Expr::If { .. } | Expr::On { .. } | Expr::Block(_) => 1,
         _ => ATOM_PREC,
+    }
+}
+
+/// The base of `.field` or of a call: anything looser than a postfix
+/// (operators, prefixes, `try`, lambdas, `if`/`match`/`to`…) keeps its parentheses,
+/// so `(a - b).abs()` does not turn into `a - b.abs()`.
+fn format_postfix_base(e: &Expr, indent: usize) -> String {
+    let s = format_expr(e, indent);
+    if expr_prec(e) < ATOM_PREC || matches!(e, Expr::Unary { .. }) {
+        format!("({s})")
+    } else {
+        s
     }
 }
 

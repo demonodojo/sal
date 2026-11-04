@@ -10,13 +10,13 @@ import qualify
 import cache
 import checks
 import tshape
+import tir
 
-fn resolve_module_graph_qualified(source_path: String, proot: String) -> Int ! io, alloc
-    g = resolve_module_graph(source_path, proot)
+fn resolve_module_graph_qualified(source_path: String, proot: String, order: Graph) -> Int ! io, alloc
+    g = resolve_module_graph(source_path, proot, order)
     if result_is_err(g) == 1
         g
     else
-        order = result_payload(g)
         qualify_module_graph(order, proot)
 
 # ---- ir_to_text ----
@@ -56,21 +56,21 @@ fn emit_arg_comma(i: Int) -> String ! alloc
     else
         d""
 
-fn emit_arg_list(args: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_arg_list(args: List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         comma = emit_arg_comma(i)
         acc = acc + comma
         acc = acc + ir_q()
-        a = vec_get(args, i)
-        esc = emit_escape_arg(str_from_int(a), 0, str_len(str_from_int(a)), d"")
+        a = list_get(args, i)
+        esc = emit_escape_arg(a, 0, str_len(a), d"")
         acc = acc + esc
         acc = acc + ir_q()
         emit_arg_list(args, i + 1, n, acc)
 
-fn emit_inst(inst: Int) -> String ! alloc
-    k = vec_get(inst, 0)
+fn emit_inst(inst: Inst) -> String ! alloc
+    k = inst.kind
     if k == II_CI()
         emit_ci(inst)
     elsif k == II_CS()
@@ -108,21 +108,17 @@ fn emit_inst(inst: Int) -> String ! alloc
     else
         d""
 
-fn emit_ci(inst: Int) -> String ! alloc
-    dest = str_from_int(vec_get(inst, 1))
-    vs = int_to_str(vec_get(inst, 2))
-    "  ConstInt {{ dest: " + ir_q() + dest + ir_q() + ", value: " + vs + " }}\n"
+fn emit_ci(inst: Inst) -> String ! alloc
+    "  ConstInt {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + int_to_str(inst.n1) + " }}\n"
 
-fn emit_cs(inst: Int) -> String ! alloc
-    "  ConstString {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ", value: " + ir_q() + ir_debug_escape(vec_get(inst, 2)) + ir_q() + " }}\n"
+fn emit_cs(inst: Inst) -> String ! alloc
+    "  ConstString {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + ir_debug_escape_s(inst.s1) + ir_q() + " }}\n"
 
-fn emit_bin(inst: Int) -> String ! alloc
-    "  Binary {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ", op: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", left: " + ir_q() + str_from_int(vec_get(inst, 3)) + ir_q() + ", right: " + ir_q() + str_from_int(vec_get(inst, 4)) + ir_q() + " }}\n"
+fn emit_bin(inst: Inst) -> String ! alloc
+    "  Binary {{ dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", left: " + ir_q() + inst.s2 + ir_q() + ", right: " + ir_q() + inst.s3 + ir_q() + " }}\n"
 
-fn emit_cf(inst: Int) -> String ! alloc
-    dest = str_from_int(vec_get(inst, 1))
-    txt = str_from_int(vec_get(inst, 3))
-    "  ConstFloat {{ dest: " + ir_q() + dest + ir_q() + ", value: " + txt + " }}\n"
+fn emit_cf(inst: Inst) -> String ! alloc
+    "  ConstFloat {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + inst.s1 + " }}\n"
 
 fn emit_elem_name(code: Int) -> String ! alloc
     if code == 1
@@ -140,38 +136,31 @@ fn emit_tbin_scalar(scalar: Int) -> String ! alloc
     else
         d"false"
 
-fn emit_tbin(inst: Int) -> String ! alloc
-    dest = str_from_int(vec_get(inst, 1))
-    op = str_from_int(vec_get(inst, 2))
-    elem = emit_elem_name(vec_get(inst, 3))
-    place = str_from_int(vec_get(inst, 4))
-    left = str_from_int(vec_get(inst, 5))
-    right = str_from_int(vec_get(inst, 6))
-    len = str_from_int(vec_get(inst, 7))
-    sc = emit_tbin_scalar(vec_get(inst, 8))
-    "  TensorBin {{ dest: " + ir_q() + dest + ir_q() + ", op: " + ir_q() + op + ir_q() + ", elem: " + elem + ", place: " + ir_q() + place + ir_q() + ", left: " + ir_q() + left + ir_q() + ", right: " + ir_q() + right + ir_q() + ", len: " + ir_q() + len + ir_q() + ", right_scalar: " + sc + " }}\n"
+fn emit_tbin(inst: Inst) -> String ! alloc
+    elem = emit_elem_name(inst.n1)
+    sc = emit_tbin_scalar(inst.n2)
+    "  TensorBin {{ dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", left: " + ir_q() + inst.s3 + ir_q() + ", right: " + ir_q() + inst.s4 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + ", right_scalar: " + sc + " }}\n"
 
-fn emit_call_dest(inst: Int) -> String ! alloc
-    if vec_get(inst, 4) == 1
-        "Some(" + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ")"
+fn emit_call_dest(inst: Inst) -> String ! alloc
+    if inst.n1 == 1
+        "Some(" + ir_q() + inst.dest + ir_q() + ")"
     else
         d"None"
 
-fn emit_call(inst: Int) -> String ! alloc
+fn emit_call(inst: Inst) -> String ! alloc
     destbit = emit_call_dest(inst)
-    args = vec_get(inst, 3)
-    pref = "  Call {{ dest: " + destbit + ", func: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", args: ["
-    acc = emit_arg_list(args, 0, vec_len(args), pref)
+    pref = "  Call {{ dest: " + destbit + ", func: " + ir_q() + inst.s1 + ir_q() + ", args: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), pref)
     acc + "] }}\n"
 
-fn emit_place(inst: Int) -> String ! alloc
-    "  PlaceCopy {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ", from: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", to_place: " + ir_q() + str_from_int(vec_get(inst, 3)) + ir_q() + " }}\n"
+fn emit_place(inst: Inst) -> String ! alloc
+    "  PlaceCopy {{ dest: " + ir_q() + inst.dest + ir_q() + ", from: " + ir_q() + inst.s1 + ir_q() + ", to_place: " + ir_q() + inst.s2 + ir_q() + " }}\n"
 
-fn emit_ret(inst: Int) -> String ! alloc
-    "  Return {{ value: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + " }}\n"
+fn emit_ret(inst: Inst) -> String ! alloc
+    "  Return {{ value: " + ir_q() + inst.s1 + ir_q() + " }}\n"
 
-fn emit_drop(inst: Int) -> String ! alloc
-    "  Drop {{ name: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + " }}\n"
+fn emit_drop(inst: Inst) -> String ! alloc
+    "  Drop {{ name: " + ir_q() + inst.s1 + ir_q() + " }}\n"
 
 fn emit_if_comma(i: Int) -> String ! alloc
     if i > 0
@@ -189,13 +178,13 @@ fn trim_nl(piece: String) -> String ! alloc
     else
         piece
 
-fn emit_if_body(body: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_if_body(body: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         comma = emit_if_comma(i)
         acc = acc + comma
-        piece = emit_inst(vec_get(body, i))
+        piece = emit_inst(list_get(body, i))
         piece2 = trim_nl(piece)
         piece3 = strip_spaces(piece2)
         acc = acc + piece3
@@ -203,7 +192,6 @@ fn emit_if_body(body: Int, i: Int, n: Int, acc: String) -> String ! alloc
 
 fn strip_spaces(s: String) -> String ! alloc
     n = str_len(s)
-    i = 0
     strip_spaces_go(s, 0, n)
 
 fn strip_spaces_go(s: String, i: Int, n: Int) -> String ! alloc
@@ -214,179 +202,156 @@ fn strip_spaces_go(s: String, i: Int, n: Int) -> String ! alloc
     else
         str_slice(s, i, n)
 
-fn emit_if_inst(inst: Int) -> String ! alloc
-    tb = vec_get(inst, 3)
-    eb = vec_get(inst, 4)
-    acc = "  If {{ cond: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", then_body: ["
-    acc = emit_if_body(tb, 0, vec_len(tb), acc)
+fn emit_if_inst(inst: Inst) -> String ! alloc
+    acc = "  If {{ cond: " + ir_q() + inst.s1 + ir_q() + ", then_body: ["
+    acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
     acc = acc + "], else_body: ["
-    acc = emit_if_body(eb, 0, vec_len(eb), acc)
+    acc = emit_if_body(inst.b2, 0, list_len(inst.b2), acc)
     acc = acc + "], then_val: "
     acc = acc + ir_q()
-    acc = acc + str_from_int(vec_get(inst, 5))
+    acc = acc + inst.s2
     acc = acc + ir_q()
     acc = acc + ", else_val: "
     acc = acc + ir_q()
-    acc = acc + str_from_int(vec_get(inst, 6))
+    acc = acc + inst.s3
     acc = acc + ir_q()
     acc = acc + ", dest: "
     acc = acc + ir_q()
-    acc = acc + str_from_int(vec_get(inst, 1))
+    acc = acc + inst.dest
     acc = acc + ir_q()
-    carried = vec_get(inst, 7)
-    if vec_len(carried) > 0
+    if list_len(inst.rows) > 0
         acc = acc + ", carried: ["
-        acc = emit_carries(carried, 0, vec_len(carried), acc)
+        acc = emit_carries(inst.rows, 0, list_len(inst.rows), acc)
         acc = acc + "]"
     acc + " }}\n"
 
-fn emit_rebind(inst: Int) -> String ! alloc
-    "  TensorRebind {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ", src: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + " }}\n"
+fn emit_rebind(inst: Inst) -> String ! alloc
+    "  TensorRebind {{ dest: " + ir_q() + inst.dest + ir_q() + ", src: " + ir_q() + inst.s1 + ir_q() + " }}\n"
 
-fn emit_extract(inst: Int) -> String ! alloc
-    "  Extract {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ", base: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", struct_name: " + ir_q() + str_from_int(vec_get(inst, 3)) + ir_q() + ", field_index: " + int_to_str(vec_get(inst, 4)) + " }}\n"
+fn emit_extract(inst: Inst) -> String ! alloc
+    "  Extract {{ dest: " + ir_q() + inst.dest + ir_q() + ", base: " + ir_q() + inst.s1 + ir_q() + ", struct_name: " + ir_q() + inst.s2 + ir_q() + ", field_index: " + int_to_str(inst.n1) + " }}\n"
 
-fn emit_emake(inst: Int) -> String ! alloc
-    payload = vec_get(inst, 4)
-    acc = "  EnumMake {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q()
-    acc = acc + ", enum_name: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q()
-    acc = acc + ", variant_index: " + int_to_str(vec_get(inst, 3)) + ", payload: ["
-    acc = emit_arg_list(payload, 0, vec_len(payload), acc)
-    acc + "], owned: " + int_to_str(vec_get(inst, 5)) + " }}\n"
+fn emit_emake(inst: Inst) -> String ! alloc
+    acc = "  EnumMake {{ dest: " + ir_q() + inst.dest + ir_q()
+    acc = acc + ", enum_name: " + ir_q() + inst.s1 + ir_q()
+    acc = acc + ", variant_index: " + int_to_str(inst.n1) + ", payload: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), acc)
+    acc + "], owned: " + int_to_str(inst.n2) + " }}\n"
 
-fn emit_efield(inst: Int) -> String ! alloc
-    "  EnumField {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + ", value: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", index: " + int_to_str(vec_get(inst, 3)) + " }}\n"
+fn emit_efield(inst: Inst) -> String ! alloc
+    "  EnumField {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + inst.s1 + ir_q() + ", index: " + int_to_str(inst.n1) + " }}\n"
 
-fn emit_switch(inst: Int) -> String ! alloc
-    arms = vec_get(inst, 3)
-    db = vec_get(inst, 4)
-    acc = "  Switch {{ scrut: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", arms: ["
-    acc = emit_switch_arms(arms, 0, vec_len(arms), acc)
+fn emit_switch(inst: Inst) -> String ! alloc
+    acc = "  Switch {{ scrut: " + ir_q() + inst.s1 + ir_q() + ", arms: ["
+    acc = emit_switch_arms(inst.rows, 0, list_len(inst.rows), acc)
     acc = acc + "], default_body: ["
-    acc = emit_if_body(db, 0, vec_len(db), acc)
-    acc = acc + "], default_val: " + ir_q() + str_from_int(vec_get(inst, 5)) + ir_q()
-    acc + ", dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q() + " }}\n"
+    acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
+    acc = acc + "], default_val: " + ir_q() + inst.s2 + ir_q()
+    acc + ", dest: " + ir_q() + inst.dest + ir_q() + " }}\n"
 
-fn emit_switch_arms(arms: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_switch_arms(arms: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        a = vec_get(arms, i)
-        body = vec_get(a, 1)
+        a = list_get(arms, i)
         acc = acc + emit_if_comma(i)
-        acc = acc + "SwitchArm {{ tag: " + int_to_str(vec_get(a, 0)) + ", body: ["
-        acc = emit_if_body(body, 0, vec_len(body), acc)
-        acc = acc + "], value: " + ir_q() + str_from_int(vec_get(a, 2)) + ir_q() + " }}"
+        acc = acc + "SwitchArm {{ tag: " + int_to_str(a.n1) + ", body: ["
+        acc = emit_if_body(a.b1, 0, list_len(a.b1), acc)
+        acc = acc + "], value: " + ir_q() + a.s1 + ir_q() + " }}"
         emit_switch_arms(arms, i + 1, n, acc)
 
-fn emit_agg(inst: Int) -> String ! alloc
-    fields = vec_get(inst, 3)
-    acc = "  Aggregate {{ dest: " + ir_q() + str_from_int(vec_get(inst, 1)) + ir_q()
-    acc = acc + ", struct_name: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", fields: ["
-    acc = emit_arg_list(fields, 0, vec_len(fields), acc)
+fn emit_agg(inst: Inst) -> String ! alloc
+    acc = "  Aggregate {{ dest: " + ir_q() + inst.dest + ir_q()
+    acc = acc + ", struct_name: " + ir_q() + inst.s1 + ir_q() + ", fields: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), acc)
     acc + "] }}\n"
 
-fn emit_while_inst(inst: Int) -> String ! alloc
-    ci = vec_get(inst, 1)
-    bd = vec_get(inst, 3)
+fn emit_while_inst(inst: Inst) -> String ! alloc
     acc = "  While {{ cond_insts: ["
-    acc = emit_if_body(ci, 0, vec_len(ci), acc)
-    acc = acc + "], cond: " + ir_q() + str_from_int(vec_get(inst, 2)) + ir_q() + ", body: ["
-    acc = emit_if_body(bd, 0, vec_len(bd), acc)
+    acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
+    acc = acc + "], cond: " + ir_q() + inst.s1 + ir_q() + ", body: ["
+    acc = emit_if_body(inst.b2, 0, list_len(inst.b2), acc)
     acc = acc + "]"
-    carried = vec_get(inst, 4)
-    if vec_len(carried) > 0
+    if list_len(inst.rows) > 0
         acc = acc + ", carried: ["
-        acc = emit_while_carries(carried, 0, vec_len(carried), acc)
+        acc = emit_while_carries(inst.rows, 0, list_len(inst.rows), acc)
         acc = acc + "]"
     acc + " }}\n"
 
-fn emit_while_carries(cs: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_while_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        c = vec_get(cs, i)
+        c = list_get(cs, i)
         acc = acc + emit_if_comma(i)
-        acc = acc + "WhileCarry {{ dest: " + ir_q() + str_from_int(vec_get(c, 0)) + ir_q()
-        acc = acc + ", incoming: " + ir_q() + str_from_int(vec_get(c, 1)) + ir_q()
-        acc = acc + ", updated: " + ir_q() + str_from_int(vec_get(c, 2)) + ir_q() + " }}"
+        acc = acc + "WhileCarry {{ dest: " + ir_q() + c.dest + ir_q()
+        acc = acc + ", incoming: " + ir_q() + c.s1 + ir_q()
+        acc = acc + ", updated: " + ir_q() + c.s2 + ir_q() + " }}"
         emit_while_carries(cs, i + 1, n, acc)
 
-fn emit_carries(cs: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        c = vec_get(cs, i)
+        c = list_get(cs, i)
         acc = acc + emit_if_comma(i)
-        acc = acc + "IfCarry {{ dest: " + ir_q() + str_from_int(vec_get(c, 0)) + ir_q()
-        acc = acc + ", then_val: " + ir_q() + str_from_int(vec_get(c, 1)) + ir_q()
-        acc = acc + ", else_val: " + ir_q() + str_from_int(vec_get(c, 2)) + ir_q() + " }}"
+        acc = acc + "IfCarry {{ dest: " + ir_q() + c.dest + ir_q()
+        acc = acc + ", then_val: " + ir_q() + c.s1 + ir_q()
+        acc = acc + ", else_val: " + ir_q() + c.s2 + ir_q() + " }}"
         emit_carries(cs, i + 1, n, acc)
 
 fn emit_fused_word(fused: Int) -> String ! alloc
     select_str(fused == 1, d"true", d"false")
 
-fn emit_peak_bytes(r: Int) -> String ! alloc
-    has_peak = vec_get(r, 3)
-    place = vec_get(r, 0)
-    peak = vec_get(r, 5)
-    if has_peak == 1
-        "{{\"" + str_from_int(place) + "\": " + int_to_str(peak) + "}}"
+fn emit_peak_bytes(r: Region) -> String ! alloc
+    if r.has_peak == 1
+        "{{\"" + r.place + "\": " + int_to_str(r.peak) + "}}"
     else
         d"{{}}"
 
-fn emit_peak_sym(r: Int) -> String ! alloc
-    has_sym = vec_get(r, 4)
-    place = vec_get(r, 0)
-    peak_sym = vec_get(r, 6)
-    if has_sym == 1
-        " peak_symbolic={{\"" + str_from_int(place) + "\": \"" + str_from_int(peak_sym) + "\"}}"
+fn emit_peak_sym(r: Region) -> String ! alloc
+    if r.has_sym == 1
+        " peak_symbolic={{\"" + r.place + "\": \"" + r.peak_sym + "\"}}"
     else
         d""
 
-fn emit_region(r: Int) -> String ! alloc
-    place = vec_get(r, 0)
-    fused = vec_get(r, 2)
-    fw = emit_fused_word(fused)
+fn emit_region(r: Region) -> String ! alloc
+    fw = emit_fused_word(r.fused)
     pb = emit_peak_bytes(r)
     ps = emit_peak_sym(r)
-    acc = "  region on " + str_from_int(place) + " fused=" + fw + " peak_bytes=" + pb + ps + "\n"
-    ops = vec_get(r, 1)
-    emit_region_ops(ops, 0, vec_len(ops), acc)
+    acc = "  region on " + r.place + " fused=" + fw + " peak_bytes=" + pb + ps + "\n"
+    emit_region_ops(r.ops, 0, list_len(r.ops), acc)
 
-fn emit_op_matmul(op: Int) -> String ! alloc
-    "    Matmul {{ lhs: " + ir_q() + str_from_int(vec_get(op, 1)) + ir_q() + ", rhs: " + ir_q() + str_from_int(vec_get(op, 2)) + ir_q() + ", dest: " + ir_q() + str_from_int(vec_get(op, 3)) + ir_q() + " }}\n"
+fn emit_op_matmul(op: FOp) -> String ! alloc
+    "    Matmul {{ lhs: " + ir_q() + op.a + ir_q() + ", rhs: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }}\n"
 
-fn emit_op_epilogue(op: Int) -> String ! alloc
-    "    MapEpilogue {{ op: " + ir_q() + str_from_int(vec_get(op, 1)) + ir_q() + ", input: " + ir_q() + str_from_int(vec_get(op, 2)) + ir_q() + ", dest: " + ir_q() + str_from_int(vec_get(op, 3)) + ir_q() + " }}  # fused epilogue, no intermediate buffer\n"
+fn emit_op_epilogue(op: FOp) -> String ! alloc
+    "    MapEpilogue {{ op: " + ir_q() + op.a + ir_q() + ", input: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }}  # fused epilogue, no intermediate buffer\n"
 
-fn emit_op_softmax(op: Int) -> String ! alloc
-    "    Softmax {{ input: " + ir_q() + str_from_int(vec_get(op, 1)) + ir_q() + ", dest: " + ir_q() + str_from_int(vec_get(op, 3)) + ir_q() + " }}\n"
+fn emit_op_softmax(op: FOp) -> String ! alloc
+    "    Softmax {{ input: " + ir_q() + op.a + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }}\n"
 
-fn emit_column_scalar(op: Int) -> String ! alloc
-    if vec_len(op) > 5
-        scalar = vec_get(op, 5)
-        if scalar == 0
+fn emit_column_scalar(op: FOp) -> String ! alloc
+    if op.nslots > 5
+        if str_len(op.scalar) == 0
             d"None"
         else
-            d"Some(" + ir_q() + str_from_int(scalar) + ir_q() + ")"
+            d"Some(" + ir_q() + op.scalar + ir_q() + ")"
     else
-        opn = str_from_int(vec_get(op, 1))
-        if str_eq(opn, d"mul") == 1
-            rhs = str_from_int(vec_get(op, 3))
-            if str_eq(rhs, d"tmp") == 1
+        if str_eq(op.a, d"mul") == 1
+            if str_eq(op.c, d"tmp") == 1
                 d"Some(" + ir_q() + d"tmp" + ir_q() + ")"
             else
                 d"None"
         else
             d"None"
 
-fn emit_op_column(op: Int) -> String ! alloc
+fn emit_op_column(op: FOp) -> String ! alloc
     sc = emit_column_scalar(op)
-    "    ColumnBin {{ op: " + ir_q() + str_from_int(vec_get(op, 1)) + ir_q() + ", left: " + ir_q() + str_from_int(vec_get(op, 2)) + ir_q() + ", right: " + ir_q() + str_from_int(vec_get(op, 3)) + ir_q() + ", dest: " + ir_q() + str_from_int(vec_get(op, 4)) + ir_q() + ", scalar: " + sc + " }}\n"
+    "    ColumnBin {{ op: " + ir_q() + op.a + ir_q() + ", left: " + ir_q() + op.b + ir_q() + ", right: " + ir_q() + op.c + ir_q() + ", dest: " + ir_q() + op.d + ir_q() + ", scalar: " + sc + " }}\n"
 
-fn emit_one_op(op: Int) -> String ! alloc
-    k = vec_get(op, 0)
+fn emit_one_op(op: FOp) -> String ! alloc
+    k = op.kind
     if k == FO_MATMUL()
         emit_op_matmul(op)
     elsif k == FO_EPILOGUE()
@@ -398,11 +363,11 @@ fn emit_one_op(op: Int) -> String ! alloc
     else
         d""
 
-fn emit_region_ops(ops: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_region_ops(ops: List[FOp], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        piece = emit_one_op(vec_get(ops, i))
+        piece = emit_one_op(list_get(ops, i))
         acc2 = acc + piece
         emit_region_ops(ops, i + 1, n, acc2)
 
@@ -412,7 +377,7 @@ fn emit_dim_comma(i: Int) -> String ! alloc
     else
         d""
 
-fn emit_dim_params(dps: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_dim_params(dps: List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -420,58 +385,55 @@ fn emit_dim_params(dps: Int, i: Int, n: Int, acc: String) -> String ! alloc
         acc = acc + comma
         q = qquote()
         acc = acc + q
-        acc = acc + str_from_int(vec_get(dps, i))
+        acc = acc + list_get(dps, i)
         acc = acc + q
         emit_dim_params(dps, i + 1, n, acc)
 
-fn emit_dim_section(dps: Int) -> String ! alloc
-    if vec_len(dps) > 0
+fn emit_dim_section(dps: List[String]) -> String ! alloc
+    if list_len(dps) > 0
         acc = d"  dim_params=["
-        acc = emit_dim_params(dps, 0, vec_len(dps), acc)
+        acc = emit_dim_params(dps, 0, list_len(dps), acc)
         acc = acc + "]\n"
         acc
     else
         d""
 
-fn emit_fn(irf: Int) -> String ! alloc
-    name = vec_get(irf, 0)
-    dps = vec_get(irf, 1)
-    insts = vec_get(irf, 2)
-    regions = vec_get(irf, 3)
-    dims = emit_dim_section(dps)
-    acc = "fn " + str_from_int(name) + ":\n" + dims
-    acc = emit_insts(insts, 0, vec_len(insts), acc)
-    emit_regions(regions, 0, vec_len(regions), acc)
+fn emit_fn(irf: IrFn) -> String ! alloc
+    dims = emit_dim_section(irf.dps)
+    acc = "fn " + irf.name + ":\n" + dims
+    acc = emit_insts(irf.insts, 0, list_len(irf.insts), acc)
+    emit_regions(irf.regions, 0, list_len(irf.regions), acc)
 
-fn emit_insts(insts: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_insts(insts: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        piece = emit_inst(vec_get(insts, i))
+        piece = emit_inst(list_get(insts, i))
         acc = acc + piece
-        # free(piece)
         emit_insts(insts, i + 1, n, acc)
 
-fn emit_regions(regions: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_regions(regions: List[Region], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        piece = emit_region(vec_get(regions, i))
+        piece = emit_region(list_get(regions, i))
         acc = acc + piece
-        # free(piece)
         emit_regions(regions, i + 1, n, acc)
 
+# The IR module is a vec of function handles; it is read through its typed copy.
 fn ir_to_text(mod: Int) -> String ! alloc
-    emit_fns(mod, 0, vec_len(mod), d"")
+    fns = ti_module(mod)
+    text = emit_fns(fns, 0, list_len(fns), d"")
+    _f = ti_free_module(fns)
+    text
 
-fn emit_fns(mod: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_fns(fns: List[IrFn], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        piece = emit_fn(vec_get(mod, i))
+        piece = emit_fn(list_get(fns, i))
         acc = acc + piece
-        # free(piece)
-        emit_fns(mod, i + 1, n, acc)
+        emit_fns(fns, i + 1, n, acc)
 
 fn emit_ir_from_prog(prog: Int) -> String ! alloc
     emit_ir_from_prog_with_extra(prog, vec_new())
@@ -486,8 +448,8 @@ fn emit_ir_from_prog_with_types(prog: Int, extra: Int, types: Int) -> String ! a
 
 # Types visible across the module graph: `[fnrets, structs]`, the mirror of the
 # bootstrap's StringEnv::from_module_graph.
-fn graph_types(order: Int) -> Int ! alloc
-    n = vec_len(order)
+fn graph_types(order: Graph) -> Int ! alloc
+    n = list_len(order.mods)
     fr = graph_fnrets(order, 0, n, map_new())
     sm = graph_structs(order, 0, n, vec_new())
     em = graph_enums(order, 0, n, vec_new())
@@ -506,27 +468,27 @@ fn graph_types_structs(types: Int) -> Int ! alloc
 fn graph_types_enums(types: Int) -> Int ! alloc
     vec_get(types, 2)
 
-fn graph_enums(order: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn graph_enums(order: Graph, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        es = prog_enums(mod_prog(vec_get(order, i)))
+        es = prog_enums(mod_h(order, i))
         _p = vec_push_all(out, es, 0, vec_len(es))
         graph_enums(order, i + 1, n, out)
 
-fn graph_fnrets(order: Int, i: Int, n: Int, m: Int) -> Int ! alloc
+fn graph_fnrets(order: Graph, i: Int, n: Int, m: Int) -> Int ! alloc
     if i >= n
         m
     else
-        fns = prog_fns(mod_prog(vec_get(order, i)))
+        fns = prog_fns(mod_h(order, i))
         _f = fnret_map_fill(m, fns, 0, vec_len(fns))
         graph_fnrets(order, i + 1, n, m)
 
-fn graph_structs(order: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn graph_structs(order: Graph, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        sts = prog_structs(mod_prog(vec_get(order, i)))
+        sts = prog_structs(mod_h(order, i))
         _p = vec_push_all(out, sts, 0, vec_len(sts))
         graph_structs(order, i + 1, n, out)
 
@@ -537,33 +499,32 @@ fn vec_push_all(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(dst, vec_get(src, i))
         vec_push_all(dst, src, i + 1, n)
 
-fn dep_fn_names(order: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn dep_fn_names(order: Graph, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        m = vec_get(order, i)
-        out2 = append_fn_names_from_prog(mod_prog(m), out)
+        out2 = append_fn_names_from_prog(mod_h(order, i), out)
         dep_fn_names(order, i + 1, n, out2)
 
-fn emit_ir_from_graph(order_in: Int, source_path: String) -> Int ! alloc
+fn emit_ir_from_graph(order: Graph, source_path: String) -> Int ! alloc
     _p = source_path
-    order = module_order_vec(order_in)
-    n = vec_len(order)
+    n = list_len(order.mods)
     extra = vec_new()
     if n > 1
         extra = dep_fn_names(order, 0, n - 1, extra)
     else
         extra = extra
-    root_prog = graph_root_prog(order_in)
+    root_prog = graph_root_prog(order)
     result_ok_str(emit_ir_from_prog_with_types(root_prog, extra, graph_types(order)))
 
 fn emit_ir_from_path(source_path: String) -> Int ! io, alloc
     proot = project_root()
-    g = resolve_module_graph_qualified(source_path, proot)
+    order = graph_new()
+    g = resolve_module_graph_qualified(source_path, proot, order)
     if result_is_err(g) == 1
         g
     else
-        emit_ir_from_graph(result_payload(g), source_path)
+        emit_ir_from_graph(order, source_path)
 
 fn emit_ir_single_file(src: String) -> Int ! io, alloc
     pre = preprocess(src)
@@ -590,7 +551,8 @@ fn emit_ir_single_file(src: String) -> Int ! io, alloc
 fn emit_ir_imported_file(source_path: String, src: String) -> Int ! io, alloc
     dir = cache_dir()
     _m = cache_mkdir(dir)
-    g = resolve_module_graph_qualified(source_path, project_root())
+    order = graph_new()
+    g = resolve_module_graph_qualified(source_path, project_root(), order)
     if result_is_err(g) == 1
         g
     else
@@ -602,7 +564,7 @@ fn emit_ir_imported_file(source_path: String, src: String) -> Int ! io, alloc
             _w = write_file(metapath, d"hit=1\n")
             result_ok_str(cached)
         else
-            ir1 = emit_ir_from_graph(result_payload(g), source_path)
+            ir1 = emit_ir_from_graph(order, source_path)
             if result_is_err(ir1) == 1
                 ir1
             else
@@ -666,11 +628,11 @@ fn emit_c_for_file(source_path: String, src: String, out_path: String) -> Int ! 
 
 fn emit_c_from_path(source_path: String, out_path: String) -> Int ! io, alloc
     proot = project_root()
-    g = resolve_module_graph_qualified(source_path, proot)
+    graph = graph_new()
+    g = resolve_module_graph_qualified(source_path, proot, graph)
     if result_is_err(g) == 1
         g
     else
-        graph = result_payload(g)
         chk = check_all_modules(graph, proot)
         if result_is_err(chk) == 1
             chk
@@ -679,8 +641,7 @@ fn emit_c_from_path(source_path: String, out_path: String) -> Int ! io, alloc
             emit_c_compile_graph(graph, root_key, out_path, proot)
 
 # Rust `{:?}` escaping of a string body (quotes are added by the caller).
-fn ir_debug_escape(h: Int) -> String ! alloc
-    s = str_from_int(h)
+fn ir_debug_escape_s(s: String) -> String ! alloc
     ir_debug_escape_go(s, 0, str_len(s), d"")
 
 fn ir_debug_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
@@ -2310,10 +2271,17 @@ fn append_stmt_strings(acc: String, stmts: Int, i: Int, n: Int) -> String ! allo
 fn emit_c_one_fn(f: Int, irf: Int, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
     if irf == 0
         emit_c_fn(f, user, linkable, allow_main, pool)
-    elsif cir_is_tensor_fn(vec_get(irf, 2)) == 1
-        cir_fn(f, irf, user, linkable, allow_main, pool)
     else
-        emit_c_fn(f, user, linkable, allow_main, pool)
+        emit_c_one_ir_fn(f, ti_fn(irf), user, linkable, allow_main, pool)
+
+fn emit_c_one_ir_fn(f: Int, tf: IrFn, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
+    text = d""
+    if cir_is_tensor_fn(tf.insts) == 1
+        text = cir_fn(f, tf, user, linkable, allow_main, pool)
+    else
+        text = emit_c_fn(f, user, linkable, allow_main, pool)
+    _x = ti_free_fn_parts(tf)
+    text
 
 fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: String, allow_main: Int, linkable: Int, pool: Int, irmod: Int) -> String ! alloc
     idx = i
@@ -2385,7 +2353,7 @@ fn obj_list_prefix(obj_list: String) -> String ! alloc
     else
         obj_list
 
-fn emit_c_compile_graph_go(graph: Int, i: Int, n: Int, root_key: Int, proot: String, out_path: String, obj_list: String, types: Int) -> Int ! io, alloc
+fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot: String, out_path: String, obj_list: String, types: Int) -> Int ! io, alloc
     if i >= n
         lrc = call_link_objs(obj_list, out_path)
         if lrc == 0
@@ -2393,16 +2361,15 @@ fn emit_c_compile_graph_go(graph: Int, i: Int, n: Int, root_key: Int, proot: Str
         else
             result_err_str(d"link failed")
     else
-        m = vec_get(graph, i)
-        is_root = str_eq(mod_key(m), root_key)
+        is_root = str_eq(mod_key_at(graph, i), root_key)
         allow_main = is_root
-        cstep = callable_fn_names(m, graph, proot)
+        cstep = callable_fn_names(graph, i, proot)
         if result_is_err(cstep) == 1
             cstep
         else
             callables = result_unwrap(cstep)
-            externs = extern_fn_arity(m, graph, callables)
-            ccode = emit_c_from_ast_module(mod_prog(m), callables, externs, allow_main, 1, types)
+            externs = extern_fn_arity(graph, i, callables)
+            ccode = emit_c_from_ast_module(mod_h(graph, i), callables, externs, allow_main, 1, types)
             cpath = tmp_path("m" + int_to_str(i) + ".c")
             opath = tmp_path("m" + int_to_str(i) + ".o")
             _w = write_file(cpath, ccode)
@@ -2413,9 +2380,8 @@ fn emit_c_compile_graph_go(graph: Int, i: Int, n: Int, root_key: Int, proot: Str
                 objs2 = prefix + opath
                 emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2, types)
 
-fn emit_c_compile_graph(graph_in: Int, root_key: Int, out_path: String, proot: String) -> Int ! io, alloc
-    order = module_order_vec(graph_in)
-    emit_c_compile_graph_go(order, 0, vec_len(order), root_key, proot, out_path, d"", graph_types(order))
+fn emit_c_compile_graph(order: Graph, root_key: String, out_path: String, proot: String) -> Int ! io, alloc
+    emit_c_compile_graph_go(order, 0, list_len(order.mods), root_key, proot, out_path, d"", graph_types(order))
 
 fn emit_c(src: String) -> Int ! alloc
     emit_c_from_prog_result(src)
@@ -2510,12 +2476,26 @@ fn cir_set(cc: Int, dest: Int, rhs: String) -> Int ! alloc
 fn cir_tn_alloc(n: String) -> String ! alloc
     "((int64_t)(uintptr_t)sal_tn_alloc(" + n + "))"
 
-fn cir_call(cc: Int, inst: Int) -> Int ! alloc
-    dest = vec_get(inst, 1)
-    fname = str_from_int(vec_get(inst, 2))
-    args = vec_get(inst, 3)
+# A handle for an operand text that outlives the typed IR (0 for the empty text).
+fn ih(s: String) -> Int ! alloc
+    if str_len(s) == 0
+        0
+    else
+        str_as_int(strdup(s))
+
+fn ih_vec(xs: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _p = vec_push(out, ih(list_get(xs, i)))
+        ih_vec(xs, i + 1, n, out)
+
+fn cir_call(cc: Int, inst: Inst) -> Int ! alloc
+    dest = ih(inst.dest)
+    fname = inst.s1
+    args = ih_vec(inst.strs, 0, list_len(inst.strs), vec_new())
     ops = cir_ops(cc, args, 0, vec_len(args), vec_new())
-    if vec_get(inst, 4) == 0
+    if inst.n1 == 0
         cir_call_free(cc, fname, ops)
     else
         cir_call_dest(cc, dest, fname, args, ops)
@@ -2673,18 +2653,18 @@ fn cir_attention(cc: Int, dest: Int, ops: Int) -> Int ! alloc
     guard = "(" + cir_arg(ops, 0) + ") && (" + cir_arg(ops, 1) + ") && (" + cir_arg(ops, 2) + ")"
     cc_line(cc, "  if (" + guard + ") " + cir_rt(cc, d"sal_attention_f32", argv) + ";\n")
 
-fn cir_tbin(cc: Int, inst: Int) -> Int ! alloc
-    dest = vec_get(inst, 1)
-    op = str_from_int(vec_get(inst, 2))
-    d = str_from_int(dest)
-    len = cir_op(cc, vec_get(inst, 7))
-    left = cir_op(cc, vec_get(inst, 5))
-    right = cir_op(cc, vec_get(inst, 6))
-    scalar = vec_get(inst, 8)
+fn cir_tbin(cc: Int, inst: Inst) -> Int ! alloc
+    dest = ih(inst.dest)
+    op = inst.s1
+    d = inst.dest
+    len = cir_op(cc, ih(inst.s5))
+    left = cir_op(cc, ih(inst.s3))
+    right = cir_op(cc, ih(inst.s4))
+    scalar = inst.n2
     sval = d"0"
     rarg = right
     if scalar == 1
-        sval = cir_float_text(cc, vec_get(inst, 6))
+        sval = cir_float_text(cc, ih(inst.s4))
         rarg = d"0"
     code = cir_tbin_code(op)
     is_cmp = cir_tbin_is_cmp(op)
@@ -2692,7 +2672,7 @@ fn cir_tbin(cc: Int, inst: Int) -> Int ! alloc
     _a = cc_line(cc, "  " + d + " = (int64_t)(uintptr_t)sal_tn_alloc_bytes(" + len + ", " + elem_sz + ");\n")
     argv = vec_new()
     _p0 = vec_push(argv, str_as_int(int_to_str(code)))
-    _p1 = vec_push(argv, str_as_int(d))
+    _p1 = vec_push(argv, str_as_int(strdup(d)))
     _p2 = vec_push(argv, str_as_int(left))
     _p3 = vec_push(argv, str_as_int(rarg))
     _p4 = vec_push(argv, str_as_int(len))
@@ -2744,39 +2724,39 @@ fn cir_tbin_is_cmp(op: String) -> Int ! alloc
     else
         0
 
-fn cir_insts(cc: Int, insts: Int, i: Int, n: Int) -> Int ! alloc
+fn cir_insts(cc: Int, insts: List[Inst], i: Int, n: Int) -> Int ! alloc
     idx = i
     while idx < n
-        _x = cir_inst(cc, vec_get(insts, idx))
+        _x = cir_inst(cc, list_get(insts, idx))
         idx = idx + 1
     0
 
-fn cir_inst(cc: Int, inst: Int) -> Int ! alloc
-    k = vec_get(inst, 0)
-    dest = vec_get(inst, 1)
+fn cir_inst(cc: Int, inst: Inst) -> Int ! alloc
+    k = inst.kind
+    dest = ih(inst.dest)
     if k == II_CI()
-        _m = map_put(vec_get(cc, 3), dest, vec_get(inst, 2))
-        cir_set(cc, dest, int_to_str(vec_get(inst, 2)))
+        _m = map_put(vec_get(cc, 3), dest, inst.n1)
+        cir_set(cc, dest, int_to_str(inst.n1))
     elsif k == II_CS()
         _m = map_put(vec_get(cc, 5), dest, 1)
-        cir_set(cc, dest, ensure_sal_lit(vec_get(inst, 2), vec_get(cc, 0)))
+        cir_set(cc, dest, ensure_sal_lit(str_as_int(strdup(inst.s1)), vec_get(cc, 0)))
     elsif k == II_CF()
-        _m = map_put(vec_get(cc, 4), dest, vec_get(inst, 3))
+        _m = map_put(vec_get(cc, 4), dest, str_as_int(strdup(inst.s1)))
         cir_set(cc, dest, d"0")
     elsif k == II_BIN()
-        cir_binary(cc, dest, str_from_int(vec_get(inst, 2)), cir_op(cc, vec_get(inst, 3)), cir_op(cc, vec_get(inst, 4)))
+        cir_binary(cc, dest, inst.s1, cir_op(cc, ih(inst.s2)), cir_op(cc, ih(inst.s3)))
     elsif k == II_CALL()
         cir_call(cc, inst)
     elsif k == II_TBIN()
         cir_tbin(cc, inst)
     elsif k == II_REBIND()
-        cir_set(cc, dest, cir_op(cc, vec_get(inst, 2)))
+        cir_set(cc, dest, cir_op(cc, ih(inst.s1)))
     elsif k == II_PLACE()
-        cir_set(cc, dest, "(int64_t)(uintptr_t)sal_tn_copy(" + cir_op(cc, vec_get(inst, 2)) + ")")
+        cir_set(cc, dest, "(int64_t)(uintptr_t)sal_tn_copy(" + cir_op(cc, ih(inst.s1)) + ")")
     elsif k == II_DROP()
         0
     elsif k == II_RET()
-        cir_ret(cc, vec_get(inst, 1))
+        cir_ret(cc, ih(inst.s1))
     elsif k == II_IF()
         cir_if(cc, inst)
     elsif k == II_WHILE()
@@ -2784,14 +2764,14 @@ fn cir_inst(cc: Int, inst: Int) -> Int ! alloc
     elsif k == II_AGG()
         cir_agg(cc, inst)
     elsif k == II_EXTRACT()
-        cir_set(cc, dest, "((int64_t *)(uintptr_t)(" + cir_op(cc, vec_get(inst, 2)) + "))[" + int_to_str(vec_get(inst, 4)) + "]")
+        cir_set(cc, dest, "((int64_t *)(uintptr_t)(" + cir_op(cc, ih(inst.s1)) + "))[" + int_to_str(inst.n1) + "]")
     else
         0
 
-fn cir_agg(cc: Int, inst: Int) -> Int ! alloc
-    fields = vec_get(inst, 3)
+fn cir_agg(cc: Int, inst: Inst) -> Int ! alloc
+    fields = ih_vec(inst.strs, 0, list_len(inst.strs), vec_new())
     ops = cir_ops(cc, fields, 0, vec_len(fields), vec_new())
-    cir_set(cc, vec_get(inst, 1), emit_c_struct_ctor(ops))
+    cir_set(cc, ih(inst.dest), emit_c_struct_ctor(ops))
 
 fn cir_ret(cc: Int, v: Int) -> Int ! alloc
     q = vec_get(cc, 7)
@@ -2805,18 +2785,16 @@ fn cir_ret(cc: Int, v: Int) -> Int ! alloc
     else
         cc_line(cc, "  return " + val + ";\n")
 
-fn cir_if(cc: Int, inst: Int) -> Int ! alloc
-    dest = vec_get(inst, 1)
-    _a = cc_line(cc, "  if (" + cir_op(cc, vec_get(inst, 2)) + ") {{\n")
-    tb = vec_get(inst, 3)
-    _b = cir_insts(cc, tb, 0, vec_len(tb))
-    _c = cir_if_assign(cc, dest, vec_get(inst, 5))
-    _d = cir_carry_assign(cc, vec_get(inst, 7), 0, 1)
+fn cir_if(cc: Int, inst: Inst) -> Int ! alloc
+    dest = ih(inst.dest)
+    _a = cc_line(cc, "  if (" + cir_op(cc, ih(inst.s1)) + ") {{\n")
+    _b = cir_insts(cc, inst.b1, 0, list_len(inst.b1))
+    _c = cir_if_assign(cc, dest, ih(inst.s2))
+    _d = cir_carry_assign(cc, inst.rows, 0, 1)
     _e = cc_line(cc, "  }} else {{\n")
-    eb = vec_get(inst, 4)
-    _f = cir_insts(cc, eb, 0, vec_len(eb))
-    _g = cir_if_assign(cc, dest, vec_get(inst, 6))
-    _h = cir_carry_assign(cc, vec_get(inst, 7), 0, 2)
+    _f = cir_insts(cc, inst.b2, 0, list_len(inst.b2))
+    _g = cir_if_assign(cc, dest, ih(inst.s3))
+    _h = cir_carry_assign(cc, inst.rows, 0, 2)
     cc_line(cc, "  }}\n")
 
 fn cir_if_assign(cc: Int, dest: Int, val: Int) -> Int ! alloc
@@ -2828,25 +2806,23 @@ fn cir_if_assign(cc: Int, dest: Int, val: Int) -> Int ! alloc
         cir_set(cc, dest, cir_op(cc, val))
 
 # Carried values: `which` selects the then (1) or else (2) source slot.
-fn cir_carry_assign(cc: Int, carried: Int, i: Int, which: Int) -> Int ! alloc
+fn cir_carry_assign(cc: Int, carried: List[Inst], i: Int, which: Int) -> Int ! alloc
     idx = i
-    n = vec_len(carried)
+    n = list_len(carried)
     while idx < n
-        c = vec_get(carried, idx)
-        _x = cir_set(cc, vec_get(c, 0), cir_op(cc, vec_get(c, which)))
+        c = list_get(carried, idx)
+        src = select_str(which == 1, c.s1, c.s2)
+        _x = cir_set(cc, ih(c.dest), cir_op(cc, ih(src)))
         idx = idx + 1
     0
 
-fn cir_while(cc: Int, inst: Int) -> Int ! alloc
-    carried = vec_get(inst, 4)
-    _a = cir_carry_assign(cc, carried, 0, 1)
+fn cir_while(cc: Int, inst: Inst) -> Int ! alloc
+    _a = cir_carry_assign(cc, inst.rows, 0, 1)
     _b = cc_line(cc, "  while (1) {{\n")
-    ci = vec_get(inst, 1)
-    _c = cir_insts(cc, ci, 0, vec_len(ci))
-    _d = cc_line(cc, "  if (!(" + cir_op(cc, vec_get(inst, 2)) + ")) break;\n")
-    bd = vec_get(inst, 3)
-    _e = cir_insts(cc, bd, 0, vec_len(bd))
-    _f = cir_carry_assign(cc, carried, 0, 2)
+    _c = cir_insts(cc, inst.b1, 0, list_len(inst.b1))
+    _d = cc_line(cc, "  if (!(" + cir_op(cc, ih(inst.s1)) + ")) break;\n")
+    _e = cir_insts(cc, inst.b2, 0, list_len(inst.b2))
+    _f = cir_carry_assign(cc, inst.rows, 0, 2)
     cc_line(cc, "  }}\n")
 
 # ---- locals ----
@@ -2858,38 +2834,39 @@ fn cir_add_local(cc: Int, name: Int) -> Int ! alloc
     else
         vec_push(vec_get(cc, 2), name)
 
-fn cir_collect(cc: Int, insts: Int) -> Int ! alloc
+fn cir_collect(cc: Int, insts: List[Inst]) -> Int ! alloc
     idx = 0
-    n = vec_len(insts)
+    n = list_len(insts)
     while idx < n
-        inst = vec_get(insts, idx)
-        k = vec_get(inst, 0)
+        inst = list_get(insts, idx)
+        k = inst.kind
         if k == II_IF()
-            _a = cir_add_local(cc, vec_get(inst, 1))
-            _b = cir_collect(cc, vec_get(inst, 3))
-            _c = cir_collect(cc, vec_get(inst, 4))
-            _d = cir_collect_carried(cc, vec_get(inst, 7))
+            _a = cir_add_local(cc, ih(inst.dest))
+            _b = cir_collect(cc, inst.b1)
+            _c = cir_collect(cc, inst.b2)
+            _d = cir_collect_carried(cc, inst.rows)
         elsif k == II_WHILE()
-            _e = cir_collect(cc, vec_get(inst, 1))
-            _f = cir_collect(cc, vec_get(inst, 3))
-            _g = cir_collect_carried(cc, vec_get(inst, 4))
+            _e = cir_collect(cc, inst.b1)
+            _f = cir_collect(cc, inst.b2)
+            _g = cir_collect_carried(cc, inst.rows)
         elsif k == II_RET()
             _h = 0
         elsif k == II_DROP()
             _h = 0
         elsif k == II_CALL()
-            if vec_get(inst, 4) == 1
-                _i = cir_add_local(cc, vec_get(inst, 1))
+            if inst.n1 == 1
+                _i = cir_add_local(cc, ih(inst.dest))
         else
-            _j = cir_add_local(cc, vec_get(inst, 1))
+            _j = cir_add_local(cc, ih(inst.dest))
         idx = idx + 1
     0
 
-fn cir_collect_carried(cc: Int, carried: Int) -> Int ! alloc
+fn cir_collect_carried(cc: Int, carried: List[Inst]) -> Int ! alloc
     idx = 0
-    n = vec_len(carried)
+    n = list_len(carried)
     while idx < n
-        _x = cir_add_local(cc, vec_get(vec_get(carried, idx), 0))
+        c = list_get(carried, idx)
+        _x = cir_add_local(cc, ih(c.dest))
         idx = idx + 1
     0
 
@@ -2906,7 +2883,7 @@ fn cir_decl_locals(cc: Int, params: Int, acc: String) -> String ! alloc
     out
 
 # An IR function `[name, dim_params, insts, regions]` as C; params come from the AST fn.
-fn cir_fn(f: Int, irf: Int, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
+fn cir_fn(f: Int, irf: IrFn, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
     header = emit_c_fn_header(f, linkable, allow_main)
     if str_len(header) == 0
         d""
@@ -2916,11 +2893,10 @@ fn cir_fn(f: Int, irf: Int, user: Int, linkable: Int, allow_main: Int, pool: Int
         is_main = select_main(f, allow_main)
         cc = cc_new(pool, user, is_main)
         _p = cir_seed_params(cc, pnames, 0, vec_len(pnames))
-        insts = vec_get(irf, 2)
-        _c = cir_collect(cc, insts)
-        _c2 = cir_collect_lits(cc, vec_get(irf, 4))
-        _l = cir_literals(cc, vec_get(irf, 4), 0, vec_len(vec_get(irf, 4)))
-        _r = cir_insts(cc, insts, 0, vec_len(insts))
+        _c = cir_collect(cc, irf.insts)
+        _c2 = cir_collect_lits(cc, irf.lits)
+        _l = cir_literals(cc, irf.lits, 0, list_len(irf.lits))
+        _r = cir_insts(cc, irf.insts, 0, list_len(irf.insts))
         acc = cir_decl_locals(cc, pnames, header)
         lines = vec_get(cc, 6)
         acc = append_stmt_strings(acc, lines, 0, vec_len(lines))
@@ -2940,13 +2916,13 @@ fn cir_seed_params(cc: Int, pnames: Int, i: Int, n: Int) -> Int ! alloc
     0
 
 # A function goes through the IR path when it uses tensors.
-fn cir_is_tensor_fn(insts: Int) -> Int ! alloc
+fn cir_is_tensor_fn(insts: List[Inst]) -> Int ! alloc
     idx = 0
-    n = vec_len(insts)
+    n = list_len(insts)
     found = 0
     while idx < n
-        inst = vec_get(insts, idx)
-        k = vec_get(inst, 0)
+        inst = list_get(insts, idx)
+        k = inst.kind
         if k == II_TBIN()
             found = 1
         elsif k == II_REBIND()
@@ -2954,13 +2930,13 @@ fn cir_is_tensor_fn(insts: Int) -> Int ! alloc
         elsif k == II_PLACE()
             found = 1
         elsif k == II_CALL()
-            if cir_tensor_call(str_from_int(vec_get(inst, 2))) == 1
+            if cir_tensor_call(inst.s1) == 1
                 found = 1
         elsif k == II_IF()
-            if cir_is_tensor_fn(vec_get(inst, 3)) + cir_is_tensor_fn(vec_get(inst, 4)) > 0
+            if cir_is_tensor_fn(inst.b1) + cir_is_tensor_fn(inst.b2) > 0
                 found = 1
         elsif k == II_WHILE()
-            if cir_is_tensor_fn(vec_get(inst, 1)) + cir_is_tensor_fn(vec_get(inst, 3)) > 0
+            if cir_is_tensor_fn(inst.b1) + cir_is_tensor_fn(inst.b2) > 0
                 found = 1
         idx = idx + 1
     found
@@ -2985,30 +2961,30 @@ fn cir_tensor_call(f: String) -> Int ! alloc
     else
         0
 
-fn cir_collect_lits(cc: Int, lits: Int) -> Int ! alloc
+fn cir_collect_lits(cc: Int, lits: List[Lit]) -> Int ! alloc
     idx = 0
-    n = vec_len(lits)
+    n = list_len(lits)
     while idx < n
-        _x = cir_add_local(cc, vec_get(vec_get(lits, idx), 0))
+        l = list_get(lits, idx)
+        _x = cir_add_local(cc, ih(l.name))
         idx = idx + 1
     0
 
 # Literal tensors are allocated up front, in source order.
-fn cir_literals(cc: Int, lits: Int, i: Int, n: Int) -> Int ! alloc
+fn cir_literals(cc: Int, lits: List[Lit], i: Int, n: Int) -> Int ! alloc
     idx = i
     while idx < n
-        lit = vec_get(lits, idx)
-        data = vec_get(lit, 1)
-        acc = "  " + str_from_int(vec_get(lit, 0)) + " = (int64_t)(uintptr_t)sal_tn_alloc(" + int_to_str(vec_len(data)) + ");\n"
+        lit = list_get(lits, idx)
+        acc = "  " + lit.name + " = (int64_t)(uintptr_t)sal_tn_alloc(" + int_to_str(list_len(lit.data)) + ");\n"
         _a = cc_line(cc, acc)
-        _b = cir_lit_cells(cc, str_from_int(vec_get(lit, 0)), data, 0, vec_len(data))
+        _b = cir_lit_cells(cc, lit.name, lit.data, 0, list_len(lit.data))
         idx = idx + 1
     0
 
-fn cir_lit_cells(cc: Int, name: String, data: Int, i: Int, n: Int) -> Int ! alloc
+fn cir_lit_cells(cc: Int, name: String, data: List[String], i: Int, n: Int) -> Int ! alloc
     idx = i
     while idx < n
-        _x = cc_line(cc, "  ((float *)(uintptr_t)" + name + ")[" + int_to_str(idx) + "] = " + str_from_int(vec_get(data, idx)) + "f;\n")
+        _x = cc_line(cc, "  ((float *)(uintptr_t)" + name + ")[" + int_to_str(idx) + "] = " + list_get(data, idx) + "f;\n")
         idx = idx + 1
     0
 

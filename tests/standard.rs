@@ -213,3 +213,16 @@ fn standard_else_multi_not_auto_fixed() {
     let out = run_standard(&["check", &path]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
 }
+
+#[test]
+fn standard_check_clean_on_method_chain() {
+    let path = root()
+        .join("standard/fixtures/method_chain_skip_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let fixed = run_standard(&["fix", &path]);
+    assert_eq!(fixed.status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&path).unwrap(), read_fixture("method_chain_skip_in.sal"));
+}

@@ -33,6 +33,7 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Atributos `@frozen`/`@stack`/`@no_heap`/`@layout(c)` | `src/attrs.rs`, `src/layout.rs`, `src/lexer.rs`, `src/parser.rs` | `tests/lang/attr_*.sal` vía `tests/lang.rs` |
 | Interpolación `"a{x}"` | `src/interp.rs`, `src/string_expr.rs` | `tests/lang/*.sal`, `tests/run_hello.rs` |
 | Calificadores, alias, símbolos `modid__nombre` | `src/qualify.rs`, `src/modules.rs` | `tests/lang/mods/`, `tests/toolchain.rs` |
+| Métodos de tipos básicos (`x.sqrt()`, `s.len()`), mate de `Float` (`float_*`, libm, `E_TARGET` en soso) | `src/methods.rs` (tabla), `src/infer.rs`, `src/llvm.rs`, `runtime/kernels.c` | `tests/lang/method_*.sal`, `tests/lang/err_float_math_*.sal`, `tests/semantics.rs` |
 | Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |
 | Destino linux/soso, `syscall` | `src/target.rs`, `runtime/soso/linux_host_syscall.c`, `src/llvm.rs` | `tests/soso_target.rs`, `tests/cli_target.rs`, `tests/std_io_linux.rs` |
 | Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |

@@ -8,6 +8,34 @@
 #include <string.h>
 #endif
 
+#ifndef SAL_SOSO
+/* Float math. A Float travels as the bit pattern of an f64 in an int64; the
+ * soso target has no libm, so these do not exist there (E_TARGET at check time). */
+static double sal_f64_of(int64_t bits) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
+
+static int64_t sal_f64_bits(double d) {
+    int64_t bits;
+    memcpy(&bits, &d, sizeof bits);
+    return bits;
+}
+
+int64_t sal_float_sqrt(int64_t a) { return sal_f64_bits(sqrt(sal_f64_of(a))); }
+int64_t sal_float_abs(int64_t a) { return sal_f64_bits(fabs(sal_f64_of(a))); }
+int64_t sal_float_floor(int64_t a) { return sal_f64_bits(floor(sal_f64_of(a))); }
+int64_t sal_float_ceil(int64_t a) { return sal_f64_bits(ceil(sal_f64_of(a))); }
+int64_t sal_float_sin(int64_t a) { return sal_f64_bits(sin(sal_f64_of(a))); }
+int64_t sal_float_cos(int64_t a) { return sal_f64_bits(cos(sal_f64_of(a))); }
+int64_t sal_float_exp(int64_t a) { return sal_f64_bits(exp(sal_f64_of(a))); }
+int64_t sal_float_log(int64_t a) { return sal_f64_bits(log(sal_f64_of(a))); }
+int64_t sal_float_pow(int64_t a, int64_t b) {
+    return sal_f64_bits(pow(sal_f64_of(a), sal_f64_of(b)));
+}
+#endif
+
 /* Tiled F32 matmul; same numeric result as a naive triple loop. */
 #ifndef SAL_MATMUL_TILE
 #define SAL_MATMUL_TILE 32

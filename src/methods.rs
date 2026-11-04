@@ -51,6 +51,17 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("Bytes", "copy") => "bytes_copy",
         ("Int", "to_str") => "int_to_str",
         ("Int", "to_float") => "int_to_float",
+        ("Float", "to_int") => "float_to_int",
+        ("Float", "to_str") => "f64_bits_to_str",
+        ("Float", "sqrt") => "float_sqrt",
+        ("Float", "abs") => "float_abs",
+        ("Float", "floor") => "float_floor",
+        ("Float", "ceil") => "float_ceil",
+        ("Float", "sin") => "float_sin",
+        ("Float", "cos") => "float_cos",
+        ("Float", "exp") => "float_exp",
+        ("Float", "log") => "float_log",
+        ("Float", "pow") => "float_pow",
         _ => return None,
     })
 }

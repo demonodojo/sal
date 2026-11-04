@@ -1,0 +1,9 @@
+# exit: 1
+# selfhost-xfail: methods are Rust bootstrap only for now
+fn main() -> Int
+    zero = 0.0
+    one = zero.cos()
+    e = zero.exp()
+    l = e.log()
+    s = zero.sin()
+    one.to_int() + e.to_int() + s.to_int() + l.to_int() - 1

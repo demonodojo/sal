@@ -4,6 +4,7 @@ import lexer
 import ast
 import parser
 import checks
+import tast
 
 # ---- Modules ----
 fn project_root() -> String ! io, alloc
@@ -307,21 +308,32 @@ fn resolve_import_path_dep_split(imp: String, base: String, dep_name: String) ->
 fn path_key(p: String) -> String ! io, alloc
     realpath(p)
 
-fn mod_new(key: String, path: String, prog: Int) -> Int ! alloc
-    m = vec_new()
-    _a = vec_push(m, str_as_int(key))
-    _b = vec_push(m, str_as_int(path))
-    _c = vec_push(m, prog)
-    m
+# A module of the graph: its identity and the handle view the later passes still read. The typed
+# program of module `i` is `progs[i]` (a `Mod` stays flat so that `list_get` copies it whole).
+struct Mod
+    key: String
+    path: String
+    h: Int
 
-fn mod_key(m: Int) -> Int ! alloc
-    vec_get(m, 0)
+struct Graph
+    mods: List[Mod]
+    progs: List[TProgram]
 
-fn mod_path(m: Int) -> Int ! alloc
-    vec_get(m, 1)
+fn graph_new() -> Graph ! alloc
+    Graph(list_new[Mod](), list_new[TProgram]())
 
-fn mod_prog(m: Int) -> Int ! alloc
-    vec_get(m, 2)
+# The graph is a `Graph` in dependency order (the root last); a module is named by its index.
+fn mod_h(order: Graph, i: Int) -> Int ! alloc
+    m = list_get(order.mods, i)
+    m.h
+
+fn mod_path_at(order: Graph, i: Int) -> String ! alloc
+    m = list_get(order.mods, i)
+    strdup(m.path)
+
+fn mod_key_at(order: Graph, i: Int) -> String ! alloc
+    m = list_get(order.mods, i)
+    strdup(m.key)
 
 fn vec_has_str(v: Int, s: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -349,10 +361,10 @@ fn stack_set_at(stack: Int, sp: Int, key: Int) -> Int ! alloc
         _p = vec_set(stack, sp, key)
         0
 
-fn load_imports_of(prog: Int, source_file: String, proot: String, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_imports_of(prog: Int, source_file: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     load_imports_of_go(prog_imports(prog), 0, vec_len(prog_imports(prog)), source_file, proot, order, visited, stack, sp)
 
-fn load_imports_of_go(imps: Int, i: Int, n: Int, source_file: String, proot: String, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_imports_of_go(imps: Int, i: Int, n: Int, source_file: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
@@ -367,7 +379,7 @@ fn load_imports_of_go(imps: Int, i: Int, n: Int, source_file: String, proot: Str
             else
                 load_imports_of_go(imps, i + 1, n, source_file, proot, order, visited, stack, sp)
 
-fn load_module_recursive(path: String, proot: String, order: Int, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_module_recursive(path: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     key = path_key(path)
     if stack_has_key(stack, sp, str_as_int(key), 0) == 1
         result_err_str(d"import cycle")
@@ -389,46 +401,36 @@ fn load_module_recursive(path: String, proot: String, order: Int, visited: Int, 
                 step
             else
                 _v = vec_push(visited, str_as_int(key))
-                ent = mod_new(key, path, prog)
-                _o = vec_push(order, ent)
+                _o = list_push(order.mods, Mod(strdup(key), strdup(path), prog))
+                _t = list_push(order.progs, to_typed(prog))
                 result_ok(0)
 
-fn module_graph_finish(step: Int, order: Int) -> Int ! alloc
-    if result_is_err(step) == 1
-        step
-    elsif vec_len(order) == 0
-        result_err_str(d"empty module graph")
-    else
-        result_ok(order)
-
-fn resolve_module_graph(root_path: String, proot: String) -> Int ! io, alloc
+# Loads the module graph of `root_path` into `order`; the result carries no payload.
+fn resolve_module_graph(root_path: String, proot: String, order: Graph) -> Int ! io, alloc
     visited = vec_new()
     stack = vec_new()
-    order = vec_new()
     step = load_module_recursive(root_path, proot, order, visited, stack, 0)
-    module_graph_finish(step, order)
-
-fn graph_root_mod(graph: Int) -> Int ! alloc
-    vec_get(module_order_vec(graph), vec_len(module_order_vec(graph)) - 1)
-
-fn graph_root_prog(graph: Int) -> Int ! alloc
-    mod_prog(graph_root_mod(graph))
-
-fn graph_root_key(graph: Int) -> Int ! alloc
-    mod_key(graph_root_mod(graph))
-
-fn graph_find_by_key(graph: Int, key: Int, i: Int, n: Int) -> Int ! alloc
-    graph_find_by_key_go(module_order_vec(graph), key, i, n)
-
-fn graph_find_by_key_go(order: Int, key: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
+    if result_is_err(step) == 1
+        step
+    elsif list_len(order.mods) == 0
+        result_err_str(d"empty module graph")
     else
-        m = vec_get(order, i)
-        if str_eq(mod_key(m), key) == 1
-            m
-        else
-            graph_find_by_key_go(order, key, i + 1, n)
+        result_ok(0)
+
+fn graph_root_prog(order: Graph) -> Int ! alloc
+    mod_h(order, list_len(order.mods) - 1)
+
+fn graph_root_key(order: Graph) -> String ! alloc
+    mod_key_at(order, list_len(order.mods) - 1)
+
+# Index of the module with this key, or -1.
+fn graph_find_by_key(order: Graph, key: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(mod_key_at(order, i), key) == 1
+        i
+    else
+        graph_find_by_key(order, key, i + 1, n)
 
 fn append_fn_names_from_prog(prog: Int, out: Int) -> Int ! alloc
     fns = prog_fns(prog)
@@ -442,8 +444,8 @@ fn append_fn_names_from_fns(fns: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         _p = vec_push(out, vec_get(f, 0))
         append_fn_names_from_fns(fns, i + 1, n, out)
 
-fn exports_names_for_module(m: Int) -> Int ! alloc
-    append_fn_names_from_prog(mod_prog(m), vec_new())
+fn exports_names_for_module(order: Graph, mi: Int) -> Int ! alloc
+    append_fn_names_from_prog(mod_h(order, mi), vec_new())
 
 fn names_vec_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     vec_has_str(names, name, i, n)
@@ -459,107 +461,106 @@ fn merge_exports_names(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
             _p = vec_push(dst, nm)
             merge_exports_names(dst, src, i + 1, n)
 
-fn walk_imports_collect(m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
-    walk_imports_collect_go(prog_imports(mod_prog(m)), 0, vec_len(prog_imports(mod_prog(m))), m, graph, proot, visited, out)
+fn walk_imports_collect(order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+    prog = mod_h(order, mi)
+    walk_imports_collect_go(prog_imports(prog), 0, vec_len(prog_imports(prog)), order, mi, proot, visited, out)
 
-fn walk_flat_imports_collect(m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
-    prog = mod_prog(m)
-    walk_flat_imports_collect_go(prog, prog_imports(prog), 0, vec_len(prog_imports(prog)), m, graph, proot, visited, out)
+fn walk_flat_imports_collect(order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+    prog = mod_h(order, mi)
+    walk_flat_imports_collect_go(prog, prog_imports(prog), 0, vec_len(prog_imports(prog)), order, mi, proot, visited, out)
 
-fn walk_flat_imports_collect_go(prog: Int, imps: Int, i: Int, n: Int, m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+fn walk_flat_imports_collect_go(prog: Int, imps: Int, i: Int, n: Int, order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
     if i >= n
         result_ok(out)
     else
         if prog_import_alias_at(prog, i) != 0
-            walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out)
+            walk_flat_imports_collect_go(prog, imps, i + 1, n, order, mi, proot, visited, out)
         else
             imp = str_from_int(vec_get(imps, i))
-            mpath = str_from_int(mod_path(m))
+            mpath = mod_path_at(order, mi)
             dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
             if str_len(dep_path) == 0
                 result_err_str("import not found: " + imp)
             else
                 key = path_key(dep_path)
                 if vec_has_str(visited, str_as_int(key), 0, vec_len(visited)) == 1
-                    walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out)
+                    walk_flat_imports_collect_go(prog, imps, i + 1, n, order, mi, proot, visited, out)
                 else
                     _v = vec_push(visited, str_as_int(key))
-                    dep_m = graph_find_by_key(graph, str_as_int(key), 0, vec_len(graph))
-                    if dep_m == 0
-                        walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out)
+                    dep_m = graph_find_by_key(order, key, 0, list_len(order.mods))
+                    if dep_m < 0
+                        walk_flat_imports_collect_go(prog, imps, i + 1, n, order, mi, proot, visited, out)
                     else
-                        step = walk_flat_imports_collect(dep_m, graph, proot, visited, out)
+                        step = walk_flat_imports_collect(order, dep_m, proot, visited, out)
                         if result_is_err(step) == 1
                             step
                         else
                             out2 = result_unwrap(step)
                             _p = vec_push(out2, dep_m)
-                            walk_flat_imports_collect_go(prog, imps, i + 1, n, m, graph, proot, visited, out2)
+                            walk_flat_imports_collect_go(prog, imps, i + 1, n, order, mi, proot, visited, out2)
 
-fn flat_transitive_import_modules(m: Int, graph: Int, proot: String) -> Int ! io, alloc
+fn flat_transitive_import_modules(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
     visited = vec_new()
     out = vec_new()
-    walk_flat_imports_collect(m, graph, proot, visited, out)
+    walk_flat_imports_collect(order, mi, proot, visited, out)
 
-fn walk_imports_collect_go(imps: Int, i: Int, n: Int, m: Int, graph: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+fn walk_imports_collect_go(imps: Int, i: Int, n: Int, order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
     if i >= n
         result_ok(out)
     else
         imp = str_from_int(vec_get(imps, i))
-        mpath = str_from_int(mod_path(m))
+        mpath = mod_path_at(order, mi)
         dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
         if str_len(dep_path) == 0
             result_err_str("import not found: " + imp)
         else
             key = path_key(dep_path)
             if vec_has_str(visited, str_as_int(key), 0, vec_len(visited)) == 1
-                walk_imports_collect_go(imps, i + 1, n, m, graph, proot, visited, out)
+                walk_imports_collect_go(imps, i + 1, n, order, mi, proot, visited, out)
             else
                 _v = vec_push(visited, str_as_int(key))
-                dep_m = graph_find_by_key(graph, str_as_int(key), 0, vec_len(graph))
-                if dep_m == 0
-                    walk_imports_collect_go(imps, i + 1, n, m, graph, proot, visited, out)
+                dep_m = graph_find_by_key(order, key, 0, list_len(order.mods))
+                if dep_m < 0
+                    walk_imports_collect_go(imps, i + 1, n, order, mi, proot, visited, out)
                 else
-                    step = walk_imports_collect(dep_m, graph, proot, visited, out)
+                    step = walk_imports_collect(order, dep_m, proot, visited, out)
                     if result_is_err(step) == 1
                         step
                     else
                         out2 = result_unwrap(step)
                         _p = vec_push(out2, dep_m)
-                        walk_imports_collect_go(imps, i + 1, n, m, graph, proot, visited, out2)
+                        walk_imports_collect_go(imps, i + 1, n, order, mi, proot, visited, out2)
 
-fn transitive_import_modules(m: Int, graph: Int, proot: String) -> Int ! io, alloc
+fn transitive_import_modules(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
     visited = vec_new()
     out = vec_new()
-    step = walk_imports_collect(m, graph, proot, visited, out)
-    step
+    walk_imports_collect(order, mi, proot, visited, out)
 
-fn check_module_names(m: Int, graph: Int, proot: String) -> Int ! io, alloc
-    step = flat_transitive_import_modules(m, graph, proot)
+fn check_module_names(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
+    step = flat_transitive_import_modules(order, mi, proot)
     if result_is_err(step) == 1
         step
     else
         deps = result_unwrap(step)
         env = vec_new()
-        env_step = merge_deps_exports(env, deps, 0, vec_len(deps))
+        env_step = merge_deps_exports(order, env, deps, 0, vec_len(deps))
         if result_is_err(env_step) == 1
             env_step
         else
             env2 = result_unwrap(env_step)
-            check_local_names(mod_prog(m), env2)
+            check_local_names(mod_h(order, mi), env2)
 
-fn merge_deps_exports(env: Int, deps: Int, i: Int, n: Int) -> Int ! alloc
+fn merge_deps_exports(order: Graph, env: Int, deps: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(env)
     else
-        dep_m = vec_get(deps, i)
-        src = exports_names_for_module(dep_m)
+        src = exports_names_for_module(order, vec_get(deps, i))
         step = merge_exports_names(env, src, 0, vec_len(src))
         if result_is_err(step) == 1
             step
         else
             env2 = result_unwrap(step)
-            merge_deps_exports(env2, deps, i + 1, n)
+            merge_deps_exports(order, env2, deps, i + 1, n)
 
 fn check_local_names(prog: Int, env: Int) -> Int ! alloc
     check_local_names_go(prog_fns(prog), 0, vec_len(prog_fns(prog)), env)
@@ -576,24 +577,23 @@ fn check_local_names_go(fns: Int, i: Int, n: Int, env: Int) -> Int ! alloc
             _p = vec_push(env, nm)
             check_local_names_go(fns, i + 1, n, env)
 
-fn callable_fn_names(m: Int, graph: Int, proot: String) -> Int ! io, alloc
-    step = transitive_import_modules(m, graph, proot)
+fn callable_fn_names(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
+    step = transitive_import_modules(order, mi, proot)
     if result_is_err(step) == 1
         step
     else
         deps = result_unwrap(step)
         out = vec_new()
-        out = callable_deps_names(deps, 0, vec_len(deps), out)
-        out = append_fn_names_from_prog(mod_prog(m), out)
+        out = callable_deps_names(order, deps, 0, vec_len(deps), out)
+        out = append_fn_names_from_prog(mod_h(order, mi), out)
         result_ok(out)
 
-fn callable_deps_names(deps: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn callable_deps_names(order: Graph, deps: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        dep_m = vec_get(deps, i)
-        out2 = append_fn_names_from_prog(mod_prog(dep_m), out)
-        callable_deps_names(deps, i + 1, n, out2)
+        out2 = append_fn_names_from_prog(mod_h(order, vec_get(deps, i)), out)
+        callable_deps_names(order, deps, i + 1, n, out2)
 
 fn fn_def_param_count(f: Int) -> Int ! alloc
     vec_len(vec_get(f, 1))
@@ -611,17 +611,13 @@ fn find_fn_named_in_fns(fns: Int, name: Int, i: Int, n: Int) -> Int ! alloc
         else
             find_fn_named_in_fns(fns, name, i + 1, n)
 
-fn find_fn_in_graph(graph: Int, name: Int, i: Int, n: Int) -> Int ! alloc
-    find_fn_in_graph_go(module_order_vec(graph), name, i, n)
-
-fn find_fn_in_graph_go(order: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+fn find_fn_in_graph(order: Graph, name: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        m = vec_get(order, i)
-        f = find_fn_named_in_prog(mod_prog(m), name)
+        f = find_fn_named_in_prog(mod_h(order, i), name)
         if f == 0
-            find_fn_in_graph_go(order, name, i + 1, n)
+            find_fn_in_graph(order, name, i + 1, n)
         else
             f
 
@@ -631,76 +627,72 @@ fn is_local_fn_name(prog: Int, name: Int) -> Int ! alloc
     else
         1
 
-fn extern_fn_arity(m: Int, graph: Int, callables: Int) -> Int ! alloc
-    prog = mod_prog(m)
-    extern_fn_arity_go(callables, 0, vec_len(callables), prog, graph, vec_new())
+fn extern_fn_arity(order: Graph, mi: Int, callables: Int) -> Int ! alloc
+    extern_fn_arity_go(callables, 0, vec_len(callables), mod_h(order, mi), order, vec_new())
 
-fn extern_fn_arity_go(callables: Int, i: Int, n: Int, prog: Int, graph: Int, out: Int) -> Int ! alloc
+fn extern_fn_arity_go(callables: Int, i: Int, n: Int, prog: Int, order: Graph, out: Int) -> Int ! alloc
     if i >= n
         out
     else
         nm = vec_get(callables, i)
         if is_local_fn_name(prog, nm) == 1
-            extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
+            extern_fn_arity_go(callables, i + 1, n, prog, order, out)
         else
-            f = find_fn_in_graph(graph, nm, 0, vec_len(module_order_vec(graph)))
+            f = find_fn_in_graph(order, nm, 0, list_len(order.mods))
             if f == 0
-                extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
+                extern_fn_arity_go(callables, i + 1, n, prog, order, out)
             else
                 pair = vec_new()
                 _a = vec_push(pair, nm)
                 _b = vec_push(pair, fn_def_param_count(f))
                 _p = vec_push(out, pair)
-                extern_fn_arity_go(callables, i + 1, n, prog, graph, out)
+                extern_fn_arity_go(callables, i + 1, n, prog, order, out)
 
-fn check_all_modules(graph: Int, proot: String) -> Int ! io, alloc
-    order = module_order_vec(graph)
-    progs = module_progs(order, 0, vec_len(order), vec_new())
-    check_all_modules_order(order, 0, vec_len(order), proot, progs)
+fn check_all_modules(order: Graph, proot: String) -> Int ! io, alloc
+    progs = module_progs(order, 0, list_len(order.mods), vec_new())
+    check_all_modules_order(order, 0, list_len(order.mods), proot, progs)
 
-fn module_progs(order: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn module_progs(order: Graph, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        _p = vec_push(out, mod_prog(vec_get(order, i)))
+        _p = vec_push(out, mod_h(order, i))
         module_progs(order, i + 1, n, out)
 
-fn check_all_modules_order(order: Int, i: Int, n: Int, proot: String, progs: Int) -> Int ! io, alloc
+fn check_all_modules_order(order: Graph, i: Int, n: Int, proot: String, progs: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
-        m = vec_get(order, i)
-        step = check_module_names(m, order, proot)
+        step = check_module_names(order, i, proot)
         if result_is_err(step) == 1
             step
         else
-            fx = check_program_with(mod_prog(m), progs)
+            fx = check_program_with(mod_h(order, i), progs)
             if result_is_err(fx) == 1
                 fx
             else
                 check_all_modules_order(order, i + 1, n, proot, progs)
 
-fn check_all_effects(order: Int, i: Int, n: Int) -> Int ! alloc
+fn check_all_effects(order: Graph, i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        fx = check_program(mod_prog(vec_get(order, i)))
+        fx = check_program(mod_h(order, i))
         if result_is_err(fx) == 1
             fx
         else
             check_all_effects(order, i + 1, n)
 
-fn graph_source_digest(graph: Int) -> String ! io, alloc
-    graph_source_digest_go(graph, 0, vec_len(graph), d"")
+fn graph_source_digest(order: Graph) -> String ! io, alloc
+    graph_source_digest_go(order, 0, list_len(order.mods), d"")
 
-fn graph_source_digest_go(graph: Int, i: Int, n: Int, acc: String) -> String ! io, alloc
+fn graph_source_digest_go(order: Graph, i: Int, n: Int, acc: String) -> String ! io, alloc
     if i >= n
         acc
     else
-        m = vec_get(graph, i)
-        p = str_from_int(mod_path(m))
+        p = mod_path_at(order, i)
         src = read_file(p)
         h = str_hash(src, str_hash(p, 5381))
         piece = int_to_str(h)
         acc = acc + piece + ":"
-        graph_source_digest_go(graph, i + 1, n, acc)
+        graph_source_digest_go(order, i + 1, n, acc)

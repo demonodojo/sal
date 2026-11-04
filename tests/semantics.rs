@@ -1219,3 +1219,21 @@ fn builtin_constructors_need_their_type_arguments() {
     expect_code("fn main() -> Int ! alloc\n    d = Dict.new[Int]()\n    0\n", ErrorCode::EType);
     expect_code("fn main() -> Int ! alloc\n    d = List.nope[Int]()\n    0\n", ErrorCode::EType);
 }
+
+#[test]
+fn float_math_methods_take_and_return_float() {
+    expect_ok("fn main() -> Int\n    x = 4.0\n    x.sqrt().pow(2.0).to_int()\n");
+    expect_code("fn main() -> Int\n    float_sqrt(4)\n", ErrorCode::EType);
+    expect_code("fn main() -> Int\n    n = 4\n    n.sqrt().to_int()\n", ErrorCode::EType);
+    expect_code("fn main() -> Int\n    x = 4.0\n    x.pow().to_int()\n", ErrorCode::EType);
+}
+
+#[test]
+fn float_math_table_entries() {
+    use sal_compiler::methods::builtin_method;
+    assert_eq!(builtin_method("Float", "sqrt"), Some("float_sqrt"));
+    assert_eq!(builtin_method("Float", "pow"), Some("float_pow"));
+    assert_eq!(builtin_method("Float", "to_int"), Some("float_to_int"));
+    assert_eq!(builtin_method("Float", "to_str"), Some("f64_bits_to_str"));
+    assert_eq!(builtin_method("Int", "sqrt"), None);
+}

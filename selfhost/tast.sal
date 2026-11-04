@@ -736,3 +736,117 @@ fn fh_block(b: TBlock) -> Int ! alloc
     _a = fh_stmts(b.stmts, 0, list_len(b.stmts), block_stmts(h))
     _b = block_set_tail(h, fh_expr(b.tail))
     h
+
+# ---- whole programs back to handles ----
+fn fh_str_vec(xs: List[String]) -> Int ! alloc
+    fh_strs(xs)
+
+fn fh_params(xs: List[TParam], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = list_get(xs, i)
+        h = param_new(fh_str(p.name), fh_str(p.ty))
+        _m = param_set_mode(h, p.mode)
+        _a = vec_push(out, h)
+        fh_params(xs, i + 1, n, out)
+
+fn fh_ints(xs: List[Int]) -> Int ! alloc
+    out = vec_new()
+    _a = fh_ints_go(xs, 0, list_len(xs), out)
+    out
+
+fn fh_ints_go(xs: List[Int], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, list_get(xs, i))
+        fh_ints_go(xs, i + 1, n, out)
+
+fn fh_fn(f: TFn) -> Int ! alloc
+    params = vec_new()
+    _a = fh_params(f.params, 0, list_len(f.params), params)
+    h = fndef_new(fh_str(f.name), params, fh_block(f.body))
+    _r = fndef_set_ret(h, fh_ty(f.ret))
+    _n = fndef_set_no_heap(h, f.no_heap)
+    _e = vec_set(h, 5, fh_ints(f.fx))
+    _t = vec_set(h, 6, fh_strs(f.tparams))
+    h
+
+fn fh_fns(xs: List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, fh_fn(list_get(xs, i)))
+        fh_fns(xs, i + 1, n, out)
+
+fn fh_fields(xs: List[TField], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(xs, i)
+        pr = vec_new()
+        _a = vec_push(pr, str_as_int(fh_str(f.name)))
+        _b = vec_push(pr, fh_ty(f.ty))
+        _c = vec_push(out, pr)
+        fh_fields(xs, i + 1, n, out)
+
+fn fh_struct(s: TStruct) -> Int ! alloc
+    fields = vec_new()
+    _a = fh_fields(s.fields, 0, list_len(s.fields), fields)
+    h = structdef_new(fh_str(s.name), fields)
+    _l = structdef_set_layout_c(h, s.layout_c)
+    _p = structdef_set_params(h, fh_strs(s.tparams))
+    _f = structdef_set_frame(h, s.is_frame)
+    h
+
+fn fh_structs(xs: List[TStruct], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, fh_struct(list_get(xs, i)))
+        fh_structs(xs, i + 1, n, out)
+
+fn fh_variants(xs: List[TVariant], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = list_get(xs, i)
+        _a = vec_push(out, variant_new(fh_str(v.name), fh_strs(v.fields)))
+        fh_variants(xs, i + 1, n, out)
+
+fn fh_enums(xs: List[TEnum], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        e = list_get(xs, i)
+        vs = vec_new()
+        _v = fh_variants(e.variants, 0, list_len(e.variants), vs)
+        _a = vec_push(out, enumdef_new(fh_str(e.name), fh_strs(e.tparams), vs))
+        fh_enums(xs, i + 1, n, out)
+
+# One alias per import, 0 when it has none.
+fn fh_aliases(xs: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, fh_ty(list_get(xs, i)))
+        fh_aliases(xs, i + 1, n, out)
+
+fn fh_program(tp: TProgram) -> Int ! alloc
+    pr = prog_new()
+    _a = fh_fns(tp.fns, 0, list_len(tp.fns), prog_fns(pr))
+    _b = vec_set(pr, 1, fh_strs(tp.imports))
+    _c = fh_structs(tp.structs, 0, list_len(tp.structs), prog_structs(pr))
+    al = vec_new()
+    _d = fh_aliases(tp.aliases, 0, list_len(tp.aliases), al)
+    _e = vec_set(pr, 3, al)
+    _f = fh_enums(tp.enums, 0, list_len(tp.enums), prog_enums(pr))
+    pr
+
+# The program rebuilt from its typed form; the typed tree is released.
+fn fh_roundtrip(pr: Int) -> Int ! alloc
+    tp = to_typed(pr)
+    h = fh_program(tp)
+    _f = tp_free(tp)
+    h

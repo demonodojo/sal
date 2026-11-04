@@ -1496,6 +1496,36 @@ fn infer_call(
                 span,
             })
         }
+        "float_sqrt" | "float_abs" | "float_floor" | "float_ceil" | "float_sin" | "float_cos"
+        | "float_exp" | "float_log" | "float_pow" => {
+            if types.target == crate::target::Target::Soso {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::ETarget,
+                    format!("{name} needs libm, which the soso target does not have"),
+                    span,
+                )]);
+            }
+            let want = if name == "float_pow" { 2 } else { 1 };
+            if args.len() != want {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("{name} expects {want} Float argument(s), found {}", args.len()),
+                    span,
+                )]);
+            }
+            let float = Type::Named { name: "Float".into(), args: vec![], span };
+            for a in args {
+                let aty = check_expr(a, env, ctx, types, entries)?;
+                if !types_compatible(&aty, &float) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("{name} expects Float, found {}", type_name(&aty)),
+                        a.span(),
+                    )]);
+                }
+            }
+            Ok(float)
+        }
         "float_to_int" | "int_to_float" => {
             if args.len() != 1 {
                 return Err(vec![Diagnostic::new(

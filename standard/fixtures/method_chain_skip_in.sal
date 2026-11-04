@@ -1,0 +1,3 @@
+fn main() -> Int
+    x = (4.0 - 7.0).abs().sqrt()
+    x.to_int()

@@ -866,3 +866,11 @@ fn init_with_an_arrow_is_e_parse() {
     let e = parse("struct P\n    x: Int\n\ninit P(x: Int) -> P\n    P(x)\n").expect_err("init has no arrow");
     assert_eq!(e.code, sal_compiler::diag::ErrorCode::EParse);
 }
+
+#[test]
+fn fmt_keeps_parentheses_around_the_receiver_of_a_call() {
+    let src = "fn f(x: Float) -> Float\n    (x - 1.0).abs() + (-x).abs() + (x * 2.0).floor().abs()\n";
+    let out = format_program(&assert_parse(src));
+    assert_eq!(out, src);
+    assert_fmt_idempotent(src);
+}

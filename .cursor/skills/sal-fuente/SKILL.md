@@ -61,6 +61,10 @@ fn add(a: Int, b: Int) -> Int
 
 `@frozen let` no se reasigna; `@stack let` exige tipo de stack y no asignar; `@no_heap fn` no asigna ni usa heap; `@layout(c)` solo con `Int`, `Float`, `Bool`. Las violaciones son `E_TYPE`. Ver [sal-autoridad](../sal-autoridad/SKILL.md).
 
+## Métodos de tipos básicos
+
+Los tipos básicos tienen métodos que son el builtin con el receptor primero (tabla en SPEC): `s.len()`, `xs.push(v)`, `n.to_str()`, y en `Float` `x.to_int()`, `x.to_str()`, `x.sqrt()`, `abs`, `floor`, `ceil`, `sin`, `cos`, `exp`, `log`, `x.pow(y)`. Dan el mismo IR que `float_sqrt(x)`. Los estáticos llevan argumentos de tipo: `List.new[Int]()`. Las funciones matemáticas de `Float` toman `Float` (`Int` es `E_TYPE`) y usan libm: en `soso` son `E_TARGET`. `sal fmt` conserva los paréntesis de la base: `(a - b).abs()`. Un método inexistente es `E_TYPE`. Los métodos solo existen en el arranque (Rust): un test que los use lleva `# selfhost-xfail:`.
+
 ## Memoria y efectos
 
 - Move por defecto. Copy solo en `Int`, `Float`, `Bool` y structs triviales.

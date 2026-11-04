@@ -382,6 +382,15 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare i64 @sal_float_to_int(i64)\n");
     s.push_str("declare i64 @sal_int_to_float(i64)\n");
+    s.push_str("declare i64 @sal_float_sqrt(i64)\n");
+    s.push_str("declare i64 @sal_float_abs(i64)\n");
+    s.push_str("declare i64 @sal_float_floor(i64)\n");
+    s.push_str("declare i64 @sal_float_ceil(i64)\n");
+    s.push_str("declare i64 @sal_float_sin(i64)\n");
+    s.push_str("declare i64 @sal_float_cos(i64)\n");
+    s.push_str("declare i64 @sal_float_exp(i64)\n");
+    s.push_str("declare i64 @sal_float_log(i64)\n");
+    s.push_str("declare i64 @sal_float_pow(i64, i64)\n");
     s.push_str("declare void @sal_panic(ptr)\n");
     s.push_str("declare void @sal_bytes_check(i64, i64, i64)\n");
     s.push_str("declare i64 @sal_os_syscall(i64, i64, i64, i64, i64, i64, i64)\n");
@@ -2695,13 +2704,15 @@ fn emit_runtime_or_user_call(
                 ));
             }
         }
-        "sal_float_to_int" | "sal_int_to_float" => {
-            let a = args
-                .first()
-                .map(|x| i64_operand(x, consts))
-                .unwrap_or_else(|| "0".into());
+        "sal_float_to_int" | "sal_int_to_float" | "sal_float_sqrt" | "sal_float_abs"
+        | "sal_float_floor" | "sal_float_ceil" | "sal_float_sin" | "sal_float_cos"
+        | "sal_float_exp" | "sal_float_log" | "sal_float_pow" => {
+            let ops: Vec<String> = args
+                .iter()
+                .map(|x| format!("i64 {}", i64_operand(x, consts)))
+                .collect();
             if let Some(d) = dest {
-                s.push_str(&format!("  %{d} = call i64 @{func}(i64 {a})\n"));
+                s.push_str(&format!("  %{d} = call i64 @{func}({})\n", ops.join(", ")));
             }
         }
         "sal_str_len" => {

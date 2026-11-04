@@ -80,3 +80,44 @@ Pendiente, por orden:
    `match` de varias variantes: "duplicate case value in switch").
 
 **Estado de la migración a tipos con dueño.** El selfhost ya compila enums con caja, structs de varios campos, `List[T]`/`Dict` y aplica el pase de drops tanto en el camino IR (`fuse.sal`) como en el AST→C (`emit.sal`, vía `drops_body`). El lexer y el estado del parser ya usan tipos con dueño: `Toks` y `Parser` son structs de `List[Int]`/`List[String]` (un token es su índice; `tok_kind/tok_text/tok_ival` reciben el parser; `parser_free` suelta las listas y la pila de sangrías se suelta en `lex`). Su propio AST sigue siendo asas `Int` (`vec_*`, `map_*`, `str_as_int`, ~280 `vec_new` y ~360 `str_as_int`); mientras sea así, el compilador autocompilado libera solo los locales simples y deja el resto vivo. Migrarlo exige reescribir parser, infer, ownership, effects, device, attrs, fuse, tensorops y emit sobre `enum Expr`/`enum Stmt`/`List[...]` El modo de parámetro (`borrow`/`take`) ya se infiere también en `selfhost/ownership.sal` (`infer_param_modes`, misma regla que `src/ownership.rs`) y lo usa `fuse.sal` para los drops de structs con `String`; el pase de drops calcula además los parámetros de solo lectura (`dr_read_only`, espejo de `read_only_params` en `src/drops.rs`), de modo que un valor pasado a una función que solo lo lee lo libera el llamante. La IR del corpus sigue idéntica en las tres cadenas (`corpus/param_modes.sal`, `corpus/drop_ro_params.sal`).
+
+## Plan de migración del resto a tipos con dueño
+
+Estado: `attrs`, `device`, `effects`, `ownership`, `infer` y `drops` son tipados (`tast.sal`, `ttypes.sal`, `thash.sal`). El resto sigue en asas `Int`: `parser`, `qualify`, `modules`, `tensorops`, `ir`, `fuse`, `emit`, `ast.sal` (los tipadores de cadenas), `std/` y `standard/`.
+
+No hay un primer paso independiente: `qualify` y `modules` mutan los programas de asas que guarda el grafo de módulos, y ese grafo lo consumen `fuse` y `emit`; `fuse` llama a `tensorops` y a los tipadores de `ast.sal`, que `emit` comparte; el parser produce las asas que todos leen. Cada módulo que se migre sin los vecinos necesita un puente (`to_typed` hacia delante, `fh_*` hacia atrás), y solo `drops` se pudo aislar así.
+
+`tast.sal` ya tiene `fh_program` (programa tipado a asas) y `fh_roundtrip`. Comprobado: pasar cada programa que lee el parser por `fh_roundtrip` deja pasar todas las pruebas de `tests/selfhost_ir.rs` (IR idéntica en las tres cadenas y sin `LEAK` en el hello instrumentado), así que el puente de vuelta es fiel.
+
+Orden propuesto, con un único puente que se va encogiendo:
+1. Grafo de módulos tipado: `modules.sal` y `qualify.sal` guardan `TProgram` en una lista; el puente `fh_program` se coloca a la entrada de `fuse` y `emit`.
+2. `tensorops.sal` y los tipadores de `ast.sal` (`expr_type`, `binary_add_*`, `call_type`) sobre `TEnv`, más `fuse.sal` y `ir.sal`. El contexto `cx` y las tablas de todo el grafo (`struct_map`, `fnrets`, `enums`) pasan a estructuras y `HT`.
+3. `emit.sal` (camino AST y camino IR) y retirada del puente `fh_*`.
+4. El parser produce `TProgram` directamente; se borran `ast.sal` y `to_typed`.
+5. `std/` y `standard/` (unos 300 usos), y retirada de `vec_*`, `map_*`, `str_as_int`, `int_as_str` y `free` manual del lenguaje (`E_TYPE`).
+
+Criterio por paso: IR idéntica en las tres cadenas (`tests/selfhost_ir.rs`), `selfhost_instrumented_clean_on_hello` sin `LEAK` y la memoria de `stage1` sobre `fuse.sal`/`emit.sal` no mayor que la medida (73 MB / 207 MB).
+
+Avance del paso 1: `qualify.sal` califica el cuerpo de cada función sobre el árbol tipado
+(`qx_*`, con `tt_block` al entrar y `fh_block` al salir); los tipos de parámetros y retorno, los
+renombres de funciones y structs y la tabla de enlaces siguen en asas. Se conservan las
+peculiaridades del pase anterior (solo desciende por campo, llamada, binario, `if`, `while`, `to`
+y `on`; una llamada reconstruida pierde los argumentos de tipo y un `on` sus banderas de kernel).
+Paso 1 cerrado: el grafo es un `struct Graph { mods: List[Mod], progs: List[TProgram] }`
+(`Mod { key, path, h }` es plano para que `list_get` lo copie entero; el programa tipado del módulo
+`i` es `progs[i]`) y un módulo se nombra por su índice. `h` es la vista en asas que aún leen
+`checks`, `fuse` y `emit`; `qualify` la modifica en su sitio y `refresh_typed` rehace `progs[i]`.
+`resolve_module_graph*` llenan un `Graph` que crea el llamador. Memoria de stage1: 77 MB sobre
+`fuse.sal` y 232 MB sobre `emit.sal` (antes 73/207), por tener el programa en las dos formas hasta
+que el parser sea tipado (paso 4).
+
+Avance del paso 2: `tir.sal` define el IR tipado (`Inst`, `FOp`, `Region`, `IrFn`, todos structs
+planos de `String`, `Int` y `List` para que `list_get` los copie enteros) con el puente `ti_module`
+desde las asas que produce `fuse` y `ti_free_module`. `ir_to_text` de `emit.sal` lo recorre tipado.
+El recorrido `cir_*` (camino C) también lee el IR tipado (`ti_fn` por función, `Lit` para los
+literales de tensor); los operandos se convierten a asa con `ih` (copia, 0 para el texto vacío)
+porque las tablas de `cc` guardan las claves sin copiarlas. Con esto `emit.sal` ya no lee asas de
+IR. Siguen en asas: `tensorops`, `ir.sal` (contexto `cx` y binds), `fuse.sal` (que produce las
+asas de IR) y los tipadores de `ast.sal`.
+Regla aprendida: un struct con `String` y con un campo struct anidado no se copia en `list_get`
+(sin bits de tipo), así que su local libera dos veces; los elementos de lista deben ser planos.

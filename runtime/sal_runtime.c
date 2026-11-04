@@ -694,7 +694,7 @@ char *sal_f64_bits_to_str(int64_t bits) {
     memcpy(&fv, &bits, sizeof(fv));
     char buf[64];
     snprintf(buf, sizeof(buf), "%.17g", fv);
-    return sal_strdup(buf);
+    return sal_str_from_cstr(buf);
 }
 
 int64_t sal_now_ns(void) {

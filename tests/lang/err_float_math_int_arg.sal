@@ -1,0 +1,4 @@
+# error: E_TYPE
+# selfhost-xfail: methods are Rust bootstrap only for now
+fn main() -> Int
+    float_sqrt(4)

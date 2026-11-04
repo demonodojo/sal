@@ -302,6 +302,7 @@ Los tipos básicos tienen métodos que son el builtin con el receptor como prime
 | `Dict[K, V]` | `get`, `put`, `has` (`dict_*`) |
 | `Bytes` | `len`, `get_u8`, `get_u16`, `get_u32`, `get_i64`, `set_u8`, `set_u16`, `set_u32`, `set_i64`, `fill`, `copy` (`bytes_*`) |
 | `Int` | `to_str` (`int_to_str`), `to_float` (`int_to_float`) |
+| `Float` | `to_int` (`float_to_int`), `to_str` (`f64_bits_to_str`), y las funciones matemáticas `sqrt`, `abs`, `floor`, `ceil`, `sin`, `cos`, `exp`, `log`, `pow` (`float_*`) |
 
 Los constructores de los tipos básicos se llaman sobre el tipo y llevan los argumentos de tipo tras el nombre, como `list_new[Int]()`:
 
@@ -313,6 +314,8 @@ Los constructores de los tipos básicos se llaman sobre el tipo y llevan los arg
 | `String.from_char(c)` | `char_to_str(c)` |
 
 Faltar argumentos de tipo (`List.new()`), sobrar o faltar alguno (`Dict.new[Int]()`) o llamar un estático que no existe (`List.nope[Int]()`) es `E_TYPE`. A diferencia de `list_new()`, que sin argumento de tipo es `List[Int]`, aquí el tipo del elemento siempre es explícito.
+
+Las funciones matemáticas de `Float` (`float_sqrt`, `float_abs`, `float_floor`, `float_ceil`, `float_sin`, `float_cos`, `float_exp`, `float_log`, `float_pow`) toman y devuelven `Float` (`Int` como argumento es `E_TYPE`) y usan libm, que el destino `soso` no tiene: ahí son `E_TARGET`.
 
 Un método que no está en la tabla es `E_TYPE` (`type String has no method nope`). Las funciones `str_len`, `list_push`… siguen existiendo y generan el mismo IR.
 
