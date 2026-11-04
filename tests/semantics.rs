@@ -33,10 +33,11 @@ fn expect_ok(src: &str) {
 /// Parse then run the semantic passes used by compile (infer, effects, ownership, devices).
 /// Parse-time diagnostics (e.g. E_TENSOR_ELEM) are returned as a single-element error list.
 fn run_semantics(src: &str) -> Result<(), Vec<sal_compiler::diag::Diagnostic>> {
-    let prog = match parse(src) {
+    let mut prog = match parse(src) {
         Ok(p) => p,
         Err(d) => return Err(vec![d]),
     };
+    sal_compiler::methods::prepare_program(&mut prog)?;
     let infer = infer_program(&prog)?;
     check_effects(&prog)?;
     check_ownership(&prog, &infer)?;
@@ -1074,4 +1075,147 @@ fn main() -> Int
     p.x + q.y
 "#,
     );
+}
+
+#[test]
+fn moving_a_field_moves_the_whole_afterwards() {
+    expect_code(
+        r#"
+struct P
+    name: String
+    other: String
+
+fn main() -> Int ! alloc
+    p = P(strdup(d"a"), strdup(d"b"))
+    n = p.name
+    str_len(n) + str_len(p)
+"#,
+        ErrorCode::EMoved,
+    );
+}
+
+#[test]
+fn field_assignment_puts_a_moved_field_back() {
+    expect_ok(
+        r#"
+struct P
+    name: String
+    other: String
+
+fn main() -> Int ! alloc
+    p = P(strdup(d"a"), strdup(d"b"))
+    n = p.name
+    p.name = strdup(d"c")
+    str_len(n) + str_len(p.name)
+"#,
+    );
+}
+
+#[test]
+fn method_call_resolves_by_receiver_type() {
+    expect_ok(
+        "struct P\n    x: Int\n\nmethod P.get() -> Int\n    self.x\n\nfn main() -> Int\n    P(1).get()\n",
+    );
+}
+
+#[test]
+fn method_on_wrong_receiver_type_is_e_type() {
+    expect_code(
+        "struct P\n    x: Int\n\nstruct Q\n    x: Int\n\nmethod P.get() -> Int\n    self.x\n\nfn main() -> Int\n    Q(1).get()\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn method_name_clash_with_mangled_fn_is_e_type() {
+    expect_code(
+        "struct P\n    x: Int\n\nfn P__get(p: P) -> Int\n    p.x\n\nmethod P.get() -> Int\n    self.x\n\nfn main() -> Int\n    0\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn double_underscore_in_method_name_is_e_type() {
+    expect_code(
+        "struct P\n    x: Int\n\nmethod P.a__b() -> Int\n    self.x\n\nfn main() -> Int\n    0\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn method_on_generic_receiver_is_e_type() {
+    expect_code(
+        "struct B[T]\n    x: Int\n\nmethod B.get() -> Int\n    self.x\n\nfn main() -> Int\n    0\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn static_and_init_calls_resolve_by_type_name() {
+    expect_ok(
+        "struct P\n    x: Int\n\ninit P(x: Int)\n    P(x)\n\nstatic P.zero() -> P\n    P(0)\n\nfn main() -> Int\n    P.new(1).x + P.zero().x\n",
+    );
+}
+
+#[test]
+fn a_local_shadows_the_type_name_for_calls() {
+    expect_code(
+        "struct P\n    x: Int\n\nstatic P.zero() -> P\n    P(0)\n\nfn main() -> Int\n    P = 1\n    P.zero().x\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn static_on_a_value_and_instance_on_a_type_are_e_type() {
+    expect_code(
+        "struct P\n    x: Int\n\nstatic P.zero() -> P\n    P(0)\n\nfn main() -> Int\n    P(1).zero().x\n",
+        ErrorCode::EType,
+    );
+    expect_code(
+        "struct P\n    x: Int\n\nmethod P.get() -> Int\n    self.x\n\nfn main() -> Int\n    P.get()\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn init_and_static_new_clash() {
+    expect_code(
+        "struct P\n    x: Int\n\ninit P(x: Int)\n    P(x)\n\nstatic P.new(x: Int) -> P\n    P(x)\n\nfn main() -> Int\n    0\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn builtin_methods_type_like_the_builtin_call() {
+    expect_ok(
+        "fn main() -> Int ! alloc\n    xs = list_new[Int]()\n    xs.push(1)\n    xs.len() + \"ab\".len()\n",
+    );
+}
+
+#[test]
+fn builtin_method_errors_are_e_type() {
+    expect_code("fn main() -> Int\n    \"ab\".nope()\n", ErrorCode::EType);
+    expect_code(
+        "fn main() -> Int ! alloc\n    xs = list_new[Int]()\n    xs.push(\"a\")\n    0\n",
+        ErrorCode::EType,
+    );
+}
+
+#[test]
+fn builtin_method_table_has_the_documented_entries() {
+    use sal_compiler::methods::builtin_method;
+    assert_eq!(builtin_method("String", "len"), Some("str_len"));
+    assert_eq!(builtin_method("List", "push"), Some("list_push"));
+    assert_eq!(builtin_method("Dict", "has"), Some("dict_has"));
+    assert_eq!(builtin_method("Bytes", "len"), Some("bytes_len"));
+    assert_eq!(builtin_method("Int", "to_str"), Some("int_to_str"));
+    assert_eq!(builtin_method("String", "nope"), None);
+}
+
+#[test]
+fn builtin_constructors_need_their_type_arguments() {
+    expect_ok("fn main() -> Int ! alloc\n    xs = List.new[Int]()\n    xs.len()\n");
+    expect_code("fn main() -> Int ! alloc\n    xs = List.new()\n    xs.len()\n", ErrorCode::EType);
+    expect_code("fn main() -> Int ! alloc\n    d = Dict.new[Int]()\n    0\n", ErrorCode::EType);
+    expect_code("fn main() -> Int ! alloc\n    d = List.nope[Int]()\n    0\n", ErrorCode::EType);
 }

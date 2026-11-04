@@ -1,0 +1,19 @@
+# exit: 3
+# selfhost-xfail: methods are Rust bootstrap only for now
+enum Opt
+    Nothing
+    Just(Int)
+
+static Opt.of(n: Int) -> Opt
+    if n > 0
+        Just(n)
+    else
+        Nothing
+
+method Opt.get() -> Int
+    match self
+        Nothing => 0
+        Just(n) => n
+
+fn main() -> Int
+    Opt.of(3).get() + Opt.of(0).get()

@@ -1,0 +1,334 @@
+# Local String/Float typer over the typed AST (`tast.sal`): the mirror of the handle typer in
+# `ast.sal` (`expr_type`, `strenv_*`). A type is its text; "" means unknown. The environment
+# keeps its own copies of every name and type, so freeing it never touches the AST.
+import ast
+import tast
+import tshape
+
+struct TEnv
+    names: List[String]
+    tys: List[String]
+    structs: List[TStruct]
+    fn_names: List[String]
+    fn_rets: List[String]
+    g_names: List[String]
+    g_idx: List[Int]
+
+# ---- type text helpers ----
+fn tt_is_string(ty: String) -> Int ! alloc
+    if str_eq(ty, "String") == 1
+        1
+    else
+        str_eq(ty, "String ")
+
+fn tt_is_float(ty: String) -> Int ! alloc
+    str_eq(trim_spaces(ty), "Float")
+
+# `ty` names `name`; the parser leaves one trailing space after an identifier ("Path ").
+fn tt_matches(ty: String, name: String) -> Int ! alloc
+    if str_len(ty) == 0
+        0
+    else
+        nl = str_len(name)
+        tl = str_len(ty)
+        if tl == nl
+            str_eq(ty, name)
+        elsif tl == nl + 1
+            if str_char(ty, nl) == 32
+                tt_chars_eq(ty, name, 0, nl)
+            else
+                0
+        else
+            0
+
+fn tt_chars_eq(a: String, b: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    elsif str_char(a, i) != str_char(b, i)
+        0
+    else
+        tt_chars_eq(a, b, i + 1, n)
+
+# `i`-th top-level type argument of `Name[A, B]`, "" when absent.
+fn tt_arg(t: String, i: Int) -> String ! alloc
+    h = nth_type_arg(t, i)
+    if h == 0
+        d""
+    else
+        str_from_int(h)
+
+# `T` of a `List[T]` type text, "" otherwise.
+fn tt_list_elem(t: String) -> String ! alloc
+    if str_len(t) == 0
+        d""
+    else
+        open = ty_find_open(t, 0)
+        if open < 0
+            d""
+        elsif str_eq(trim_spaces(str_slice(t, 0, open)), "List") == 1
+            tt_arg(t, 0)
+        else
+            d""
+
+# ---- environment ----
+fn tenv_new(tp: TProgram) -> TEnv ! alloc
+    env = TEnv(list_new[String](), list_new[String](), tp.structs, list_new[String](), list_new[String](), list_new[String](), list_new[Int]())
+    _a = tenv_fill(env, tp.fns, 0, list_len(tp.fns))
+    env
+
+# Index of the first param whose type is the bare type parameter `f` returns, or -1.
+fn tt_generic_ret(f: TFn) -> Int ! alloc
+    if str_len(f.ret) == 0
+        0 - 1
+    elsif list_len(f.tparams) == 0
+        0 - 1
+    elsif tt_in_names(f.ret, f.tparams, 0, list_len(f.tparams)) == 0
+        0 - 1
+    else
+        tt_generic_param(f.params, f.ret, 0, list_len(f.params))
+
+fn tt_in_names(ty: String, names: List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif tt_matches(ty, list_get(names, i)) == 1
+        1
+    else
+        tt_in_names(ty, names, i + 1, n)
+
+fn tt_generic_param(params: List[TParam], ret: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif tt_matches(list_get(params, i).ty, ret) == 1
+        i
+    else
+        tt_generic_param(params, ret, i + 1, n)
+
+fn tenv_fill(env: TEnv, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        gi = tt_generic_ret(f)
+        if gi >= 0
+            _g = tenv_put_generic(env, f.name, gi + 1)
+            _p = tenv_put_ret(env, f.name, d"Unknown")
+        elsif str_len(f.ret) != 0
+            _p = tenv_put_ret(env, f.name, f.ret)
+        else
+            _p = 0
+        tenv_fill(env, fns, i + 1, n)
+
+fn tenv_put_ret(env: TEnv, name: String, ret: String) -> Int ! alloc
+    _a = list_push(env.fn_names, strdup(name))
+    _b = list_push(env.fn_rets, strdup(ret))
+    0
+
+fn tenv_put_generic(env: TEnv, name: String, idx: Int) -> Int ! alloc
+    _a = list_push(env.g_names, strdup(name))
+    _b = list_push(env.g_idx, idx)
+    0
+
+# Position of `name` in `names`, or -1; the first definition wins.
+fn tt_index_of(names: List[String], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(list_get(names, i), name) == 1
+        i
+    else
+        tt_index_of(names, name, i + 1, n)
+
+fn tenv_free(env: TEnv) -> Int ! alloc
+    _a = list_free(env.names)
+    _b = list_free(env.tys)
+    _c = list_free(env.fn_names)
+    _d = list_free(env.fn_rets)
+    _e = list_free(env.g_names)
+    _f = list_free(env.g_idx)
+    0
+
+fn tenv_len(env: TEnv) -> Int ! alloc
+    list_len(env.names)
+
+fn tenv_bind(env: TEnv, name: String, ty: String) -> Int ! alloc
+    _a = list_push(env.names, strdup(name))
+    _b = list_push(env.tys, strdup(ty))
+    0
+
+# Drops the bindings made since the environment had `mark` of them.
+fn tenv_truncate(env: TEnv, mark: Int) -> Int ! alloc
+    if list_len(env.names) > mark
+        _a = list_pop(env.names)
+        _b = list_pop(env.tys)
+        tenv_truncate(env, mark)
+    else
+        0
+
+fn tenv_type_go(env: TEnv, name: String, i: Int) -> String ! alloc
+    if i < 0
+        d""
+    elsif str_eq(list_get(env.names, i), name) == 1
+        list_get(env.tys, i)
+    else
+        tenv_type_go(env, name, i - 1)
+
+fn tenv_type(env: TEnv, name: String) -> String ! alloc
+    tenv_type_go(env, name, list_len(env.names) - 1)
+
+# ---- structs ----
+fn tt_struct_find_go(structs: List[TStruct], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif tt_matches(name, list_get(structs, i).name) == 1
+        i
+    else
+        tt_struct_find_go(structs, name, i + 1, n)
+
+# Index of the struct `name` spells, or -1.
+fn tt_struct_find(structs: List[TStruct], name: String) -> Int ! alloc
+    tt_struct_find_go(structs, name, 0, list_len(structs))
+
+fn tt_field_type_go(fields: List[TField], field: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        d""
+    elsif str_eq(list_get(fields, i).name, field) == 1
+        list_get(fields, i).ty
+    else
+        tt_field_type_go(fields, field, i + 1, n)
+
+fn tt_field_type(structs: List[TStruct], sname: String, field: String) -> String ! alloc
+    si = tt_struct_find(structs, sname)
+    if si < 0
+        d""
+    else
+        fields = list_get(structs, si).fields
+        tt_field_type_go(fields, field, 0, list_len(fields))
+
+# ---- expressions ----
+fn tt_call_returns_string(name: String) -> Int ! alloc
+    call_returns_string(str_as_int(name))
+
+fn tt_matmul(env: TEnv, args: List[Expr]) -> String ! alloc
+    if list_len(args) == 2
+        a = str_as_int(texpr_type(env, list_get(args, 0)))
+        b = str_as_int(texpr_type(env, list_get(args, 1)))
+        r = tt_matmul_text(a, b)
+        if r == 0
+            d""
+        else
+            str_from_int(r)
+    else
+        d""
+
+fn tt_dict_get(env: TEnv, args: List[Expr]) -> String ! alloc
+    dt = texpr_type(env, list_get(args, 0))
+    v = tt_arg(dt, 1)
+    if str_len(v) == 0
+        d""
+    else
+        "Option" + "[" + v + "]"
+
+fn tt_user_call(env: TEnv, name: String, args: List[Expr]) -> String ! alloc
+    g = tt_index_of(env.g_names, name, 0, list_len(env.g_names))
+    if g >= 0
+        gi = list_get(env.g_idx, g) - 1
+        if gi < list_len(args)
+            texpr_type(env, list_get(args, gi))
+        else
+            d""
+    else
+        r = tt_index_of(env.fn_names, name, 0, list_len(env.fn_names))
+        if r >= 0
+            list_get(env.fn_rets, r)
+        else
+            d""
+
+fn tt_call_type(env: TEnv, name: String, args: List[Expr], targs: String) -> String ! alloc
+    if tt_call_returns_string(name) == 1
+        d"String"
+    elsif str_eq(name, "int_to_float") == 1
+        d"Float"
+    elsif str_eq(name, "load") == 1
+        targs
+    elsif str_eq(name, "matmul") == 1
+        tt_matmul(env, args)
+    elsif tt_struct_find(env.structs, name) >= 0
+        name
+    elsif str_eq(name, "list_new") == 1
+        if str_len(targs) == 0
+            d""
+        else
+            "List[" + targs + "]"
+    elsif str_eq(name, "list_get") == 1
+        tt_list_elem(texpr_type(env, list_get(args, 0)))
+    elsif str_eq(name, "list_pop") == 1
+        tt_list_elem(texpr_type(env, list_get(args, 0)))
+    elsif str_eq(name, "dict_new") == 1
+        if str_len(targs) == 0
+            d""
+        else
+            "Dict[" + targs + "]"
+    elsif str_eq(name, "dict_get") == 1
+        tt_dict_get(env, args)
+    else
+        tt_user_call(env, name, args)
+
+fn tt_block_tail_type(env: TEnv, b: TBlock) -> String ! alloc
+    texpr_type(env, b.tail)
+
+# sub, mul or div with a Float operand.
+fn tt_arith_is_float(env: TEnv, op: String, l: Expr, r: Expr) -> Int ! alloc
+    if str_eq(op, "sub") + str_eq(op, "mul") + str_eq(op, "div") == 0
+        0
+    elsif tt_is_float(texpr_type(env, l)) == 1
+        1
+    else
+        tt_is_float(texpr_type(env, r))
+
+fn tt_binary_type(env: TEnv, op: String, l: Expr, r: Expr) -> String ! alloc
+    if str_eq(op, "add") == 1
+        lt = texpr_type(env, l)
+        if tt_is_string(lt) == 1
+            d"String"
+        elsif tt_is_float(lt) == 1
+            d"Float"
+        else
+            d""
+    elsif tt_arith_is_float(env, op, l, r) == 1
+        d"Float"
+    else
+        d""
+
+fn tt_unary_type(env: TEnv, op: String, inner: Expr) -> String ! alloc
+    if str_eq(op, "neg") == 1
+        texpr_type(env, inner)
+    else
+        d""
+
+# Type text of `e` under `env`, "" when unknown.
+fn texpr_type(env: TEnv, e: Expr) -> String ! alloc
+    match e
+        XStr(s) => d"String"
+        XFloat(bits, txt) => d"Float"
+        XCall(name, args, targs) => tt_call_type(env, name, args, targs)
+        XTensor(nr, nc, data) => "Tensor[F32, " + int_to_str(nr) + ", " + int_to_str(nc) + "] on cpu"
+        XIdent(name) => tenv_type(env, name)
+        XUnary(op, inner) => tt_unary_type(env, op, inner)
+        XBin(op, l, r) => tt_binary_type(env, op, l, r)
+        XField(base, field) => tt_field_type(env.structs, texpr_type(env, base), field)
+        XIf(cond, then_b, else_b, has_else, elsifs) => tt_block_tail_type(env, then_b)
+        _ => d""
+
+fn texpr_is_string(env: TEnv, e: Expr) -> Int ! alloc
+    tt_is_string(texpr_type(env, e))
+
+# `a + b` where the left operand types as String.
+fn tbinary_is_string_concat(env: TEnv, e: Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) => tt_add_is_string(env, op, l)
+        _ => 0
+
+fn tt_add_is_string(env: TEnv, op: String, l: Expr) -> Int ! alloc
+    if str_eq(op, "add") == 1
+        texpr_is_string(env, l)
+    else
+        0

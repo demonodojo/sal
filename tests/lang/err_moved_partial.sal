@@ -1,0 +1,9 @@
+# error: E_MOVED
+struct P
+    name: String
+    other: String
+
+fn main() -> Int ! alloc
+    p = P(strdup(d"a"), strdup(d"b"))
+    n = p.name
+    str_len(n) + str_len(p.name)

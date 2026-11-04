@@ -114,3 +114,65 @@ fn tt_matmul_text(ta: Int, tb: Int) -> Int ! alloc
         head = "Tensor[" + str_from_int(vec_get(pa, 0))
         mid = tt_join_dims(pa, 1, vec_len(pa) - 1, head)
         str_as_int(mid + ", " + str_from_int(vec_get(pb, vec_len(pb) - 1)) + "] on " + tt_place(ta))
+
+# ---- typed forms: type texts as `String`, shape parts as `List[String]` ----
+# "" stands for an absent type and trims to "Unknown".
+fn ts_trim(s: String) -> String ! alloc
+    if str_len(s) == 0
+        d"Unknown"
+    else
+        ty_trim_go(s)
+
+fn ts_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ch = str_char(s, i)
+        if ch == 91
+            ts_parts(s, i + 1, n, from, depth + 1, out)
+        elsif ch == 93
+            if depth == 0
+                _p = list_push(out, strdup(ty_trim_go(tt_trim_left(str_slice(s, from, i)))))
+                0
+            else
+                ts_parts(s, i + 1, n, from, depth - 1, out)
+        elsif ch == 44
+            if depth == 0
+                _p = list_push(out, strdup(ty_trim_go(tt_trim_left(str_slice(s, from, i)))))
+                ts_parts(s, i + 1, n, i + 1, depth, out)
+            else
+                ts_parts(s, i + 1, n, from, depth, out)
+        else
+            ts_parts(s, i + 1, n, from, depth, out)
+
+# `Tensor[F32, 2, 3] on cpu` -> ["F32", "2", "3"].
+fn ts_split(t: String) -> List[String] ! alloc
+    s = ts_trim(t)
+    o = tt_open(s, 0, str_len(s))
+    out = list_new[String]()
+    _a = ts_parts(s, o, str_len(s), o, 0, out)
+    out
+
+fn ts_place(t: String) -> String ! alloc
+    s = ts_trim(t)
+    tt_place_go(s, str_len(s) - 1, str_len(s))
+
+fn ts_static(d: String) -> Int ! alloc
+    if str_len(d) == 0
+        0
+    elsif str_char(d, 0) >= 48
+        if str_char(d, 0) <= 57
+            1
+        else
+            0
+    else
+        0
+
+fn ts_dim(d: String) -> Int ! alloc
+    tt_dim_go(d, 0, str_len(d), 0)
+
+fn ts_join(parts: List[String], lo: Int, hi: Int, acc: String) -> String ! alloc
+    if lo >= hi
+        acc
+    else
+        ts_join(parts, lo + 1, hi, acc + ", " + list_get(parts, lo))

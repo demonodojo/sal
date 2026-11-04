@@ -261,7 +261,7 @@ fn track_stmt(
             consume_if_unique(init, &ity, moved, params, taken);
             let bound = ty.clone().unwrap_or(ity);
             env.insert(name.clone(), bound);
-            moved.remove(name);
+            revive(moved, name);
             if *is_frozen {
                 frozen.insert(name.clone());
             }
@@ -293,7 +293,20 @@ fn track_stmt(
                     }
                 }
                 env.insert(name.clone(), vty);
-                moved.remove(name);
+                revive(moved, name);
+            } else if let Expr::Field { base, field, .. } = target {
+                match base.as_ref() {
+                    // `p.f = v` puts a field back.
+                    Expr::Ident { name, span: bsp } => {
+                        if moved.contains(name) {
+                            return Err(moved_err(name, *bsp));
+                        }
+                        moved.remove(&format!("{name}.{field}"));
+                    }
+                    _ => {
+                        track_expr(target, env, moved, params, taken, used, frozen)?;
+                    }
+                }
             } else {
                 track_expr(target, env, moved, params, taken, used, frozen)?;
                 let _ = span;
@@ -369,12 +382,8 @@ fn track_expr(
             Ok(named("String", *span))
         }
         Expr::Ident { name, span } => {
-            if moved.contains(name) {
-                return Err(vec![Diagnostic::new(
-                    ErrorCode::EMoved,
-                    format!("use of moved value `{name}`"),
-                    *span,
-                )]);
+            if is_moved(moved, name) {
+                return Err(moved_err(name, *span));
             }
             if params.contains(name) {
                 used.insert(name.clone());
@@ -469,8 +478,18 @@ fn track_expr(
                 span: *span,
             })
         }
-        Expr::Field { base, span, .. } => {
-            track_expr(base, env, moved, params, taken, used, frozen)?;
+        Expr::Field { base, field, span } => {
+            if let Expr::Ident { name, span: bsp } = base.as_ref() {
+                // Reading a field of a partly moved value is fine unless that field left.
+                if moved.contains(name) || moved.contains(&format!("{name}.{field}")) {
+                    return Err(moved_err(name, *bsp));
+                }
+                if params.contains(name) {
+                    used.insert(name.clone());
+                }
+            } else {
+                track_expr(base, env, moved, params, taken, used, frozen)?;
+            }
             Ok(typed_or(e, named("Unknown", *span)))
         }
         Expr::Match {
@@ -567,6 +586,20 @@ fn use_lambda(
     })
 }
 
+/// `name` or any of its fields (`name.f`) was moved out.
+fn is_moved(moved: &HashSet<String>, name: &str) -> bool {
+    moved.contains(name) || moved.iter().any(|m| m.strip_prefix(name).is_some_and(|r| r.starts_with('.')))
+}
+
+/// A rebinding of `name` revives it and every field moved out of it.
+fn revive(moved: &mut HashSet<String>, name: &str) {
+    moved.retain(|m| m != name && !m.strip_prefix(name).is_some_and(|r| r.starts_with('.')));
+}
+
+fn moved_err(name: &str, span: Span) -> Vec<Diagnostic> {
+    vec![Diagnostic::new(ErrorCode::EMoved, format!("use of moved value `{name}`"), span)]
+}
+
 fn consume_if_unique(
     e: &Expr,
     ty: &Type,
@@ -581,6 +614,15 @@ fn consume_if_unique(
         moved.insert(name.clone());
         if params.contains(name) {
             taken.insert(name.clone());
+        }
+    }
+    // Partial move: `p.f` of a non-Copy field leaves `p` without that field.
+    if let Expr::Field { base, field, .. } = e {
+        if let Expr::Ident { name, .. } = base.as_ref() {
+            moved.insert(format!("{name}.{field}"));
+            if params.contains(name) {
+                taken.insert(name.clone());
+            }
         }
     }
 }
@@ -679,6 +721,7 @@ fn is_borrow_fn(name: &str) -> bool {
             | "list_free"
             | "dict_free"
             | "enum_free"
+            | "enum_owns"
             | "bytes_free"
             | "list_push"
             | "list_get"

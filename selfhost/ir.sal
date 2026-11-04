@@ -45,8 +45,17 @@ fn II_EXTRACT() -> Int
 fn II_REBIND() -> Int
     13
 
+fn II_EMAKE() -> Int
+    14
+
+fn II_EFIELD() -> Int
+    15
+
+fn II_SWITCH() -> Int
+    16
+
 # ---- Lower / IR ----
-fn cx_new(fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
+fn cx_new(fn_names: Int, fm: Int, struct_map: Int, fnrets: Int, enums: Int) -> Int ! alloc
     cx = vec_new()
     _a = vec_push(cx, 0)
     _b = vec_push(cx, vec_new())
@@ -63,7 +72,47 @@ fn cx_new(fn_names: Int, fm: Int, struct_map: Int, fnrets: Int) -> Int ! alloc
     _j = vec_push(cx, struct_map)
     _k = vec_push(cx, 0)
     _l = vec_push(cx, vec_new())
+    vm = map_new()
+    _m = variants_fill(vm, enums, 0, vec_len(enums))
+    _n = vec_push(cx, vm)
     cx
+
+# Variant name -> `[enum name, variant index, field count, tag]`; the first definition wins.
+fn cx_variants(cx: Int) -> Int ! alloc
+    vec_get(cx, 12)
+
+fn variants_fill(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ed = vec_get(enums, i)
+        vs = vec_get(ed, 1)
+        _a = variants_fill_go(m, vec_get(ed, 0), vs, 0, vec_len(vs))
+        variants_fill(m, enums, i + 1, n)
+
+fn variants_fill_go(m: Int, ename: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = vec_get(vs, i)
+        nf = vec_len(vec_get(v, 1))
+        tag = if nf == 0
+            if i == 0
+                0
+            else
+                i + 1
+        else
+            i + 1
+        if map_get(m, vec_get(v, 0)) == 0
+            rec = vec_new()
+            _a = vec_push(rec, ename)
+            _b = vec_push(rec, i)
+            _c = vec_push(rec, nf)
+            _d = vec_push(rec, tag)
+            _e = map_put(m, vec_get(v, 0), rec)
+            variants_fill_go(m, ename, vs, i + 1, n)
+        else
+            variants_fill_go(m, ename, vs, i + 1, n)
 
 # Tensor literals `[ssa, element texts]` seen while lowering; the IR text has no
 # instruction for them, the C backend needs the data.
@@ -212,6 +261,35 @@ fn ir_extract(dest: Int, base: Int, sname: Int, idx: Int) -> Int ! alloc
     _c = vec_push(inst, base)
     _d = vec_push(inst, sname)
     _e = vec_push(inst, idx)
+    inst
+
+fn ir_emake(dest: Int, ename: Int, vidx: Int, payload: Int, owned: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_EMAKE())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, ename)
+    _d = vec_push(inst, vidx)
+    _e = vec_push(inst, payload)
+    _f = vec_push(inst, owned)
+    inst
+
+fn ir_efield(dest: Int, value: Int, idx: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_EFIELD())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, value)
+    _d = vec_push(inst, idx)
+    inst
+
+# `arms` are `[tag, body, value]`.
+fn ir_switch(dest: Int, scrut: Int, arms: Int, default_body: Int, default_val: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_SWITCH())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, scrut)
+    _d = vec_push(inst, arms)
+    _e = vec_push(inst, default_body)
+    _f = vec_push(inst, default_val)
     inst
 
 fn ir_call_free(arg: Int) -> Int ! alloc

@@ -1,0 +1,15 @@
+# exit: 12
+# selfhost-xfail: methods are Rust bootstrap only for now
+enum Shape
+    Sq(Int)
+    Rect(Int, Int)
+
+method Shape.area() -> Int
+    match self
+        Sq(a) => a * a
+        Rect(w, h) => w * h
+
+fn main() -> Int
+    s = Sq(2)
+    r = Rect(2, 4)
+    s.area() + r.area()

@@ -1,0 +1,10 @@
+# exit: 9
+# selfhost-xfail: methods are Rust bootstrap only for now
+fn main() -> Int ! alloc
+    s = str_slice("hello world", 0, 5)
+    t = s.slice(1, 3)
+    eq = if s.eq("hello")
+        2
+    else
+        0
+    s.len() + t.len() + eq

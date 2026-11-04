@@ -21,6 +21,11 @@ pub struct TypeEnv {
     /// first parameter declared with that same type (the call's result type).
     pub generic_ret: HashMap<String, usize>,
     pub target: crate::target::Target,
+    /// `p.m(args)` calls resolved while inferring: call span → `T__m`.
+    /// `crate::methods::resolve_method_calls` rewrites them to direct calls.
+    pub method_calls: std::cell::RefCell<crate::methods::Resolved>,
+    /// Mangled names of `static` and `init` fns (`T__name`): they have no `self`.
+    pub statics: std::collections::HashSet<String>,
 }
 
 impl Default for TypeEnv {
@@ -32,12 +37,19 @@ impl Default for TypeEnv {
             fns: HashMap::new(),
             generic_ret: HashMap::new(),
             target: crate::target::Target::host(),
+            method_calls: Default::default(),
+            statics: Default::default(),
         }
     }
 }
 
 
 pub fn infer_program(prog: &Program) -> DiagResult<InferOutput> {
+    infer_program_with_env(prog, &type_env_of_program(prog))
+}
+
+/// The type environment of one program on its own (no imports).
+pub fn type_env_of_program(prog: &Program) -> TypeEnv {
     let mut types = TypeEnv::default();
     for item in &prog.items {
         match item {
@@ -53,16 +65,22 @@ pub fn infer_program(prog: &Program) -> DiagResult<InferOutput> {
             Item::Enum(e) => {
                 types.enums.insert(e.name.clone(), e.clone());
             }
-            Item::Fn(f) => {
-                types.fns.insert(f.name.clone(), fn_signature(f));
-                if let Some(i) = generic_ret_index(f) {
-                    types.generic_ret.insert(f.name.clone(), i);
-                }
-            }
+            Item::Fn(f) => register_fn(&mut types, f),
             _ => {}
         }
     }
-    infer_program_with_env(prog, &types)
+    types
+}
+
+/// Add `f` to the callable signatures, noting whether it is a `static`/`init`.
+pub fn register_fn(types: &mut TypeEnv, f: &FnDef) {
+    types.fns.insert(f.name.clone(), fn_signature(f));
+    if let Some(i) = generic_ret_index(f) {
+        types.generic_ret.insert(f.name.clone(), i);
+    }
+    if f.method_kind != MethodKind::Method {
+        types.statics.insert(f.name.clone());
+    }
 }
 
 pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<InferOutput> {
@@ -1172,6 +1190,184 @@ fn infer_enum_variant_constructor(
     })
 }
 
+/// `base.field(args)`: the method `T__field` of the receiver's nominal type `T`.
+fn infer_method_call(
+    base: &Expr,
+    field: &str,
+    type_args: &[TypeArg],
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let err = |msg: String, at: Span| Err(vec![Diagnostic::new(ErrorCode::EType, msg, at)]);
+    // `T.name(args)`: a type name that no local shadows is a static call.
+    if let Expr::Ident { name: tname, .. } = base {
+        if !env.contains_key(tname) {
+            // `List.new[Int]()`, `Dict.new[String, Int]()`, `Bytes.new(n)`: the
+            // constructor of a built-in type is the builtin, type arguments included.
+            if !types.structs.contains_key(tname) && !types.enums.contains_key(tname) {
+                if let Some((builtin, want)) = crate::methods::builtin_static(tname, field) {
+                    let got = type_args.iter().filter(|a| matches!(a, TypeArg::Type(_))).count();
+                    if got != want || type_args.len() != want {
+                        return err(
+                            format!(
+                                "`{tname}.{field}` takes {want} type argument(s), found {}: write `{tname}.{field}[…](…)`",
+                                type_args.len()
+                            ),
+                            span,
+                        );
+                    }
+                    let callee = Expr::Ident { name: builtin.to_string(), span };
+                    let ty = infer_call(&callee, type_args, args, env, ctx, types, entries, span)?;
+                    types
+                        .method_calls
+                        .borrow_mut()
+                        .insert((span.start, span.end), (builtin.to_string(), true));
+                    return Ok(ty);
+                }
+            }
+            if matches!(tname.as_str(), "List" | "Dict" | "Bytes" | "String" | "Int" | "Float" | "Bool")
+                && !types.structs.contains_key(tname)
+                && !types.enums.contains_key(tname)
+            {
+                return err(format!("type `{tname}` has no static `{field}`"), span);
+            }
+            if types.structs.contains_key(tname) || types.enums.contains_key(tname) {
+                if !type_args.is_empty() {
+                    return err(format!("`{tname}.{field}` takes no type arguments"), span);
+                }
+                return infer_static_call(tname, field, args, env, ctx, types, entries, span);
+            }
+        }
+    }
+    if !type_args.is_empty() {
+        return err(format!("method `{field}` takes no type arguments"), span);
+    }
+    let bty = check_expr(base, env, ctx, types, entries)?;
+    // A method of a built-in type is the builtin applied to the receiver. The
+    // receiver is bound once to a synthetic name, so a chain of calls is
+    // inferred in linear time.
+    if let Type::Named { name, .. } = &bty {
+        if let Some(builtin) = crate::methods::builtin_method(name, field) {
+            let recv = "__recv".to_string();
+            let mut env2 = env.clone();
+            env2.insert(recv.clone(), bty.clone());
+            let mut call_args = vec![Expr::Ident { name: recv, span: base.span() }];
+            call_args.extend(args.iter().cloned());
+            let callee = Expr::Ident { name: builtin.to_string(), span };
+            let ty = infer_call(&callee, type_args, &call_args, &env2, ctx, types, entries, span)?;
+            types
+                .method_calls
+                .borrow_mut()
+                .insert((span.start, span.end), (builtin.to_string(), false));
+            return Ok(ty);
+        }
+    }
+    let tname = match &bty {
+        Type::Named { name, args, .. } if args.is_empty() => name.clone(),
+        other => {
+            return err(
+                format!("cannot call method `{field}` on type {}", type_name(other)),
+                base.span(),
+            )
+        }
+    };
+    let mangled = format!("{tname}__{field}");
+    let Some((params, ret)) = types.fns.get(&mangled) else {
+        return err(format!("type `{tname}` has no method `{field}`"), span);
+    };
+    if types.statics.contains(&mangled) {
+        return err(
+            format!("`{tname}.{field}` is static: call it as `{tname}.{field}(…)`"),
+            span,
+        );
+    }
+    if args.len() + 1 != params.len() {
+        return err(
+            format!(
+                "method `{tname}.{field}` expects {} argument(s), found {}",
+                params.len() - 1,
+                args.len()
+            ),
+            span,
+        );
+    }
+    for (a, pt) in args.iter().zip(params.iter().skip(1)) {
+        let aty = check_expr(a, env, ctx, types, entries)?;
+        if !types_compatible(&aty, pt) {
+            return err(
+                format!(
+                    "argument type mismatch calling `{tname}.{field}`: expected {}, found {}",
+                    type_name(pt),
+                    type_name(&aty)
+                ),
+                a.span(),
+            );
+        }
+    }
+    types
+        .method_calls
+        .borrow_mut()
+        .insert((span.start, span.end), (mangled, false));
+    Ok(ret.clone())
+}
+
+/// `tname.field(args)` where `tname` is a type: the `static` or `init`
+/// function `tname__field` (`new` for an `init`).
+fn infer_static_call(
+    tname: &str,
+    field: &str,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let err = |msg: String, at: Span| Err(vec![Diagnostic::new(ErrorCode::EType, msg, at)]);
+    let mangled = format!("{tname}__{field}");
+    let Some((params, ret)) = types.fns.get(&mangled) else {
+        return err(format!("type `{tname}` has no static `{field}`"), span);
+    };
+    if !types.statics.contains(&mangled) {
+        return err(
+            format!("`{tname}.{field}` is an instance method: call it on a value, `x.{field}(…)`"),
+            span,
+        );
+    }
+    if args.len() != params.len() {
+        return err(
+            format!(
+                "`{tname}.{field}` expects {} argument(s), found {}",
+                params.len(),
+                args.len()
+            ),
+            span,
+        );
+    }
+    for (a, pt) in args.iter().zip(params.iter()) {
+        let aty = check_expr(a, env, ctx, types, entries)?;
+        if !types_compatible(&aty, pt) {
+            return err(
+                format!(
+                    "argument type mismatch calling `{tname}.{field}`: expected {}, found {}",
+                    type_name(pt),
+                    type_name(&aty)
+                ),
+                a.span(),
+            );
+        }
+    }
+    types
+        .method_calls
+        .borrow_mut()
+        .insert((span.start, span.end), (mangled, true));
+    Ok(ret.clone())
+}
+
 fn infer_call(
     func: &Expr,
     type_args: &[TypeArg],
@@ -1182,6 +1378,9 @@ fn infer_call(
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
 ) -> DiagResult<Type> {
+    if let Expr::Field { base, field, .. } = func {
+        return infer_method_call(base, field, type_args, args, env, ctx, types, entries, span);
+    }
     // Only direct named calls; lambdas are `Expr::Lambda`, not calls.
     let name = match func {
         Expr::Ident { name, .. } => name.as_str(),
@@ -1285,7 +1484,7 @@ fn infer_call(
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
-        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
+        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "enum_owns" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
             for a in args {

@@ -1,0 +1,13 @@
+# error: E_MOVED
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct N
+    name: String
+
+method N.consume(self take) -> Int ! alloc
+    str_len(self.name)
+
+fn main() -> Int ! alloc
+    n = N(strdup(d"hi"))
+    a = n.consume()
+    b = n.consume()
+    0

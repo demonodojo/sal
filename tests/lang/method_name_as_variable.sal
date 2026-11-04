@@ -1,0 +1,13 @@
+# exit: 3
+# selfhost-xfail: methods are Rust bootstrap only for now
+fn pick(method: Int) -> Int
+    method
+
+struct Q
+    v: Int
+
+method Q.get() -> Int
+    self.v
+
+fn main() -> Int
+    pick(Q(3).get())

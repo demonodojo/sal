@@ -8,6 +8,7 @@
     { "include": "#number" },
     { "include": "#function-def" },
     { "include": "#tensor" },
+    { "include": "#method" },
     { "include": "#keyword" },
     { "include": "#constant" },
     { "include": "#type" }
@@ -55,6 +56,10 @@
     "tensor": {
       "name": "keyword.control.sal",
       "match": "\\btensor(?=\\s*\\[)"
+    },
+    "method": {
+      "name": "keyword.control.sal",
+      "match": "^\\s*\\b(?:(?:method|static)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\.)|init(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\())"
     },
     "keyword": {
       "name": "keyword.control.sal",

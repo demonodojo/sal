@@ -1,0 +1,10 @@
+# exit: 3
+struct P
+    name: String
+    other: String
+
+fn main() -> Int ! alloc
+    p = P(strdup(d"a"), strdup(d"bb"))
+    n = p.name
+    m = p.other
+    str_len(n) + str_len(m)

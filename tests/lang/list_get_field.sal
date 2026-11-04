@@ -1,0 +1,13 @@
+# exit: 3
+struct B
+    p: Int
+    q: Int
+    r: Int
+
+fn third(xs: List[B]) -> Int ! alloc
+    list_get(xs, 0).r
+
+fn main() -> Int ! alloc
+    xs = list_new[B]()
+    _a = list_push(xs, B(1, 2, 3))
+    third(xs)

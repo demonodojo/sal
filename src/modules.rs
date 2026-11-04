@@ -20,6 +20,8 @@ pub struct ModuleExports {
 pub struct LoadedModule {
     pub path: PathBuf,
     pub program: Program,
+    /// The module defines `method`s (`methods::has_methods` before desugaring).
+    pub has_methods: bool,
 }
 
 #[derive(Clone)]
@@ -108,7 +110,29 @@ pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGr
         order,
     };
     crate::qualify::qualify_module_graph(&mut graph)?;
+    resolve_graph_methods(&mut graph)?;
     Ok(graph)
+}
+
+/// Rewrite `p.m(args)` to `T__m(p, args)` (or to the builtin, for `xs.push(v)`)
+/// in every module once the graph is qualified. Only when some module defines
+/// a method (definitions were already desugared at load time, which is why that
+/// flag is recorded by the loader) or calls something of the form `x.m(…)`.
+fn resolve_graph_methods(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnostic>> {
+    if !graph
+        .order
+        .iter()
+        .any(|m| m.has_methods || crate::methods::has_field_calls(&m.program))
+    {
+        return Ok(());
+    }
+    for i in 0..graph.order.len() {
+        let env = type_env_for_module(&graph.order[i], graph)?;
+        let mut prog = graph.order[i].program.clone();
+        crate::methods::resolve_methods(&mut prog, &env);
+        graph.order[i].program = prog;
+    }
+    Ok(())
 }
 
 fn load_module_recursive(
@@ -140,6 +164,8 @@ fn load_module_recursive(
     })?;
     let mut program = parse(&crate::interp::with_prelude_enums(&src)).map_err(|d| vec![d])?;
     crate::interp::expand_interpolation(&mut program);
+    let has_methods = crate::methods::has_methods(&program);
+    crate::methods::desugar_method_defs(&mut program)?;
 
     for item in &program.items {
         let Item::Import(imp) = item else {
@@ -169,6 +195,7 @@ fn load_module_recursive(
     order.push(LoadedModule {
         path: path.to_path_buf(),
         program,
+        has_methods,
     });
     Ok(())
 }
@@ -396,10 +423,7 @@ pub fn type_env_for_module(
     env.enums = imports.enums.clone();
     env.frames = imports.frames.clone();
     for f in imports.fns.values() {
-        env.fns.insert(f.name.clone(), crate::infer::fn_signature(f));
-        if let Some(i) = crate::infer::generic_ret_index(f) {
-            env.generic_ret.insert(f.name.clone(), i);
-        }
+        crate::infer::register_fn(&mut env, f);
     }
     // Functions reached through an aliased import (`alias.f()`, rewritten to a
     // plain call by `qualify`) are not flat exports but still have a signature.
@@ -409,9 +433,8 @@ pub fn type_env_for_module(
         }
         for item in &dep.program.items {
             if let Item::Fn(f) = item {
-                env.fns.entry(f.name.clone()).or_insert_with(|| crate::infer::fn_signature(f));
-                if let Some(i) = crate::infer::generic_ret_index(f) {
-                    env.generic_ret.entry(f.name.clone()).or_insert(i);
+                if !env.fns.contains_key(&f.name) {
+                    crate::infer::register_fn(&mut env, f);
                 }
             }
         }
@@ -472,10 +495,7 @@ pub fn type_env_for_module(
                         f.span,
                     )]);
                 }
-                env.fns.insert(f.name.clone(), crate::infer::fn_signature(f));
-                if let Some(i) = crate::infer::generic_ret_index(f) {
-                    env.generic_ret.insert(f.name.clone(), i);
-                }
+                crate::infer::register_fn(&mut env, f);
             }
             Item::Import(_) => {}
         }

@@ -229,6 +229,10 @@ fn main() {
             let src = std::fs::read_to_string(&file).expect("read");
             let mut prog = parse(&src).expect("parse");
             sal_compiler::interp::expand_interpolation(&mut prog);
+            if let Err(diags) = sal_compiler::methods::prepare_program(&mut prog) {
+                print_diags(&diags, "human");
+                std::process::exit(1);
+            }
             match kind.as_str() {
                 "ast" => println!("{}", serde_json::to_string_pretty(&prog).expect("json")),
                 "typed" => {

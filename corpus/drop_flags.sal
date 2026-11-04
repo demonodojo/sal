@@ -1,0 +1,40 @@
+fn branch(n: Int) -> Int ! alloc
+    s = int_to_str(n)
+    xs = list_new[String]()
+    if n > 3
+        _a = list_push(xs, s)
+        0
+    else
+        0
+    k = list_len(xs)
+    _f = list_free(xs)
+    k
+
+fn early(n: Int) -> Int ! alloc
+    s = int_to_str(n)
+    xs = list_new[String]()
+    if n > 3
+        _a = list_push(xs, s)
+        _b = list_free(xs)
+        return 1
+    k = str_len(s)
+    _c = list_free(xs)
+    k
+
+fn looped(n: Int) -> Int ! alloc
+    xs = list_new[String]()
+    i = 0
+    while i < n
+        t = int_to_str(i)
+        if i > 1
+            _a = list_push(xs, t)
+            0
+        else
+            0
+        i = i + 1
+    k = list_len(xs)
+    _f = list_free(xs)
+    k
+
+fn main() -> Int ! alloc
+    branch(5) + branch(1) + early(5) + early(1) + looped(4)

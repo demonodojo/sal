@@ -1,0 +1,15 @@
+struct Pt
+    x: Int
+    y: Int
+
+init Pt(x: Int)
+    Pt(x, 0)
+
+static Pt.diag(n: Int) -> Pt
+    Pt(n, n)
+
+method Pt.sum() -> Int
+    self.x + self.y
+
+fn mk() -> Pt
+    Pt.diag(1)

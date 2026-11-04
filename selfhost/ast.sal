@@ -792,11 +792,11 @@ fn list_elem_type(t: Int) -> Int ! alloc
         0
     else
         s = str_from_int(t)
-        n = str_len(s)
-        if n < 7
+        open = ty_find_open(s, 0)
+        if open < 0
             0
-        elsif str_eq(str_slice(s, 0, 5), "List[") == 1
-            str_as_int(str_slice(s, 5, n - 1))
+        elsif str_eq(trim_spaces(str_slice(s, 0, open)), "List") == 1
+            nth_type_arg(s, 0)
         else
             0
 

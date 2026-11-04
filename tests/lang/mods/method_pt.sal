@@ -1,0 +1,12 @@
+struct Pt
+    x: Int
+    y: Int
+
+method Pt.sum() -> Int
+    self.x + self.y
+
+fn origin() -> Pt
+    Pt(0, 0)
+
+fn mk(x: Int, y: Int) -> Pt
+    Pt(x, y)

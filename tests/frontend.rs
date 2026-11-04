@@ -41,7 +41,7 @@ fn examples_parse() {
         let src = std::fs::read_to_string(format!("examples/{name}.sal")).unwrap();
         let p = assert_parse(&src);
         assert!(!p.items.is_empty(), "{name} has no items");
-        assert_eq!(p.schema_version, 2);
+        assert_eq!(p.schema_version, 3);
     }
 }
 
@@ -314,9 +314,9 @@ fn id[T](x: T) -> T
 fn ast_json_roundtrip_with_schema() {
     let src = std::fs::read_to_string("examples/gpu_roundtrip.sal").unwrap();
     let p = assert_parse(&src);
-    assert_eq!(p.schema_version, 2);
+    assert_eq!(p.schema_version, 3);
     let j = serde_json::to_string(&p).unwrap();
-    assert!(j.contains("\"schema_version\":2") || j.contains("\"schema_version\": 2"));
+    assert!(j.contains("\"schema_version\":3") || j.contains("\"schema_version\": 3"));
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }
@@ -772,4 +772,97 @@ fn call_and_brackets_may_break_across_lines() {
         },
         other => panic!("expected assign, got {other:?}"),
     }
+}
+
+#[test]
+fn method_item_parses_with_receiver_and_formats_back() {
+    let src = "struct P\n    x: Int\n\nmethod P.sum(k: Int) -> Int\n    self.x + k\n\nfn main() -> Int\n    P(1).sum(2)\n";
+    let p = assert_parse(src);
+    let f = p
+        .items
+        .iter()
+        .find_map(|i| match i {
+            sal_compiler::ast::Item::Fn(f) if f.receiver.is_some() => Some(f),
+            _ => None,
+        })
+        .expect("method item");
+    assert_eq!(f.name, "sum");
+    assert_eq!(f.receiver.as_deref(), Some("P"));
+    assert_eq!(f.params.len(), 1, "self is added by desugar, not by the parser");
+    assert_eq!(format_program(&p), src);
+    assert_fmt_idempotent(src);
+}
+
+#[test]
+fn method_stays_a_plain_identifier_elsewhere() {
+    assert_parse("fn f(method: Int) -> Int\n    method\n");
+}
+
+#[test]
+fn method_without_receiver_type_is_e_parse() {
+    let e = parse("method sum() -> Int\n    1\n").expect_err("no receiver");
+    assert_eq!(e.code, sal_compiler::diag::ErrorCode::EParse);
+}
+
+#[test]
+fn method_with_type_params_is_e_parse() {
+    let e = parse("struct P\n    x: Int\n\nmethod P.f[T]() -> Int\n    1\n").expect_err("generic method");
+    assert_eq!(e.code, sal_compiler::diag::ErrorCode::EParse);
+}
+
+#[test]
+fn method_self_mode_parses_and_formats_back() {
+    let src = "struct P\n    x: Int\n\nmethod P.a(self take) -> Int\n    self.x\n\nmethod P.b(self borrow, k: Int) -> Int\n    self.x + k\n\nmethod P.c(k: Int) -> Int\n    self.x + k\n";
+    let p = assert_parse(src);
+    use sal_compiler::ast::{Item, ParamMode};
+    let modes: Vec<(ParamMode, usize)> = p
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Fn(f) => Some((f.self_mode, f.params.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(modes, vec![(ParamMode::Take, 0), (ParamMode::Borrow, 1), (ParamMode::Inferred, 1)]);
+    assert_eq!(format_program(&p), src);
+}
+
+#[test]
+fn method_self_with_a_type_is_e_parse() {
+    let e = parse("struct P\n    x: Int\n\nmethod P.f(self: P) -> Int\n    1\n").expect_err("typed self");
+    assert_eq!(e.code, sal_compiler::diag::ErrorCode::EParse);
+}
+
+#[test]
+fn static_and_init_items_parse_and_format_back() {
+    let src = "struct P\n    x: Int\n\nstatic P.origin() -> P\n    P(0)\n\ninit P(x: Int) ! alloc\n    P(x)\n";
+    let p = assert_parse(src);
+    use sal_compiler::ast::{Item, MethodKind};
+    let items: Vec<(String, Option<String>, MethodKind)> = p
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Fn(f) => Some((f.name.clone(), f.receiver.clone(), f.method_kind)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        items,
+        vec![
+            ("origin".to_string(), Some("P".to_string()), MethodKind::Static),
+            ("new".to_string(), Some("P".to_string()), MethodKind::Init),
+        ]
+    );
+    assert_eq!(format_program(&p), src);
+}
+
+#[test]
+fn static_and_init_stay_plain_identifiers_elsewhere() {
+    assert_parse("fn f(static: Int, init: Int) -> Int\n    static + init\n");
+}
+
+#[test]
+fn init_with_an_arrow_is_e_parse() {
+    let e = parse("struct P\n    x: Int\n\ninit P(x: Int) -> P\n    P(x)\n").expect_err("init has no arrow");
+    assert_eq!(e.code, sal_compiler::diag::ErrorCode::EParse);
 }

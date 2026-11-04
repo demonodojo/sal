@@ -1,10 +1,12 @@
 # Attribute checks, the mirror of src/attrs.rs plus the `@frozen` rule of
 # src/ownership.rs: `@layout(c)` fields, `@no_heap` fns, `@stack` types and
 # assignments to `@frozen` bindings. (`@stack` initializers that allocate are
-# caught by the effects pass.)
+# caught by the effects pass.) It reads the typed AST (`tast.sal`).
 import ast
 import result
 import effects
+import tast
+import ttypes
 
 # End of the first word of a type text (`Int ` -> 3).
 fn at_word_end(text: String, i: Int, n: Int) -> Int ! alloc
@@ -22,28 +24,25 @@ fn at_head(text: String) -> String ! alloc
     e = at_word_end(text, 0, n)
     str_slice(text, 0, e)
 
-fn at_find_struct(structs: Int, name: String, i: Int, n: Int) -> Int ! alloc
+# Index of the struct named `name`, or -1.
+fn at_find_struct(structs: List[TStruct], name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
-        0
+        0 - 1
+    elsif str_eq(list_get(structs, i).name, name) == 1
+        i
     else
-        s = vec_get(structs, i)
-        if str_eq(str_from_int(vec_get(s, 0)), name) == 1
-            s
-        else
-            at_find_struct(structs, name, i + 1, n)
+        at_find_struct(structs, name, i + 1, n)
 
-fn at_fields_stack(structs: Int, fields: Int, i: Int, n: Int, depth: Int) -> Int ! alloc
+fn at_fields_stack(structs: List[TStruct], fields: List[TField], i: Int, n: Int, depth: Int) -> Int ! alloc
     if i >= n
         1
+    elsif at_is_stack(structs, list_get(fields, i).ty, depth + 1) == 1
+        at_fields_stack(structs, fields, i + 1, n, depth)
     else
-        fld = vec_get(fields, i)
-        if at_is_stack(structs, str_from_int(vec_get(fld, 1)), depth + 1) == 1
-            at_fields_stack(structs, fields, i + 1, n, depth)
-        else
-            0
+        0
 
 # Whether a type (by its text) lives on the stack: scalars and structs of them.
-fn at_is_stack(structs: Int, raw: String, depth: Int) -> Int ! alloc
+fn at_is_stack(structs: List[TStruct], raw: String, depth: Int) -> Int ! alloc
     text = at_head(raw)
     if str_contains(raw, d"[") == 1
         0
@@ -58,26 +57,26 @@ fn at_is_stack(structs: Int, raw: String, depth: Int) -> Int ! alloc
     elsif depth > 8
         0
     else
-        s = at_find_struct(structs, text, 0, vec_len(structs))
-        if s == 0
+        si = at_find_struct(structs, text, 0, list_len(structs))
+        if si < 0
             0
         else
-            fields = structdef_fields(s)
-            at_fields_stack(structs, fields, 0, vec_len(fields), depth)
+            fields = list_get(structs, si).fields
+            at_fields_stack(structs, fields, 0, list_len(fields), depth)
 
-fn at_ty_heap(structs: Int, ty: Int) -> Int ! alloc
-    if ty == 0
+fn at_ty_heap(structs: List[TStruct], ty: String) -> Int ! alloc
+    if str_len(ty) == 0
         0
-    elsif at_is_stack(structs, str_from_int(ty), 0) == 1
+    elsif at_is_stack(structs, ty, 0) == 1
         0
     else
         1
 
-fn at_layout_fields(fields: Int, i: Int, n: Int) -> Int ! alloc
+fn at_layout_fields(fields: List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        ty = at_head(str_from_int(vec_get(vec_get(fields, i), 1)))
+        ty = at_head(list_get(fields, i).ty)
         if str_eq(ty, "Int") == 1
             at_layout_fields(fields, i + 1, n)
         elsif str_eq(ty, "Float") == 1
@@ -87,209 +86,204 @@ fn at_layout_fields(fields: Int, i: Int, n: Int) -> Int ! alloc
         else
             result_err_str("@layout(c) struct fields must be Int, Float or Bool")
 
-fn at_layout(structs: Int, i: Int, n: Int) -> Int ! alloc
+fn at_layout_struct(s: TStruct) -> Int ! alloc
+    if s.layout_c == 1
+        at_layout_fields(s.fields, 0, list_len(s.fields))
+    else
+        result_ok(0)
+
+fn at_layout(structs: List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        s = vec_get(structs, i)
-        r = result_ok(0)
-        if structdef_layout_c(s) == 1
-            fields = structdef_fields(s)
-            r = at_layout_fields(fields, 0, vec_len(fields))
-        else
-            r = result_ok(0)
+        r = at_layout_struct(list_get(structs, i))
         if result_is_err(r) == 1
             r
         else
             at_layout(structs, i + 1, n)
 
-fn at_no_heap_params(structs: Int, params: Int, i: Int, n: Int) -> Int ! alloc
+fn at_no_heap_params(structs: List[TStruct], params: List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        pm = vec_get(params, i)
-        if at_ty_heap(structs, vec_get(pm, 1)) == 1
-            result_err_str("@no_heap function cannot take heap parameter `" + str_from_int(vec_get(pm, 0)) + "`")
+        pm = list_get(params, i)
+        if at_ty_heap(structs, pm.ty) == 1
+            result_err_str("@no_heap function cannot take heap parameter `" + pm.name + "`")
         else
             at_no_heap_params(structs, params, i + 1, n)
 
 # Walk the lets of a block (and nested `while` bodies): declared heap types are
 # rejected for `@no_heap` fns (mode 0) and `@stack` lets (mode 1).
-fn at_block_lets(structs: Int, b: Int, mode: Int) -> Int ! alloc
-    if b == 0
-        result_ok(0)
+fn at_block_lets(structs: List[TStruct], b: TBlock, mode: Int) -> Int ! alloc
+    r = at_stmt_lets(structs, b.stmts, 0, list_len(b.stmts), mode)
+    if result_is_err(r) == 1
+        r
     else
-        stmts = block_stmts(b)
-        r = at_stmt_lets(structs, stmts, 0, vec_len(stmts), mode)
-        if result_is_err(r) == 1
-            r
+        at_expr_lets(structs, b.tail, mode)
+
+fn at_expr_lets(structs: List[TStruct], e: Expr, mode: Int) -> Int ! alloc
+    match e
+        XWhile(cond, body) => at_block_lets(structs, body, mode)
+        _ => result_ok(0)
+
+# 1 when the binding `st` declares a heap type that `mode` forbids.
+fn at_stmt_bad(structs: List[TStruct], st: TStmt, mode: Int) -> Int ! alloc
+    if st.kind == 1
+        if st.is_let == 1
+            if mode == 0
+                at_ty_heap(structs, st.ty)
+            elsif st.stack == 1
+                at_ty_heap(structs, st.ty)
+            else
+                0
         else
-            at_expr_lets(structs, block_tail(b), mode)
-
-fn at_expr_lets(structs: Int, e: Int, mode: Int) -> Int ! alloc
-    if e == 0
-        result_ok(0)
-    elsif ex_kind(e) == EX_WHILE()
-        at_block_lets(structs, vec_get(e, 2), mode)
+            0
     else
-        result_ok(0)
+        0
 
-fn at_stmt_lets(structs: Int, stmts: Int, i: Int, n: Int, mode: Int) -> Int ! alloc
+fn at_stmt_lets(structs: List[TStruct], stmts: List[TStmt], i: Int, n: Int, mode: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        st = vec_get(stmts, i)
-        bad = 0
-        if vec_get(st, 0) == 1
-            if vec_get(st, 4) == 1
-                if mode == 0
-                    bad = at_ty_heap(structs, vec_get(st, 3))
-                elsif vec_get(st, 7) == 1
-                    bad = at_ty_heap(structs, vec_get(st, 3))
-                else
-                    bad = 0
-            else
-                bad = 0
-        else
-            bad = 0
-        if bad == 1
+        st = list_get(stmts, i)
+        if at_stmt_bad(structs, st, mode) == 1
             if mode == 0
                 result_err_str("@no_heap function cannot bind a heap type")
             else
-                result_err_str("@stack `" + str_from_int(vec_get(st, 1)) + "` cannot hold a heap value")
+                result_err_str("@stack `" + st.name + "` cannot hold a heap value")
         else
-            r = at_expr_lets(structs, vec_get(st, 2), mode)
+            r = at_expr_lets(structs, st.expr, mode)
             if result_is_err(r) == 1
                 r
             else
                 at_stmt_lets(structs, stmts, i + 1, n, mode)
 
-fn at_no_heap_fn(structs: Int, f: Int, env: Int) -> Int ! alloc
-    ret = fndef_ret(f)
-    if at_ty_heap(structs, ret) == 1
+fn at_no_heap_body(structs: List[TStruct], f: TFn, env: TEnv) -> Int ! alloc
+    used = fx_new(callees_new())
+    _s = fx_seed_params(f.params, 0, list_len(f.params), env)
+    _b = fx_scan_block(f.body, used, env)
+    _z = tenv_truncate(env, 0)
+    allocates = fx_used(used, 1)
+    _f = list_free(used.flags)
+    if allocates == 1
+        result_err_str("@no_heap function body cannot allocate")
+    else
+        at_block_lets(structs, f.body, 0)
+
+fn at_no_heap_fn(structs: List[TStruct], f: TFn, env: TEnv) -> Int ! alloc
+    if at_ty_heap(structs, f.ret) == 1
         result_err_str("@no_heap function cannot return a heap type")
     else
-        params = vec_get(f, 1)
-        r = at_no_heap_params(structs, params, 0, vec_len(params))
+        r = at_no_heap_params(structs, f.params, 0, list_len(f.params))
         if result_is_err(r) == 1
             r
         else
-            used = fx_flags_new()
-            _m = vec_push(used, map_new())
-            _s = fx_seed_params(params, 0, vec_len(params), env)
-            _b = fx_scan_block(vec_get(f, 2), used, env)
-            _z = strenv_set_len(env, 0)
-            if vec_get(used, 1) == 1
-                result_err_str("@no_heap function body cannot allocate")
-            else
-                at_block_lets(structs, vec_get(f, 2), 0)
+            at_no_heap_body(structs, f, env)
 
 # `names`: the `@frozen` bindings seen so far in the fn.
-fn at_frozen_block(b: Int, names: Int) -> Int ! alloc
-    if b == 0
-        result_ok(0)
+fn at_frozen_block(b: TBlock, names: List[String]) -> Int ! alloc
+    r = at_frozen_stmts(b.stmts, 0, list_len(b.stmts), names)
+    if result_is_err(r) == 1
+        r
     else
-        stmts = block_stmts(b)
-        r = at_frozen_stmts(stmts, 0, vec_len(stmts), names)
-        if result_is_err(r) == 1
-            r
-        else
-            at_frozen_expr(block_tail(b), names)
+        at_frozen_expr(b.tail, names)
 
-fn at_frozen_arms(arms: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+fn at_frozen_elsifs(arms: List[TElsif], i: Int, n: Int, names: List[String]) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        r = at_frozen_block(vec_get(vec_get(arms, i), 1), names)
+        r = at_frozen_block(list_get(arms, i).body, names)
         if result_is_err(r) == 1
             r
         else
-            at_frozen_arms(arms, i + 1, n, names)
+            at_frozen_elsifs(arms, i + 1, n, names)
 
-fn at_frozen_expr(e: Int, names: Int) -> Int ! alloc
-    if e == 0
-        result_ok(0)
-    elsif ex_kind(e) == EX_WHILE()
-        at_frozen_block(vec_get(e, 2), names)
-    elsif ex_kind(e) == EX_ON()
-        at_frozen_block(vec_get(e, 2), names)
-    elsif ex_kind(e) == EX_IF()
-        r = at_frozen_block(vec_get(e, 2), names)
-        if result_is_err(r) == 1
-            r
-        else
-            arms = vec_get(e, 4)
-            r2 = at_frozen_arms(arms, 0, vec_len(arms), names)
-            if result_is_err(r2) == 1
-                r2
-            else
-                at_frozen_block(vec_get(e, 3), names)
+fn at_frozen_if(then_b: TBlock, else_b: TBlock, elsifs: List[TElsif], names: List[String]) -> Int ! alloc
+    r = at_frozen_block(then_b, names)
+    if result_is_err(r) == 1
+        r
     else
-        result_ok(0)
+        r2 = at_frozen_elsifs(elsifs, 0, list_len(elsifs), names)
+        if result_is_err(r2) == 1
+            r2
+        else
+            at_frozen_block(else_b, names)
 
-fn at_name_in(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+fn at_frozen_expr(e: Expr, names: List[String]) -> Int ! alloc
+    match e
+        XWhile(cond, body) => at_frozen_block(body, names)
+        XOn(place, body, is_kern, has_index) => at_frozen_block(body, names)
+        XIf(cond, then_b, else_b, has_else, elsifs) => at_frozen_if(then_b, else_b, elsifs, names)
+        _ => result_ok(0)
+
+fn at_name_in(names: List[String], name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif str_eq(str_from_int(vec_get(names, i)), str_from_int(name)) == 1
+    elsif str_eq(list_get(names, i), name) == 1
         1
     else
         at_name_in(names, name, i + 1, n)
 
-fn at_frozen_stmts(stmts: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+fn at_frozen_stmts(stmts: List[TStmt], i: Int, n: Int, names: List[String]) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        st = vec_get(stmts, i)
-        if vec_get(st, 0) == 1
-            if vec_get(st, 4) == 1
-                if vec_get(st, 6) == 1
-                    _p = vec_push(names, vec_get(st, 1))
+        st = list_get(stmts, i)
+        if st.kind == 1
+            if st.is_let == 1
+                if st.frozen == 1
+                    _p = list_push(names, strdup(st.name))
                     at_frozen_stmts(stmts, i + 1, n, names)
                 else
                     at_frozen_stmts(stmts, i + 1, n, names)
-            elsif at_name_in(names, vec_get(st, 1), 0, vec_len(names)) == 1
-                result_err_str("`" + str_from_int(vec_get(st, 1)) + "` is @frozen and cannot be mutated")
+            elsif at_name_in(names, st.name, 0, list_len(names)) == 1
+                result_err_str("`" + st.name + "` is @frozen and cannot be mutated")
             else
                 at_frozen_stmts(stmts, i + 1, n, names)
         else
-            r = at_frozen_expr(vec_get(st, 2), names)
+            r = at_frozen_expr(st.expr, names)
             if result_is_err(r) == 1
                 r
             else
                 at_frozen_stmts(stmts, i + 1, n, names)
 
-fn at_check_fns(prog: Int, fns: Int, i: Int, n: Int, env: Int) -> Int ! alloc
-    if i >= n
-        result_ok(0)
-    else
-        f = vec_get(fns, i)
-        structs = prog_structs(prog)
-        r = result_ok(0)
-        if fndef_no_heap(f) == 1
-            r = at_no_heap_fn(structs, f, env)
-        else
-            r = result_ok(0)
-        if result_is_err(r) == 1
-            r
-        else
-            r2 = at_block_lets(structs, vec_get(f, 2), 1)
-            if result_is_err(r2) == 1
-                r2
-            else
-                r3 = at_frozen_block(vec_get(f, 2), vec_new())
-                if result_is_err(r3) == 1
-                    r3
-                else
-                    at_check_fns(prog, fns, i + 1, n, env)
+fn at_frozen_fn(f: TFn) -> Int ! alloc
+    names = list_new[String]()
+    r = at_frozen_block(f.body, names)
+    _f = list_free(names)
+    r
 
-# Ok(0), or Err(message) for the first attribute violation in `prog`.
-fn check_attrs(prog: Int) -> Int ! alloc
-    structs = prog_structs(prog)
-    r = at_layout(structs, 0, vec_len(structs))
+fn at_check_fn(structs: List[TStruct], f: TFn, env: TEnv) -> Int ! alloc
+    r = if f.no_heap == 1
+        at_no_heap_fn(structs, f, env)
+    else
+        result_ok(0)
     if result_is_err(r) == 1
         r
     else
-        env = strenv_new()
-        _g = strenv_set_globals(env, fnret_map_from_prog(prog), structs)
-        fns = prog_fns(prog)
-        at_check_fns(prog, fns, 0, vec_len(fns), env)
+        r2 = at_block_lets(structs, f.body, 1)
+        if result_is_err(r2) == 1
+            r2
+        else
+            at_frozen_fn(f)
+
+fn at_check_fns(tp: TProgram, i: Int, n: Int, env: TEnv) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        r = at_check_fn(tp.structs, list_get(tp.fns, i), env)
+        if result_is_err(r) == 1
+            r
+        else
+            at_check_fns(tp, i + 1, n, env)
+
+# Ok(0), or Err(message) for the first attribute violation in `tp`.
+fn check_attrs(tp: TProgram) -> Int ! alloc
+    r = at_layout(tp.structs, 0, list_len(tp.structs))
+    if result_is_err(r) == 1
+        r
+    else
+        env = tenv_new(tp)
+        out = at_check_fns(tp, 0, list_len(tp.fns), env)
+        _f = tenv_free(env)
+        out

@@ -69,11 +69,23 @@ fn compute_clashing_names(graph: &ModuleGraph) -> HashSet<String> {
             *counts.entry(name).or_default() += 1;
         }
     }
-    counts
+    let mut clashes: HashSet<String> = counts
         .into_iter()
         .filter(|(_, c)| *c > 1)
         .map(|(n, _)| n)
-        .collect()
+        .collect();
+    // A method `T__m` follows its type: if `T` is renamed `modid__T`, the
+    // method has to become `modid__T__m` so that `p.m()` still finds it.
+    for module in &graph.order {
+        for name in export_item_names(&module.program) {
+            if let Some((ty, _)) = name.split_once("__") {
+                if clashes.contains(ty) {
+                    clashes.insert(name);
+                }
+            }
+        }
+    }
+    clashes
 }
 
 fn compute_clashing_variant_names(graph: &ModuleGraph) -> HashSet<String> {
@@ -529,7 +541,15 @@ fn rename_expr_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
                 rename_expr_refs(a, renames);
             }
         }
-        Expr::Field { base, .. } => rename_expr_refs(base, renames),
+        // `T.name(…)`: a renamed type used as the base of a static call.
+        Expr::Field { base, .. } => match &mut **base {
+            Expr::Ident { name, .. } => {
+                if let Some(n) = renames.get(name.as_str()) {
+                    *name = n.clone();
+                }
+            }
+            other => rename_expr_refs(other, renames),
+        },
         Expr::Binary { left, right, .. } => {
             rename_expr_refs(left, renames);
             rename_expr_refs(right, renames);

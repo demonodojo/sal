@@ -490,7 +490,9 @@ fn lower_expr(cx: Int, e: Int) -> Int ! alloc
             _p = ir_push(cx, ir_cs(d, vec_get(e, 1)))
             d
         elsif k == EX_IDENT()
-            cx_lookup(cx, vec_get(e, 1))
+            lower_ident(cx, vec_get(e, 1))
+        elsif k == EX_MATCH()
+            lower_match(cx, e)
         elsif k == EX_BINARY()
             if binary_add_is_string_concat(e, cx_strenv(cx)) == 1
                 lower_str_add(cx, e)
@@ -728,6 +730,8 @@ fn lower_call(cx: Int, e: Int) -> Int ! alloc
     args = vec_get(e, 2)
     if is_struct_ctor_call(cx, fname, args) == 1
         lower_struct_ctor(cx, fname, args)
+    elsif variant_rec(cx, fname) != 0
+        lower_variant_ctor(cx, fname, args)
     else
         lower_call_runtime(cx, e, fname, args)
 
@@ -742,6 +746,71 @@ fn scalar_kind_text(txt: String, i: Int, j: Int) -> Int ! alloc
         3
     else
         0
+
+# Kind of a field type for flat-struct lists: 0 Int/Float/Bool, 1 String, -1 other.
+fn flat_field_class(ty: Int) -> Int ! alloc
+    if ty == 0
+        0 - 1
+    else
+        t = trim_type_piece(str_from_int(ty))
+        if str_eq(t, "String") == 1
+            1
+        elsif str_eq(t, "Int") == 1
+            0
+        elsif str_eq(t, "Float") == 1
+            0
+        elsif str_eq(t, "Bool") == 1
+            0
+        else
+            0 - 1
+
+# Bit mask of the String fields of `sd`, or -1 when a field is not Int/Float/Bool/String.
+fn flat_mask(fields: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        c = flat_field_class(vec_get(vec_get(fields, i), 1))
+        if c < 0
+            0 - 1
+        elsif c == 1
+            flat_mask(fields, i + 1, n, acc + shift_left_one(i))
+        else
+            flat_mask(fields, i + 1, n, acc)
+
+fn shift_left_one(i: Int) -> Int ! alloc
+    if i == 0
+        1
+    else
+        2 * shift_left_one(i - 1)
+
+# `4 | n << 4 | mask << 12` for `List[S]` of a flat struct `S`, else -1.
+fn flat_struct_kind(sd: Int) -> Int ! alloc
+    n = structdef_field_count(sd)
+    if vec_len(structdef_params(sd)) > 0
+        0 - 1
+    elsif n < 2
+        0 - 1
+    elsif n > 20
+        0 - 1
+    else
+        mask = flat_mask(structdef_fields(sd), 0, n, 0)
+        if mask < 0
+            0 - 1
+        else
+            4 + n * 16 + mask * 4096
+
+# Element kind of the type argument text `txt[i, j)`: a flat struct or a scalar.
+fn list_elem_kind(cx: Int, txt: String, i: Int, j: Int) -> Int ! alloc
+    t = trim_type_piece(str_slice(txt, i, j))
+    sd = struct_find(cx_struct_map(cx), str_as_int(t))
+    if sd == 0
+        scalar_kind_text(txt, i, j)
+    else
+        k = flat_struct_kind(sd)
+        if k < 0
+            scalar_kind_text(txt, i, j)
+        else
+            k
 
 fn trim_type_piece(t: String) -> String ! alloc
     n = str_len(t)
@@ -765,7 +834,7 @@ fn lower_container_new(cx: Int, e: Int, d: Int, nkinds: Int) -> Int ! alloc
     k1 = 0
     k2 = 0
     if comma < 0
-        k1 = scalar_kind_text(txt, 0, str_len(txt))
+        k1 = list_elem_kind(cx, txt, 0, str_len(txt))
     else
         k1 = scalar_kind_text(txt, 0, comma)
         k2 = scalar_kind_text(txt, comma + 1, str_len(txt))
@@ -942,6 +1011,164 @@ fn lower_call_normal(cx: Int, e: Int) -> Int ! alloc
     rname = runtime_name(cx, fname)
     _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
     d
+
+# ---- enums ----
+fn variant_rec(cx: Int, name: Int) -> Int ! alloc
+    map_get(cx_variants(cx), name)
+
+# A bound name, or a payload-free variant (a unit value), else the name itself.
+fn lower_ident(cx: Int, name: Int) -> Int ! alloc
+    b = cx_find(cx, name)
+    if b != 0
+        bind_ssa(b)
+    else
+        rec = variant_rec(cx, name)
+        if rec == 0
+            name
+        elsif vec_get(rec, 2) == 0
+            d = fresh(cx)
+            _p = ir_push(cx, ir_emake(d, vec_get(rec, 0), vec_get(rec, 1), vec_new(), 0))
+            d
+        else
+            name
+
+fn lower_variant_ctor(cx: Int, fname: Int, args: Int) -> Int ! alloc
+    rec = variant_rec(cx, fname)
+    arg_names = lower_args(cx, args, 0, vec_len(args), vec_new())
+    d = fresh(cx)
+    mask = enum_owned_mask(cx, args, 0, vec_len(args), 1, 0)
+    _p = ir_push(cx, ir_emake(d, vec_get(rec, 0), vec_get(rec, 1), arg_names, mask))
+    d
+
+# Two bits per field (first 28): 1 a fresh value, 2 a nested variant with fields.
+fn enum_owned_mask(cx: Int, args: Int, i: Int, n: Int, scale: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    elsif i >= 28
+        acc
+    else
+        a = vec_get(args, i)
+        kind = if dr_is_fresh_value(a) == 1
+            1
+        elsif ex_kind(a) == EX_CALL()
+            inner = vec_get(a, 2)
+            if vec_len(inner) == 0
+                0
+            elsif variant_rec(cx, vec_get(a, 1)) != 0
+                2
+            else
+                0
+        else
+            0
+        enum_owned_mask(cx, args, i + 1, n, scale * 4, acc + kind * scale)
+
+# `match` over an enum: a `Switch` on the tag. Only variant, bare and `_` patterns lower.
+fn lower_match(cx: Int, e: Int) -> Int ! alloc
+    scrut = lower_expr(cx, vec_get(e, 1))
+    arms = vec_get(e, 2)
+    if vec_len(arms) == 0
+        fresh(cx)
+    elsif match_switchable(arms, 0, vec_len(arms)) == 0
+        fresh(cx)
+    else
+        lower_match_switch(cx, scrut, arms)
+
+fn match_switchable(arms: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    elsif vec_get(vec_get(vec_get(arms, i), 0), 0) == 2
+        0
+    else
+        match_switchable(arms, i + 1, n)
+
+fn lower_match_switch(cx: Int, scrut: Int, arms: Int) -> Int ! alloc
+    saved = cx_insts(cx)
+    binds = cx_binds(cx)
+    n0 = vec_len(binds)
+    base_snap = snap_binds(binds, 0, n0, vec_new())
+    slen = strenv_len(cx_strenv(cx))
+    sw = vec_new()
+    dflt = vec_new()
+    _a = vec_push(dflt, vec_new())
+    _b = vec_push(dflt, str_as_int(d"0"))
+    _c = lower_switch_arms(cx, scrut, arms, 0, vec_len(arms), n0, base_snap, slen, sw, dflt)
+    _d = cx_set_insts(cx, saved)
+    d = fresh(cx)
+    _p = ir_push(cx, ir_switch(d, scrut, sw, vec_get(dflt, 0), vec_get(dflt, 1)))
+    d
+
+fn lower_switch_arms(cx: Int, scrut: Int, arms: Int, i: Int, n: Int, n0: Int, snap: Int, slen: Int, sw: Int, dflt: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(arms, i)
+        pat = vec_get(arm, 0)
+        k = vec_get(pat, 0)
+        _i = cx_set_insts(cx, vec_new())
+        tag = switch_pattern_tag(cx, pat)
+        _p = bind_variant_payloads(cx, scrut, vec_get(pat, 3), 0, vec_len(vec_get(pat, 3)), k)
+        val = lower_expr(cx, vec_get(arm, 1))
+        body = cx_insts(cx)
+        _k = kill_new_binds(cx, n0)
+        _r = restore_binds(cx_binds(cx), snap, 0, n0)
+        _s = strenv_set_len(cx_strenv(cx), slen)
+        if k == 0
+            _x = vec_set(dflt, 0, body)
+            _y = vec_set(dflt, 1, val)
+            lower_switch_arms(cx, scrut, arms, i + 1, n, n0, snap, slen, sw, dflt)
+        else
+            rec = vec_new()
+            _t1 = vec_push(rec, tag)
+            _t2 = vec_push(rec, body)
+            _t3 = vec_push(rec, val)
+            _t4 = vec_push(sw, rec)
+            lower_switch_arms(cx, scrut, arms, i + 1, n, n0, snap, slen, sw, dflt)
+
+# Low tag byte of the variant a pattern names; a bare binding or `_` is 0.
+fn switch_pattern_tag(cx: Int, pat: Int) -> Int ! alloc
+    k = vec_get(pat, 0)
+    if k == 1
+        rec = variant_rec(cx, vec_get(pat, 1))
+        if rec == 0
+            0
+        else
+            vec_get(rec, 3)
+    elsif k == 3
+        rec = variant_rec(cx, vec_get(pat, 1))
+        if rec == 0
+            name_variant_tag(vec_get(pat, 1)) + 1
+        else
+            vec_get(rec, 3)
+    else
+        0
+
+fn name_variant_tag(name: Int) -> Int ! alloc
+    if str_eq(name, "None") == 1
+        0
+    elsif str_eq(name, "Some") == 1
+        1
+    elsif str_eq(name, "Ok") == 1
+        1
+    elsif str_eq(name, "Err") == 1
+        2
+    else
+        1
+
+# One `EnumField` per bound payload name of a variant pattern.
+fn bind_variant_payloads(cx: Int, scrut: Int, args: Int, i: Int, n: Int, k: Int) -> Int ! alloc
+    if k != 3
+        0
+    elsif i >= n
+        0
+    else
+        a = vec_get(args, i)
+        if vec_get(a, 0) == 1
+            d = fresh(cx)
+            _p = ir_push(cx, ir_efield(d, scrut, i))
+            _b = cx_bind(cx, vec_get(a, 1), d)
+            bind_variant_payloads(cx, scrut, args, i + 1, n, k)
+        else
+            bind_variant_payloads(cx, scrut, args, i + 1, n, k)
 
 fn lower_if(cx: Int, e: Int) -> Int ! alloc
     c = lower_expr(cx, vec_get(e, 1))
@@ -1494,6 +1721,14 @@ fn mv_take_args(params: Int, args: Int, i: Int, n: Int, names: Int) -> Int ! all
             _a = 0
         mv_take_args(params, args, i + 1, n, names)
 
+# A builtin or a constructor keeps what it is given.
+fn mv_all_args(args: Int, i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = mv_add(names, vec_get(args, i))
+        mv_all_args(args, i + 1, n, names)
+
 fn mv_arms(arms: Int, i: Int, n: Int, names: Int, md: Int) -> Int ! alloc
     if i >= n
         0
@@ -1521,7 +1756,7 @@ fn mv_expr(e: Int, names: Int, md: Int) -> Int ! alloc
             if params != 0
                 _t = mv_take_args(params, args, 0, vec_len(args), names)
             else
-                _t = 0
+                _t = mv_all_args(args, 0, vec_len(args), names)
             mv_args(args, 0, vec_len(args), names, md)
         elsif k == EX_BINARY()
             _a = mv_expr(vec_get(e, 2), names, md)
@@ -1670,8 +1905,8 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(dst, vec_get(src, i))
         copy_insts(src, dst, i + 1, n)
 
-fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int, denv: Int) -> Int ! alloc
-    cx = cx_new(fn_names, fm, struct_map, fnrets)
+fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int, enums: Int, denv: Int) -> Int ! alloc
+    cx = cx_new(fn_names, fm, struct_map, fnrets, enums)
     params = vec_get(f, 1)
     _a = lower_params(cx, params, 0, vec_len(params))
     body = drops_body(f, denv)
@@ -1687,7 +1922,9 @@ fn lower_fn(f: Int, fn_names: Int, fm: Int, struct_map: Int, fnrets: Int, denv: 
     else
         _c = 0
     ret = pop_final_ret(cx)
-    _dr = emit_struct_drops(cx, f, vec_get(denv, 1))
+    fb = dr_copy_vec(f, 0, vec_new())
+    _fb = vec_set(fb, 2, body)
+    _dr = emit_struct_drops(cx, fb, vec_get(denv, 1))
     if ret != 0
         _rr = ir_push(cx, ret)
     else
@@ -1771,11 +2008,11 @@ fn lower_program(prog: Int) -> Int ! alloc
     lower_program_with_callables(prog, vec_new())
 
 fn lower_program_with_callables(prog: Int, extra: Int) -> Int ! alloc
-    lower_program_with_types(prog, extra, struct_map_from_prog(prog), fnret_map_from_prog(prog))
+    lower_program_with_types(prog, extra, struct_map_from_prog(prog), fnret_map_from_prog(prog), prog_enums(prog))
 
 # `sm` and `fr` may cover the whole module graph, so `+` types imported
 # struct fields and imported fn results the way the bootstrap does.
-fn lower_program_with_types(prog: Int, extra: Int, sm: Int, fr: Int) -> Int ! alloc
+fn lower_program_with_types(prog: Int, extra: Int, sm: Int, fr: Int, em: Int) -> Int ! alloc
     fns = prog_fns(prog)
     names = collect_fn_names(fns, 0, vec_len(fns), vec_new())
     names = merge_callable_names(extra, names)
@@ -1784,7 +2021,7 @@ fn lower_program_with_types(prog: Int, extra: Int, sm: Int, fr: Int) -> Int ! al
     out = vec_new()
     _im = infer_param_modes(prog)
     denv = drop_env_from_prog(prog)
-    lower_fns(fns, names, fm, sm, fr, denv, 0, vec_len(fns), out)
+    lower_fns(fns, names, fm, sm, fr, em, denv, 0, vec_len(fns), out)
 
 # `[variants, modes]`: the variant table and, per fn name, its parameters (with their modes).
 fn drop_env_from_prog(prog: Int) -> Int ! alloc
@@ -1810,7 +2047,31 @@ fn variant_map_from_prog(prog: Int) -> Int ! alloc
     m = map_new()
     enums = prog_enums(prog)
     _a = variant_map_enums(m, enums, 0, vec_len(enums))
+    sts = prog_structs(prog)
+    _b = flat_map_structs(m, sts, 0, vec_len(sts))
     m
+
+# Flat structs (see `flat_struct_kind`) go in the same table under `struct:Name`, as the
+# per-field "is a String" flags.
+fn flat_map_structs(m: Int, sts: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        sd = vec_get(sts, i)
+        if flat_struct_kind(sd) >= 0
+            flags = vec_new()
+            _f = flat_string_flags(flags, structdef_fields(sd), 0, structdef_field_count(sd))
+            _p = map_put(m, str_as_int("struct:" + str_from_int(structdef_name(sd))), flags)
+            flat_map_structs(m, sts, i + 1, n)
+        else
+            flat_map_structs(m, sts, i + 1, n)
+
+fn flat_string_flags(out: Int, fields: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(out, flat_field_class(vec_get(vec_get(fields, i), 1)))
+        flat_string_flags(out, fields, i + 1, n)
 
 fn variant_map_enums(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1843,10 +2104,10 @@ fn variant_field_flags(fields: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         _p = vec_push(out, dr_field_owned(vec_get(fields, i)))
         variant_field_flags(fields, i + 1, n, out)
 
-fn lower_fns(fns: Int, names: Int, fm: Int, sm: Int, fr: Int, denv: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_fns(fns: Int, names: Int, fm: Int, sm: Int, fr: Int, em: Int, denv: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        irf = lower_fn(vec_get(fns, i), names, fm, sm, fr, denv)
+        irf = lower_fn(vec_get(fns, i), names, fm, sm, fr, em, denv)
         _p = vec_push(out, irf)
-        lower_fns(fns, names, fm, sm, fr, denv, i + 1, n, out)
+        lower_fns(fns, names, fm, sm, fr, em, denv, i + 1, n, out)

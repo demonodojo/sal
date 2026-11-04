@@ -143,6 +143,7 @@ int64_t sal_enum_new(int64_t tag, int64_t n);
 int64_t sal_enum_set(int64_t v, int64_t i, int64_t x);
 void sal_enum_free(int64_t v);
 int64_t sal_enum_tag(int64_t v);
+int64_t sal_enum_owns(int64_t v, int64_t i);
 int64_t sal_enum_field(int64_t v, int64_t i);
 void sal_list_free(void *v);
 void sal_dict_free(void *v);

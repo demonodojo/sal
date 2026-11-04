@@ -29,6 +29,9 @@ item         → import_def
              | enum_def
              | frame_def
              | attr_list fn_def
+             | attr_list method_def
+             | attr_list static_def
+             | attr_list init_def
 attr_list    → attr_list attr
              | ε
 attr         → "@" IDENT ("(" IDENT ")" | ε)
@@ -64,6 +67,12 @@ type_list    → type_list "," type
              | ε
 
 fn_def       → "fn" IDENT type_params "(" param_list ")" "->" type effect_clause suite
+method_def   → "method" IDENT "." IDENT "(" method_params ")" "->" type effect_clause suite
+method_params → "self" param_mode "," param_list
+              | "self" param_mode
+              | param_list
+static_def   → "static" IDENT "." IDENT "(" param_list ")" "->" type effect_clause suite
+init_def     → "init" IDENT "(" param_list ")" effect_clause suite
 suite        → NEWLINE INDENT block DEDENT
 type_params  → "[" type_param_list "]"
              | ε
@@ -274,6 +283,39 @@ Los tipos nominales no se mezclan: `Int`, `String` y un `struct`/`enum` distinto
 
 Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos. Un `struct` de un solo campo es un **newtype transparente**: misma representación que el campo en IR/LLVM. Un `struct` de dos o más campos es un **valor**: se copia al asignarlo, al pasarlo y al devolverlo, y `p.x = v` actualiza solo esa copia. El compilador lo reparte en un registro por campo (los structs anidados, aplanados), sin reservar memoria: un parámetro struct son sus campos como parámetros, y un resultado struct se escribe en un búfer de pila del llamador. Solo se encajona en el heap (un bloque de `i64`, uno por campo) cuando entra en algo que guarda `i64` sin tipo: contenedores (`List`, `Dict`), el payload de un enum y las funciones del runtime. Quedan fuera del reparto los structs genéricos y los que tienen un campo `Tensor` (los `frame`). Un enum se construye con el nombre de variante (`None`, `Some(x)`, …); en ejecución vale un `i64`: una variante sin campos es su tag; una variante con campos (uno o varios) es la dirección de una caja del heap `[tag, campo0, campo1, …]`. El payload va siempre en caja, sea cual sea su tipo. La caja de un local que solo se lee con `match` se libera al salir del ámbito; los campos con dueño de la caja todavía no (pendiente del glue de drop por tipo).
 
+### Métodos
+
+`method Tipo.nombre(params) -> R ! efectos` define una función `Tipo__nombre` cuyo primer parámetro es `self: Tipo`, implícito. `method` es contextual: solo es palabra clave al inicio de un item (`method` sigue valiendo como nombre de parámetro o variable). `self` no es palabra clave: es el identificador del primer parámetro, y un `self` en otro sitio es un nombre normal. El modo de `self` sale del cuerpo, como el de cualquier parámetro, salvo que se escriba: `method T.m(self take, k: Int)` o `self borrow` (`self` sin tipo; `self: T` es `E_PARSE`). Los atributos de `fn` valen delante de `method` (`@no_heap`).
+
+`expr.nombre(args)` es una llamada de método cuando `expr` no es un calificador de módulo. El compilador la resuelve por el tipo inferido de `expr` (un tipo nominal `T`) y la baja a `T__nombre(expr, args)`; no hay dispatch dinámico. `self` es un valor como cualquier `struct`: `self.x = v` solo cambia la copia, y un método que «muta» devuelve el valor nuevo.
+
+El receptor es un `struct`, `enum` o `frame` definido en el mismo módulo y sin parámetros de tipo; el método no los tiene tampoco (`E_PARSE`). Los métodos de un tipo importado se llaman igual (`p.m()`), pero no se pueden definir fuera de su módulo. Son `E_TYPE`: un receptor que no es de este módulo, builtin (`String`, `List`, …) o genérico; un método repetido o que choca con una `fn Tipo__nombre`; `__` en el nombre del tipo o del método; `expr.nombre(…)` sin método `nombre` en el tipo de `expr`; la aridad y los tipos de los argumentos (reglas de `fn`, con `self` como primer argumento); y que un parámetro o `let` con el mismo nombre que un alias de `import … as` sirva de base de `x.f(…)`. Una forma mal construida (`method` sin `Tipo.nombre`) es `E_PARSE`. El nombre `Tipo__nombre` sigue el esquema `modid__nombre` de «Módulos»: si `Tipo` choca entre módulos, el método se llama `modid__Tipo__nombre`.
+
+`static Tipo.nombre(params) -> R` define `Tipo__nombre` sin `self`, y se llama `Tipo.nombre(args)`. `init Tipo(params)` define el constructor `Tipo__new`: el resultado es siempre un `Tipo` (no se escribe `->`; el cuerpo evalúa a un `Tipo`, normalmente `Tipo(…)`), admite efectos, y se llama `Tipo.new(args)`. Solo hay un `init` por tipo, y `static Tipo.new` choca con él (`E_TYPE`). `static` e `init` son contextuales, como `method`. En `T.nombre(args)`, `T` es un nombre de `struct`, `enum` o `frame` que ningún local sombrea; si hay un local con ese nombre, es una llamada de método sobre ese valor. Llamar un estático sobre un valor (`p.make()`), un método de instancia sobre el tipo (`P.get()`), o un estático inexistente es `E_TYPE`. Valen las mismas reglas de receptor, `__` y aridad que en `method`; los parámetros de tipo no se admiten en ninguno (`E_PARSE`).
+
+Los tipos básicos tienen métodos que son el builtin con el receptor como primer argumento: `xs.push(v)` es `list_push(xs, v)`, con sus mismas reglas de tipos, efectos y ownership (`xs.push(s)` mueve `s`). Se resuelven por el tipo inferido del receptor y no se pueden redefinir ni ampliar con `method`.
+
+| Tipo | Métodos (builtin) |
+|------|-------------------|
+| `String` | `len` (`str_len`), `eq`, `contains`, `slice`, `char`, `hash`, `concat`, `append`, `skip` (`str_*`) |
+| `List[T]` | `len`, `push`, `get`, `set`, `pop` (`list_*`) |
+| `Dict[K, V]` | `get`, `put`, `has` (`dict_*`) |
+| `Bytes` | `len`, `get_u8`, `get_u16`, `get_u32`, `get_i64`, `set_u8`, `set_u16`, `set_u32`, `set_i64`, `fill`, `copy` (`bytes_*`) |
+| `Int` | `to_str` (`int_to_str`), `to_float` (`int_to_float`) |
+
+Los constructores de los tipos básicos se llaman sobre el tipo y llevan los argumentos de tipo tras el nombre, como `list_new[Int]()`:
+
+| Llamada | Builtin |
+|---------|---------|
+| `List.new[T]()` | `list_new[T]()` |
+| `Dict.new[K, V]()` | `dict_new[K, V]()` |
+| `Bytes.new(n)` | `bytes_new(n)` |
+| `String.from_char(c)` | `char_to_str(c)` |
+
+Faltar argumentos de tipo (`List.new()`), sobrar o faltar alguno (`Dict.new[Int]()`) o llamar un estático que no existe (`List.nope[Int]()`) es `E_TYPE`. A diferencia de `list_new()`, que sin argumento de tipo es `List[Int]`, aquí el tipo del elemento siempre es explícito.
+
+Un método que no está en la tabla es `E_TYPE` (`type String has no method nope`). Las funciones `str_len`, `list_push`… siguen existiendo y generan el mismo IR.
+
 Lugar: `cpu`, `gpu`, `tpu` o parámetro `p`.
 
 ## Módulos
@@ -298,8 +340,8 @@ Ruta inexistente, choque de nombre entre importados aplanados o con items locale
 
 - Stack por defecto; heap para `String`, `List`, tensores. Un `struct` de varios campos va en registros (ver «Un `struct` se construye…»).
 - Move por defecto; copy solo tipos triviales.
-- Préstamo solo en argumento de llamada.
-- Un valor con dueño (`String`, `List`, `Dict`, enum, tensor, struct con algún campo que no sea Copy) se mueve al ligarlo a otro nombre, devolverlo, enviarlo con `to`, pasarlo a un parámetro `take`, guardarlo con `list_push`/`list_set`/`dict_put` (el valor, no el contenedor) o usarlo como argumento de un constructor de struct o de variante. Usarlo después es `E_MOVED`. El modo de cada parámetro sale del cuerpo y es interprocedural: una función que pasa su parámetro a una posición `take` de otra también lo toma. Los tipos que decide el pase salen de la inferencia (el resultado de una llamada, un campo o un `match` ya no se trata como Copy). El valor de cola de una rama de `if` no se mueve por sí mismo. El constructor de un `frame` no mueve sus columnas. Aún no hay movimiento parcial de campos ni banderas de drop por rama o bucle.
+- Préstamo solo en argumento de llamada. En `p.m(…)`, `p` es el primer argumento: se presta o se mueve según el modo de `self`.
+- Un valor con dueño (`String`, `List`, `Dict`, enum, tensor, struct con algún campo que no sea Copy) se mueve al ligarlo a otro nombre, devolverlo, enviarlo con `to`, pasarlo a un parámetro `take`, guardarlo con `list_push`/`list_set`/`dict_put` (el valor, no el contenedor) o usarlo como argumento de un constructor de struct o de variante. Usarlo después es `E_MOVED`. El modo de cada parámetro sale del cuerpo y es interprocedural: una función que pasa su parámetro a una posición `take` de otra también lo toma. Los tipos que decide el pase salen de la inferencia (el resultado de una llamada, un campo o un `match` ya no se trata como Copy). El valor de cola de una rama de `if` no se mueve por sí mismo. El constructor de un `frame` no mueve sus columnas. Leer por valor un campo que no es Copy (`n = p.name`) mueve ese campo: `p.name` y `p` entero pasan a `E_MOVED`, pero los demás campos siguen usables, y `p.name = v` lo repone (solo con `p` local como base directa). Un local que se mueve solo en algunas ramas se suelta al final detrás de una bandera de drop (`__live_x`) que se baja justo después de la sentencia que lo mueve; si se mueve en un bucle más interno que su declaración, o en una cola de bloque, `match` o `on`, no se suelta (fuga, nunca doble liberación). Un `String` fresco que se pasa directo a un builtin que solo lo lee (`str_len`, `str_eq`, `str_slice`, `print_str`…) es un temporal: se liga a un local anterior a la sentencia y se suelta al final del ámbito. Una `List[S]` local de un struct plano (de 2 a 20 campos `Int`, `Float`, `Bool` o `String`) se suelta, con sus elementos, cuando todo lo que se le guarda es un constructor `S(…)` cuyos `String` son frescos; `list_get` sobre ella devuelve una copia (los `String` se duplican) y `list_set` suelta el elemento viejo.
 - Atributos admitidos: `@frozen`, `@stack`, `@no_heap`, `@layout(c)` (ver Atributos). `@resource` y el resto, reservados.
 - Un `struct` es un valor: asignar un campo en una copia o dentro de una función llamada no cambia el original.
 
@@ -307,8 +349,8 @@ Ruta inexistente, choque de nombre entre importados aplanados o con items locale
 
 El runtime usa `malloc`/`free`: lo que se libera vuelve al sistema. El compilador inserta la liberación (`free`, `list_free`, `dict_free`, `enum_free` o `bytes_free`) al salir de ámbito para un local que cumple todo esto:
 
-- se liga una sola vez (`let` o primera asignación, sin anotación de tipo salvo `String`) a un valor fresco. `String`: literal, `int_to_str`, `char_to_str`, `str_slice`, `strdup`, `read_file`, `str_concat`, o una cadena de `+` con algún operando `String` explícito. `List`: `list_new[T]()` con `T` `Int`, `Float`, `Bool` o `String` (una lista de `String` es dueña de sus elementos y `list_free` los suelta). `Dict`: `dict_new[K, V]()` con `K` `Int` o `String` y `V` `Int`, `Float`, `Bool` o `String` (suelta los valores `String`; las claves se prestan). Enum: una variante con campos (`Rect(3, 4)`); la caja guarda en su cabecera qué campos posee (un `String` fresco o la caja fresca de otro enum con campos) y `enum_free` los suelta; un campo que es un nombre o el resultado de una función de usuario no se posee y se deja. `Bytes`: `bytes_new(n)`;
-- no escapa: solo lo leen builtins que prestan (`str_len`, `str_eq`, `str_char`, `str_contains`, `str_skip`, `str_hash`, `str_slice`, `str_concat`, `str_to_f64_bits`, `print_str`, `eprint_str`, `write_file`, `mkdir_p`, `path_readable`, `getenv`, `map_get`, `read_file`, `list_len`, `list_get`, `list_pop`, `dict_get`, `dict_has`, `bytes_len`, `bytes_get_*`, `bytes_set_*`, `bytes_fill*`, `bytes_copy`, `str_bytes_copy`), el operador `+` y, para un enum, un `match` cuyos patrones son variantes (un patrón que liga el valor entero lo hace escapar). `list_push`, `list_set` y `dict_put` prestan el contenedor solo como sentencia (o ligado a un nombre que empieza por `_`), porque devuelven un alias. Pasarlo a una función de usuario cuyo parámetro lo deja escapar (lo devuelve, lo guarda, lo liga a otro nombre o lo pasa a un parámetro que escapa), a `str_as_int`, a `vec_push`/`map_put`, ligarlo a otro nombre, devolverlo o ponerlo en cola de bloque lo hace escapar y no se libera.
+- se liga una sola vez (`let` o primera asignación, sin anotación de tipo salvo `String`) a un valor fresco. `String`: literal, `int_to_str`, `char_to_str`, `str_slice`, `strdup`, `read_file`, `str_concat`, o una cadena de `+` con algún operando `String` explícito. `List`: `list_new[T]()` con `T` `Int`, `Float`, `Bool` o `String` (una lista de `String` es dueña de sus elementos y `list_free` los suelta). `Dict`: `dict_new[K, V]()` con `K` `Int` o `String` y `V` `Int`, `Float`, `Bool` o `String` (suelta los valores `String`; las claves se prestan). Enum: una variante con campos (`Rect(3, 4)`); la caja guarda en su cabecera qué campos posee (un `String` fresco o la caja fresca de otro enum con campos) y `enum_free` los suelta; un campo que es un nombre o el resultado de una función de usuario no se posee y se deja. `enum_owns(v, i)` devuelve 1 cuando la caja de `v` posee su campo `i` (y `enum_free` lo suelta), de modo que quien libere a mano los demás campos no libere dos veces. `Bytes`: `bytes_new(n)`;
+- no escapa: solo lo leen builtins que prestan (`str_len`, `str_eq`, `str_char`, `str_contains`, `str_skip`, `str_hash`, `str_slice`, `str_concat`, `str_to_f64_bits`, `print_str`, `eprint_str`, `write_file`, `mkdir_p`, `path_readable`, `getenv`, `map_get`, `read_file`, `list_len`, `list_get`, `list_pop`, `dict_get`, `dict_has`, `enum_owns`, `bytes_len`, `bytes_get_*`, `bytes_set_*`, `bytes_fill*`, `bytes_copy`, `str_bytes_copy`), el operador `+` y, para un enum, un `match` cuyos patrones son variantes (un patrón que liga el valor entero lo hace escapar). `list_push`, `list_set` y `dict_put` prestan el contenedor solo como sentencia (o ligado a un nombre que empieza por `_`), porque devuelven un alias. Pasarlo a una función de usuario cuyo parámetro lo deja escapar (lo devuelve, lo guarda, lo liga a otro nombre o lo pasa a un parámetro que escapa), a `str_as_int`, a `vec_push`/`map_put`, ligarlo a otro nombre, devolverlo o ponerlo en cola de bloque lo hace escapar y no se libera.
 
 El `free` va al final del bloque que declara el local y antes de cada `return` dentro de su ámbito, en orden inverso de declaración. Un valor de cola o de `return` se calcula antes de liberar. Una lista de `String` o un `Dict` con valores `String` solo se libera si todo lo que se guarda en él es un valor fresco (literal, `int_to_str`, `str_slice`, `+`…); guardar un nombre o el resultado de una función de usuario lo deja sin liberar, para no soltar dos veces un valor ajeno. Un `match x` libera la caja de `x` solo si ningún nombre ligado por sus patrones a un campo que pueda tener dueño escapa (un campo `Int`, `Float` o `Bool` no cuenta). En `a + b`, un operando izquierdo que es una llamada de cadena fresca (`int_to_str(n) + "x"`) también se suelta tras copiarlo. Un parámetro de usuario es de solo lectura si su función no lo deja escapar, y se calcula como punto fijo sobre todo el programa (empieza optimista, así que la recursión no lo estropea): pasar un local a esa posición no lo hace escapar y lo libera quien lo declara. Un parámetro `take` de un struct con campos `String` se libera en la función que lo recibe; pasar un nombre a un parámetro `take` lo marca como movido en el llamante. Un local que no cumple la regla no se libera (la memoria no vuelve, pero nunca hay uso tras liberar). Siguen sin liberarse automáticamente: listas de structs o de enums, `Dict` con valores struct o enum, los campos de una caja de enum que no son valores frescos, el resultado de una función de usuario, `bytes_view`, tensores, el resultado de `list_pop` y de `dict_get` (un `Option` con caja) y los `String` que viajan como asas `Int`.
 

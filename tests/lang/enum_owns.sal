@@ -1,0 +1,15 @@
+# exit: 10
+enum E
+    Leaf(Int)
+    Pair(E, E)
+
+fn leaf(n: Int) -> E ! alloc
+    Leaf(n)
+
+fn main() -> Int ! alloc
+    boxed = Pair(Leaf(1), Leaf(2))
+    made = Pair(leaf(1), leaf(2))
+    a = enum_owns(boxed, 0) + enum_owns(boxed, 1)
+    b = enum_owns(made, 0) + enum_owns(made, 1)
+    _f = enum_free(boxed)
+    a * 5 + b

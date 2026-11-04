@@ -5,6 +5,7 @@ import effects
 import attrs
 import ownership
 import device
+import tast
 
 # Ok(0), or Err(message) for the first violation in `prog`.
 fn check_program(prog: Int) -> Int ! alloc
@@ -12,20 +13,27 @@ fn check_program(prog: Int) -> Int ! alloc
 
 # `progs`: every program of the module graph (0 when single-file).
 fn check_program_with(prog: Int, progs: Int) -> Int ! alloc
-    ty = infer_program(prog)
+    tp = to_typed(prog)
+    ty = infer_program(tp)
     if result_is_err(ty) == 1
+        _f = tp_free(tp)
         ty
     else
-        at = check_attrs(prog)
-        if result_is_err(at) == 1
-            at
+        r = check_typed(tp, prog, progs)
+        _f = tp_free(tp)
+        r
+
+fn check_typed(tp: TProgram, prog: Int, progs: Int) -> Int ! alloc
+    at = check_attrs(tp)
+    if result_is_err(at) == 1
+        at
+    else
+        fx = check_effects_with(tp, progs)
+        if result_is_err(fx) == 1
+            fx
         else
-            fx = check_effects_with(prog, progs)
-            if result_is_err(fx) == 1
-                fx
+            own = check_ownership(tp)
+            if result_is_err(own) == 1
+                own
             else
-                own = check_ownership(prog)
-                if result_is_err(own) == 1
-                    own
-                else
-                    check_devices(prog)
+                check_devices(tp)

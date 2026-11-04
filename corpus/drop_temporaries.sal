@@ -1,0 +1,6 @@
+fn main() -> Int ! alloc
+    a = str_len(int_to_str(12345))
+    b = str_len(str_slice("hello world", 0, 5))
+    c = str_eq(strdup("x"), "x")
+    d = str_len(int_to_str(1) + "ab")
+    a + b + c + d

@@ -18,11 +18,11 @@
   ],
   "wordPattern": "[A-Za-z_][A-Za-z0-9_]*|\\d+(?:\\.\\d+)?",
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(fn|if|elsif|while|match|on|struct|enum)\\b.*$|^\\s*else\\s*(#.*)?$|^.*=>\\s*(#.*)?$"
+    "increaseIndentPattern": "^\\s*(fn|method|static|init|if|elsif|while|match|on|struct|enum)\\b.*$|^\\s*else\\s*(#.*)?$|^.*=>\\s*(#.*)?$"
   },
   "onEnterRules": [
     {
-      "beforeText": "^\\s*(fn|if|elsif|while|match|on|struct|enum)\\b.*$",
+      "beforeText": "^\\s*(fn|method|static|init|if|elsif|while|match|on|struct|enum)\\b.*$",
       "action": { "indent": "indent" }
     },
     {

@@ -49,6 +49,7 @@ pub struct CompileArtifacts {
 pub fn compile_source(source: &str, opts: &CompileOptions) -> Result<CompileArtifacts, Vec<Diagnostic>> {
     let mut program = parse(&crate::interp::with_prelude_enums(source)).map_err(|d| vec![d])?;
     crate::interp::expand_interpolation(&mut program);
+    crate::methods::prepare_program(&mut program)?;
     compile_program(&program, opts)
 }
 

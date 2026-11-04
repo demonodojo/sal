@@ -3,89 +3,120 @@ import result
 import lexer
 import ast
 
-fn parser_new(toks: Int) -> Int ! alloc
-    pr = vec_new()
-    _a = vec_push(pr, toks)
-    _b = vec_push(pr, 0)
-    _c = vec_push(pr, 0)
-    _d = vec_push(pr, 0)
-    _e = vec_push(pr, 0)
-    pr
+# Parser state: the token lists plus `st = [index, has_err, group depth]` and `msg = [error text]`.
+# The lists are shared by every copy of the struct, so `list_set` on them is the mutation.
+struct Parser
+    kinds: List[Int]
+    texts: List[String]
+    ivals: List[Int]
+    st: List[Int]
+    msg: List[String]
 
-fn p_set_err(pr: Int, msg: String) -> Int ! alloc
-    _a = vec_set(pr, 2, 1)
-    _b = vec_set(pr, 3, str_as_int(msg))
+fn parser_new(toks: Toks) -> Parser ! alloc
+    st = list_new[Int]()
+    _a = list_push(st, 0)
+    _b = list_push(st, 0)
+    _c = list_push(st, 0)
+    msg = list_new[String]()
+    _d = list_push(msg, d"")
+    Parser(toks.kinds, toks.texts, toks.ivals, st, msg)
+
+# Releases the lists; the AST built from the tokens does not point into them.
+fn parser_free(pr: Parser) -> Int ! alloc
+    _a = list_free(pr.kinds)
+    _b = list_free(pr.texts)
+    _c = list_free(pr.ivals)
+    _d = list_free(pr.st)
+    _e = list_free(pr.msg)
     0
 
-fn p_has_err(pr: Int) -> Int ! alloc
-    vec_get(pr, 2)
-
-fn p_err_msg(pr: Int) -> Int ! alloc
-    vec_get(pr, 3)
-
-fn p_idx(pr: Int) -> Int ! alloc
-    vec_get(pr, 1)
-
-fn p_set_idx(pr: Int, i: Int) -> Int ! alloc
-    _s = vec_set(pr, 1, i)
+fn p_set_err(pr: Parser, msg: String) -> Int ! alloc
+    _a = list_set(pr.st, 1, 1)
+    _b = list_set(pr.msg, 0, msg)
     0
 
-fn p_peek(pr: Int) -> Int ! alloc
-    toks = vec_get(pr, 0)
-    idx = vec_get(pr, 1)
-    n = vec_len(toks)
-    if idx >= n
-        tok_new(TK_EOF(), d"", 0)
+fn p_has_err(pr: Parser) -> Int ! alloc
+    list_get(pr.st, 1)
+
+fn p_err_msg(pr: Parser) -> String ! alloc
+    list_get(pr.msg, 0)
+
+fn p_idx(pr: Parser) -> Int ! alloc
+    list_get(pr.st, 0)
+
+fn p_set_idx(pr: Parser, i: Int) -> Int ! alloc
+    _s = list_set(pr.st, 0, i)
+    0
+
+# A token is its index; past the end every token reads as end of file.
+fn tok_kind(pr: Parser, t: Int) -> Int ! alloc
+    if t >= list_len(pr.kinds)
+        TK_EOF()
     else
-        vec_get(toks, idx)
+        list_get(pr.kinds, t)
 
-fn p_advance(pr: Int) -> Int ! alloc
+fn tok_text(pr: Parser, t: Int) -> String ! alloc
+    if t >= list_len(pr.texts)
+        d""
+    else
+        list_get(pr.texts, t)
+
+fn tok_ival(pr: Parser, t: Int) -> Int ! alloc
+    if t >= list_len(pr.ivals)
+        0
+    else
+        list_get(pr.ivals, t)
+
+fn p_peek(pr: Parser) -> Int ! alloc
+    p_idx(pr)
+
+fn p_advance(pr: Parser) -> Int ! alloc
     t = p_peek(pr)
-    if tok_kind(t) == TK_EOF()
+    if tok_kind(pr, t) == TK_EOF()
         t
     else
-        _s = p_set_idx(pr, p_idx(pr) + 1)
+        _s = p_set_idx(pr, t + 1)
         t
 
-fn p_skip_nls(pr: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) == TK_NL()
+fn p_skip_nls(pr: Parser) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_NL()
         _a = p_advance(pr)
         p_skip_nls(pr)
     else
         0
 
-fn p_group(pr: Int) -> Int ! alloc
-    vec_get(pr, 4)
+fn p_group(pr: Parser) -> Int ! alloc
+    list_get(pr.st, 2)
 
-fn p_set_group(pr: Int, d: Int) -> Int ! alloc
-    _s = vec_set(pr, 4, d)
+fn p_set_group(pr: Parser, d: Int) -> Int ! alloc
+    _s = list_set(pr.st, 2, d)
     0
 
-fn p_enter_group(pr: Int) -> Int ! alloc
+fn p_enter_group(pr: Parser) -> Int ! alloc
     p_set_group(pr, p_group(pr) + 1)
 
-fn p_leave_group(pr: Int) -> Int ! alloc
+fn p_leave_group(pr: Parser) -> Int ! alloc
     d = p_group(pr)
     if d > 0
         p_set_group(pr, d - 1)
     else
         0
 
-fn p_skip_group_nls(pr: Int) -> Int ! alloc
+fn p_skip_group_nls(pr: Parser) -> Int ! alloc
     if p_group(pr) > 0
         p_skip_nls(pr)
     else
         0
 
-fn p_accept(pr: Int, k: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) == k
+fn p_accept(pr: Parser, k: Int) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) == k
         _a = p_advance(pr)
         1
     else
         0
 
-fn at_block_end(pr: Int) -> Int ! alloc
-    k = tok_kind(p_peek(pr))
+fn at_block_end(pr: Parser) -> Int ! alloc
+    k = tok_kind(pr, p_peek(pr))
     if k == TK_DEDENT()
         1
     elsif k == TK_EOF()
@@ -100,9 +131,9 @@ fn at_block_end(pr: Int) -> Int ! alloc
         0
 
 # ---- type text / expr parsing ----
-fn parse_type_text_go(pr: Int, depth: Int, acc: String) -> String ! alloc
+fn parse_type_text_go(pr: Parser, depth: Int, acc: String) -> String ! alloc
     t = p_peek(pr)
-    k = tok_kind(t)
+    k = tok_kind(pr, t)
     if k == TK_EOF()
         acc
     elsif depth != 0
@@ -124,12 +155,12 @@ fn parse_type_text_go(pr: Int, depth: Int, acc: String) -> String ! alloc
     else
         parse_type_text_cont(pr, depth, acc, t, k)
 
-fn parse_type_text_cont(pr: Int, depth: Int, acc: String, t: Int, k: Int) -> String ! alloc
+fn parse_type_text_cont(pr: Parser, depth: Int, acc: String, t: Int, k: Int) -> String ! alloc
     if k == TK_NL()
         _a = p_advance(pr)
         parse_type_text_go(pr, depth, acc)
     elsif k == TK_IDENT()
-        tx = tok_text(t)
+        tx = tok_text(pr, t)
         _a = p_advance(pr)
         acc2 = acc + tx
         sp = d" "
@@ -156,7 +187,7 @@ fn parse_type_text_cont(pr: Int, depth: Int, acc: String, t: Int, k: Int) -> Str
         parse_type_text_go(pr, depth, acc2)
     elsif k == TK_INT()
         _a = p_advance(pr)
-        vs = int_to_str(tok_ival(t))
+        vs = int_to_str(tok_ival(pr, t))
         acc2 = acc + vs
         free(vs)
         sp = d" "
@@ -184,7 +215,7 @@ fn parse_type_text_cont(pr: Int, depth: Int, acc: String, t: Int, k: Int) -> Str
     else
         acc
 
-fn parse_type_text(pr: Int) -> String ! alloc
+fn parse_type_text(pr: Parser) -> String ! alloc
     acc = d""
     r = parse_type_text_go(pr, 0, acc)
     if str_len(r) == 0
@@ -266,19 +297,19 @@ fn binop_name(k: Int) -> String ! alloc
         d"add"
 
 # expr -> "try" expr | lambda
-fn parse_expr(pr: Int) -> Int ! alloc
+fn parse_expr(pr: Parser) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_TRY()
+    if tok_kind(pr, p_peek(pr)) == TK_TRY()
         _a = p_advance(pr)
         ex_try(parse_expr(pr))
     else
         parse_lambda(pr)
 
 # lambda -> cmp "=>" expr | cmp
-fn parse_lambda(pr: Int) -> Int ! alloc
+fn parse_lambda(pr: Parser) -> Int ! alloc
     left = parse_binary(pr, 0)
     _s = p_skip_group_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_FATARROW()
+    if tok_kind(pr, p_peek(pr)) == TK_FATARROW()
         _a = p_advance(pr)
         if ex_kind(left) == EX_IDENT()
             ex_lambda(str_from_int(vec_get(left, 1)), parse_expr(pr))
@@ -289,9 +320,9 @@ fn parse_lambda(pr: Int) -> Int ! alloc
         left
 
 # unary -> "-" unary | "!" unary | "to" place unary | postfix
-fn parse_unary(pr: Int) -> Int ! alloc
+fn parse_unary(pr: Parser) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    k = tok_kind(p_peek(pr))
+    k = tok_kind(pr, p_peek(pr))
     if k == TK_MINUS()
         _a = p_advance(pr)
         ex_unary(d"neg", parse_unary(pr))
@@ -301,7 +332,7 @@ fn parse_unary(pr: Int) -> Int ! alloc
     elsif k == TK_TO()
         _a = p_advance(pr)
         pl = p_advance(pr)
-        place = or_place(tok_text(pl), d"cpu")
+        place = or_place(tok_text(pr, pl), d"cpu")
         inner = parse_unary(pr)
         ex_to(place, inner)
     else
@@ -322,17 +353,17 @@ fn call_name_from_expr(e: Int) -> String ! alloc
     else
         d""
 
-fn parse_postfix_go(pr: Int, e: Int) -> Int ! alloc
+fn parse_postfix_go(pr: Parser, e: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_DOT()
+    if tok_kind(pr, p_peek(pr)) == TK_DOT()
         _d = p_advance(pr)
-        if tok_kind(p_peek(pr)) == TK_IDENT()
+        if tok_kind(pr, p_peek(pr)) == TK_IDENT()
             t = p_advance(pr)
-            fld = tok_text(t)
+            fld = tok_text(pr, t)
             parse_postfix_go(pr, ex_field(e, fld))
         else
             e
-    elsif tok_kind(p_peek(pr)) == TK_LPAREN()
+    elsif tok_kind(pr, p_peek(pr)) == TK_LPAREN()
         nm = call_name_from_expr(e)
         if str_len(nm) > 0
             _a = p_advance(pr)
@@ -346,17 +377,17 @@ fn parse_postfix_go(pr: Int, e: Int) -> Int ! alloc
     else
         e
 
-fn parse_postfix(pr: Int) -> Int ! alloc
+fn parse_postfix(pr: Parser) -> Int ! alloc
     parse_postfix_go(pr, parse_primary(pr))
 
-fn parse_binary(pr: Int, min_prec: Int) -> Int ! alloc
+fn parse_binary(pr: Parser, min_prec: Int) -> Int ! alloc
     left = parse_unary(pr)
     parse_binary_loop(pr, min_prec, left)
 
-fn parse_binary_loop(pr: Int, min_prec: Int, left: Int) -> Int ! alloc
+fn parse_binary_loop(pr: Parser, min_prec: Int, left: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     t = p_peek(pr)
-    k = tok_kind(t)
+    k = tok_kind(pr, t)
     prec = binop_prec(k)
     if prec == 0
         left
@@ -369,9 +400,9 @@ fn parse_binary_loop(pr: Int, min_prec: Int, left: Int) -> Int ! alloc
         nleft = ex_binary(op, left, right)
         parse_binary_loop(pr, min_prec, nleft)
 
-fn parse_arg_list(pr: Int, args: Int) -> Int ! alloc
+fn parse_arg_list(pr: Parser, args: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_RPAREN()
+    if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         _a = p_accept(pr, TK_RPAREN())
         args
     else
@@ -385,12 +416,12 @@ fn parse_arg_list(pr: Int, args: Int) -> Int ! alloc
             _c = p_accept(pr, TK_RPAREN())
             args
 
-fn skip_brackets(pr: Int, depth: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) == TK_EOF()
+fn skip_brackets(pr: Parser, depth: Int) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_EOF()
         0
     else
         t = p_advance(pr)
-        k = tok_kind(t)
+        k = tok_kind(pr, t)
         d2 = skip_brackets_depth(depth, k)
         if d2 <= 0
             0
@@ -405,9 +436,9 @@ fn skip_brackets_depth(depth: Int, k: Int) -> Int ! alloc
     else
         depth
 
-fn parse_tensor_rows(pr: Int, nrows: Int, ncols: Int, data: Int) -> Int ! alloc
+fn parse_tensor_rows(pr: Parser, nrows: Int, ncols: Int, data: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_LBRACK()
+    if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
         _e = p_enter_group(pr)
         rowc = parse_tensor_cells(pr, 0, data)
@@ -424,19 +455,19 @@ fn parse_tensor_rows(pr: Int, nrows: Int, ncols: Int, data: Int) -> Int ! alloc
     else
         ex_tensor_data(nrows, ncols, data)
 
-fn parse_tensor_cells(pr: Int, rowc: Int, data: Int) -> Int ! alloc
+fn parse_tensor_cells(pr: Parser, rowc: Int, data: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    k = tok_kind(p_peek(pr))
+    k = tok_kind(pr, p_peek(pr))
     if k == TK_RBRACK()
         rowc
     elsif k == TK_EOF()
         rowc
     elsif k == TK_FLOAT()
-        _d = vec_push(data, str_as_int(tok_text(p_peek(pr))))
+        _d = vec_push(data, str_as_int(tok_text(pr, p_peek(pr))))
         _a = p_advance(pr)
         parse_tensor_cells(pr, rowc + 1, data)
     elsif k == TK_INT()
-        _d = vec_push(data, str_as_int(int_to_str(tok_ival(p_peek(pr)))))
+        _d = vec_push(data, str_as_int(int_to_str(tok_ival(pr, p_peek(pr)))))
         _a = p_advance(pr)
         parse_tensor_cells(pr, rowc + 1, data)
     elsif k == TK_COMMA()
@@ -452,32 +483,32 @@ fn or_place(place: String, fallback: String) -> String ! alloc
     else
         place
 
-fn parse_primary(pr: Int) -> Int ! alloc
+fn parse_primary(pr: Parser) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     t = p_peek(pr)
-    k = tok_kind(t)
+    k = tok_kind(pr, t)
     if k == TK_INT()
         _a = p_advance(pr)
-        ex_int(tok_ival(t))
+        ex_int(tok_ival(pr, t))
     elsif k == TK_FLOAT()
         _a = p_advance(pr)
-        ex_float(tok_ival(t), tok_text(t))
+        ex_float(tok_ival(pr, t), tok_text(pr, t))
     elsif k == TK_STRING()
         _a = p_advance(pr)
-        if tok_ival(t) == 1
+        if tok_ival(pr, t) == 1
             _e = p_set_err(pr, d"parse error: invalid string interpolation")
         else
             _e = 0
-        string_literal_expr(t)
+        string_literal_expr(pr, t)
     elsif k == TK_DSTRING()
-        s = tok_text(t)
+        s = tok_text(pr, t)
         _a = p_advance(pr)
-        if tok_ival(t) == 1
+        if tok_ival(pr, t) == 1
             _e = p_set_err(pr, d"parse error: invalid string interpolation")
         else
             _e = 0
         args = vec_new()
-        _b = vec_push(args, string_literal_expr(t))
+        _b = vec_push(args, string_literal_expr(pr, t))
         ex_call(d"strdup", args)
     elsif k == TK_IF()
         parse_if(pr)
@@ -494,12 +525,12 @@ fn parse_primary(pr: Int) -> Int ! alloc
     elsif k == TK_ON()
         _a = p_advance(pr)
         pl = p_advance(pr)
-        place = or_place(tok_text(pl), d"pp")
+        place = or_place(tok_text(pr, pl), d"pp")
         is_kernel = 0
         has_index = 0
         if p_accept(pr, TK_KERNEL()) == 1
             is_kernel = 1
-            if tok_kind(p_peek(pr)) == TK_IDENT()
+            if tok_kind(pr, p_peek(pr)) == TK_IDENT()
                 has_index = 1
                 _ki = skip_kernel_index(pr)
             else
@@ -534,8 +565,8 @@ fn parse_primary(pr: Int) -> Int ! alloc
         _a = p_advance(pr)
         ex_int(0)
 
-fn parse_elsif_arms(pr: Int, arms: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) == TK_ELSIF()
+fn parse_elsif_arms(pr: Parser, arms: Int) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_ELSIF()
         _a = p_advance(pr)
         cond = parse_expr(pr)
         _b = p_skip_nls(pr)
@@ -550,7 +581,7 @@ fn parse_elsif_arms(pr: Int, arms: Int) -> Int ! alloc
     else
         arms
 
-fn parse_if(pr: Int) -> Int ! alloc
+fn parse_if(pr: Parser) -> Int ! alloc
     _a = p_advance(pr)
     cond = parse_expr(pr)
     _b = p_skip_nls(pr)
@@ -558,7 +589,7 @@ fn parse_if(pr: Int) -> Int ! alloc
     then_b = parse_block_after_indent(pr)
     _d = p_skip_nls(pr)
     arms = parse_elsif_arms(pr, vec_new())
-    if tok_kind(p_peek(pr)) == TK_ELSE()
+    if tok_kind(pr, p_peek(pr)) == TK_ELSE()
         _e = p_advance(pr)
         _f = p_skip_nls(pr)
         _g = p_accept(pr, TK_INDENT())
@@ -570,12 +601,12 @@ fn parse_if(pr: Int) -> Int ! alloc
 # pattern -> "_" | INT | IDENT "." IDENT "(" patterns ")" | IDENT "(" patterns ")" | IDENT
 # A string literal; `"a{x}b"` becomes the chain `"a" + x + "b"` (the chain
 # starts with a literal so `+` concatenates and copies `x`).
-fn string_literal_expr(t: Int) -> Int ! alloc
-    if tok_ival(t) == 2
-        raw = tok_text(t)
+fn string_literal_expr(pr: Parser, t: Int) -> Int ! alloc
+    if tok_ival(pr, t) == 2
+        raw = tok_text(pr, t)
         interp_chain(raw, 0, str_len(raw), d"", 0)
     else
-        ex_string(tok_text(t))
+        ex_string(tok_text(pr, t))
 
 # `left` is the chain so far (0 before the first piece); `lit` the pending text.
 fn interp_chain(raw: String, i: Int, n: Int, lit: String, left: Int) -> Int ! alloc
@@ -615,21 +646,21 @@ fn interp_flush(left: Int, lit: String, last: Int) -> Int ! alloc
     else
         ex_binary(d"add", left, ex_string(lit))
 
-fn parse_pattern(pr: Int) -> Int ! alloc
+fn parse_pattern(pr: Parser) -> Int ! alloc
     t = p_advance(pr)
-    k = tok_kind(t)
+    k = tok_kind(pr, t)
     if k == TK_INT()
-        pat_new(2, tok_ival(t), 0, 0)
+        pat_new(2, tok_ival(pr, t), 0, 0)
     elsif k == TK_IDENT()
-        nm = tok_text(t)
+        nm = tok_text(pr, t)
         if str_eq(nm, d"_") == 1
             pat_new(0, 0, 0, 0)
-        elsif tok_kind(p_peek(pr)) == TK_DOT()
+        elsif tok_kind(pr, p_peek(pr)) == TK_DOT()
             _d = p_advance(pr)
             vt = p_advance(pr)
             args = parse_pattern_args(pr)
-            pat_new(3, vec_get(vt, 1), str_as_int(nm), args)
-        elsif tok_kind(p_peek(pr)) == TK_LPAREN()
+            pat_new(3, str_as_int(tok_text(pr, vt)), str_as_int(nm), args)
+        elsif tok_kind(pr, p_peek(pr)) == TK_LPAREN()
             args = parse_pattern_args(pr)
             pat_new(3, str_as_int(nm), 0, args)
         else
@@ -638,7 +669,7 @@ fn parse_pattern(pr: Int) -> Int ! alloc
         _e = p_set_err(pr, d"parse error: expected pattern")
         pat_new(0, 0, 0, 0)
 
-fn parse_pattern_args(pr: Int) -> Int ! alloc
+fn parse_pattern_args(pr: Parser) -> Int ! alloc
     args = vec_new()
     if p_accept(pr, TK_LPAREN()) == 1
         _g = p_enter_group(pr)
@@ -648,9 +679,9 @@ fn parse_pattern_args(pr: Int) -> Int ! alloc
     else
         args
 
-fn parse_pattern_list(pr: Int, args: Int) -> Int ! alloc
+fn parse_pattern_list(pr: Parser, args: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_RPAREN()
+    if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         p_accept(pr, TK_RPAREN())
     else
         _a = vec_push(args, parse_pattern(pr))
@@ -660,12 +691,12 @@ fn parse_pattern_list(pr: Int, args: Int) -> Int ! alloc
         else
             p_accept(pr, TK_RPAREN())
 
-fn parse_match_arms(pr: Int, arms: Int) -> Int ! alloc
+fn parse_match_arms(pr: Parser, arms: Int) -> Int ! alloc
     _s = p_skip_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_DEDENT()
+    if tok_kind(pr, p_peek(pr)) == TK_DEDENT()
         _a = p_advance(pr)
         arms
-    elsif tok_kind(p_peek(pr)) == TK_EOF()
+    elsif tok_kind(pr, p_peek(pr)) == TK_EOF()
         arms
     else
         pat = parse_pattern(pr)
@@ -680,7 +711,7 @@ fn parse_match_arms(pr: Int, arms: Int) -> Int ! alloc
         else
             parse_match_arms(pr, arms)
 
-fn parse_match(pr: Int) -> Int ! alloc
+fn parse_match(pr: Parser) -> Int ! alloc
     _a = p_advance(pr)
     scrut = parse_expr(pr)
     _b = p_skip_nls(pr)
@@ -689,8 +720,8 @@ fn parse_match(pr: Int) -> Int ! alloc
     ex_match(scrut, arms)
 
 # kernel index list: IDENT ("," IDENT)* "in" type
-fn skip_kernel_index(pr: Int) -> Int ! alloc
-    k = tok_kind(p_peek(pr))
+fn skip_kernel_index(pr: Parser) -> Int ! alloc
+    k = tok_kind(pr, p_peek(pr))
     if k == TK_IDENT()
         _a = p_advance(pr)
         skip_kernel_index(pr)
@@ -703,7 +734,7 @@ fn skip_kernel_index(pr: Int) -> Int ! alloc
     else
         0
 
-fn parse_while(pr: Int) -> Int ! alloc
+fn parse_while(pr: Parser) -> Int ! alloc
     _a = p_advance(pr)
     cond = parse_expr(pr)
     _b = p_skip_nls(pr)
@@ -717,15 +748,15 @@ fn or_fn_name(name: String) -> String ! alloc
     else
         name
 
-fn parse_ident_primary(pr: Int) -> Int ! alloc
+fn parse_ident_primary(pr: Parser) -> Int ! alloc
     t = p_advance(pr)
-    name = or_fn_name(tok_text(t))
+    name = or_fn_name(tok_text(pr, t))
     if str_eq(name, "tensor") == 1
-        if tok_kind(p_peek(pr)) == TK_LBRACK()
+        if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
             _a = p_advance(pr)
             _g = p_enter_group(pr)
             _n = p_skip_group_nls(pr)
-            if tok_kind(p_peek(pr)) == TK_LBRACK()
+            if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
                 te = parse_tensor_rows(pr, 0, 0, vec_new())
                 _n = p_skip_group_nls(pr)
                 _b = p_accept(pr, TK_RBRACK())
@@ -740,8 +771,8 @@ fn parse_ident_primary(pr: Int) -> Int ! alloc
     else
         parse_ident_or_call(pr, name)
 
-fn parse_ident_or_call(pr: Int, name: String) -> Int ! alloc
-    if tok_kind(p_peek(pr)) == TK_LBRACK()
+fn parse_ident_or_call(pr: Parser, name: String) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
         text = parse_type_text_go(pr, 1, d"")
         parse_call_with_type_args(pr, name, str_as_int(trim_closing_bracket(text)))
@@ -759,8 +790,8 @@ fn trim_closing_bracket(text: String) -> String ! alloc
     else
         text
 
-fn parse_call_with_type_args(pr: Int, name: String, targs: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) == TK_LPAREN()
+fn parse_call_with_type_args(pr: Parser, name: String, targs: Int) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_LPAREN()
         _a = p_advance(pr)
         _g = p_enter_group(pr)
         args = vec_new()
@@ -772,38 +803,38 @@ fn parse_call_with_type_args(pr: Int, name: String, targs: Int) -> Int ! alloc
     else
         ex_ident(name)
 
-fn parse_block_after_indent(pr: Int) -> Int ! alloc
+fn parse_block_after_indent(pr: Parser) -> Int ! alloc
     b = block_new()
     _a = p_skip_nls(pr)
     parse_block_go(pr, b)
 
-fn parse_return_value(pr: Int) -> Int ! alloc
+fn parse_return_value(pr: Parser) -> Int ! alloc
     if at_block_end(pr) == 1
         0
-    elsif tok_kind(p_peek(pr)) == TK_NL()
+    elsif tok_kind(pr, p_peek(pr)) == TK_NL()
         0
     else
         parse_expr(pr)
 
-fn parse_block_go(pr: Int, b: Int) -> Int ! alloc
+fn parse_block_go(pr: Parser, b: Int) -> Int ! alloc
     _a = p_skip_nls(pr)
     if at_block_end(pr) == 1
         _b = p_accept(pr, TK_DEDENT())
         b
-    elsif tok_kind(p_peek(pr)) == TK_RETURN()
+    elsif tok_kind(pr, p_peek(pr)) == TK_RETURN()
         _r = p_advance(pr)
         rex = parse_return_value(pr)
         st = stmt_new(2, d"", rex)
         _d = vec_push(block_stmts(b), st)
         _e = p_skip_nls(pr)
         parse_block_go(pr, b)
-    elsif tok_kind(p_peek(pr)) == TK_LET()
+    elsif tok_kind(pr, p_peek(pr)) == TK_LET()
         parse_let(pr, b, 0)
-    elsif tok_kind(p_peek(pr)) == TK_AT()
+    elsif tok_kind(pr, p_peek(pr)) == TK_AT()
         flags = parse_stmt_attrs(pr, 0)
         if flags < 0
             b
-        elsif tok_kind(p_peek(pr)) != TK_LET()
+        elsif tok_kind(pr, p_peek(pr)) != TK_LET()
             _e = p_set_err(pr, d"parse error: @frozen and @stack apply to let only")
             b
         else
@@ -812,18 +843,18 @@ fn parse_block_go(pr: Int, b: Int) -> Int ! alloc
         parse_block_expr(pr, b)
 
 # `@frozen` (1) and `@stack` (2) before a `let`; -1 on error.
-fn parse_stmt_attrs(pr: Int, flags: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) != TK_AT()
+fn parse_stmt_attrs(pr: Parser, flags: Int) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) != TK_AT()
         flags
     else
         _at = p_accept(pr, TK_AT())
         nt = p_peek(pr)
-        if tok_kind(nt) != TK_IDENT()
+        if tok_kind(pr, nt) != TK_IDENT()
             _e = p_set_err(pr, d"parse error: expected attribute name")
             -1
         else
             nt = p_advance(pr)
-            name = tok_text(nt)
+            name = tok_text(pr, nt)
             if str_eq(name, d"frozen") == 1
                 _s = p_skip_nls(pr)
                 parse_stmt_attrs(pr, flags | 1)
@@ -834,10 +865,10 @@ fn parse_stmt_attrs(pr: Int, flags: Int) -> Int ! alloc
                 _e = p_set_err(pr, d"parse error: unknown attribute")
                 -1
 
-fn parse_let(pr: Int, b: Int, flags: Int) -> Int ! alloc
+fn parse_let(pr: Parser, b: Int, flags: Int) -> Int ! alloc
     _l = p_advance(pr)
     nt = p_advance(pr)
-    nm = tok_text(nt)
+    nm = tok_text(pr, nt)
     ty = 0
     if p_accept(pr, TK_COLON()) == 1
         ty = str_as_int(parse_type_text(pr))
@@ -851,7 +882,7 @@ fn parse_let(pr: Int, b: Int, flags: Int) -> Int ! alloc
     _e = p_skip_nls(pr)
     parse_block_go(pr, b)
 
-fn parse_block_expr(pr: Int, b: Int) -> Int ! alloc
+fn parse_block_expr(pr: Parser, b: Int) -> Int ! alloc
     ex = parse_expr(pr)
     if p_accept(pr, TK_EQ()) == 1
         parse_assign_stmt(pr, b, ex)
@@ -859,7 +890,7 @@ fn parse_block_expr(pr: Int, b: Int) -> Int ! alloc
         parse_block_expr_tail(pr, b, ex)
 
 # `lvalue = expr`: the lvalue is an identifier or a chain of fields.
-fn parse_assign_stmt(pr: Int, b: Int, target: Int) -> Int ! alloc
+fn parse_assign_stmt(pr: Parser, b: Int, target: Int) -> Int ! alloc
     value = parse_expr(pr)
     if ex_kind(target) == EX_IDENT()
         st = stmt_new(1, str_from_int(vec_get(target, 1)), value)
@@ -872,7 +903,7 @@ fn parse_assign_stmt(pr: Int, b: Int, target: Int) -> Int ! alloc
     _n = p_skip_nls(pr)
     parse_block_go(pr, b)
 
-fn parse_block_expr_tail(pr: Int, b: Int, ex: Int) -> Int ! alloc
+fn parse_block_expr_tail(pr: Parser, b: Int, ex: Int) -> Int ! alloc
     _a = p_skip_nls(pr)
     if at_block_end(pr) == 1
         _b = block_set_tail(b, ex)
@@ -884,18 +915,18 @@ fn parse_block_expr_tail(pr: Int, b: Int, ex: Int) -> Int ! alloc
         parse_block_go(pr, b)
 
 # Effect names after `!` set their flag in `fx` (see fx_flags_new).
-fn parse_effects(pr: Int, fx: Int) -> Int ! alloc
+fn parse_effects(pr: Parser, fx: Int) -> Int ! alloc
     if p_accept(pr, TK_BANG()) == 0
         0
     else
         parse_effects_go(pr, fx)
 
-fn parse_effects_go(pr: Int, fx: Int) -> Int ! alloc
+fn parse_effects_go(pr: Parser, fx: Int) -> Int ! alloc
     t = p_peek(pr)
-    k = tok_kind(t)
+    k = tok_kind(pr, t)
     if k == TK_IDENT()
         _a = p_advance(pr)
-        _m = mark_effect(fx, tok_text(t))
+        _m = mark_effect(fx, tok_text(pr, t))
         parse_effects_go(pr, fx)
     elsif k == TK_COMMA()
         _a = p_advance(pr)
@@ -923,20 +954,20 @@ fn or_arg_name(pn: String) -> String ! alloc
     else
         pn
 
-fn parse_param_ty(pr: Int) -> String ! alloc
+fn parse_param_ty(pr: Parser) -> String ! alloc
     if p_accept(pr, TK_COLON()) == 1
         parse_type_text(pr)
     else
         d"Int"
 
 # Explicit `borrow` / `take` after a parameter type.
-fn parse_param_mode(pr: Int, prm: Int) -> Int ! alloc
+fn parse_param_mode(pr: Parser, prm: Int) -> Int ! alloc
     t = p_peek(pr)
-    if tok_kind(t) == TK_IDENT()
-        if str_eq(tok_text(t), "borrow") == 1
+    if tok_kind(pr, t) == TK_IDENT()
+        if str_eq(tok_text(pr, t), "borrow") == 1
             _a = p_advance(pr)
             param_set_mode(prm, 1)
-        elsif str_eq(tok_text(t), "take") == 1
+        elsif str_eq(tok_text(pr, t), "take") == 1
             _b = p_advance(pr)
             param_set_mode(prm, 2)
         else
@@ -944,13 +975,13 @@ fn parse_param_mode(pr: Int, prm: Int) -> Int ! alloc
     else
         0
 
-fn parse_params(pr: Int, params: Int) -> Int ! alloc
+fn parse_params(pr: Parser, params: Int) -> Int ! alloc
     _s = p_skip_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_RPAREN()
+    if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         params
     else
         pn_t = p_advance(pr)
-        pn = or_arg_name(tok_text(pn_t))
+        pn = or_arg_name(tok_text(pr, pn_t))
         ty = parse_param_ty(pr)
         prm = param_new(pn, ty)
         _m = parse_param_mode(pr, prm)
@@ -961,13 +992,13 @@ fn parse_params(pr: Int, params: Int) -> Int ! alloc
             _t = p_skip_nls(pr)
             params
 
-fn parse_struct_fields(pr: Int, fields: Int) -> Int ! alloc
+fn parse_struct_fields(pr: Parser, fields: Int) -> Int ! alloc
     _s = p_skip_nls(pr)
     if at_block_end(pr) == 1
         fields
-    elsif tok_kind(p_peek(pr)) == TK_IDENT()
+    elsif tok_kind(pr, p_peek(pr)) == TK_IDENT()
         pn_t = p_advance(pr)
-        pn = or_arg_name(tok_text(pn_t))
+        pn = or_arg_name(tok_text(pr, pn_t))
         ty = parse_param_ty(pr)
         _a = vec_push(fields, param_new(pn, ty))
         parse_struct_fields(pr, fields)
@@ -976,18 +1007,18 @@ fn parse_struct_fields(pr: Int, fields: Int) -> Int ! alloc
         fields
 
 # 0 = none, 1 = @no_heap, 2 = @layout(c), -1 = error
-fn parse_item_attr_kind(pr: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) != TK_AT()
+fn parse_item_attr_kind(pr: Parser) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) != TK_AT()
         0
     else
         _at = p_accept(pr, TK_AT())
         nt = p_peek(pr)
-        if tok_kind(nt) != TK_IDENT()
+        if tok_kind(pr, nt) != TK_IDENT()
             _e = p_set_err(pr, d"parse error: expected attribute name")
             -1
         else
             nt = p_advance(pr)
-            name = tok_text(nt)
+            name = tok_text(pr, nt)
             if str_eq(name, d"no_heap") == 1
                 1
             elsif str_eq(name, d"layout") == 1
@@ -996,12 +1027,12 @@ fn parse_item_attr_kind(pr: Int) -> Int ! alloc
                     -1
                 else
                     nt2 = p_peek(pr)
-                    if tok_kind(nt2) != TK_IDENT()
+                    if tok_kind(pr, nt2) != TK_IDENT()
                         _e = p_set_err(pr, d"parse error: expected c in @layout(c)")
                         -1
                     else
                         nt2 = p_advance(pr)
-                        arg = tok_text(nt2)
+                        arg = tok_text(pr, nt2)
                         if p_accept(pr, TK_RPAREN()) == 0
                             _e = p_set_err(pr, d"parse error: expected ) after @layout(c)")
                             -1
@@ -1018,20 +1049,20 @@ fn parse_item_attr_kind(pr: Int) -> Int ! alloc
                 -1
 
 # type_params -> "[" IDENT ("," IDENT)* "]" | empty; returns the names.
-fn parse_type_params(pr: Int) -> Int ! alloc
+fn parse_type_params(pr: Parser) -> Int ! alloc
     ps = vec_new()
-    if tok_kind(p_peek(pr)) == TK_LBRACK()
+    if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
         parse_type_params_go(pr, ps)
     else
         ps
 
-fn parse_type_params_go(pr: Int, ps: Int) -> Int ! alloc
+fn parse_type_params_go(pr: Parser, ps: Int) -> Int ! alloc
     t = p_peek(pr)
-    k = tok_kind(t)
+    k = tok_kind(pr, t)
     if k == TK_IDENT()
         _a = p_advance(pr)
-        _b = vec_push(ps, vec_get(t, 1))
+        _b = vec_push(ps, str_as_int(tok_text(pr, t)))
         parse_type_params_go(pr, ps)
     elsif k == TK_COMMA()
         _a = p_advance(pr)
@@ -1042,9 +1073,9 @@ fn parse_type_params_go(pr: Int, ps: Int) -> Int ! alloc
     else
         ps
 
-fn parse_variant_fields(pr: Int, fields: Int) -> Int ! alloc
+fn parse_variant_fields(pr: Parser, fields: Int) -> Int ! alloc
     _s = p_skip_group_nls(pr)
-    if tok_kind(p_peek(pr)) == TK_RPAREN()
+    if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         _a = p_advance(pr)
         fields
     else
@@ -1055,56 +1086,56 @@ fn parse_variant_fields(pr: Int, fields: Int) -> Int ! alloc
             _c = p_accept(pr, TK_RPAREN())
             fields
 
-fn parse_enum_variants(pr: Int, vs: Int) -> Int ! alloc
+fn parse_enum_variants(pr: Parser, vs: Int) -> Int ! alloc
     _s = p_skip_nls(pr)
     t = p_peek(pr)
-    if tok_kind(t) == TK_IDENT()
+    if tok_kind(pr, t) == TK_IDENT()
         _a = p_advance(pr)
         fields = vec_new()
-        if tok_kind(p_peek(pr)) == TK_LPAREN()
+        if tok_kind(pr, p_peek(pr)) == TK_LPAREN()
             _b = p_advance(pr)
             _c = parse_variant_fields(pr, fields)
         else
             _c = 0
-        _d = vec_push(vs, variant_new(tok_text(t), fields))
+        _d = vec_push(vs, variant_new(tok_text(pr, t), fields))
         parse_enum_variants(pr, vs)
     else
         vs
 
-fn parse_enum(pr: Int) -> Int ! alloc
+fn parse_enum(pr: Parser) -> Int ! alloc
     _a = p_advance(pr)
     nt = p_peek(pr)
-    if tok_kind(nt) == TK_IDENT()
+    if tok_kind(pr, nt) == TK_IDENT()
         _b = p_advance(pr)
         params = parse_type_params(pr)
         _c = p_skip_nls(pr)
         _d = p_accept(pr, TK_INDENT())
         vs = parse_enum_variants(pr, vec_new())
         _e = p_accept(pr, TK_DEDENT())
-        enumdef_new(tok_text(nt), params, vs)
+        enumdef_new(tok_text(pr, nt), params, vs)
     else
         _e = p_set_err(pr, d"parse error: expected enum name")
         enumdef_new(d"_bad", vec_new(), vec_new())
 
-fn parse_struct(pr: Int) -> Int ! alloc
+fn parse_struct(pr: Parser) -> Int ! alloc
     is_frame = 0
-    if tok_kind(p_peek(pr)) == TK_STRUCT()
+    if tok_kind(pr, p_peek(pr)) == TK_STRUCT()
         _a = p_accept(pr, TK_STRUCT())
-    elsif tok_kind(p_peek(pr)) == TK_FRAME()
+    elsif tok_kind(pr, p_peek(pr)) == TK_FRAME()
         _a = p_advance(pr)
         is_frame = 1
     else
         _a = p_advance(pr)
     nt = p_peek(pr)
-    if tok_kind(nt) == TK_IDENT()
+    if tok_kind(pr, nt) == TK_IDENT()
         nt = p_advance(pr)
-        name = or_fn_name(tok_text(nt))
+        name = or_fn_name(tok_text(pr, nt))
         sparams = parse_type_params(pr)
         _b = p_skip_nls(pr)
         _c = p_accept(pr, TK_INDENT())
         fields = vec_new()
         fields = parse_struct_fields(pr, fields)
-        if tok_kind(p_peek(pr)) == TK_DEDENT()
+        if tok_kind(pr, p_peek(pr)) == TK_DEDENT()
             _d = p_accept(pr, TK_DEDENT())
         else
             _d = 0
@@ -1117,19 +1148,19 @@ fn parse_struct(pr: Int) -> Int ! alloc
         structdef_new(d"_bad", vec_new())
 
 # Handle of the return type text after `->`, 0 when there is none.
-fn parse_fn_ret(pr: Int) -> Int ! alloc
+fn parse_fn_ret(pr: Parser) -> Int ! alloc
     if p_accept(pr, TK_ARROW()) == 1
         str_as_int(parse_type_text(pr))
     else
         _e = p_set_err(pr, d"parse error: expected -> after parameters")
         0
 
-fn parse_fn(pr: Int) -> Int ! alloc
+fn parse_fn(pr: Parser) -> Int ! alloc
     _a = p_accept(pr, TK_FN())
     nt = p_peek(pr)
-    if tok_kind(nt) == TK_IDENT()
+    if tok_kind(pr, nt) == TK_IDENT()
         nt = p_advance(pr)
-        name = or_fn_name(tok_text(nt))
+        name = or_fn_name(tok_text(pr, nt))
         tparams = parse_type_params(pr)
         _b = p_accept(pr, TK_LPAREN())
         params = vec_new()
@@ -1151,13 +1182,13 @@ fn parse_fn(pr: Int) -> Int ! alloc
         _e = p_set_err(pr, d"parse error: expected function name")
         fndef_new(d"_bad", vec_new(), block_new())
 
-fn parse_import_path_dots(pr: Int, path: String) -> String ! alloc
-    if tok_kind(p_peek(pr)) == TK_DOT()
+fn parse_import_path_dots(pr: Parser, path: String) -> String ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_DOT()
         _d = p_advance(pr)
-        if tok_kind(p_peek(pr)) == TK_IDENT()
+        if tok_kind(pr, p_peek(pr)) == TK_IDENT()
             t = p_peek(pr)
             _t = p_advance(pr)
-            seg = tok_text(t)
+            seg = tok_text(pr, t)
             npath = path + "." + seg
             parse_import_path_dots(pr, npath)
         else
@@ -1165,13 +1196,13 @@ fn parse_import_path_dots(pr: Int, path: String) -> String ! alloc
     else
         path
 
-fn parse_optional_import_as(pr: Int) -> Int ! alloc
-    if tok_kind(p_peek(pr)) == TK_IDENT()
-        if str_eq(tok_text(p_peek(pr)), d"as") == 1
+fn parse_optional_import_as(pr: Parser) -> Int ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_IDENT()
+        if str_eq(tok_text(pr, p_peek(pr)), d"as") == 1
             _a = p_advance(pr)
-            if tok_kind(p_peek(pr)) == TK_IDENT()
+            if tok_kind(pr, p_peek(pr)) == TK_IDENT()
                 t = p_advance(pr)
-                str_as_int(tok_text(t))
+                str_as_int(tok_text(pr, t))
             else
                 _e = p_set_err(pr, d"parse error: expected import alias name")
                 0
@@ -1180,24 +1211,24 @@ fn parse_optional_import_as(pr: Int) -> Int ! alloc
     else
         0
 
-fn parse_import_path(pr: Int) -> String ! alloc
+fn parse_import_path(pr: Parser) -> String ! alloc
     t = p_peek(pr)
-    k = tok_kind(t)
+    k = tok_kind(pr, t)
     if k == TK_STRING()
-        name = tok_text(t)
+        name = tok_text(pr, t)
         _a = p_advance(pr)
         name
     elsif k == TK_IDENT()
-        path = tok_text(t)
+        path = tok_text(pr, t)
         _b = p_advance(pr)
         parse_import_path_dots(pr, path)
     else
         _e = p_set_err(pr, d"parse error: expected identifier")
         d""
 
-fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
+fn parse_program_go(pr: Parser, prog: Int) -> Int ! alloc
     _a = p_skip_nls(pr)
-    k = tok_kind(p_peek(pr))
+    k = tok_kind(pr, p_peek(pr))
     if k == TK_EOF()
         prog
     elsif k == TK_AT()
@@ -1235,7 +1266,7 @@ fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
         _s = vec_push(prog_enums(prog), ed)
         parse_program_go(pr, prog)
     elsif k == TK_IDENT()
-        if str_eq(tok_text(p_peek(pr)), d"struct") == 1
+        if str_eq(tok_text(pr, p_peek(pr)), d"struct") == 1
             sd = parse_struct(pr)
             _s = vec_push(prog_structs(prog), sd)
             parse_program_go(pr, prog)
@@ -1250,37 +1281,41 @@ fn parse_program_go(pr: Int, prog: Int) -> Int ! alloc
         _d = p_advance(pr)
         parse_program_go(pr, prog)
 
-fn toks_has_code(toks: Int, i: Int, n: Int) -> Int ! alloc
+fn toks_has_code(pr: Parser, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        k = tok_kind(vec_get(toks, i))
+        k = tok_kind(pr, i)
         if k == TK_EOF()
-            toks_has_code(toks, i + 1, n)
+            toks_has_code(pr, i + 1, n)
         elsif k == TK_NL()
-            toks_has_code(toks, i + 1, n)
+            toks_has_code(pr, i + 1, n)
         elsif k == TK_INDENT()
-            toks_has_code(toks, i + 1, n)
+            toks_has_code(pr, i + 1, n)
         elsif k == TK_DEDENT()
-            toks_has_code(toks, i + 1, n)
+            toks_has_code(pr, i + 1, n)
         else
             1
 
 fn parse_program(src: String) -> Int ! alloc
-    toks = lex(src)
-    pr = parser_new(toks)
+    pr = parser_new(lex(src))
     prog = prog_new()
     _a = p_skip_nls(pr)
     parse_program_go(pr, prog)
+    r = parse_program_result(pr, prog, src)
+    _f = parser_free(pr)
+    r
+
+fn parse_program_result(pr: Parser, prog: Int, src: String) -> Int ! alloc
     if p_has_err(pr) == 1
-        result_err(p_err_msg(pr))
+        result_err_str(p_err_msg(pr))
     elsif vec_len(prog_fns(prog)) > 0
         result_ok(prog)
     elsif vec_len(prog_structs(prog)) > 0
         result_ok(prog)
     elsif vec_len(prog_enums(prog)) > 0
         result_ok(prog)
-    elsif toks_has_code(toks, 0, vec_len(toks)) == 1
+    elsif toks_has_code(pr, 0, list_len(pr.kinds)) == 1
         result_err_str(d"parse error: expected fn")
     elsif str_len(src) == 0
         result_err_str(d"parse error: empty source")

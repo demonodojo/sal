@@ -1,0 +1,13 @@
+# error: E_TYPE
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct P
+    x: Int
+
+method P.get() -> Int
+    self.x
+
+method P.get() -> Int
+    0
+
+fn main() -> Int
+    P(1).get()

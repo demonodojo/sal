@@ -162,9 +162,67 @@ impl Parser {
             Ok(Item::Enum(self.parse_enum()?))
         } else if self.at(TokenKind::Frame) {
             Ok(Item::Frame(self.parse_frame()?))
+        } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "method")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        {
+            self.bump();
+            self.parse_method_after_kw().map(Item::Fn)
+        } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "static")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+            && matches!(self.tokens.get(self.pos + 2).map(|t| &t.kind), Some(TokenKind::Dot))
+        {
+            self.bump();
+            self.parse_static_after_kw().map(Item::Fn)
+        } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "init")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+            && matches!(self.tokens.get(self.pos + 2).map(|t| &t.kind), Some(TokenKind::LParen))
+        {
+            self.bump();
+            self.parse_init_after_kw().map(Item::Fn)
         } else {
-            self.expect(TokenKind::Fn, "expected fn, import, struct, enum or frame")?;
+            self.expect(TokenKind::Fn, "expected fn, method, static, init, import, struct, enum or frame")?;
             self.parse_fn_after_kw().map(Item::Fn)
+        }
+    }
+
+    fn parse_method_after_kw(&mut self) -> Result<FnDef, Diagnostic> {
+        let receiver = self.parse_ident()?;
+        self.expect(TokenKind::Dot, "expected . after the method receiver type")?;
+        let mut f = self.parse_fn_after_kw_as(true, None)?;
+        Self::no_type_params(&f, "a method")?;
+        f.receiver = Some(receiver);
+        Ok(f)
+    }
+
+    /// `static T.name(params) -> R`: a function in the namespace of `T`.
+    fn parse_static_after_kw(&mut self) -> Result<FnDef, Diagnostic> {
+        let receiver = self.parse_ident()?;
+        self.expect(TokenKind::Dot, "expected . after the static receiver type")?;
+        let mut f = self.parse_fn_after_kw_as(false, None)?;
+        Self::no_type_params(&f, "a static method")?;
+        f.receiver = Some(receiver);
+        f.method_kind = MethodKind::Static;
+        Ok(f)
+    }
+
+    /// `init T(params)`: the constructor `T.new(params)`; it returns a `T`.
+    fn parse_init_after_kw(&mut self) -> Result<FnDef, Diagnostic> {
+        let receiver = self.parse_ident()?;
+        let mut f = self.parse_fn_after_kw_as(false, Some(&receiver))?;
+        f.receiver = Some(receiver);
+        f.method_kind = MethodKind::Init;
+        Ok(f)
+    }
+
+    fn no_type_params(f: &FnDef, what: &str) -> Result<(), Diagnostic> {
+        if f.type_params.is_empty() {
+            Ok(())
+        } else {
+            Err(Diagnostic::new(
+                ErrorCode::EParse,
+                format!("{what} has no type parameters"),
+                f.span,
+            ))
         }
     }
 
@@ -320,11 +378,48 @@ impl Parser {
     }
 
     fn parse_fn_after_kw(&mut self) -> Result<FnDef, Diagnostic> {
-        let name = self.parse_ident()?;
-        let type_params = self.parse_type_params()?;
+        self.parse_fn_after_kw_as(false, None)
+    }
+
+    /// With `method`, the list may start with the bare `self`, optionally
+    /// followed by `take` or `borrow`; it sets the mode of the implicit `self`.
+    /// With `init`, the name is `new`, there is no `->` and the result is `init`.
+    fn parse_fn_after_kw_as(&mut self, method: bool, init: Option<&str>) -> Result<FnDef, Diagnostic> {
+        let (name, type_params) = match init {
+            Some(_) => ("new".to_string(), Vec::new()),
+            None => (self.parse_ident()?, self.parse_type_params()?),
+        };
         self.expect(TokenKind::LParen, "expected (")?;
         self.skip_soft_layout();
         let mut params = Vec::new();
+        let mut self_mode = ParamMode::Inferred;
+        if method && matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
+            let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
+            let bare = match &next {
+                Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
+                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow",
+                _ => false,
+            };
+            if !bare {
+                return Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    "`self` is implicit in a method: write `self`, `self take` or `self borrow`",
+                    self.peek().span,
+                ));
+            }
+            self.bump();
+            if let TokenKind::Ident(m) = self.peek().kind.clone() {
+                if m == "take" || m == "borrow" {
+                    self.bump();
+                    self_mode = if m == "take" { ParamMode::Take } else { ParamMode::Borrow };
+                }
+            }
+            self.skip_soft_layout();
+            if self.at(TokenKind::Comma) {
+                self.bump();
+                self.skip_soft_layout();
+            }
+        }
         if !self.at(TokenKind::RParen) {
             loop {
                 params.push(self.parse_param()?);
@@ -339,8 +434,13 @@ impl Parser {
         }
         self.skip_soft_layout();
         self.expect(TokenKind::RParen, "expected )")?;
-        self.expect(TokenKind::Arrow, "expected ->")?;
-        let ret = self.parse_type()?;
+        let ret = match init {
+            Some(t) => Type::Named { name: t.to_string(), args: vec![], span: self.peek().span },
+            None => {
+                self.expect(TokenKind::Arrow, "expected ->")?;
+                self.parse_type()?
+            }
+        };
         let effects = self.parse_effects()?;
         self.expect(TokenKind::Newline, "expected newline before body")?;
         self.expect(TokenKind::Indent, "expected indented body")?;
@@ -352,6 +452,9 @@ impl Parser {
         let span = body.span;
         Ok(FnDef {
             name,
+            receiver: None,
+            self_mode,
+            method_kind: MethodKind::Method,
             type_params,
             params,
             ret,

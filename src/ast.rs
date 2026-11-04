@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
 
-pub const AST_SCHEMA_VERSION: u32 = 2;
+pub const AST_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Program {
@@ -56,9 +56,31 @@ pub struct Import {
     pub span: Span,
 }
 
+/// How a `method`-family item is called. `Method` is the default (and what a
+/// plain `fn` carries); `Static` and `Init` have no `self` and are called as
+/// `T.name(…)` / `T.new(…)`. The kind outlives desugaring so that inference
+/// can tell a static `T__name` from an instance method.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MethodKind {
+    #[default]
+    Method,
+    Static,
+    Init,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FnDef {
     pub name: String,
+    /// `Some(T)` for `method T.name(...)`: `desugar_method_defs` renames the
+    /// fn to `T__name` and inserts `self: T` as the first parameter.
+    #[serde(default)]
+    pub receiver: Option<String>,
+    /// `method T.m(self take, …)`: the mode written for the implicit `self`.
+    #[serde(default)]
+    pub self_mode: ParamMode,
+    #[serde(default)]
+    pub method_kind: MethodKind,
     #[serde(default)]
     pub type_params: Vec<String>,
     pub params: Vec<Param>,

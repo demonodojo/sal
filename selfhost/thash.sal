@@ -1,0 +1,58 @@
+# A fixed-capacity string-to-string hash table over `List[String]`: open addressing, no
+# resizing (size it for at most half full). A key is never empty; a missing key reads as "".
+struct HT
+    keys: List[String]
+    vals: List[String]
+    cap: Int
+
+fn ht_fill(xs: List[String], n: Int) -> Int ! alloc
+    if n == 0
+        0
+    else
+        _a = list_push(xs, strdup(""))
+        ht_fill(xs, n - 1)
+
+fn ht_new(cap: Int) -> HT ! alloc
+    keys = list_new[String]()
+    vals = list_new[String]()
+    n = cap * 2 + 8
+    _a = ht_fill(keys, n)
+    _b = ht_fill(vals, n)
+    HT(keys, vals, n)
+
+fn ht_home(h: HT, key: String) -> Int ! alloc
+    x = str_hash(key, 5381)
+    y = if x < 0
+        0 - x
+    else
+        x
+    y - (y / h.cap) * h.cap
+
+# Slot holding `key`, or the empty slot where it would go.
+fn ht_probe(h: HT, key: String, i: Int) -> Int ! alloc
+    k = list_get(h.keys, i)
+    if str_len(k) == 0
+        i
+    elsif str_eq(k, key) == 1
+        i
+    else
+        j = i + 1
+        next = if j >= h.cap
+            0
+        else
+            j
+        ht_probe(h, key, next)
+
+fn ht_put(h: HT, key: String, val: String) -> Int ! alloc
+    i = ht_probe(h, key, ht_home(h, key))
+    _a = list_set(h.keys, i, strdup(key))
+    _b = list_set(h.vals, i, strdup(val))
+    0
+
+fn ht_get(h: HT, key: String) -> String ! alloc
+    i = ht_probe(h, key, ht_home(h, key))
+    list_get(h.vals, i)
+
+fn ht_free(h: HT) -> Int ! alloc
+    _a = list_free(h.keys)
+    list_free(h.vals)

@@ -1,0 +1,7 @@
+# error: E_TYPE
+# selfhost-xfail: methods are Rust bootstrap only for now
+import "mods/method_pt.sal" as geo
+
+fn main() -> Int
+    geo = mk(1, 2)
+    geo.sum()

@@ -1,221 +1,357 @@
 # Ownership pass, the mirror of check_ownership in src/ownership.rs: a unique
 # value (String, tensor, struct) moves when it is bound, returned, passed to a
-# move fn or sent with `to`; using it afterwards is E_MOVED.
+# move fn or sent with `to`; using it afterwards is E_MOVED. It reads the typed AST
+# (`tast.sal`) and types names with the typed environment (`ttypes.sal`).
 import ast
 import result
+import tast
+import ttypes
+import thash
 
-# Context: [moved, err_msg, has_err, env, params, taken, used, modes, ctors]; `params` are the
-# names of the function's parameters, `taken` those moved out of and `used` those read (for
-# `infer_param_modes`); `modes` maps a fn name to its parameter modes and `ctors` holds the
-# struct and enum-variant constructor names, whose arguments move into the value.
-fn oc_new(prog: Int, modes: Int) -> Int ! alloc
-    c = vec_new()
-    _a = vec_push(c, vec_new())
-    _b = vec_push(c, 0)
-    _c = vec_push(c, 0)
-    env = strenv_new()
-    _g = strenv_set_globals(env, fnret_map_from_prog(prog), prog_structs(prog))
-    _d = vec_push(c, env)
-    _e = vec_push(c, vec_new())
-    _f = vec_push(c, vec_new())
-    _h = vec_push(c, vec_new())
-    _m = vec_push(c, modes)
-    _k = vec_push(c, own_ctors(prog))
-    c
+# `moved` is the set of moved names and `name.field` keys; `err` is empty or holds the first
+# message; `params` are the names of the function's parameters, `taken` those moved out of and
+# `used` those read (for the parameter modes); `table` maps a fn name to "m" + one digit per
+# parameter mode and `ctors` holds the struct and enum-variant constructor names, whose
+# arguments move into the value.
+struct OC
+    moved: List[String]
+    err: List[String]
+    env: TEnv
+    params: List[String]
+    taken: List[String]
+    used: List[String]
+    table: HT
+    ctors: List[String]
 
-fn own_ctors(prog: Int) -> Int ! alloc
-    m = map_new()
-    structs = prog_structs(prog)
-    _a = own_ctor_structs(m, structs, 0, vec_len(structs))
-    enums = prog_enums(prog)
-    _b = own_ctor_enums(m, enums, 0, vec_len(enums))
-    m
+fn oc_new(tp: TProgram, table: HT) -> OC ! alloc
+    ctors = list_new[String]()
+    _a = own_ctor_structs(ctors, tp.structs, 0, list_len(tp.structs))
+    _b = own_ctor_enums(ctors, tp.enums, 0, list_len(tp.enums))
+    OC(list_new[String](), list_new[String](), tenv_new(tp), list_new[String](), list_new[String](), list_new[String](), table, ctors)
 
-fn own_ctor_structs(m: Int, structs: Int, i: Int, n: Int) -> Int ! alloc
+fn oc_free(c: OC) -> Int ! alloc
+    _a = list_free(c.moved)
+    _b = list_free(c.err)
+    _c = tenv_free(c.env)
+    _d = list_free(c.params)
+    _e = list_free(c.taken)
+    _f = list_free(c.used)
+    _g = ht_free(c.table)
+    list_free(c.ctors)
+
+# Clears what a fn leaves behind, so the context serves the next one.
+fn oc_reset(c: OC) -> Int ! alloc
+    _a = own_clear(c.moved)
+    _b = own_clear(c.err)
+    _c = own_clear(c.params)
+    _d = own_clear(c.taken)
+    _e = own_clear(c.used)
+    tenv_truncate(c.env, 0)
+
+fn own_ctor_structs(out: List[String], structs: List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        sd = vec_get(structs, i)
-        if structdef_is_frame(sd) == 0
-            _a = map_put(m, structdef_name(sd), 1)
+        sd = list_get(structs, i)
+        if sd.is_frame == 0
+            _a = list_push(out, strdup(sd.name))
+            own_ctor_structs(out, structs, i + 1, n)
         else
-            _a = 0
-        own_ctor_structs(m, structs, i + 1, n)
+            own_ctor_structs(out, structs, i + 1, n)
 
-fn own_ctor_enums(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+fn own_ctor_enums(out: List[String], enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        vs = vec_get(vec_get(enums, i), 1)
-        _a = own_ctor_variants(m, vs, 0, vec_len(vs))
-        own_ctor_enums(m, enums, i + 1, n)
+        e = list_get(enums, i)
+        _a = own_ctor_variants(out, e.variants, 0, list_len(e.variants))
+        own_ctor_enums(out, enums, i + 1, n)
 
-fn own_ctor_variants(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+fn own_ctor_variants(out: List[String], vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        v = vec_get(vs, i)
-        if vec_len(vec_get(v, 1)) == 0
-            _a = 0
+        v = list_get(vs, i)
+        if list_len(v.fields) == 0
+            own_ctor_variants(out, vs, i + 1, n)
         else
-            _a = map_put(m, vec_get(v, 0), 1)
-        own_ctor_variants(m, vs, i + 1, n)
+            _a = list_push(out, strdup(v.name))
+            own_ctor_variants(out, vs, i + 1, n)
 
-fn oc_modes(c: Int) -> Int ! alloc
-    vec_get(c, 7)
-
-fn oc_ctors(c: Int) -> Int ! alloc
-    vec_get(c, 8)
-
-fn oc_params(c: Int) -> Int ! alloc
-    vec_get(c, 4)
-
-fn oc_taken(c: Int) -> Int ! alloc
-    vec_get(c, 5)
-
-fn oc_used(c: Int) -> Int ! alloc
-    vec_get(c, 6)
-
-# Adds `name` to `set` when `names` (the parameters) contains it and it is not there yet.
-fn own_note_param(c: Int, set: Int, name: Int) -> Int ! alloc
-    if own_has(oc_params(c), name, 0, vec_len(oc_params(c))) == 1
-        if own_has(set, name, 0, vec_len(set)) == 0
-            vec_push(set, name)
+# Adds `name` to `set` when it is a parameter and is not there yet.
+fn own_note_param(c: OC, set: List[String], name: String) -> Int ! alloc
+    if own_has(c.params, name, 0, list_len(c.params)) == 1
+        if own_has(set, name, 0, list_len(set)) == 0
+            _a = list_push(set, strdup(name))
+            0
         else
             0
     else
         0
 
-fn oc_moved(c: Int) -> Int ! alloc
-    vec_get(c, 0)
-
-fn oc_set_moved(c: Int, m: Int) -> Int ! alloc
-    vec_set(c, 0, m)
-
-fn oc_env(c: Int) -> Int ! alloc
-    vec_get(c, 3)
-
-fn oc_failed(c: Int) -> Int ! alloc
-    vec_get(c, 2)
-
-fn oc_fail(c: Int, msg: String) -> Int ! alloc
-    if vec_get(c, 2) == 0
-        _a = vec_set(c, 1, str_as_int(msg))
-        vec_set(c, 2, 1)
+fn oc_fail(c: OC, msg: String) -> Int ! alloc
+    if list_len(c.err) == 0
+        _a = list_push(c.err, strdup(msg))
+        0
     else
         0
 
-fn own_copy(src: Int) -> Int ! alloc
-    out = vec_new()
-    own_copy_go(src, out, 0, vec_len(src))
+fn oc_failed(c: OC) -> Int ! alloc
+    if list_len(c.err) == 0
+        0
+    else
+        1
+
+# ---- name sets ----
+fn own_copy(src: List[String]) -> List[String] ! alloc
+    out = list_new[String]()
+    _a = own_append(out, src, 0, list_len(src))
     out
 
-fn own_copy_go(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        dst
-    else
-        _p = vec_push(dst, vec_get(src, i))
-        own_copy_go(src, dst, i + 1, n)
-
-fn own_has(set: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+fn own_append(dst: List[String], src: List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif str_eq(vec_get(set, i), name) == 1
+    else
+        _p = list_push(dst, strdup(list_get(src, i)))
+        own_append(dst, src, i + 1, n)
+
+fn own_clear(xs: List[String]) -> Int ! alloc
+    if list_len(xs) > 0
+        _a = list_pop(xs)
+        own_clear(xs)
+    else
+        0
+
+# `c.moved` becomes a copy of `src`.
+fn oc_set_moved(c: OC, src: List[String]) -> Int ! alloc
+    _a = own_clear(c.moved)
+    own_append(c.moved, src, 0, list_len(src))
+
+fn own_has(set: List[String], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(set, i), name) == 1
         1
     else
         own_has(set, name, i + 1, n)
 
-fn is_moved(c: Int, name: Int) -> Int ! alloc
-    own_has(oc_moved(c), name, 0, vec_len(oc_moved(c)))
+fn is_moved(c: OC, name: String) -> Int ! alloc
+    own_has(c.moved, name, 0, list_len(c.moved))
 
-fn mark_moved(c: Int, name: Int) -> Int ! alloc
+fn mark_moved(c: OC, name: String) -> Int ! alloc
     if is_moved(c, name) == 0
-        vec_push(oc_moved(c), name)
+        _a = list_push(c.moved, strdup(name))
+        0
     else
         0
 
-fn own_remove_go(src: Int, name: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
+# Elements of `src` other than `name`, copied into `dst`.
+fn own_remove_go(src: List[String], name: String, dst: List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
-        dst
-    elsif str_eq(vec_get(src, i), name) == 1
+        0
+    elsif str_eq(list_get(src, i), name) == 1
         own_remove_go(src, name, dst, i + 1, n)
     else
-        _p = vec_push(dst, vec_get(src, i))
+        _p = list_push(dst, strdup(list_get(src, i)))
         own_remove_go(src, name, dst, i + 1, n)
 
-fn unmove(c: Int, name: Int) -> Int ! alloc
+# `m` is `name.field`: a field of `name` that moved out.
+fn own_is_field_of(m: String, name: String) -> Int ! alloc
+    nl = str_len(name)
+    if str_len(m) <= nl
+        0
+    elsif str_char(m, nl) != 46
+        0
+    else
+        str_eq(str_slice(m, 0, nl), name)
+
+fn own_any_field_go(set: List[String], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif own_is_field_of(list_get(set, i), name) == 1
+        1
+    else
+        own_any_field_go(set, name, i + 1, n)
+
+# The value, or any field of it, moved out.
+fn is_moved_any(c: OC, name: String) -> Int ! alloc
     if is_moved(c, name) == 1
-        oc_set_moved(c, own_remove_go(oc_moved(c), name, vec_new(), 0, vec_len(oc_moved(c))))
+        1
+    else
+        own_any_field_go(c.moved, name, 0, list_len(c.moved))
+
+fn own_revive_go(src: List[String], name: String, dst: List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(src, i), name) == 1
+        own_revive_go(src, name, dst, i + 1, n)
+    elsif own_is_field_of(list_get(src, i), name) == 1
+        own_revive_go(src, name, dst, i + 1, n)
+    else
+        _p = list_push(dst, strdup(list_get(src, i)))
+        own_revive_go(src, name, dst, i + 1, n)
+
+fn unmove(c: OC, name: String) -> Int ! alloc
+    if is_moved_any(c, name) == 1
+        kept = list_new[String]()
+        _a = own_revive_go(c.moved, name, kept, 0, list_len(c.moved))
+        _b = oc_set_moved(c, kept)
+        list_free(kept)
     else
         0
+
+fn own_unmove_key(c: OC, key: String) -> Int ! alloc
+    kept = list_new[String]()
+    _a = own_remove_go(c.moved, key, kept, 0, list_len(c.moved))
+    _b = oc_set_moved(c, kept)
+    list_free(kept)
+
+# Adds the elements of `src` that `dst` lacks.
+fn own_union(dst: List[String], src: List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = list_get(src, i)
+        if own_has(dst, nm, 0, list_len(dst)) == 0
+            _p = list_push(dst, strdup(nm))
+            own_union(dst, src, i + 1, n)
+        else
+            own_union(dst, src, i + 1, n)
+
+# `base.field` with a plain local as base: the moved-set key, else "".
+fn own_field_key(e: Expr) -> String ! alloc
+    match e
+        XField(base, field) => own_field_key_of(base, field)
+        _ => d""
+
+fn own_field_key_of(base: Expr, field: String) -> String ! alloc
+    match base
+        XIdent(name) => own_join(name, field)
+        _ => d""
+
+fn own_join(a: String, b: String) -> String ! alloc
+    a + "." + b
+
+# The local a field expression reads from, "" when its base is not a plain local.
+fn own_field_base(e: Expr) -> String ! alloc
+    match e
+        XField(base, field) => own_ident_name(base)
+        _ => d""
+
+fn own_ident_name(e: Expr) -> String ! alloc
+    match e
+        XIdent(name) => name
+        _ => d""
 
 # ---- types: only what moves care about ----
-fn own_ty(name: String) -> Int ! alloc
-    str_as_int(name)
-
-fn own_is_copy(ty: Int) -> Int ! alloc
-    if ty == 0
+fn own_is_copy(ty: String) -> Int ! alloc
+    if str_len(ty) == 0
         1
-    elsif ty_text_matches(ty, str_as_int(d"Int")) == 1
+    elsif tt_matches(ty, "Int") == 1
         1
-    elsif ty_text_matches(ty, str_as_int(d"Float")) == 1
+    elsif tt_matches(ty, "Float") == 1
         1
-    elsif ty_text_matches(ty, str_as_int(d"Bool")) == 1
+    elsif tt_matches(ty, "Bool") == 1
         1
-    elsif ty_text_matches(ty, str_as_int(d"Unit")) == 1
+    elsif tt_matches(ty, "Unit") == 1
         1
-    elsif ty_text_matches(ty, str_as_int(d"Unknown")) == 1
+    elsif tt_matches(ty, "Unknown") == 1
         1
     else
         0
 
-fn own_expr_ty(c: Int, e: Int) -> Int ! alloc
-    k = ex_kind(e)
-    if k == EX_INT()
-        own_ty(d"Int")
-    elsif k == EX_FLOAT()
-        own_ty(d"Float")
-    elsif k == EX_BOOL()
-        own_ty(d"Bool")
-    elsif k == EX_STRING()
-        own_ty(d"String")
-    elsif k == EX_IDENT()
-        t = strenv_type(oc_env(c), vec_get(e, 1))
-        if t == 0
-            own_ty(d"Unknown")
+# A type is Copy when it is Int, Float, Bool, Unit or Unknown, or a struct whose fields all are.
+fn own_is_copy_ext(ty: String, structs: List[TStruct], depth: Int) -> Int ! alloc
+    if own_is_copy(ty) == 1
+        1
+    elsif depth > 8
+        0
+    else
+        si = tt_struct_find(structs, ty_base_name(ty))
+        if si < 0
+            0
         else
-            t
-    elsif k == EX_BINARY()
-        if str_eq(vec_get(e, 1), "add") == 1
-            if ty_handle_is_string(own_expr_ty(c, vec_get(e, 2))) == 1
-                own_ty(d"String")
-            else
-                own_ty(d"Int")
+            fields = list_get(structs, si).fields
+            own_fields_copy(fields, 0, list_len(fields), structs, depth + 1)
+
+fn own_fields_copy(fields: List[TField], i: Int, n: Int, structs: List[TStruct], depth: Int) -> Int ! alloc
+    if i >= n
+        1
+    elsif own_is_copy_ext(list_get(fields, i).ty, structs, depth) == 0
+        0
+    else
+        own_fields_copy(fields, i + 1, n, structs, depth)
+
+# The leading identifier of a type text (a generic type yields its bare name).
+fn ty_base_name(ty: String) -> String ! alloc
+    n = str_len(ty)
+    trim_spaces(str_slice(ty, 0, ty_name_end(ty, 0, n)))
+
+fn ty_name_end(s: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        n
+    elsif str_char(s, i) == 91
+        i
+    else
+        ty_name_end(s, i + 1, n)
+
+fn own_expr_ty(c: OC, e: Expr) -> String ! alloc
+    match e
+        XInt(v) => d"Int"
+        XFloat(bits, txt) => d"Float"
+        XBool(v) => d"Bool"
+        XStr(s) => d"String"
+        XIdent(name) => own_ident_ty(c, name)
+        XBin(op, l, r) => own_binary_ty(c, op, l)
+        XUnary(op, inner) => own_expr_ty(c, inner)
+        XTo(place, inner) => own_expr_ty(c, inner)
+        XTensor(nr, nc, data) => d"Tensor"
+        XIf(cond, then_b, else_b, has_else, elsifs) => d"Int"
+        _ => d"Unknown"
+
+fn own_ident_ty(c: OC, name: String) -> String ! alloc
+    t = tenv_type(c.env, name)
+    if str_len(t) == 0
+        d"Unknown"
+    else
+        t
+
+fn own_binary_ty(c: OC, op: String, l: Expr) -> String ! alloc
+    if str_eq(op, "add") == 1
+        if tt_is_string(own_expr_ty(c, l)) == 1
+            d"String"
         else
-            own_ty(d"Int")
-    elsif k == EX_UNARY()
-        own_expr_ty(c, vec_get(e, 2))
-    elsif k == EX_TO()
-        own_expr_ty(c, vec_get(e, 2))
-    elsif k == EX_TENSOR()
-        own_ty(d"Tensor")
-    elsif k == EX_IF()
-        own_ty(d"Int")
+            d"Int"
     else
-        own_ty(d"Unknown")
+        d"Int"
 
-fn consume_if_unique(c: Int, e: Int, ty: Int) -> Int ! alloc
-    if own_is_copy_ext(ty, strenv_structs(oc_env(c)), 0) == 1
+# ---- consuming ----
+fn consume_if_unique(c: OC, e: Expr, ty: String) -> Int ! alloc
+    match e
+        XNone => 0
+        XField(base, field) => consume_field(c, e)
+        XIdent(name) => consume_ident(c, name, ty)
+        _ => 0
+
+fn consume_ident(c: OC, name: String, ty: String) -> Int ! alloc
+    if own_is_copy_ext(ty, c.env.structs, 0) == 1
         0
-    elsif e == 0
-        0
-    elsif ex_kind(e) == EX_IDENT()
-        _t = own_note_param(c, oc_taken(c), vec_get(e, 1))
-        mark_moved(c, vec_get(e, 1))
     else
-        0
+        _t = own_note_param(c, c.taken, name)
+        mark_moved(c, name)
 
-fn is_move_fn(name: Int) -> Int ! alloc
+# Moving `p.f` out of `p` when the field is not Copy.
+fn consume_field(c: OC, e: Expr) -> Int ! alloc
+    key = own_field_key(e)
+    if str_len(key) == 0
+        0
+    elsif own_is_copy_ext(texpr_type(c.env, e), c.env.structs, 0) == 1
+        0
+    else
+        _t = own_note_param(c, c.taken, own_field_base(e))
+        mark_moved(c, key)
+
+fn is_move_fn(name: String) -> Int ! alloc
     if str_eq(name, "save") == 1
         1
     elsif str_eq(name, "reshape") == 1
@@ -230,95 +366,104 @@ fn is_move_fn(name: Int) -> Int ! alloc
         0
 
 # ---- expressions ----
-fn track_args(c: Int, args: Int, i: Int, n: Int, tys: Int) -> Int ! alloc
+fn track_args(c: OC, args: List[Expr], i: Int, n: Int, tys: List[String]) -> Int ! alloc
     if i >= n
         0
     else
-        _t = vec_push(tys, track_expr(c, vec_get(args, i)))
+        _t = list_push(tys, strdup(track_expr(c, list_get(args, i))))
         track_args(c, args, i + 1, n, tys)
 
-fn consume_args(c: Int, args: Int, tys: Int, i: Int, n: Int) -> Int ! alloc
+fn consume_args(c: OC, args: List[Expr], tys: List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = consume_if_unique(c, vec_get(args, i), vec_get(tys, i))
+        _a = consume_if_unique(c, list_get(args, i), list_get(tys, i))
         consume_args(c, args, tys, i + 1, n)
 
-# Runs `body` on a copy of the moved set and the env scope, then restores
-# both. What a branch that falls through moved is added to `acc`; the caller
-# applies it after the whole `if` (later conditions must not see it).
-fn track_branch_block(c: Int, b: Int, base: Int, acc: Int) -> Int ! alloc
-    saved = oc_moved(c)
-    _s = oc_set_moved(c, own_copy(base))
-    mark = strenv_len(oc_env(c))
+# Runs `b` from the moved set `base` and the env scope, then restores both. What a branch that
+# falls through moved is added to `acc`; the caller applies it after the whole `if` (later
+# conditions must not see it).
+fn track_branch_block(c: OC, b: TBlock, base: List[String], acc: List[String]) -> Int ! alloc
+    saved = own_copy(c.moved)
+    _s = oc_set_moved(c, base)
+    mark = tenv_len(c.env)
     div = track_block_tail(c, b, 0)
-    _m = strenv_set_len(oc_env(c), mark)
-    after = oc_moved(c)
+    _m = tenv_truncate(c.env, mark)
+    after = own_copy(c.moved)
     _r = oc_set_moved(c, saved)
+    _fs = list_free(saved)
     if div == 1
-        0
+        list_free(after)
     else
-        own_union(acc, after, 0, vec_len(after))
-
-fn own_union(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        nm = vec_get(src, i)
-        if own_has(dst, nm, 0, vec_len(dst)) == 0
-            _p = vec_push(dst, nm)
-            own_union(dst, src, i + 1, n)
-        else
-            own_union(dst, src, i + 1, n)
+        _u = own_union(acc, after, 0, list_len(after))
+        list_free(after)
 
 # Statements and tail of a block, with its bindings dropped at the end.
-fn track_block_scoped(c: Int, b: Int) -> Int ! alloc
-    mark = strenv_len(oc_env(c))
+fn track_block_scoped(c: OC, b: TBlock) -> Int ! alloc
+    mark = tenv_len(c.env)
     r = track_block(c, b)
-    _s = strenv_set_len(oc_env(c), mark)
+    _s = tenv_truncate(c.env, mark)
     r
 
-fn track_elsifs(c: Int, arms: Int, i: Int, n: Int, base: Int, acc: Int) -> Int ! alloc
+fn track_elsifs(c: OC, arms: List[TElsif], i: Int, n: Int, base: List[String], acc: List[String]) -> Int ! alloc
     if i >= n
         0
     else
-        arm = vec_get(arms, i)
-        _a = track_expr(c, vec_get(arm, 0))
-        _b = track_branch_block(c, vec_get(arm, 1), base, acc)
+        arm = list_get(arms, i)
+        _a = track_expr(c, arm.cond)
+        _b = track_branch_block(c, arm.body, base, acc)
         track_elsifs(c, arms, i + 1, n, base, acc)
 
-fn track_if(c: Int, e: Int) -> Int ! alloc
-    _a = track_expr(c, vec_get(e, 1))
-    base = own_copy(oc_moved(c))
-    acc = vec_new()
-    _b = track_branch_block(c, vec_get(e, 2), base, acc)
-    arms = vec_get(e, 4)
-    _c = track_elsifs(c, arms, 0, vec_len(arms), base, acc)
-    if vec_get(e, 3) != 0
-        _d = track_branch_block(c, vec_get(e, 3), base, acc)
-    else
-        _d = 0
-    cur = oc_moved(c)
-    _u = own_union(cur, acc, 0, vec_len(acc))
-    own_ty(d"Int")
+fn track_if(c: OC, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif]) -> String ! alloc
+    _a = track_expr(c, cond)
+    base = own_copy(c.moved)
+    acc = list_new[String]()
+    _b = track_branch_block(c, then_b, base, acc)
+    _c = track_elsifs(c, elsifs, 0, list_len(elsifs), base, acc)
+    _d = track_else(c, else_b, has_else, base, acc)
+    _u = own_union(c.moved, acc, 0, list_len(acc))
+    _f1 = list_free(base)
+    _f2 = list_free(acc)
+    d"Int"
 
-fn track_call(c: Int, e: Int) -> Int ! alloc
-    args = vec_get(e, 2)
-    tys = vec_new()
-    _a = track_args(c, args, 0, vec_len(args), tys)
-    name = vec_get(e, 1)
+fn track_else(c: OC, else_b: TBlock, has_else: Int, base: List[String], acc: List[String]) -> Int ! alloc
+    if has_else != 0
+        track_branch_block(c, else_b, base, acc)
+    else
+        0
+
+fn track_call(c: OC, name: String, args: List[Expr], e: Expr) -> String ! alloc
+    tys = list_new[String]()
+    _a = track_args(c, args, 0, list_len(args), tys)
+    modes = ht_get(c.table, name)
     if is_move_fn(name) == 1
-        _b = consume_args(c, args, tys, 0, vec_len(args))
+        _b = consume_args(c, args, tys, 0, list_len(args))
     else
-        _b = consume_moved_args(c, name, args, tys, 0, vec_len(args), map_get(oc_modes(c), name))
+        _b = consume_moved_args(c, name, args, tys, 0, list_len(args), modes)
+    _f = list_free(tys)
     if returns_owned_string(name) == 1
-        own_ty(d"String")
+        d"String"
     else
-        own_ty(d"Unknown")
+        own_call_ret(c, e)
+
+# Declared result type of a constructor or user fn call, Unknown otherwise.
+fn own_call_ret(c: OC, e: Expr) -> String ! alloc
+    t = texpr_type(c.env, e)
+    if str_len(t) == 0
+        d"Unknown"
+    else
+        t
+
+# Parameter mode `i` out of a table entry ("m" + digits): 0 when out of range.
+fn own_mode_at(modes: String, i: Int) -> Int ! alloc
+    if i + 1 < str_len(modes)
+        str_char(modes, i + 1) - 48
+    else
+        0
 
 # 1 when the call moves its argument at position `i`: the value stored by `list_push`,
 # `list_set` and `dict_put`, any constructor argument, or an argument at a `take` parameter.
-fn call_moves_arg(c: Int, name: Int, i: Int, modes: Int) -> Int ! alloc
+fn call_moves_arg(c: OC, name: String, i: Int, modes: String) -> Int ! alloc
     if str_eq(name, "list_push") == 1
         if i == 1
             1
@@ -334,30 +479,25 @@ fn call_moves_arg(c: Int, name: Int, i: Int, modes: Int) -> Int ! alloc
             1
         else
             0
-    elsif map_get(oc_ctors(c), name) != 0
+    elsif own_has(c.ctors, name, 0, list_len(c.ctors)) == 1
         1
-    elsif modes == 0
-        0
-    elsif i < vec_len(modes)
-        if vec_get(modes, i) == 2
-            1
-        else
-            0
+    elsif own_mode_at(modes, i) == 2
+        1
     else
         0
 
-fn consume_moved_args(c: Int, name: Int, args: Int, tys: Int, i: Int, n: Int, modes: Int) -> Int ! alloc
+fn consume_moved_args(c: OC, name: String, args: List[Expr], tys: List[String], i: Int, n: Int, modes: String) -> Int ! alloc
     if i >= n
         0
     else
         if call_moves_arg(c, name, i, modes) == 1
-            _a = consume_if_unique(c, vec_get(args, i), vec_get(tys, i))
+            _a = consume_if_unique(c, list_get(args, i), list_get(tys, i))
+            consume_moved_args(c, name, args, tys, i + 1, n, modes)
         else
-            _a = 0
-        consume_moved_args(c, name, args, tys, i + 1, n, modes)
+            consume_moved_args(c, name, args, tys, i + 1, n, modes)
 
 # Builtins whose result is a fresh heap String (moved on use).
-fn returns_owned_string(name: Int) -> Int ! alloc
+fn returns_owned_string(name: String) -> Int ! alloc
     if str_eq(name, "strdup") == 1
         1
     elsif str_eq(name, "str_concat") == 1
@@ -373,379 +513,409 @@ fn returns_owned_string(name: Int) -> Int ! alloc
     else
         0
 
-fn track_use(c: Int, e: Int) -> Int ! alloc
-    name = vec_get(e, 1)
-    if is_moved(c, name) == 1
-        _f = oc_fail(c, "use of moved value `" + str_from_int(name) + "`")
-        own_ty(d"Unknown")
+fn track_use(c: OC, e: Expr, name: String) -> String ! alloc
+    if is_moved_any(c, name) == 1
+        _f = oc_fail(c, "use of moved value `" + name + "`")
+        d"Unknown"
     else
-        _u = own_note_param(c, oc_used(c), name)
+        _u = own_note_param(c, c.used, name)
         own_expr_ty(c, e)
 
-fn track_expr(c: Int, e: Int) -> Int ! alloc
-    if e == 0
-        own_ty(d"Unit")
-    elsif oc_failed(c) == 1
-        own_ty(d"Unknown")
+# Reading `p.f`: fine unless `p` or that field moved out.
+fn track_field(c: OC, e: Expr, base: Expr) -> String ! alloc
+    key = own_field_key(e)
+    if str_len(key) == 0
+        _t = track_expr(c, base)
+        d"Unknown"
     else
-        k = ex_kind(e)
-        if k == EX_IDENT()
-            track_use(c, e)
-        elsif k == EX_CALL()
-            track_call(c, e)
-        elsif k == EX_BINARY()
-            lt = track_expr(c, vec_get(e, 2))
-            _r = track_expr(c, vec_get(e, 3))
-            if str_eq(vec_get(e, 1), "add") == 1
-                if ty_handle_is_string(lt) == 1
-                    own_ty(d"String")
-                else
-                    own_ty(d"Int")
-            else
-                own_ty(d"Int")
-        elsif k == EX_UNARY()
-            track_expr(c, vec_get(e, 2))
-        elsif k == EX_TRY()
-            track_expr(c, vec_get(e, 1))
-        elsif k == EX_TO()
-            ty = track_expr(c, vec_get(e, 2))
-            _m = consume_if_unique(c, vec_get(e, 2), ty)
-            ty
-        elsif k == EX_ON()
-            _t = track_block_scoped(c, vec_get(e, 2))
-            own_ty(d"Unit")
-        elsif k == EX_FIELD()
-            _t = track_expr(c, vec_get(e, 1))
-            own_ty(d"Unknown")
-        elsif k == EX_IF()
-            track_if(c, e)
-        elsif k == EX_MATCH()
-            track_match(c, e)
-        elsif k == EX_WHILE()
-            track_while(c, e)
-        elsif k == EX_LAMBDA()
-            mark = strenv_len(oc_env(c))
-            _b = strenv_bind(oc_env(c), vec_get(e, 1), own_ty(d"Float"))
-            _t = track_expr(c, vec_get(e, 2))
-            _s = strenv_set_len(oc_env(c), mark)
-            own_ty(d"Unknown")
+        who = own_ident_name(base)
+        if is_moved(c, who) + is_moved(c, key) > 0
+            _f = oc_fail(c, "use of moved value `" + who + "`")
+            d"Unknown"
         else
-            own_expr_ty(c, e)
+            _u = own_note_param(c, c.used, who)
+            d"Unknown"
+
+fn track_expr(c: OC, e: Expr) -> String ! alloc
+    match e
+        XNone => d"Unit"
+        _ => track_expr_live(c, e)
+
+fn track_expr_live(c: OC, e: Expr) -> String ! alloc
+    if oc_failed(c) == 1
+        d"Unknown"
+    else
+        track_expr_go(c, e)
+
+fn track_expr_go(c: OC, e: Expr) -> String ! alloc
+    match e
+        XIdent(name) => track_use(c, e, name)
+        XCall(name, args, targs) => track_call(c, name, args, e)
+        XBin(op, l, r) => track_binary(c, op, l, r)
+        XUnary(op, inner) => track_expr(c, inner)
+        XTry(inner) => track_expr(c, inner)
+        XTo(place, inner) => track_to(c, inner)
+        XOn(place, body, is_kern, has_index) => track_on(c, body)
+        XField(base, field) => track_field(c, e, base)
+        XIf(cond, then_b, else_b, has_else, elsifs) => track_if(c, cond, then_b, else_b, has_else, elsifs)
+        XMatch(scrut, arms) => track_match(c, scrut, arms)
+        XWhile(cond, body) => track_while(c, cond, body)
+        XLambda(param, body) => track_lambda(c, param, body)
+        _ => own_expr_ty(c, e)
+
+fn track_binary(c: OC, op: String, l: Expr, r: Expr) -> String ! alloc
+    lt = track_expr(c, l)
+    _r = track_expr(c, r)
+    if str_eq(op, "add") == 1
+        if tt_is_string(lt) == 1
+            d"String"
+        else
+            d"Int"
+    else
+        d"Int"
+
+fn track_to(c: OC, inner: Expr) -> String ! alloc
+    ty = track_expr(c, inner)
+    _m = consume_if_unique(c, inner, ty)
+    ty
+
+fn track_on(c: OC, body: TBlock) -> String ! alloc
+    _t = track_block_scoped(c, body)
+    d"Unit"
+
+fn track_lambda(c: OC, param: String, body: Expr) -> String ! alloc
+    mark = tenv_len(c.env)
+    _b = tenv_bind(c.env, param, "Float")
+    _t = track_expr(c, body)
+    _s = tenv_truncate(c.env, mark)
+    d"Unknown"
 
 # `match x`: the scrutinee is read, then each arm body runs with the names its pattern
 # binds in scope (moves persist from one arm to the next, as in the bootstrap).
-fn track_match(c: Int, e: Int) -> Int ! alloc
-    _s = track_expr(c, vec_get(e, 1))
-    arms = vec_get(e, 2)
-    _a = track_match_arms(c, arms, 0, vec_len(arms))
-    own_ty(d"Unknown")
+fn track_match(c: OC, scrut: Expr, arms: List[TArm]) -> String ! alloc
+    _s = track_expr(c, scrut)
+    _a = track_match_arms(c, arms, 0, list_len(arms))
+    d"Unknown"
 
-fn track_match_arms(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
+fn track_match_arms(c: OC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        arm = vec_get(arms, i)
-        mark = strenv_len(oc_env(c))
-        _b = own_bind_pattern(c, vec_get(arm, 0))
-        _t = track_expr(c, vec_get(arm, 1))
-        _r = strenv_set_len(oc_env(c), mark)
+        arm = list_get(arms, i)
+        mark = tenv_len(c.env)
+        _b = own_bind_pattern(c, arm.pat)
+        _t = track_expr(c, arm.body)
+        _r = tenv_truncate(c.env, mark)
         track_match_arms(c, arms, i + 1, n)
 
-fn own_bind_pattern(c: Int, p: Int) -> Int ! alloc
-    k = vec_get(p, 0)
-    if k == 1
-        strenv_bind(oc_env(c), vec_get(p, 1), own_ty(d"Unknown"))
-    elsif k == 3
-        args = vec_get(p, 3)
-        own_bind_patterns(c, args, 0, vec_len(args))
+fn own_bind_pattern(c: OC, p: TPat) -> Int ! alloc
+    if p.kind == 1
+        tenv_bind(c.env, p.name, "Unknown")
+    elsif p.kind == 3
+        own_bind_patterns(c, p.args, 0, list_len(p.args))
     else
         0
 
-fn own_bind_patterns(c: Int, ps: Int, i: Int, n: Int) -> Int ! alloc
+fn own_bind_patterns(c: OC, ps: List[TPat], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = own_bind_pattern(c, vec_get(ps, i))
+        _a = own_bind_pattern(c, list_get(ps, i))
         own_bind_patterns(c, ps, i + 1, n)
 
 # The body moves persist when it does not diverge.
-fn track_while(c: Int, e: Int) -> Int ! alloc
-    _a = track_expr(c, vec_get(e, 1))
-    saved = oc_moved(c)
-    _s = oc_set_moved(c, own_copy(saved))
-    div = track_block_scoped(c, vec_get(e, 2))
+fn track_while(c: OC, cond: Expr, body: TBlock) -> String ! alloc
+    _a = track_expr(c, cond)
+    saved = own_copy(c.moved)
+    div = track_block_scoped(c, body)
+    _r = own_restore_if(c, saved, div)
+    _f = list_free(saved)
+    d"Unit"
+
+fn own_restore_if(c: OC, saved: List[String], div: Int) -> Int ! alloc
     if div == 1
-        _r = oc_set_moved(c, saved)
+        oc_set_moved(c, saved)
     else
-        _r = 0
-    own_ty(d"Unit")
+        0
 
 # ---- statements ----
-# Returns 1 when the statement diverges (return).
-fn track_stmt(c: Int, st: Int) -> Int ! alloc
-    k = vec_get(st, 0)
-    ex = vec_get(st, 2)
-    if k == 2
-        if ex != 0
-            ty = track_expr(c, ex)
-            _m = consume_if_unique(c, ex, ty)
-        else
-            _m = 0
-        1
-    elsif k == 1
-        ty = track_expr(c, ex)
-        _m = consume_if_unique(c, ex, ty)
-        name = vec_get(st, 1)
-        if ty_handle_is_string(ty) == 1
-            if assign_accumulates(ex, name) == 1
-                _x = consume_if_unique(c, add_chain_leftmost(ex), ty)
-            else
-                _x = 0
-        else
-            _x = 0
-        bound = ty
-        if vec_get(st, 3) != 0
-            bound = vec_get(st, 3)
-        else
-            bound = ty
-        _b = strenv_bind(oc_env(c), name, bound)
-        _u = unmove(c, name)
-        0
-    elsif k == 3
-        ty = track_expr(c, ex)
-        _m = consume_if_unique(c, ex, ty)
-        _b = track_expr(c, vec_get(st, 5))
-        0
+# `name = name + ...` with a string chain starting at `name`.
+fn own_accumulates(value: Expr, name: String) -> Int ! alloc
+    match value
+        XBin(op, l, r) => own_accumulates_bin(op, value, name)
+        _ => 0
+
+fn own_accumulates_bin(op: String, value: Expr, name: String) -> Int ! alloc
+    if str_eq(op, "add") == 1
+        str_eq(own_leftmost(value), name)
     else
-        _a = track_expr(c, ex)
         0
 
-fn track_stmts(c: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
+# Name at the left end of a `+` chain, "" when it is not a plain local.
+fn own_leftmost(e: Expr) -> String ! alloc
+    match e
+        XBin(op, l, r) => own_leftmost_add(op, l)
+        XIdent(name) => name
+        _ => d""
+
+fn own_leftmost_add(op: String, l: Expr) -> String ! alloc
+    if str_eq(op, "add") == 1
+        own_leftmost(l)
+    else
+        d""
+
+# Consumes the left end of a chain when it is a plain local.
+fn own_consume_leftmost(c: OC, e: Expr, ty: String) -> Int ! alloc
+    match e
+        XBin(op, l, r) => own_consume_leftmost_add(c, op, l, ty)
+        XIdent(name) => consume_ident(c, name, ty)
+        _ => 0
+
+fn own_consume_leftmost_add(c: OC, op: String, l: Expr, ty: String) -> Int ! alloc
+    if str_eq(op, "add") == 1
+        own_consume_leftmost(c, l, ty)
+    else
+        0
+
+# Returns 1 when the statement diverges (return).
+fn track_stmt(c: OC, st: TStmt) -> Int ! alloc
+    if st.kind == 2
+        track_return(c, st.expr)
+    elsif st.kind == 1
+        track_binding(c, st)
+    elsif st.kind == 3
+        track_field_assign(c, st)
+    else
+        _a = track_expr(c, st.expr)
+        0
+
+fn track_return(c: OC, ex: Expr) -> Int ! alloc
+    ty = track_expr(c, ex)
+    _m = consume_if_unique(c, ex, ty)
+    1
+
+fn track_binding(c: OC, st: TStmt) -> Int ! alloc
+    ty = track_expr(c, st.expr)
+    _m = consume_if_unique(c, st.expr, ty)
+    _x = track_accumulate(c, st, ty)
+    bound = if str_len(st.ty) > 0
+        st.ty
+    else
+        ty
+    _b = tenv_bind(c.env, st.name, bound)
+    _u = unmove(c, st.name)
+    0
+
+fn track_accumulate(c: OC, st: TStmt, ty: String) -> Int ! alloc
+    if tt_is_string(ty) == 1
+        if own_accumulates(st.expr, st.name) == 1
+            own_consume_leftmost(c, st.expr, ty)
+        else
+            0
+    else
+        0
+
+fn track_field_assign(c: OC, st: TStmt) -> Int ! alloc
+    ty = track_expr(c, st.expr)
+    _m = consume_if_unique(c, st.expr, ty)
+    _b = track_assign_target(c, st.target)
+    0
+
+# `p.f = v` puts a moved field back; any other target is read as usual.
+fn track_assign_target(c: OC, t: Expr) -> Int ! alloc
+    key = own_field_key(t)
+    if str_len(key) == 0
+        _a = track_expr(c, t)
+        0
+    else
+        who = own_field_base(t)
+        if is_moved(c, who) == 1
+            oc_fail(c, "use of moved value `" + who + "`")
+        else
+            own_unmove_key(c, key)
+
+fn track_stmts(c: OC, stmts: List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif oc_failed(c) == 1
         0
     else
-        if track_stmt(c, vec_get(stmts, i)) == 1
+        if track_stmt(c, list_get(stmts, i)) == 1
             1
         else
             track_stmts(c, stmts, i + 1, n)
 
 # Returns 1 when the block diverges.
-fn track_block(c: Int, b: Int) -> Int ! alloc
+fn track_block(c: OC, b: TBlock) -> Int ! alloc
     track_block_tail(c, b, 1)
 
 # `consume` is 0 for the arm of an `if`, whose tail value is not moved (as in Rust).
-fn track_block_tail(c: Int, b: Int, consume: Int) -> Int ! alloc
-    if b == 0
+fn track_block_tail(c: OC, b: TBlock, consume: Int) -> Int ! alloc
+    if track_stmts(c, b.stmts, 0, list_len(b.stmts)) == 1
+        1
+    else
+        match b.tail
+            XNone => 0
+            _ => track_tail(c, b.tail, consume)
+
+fn track_tail(c: OC, tail: Expr, consume: Int) -> Int ! alloc
+    ty = track_expr(c, tail)
+    if consume == 1
+        _m = consume_if_unique(c, tail, ty)
         0
     else
-        stmts = block_stmts(b)
-        if track_stmts(c, stmts, 0, vec_len(stmts)) == 1
-            1
-        else
-            tail = block_tail(b)
-            if tail != 0
-                ty = track_expr(c, tail)
-                if consume == 1
-                    _m = consume_if_unique(c, tail, ty)
-                else
-                    _m = 0
-            else
-                _m = 0
-            0
+        0
 
-fn own_seed_params(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
+fn own_seed_params(c: OC, params: List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        pm = vec_get(params, i)
-        _b = strenv_bind(oc_env(c), vec_get(pm, 0), vec_get(pm, 1))
+        pm = list_get(params, i)
+        _b = tenv_bind(c.env, pm.name, pm.ty)
         own_seed_params(c, params, i + 1, n)
 
-fn check_fn_moves(prog: Int, modes: Int, f: Int) -> Int ! alloc
-    c = oc_new(prog, modes)
-    params = vec_get(f, 1)
-    _s = own_seed_params(c, params, 0, vec_len(params))
-    _t = track_block(c, vec_get(f, 2))
+fn own_seed_names(c: OC, params: List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(c.params, strdup(list_get(params, i).name))
+        own_seed_names(c, params, i + 1, n)
+
+# ---- checking ----
+fn check_fn_moves(c: OC, f: TFn) -> Int ! alloc
+    _r = oc_reset(c)
+    _s = own_seed_params(c, f.params, 0, list_len(f.params))
+    _t = track_block(c, f.body)
+    own_fn_result(c)
+
+fn own_fn_result(c: OC) -> Int ! alloc
     if oc_failed(c) == 1
-        result_err(vec_get(c, 1))
+        result_err_str(list_get(c.err, 0))
     else
         result_ok(0)
 
-fn check_ownership_go(prog: Int, modes: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+fn check_ownership_go(c: OC, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        r = check_fn_moves(prog, modes, vec_get(fns, i))
+        r = check_fn_moves(c, list_get(fns, i))
         if result_is_err(r) == 1
             r
         else
-            check_ownership_go(prog, modes, fns, i + 1, n)
+            check_ownership_go(c, fns, i + 1, n)
 
 # Ok(0), or Err(message) for the first use of a moved value.
-fn check_ownership(prog: Int) -> Int ! alloc
-    fns = prog_fns(prog)
-    check_ownership_go(prog, own_mode_table(prog), fns, 0, vec_len(fns))
+fn check_ownership(tp: TProgram) -> Int ! alloc
+    table = own_mode_table(tp)
+    c = oc_new(tp, table)
+    r = check_ownership_go(c, tp.fns, 0, list_len(tp.fns))
+    _f = oc_free(c)
+    r
 
 # ---- parameter modes (the mirror of `infer_param_modes` in src/ownership.rs) ----
 
-# A type is Copy when it is Int, Float, Bool, Unit or Unknown, or a struct whose fields all are.
-fn own_is_copy_ext(ty: Int, structs: Int, depth: Int) -> Int ! alloc
-    if own_is_copy(ty) == 1
-        1
-    elsif depth > 8
-        0
-    else
-        sd = struct_find(structs, ty_base_name(ty))
-        if sd == 0
-            0
-        else
-            own_fields_copy(structdef_fields(sd), 0, vec_len(structdef_fields(sd)), structs, depth + 1)
-
-fn own_fields_copy(fields: Int, i: Int, n: Int, structs: Int, depth: Int) -> Int ! alloc
-    if i >= n
-        1
-    elsif own_is_copy_ext(vec_get(vec_get(fields, i), 1), structs, depth) == 0
-        0
-    else
-        own_fields_copy(fields, i + 1, n, structs, depth)
-
-# The leading identifier of a type text (a generic type yields its bare name).
-fn ty_base_name(ty: Int) -> Int ! alloc
-    s = str_from_int(ty)
-    n = str_len(s)
-    str_as_int(trim_spaces(str_slice(s, 0, ty_name_end(s, 0, n))))
-
-fn ty_name_end(s: String, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        n
-    elsif str_char(s, i) == 91
-        i
-    else
-        ty_name_end(s, i + 1, n)
-
-fn own_seed_names(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = vec_push(oc_params(c), vec_get(vec_get(params, i), 0))
-        own_seed_names(c, params, i + 1, n)
-
 # The mode of parameter `pm` once the body has been tracked in `c` (as `infer_fn_modes` in Rust).
-fn own_param_mode(c: Int, pm: Int, structs: Int) -> Int ! alloc
-    name = vec_get(pm, 0)
-    if param_mode(pm) != 0
-        param_mode(pm)
-    elsif own_is_copy_ext(vec_get(pm, 1), structs, 0) == 1
+fn own_param_mode(c: OC, pm: TParam) -> Int ! alloc
+    if pm.mode != 0
+        pm.mode
+    elsif own_is_copy_ext(pm.ty, c.env.structs, 0) == 1
         0
-    elsif own_has(oc_taken(c), name, 0, vec_len(oc_taken(c))) == 1
+    elsif own_has(c.taken, pm.name, 0, list_len(c.taken)) == 1
         2
-    elsif own_has(oc_used(c), name, 0, vec_len(oc_used(c))) == 1
+    elsif own_has(c.used, pm.name, 0, list_len(c.used)) == 1
         1
     else
         2
 
-fn own_mode_vec(c: Int, params: Int, structs: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn own_mode_text(c: OC, params: List[TParam], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
-        out
+        acc
     else
-        _a = vec_push(out, own_param_mode(c, vec_get(params, i), structs))
-        own_mode_vec(c, params, structs, i + 1, n, out)
+        m = own_param_mode(c, list_get(params, i))
+        own_mode_text(c, params, i + 1, n, acc + int_to_str(m))
 
-# Modes of `f` given the callee modes in `table`.
-fn infer_fn_modes(prog: Int, table: Int, f: Int) -> Int ! alloc
-    c = oc_new(prog, table)
-    params = vec_get(f, 1)
-    _s = own_seed_params(c, params, 0, vec_len(params))
-    _n = own_seed_names(c, params, 0, vec_len(params))
-    _t = track_block(c, vec_get(f, 2))
-    own_mode_vec(c, params, prog_structs(prog), 0, vec_len(params), vec_new())
+# "m" + the modes of `f` given the callee modes in `table`.
+fn infer_fn_modes(c: OC, f: TFn) -> String ! alloc
+    _r = oc_reset(c)
+    _s = own_seed_params(c, f.params, 0, list_len(f.params))
+    _n = own_seed_names(c, f.params, 0, list_len(f.params))
+    _t = track_block(c, f.body)
+    own_mode_text(c, f.params, 0, list_len(f.params), d"m")
 
-fn own_vec_eq(a: Int, b: Int, i: Int, n: Int) -> Int ! alloc
-    if b == 0
-        0
-    elsif vec_len(a) != vec_len(b)
-        0
-    elsif i >= n
-        1
-    elsif vec_get(a, i) != vec_get(b, i)
+fn own_explicit_text(params: List[TParam], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        own_explicit_text(params, i + 1, n, acc + int_to_str(list_get(params, i).mode))
+
+fn own_table_explicit(table: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
         0
     else
-        own_vec_eq(a, b, i + 1, n)
+        f = list_get(fns, i)
+        _a = ht_put(table, f.name, own_explicit_text(f.params, 0, list_len(f.params), d"m"))
+        own_table_explicit(table, fns, i + 1, n)
 
 # One round over every fn; returns 1 when some fn's modes differ from `table`.
-fn own_table_round(prog: Int, table: Int, next: Int, fns: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
+fn own_table_round(c: OC, fns: List[TFn], next: HT, i: Int, n: Int, changed: Int) -> Int ! alloc
     if i >= n
         changed
     else
-        f = vec_get(fns, i)
-        v = infer_fn_modes(prog, table, f)
-        _p = map_put(next, vec_get(f, 0), v)
-        same = own_vec_eq(v, map_get(table, vec_get(f, 0)), 0, vec_len(v))
+        f = list_get(fns, i)
+        v = infer_fn_modes(c, f)
+        _p = ht_put(next, f.name, v)
+        same = str_eq(v, ht_get(c.table, f.name))
         any = if same == 1
             changed
         else
             1
-        own_table_round(prog, table, next, fns, i + 1, n, any)
+        own_table_round(c, fns, next, i + 1, n, any)
 
-fn own_table_explicit(table: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = vec_get(fns, i)
-        params = vec_get(f, 1)
-        v = vec_new()
-        _a = own_explicit_vec(params, 0, vec_len(params), v)
-        _b = map_put(table, vec_get(f, 0), v)
-        own_table_explicit(table, fns, i + 1, n)
-
-fn own_explicit_vec(params: Int, i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = vec_push(out, param_mode(vec_get(params, i)))
-        own_explicit_vec(params, i + 1, n, out)
-
-fn own_table_fix(prog: Int, table: Int, fns: Int, round: Int) -> Int ! alloc
+fn own_table_fix(tp: TProgram, table: HT, round: Int) -> HT ! alloc
     if round >= 16
         table
     else
-        next = map_new()
-        ch = own_table_round(prog, table, next, fns, 0, vec_len(fns), 0)
+        c = oc_new(tp, table)
+        next = ht_new(list_len(tp.fns))
+        ch = own_table_round(c, tp.fns, next, 0, list_len(tp.fns), 0)
+        _f = oc_free(c)
         if ch == 0
             next
         else
-            own_table_fix(prog, next, fns, round + 1)
+            own_table_fix(tp, next, round + 1)
 
-# Fn name -> parameter modes (0 inferred/copy, 1 borrow, 2 take), as a fixpoint: a fn that hands
-# a parameter to a `take` position of another fn takes it too.
-fn own_mode_table(prog: Int) -> Int ! alloc
-    fns = prog_fns(prog)
-    table = map_new()
-    _a = own_table_explicit(table, fns, 0, vec_len(fns))
-    own_table_fix(prog, table, fns, 0)
+# Fn name -> "m" + parameter modes (0 inferred/copy, 1 borrow, 2 take), as a fixpoint: a fn that
+# hands a parameter to a `take` position of another fn takes it too.
+fn own_mode_table(tp: TProgram) -> HT ! alloc
+    table = ht_new(list_len(tp.fns))
+    _a = own_table_explicit(table, tp.fns, 0, list_len(tp.fns))
+    own_table_fix(tp, table, 0)
 
-fn own_apply_modes(params: Int, modes: Int, i: Int, n: Int) -> Int ! alloc
+# Writes the inferred modes into the parameters of the handle AST that spell none.
+fn own_apply_modes(params: Int, modes: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         pm = vec_get(params, i)
         if param_mode(pm) == 0
-            _m = param_set_mode(pm, vec_get(modes, i))
+            _m = param_set_mode(pm, own_mode_at(modes, i))
+            own_apply_modes(params, modes, i + 1, n)
         else
-            _m = 0
-        own_apply_modes(params, modes, i + 1, n)
+            own_apply_modes(params, modes, i + 1, n)
 
-fn infer_modes_go(table: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+fn infer_modes_go(table: HT, fns: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = vec_get(fns, i)
-        _a = own_apply_modes(vec_get(f, 1), map_get(table, vec_get(f, 0)), 0, vec_len(vec_get(f, 1)))
+        _a = own_apply_modes(vec_get(f, 1), ht_get(table, str_from_int(vec_get(f, 0))), 0, vec_len(vec_get(f, 1)))
         infer_modes_go(table, fns, i + 1, n)
 
 # Fills in `borrow` / `take` on each parameter that does not spell one. Idempotent.
 fn infer_param_modes(prog: Int) -> Int ! alloc
+    tp = to_typed(prog)
+    table = own_mode_table(tp)
     fns = prog_fns(prog)
-    infer_modes_go(own_mode_table(prog), fns, 0, vec_len(fns))
+    _a = infer_modes_go(table, fns, 0, vec_len(fns))
+    _b = ht_free(table)
+    tp_free(tp)

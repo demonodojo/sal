@@ -1,0 +1,13 @@
+# error: E_MOVED
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct N
+    name: String
+
+method N.into() -> N
+    self
+
+fn main() -> Int ! alloc
+    n = N("x")
+    a = n.into()
+    b = n.into()
+    0

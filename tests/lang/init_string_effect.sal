@@ -1,0 +1,14 @@
+# exit: 5
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct N
+    name: String
+
+init N(s: String) ! alloc
+    N(s + d"!")
+
+method N.len() -> Int
+    str_len(self.name)
+
+fn main() -> Int ! alloc
+    n = N.new(d"abcd")
+    n.len()

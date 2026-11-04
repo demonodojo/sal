@@ -1857,6 +1857,15 @@ void sal_enum_free(int64_t v) {
     sal_xfree(b);
 }
 
+/* 1 when the box of `v` owns its field `i` (a fresh string or box), so `enum_free` releases it. */
+int64_t sal_enum_owns(int64_t v, int64_t i) {
+    if (v < 4096 || i < 0 || i >= 28) {
+        return 0;
+    }
+    int64_t *b = (int64_t *)(intptr_t)v;
+    return (((int64_t)((uint64_t)b[0] >> 8) >> (2 * i)) & 3) != 0;
+}
+
 int64_t sal_enum_tag(int64_t v) {
     if (v >= 0 && v < 4096) return v;
     return ((int64_t *)(intptr_t)v)[0] & 255;
@@ -2074,6 +2083,41 @@ void *sal_list_new_typed(int64_t elem_kind) {
     return l;
 }
 
+/* A list of flat structs has elem_kind 4 | n << 4 | mask << 12: `n` fields of one
+ * i64 each in a malloc'd block, bit i of `mask` set when field i is a String. The
+ * list owns its blocks and their strings. */
+static int sal_kind_is_struct(int32_t k) {
+    return (k & 15) == 4;
+}
+
+static void sal_struct_elem_free(int32_t k, int64_t raw) {
+    int64_t *blk = (int64_t *)(uintptr_t)raw;
+    if (!blk) {
+        return;
+    }
+    int n = (k >> 4) & 255;
+    for (int f = 0; f < n; f++) {
+        if ((k >> (12 + f)) & 1) {
+            sal_free((void *)(uintptr_t)blk[f]);
+        }
+    }
+    free(blk);
+}
+
+static int64_t sal_struct_elem_copy(int32_t k, int64_t raw) {
+    int64_t *src = (int64_t *)(uintptr_t)raw;
+    int n = (k >> 4) & 255;
+    int64_t *dst = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * 8);
+    for (int f = 0; f < n; f++) {
+        dst[f] = src[f];
+        if ((k >> (12 + f)) & 1) {
+            const char *str = (const char *)(uintptr_t)src[f];
+            dst[f] = (int64_t)(uintptr_t)sal_strdup(str ? str : "");
+        }
+    }
+    return (int64_t)(uintptr_t)dst;
+}
+
 /* Frees a list. A String list owns its elements and releases them; Copy
  * elements (Int/Float/Bool) need nothing. */
 void sal_list_free(void *vp) {
@@ -2084,6 +2128,10 @@ void sal_list_free(void *vp) {
     if (l->elem_kind == 3) {
         for (size_t i = 0; i < l->vec.len; i++) {
             sal_free((void *)(uintptr_t)l->vec.data[i]);
+        }
+    } else if (sal_kind_is_struct(l->elem_kind)) {
+        for (size_t i = 0; i < l->vec.len; i++) {
+            sal_struct_elem_free(l->elem_kind, l->vec.data[i]);
         }
     }
     free(l->vec.data);
@@ -2129,6 +2177,8 @@ void *sal_list_set(void *vp, int64_t i, int64_t x) {
     }
     if (l->elem_kind == 3) {
         sal_free((void *)(uintptr_t)l->vec.data[i]);
+    } else if (sal_kind_is_struct(l->elem_kind)) {
+        sal_struct_elem_free(l->elem_kind, l->vec.data[i]);
     }
     l->vec.data[i] = x;
     return l;
@@ -2166,6 +2216,9 @@ int64_t sal_list_get_typed(void *vp, int64_t i) {
         const char *s = (const char *)(uintptr_t)raw;
         char *copy = sal_strdup(s ? s : "");
         return (int64_t)(uintptr_t)copy;
+    }
+    if (sal_kind_is_struct(l->elem_kind)) {
+        return sal_struct_elem_copy(l->elem_kind, raw);
     }
     return raw;
 }

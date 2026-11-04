@@ -208,6 +208,47 @@ void sal_instrument_shutdown(void) {
      * SAL_INSTRUMENT_STRICT=1 reports every live block: a program whose locals
      * the compiler frees must come out clean. */
     int strict = getenv("SAL_INSTRUMENT_STRICT") != NULL;
+    if (getenv("SAL_INSTRUMENT_HIST") != NULL) {
+        /* Live blocks and bytes per allocation site, biggest first. */
+        enum { MAXSITES = 64 };
+        char names[MAXSITES][64];
+        long counts[MAXSITES];
+        long bytes[MAXSITES];
+        int n = 0;
+        for (Block *b = live; b; b = b->next) {
+            int i = 0;
+            while (i < n && strcmp(names[i], b->site) != 0) {
+                i++;
+            }
+            if (i == n && n < MAXSITES) {
+                strcpy(names[n], b->site);
+                counts[n] = 0;
+                bytes[n] = 0;
+                n++;
+            }
+            if (i < n) {
+                counts[i]++;
+                bytes[i] += (long)b->size;
+            }
+        }
+        for (int k = 0; k < n; k++) {
+            int best = k;
+            for (int j = k + 1; j < n; j++) {
+                if (bytes[j] > bytes[best]) {
+                    best = j;
+                }
+            }
+            if (best != k) {
+                char tn[64];
+                strcpy(tn, names[k]);
+                strcpy(names[k], names[best]);
+                strcpy(names[best], tn);
+                long t = counts[k]; counts[k] = counts[best]; counts[best] = t;
+                t = bytes[k]; bytes[k] = bytes[best]; bytes[best] = t;
+            }
+            fprintf(stderr, "HIST %-12s %8ld blocks %10ld bytes\n", names[k], counts[k], bytes[k]);
+        }
+    }
     while (live) {
         const char *s = live->site;
         int ephemeral = !strict && s && (

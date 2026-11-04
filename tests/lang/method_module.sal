@@ -1,0 +1,7 @@
+# exit: 7
+# selfhost-xfail: methods are Rust bootstrap only for now
+import "mods/method_pt.sal"
+
+fn main() -> Int
+    p = mk(3, 4)
+    p.sum()

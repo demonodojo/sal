@@ -204,21 +204,21 @@ fn is_ident_char(c: Int) -> Int
     else
         is_digit(c)
 
-fn tok_new(kind: Int, text: String, ival: Int) -> Int ! alloc
-    v = vec_new()
-    _a = vec_push(v, kind)
-    _b = vec_push(v, str_as_int(text))
-    _c = vec_push(v, ival)
-    v
+# Tokens as parallel lists: `kinds[i]`, `texts[i]`, `ivals[i]` describe token `i`.
+struct Toks
+    kinds: List[Int]
+    texts: List[String]
+    ivals: List[Int]
 
-fn tok_kind(t: Int) -> Int ! alloc
-    vec_get(t, 0)
+fn toks_new() -> Toks ! alloc
+    Toks(list_new[Int](), list_new[String](), list_new[Int]())
 
-fn tok_text(t: Int) -> String ! alloc
-    str_from_int(vec_get(t, 1))
-
-fn tok_ival(t: Int) -> Int ! alloc
-    vec_get(t, 2)
+# Appends a token; the text is copied, so the caller keeps its own.
+fn tok_push(out: Toks, kind: Int, text: String, ival: Int) -> Int ! alloc
+    _a = list_push(out.kinds, kind)
+    _b = list_push(out.texts, strdup(text))
+    _c = list_push(out.ivals, ival)
+    0
 
 fn kw_kind(text: String) -> Int ! alloc
     if str_eq(text, "fn") == 1
@@ -262,70 +262,70 @@ fn kw_kind(text: String) -> Int ! alloc
     else
         TK_IDENT()
 
-fn indent_stack_new() -> Int ! alloc
-    v = vec_new()
-    _d = vec_push(v, 0 - 2)
-    _p = vec_push(v, 0)
+fn indent_stack_new() -> List[Int] ! alloc
+    v = list_new[Int]()
+    _d = list_push(v, 0 - 2)
+    _p = list_push(v, 0)
     v
 
-fn group_depth(st: Int) -> Int ! alloc
-    v = vec_get(st, 0)
+fn group_depth(st: List[Int]) -> Int ! alloc
+    v = list_get(st, 0)
     0 - v - 2
 
-fn group_set(st: Int, d: Int) -> Int ! alloc
-    _p = vec_set(st, 0, 0 - d - 2)
+fn group_set(st: List[Int], d: Int) -> Int ! alloc
+    _p = list_set(st, 0, 0 - d - 2)
     0
 
-fn group_enter(st: Int) -> Int ! alloc
+fn group_enter(st: List[Int]) -> Int ! alloc
     group_set(st, group_depth(st) + 1)
 
-fn group_leave(st: Int) -> Int ! alloc
+fn group_leave(st: List[Int]) -> Int ! alloc
     d = group_depth(st)
     if d > 0
         group_set(st, d - 1)
     else
         0
 
-fn indent_top_at(st: Int, i: Int) -> Int ! alloc
+fn indent_top_at(st: List[Int], i: Int) -> Int ! alloc
     if i < 0
         0
     else
-        v = vec_get(st, i)
+        v = list_get(st, i)
         if v < 0
             indent_top_at(st, i - 1)
         else
             v
 
-fn indent_top(st: Int) -> Int ! alloc
-    n = vec_len(st)
+fn indent_top(st: List[Int]) -> Int ! alloc
+    n = list_len(st)
     indent_top_at(st, n - 1)
 
-fn indent_push(st: Int, col: Int) -> Int ! alloc
-    _p = vec_push(st, col)
-    st
+fn indent_push(st: List[Int], col: Int) -> Int ! alloc
+    _p = list_push(st, col)
+    0
 
-fn indent_tombstone_at(st: Int, i: Int) -> Int ! alloc
+fn indent_tombstone_at(st: List[Int], i: Int) -> Int ! alloc
     if i < 0
         0
     else
-        v = vec_get(st, i)
+        v = list_get(st, i)
         if v < 0
             indent_tombstone_at(st, i - 1)
         else
-            _p = vec_set(st, i, 0 - 1)
+            _p = list_set(st, i, 0 - 1)
             0
 
-fn indent_pop(st: Int) -> Int ! alloc
-    n = vec_len(st)
+fn indent_pop(st: List[Int]) -> Int ! alloc
+    n = list_len(st)
     _t = indent_tombstone_at(st, n - 1)
-    st
+    0
 
-fn count_live_indent(st: Int, i: Int, acc: Int) -> Int ! alloc
-    n = vec_len(st)
+fn count_live_indent(st: List[Int], i: Int, acc: Int) -> Int ! alloc
+    n = list_len(st)
     if i >= n
         acc
     else
-        v = vec_get(st, i)
+        v = list_get(st, i)
         if v < 0
             count_live_indent(st, i + 1, acc)
         else
@@ -367,29 +367,26 @@ fn slice_has_dot(src: String, i: Int, end: Int) -> Int ! alloc
     else
         slice_has_dot(src, i + 1, end)
 
-fn push_number_tok(out: Int, src: String, i: Int, end: Int, neg: Int) -> Int ! alloc
+fn push_number_tok(out: Toks, src: String, i: Int, end: Int, neg: Int) -> Int ! alloc
     if slice_has_dot(src, i, end) == 1
         txt = str_slice(src, i, end)
         if neg == 1
             ntxt = "-" + txt
             free(txt)
             bits = str_to_f64_bits(ntxt)
-            t = tok_new(TK_FLOAT(), ntxt, bits)
+            _p = tok_push(out, TK_FLOAT(), ntxt, bits)
             free(ntxt)
-            _p = vec_push(out, t)
+            _q = 0
         else
             bits = str_to_f64_bits(txt)
-            t = tok_new(TK_FLOAT(), txt, bits)
-            _p = vec_push(out, t)
+            _p = tok_push(out, TK_FLOAT(), txt, bits)
     else
         ival = parse_int_digits(src, i, end, 0)
         if neg == 1
             ival = 0 - ival
-            t = tok_new(TK_INT(), d"", ival)
-            _p = vec_push(out, t)
+            _p = tok_push(out, TK_INT(), d"", ival)
         else
-            t = tok_new(TK_INT(), d"", ival)
-            _p = vec_push(out, t)
+            _p = tok_push(out, TK_INT(), d"", ival)
     0
 
 fn parse_int_digits(src: String, i: Int, end: Int, acc: Int) -> Int ! alloc
@@ -479,22 +476,20 @@ fn unescape_braces(s: String, i: Int, n: Int, acc: String) -> String ! alloc
             free(piece)
             unescape_braces(s, i + 1, n, acc2)
 
-fn dedent_to_col(out: Int, st: Int, col: Int) -> Int ! alloc
+fn dedent_to_col(out: Toks, st: List[Int], col: Int) -> Int ! alloc
     top = indent_top(st)
     if col < top
         _t = indent_pop(st)
-        t = tok_new(TK_DEDENT(), d"", 0)
-        _q = vec_push(out, t)
+        _p = tok_push(out, TK_DEDENT(), d"", 0)
         dedent_to_col(out, st, col)
     else
         0
 
-fn lex_go(src: String, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int ! alloc
+fn lex_go(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int) -> Int ! alloc
     if i >= n
         dedent_to_col(out, st, 0)
-        t = tok_new(TK_EOF(), d"", 0)
-        _p = vec_push(out, t)
-        out
+        _p = tok_push(out, TK_EOF(), d"", 0)
+        0
     else
         c = str_char(src, i)
         if c == 35
@@ -532,15 +527,13 @@ fn lex_go(src: String, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int 
                     top = indent_top(st)
                     if sp > top
                         _p = indent_push(st, sp)
-                        t = tok_new(TK_INDENT(), d"", 0)
-                        _q = vec_push(out, t)
+                        _p = tok_push(out, TK_INDENT(), d"", 0)
                         lex_go(src, j, n, out, st, 0)
                     else
                         _d = dedent_to_col(out, st, sp)
                         lex_go(src, j, n, out, st, 0)
         elsif c == 10
-            t = tok_new(TK_NL(), d"", 0)
-            _p = vec_push(out, t)
+            _p = tok_push(out, TK_NL(), d"", 0)
             if group_depth(st) > 0
                 lex_go(src, i + 1, n, out, st, 0)
             else
@@ -552,14 +545,13 @@ fn lex_go(src: String, i: Int, n: Int, out: Int, st: Int, at_start: Int) -> Int 
             else
                 lex_go(src, j, n, out, st, 0)
 
-fn lex_tok(src: String, i: Int, n: Int, out: Int, st: Int) -> Int ! alloc
+fn lex_tok(src: String, i: Int, n: Int, out: Toks, st: List[Int]) -> Int ! alloc
     c = str_char(src, i)
     if c == 45
         if i + 1 < n
             c2 = str_char(src, i + 1)
             if c2 == 62
-                t = tok_new(TK_ARROW(), d"", 0)
-                _p = vec_push(out, t)
+                _p = tok_push(out, TK_ARROW(), d"", 0)
                 lex_go(src, i + 2, n, out, st, 0)
             else
                 lex_tok_rest(src, i, n, out, st, c)
@@ -568,38 +560,32 @@ fn lex_tok(src: String, i: Int, n: Int, out: Int, st: Int) -> Int ! alloc
     else
         lex_tok_rest(src, i, n, out, st, c)
 
-fn lex_tok_rest(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 40
-        t = tok_new(TK_LPAREN(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_LPAREN(), d"", 0)
         _g = group_enter(st)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 41
-        t = tok_new(TK_RPAREN(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_RPAREN(), d"", 0)
         _g = group_leave(st)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 91
-        t = tok_new(TK_LBRACK(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_LBRACK(), d"", 0)
         _g = group_enter(st)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 93
-        t = tok_new(TK_RBRACK(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_RBRACK(), d"", 0)
         _g = group_leave(st)
         lex_go(src, i + 1, n, out, st, 0)
     else
         lex_tok_rest2(src, i, n, out, st, c)
 
-fn lex_tok_rest2(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest2(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 44
-        t = tok_new(TK_COMMA(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_COMMA(), d"", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 58
-        t = tok_new(TK_COLON(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_COLON(), d"", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 61
         if i + 1 < n
@@ -612,21 +598,18 @@ fn lex_tok_rest2(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
     else
         lex_tok_rest3(src, i, n, out, st, c)
 
-fn lex_tok_rest3(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest3(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 33
         if i + 1 < n
             c2 = str_char(src, i + 1)
             if c2 == 61
-                t = tok_new(TK_NE(), d"", 0)
-                _p = vec_push(out, t)
+                _p = tok_push(out, TK_NE(), d"", 0)
                 lex_go(src, i + 2, n, out, st, 0)
             else
-                t = tok_new(TK_BANG(), d"", 0)
-                _p = vec_push(out, t)
+                _p = tok_push(out, TK_BANG(), d"", 0)
                 lex_go(src, i + 1, n, out, st, 0)
         else
-            t = tok_new(TK_BANG(), d"", 0)
-            _p = vec_push(out, t)
+            _p = tok_push(out, TK_BANG(), d"", 0)
             lex_go(src, i + 1, n, out, st, 0)
     elsif c == 60
         if i + 1 < n
@@ -639,7 +622,7 @@ fn lex_tok_rest3(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
     else
         lex_tok_rest4(src, i, n, out, st, c)
 
-fn lex_tok_rest4(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest4(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 62
         if i + 1 < n
             if str_char(src, i + 1) == 62
@@ -649,27 +632,23 @@ fn lex_tok_rest4(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
         else
             lex_simple(src, i, n, out, st, TK_GT(), 1)
     elsif c == 43
-        t = tok_new(TK_PLUS(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_PLUS(), d"", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 42
-        t = tok_new(TK_STAR(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_STAR(), d"", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 47
-        t = tok_new(TK_SLASH(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_SLASH(), d"", 0)
         lex_go(src, i + 1, n, out, st, 0)
     else
         lex_tok_rest5(src, i, n, out, st, c)
 
-fn lex_simple(src: String, i: Int, n: Int, out: Int, st: Int, kind: Int, width: Int) -> Int ! alloc
-    t = tok_new(kind, d"", 0)
-    _p = vec_push(out, t)
+fn lex_simple(src: String, i: Int, n: Int, out: Toks, st: List[Int], kind: Int, width: Int) -> Int ! alloc
+    _p = tok_push(out, kind, d"", 0)
     lex_go(src, i + width, n, out, st, 0)
 
 # Operator that is `kind1` alone or `kind2` when followed by `next`.
-fn lex_pair(src: String, i: Int, n: Int, out: Int, st: Int, next: Int, kind1: Int, kind2: Int) -> Int ! alloc
+fn lex_pair(src: String, i: Int, n: Int, out: Toks, st: List[Int], next: Int, kind1: Int, kind2: Int) -> Int ! alloc
     if i + 1 < n
         if str_char(src, i + 1) == next
             lex_simple(src, i, n, out, st, kind2, 2)
@@ -749,7 +728,7 @@ fn interp_name_rest(s: String, i: Int, n: Int) -> Int ! alloc
         else
             0
 
-fn lex_quoted(src: String, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int ! alloc
+fn lex_quoted(src: String, i: Int, n: Int, out: Toks, st: List[Int], kind: Int) -> Int ! alloc
     raw = d""
     raw2 = read_string_chars(src, i + 1, n, raw)
     end = string_end(src, i + 1, n)
@@ -768,8 +747,7 @@ fn lex_quoted(src: String, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int 
         raw2
     else
         un
-    t = tok_new(kind, text, ival)
-    _p = vec_push(out, t)
+    _p = tok_push(out, kind, text, ival)
     j = end
     if end < n
         j = end + 1
@@ -777,7 +755,7 @@ fn lex_quoted(src: String, i: Int, n: Int, out: Int, st: Int, kind: Int) -> Int 
         j = end
     lex_go(src, j, n, out, st, 0)
 
-fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int ! alloc
+fn lex_tok_rest5(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 34
         lex_quoted(src, i, n, out, st, TK_STRING())
     elsif is_digit(c) == 1
@@ -787,8 +765,7 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
     elsif c == 45
         lex_simple(src, i, n, out, st, TK_MINUS(), 1)
     elsif c == 46
-        t = tok_new(TK_DOT(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_DOT(), d"", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 37
         lex_simple(src, i, n, out, st, TK_PERCENT(), 1)
@@ -799,8 +776,7 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
     elsif c == 94
         lex_simple(src, i, n, out, st, TK_CARET(), 1)
     elsif c == 64
-        t = tok_new(TK_AT(), d"", 0)
-        _p = vec_push(out, t)
+        _p = tok_push(out, TK_AT(), d"", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif is_ident_start(c) == 1
         end = read_ident(src, i, n)
@@ -812,25 +788,25 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Int, st: Int, c: Int) -> Int 
                     lex_quoted(src, end, n, out, st, TK_DSTRING())
                 else
                     kind = kw_kind(text)
-                    t = tok_new(kind, text, 0)
-                    _p = vec_push(out, t)
+                    _p = tok_push(out, kind, text, 0)
                     lex_go(src, end, n, out, st, 0)
             else
                 kind = kw_kind(text)
-                t = tok_new(kind, text, 0)
-                _p = vec_push(out, t)
+                _p = tok_push(out, kind, text, 0)
                 lex_go(src, end, n, out, st, 0)
         else
             kind = kw_kind(text)
-            t = tok_new(kind, text, 0)
-            _p = vec_push(out, t)
+            _p = tok_push(out, kind, text, 0)
             lex_go(src, end, n, out, st, 0)
     else
         lex_go(src, i + 1, n, out, st, 0)
 
-fn lex(src: String) -> Int ! alloc
-    out = vec_new()
-    lex_go(src, 0, str_len(src), out, indent_stack_new(), 1)
+fn lex(src: String) -> Toks ! alloc
+    out = toks_new()
+    st = indent_stack_new()
+    _a = lex_go(src, 0, str_len(src), out, st, 1)
+    _f = list_free(st)
+    out
 
 fn preprocess_scan(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc
     if i >= n

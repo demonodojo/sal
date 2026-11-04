@@ -1,0 +1,11 @@
+struct Pt
+    x: Int
+
+init Pt(x: Int)
+    Pt(x)
+
+method Pt.sum() -> Int
+    self.x + 1
+
+fn mk() -> Pt
+    Pt.new(5)

@@ -24,6 +24,11 @@ fn ir_of(name: &str, src: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// The only release of a moved local sits behind its `__live_` flag test.
+fn guarded_free(ir: &str) -> bool {
+    ir.contains("op: \"eq\"") && frees(ir) == 1
+}
+
 fn frees(ir: &str) -> usize {
     ir.matches("func: \"sal_free\"").count()
 }
@@ -56,7 +61,8 @@ fn local_stored_as_handle_is_not_freed() {
         "handle",
         "fn main() -> Int ! alloc\n    v = vec_new()\n    s = str_slice(\"hello world\", 0, 5)\n    _p = vec_push(v, str_as_int(s))\n    vec_len(v)\n",
     );
-    assert_eq!(frees(&ir), 0, "{ir}");
+    // The statement that stores `s` clears its flag, so the guarded free never runs.
+    assert!(guarded_free(&ir), "{ir}");
 }
 
 #[test]
@@ -162,7 +168,8 @@ fn list_push_alias_keeps_the_list_alive() {
         "push_alias",
         "fn f() -> Int ! alloc\n    ys = list_new()\n    zs = list_push(ys, 1)\n    list_len(zs)\n",
     );
-    assert!(!ir.contains("sal_list_free"), "{ir}");
+    // `ys` moved into `zs`: its flag is cleared, so only the guarded free remains.
+    assert!(ir.contains("op: \"eq\""), "{ir}");
 }
 
 #[test]
@@ -171,7 +178,7 @@ fn bytes_view_keeps_the_parent_alive() {
         "bytes_view",
         "fn f() -> Int ! alloc\n    b = bytes_new(8)\n    v = bytes_view(b, 0, 4)\n    bytes_len(v)\n",
     );
-    assert!(!ir.contains("sal_bytes_free"), "{ir}");
+    assert!(ir.contains("op: \"eq\""), "{ir}");
 }
 
 #[test]
@@ -253,8 +260,9 @@ fn string_passed_to_escaping_user_fn_is_not_freed() {
         "escaping_param",
         "fn id(s: String) -> String\n    s\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    t = id(s)\n    str_len(t)\n",
     );
-    // `t` is the result of a user call (unknown provenance); `s` moved into `id`.
-    assert_eq!(frees(&ir), 0, "{ir}");
+    // `t` is the result of a user call (unknown provenance); `s` moved into `id`, which
+    // clears its flag before the guarded free.
+    assert!(guarded_free(&ir), "{ir}");
 }
 
 #[test]
@@ -273,4 +281,49 @@ fn recursion_keeps_read_only_optimistic() {
         "fn count(s: String, n: Int) -> Int\n    if n == 0\n        str_len(s)\n    else\n        count(s, n - 1)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    count(s, 3)\n",
     );
     assert_eq!(frees(&ir), 1, "{ir}");
+}
+
+#[test]
+fn local_moved_in_one_branch_is_freed_behind_a_flag() {
+    let ir = ir_of(
+        "flag_branch",
+        "fn main() -> Int ! alloc\n    s = int_to_str(7)\n    xs = list_new[String]()\n    if str_len(s) > 3\n        _a = list_push(xs, s)\n        0\n    else\n        0\n    k = list_len(xs)\n    _f = list_free(xs)\n    k\n",
+    );
+    // `s` is released once, guarded by its liveness flag (the list free is `sal_list_free`).
+    assert_eq!(frees(&ir), 1, "{ir}");
+    assert!(ir.contains("op: \"eq\""), "{ir}");
+}
+
+#[test]
+fn local_moved_in_a_loop_it_was_declared_outside_stays_unfreed() {
+    let ir = ir_of(
+        "flag_loop",
+        "fn main() -> Int ! alloc\n    s = int_to_str(7)\n    xs = list_new[String]()\n    i = 0\n    while i < 1\n        _a = list_push(xs, s)\n        i = i + 1\n    _f = list_free(xs)\n    0\n",
+    );
+    assert_eq!(frees(&ir), 0, "{ir}");
+}
+
+#[test]
+fn list_of_flat_structs_is_freed_when_every_element_is_a_fresh_constructor() {
+    let ir = ir_of(
+        "list_flat",
+        "struct F\n    name: String\n    k: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[F]()\n    _a = list_push(xs, F(int_to_str(1), 2))\n    list_len(xs)\n",
+    );
+    assert!(ir.contains("sal_list_free"), "{ir}");
+    let kept = ir_of(
+        "list_flat_borrowed",
+        "struct F\n    name: String\n    k: Int\n\nfn main() -> Int ! alloc\n    s = int_to_str(1)\n    xs = list_new[F]()\n    _a = list_push(xs, F(s, 2))\n    list_len(xs)\n",
+    );
+    assert!(!kept.contains("sal_list_free"), "{kept}");
+}
+
+#[test]
+fn fresh_string_passed_to_a_reader_is_bound_and_freed() {
+    let ir = ir_of(
+        "temporary",
+        "fn main() -> Int ! alloc\n    str_len(int_to_str(12345))\n",
+    );
+    assert_eq!(frees(&ir), 1, "{ir}");
+    let lit = ir_of("temporary_lit", "fn main() -> Int ! alloc\n    str_len(\"abc\")\n");
+    assert_eq!(frees(&lit), 0, "{lit}");
 }

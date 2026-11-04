@@ -1,0 +1,10 @@
+# exit: 25
+# selfhost-xfail: methods are Rust bootstrap only for now
+fn main() -> Int ! alloc
+    xs = list_new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    xs.set(1, 20)
+    top = xs.pop()
+    xs.len() + xs.get(1) + top

@@ -10,6 +10,7 @@ pub mod fuse;
 pub mod incremental;
 pub mod interp;
 pub mod infer;
+pub mod methods;
 pub mod modules;
 pub mod ir;
 pub mod layout;

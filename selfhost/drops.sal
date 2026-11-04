@@ -1,58 +1,1241 @@
-# Scope-end `free` insertion for owned String locals; the mirror of src/drops.rs.
-# A local is dropped when it is bound once (let or first assignment) to a fresh
-# heap string, never reassigned (except the in-place `x = x + ...`) and never
-# escapes: it is only read by borrowing builtins and by `+`. Frees go at the end
-# of the declaring block and before each `return` in its scope.
+# Scope-end release insertion for owned locals; the mirror of src/drops.rs. A local is dropped
+# when it is bound once (let or first assignment) to a fresh heap value, never reassigned (except
+# the in-place `x = x + ...`) and never escapes: it is only read by borrowing builtins and by `+`.
+# Releases go at the end of the declaring block and before each `return` in its scope.
+#
+# The pass works on a typed fn (`tast.sal`). The program-wide tables it reads (`variants`: variant
+# name to `[1 (has fields) or 2 (unit), per-field "may own heap memory" flags]` and
+# `struct:Name` to a flat struct's per-field "is a String" flags; `ro`: fn name to its parameters'
+# read-only flags) are still handle maps built by `fuse.sal`, so they are `Int` fields here.
 import ast
+import tast
+import tshape
 
-# Context: [escaped, defs, params, live, tmp, kinds, variants, tainted, matches];
-# `variants` maps a variant name to [1 (has fields) or 2 (unit), per-field "may own
-# heap memory" flags]; `tainted` holds containers that received a value not known to
-# be fresh; `matches` records `[scrutinee, bound owned names]` of each `match x`.
-fn dr_new() -> Int ! alloc
-    c = vec_new()
-    _a = vec_push(c, map_new())
-    _b = vec_push(c, map_new())
-    _c = vec_push(c, map_new())
-    _d = vec_push(c, vec_new())
-    _e = vec_push(c, 0)
-    _f = vec_push(c, map_new())
-    _g = vec_push(c, map_new())
-    _h = vec_push(c, map_new())
-    _i = vec_push(c, vec_new())
-    _j = vec_push(c, map_new())
-    c
+# Name to number; a missing name reads 0.
+struct NM
+    names: List[String]
+    vals: List[Int]
 
-fn dr_escape(c: Int, name: Int) -> Int ! alloc
-    map_put(vec_get(c, 0), name, 1)
+fn nm_new() -> NM ! alloc
+    NM(list_new[String](), list_new[Int]())
 
-fn dr_bind(c: Int, name: Int) -> Int ! alloc
-    defs = vec_get(c, 1)
-    map_put(defs, name, map_get(defs, name) + 1)
+fn nm_find(m: NM, name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(list_get(m.names, i), name) == 1
+        i
+    else
+        nm_find(m, name, i + 1, n)
 
-fn dr_live(c: Int) -> Int ! alloc
-    vec_get(c, 3)
+fn nm_get(m: NM, name: String) -> Int ! alloc
+    i = nm_find(m, name, 0, list_len(m.names))
+    if i < 0
+        0
+    else
+        list_get(m.vals, i)
 
-fn dr_truncate(c: Int, mark: Int) -> Int ! alloc
-    live = dr_live(c)
-    keep = vec_new()
-    _k = dr_copy_prefix(live, keep, 0, mark)
-    vec_set(c, 3, keep)
+fn nm_put(m: NM, name: String, v: Int) -> Int ! alloc
+    i = nm_find(m, name, 0, list_len(m.names))
+    if i < 0
+        _a = list_push(m.names, strdup(name))
+        _b = list_push(m.vals, v)
+        0
+    else
+        _c = list_set(m.vals, i, v)
+        0
 
-fn dr_copy_prefix(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
+fn nm_free(m: NM) -> Int ! alloc
+    _a = list_free(m.names)
+    list_free(m.vals)
+
+# `esc` holds names that leave their scope, `defs` how often each is bound, `params` the
+# parameters, `kinds` how a fresh local is released, `tainted` containers that received a value
+# not known to be fresh, `soft` names that escape only at whole statements of their own loop
+# depth, `born` the loop depth (+1) each name was bound at. `sites` pairs a statement id with a
+# name it moves. `m_scrut`/`m_bound` record, per `match x`, the scrutinee and the owned names
+# its patterns bind (comma separated). `cells`: 0 temp counter, 1 statement being walked (0 when
+# none can clear a flag), 2 depth inside blocks the transform skips, 3 loop depth.
+struct DC
+    esc: NM
+    defs: NM
+    params: NM
+    kinds: NM
+    tainted: NM
+    soft: NM
+    born: NM
+    live: List[String]
+    site_ids: List[Int]
+    site_names: List[String]
+    m_scrut: List[String]
+    m_bound: List[String]
+    cells: List[Int]
+    variants: Int
+    ro: Int
+
+fn dr_new(variants: Int, ro: Int) -> DC ! alloc
+    cells = list_new[Int]()
+    _a = list_push(cells, 0)
+    _b = list_push(cells, 0)
+    _c = list_push(cells, 0)
+    _d = list_push(cells, 0)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro)
+
+fn dr_free(c: DC) -> Int ! alloc
+    _a = nm_free(c.esc)
+    _b = nm_free(c.defs)
+    _c = nm_free(c.params)
+    _d = nm_free(c.kinds)
+    _e = nm_free(c.tainted)
+    _f = nm_free(c.soft)
+    _g = nm_free(c.born)
+    _h = list_free(c.live)
+    _i = list_free(c.site_ids)
+    _j = list_free(c.site_names)
+    _k = list_free(c.m_scrut)
+    _l = list_free(c.m_bound)
+    _m = list_free(c.cells)
+    0
+
+fn dr_cell(c: DC, i: Int) -> Int ! alloc
+    list_get(c.cells, i)
+
+fn dr_set(c: DC, i: Int, v: Int) -> Int ! alloc
+    _a = list_set(c.cells, i, v)
+    0
+
+fn dr_escape(c: DC, name: String) -> Int ! alloc
+    nm_put(c.esc, name, 1)
+
+fn dr_bind(c: DC, name: String) -> Int ! alloc
+    if nm_get(c.born, name) == 0
+        _d = nm_put(c.born, name, dr_cell(c, 3) + 1)
+        nm_put(c.defs, name, nm_get(c.defs, name) + 1)
+    else
+        nm_put(c.defs, name, nm_get(c.defs, name) + 1)
+
+# Records that statement `st` moves `name`.
+fn dr_soft(c: DC, st: Int, name: String) -> Int ! alloc
+    _s = nm_put(c.soft, name, 1)
+    if dr_site_has(c, st, name, 0, list_len(c.site_ids)) == 1
+        0
+    else
+        _a = list_push(c.site_ids, st)
+        _b = list_push(c.site_names, strdup(name))
+        0
+
+fn dr_site_has(c: DC, st: Int, name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif list_get(c.site_ids, i) == st
+        if str_eq(list_get(c.site_names, i), name) == 1
+            1
+        else
+            dr_site_has(c, st, name, i + 1, n)
+    else
+        dr_site_has(c, st, name, i + 1, n)
+
+# Hard or soft: the name leaves its scope somehow.
+fn dr_escapes(c: DC, name: String) -> Int ! alloc
+    if nm_get(c.esc, name) != 0
+        1
+    elsif nm_get(c.soft, name) != 0
+        1
+    else
+        0
+
+fn dr_truncate(c: DC, mark: Int) -> Int ! alloc
+    if list_len(c.live) > mark
+        _p = list_pop(c.live)
+        dr_truncate(c, mark)
+    else
+        0
+
+fn dr_next_tmp(c: DC) -> String ! alloc
+    n = dr_cell(c, 0) + 1
+    _s = dr_set(c, 0, n)
+    "__ret" + int_to_str(n)
+
+# Trimmed type text equals `name`.
+fn dr_tm(t: String, name: String) -> Int ! alloc
+    if str_len(t) == 0
+        0
+    else
+        str_eq(trim_spaces(t), name)
+
+
+# ---- shapes of an expression ----
+fn dx_ident(e: Expr) -> String ! alloc
+    match e
+        XIdent(s) => s
+        _ => d""
+
+fn dx_is_ident(e: Expr) -> Int ! alloc
+    match e
+        XIdent(s) => 1
+        _ => 0
+
+fn dx_is_call(e: Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs) => 1
+        _ => 0
+
+fn dx_is_none(e: Expr) -> Int ! alloc
+    match e
+        XNone => 1
+        _ => 0
+
+fn dx_is_while(e: Expr) -> Int ! alloc
+    match e
+        XWhile(cond, body) => 1
+        _ => 0
+
+fn dx_is_if(e: Expr) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => 1
+        _ => 0
+
+fn dx_is_string_operand(e: Expr) -> Int ! alloc
+    match e
+        XStr(s) => 1
+        XCall(name, args, targs) => dr_returns_fresh(name)
+        _ => 0
+
+# A `+` chain is a string concatenation when some operand is syntactically a string.
+fn dx_add_is_string_chain(e: Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) => dx_chain_bin(op, l, r)
+        _ => dx_is_string_operand(e)
+
+fn dx_chain_bin(op: String, l: Expr, r: Expr) -> Int ! alloc
+    if str_eq(op, "add") == 1
+        if dx_add_is_string_chain(l) == 1
+            1
+        else
+            dx_is_string_operand(r)
+    else
+        0
+
+# A value certainly owned by whoever stores it: a literal, a fresh-string call or a string `+` chain.
+fn dx_is_fresh_value(e: Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) => dx_add_is_string_chain(e)
+        _ => dx_is_string_operand(e)
+
+fn dx_is_fresh_temp(e: Expr) -> Int ! alloc
+    match e
+        XNone => 0
+        XStr(s) => 0
+        _ => dx_is_fresh_value(e)
+
+# `list_new[T]()` with T Int, Float, Bool or String (or no type argument).
+fn dx_copy_elem_args(targs: String) -> Int ! alloc
+    if str_len(targs) == 0
+        1
+    elsif dr_tm(targs, "Int") == 1
+        1
+    elsif dr_tm(targs, "Float") == 1
+        1
+    elsif dr_tm(targs, "Bool") == 1
+        1
+    elsif dr_tm(targs, "String") == 1
+        1
+    else
+        0
+
+fn dx_find_comma(s: String, i: Int) -> Int ! alloc
+    if i >= str_len(s)
+        0 - 1
+    elsif str_char(s, i) == 44
+        i
+    else
+        dx_find_comma(s, i + 1)
+
+fn dx_key_ok(k: String) -> Int ! alloc
+    if dr_tm(k, "Int") == 1
+        1
+    elsif dr_tm(k, "String") == 1
+        1
+    else
+        0
+
+fn dx_val_ok(v: String) -> Int ! alloc
+    if dr_tm(v, "Int") == 1
+        1
+    elsif dr_tm(v, "Float") == 1
+        1
+    elsif dr_tm(v, "Bool") == 1
+        1
+    elsif dr_tm(v, "String") == 1
+        1
+    else
+        0
+
+# `dict_new[K, V]()` with K Int or String and V Int, Float, Bool or String.
+fn dx_dict_args(targs: String) -> Int ! alloc
+    if str_len(targs) == 0
+        0
+    else
+        comma = dx_find_comma(targs, 0)
+        if comma < 0
+            0
+        elsif dx_key_ok(trim_spaces(str_slice(targs, 0, comma))) == 1
+            dx_val_ok(trim_spaces(str_slice(targs, comma + 1, str_len(targs))))
+        else
+            0
+
+# `dict_new[K, String]()`: the dict owns its values.
+fn dx_dict_owns(targs: String) -> Int ! alloc
+    comma = dx_find_comma(targs, 0)
+    dr_tm(trim_spaces(str_slice(targs, comma + 1, str_len(targs))), "String")
+
+# `list_new[String]()`: the list owns its elements.
+fn dx_list_owns(targs: String) -> Int ! alloc
+    if str_len(targs) == 0
+        0
+    else
+        dr_tm(targs, "String")
+
+fn dr_flat_rec(c: DC, name: String) -> Int ! alloc
+    map_get(c.variants, str_as_int("struct:" + name))
+
+# `list_new[S]()` of a flat struct: the list owns the element blocks and their strings.
+fn dx_list_flat(c: DC, targs: String) -> Int ! alloc
+    if str_len(targs) == 0
+        0
+    elsif dr_flat_rec(c, trim_spaces(targs)) == 0
+        0
+    else
+        1
+
+# `S(a, b, ..)` of a flat struct whose String fields are all fresh values.
+fn dx_is_fresh_flat_ctor(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs) => dx_flat_ctor(c, name, args)
+        _ => 0
+
+fn dx_flat_ctor(c: DC, name: String, args: List[Expr]) -> Int ! alloc
+    rec = dr_flat_rec(c, name)
+    if rec == 0
+        0
+    elsif vec_len(rec) != list_len(args)
+        0
+    else
+        dx_flat_args_fresh(rec, args, 0, list_len(args))
+
+fn dx_flat_args_fresh(rec: Int, args: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    elsif vec_get(rec, i) == 1
+        if dx_is_fresh_value(list_get(args, i)) == 1
+            dx_flat_args_fresh(rec, args, i + 1, n)
+        else
+            0
+    else
+        dx_flat_args_fresh(rec, args, i + 1, n)
+
+# Whether variant `name` has fields.
+fn dr_variant_has_fields(c: DC, name: String) -> Int ! alloc
+    rec = map_get(c.variants, str_as_int(name))
+    if rec == 0
+        0
+    elsif vec_get(rec, 0) == 1
+        1
+    else
+        0
+
+# How a fresh local is released: 0 none, 1 `free`, 2 `list_free`, 3 `bytes_free`, 4 `dict_free`,
+# 5 `enum_free` (box of a variant with fields), 6 a list that owns its elements, 7 a dict that does.
+fn dr_fresh_kind(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XStr(s) => 1
+        XCall(name, args, targs) => dr_fresh_call(c, name, targs)
+        XBin(op, l, r) => dr_fresh_bin(op, e)
+        _ => 0
+
+fn dr_fresh_bin(op: String, e: Expr) -> Int ! alloc
+    if str_eq(op, "add") == 1
+        dx_add_is_string_chain(e)
+    else
+        0
+
+fn dr_fresh_call(c: DC, name: String, targs: String) -> Int ! alloc
+    if dr_returns_fresh(name) == 1
+        1
+    elsif dr_variant_has_fields(c, name) == 1
+        5
+    elsif str_eq(name, "bytes_new") == 1
+        3
+    elsif str_eq(name, "list_new") == 1
+        dr_fresh_list(c, targs)
+    elsif str_eq(name, "dict_new") == 1
+        dr_fresh_dict(targs)
+    else
+        0
+
+fn dr_fresh_list(c: DC, targs: String) -> Int ! alloc
+    if dx_list_flat(c, targs) == 1
+        6
+    elsif dx_copy_elem_args(targs) == 1
+        if dx_list_owns(targs) == 1
+            6
+        else
+            2
+    else
+        0
+
+fn dr_fresh_dict(targs: String) -> Int ! alloc
+    if dx_dict_args(targs) == 1
+        if dx_dict_owns(targs) == 1
+            7
+        else
+            4
+    else
+        0
+
+# `x = x + ...`: appends in place, not a new binding.
+fn dr_is_accumulate(name: String, value: Expr) -> Int ! alloc
+    match value
+        XBin(op, l, r) => dr_accumulates(name, op, l)
+        _ => 0
+
+fn dr_accumulates(name: String, op: String, l: Expr) -> Int ! alloc
+    if str_eq(op, "add") == 1
+        str_eq(dx_leftmost(l), name)
+    else
+        0
+
+# Identifier at the left end of a `+` chain, "" when it is not one.
+fn dx_leftmost(e: Expr) -> String ! alloc
+    match e
+        XBin(op, l, r) => dx_leftmost_bin(op, l, e)
+        XIdent(s) => s
+        _ => d""
+
+fn dx_leftmost_bin(op: String, l: Expr, e: Expr) -> String ! alloc
+    if str_eq(op, "add") == 1
+        dx_leftmost(l)
+    else
+        d""
+
+# ---- escape facts ----
+fn dr_arg(c: DC, a: Expr, safe: Int) -> Int ! alloc
+    match a
+        XNone => 0
+        XIdent(n) => dr_arg_ident(c, n, safe)
+        _ => dr_expr(c, a)
+
+fn dr_arg_ident(c: DC, n: String, safe: Int) -> Int ! alloc
+    if safe == 0
+        dr_arg_escape(c, n)
+    else
+        0
+
+fn dr_arg_escape(c: DC, name: String) -> Int ! alloc
+    if dr_cell(c, 1) == 0
+        dr_escape(c, name)
+    elsif nm_get(c.born, name) == dr_cell(c, 3) + 1
+        dr_soft(c, dr_cell(c, 1), name)
+    else
+        dr_escape(c, name)
+
+# An `if` in a position `dr_xform_expr` rewrites: its branches are visited.
+fn dr_top(c: DC, e: Expr, safe: Int) -> Int ! alloc
+    if dx_is_if(e) == 1
+        dr_walk_if(c, e)
+    else
+        dr_arg(c, e, safe)
+
+fn dr_walk_if(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_walk_if_parts(c, cond, then_b, else_b, has_else, elsifs)
+        _ => 0
+
+fn dr_walk_if_parts(c: DC, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif]) -> Int ! alloc
+    _a = dr_arg(c, cond, 1)
+    _b = dr_block(c, then_b)
+    _c = dr_if_arms(c, elsifs, 0, list_len(elsifs))
+    if has_else == 1
+        dr_block(c, else_b)
+    else
+        0
+
+# Arguments of a call: bare identifiers are only read when the callee borrows them
+# (`safe`) or its parameter at that position is read-only (`ro`, 0 when not a user fn).
+fn dr_call_args(c: DC, args: List[Expr], i: Int, n: Int, safe: Int, ro: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = vec_push(dst, vec_get(src, i))
-        dr_copy_prefix(src, dst, i + 1, n)
+        reads = dr_ro_at(ro, i)
+        mode = if safe == 1
+            1
+        else
+            reads
+        _a = dr_arg(c, list_get(args, i), mode)
+        dr_call_args(c, args, i + 1, n, safe, ro)
 
-fn dr_next_tmp(c: Int) -> String ! alloc
-    n = vec_get(c, 4) + 1
-    _s = vec_set(c, 4, n)
-    "__ret" + int_to_str(n)
+fn dr_ro_at(ro: Int, i: Int) -> Int ! alloc
+    if ro == 0
+        0
+    elsif i < vec_len(ro)
+        vec_get(ro, i)
+    else
+        0
 
+fn dr_pattern(c: DC, p: TPat) -> Int ! alloc
+    if p.kind == 1
+        dr_bind(c, p.name)
+    elsif p.kind == 3
+        dr_patterns(c, p.args, 0, list_len(p.args))
+    else
+        0
+
+fn dr_patterns(c: DC, ps: List[TPat], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = dr_pattern(c, list_get(ps, i))
+        dr_patterns(c, ps, i + 1, n)
+
+# Unknown variants stay conservative (owned).
+fn dr_field_flag(rec: Int, i: Int) -> Int ! alloc
+    if rec == 0
+        1
+    elsif i < vec_len(vec_get(rec, 1))
+        vec_get(vec_get(rec, 1), i)
+    else
+        1
+
+# Names bound by the variant patterns of `arms` over fields that may own memory, comma terminated.
+fn dr_arms_bound(c: DC, arms: List[TArm], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        dr_arms_bound(c, arms, i + 1, n, dr_pat_bound(c, list_get(arms, i).pat, acc))
+
+fn dr_pat_bound(c: DC, pat: TPat, acc: String) -> String ! alloc
+    if pat.kind == 3
+        rec = map_get(c.variants, str_as_int(pat.name))
+        dr_pat_bound_go(c, rec, pat.args, 0, list_len(pat.args), acc)
+    else
+        acc
+
+fn dr_pat_bound_go(c: DC, rec: Int, args: List[TPat], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        sub = list_get(args, i)
+        if sub.kind == 1
+            if dr_field_flag(rec, i) == 1
+                dr_pat_bound_go(c, rec, args, i + 1, n, acc + sub.name + ",")
+            else
+                dr_pat_bound_go(c, rec, args, i + 1, n, acc)
+        else
+            dr_pat_bound_go(c, rec, args, i + 1, n, dr_pat_bound(c, sub, acc))
+
+# A payload bound by a pattern aliases a field of the box; if that name escapes, the
+# scrutinee's box can no longer be freed. Repeats until nothing changes.
+fn dr_propagate(c: DC) -> Int ! alloc
+    ch = dr_propagate_once(c, 0, list_len(c.m_scrut), 0)
+    if ch > 0
+        dr_propagate(c)
+    else
+        0
+
+fn dr_propagate_once(c: DC, i: Int, n: Int, changed: Int) -> Int ! alloc
+    if i >= n
+        changed
+    else
+        scrut = list_get(c.m_scrut, i)
+        if nm_get(c.esc, scrut) == 0
+            if dr_any_escaped(c, list_get(c.m_bound, i), 0, 0) == 1
+                _e = dr_escape(c, scrut)
+                dr_propagate_once(c, i + 1, n, changed + 1)
+            else
+                dr_propagate_once(c, i + 1, n, changed)
+        else
+            dr_propagate_once(c, i + 1, n, changed)
+
+# Whether some name of the comma-terminated list `s` escapes.
+fn dr_any_escaped(c: DC, s: String, from: Int, i: Int) -> Int ! alloc
+    if i >= str_len(s)
+        0
+    elsif str_char(s, i) == 44
+        if dr_escapes(c, str_slice(s, from, i)) == 1
+            1
+        else
+            dr_any_escaped(c, s, i + 1, i + 1)
+    else
+        dr_any_escaped(c, s, from, i + 1)
+
+fn dr_binds_whole(c: DC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pat = list_get(arms, i).pat
+        if pat.kind == 1
+            if map_get(c.variants, str_as_int(pat.name)) == 0
+                1
+            else
+                dr_binds_whole(c, arms, i + 1, n)
+        else
+            dr_binds_whole(c, arms, i + 1, n)
+
+fn dr_match_arms(c: DC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _a = dr_pattern(c, arm.pat)
+        _b = dr_expr(c, arm.body)
+        dr_match_arms(c, arms, i + 1, n)
+
+fn dr_if_arms(c: DC, arms: List[TElsif], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _a = dr_arg(c, arm.cond, 1)
+        _b = dr_block(c, arm.body)
+        dr_if_arms(c, arms, i + 1, n)
+
+fn dr_expr(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XIdent(n) => dr_escape(c, n)
+        XCall(name, args, targs) => dr_call_args(c, args, 0, list_len(args), dr_borrows(name), map_get(c.ro, str_as_int(name)))
+        XLambda(param, body) => dr_lambda(c, param, body)
+        XBin(op, l, r) => dr_binary(c, l, r)
+        XUnary(op, inner) => dr_arg(c, inner, 1)
+        XOn(place, body, kern, idx) => dr_on(c, body)
+        XTo(place, inner) => dr_arg(c, inner, 0)
+        XField(base, field) => dr_arg(c, base, 1)
+        XMatch(scrut, arms) => dr_match(c, scrut, arms)
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_if_nested(c, e)
+        XWhile(cond, body) => dr_while(c, cond, body)
+        XTry(inner) => dr_arg(c, inner, 0)
+        _ => 0
+
+fn dr_lambda(c: DC, param: String, body: Expr) -> Int ! alloc
+    _b = dr_bind(c, param)
+    _o = dr_set(c, 2, dr_cell(c, 2) + 1)
+    _x = dr_expr(c, body)
+    dr_set(c, 2, dr_cell(c, 2) - 1)
+
+fn dr_binary(c: DC, l: Expr, r: Expr) -> Int ! alloc
+    _l = dr_arg(c, l, 1)
+    dr_arg(c, r, 1)
+
+fn dr_on(c: DC, body: TBlock) -> Int ! alloc
+    _o = dr_set(c, 2, dr_cell(c, 2) + 1)
+    _x = dr_block(c, body)
+    dr_set(c, 2, dr_cell(c, 2) - 1)
+
+fn dr_if_nested(c: DC, e: Expr) -> Int ! alloc
+    _o = dr_set(c, 2, dr_cell(c, 2) + 1)
+    _x = dr_walk_if(c, e)
+    dr_set(c, 2, dr_cell(c, 2) - 1)
+
+fn dr_while(c: DC, cond: Expr, body: TBlock) -> Int ! alloc
+    outer = dr_cell(c, 1)
+    _n = dr_set(c, 1, 0)
+    _a = dr_arg(c, cond, 1)
+    _d = dr_set(c, 3, dr_cell(c, 3) + 1)
+    _b = dr_block(c, body)
+    _u = dr_set(c, 3, dr_cell(c, 3) - 1)
+    dr_set(c, 1, outer)
+
+fn dr_match(c: DC, scrut: Expr, arms: List[TArm]) -> Int ! alloc
+    # Variant patterns only read the box; a bare binding aliases the whole value.
+    if dx_is_ident(scrut) == 1
+        _a = list_push(c.m_scrut, strdup(dx_ident(scrut)))
+        _b = list_push(c.m_bound, dr_arms_bound(c, arms, 0, list_len(arms), d""))
+        0
+    else
+        0
+    if dr_binds_whole(c, arms, 0, list_len(arms)) == 1
+        _s = dr_arg(c, scrut, 0)
+        0
+    else
+        _s = dr_arg(c, scrut, 1)
+        0
+    _o = dr_set(c, 2, dr_cell(c, 2) + 1)
+    _x = dr_match_arms(c, arms, 0, list_len(arms))
+    dr_set(c, 2, dr_cell(c, 2) - 1)
+
+# `list_push`, `list_set` and `dict_put` return an alias of their container.
+fn dr_is_alias_call(name: String) -> Int ! alloc
+    if str_eq(name, "list_push") == 1
+        1
+    elsif str_eq(name, "list_set") == 1
+        1
+    elsif str_eq(name, "dict_put") == 1
+        1
+    else
+        0
+
+fn dr_taint_unless_flat(c: DC, name: String, v: Expr) -> Int ! alloc
+    if dx_is_fresh_flat_ctor(c, v) == 1
+        0
+    else
+        nm_put(c.tainted, name, 1)
+
+# `list_push(xs, v)` as a statement (or bound to a `_name`) discards the
+# returned alias of `xs`, so `xs` is only borrowed there. Returns 1 when handled.
+fn dr_push_stmt(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs) => dr_push_call(c, name, args)
+        _ => 0
+
+fn dr_push_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
+    if dr_is_alias_call(name) == 0
+        0
+    elsif list_len(args) == 0
+        0
+    else
+        first = list_get(args, 0)
+        if dx_is_ident(first) == 1
+            _t = dr_push_taint(c, dx_ident(first), args)
+            _r = dr_args_from(c, args, 1, list_len(args))
+            1
+        elsif dr_push_stmt(c, first) == 0
+            _a = dr_expr(c, first)
+            _r = dr_args_from(c, args, 1, list_len(args))
+            1
+        else
+            _r = dr_args_from(c, args, 1, list_len(args))
+            1
+
+fn dr_push_taint(c: DC, name: String, args: List[Expr]) -> Int ! alloc
+    if list_len(args) >= 2
+        last = list_get(args, list_len(args) - 1)
+        if dx_is_fresh_value(last) == 0
+            dr_taint_unless_flat(c, name, last)
+        else
+            0
+    else
+        0
+
+fn dr_args_from(c: DC, args: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = dr_arg(c, list_get(args, i), 0)
+        dr_args_from(c, args, i + 1, n)
+
+# Statements whose escapes a transform step can follow up with a flag clear.
+fn dr_stmt(c: DC, st: TStmt) -> Int ! alloc
+    outer = dr_cell(c, 1)
+    if dr_cell(c, 2) == 0
+        _s = dr_set(c, 1, st.id)
+        0
+    else
+        _s = dr_set(c, 1, 0)
+        0
+    r = dr_stmt_go(c, st)
+    _t = dr_set(c, 1, outer)
+    r
+
+fn dr_stmt_go(c: DC, st: TStmt) -> Int ! alloc
+    if st.kind == 1
+        dr_stmt_bind(c, st)
+    elsif st.kind == 2
+        dr_arg(c, st.expr, 0)
+    elsif st.kind == 3
+        _a = dr_expr(c, st.target)
+        dr_top(c, st.expr, 0)
+    else
+        dr_stmt_expr(c, st.expr)
+
+fn dr_stmt_expr(c: DC, ex: Expr) -> Int ! alloc
+    if dr_push_stmt(c, ex) == 1
+        0
+    elsif dx_is_if(ex) == 1
+        dr_walk_if(c, ex)
+    else
+        dr_expr(c, ex)
+
+fn dr_stmt_bind(c: DC, st: TStmt) -> Int ! alloc
+    if st.is_let == 1
+        _b = dr_bind(c, st.name)
+        dr_top(c, st.expr, 0)
+    elsif dr_is_accumulate(st.name, st.expr) == 0
+        _b = dr_bind(c, st.name)
+        dr_stmt_assign(c, st)
+    else
+        dr_stmt_assign(c, st)
+
+fn dr_stmt_assign(c: DC, st: TStmt) -> Int ! alloc
+    if str_char(st.name, 0) == 95
+        if dr_push_stmt(c, st.expr) == 1
+            0
+        else
+            dr_top(c, st.expr, 0)
+    else
+        dr_top(c, st.expr, 0)
+
+fn dr_stmts(c: DC, stmts: List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = dr_stmt(c, list_get(stmts, i))
+        dr_stmts(c, stmts, i + 1, n)
+
+fn dr_block(c: DC, b: TBlock) -> Int ! alloc
+    _a = dr_stmts(c, b.stmts, 0, list_len(b.stmts))
+    outer = dr_cell(c, 1)
+    _n = dr_set(c, 1, 0)
+    r = dr_top(c, b.tail, 0)
+    _t = dr_set(c, 1, outer)
+    r
+
+# ---- transform ----
+fn dr_candidate(c: DC, name: String, ty: String, init: Expr) -> Int ! alloc
+    kind = dr_fresh_kind(c, init)
+    if kind == 0
+        0
+    elsif str_len(ty) != 0
+        if kind != 1
+            0
+        elsif ty_is_string(ty) == 0
+            0
+        else
+            dr_candidate_go(c, name, kind)
+    else
+        dr_candidate_go(c, name, kind)
+
+fn dr_candidate_go(c: DC, name: String, kind: Int) -> Int ! alloc
+    if dr_kind_owned(kind) == 1
+        if nm_get(c.tainted, name) != 0
+            0
+        else
+            dr_candidate_go2(c, name, kind)
+    else
+        dr_candidate_go2(c, name, kind)
+
+# Kinds whose container owns its elements.
+fn dr_kind_owned(kind: Int) -> Int ! alloc
+    if kind == 6
+        1
+    elsif kind == 7
+        1
+    else
+        0
+
+fn dr_candidate_go2(c: DC, name: String, kind: Int) -> Int ! alloc
+    if nm_get(c.params, name) != 0
+        0
+    elsif nm_get(c.defs, name) != 1
+        0
+    elsif nm_get(c.esc, name) != 0
+        0
+    else
+        kind
+
+fn dr_empty_block() -> TBlock ! alloc
+    TBlock(list_new[TStmt](), XNone)
+
+fn dr_plain(e: Expr) -> TStmt ! alloc
+    TStmt(0, d"", e, d"", 0, XNone, 0, 0, 0)
+
+fn dr_free_fn(kind: Int) -> String ! alloc
+    if kind == 2
+        d"list_free"
+    elsif kind == 6
+        d"list_free"
+    elsif kind == 7
+        d"dict_free"
+    elsif kind == 3
+        d"bytes_free"
+    elsif kind == 4
+        d"dict_free"
+    elsif kind == 5
+        d"enum_free"
+    else
+        d"free"
+
+fn dr_free_stmt(c: DC, name: String) -> TStmt ! alloc
+    args = list_new[Expr]()
+    _a = list_push(args, XIdent(strdup(name)))
+    dr_plain(XCall(strdup(dr_free_fn(nm_get(c.kinds, name))), args, d""))
+
+# The release of a live local, guarded by its flag when a statement may have moved it.
+fn dr_release_stmt(c: DC, name: String) -> TStmt ! alloc
+    free = dr_free_stmt(c, name)
+    if nm_get(c.soft, name) == 0
+        free
+    else
+        stmts = list_new[TStmt]()
+        _a = list_push(stmts, free)
+        flag = XIdent("__live_" + name)
+        one = XInt(1)
+        cond = XBin(d"eq", flag, one)
+        dr_plain(XIf(cond, TBlock(stmts, XNone), dr_empty_block(), 0, list_new[TElsif]()))
+
+fn dr_flag_init(name: String) -> TStmt ! alloc
+    TStmt(1, "__live_" + name, XInt(1), d"", 1, XNone, 0, 0, 0)
+
+fn dr_flag_clear(name: String) -> TStmt ! alloc
+    TStmt(1, "__live_" + name, XInt(0), d"", 0, XNone, 0, 0, 0)
+
+fn dr_in_live(live: List[String], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(live, i), name) == 1
+        1
+    else
+        dr_in_live(live, name, i + 1, n)
+
+# Clears the flag of every flagged live local the statement `st` moved.
+fn dr_clear_moved(c: DC, st: Int, out: List[TStmt]) -> Int ! alloc
+    dr_clear_go(c, st, out, 0, list_len(c.site_ids))
+
+fn dr_clear_go(c: DC, st: Int, out: List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif list_get(c.site_ids, i) != st
+        dr_clear_go(c, st, out, i + 1, n)
+    else
+        name = list_get(c.site_names, i)
+        if nm_get(c.soft, name) != 0
+            if dr_in_live(c.live, name, 0, list_len(c.live)) == 1
+                _p = list_push(out, dr_flag_clear(name))
+                dr_clear_go(c, st, out, i + 1, n)
+            else
+                dr_clear_go(c, st, out, i + 1, n)
+        else
+            dr_clear_go(c, st, out, i + 1, n)
+
+# Releases live[from..] in reverse order.
+fn dr_push_frees(c: DC, out: List[TStmt], from: Int, i: Int) -> Int ! alloc
+    if i < from
+        0
+    else
+        _p = list_push(out, dr_release_stmt(c, list_get(c.live, i)))
+        dr_push_frees(c, out, from, i - 1)
+
+fn dr_xform_if_arms(c: DC, arms: List[TElsif], i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _p = list_push(out, TElsif(tc_expr(arm.cond), dr_xform_block(c, arm.body)))
+        dr_xform_if_arms(c, arms, i + 1, n, out)
+
+fn dr_xform_expr(c: DC, e: Expr) -> Expr ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_xform_if(c, cond, then_b, else_b, has_else, elsifs)
+        XWhile(cond, body) => XWhile(tc_expr(cond), dr_xform_block(c, body))
+        _ => tc_expr(e)
+
+fn dr_xform_if(c: DC, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif]) -> Expr ! alloc
+    tb = dr_xform_block(c, then_b)
+    arms = list_new[TElsif]()
+    _a = dr_xform_if_arms(c, elsifs, 0, list_len(elsifs), arms)
+    eb = if has_else == 1
+        dr_xform_block(c, else_b)
+    else
+        dr_empty_block()
+    XIf(tc_expr(cond), tb, eb, has_else, arms)
+
+# Returns 1 when a `return` ended the statement list.
+fn dr_xform_stmts(c: DC, stmts: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        if st.kind == 2
+            _r = dr_xform_return(c, st, out)
+            1
+        else
+            _s = dr_xform_stmt(c, st, out)
+            dr_xform_stmts(c, stmts, i + 1, n, out)
+
+fn dr_xform_stmt(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
+    if st.kind == 1
+        dr_xform_bind(c, st, out)
+    elsif st.kind == 0
+        _p = list_push(out, dr_plain(dr_xform_expr(c, st.expr)))
+        dr_clear_moved(c, st.id, out)
+    else
+        _p = list_push(out, tc_stmt(st))
+        dr_clear_moved(c, st.id, out)
+
+fn dr_xform_bind(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
+    cand = dr_bind_candidate(c, st)
+    _p = list_push(out, TStmt(st.kind, strdup(st.name), dr_xform_expr(c, st.expr), strdup(st.ty), st.is_let, tc_expr(st.target), st.frozen, st.stack, st.id))
+    _m = dr_clear_moved(c, st.id, out)
+    if cand != 0
+        _k = nm_put(c.kinds, st.name, cand)
+        if nm_get(c.soft, st.name) != 0
+            _fi = list_push(out, dr_flag_init(st.name))
+            _lv = list_push(c.live, strdup(st.name))
+            0
+        else
+            _lv = list_push(c.live, strdup(st.name))
+            0
+    else
+        0
+
+fn dr_bind_candidate(c: DC, st: TStmt) -> Int ! alloc
+    if st.is_let == 1
+        dr_candidate(c, st.name, st.ty, st.expr)
+    elsif dr_is_accumulate(st.name, st.expr) == 0
+        dr_candidate(c, st.name, d"", st.expr)
+    else
+        0
+
+fn dr_xform_return(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
+    if list_len(c.live) == 0
+        _p = list_push(out, tc_stmt(st))
+        0
+    else
+        rv = dr_return_value(c, st.expr, out)
+        _m = dr_clear_moved(c, st.id, out)
+        _f = dr_push_frees(c, out, 0, list_len(c.live) - 1)
+        _r = list_push(out, TStmt(2, d"", rv, d"", 0, XNone, 0, 0, 0))
+        0
+
+# Binds a returned value ahead of the releases; the expression to return.
+fn dr_return_value(c: DC, v: Expr, out: List[TStmt]) -> Expr ! alloc
+    match v
+        XNone => XNone
+        _ => dr_return_tmp(c, v, out)
+
+fn dr_return_tmp(c: DC, v: Expr, out: List[TStmt]) -> Expr ! alloc
+    tmp = dr_next_tmp(c)
+    _l = list_push(out, TStmt(1, strdup(tmp), tc_expr(v), d"", 1, XNone, 0, 0, 0))
+    XIdent(tmp)
+
+fn dr_xform_block(c: DC, b: TBlock) -> TBlock ! alloc
+    mark = list_len(c.live)
+    out = list_new[TStmt]()
+    diverged = dr_xform_stmts(c, b.stmts, 0, list_len(b.stmts), out)
+    # Statements after a `return` stay as they were.
+    if diverged == 1
+        _rest = dr_copy_after_return(b.stmts, out, 0, list_len(b.stmts))
+        _t = dr_truncate(c, mark)
+        TBlock(out, dr_xform_expr(c, b.tail))
+    else
+        tail = dr_xform_expr(c, b.tail)
+        if list_len(c.live) > mark
+            t2 = dr_finish_block(c, out, tail, mark)
+            _t = dr_truncate(c, mark)
+            TBlock(out, t2)
+        else
+            _t = dr_truncate(c, mark)
+            TBlock(out, tail)
+
+# Appends the releases of this block's own locals; returns the new tail.
+fn dr_finish_block(c: DC, out: List[TStmt], tail: Expr, mark: Int) -> Expr ! alloc
+    last = list_len(c.live) - 1
+    if dx_is_none(tail) == 1
+        _f = dr_push_frees(c, out, mark, last)
+        XNone
+    elsif dx_is_while(tail) == 1
+        _w = list_push(out, dr_plain(tail))
+        _f = dr_push_frees(c, out, mark, last)
+        XNone
+    else
+        tmp = dr_next_tmp(c)
+        _l = list_push(out, TStmt(1, strdup(tmp), tail, d"", 1, XNone, 0, 0, 0))
+        _f = dr_push_frees(c, out, mark, last)
+        XIdent(tmp)
+
+# Copies the statements after the first `return` verbatim.
+fn dr_copy_after_return(stmts: List[TStmt], out: List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif list_get(stmts, i).kind == 2
+        dr_copy_rest(stmts, out, i + 1, n)
+    else
+        dr_copy_after_return(stmts, out, i + 1, n)
+
+fn dr_copy_rest(stmts: List[TStmt], out: List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = list_push(out, tc_stmt(list_get(stmts, i)))
+        dr_copy_rest(stmts, out, i + 1, n)
+
+fn dr_seed_params(c: DC, params: List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = list_get(params, i).name
+        _a = dr_bind(c, nm)
+        _b = nm_put(c.params, nm, 1)
+        dr_seed_params(c, params, i + 1, n)
+
+# Escape facts of a fn body under the read-only assumptions `ro`.
+fn dr_facts(params: List[TParam], body: TBlock, variants: Int, ro: Int) -> DC ! alloc
+    c = dr_new(variants, ro)
+    _s = dr_seed_params(c, params, 0, list_len(params))
+    _w = dr_block(c, body)
+    _p = dr_propagate(c)
+    c
+
+# Per fn, per parameter: 1 when the fn only reads it. Optimistic fixpoint, as `drops.rs`.
+fn dr_read_only(prog: Int, variants: Int) -> Int ! alloc
+    tp = to_typed(prog)
+    ro = map_new()
+    _i = dr_ro_init(ro, tp.fns, 0, list_len(tp.fns))
+    _l = dr_ro_loop(ro, tp.fns, variants)
+    _f = tp_free(tp)
+    ro
+
+fn dr_ro_init(ro: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        flags = vec_new()
+        _a = dr_ro_ones(flags, list_len(f.params))
+        _b = map_put(ro, str_as_int(strdup(f.name)), flags)
+        dr_ro_init(ro, fns, i + 1, n)
+
+fn dr_ro_ones(flags: Int, n: Int) -> Int ! alloc
+    if n == 0
+        0
+    else
+        _a = vec_push(flags, 1)
+        dr_ro_ones(flags, n - 1)
+
+fn dr_ro_loop(ro: Int, fns: List[TFn], variants: Int) -> Int ! alloc
+    if dr_ro_pass(ro, fns, variants, 0, list_len(fns), 0) == 1
+        dr_ro_loop(ro, fns, variants)
+    else
+        0
+
+# One sweep; returns 1 when some parameter lost its read-only flag.
+fn dr_ro_pass(ro: Int, fns: List[TFn], variants: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
+    if i >= n
+        changed
+    else
+        f = list_get(fns, i)
+        c = dr_facts(f.params, f.body, variants, ro)
+        flags = map_get(ro, str_as_int(f.name))
+        ch = dr_ro_params(c, flags, f.params, 0, list_len(f.params))
+        _f = dr_free(c)
+        any = if ch == 1
+            1
+        else
+            changed
+        dr_ro_pass(ro, fns, variants, i + 1, n, any)
+
+fn dr_ro_params(c: DC, flags: Int, params: List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ch = if vec_get(flags, i) == 1
+            if dr_escapes(c, list_get(params, i).name) == 1
+                _s = vec_set(flags, i, 0)
+                1
+            else
+                0
+        else
+            0
+        rest = dr_ro_params(c, flags, params, i + 1, n)
+        if ch == 1
+            1
+        else
+            rest
+
+# ---- temporaries ----
+# A fresh string passed to a builtin that only reads it is bound to a local ahead of the
+# statement, so the scope-end release frees it. `h` holds the counter.
+fn dr_hoist_args(h: List[Int], args: List[Expr], i: Int, n: Int, reads: Int, out: List[TStmt], res: List[Expr]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = dr_hoist_expr(h, list_get(args, i), out)
+        if reads == 1
+            if dx_is_fresh_temp(a) == 1
+                k = list_get(h, 0) + 1
+                _s = list_set(h, 0, k)
+                name = "__tmp" + int_to_str(k)
+                _l = list_push(out, TStmt(1, strdup(name), a, d"", 1, XNone, 0, 0, 0 - k))
+                _p = list_push(res, XIdent(strdup(name)))
+                dr_hoist_args(h, args, i + 1, n, reads, out, res)
+            else
+                _p = list_push(res, a)
+                dr_hoist_args(h, args, i + 1, n, reads, out, res)
+        else
+            _p = list_push(res, a)
+            dr_hoist_args(h, args, i + 1, n, reads, out, res)
+
+fn dr_hoist_arms(h: List[Int], arms: List[TElsif], i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _p = list_push(out, TElsif(tc_expr(arm.cond), dr_hoist_block(h, arm.body)))
+        dr_hoist_arms(h, arms, i + 1, n, out)
+
+fn dr_hoist_expr(h: List[Int], e: Expr, out: List[TStmt]) -> Expr ! alloc
+    match e
+        XCall(name, args, targs) => dr_hoist_call(h, name, args, targs, out)
+        XBin(op, l, r) => dr_hoist_bin(h, op, l, r, out)
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_hoist_if(h, cond, then_b, else_b, has_else, elsifs)
+        XWhile(cond, body) => XWhile(tc_expr(cond), dr_hoist_block(h, body))
+        _ => tc_expr(e)
+
+fn dr_hoist_call(h: List[Int], name: String, args: List[Expr], targs: String, out: List[TStmt]) -> Expr ! alloc
+    res = list_new[Expr]()
+    _a = dr_hoist_args(h, args, 0, list_len(args), dr_reads_string_arg(name), out, res)
+    XCall(strdup(name), res, strdup(targs))
+
+fn dr_hoist_bin(h: List[Int], op: String, l: Expr, r: Expr, out: List[TStmt]) -> Expr ! alloc
+    nl = dr_hoist_expr(h, l, out)
+    nr = dr_hoist_expr(h, r, out)
+    XBin(strdup(op), nl, nr)
+
+fn dr_hoist_if(h: List[Int], cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif]) -> Expr ! alloc
+    tb = dr_hoist_block(h, then_b)
+    eb = if has_else == 1
+        dr_hoist_block(h, else_b)
+    else
+        dr_empty_block()
+    arms = list_new[TElsif]()
+    _a = dr_hoist_arms(h, elsifs, 0, list_len(elsifs), arms)
+    XIf(tc_expr(cond), tb, eb, has_else, arms)
+
+fn dr_hoist_stmts(h: List[Int], stmts: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        ne = dr_hoist_expr(h, st.expr, out)
+        _p = list_push(out, TStmt(st.kind, strdup(st.name), ne, strdup(st.ty), st.is_let, tc_expr(st.target), st.frozen, st.stack, st.id))
+        dr_hoist_stmts(h, stmts, i + 1, n, out)
+
+fn dr_hoist_block(h: List[Int], b: TBlock) -> TBlock ! alloc
+    out = list_new[TStmt]()
+    _a = dr_hoist_stmts(h, b.stmts, 0, list_len(b.stmts), out)
+    tail = dr_hoist_expr(h, b.tail, out)
+    TBlock(out, tail)
+
+# The body of `f` with scope-end releases inserted, as a handle block.
+# `denv` is `[variants, modes, read-only params]` as `drop_env_from_prog` builds it.
+fn drops_body(f: Int, denv: Int) -> Int ! alloc
+    params = list_new[TParam]()
+    _pp = tt_params(vec_get(f, 1), 0, vec_len(vec_get(f, 1)), params)
+    body = tt_block(vec_get(f, 2))
+    h = list_new[Int]()
+    _h = list_push(h, 0)
+    hoisted = dr_hoist_block(h, body)
+    c = dr_facts(params, hoisted, vec_get(denv, 0), vec_get(denv, 2))
+    res = dr_xform_block(c, hoisted)
+    out = fh_block(res)
+    _a = dr_free(c)
+    _b = tp_free_block(res)
+    _d = tp_free_block(hoisted)
+    _e = tp_free_block(body)
+    _g = list_free(h)
+    _p = list_free(params)
+    out
+
+# ---- legacy handle helpers (callers in fuse.sal and emit.sal) ----
 # Builtins whose String arguments are only read.
-fn dr_borrows(name: Int) -> Int ! alloc
+fn dr_borrows(name: String) -> Int ! alloc
     if str_eq(name, "str_len") == 1
         1
     elsif str_eq(name, "str_eq") == 1
@@ -97,6 +1280,8 @@ fn dr_borrows(name: Int) -> Int ! alloc
         1
     elsif str_eq(name, "dict_has") == 1
         1
+    elsif str_eq(name, "enum_owns") == 1
+        1
     elsif str_eq(name, "bytes_len") == 1
         1
     elsif str_eq(name, "bytes_get_u8") == 1
@@ -127,7 +1312,7 @@ fn dr_borrows(name: Int) -> Int ! alloc
         0
 
 # Builtins that return a fresh heap String nobody else owns.
-fn dr_returns_fresh(name: Int) -> Int ! alloc
+fn dr_returns_fresh(name: String) -> Int ! alloc
     if str_eq(name, "int_to_str") == 1
         1
     elsif str_eq(name, "char_to_str") == 1
@@ -148,7 +1333,7 @@ fn dr_is_string_operand(e: Int) -> Int ! alloc
     if k == EX_STRING()
         1
     elsif k == EX_CALL()
-        dr_returns_fresh(vec_get(e, 1))
+        dr_returns_fresh(str_from_int(vec_get(e, 1)))
     else
         0
 
@@ -165,54 +1350,6 @@ fn dr_add_is_string_chain(e: Int) -> Int ! alloc
     else
         dr_is_string_operand(e)
 
-# `list_new[T]()` with T Int, Float or Bool (or no type argument).
-fn dr_copy_elem_args(e: Int) -> Int ! alloc
-    ta = ex_call_type_args(e)
-    if ta == 0
-        1
-    elsif ty_text_matches(ta, str_as_int(d"Int")) == 1
-        1
-    elsif ty_text_matches(ta, str_as_int(d"Float")) == 1
-        1
-    elsif ty_text_matches(ta, str_as_int(d"Bool")) == 1
-        1
-    elsif ty_text_matches(ta, str_as_int(d"String")) == 1
-        1
-    else
-        0
-
-# `dict_new[K, V]()` with K Int or String and V Int, Float, Bool or String.
-fn dr_dict_args(e: Int) -> Int ! alloc
-    ta = ex_call_type_args(e)
-    if ta == 0
-        0
-    else
-        txt = str_from_int(ta)
-        comma = dr_find_comma(txt, 0)
-        if comma < 0
-            0
-        else
-            k = str_as_int(trim_spaces(str_slice(txt, 0, comma)))
-            v = str_as_int(trim_spaces(str_slice(txt, comma + 1, str_len(txt))))
-            if dr_key_ok(k) == 1
-                dr_val_ok(v)
-            else
-                0
-
-# `list_new[String]()`: the list owns its elements.
-fn dr_list_owns(e: Int) -> Int ! alloc
-    ta = ex_call_type_args(e)
-    if ta == 0
-        0
-    else
-        ty_text_matches(ta, str_as_int(d"String"))
-
-# `dict_new[K, String]()`: the dict owns its values.
-fn dr_dict_owns(e: Int) -> Int ! alloc
-    txt = str_from_int(ex_call_type_args(e))
-    comma = dr_find_comma(txt, 0)
-    ty_text_matches(str_as_int(trim_spaces(str_slice(txt, comma + 1, str_len(txt)))), str_as_int(d"String"))
-
 # A value certainly owned by whoever stores it: a literal, a fresh-string call or a
 # string `+` chain.
 fn dr_is_fresh_value(e: Int) -> Int ! alloc
@@ -221,146 +1358,6 @@ fn dr_is_fresh_value(e: Int) -> Int ! alloc
         dr_add_is_string_chain(e)
     else
         dr_is_string_operand(e)
-
-fn dr_find_comma(s: String, i: Int) -> Int ! alloc
-    if i >= str_len(s)
-        0 - 1
-    elsif str_char(s, i) == 44
-        i
-    else
-        dr_find_comma(s, i + 1)
-
-fn dr_key_ok(k: Int) -> Int ! alloc
-    if ty_text_matches(k, str_as_int(d"Int")) == 1
-        1
-    elsif ty_text_matches(k, str_as_int(d"String")) == 1
-        1
-    else
-        0
-
-fn dr_val_ok(v: Int) -> Int ! alloc
-    if ty_text_matches(v, str_as_int(d"Int")) == 1
-        1
-    elsif ty_text_matches(v, str_as_int(d"Float")) == 1
-        1
-    elsif ty_text_matches(v, str_as_int(d"Bool")) == 1
-        1
-    elsif ty_text_matches(v, str_as_int(d"String")) == 1
-        1
-    else
-        0
-
-# How a fresh local is released: 0 none, 1 `free`, 2 `list_free`, 3 `bytes_free`, 4 `dict_free`,
-# 5 `enum_free` (box of a variant with fields).
-fn dr_fresh_kind(c: Int, e: Int) -> Int ! alloc
-    k = ex_kind(e)
-    if k == EX_STRING()
-        1
-    elsif k == EX_CALL()
-        name = vec_get(e, 1)
-        if dr_returns_fresh(name) == 1
-            1
-        elsif dr_variant_has_fields(c, name) == 1
-            5
-        elsif str_eq(name, "bytes_new") == 1
-            3
-        elsif str_eq(name, "list_new") == 1
-            if dr_copy_elem_args(e) == 1
-                if dr_list_owns(e) == 1
-                    6
-                else
-                    2
-            else
-                0
-        elsif str_eq(name, "dict_new") == 1
-            if dr_dict_args(e) == 1
-                if dr_dict_owns(e) == 1
-                    7
-                else
-                    4
-            else
-                0
-        else
-            0
-    elsif k == EX_BINARY()
-        if str_eq(vec_get(e, 1), "add") == 1
-            if dr_add_is_string_chain(e) == 1
-                1
-            else
-                0
-        else
-            0
-    else
-        0
-
-# `x = x + ...`: appends in place, not a new binding.
-fn dr_is_accumulate(name: Int, value: Int) -> Int ! alloc
-    assign_accumulates(value, name)
-
-# ---- escape facts ----
-fn dr_arg(c: Int, a: Int, safe: Int) -> Int ! alloc
-    if a == 0
-        0
-    elsif ex_kind(a) == EX_IDENT()
-        if safe == 0
-            dr_escape(c, vec_get(a, 1))
-        else
-            0
-    else
-        dr_expr(c, a)
-
-fn dr_args(c: Int, args: Int, i: Int, n: Int, safe: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = dr_arg(c, vec_get(args, i), safe)
-        dr_args(c, args, i + 1, n, safe)
-
-# Arguments of a call: bare identifiers are only read when the callee borrows them
-# (`safe`) or its parameter at that position is read-only (`ro`, 0 when not a user fn).
-fn dr_call_args(c: Int, args: Int, i: Int, n: Int, safe: Int, ro: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        reads = if ro == 0
-            0
-        elsif i < vec_len(ro)
-            vec_get(ro, i)
-        else
-            0
-        mode = if safe == 1
-            1
-        else
-            reads
-        _a = dr_arg(c, vec_get(args, i), mode)
-        dr_call_args(c, args, i + 1, n, safe, ro)
-
-fn dr_pattern(c: Int, p: Int) -> Int ! alloc
-    k = vec_get(p, 0)
-    if k == 1
-        dr_bind(c, vec_get(p, 1))
-    elsif k == 3
-        args = vec_get(p, 3)
-        dr_patterns(c, args, 0, vec_len(args))
-    else
-        0
-
-fn dr_patterns(c: Int, ps: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = dr_pattern(c, vec_get(ps, i))
-        dr_patterns(c, ps, i + 1, n)
-
-# Whether variant `name` has fields.
-fn dr_variant_has_fields(c: Int, name: Int) -> Int ! alloc
-    rec = map_get(vec_get(c, 6), name)
-    if rec == 0
-        0
-    elsif vec_get(rec, 0) == 1
-        1
-    else
-        0
 
 # A field typed Int, Float or Bool cannot alias heap memory.
 fn dr_field_owned(fty: Int) -> Int ! alloc
@@ -373,557 +1370,47 @@ fn dr_field_owned(fty: Int) -> Int ! alloc
     else
         1
 
-# Names bound by the variant patterns of `arms` over fields that may own memory.
-fn dr_arms_bound(c: Int, arms: Int, i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = dr_pat_bound(c, vec_get(vec_get(arms, i), 0), out)
-        dr_arms_bound(c, arms, i + 1, n, out)
-
-fn dr_pat_bound(c: Int, pat: Int, out: Int) -> Int ! alloc
-    if vec_get(pat, 0) == 3
-        rec = map_get(vec_get(c, 6), vec_get(pat, 1))
-        args = vec_get(pat, 3)
-        dr_pat_bound_go(c, rec, args, 0, vec_len(args), out)
-    else
-        0
-
-fn dr_pat_bound_go(c: Int, rec: Int, args: Int, i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        sub = vec_get(args, i)
-        if vec_get(sub, 0) == 1
-            if dr_field_flag(rec, i) == 1
-                _p = vec_push(out, vec_get(sub, 1))
-            else
-                _p = 0
-        else
-            _p = dr_pat_bound(c, sub, out)
-        dr_pat_bound_go(c, rec, args, i + 1, n, out)
-
-# Unknown variants stay conservative (owned).
-fn dr_field_flag(rec: Int, i: Int) -> Int ! alloc
-    if rec == 0
+# ---- temporaries ----
+# A fresh string passed to a builtin that only reads it is bound to a local ahead of the
+# statement, so the scope-end release frees it. `h` is `[counter]`.
+fn dr_reads_string_arg(name: String) -> Int ! alloc
+    if str_eq(name, "str_len") == 1
         1
-    elsif i < vec_len(vec_get(rec, 1))
-        vec_get(vec_get(rec, 1), i)
-    else
+    elsif str_eq(name, "str_eq") == 1
         1
-
-# A payload bound by a pattern aliases a field of the box; if that name escapes, the
-# scrutinee's box can no longer be freed. Repeats until nothing changes.
-fn dr_propagate(c: Int) -> Int ! alloc
-    recs = vec_get(c, 8)
-    ch = dr_propagate_once(c, recs, 0, vec_len(recs), 0)
-    if ch > 0
-        dr_propagate(c)
-    else
-        0
-
-fn dr_propagate_once(c: Int, recs: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
-    if i >= n
-        changed
-    else
-        rec = vec_get(recs, i)
-        scrut = vec_get(rec, 0)
-        if map_get(vec_get(c, 0), scrut) == 0
-            if dr_any_escaped(c, vec_get(rec, 1), 0, vec_len(vec_get(rec, 1))) == 1
-                _e = dr_escape(c, scrut)
-                dr_propagate_once(c, recs, i + 1, n, changed + 1)
-            else
-                dr_propagate_once(c, recs, i + 1, n, changed)
-        else
-            dr_propagate_once(c, recs, i + 1, n, changed)
-
-fn dr_any_escaped(c: Int, names: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    elsif map_get(vec_get(c, 0), vec_get(names, i)) != 0
+    elsif str_eq(name, "str_char") == 1
         1
-    else
-        dr_any_escaped(c, names, i + 1, n)
-
-fn dr_binds_whole(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        pat = vec_get(vec_get(arms, i), 0)
-        if vec_get(pat, 0) == 1
-            if map_get(vec_get(c, 6), vec_get(pat, 1)) == 0
-                1
-            else
-                dr_binds_whole(c, arms, i + 1, n)
-        else
-            dr_binds_whole(c, arms, i + 1, n)
-
-fn dr_match_arms(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        arm = vec_get(arms, i)
-        _a = dr_pattern(c, vec_get(arm, 0))
-        _b = dr_expr(c, vec_get(arm, 1))
-        dr_match_arms(c, arms, i + 1, n)
-
-fn dr_if_arms(c: Int, arms: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        arm = vec_get(arms, i)
-        _a = dr_arg(c, vec_get(arm, 0), 1)
-        _b = dr_block(c, vec_get(arm, 1))
-        dr_if_arms(c, arms, i + 1, n)
-
-fn dr_expr(c: Int, e: Int) -> Int ! alloc
-    if e == 0
-        0
-    else
-        k = ex_kind(e)
-        if k == EX_IDENT()
-            dr_escape(c, vec_get(e, 1))
-        elsif k == EX_CALL()
-            args = vec_get(e, 2)
-            dr_call_args(c, args, 0, vec_len(args), dr_borrows(vec_get(e, 1)), map_get(vec_get(c, 9), vec_get(e, 1)))
-        elsif k == EX_LAMBDA()
-            _b = dr_bind(c, vec_get(e, 1))
-            dr_expr(c, vec_get(e, 2))
-        elsif k == EX_BINARY()
-            _l = dr_arg(c, vec_get(e, 2), 1)
-            dr_arg(c, vec_get(e, 3), 1)
-        elsif k == EX_UNARY()
-            dr_arg(c, vec_get(e, 2), 1)
-        elsif k == EX_ON()
-            dr_block(c, vec_get(e, 2))
-        elsif k == EX_TO()
-            dr_arg(c, vec_get(e, 2), 0)
-        elsif k == EX_FIELD()
-            dr_arg(c, vec_get(e, 1), 1)
-        elsif k == EX_MATCH()
-            arms = vec_get(e, 2)
-            # Variant patterns only read the box; a bare binding aliases the whole value.
-            if ex_kind(vec_get(e, 1)) == EX_IDENT()
-                bound = vec_new()
-                _nb = dr_arms_bound(c, arms, 0, vec_len(arms), bound)
-                rec = vec_new()
-                _r1 = vec_push(rec, vec_get(vec_get(e, 1), 1))
-                _r2 = vec_push(rec, bound)
-                _r3 = vec_push(vec_get(c, 8), rec)
-            else
-                _nb = 0
-            if dr_binds_whole(c, arms, 0, vec_len(arms)) == 1
-                _s = dr_arg(c, vec_get(e, 1), 0)
-            else
-                _s = dr_arg(c, vec_get(e, 1), 1)
-            dr_match_arms(c, arms, 0, vec_len(arms))
-        elsif k == EX_IF()
-            _a = dr_arg(c, vec_get(e, 1), 1)
-            _b = dr_block(c, vec_get(e, 2))
-            arms = vec_get(e, 4)
-            _c = dr_if_arms(c, arms, 0, vec_len(arms))
-            if vec_get(e, 3) != 0
-                dr_block(c, vec_get(e, 3))
-            else
-                0
-        elsif k == EX_WHILE()
-            _a = dr_arg(c, vec_get(e, 1), 1)
-            dr_block(c, vec_get(e, 2))
-        elsif k == EX_TRY()
-            dr_arg(c, vec_get(e, 1), 0)
-        else
-            0
-
-# `list_push`, `list_set` and `dict_put` return an alias of their container.
-fn dr_is_alias_call(name: Int) -> Int ! alloc
-    if str_eq(name, "list_push") == 1
+    elsif str_eq(name, "str_contains") == 1
         1
-    elsif str_eq(name, "list_set") == 1
+    elsif str_eq(name, "str_skip") == 1
         1
-    elsif str_eq(name, "dict_put") == 1
+    elsif str_eq(name, "str_hash") == 1
+        1
+    elsif str_eq(name, "str_to_f64_bits") == 1
+        1
+    elsif str_eq(name, "print_str") == 1
+        1
+    elsif str_eq(name, "eprint_str") == 1
+        1
+    elsif str_eq(name, "write_file") == 1
+        1
+    elsif str_eq(name, "mkdir_p") == 1
+        1
+    elsif str_eq(name, "path_readable") == 1
+        1
+    elsif str_eq(name, "getenv") == 1
+        1
+    elsif str_eq(name, "str_slice") == 1
+        1
+    elsif str_eq(name, "read_file") == 1
         1
     else
         0
 
-# `list_push(xs, v)` as a statement (or bound to a `_name`) discards the
-# returned alias of `xs`, so `xs` is only borrowed there. Returns 1 when handled.
-fn dr_push_stmt(c: Int, e: Int) -> Int ! alloc
-    if e == 0
-        0
-    elsif ex_kind(e) != EX_CALL()
-        0
-    elsif dr_is_alias_call(vec_get(e, 1)) == 0
-        0
-    else
-        args = vec_get(e, 2)
-        if vec_len(args) == 0
-            0
-        else
-            first = vec_get(args, 0)
-            if ex_kind(first) == EX_IDENT()
-                if vec_len(args) >= 2
-                    if dr_is_fresh_value(vec_get(args, vec_len(args) - 1)) == 0
-                        _t = map_put(vec_get(c, 7), vec_get(first, 1), 1)
-                    else
-                        _t = 0
-                else
-                    _t = 0
-                _a = 0
-            elsif dr_push_stmt(c, first) == 0
-                _a = dr_expr(c, first)
-            else
-                _a = 0
-            _r = dr_args_from(c, args, 1, vec_len(args))
-            1
-
-fn dr_args_from(c: Int, args: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = dr_arg(c, vec_get(args, i), 0)
-        dr_args_from(c, args, i + 1, n)
-
-fn dr_stmt(c: Int, st: Int) -> Int ! alloc
-    k = vec_get(st, 0)
-    ex = vec_get(st, 2)
-    if k == 1
-        name = vec_get(st, 1)
-        if vec_get(st, 4) == 1
-            _b = dr_bind(c, name)
-        elsif dr_is_accumulate(name, ex) == 0
-            _b = dr_bind(c, name)
-        else
-            _b = 0
-        if vec_get(st, 4) == 0
-            if str_char(name, 0) == 95
-                if dr_push_stmt(c, ex) == 1
-                    0
-                else
-                    dr_arg(c, ex, 0)
-            else
-                dr_arg(c, ex, 0)
-        else
-            dr_arg(c, ex, 0)
-    elsif k == 2
-        dr_arg(c, ex, 0)
-    elsif k == 3
-        _a = dr_expr(c, vec_get(st, 5))
-        dr_arg(c, ex, 0)
-    else
-        if dr_push_stmt(c, ex) == 1
-            0
-        else
-            dr_expr(c, ex)
-
-fn dr_stmts(c: Int, stmts: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = dr_stmt(c, vec_get(stmts, i))
-        dr_stmts(c, stmts, i + 1, n)
-
-fn dr_block(c: Int, b: Int) -> Int ! alloc
-    stmts = block_stmts(b)
-    _a = dr_stmts(c, stmts, 0, vec_len(stmts))
-    dr_arg(c, block_tail(b), 0)
-
-# ---- transform ----
-fn dr_candidate(c: Int, name: Int, ty: Int, init: Int) -> Int ! alloc
-    kind = dr_fresh_kind(c, init)
-    if kind == 0
-        0
-    elsif ty != 0
-        if kind != 1
-            0
-        elsif ty_handle_is_string(ty) == 0
-            0
-        else
-            dr_candidate_go(c, name, kind)
-    else
-        dr_candidate_go(c, name, kind)
-
-fn dr_candidate_go(c: Int, name: Int, kind: Int) -> Int ! alloc
-    if dr_kind_owned(kind) == 1
-        if map_get(vec_get(c, 7), name) != 0
-            0
-        else
-            dr_candidate_go2(c, name, kind)
-    else
-        dr_candidate_go2(c, name, kind)
-
-# Kinds whose container owns its elements.
-fn dr_kind_owned(kind: Int) -> Int ! alloc
-    if kind == 6
-        1
-    elsif kind == 7
-        1
-    else
-        0
-
-fn dr_candidate_go2(c: Int, name: Int, kind: Int) -> Int ! alloc
-    if map_get(vec_get(c, 2), name) != 0
-        0
-    elsif map_get(vec_get(c, 1), name) != 1
-        0
-    elsif map_get(vec_get(c, 0), name) != 0
-        0
-    else
-        kind
-
-fn dr_free_stmt(c: Int, name: Int) -> Int ! alloc
-    args = vec_new()
-    _a = vec_push(args, ex_ident(str_from_int(name)))
-    kind = map_get(vec_get(c, 5), name)
-    if kind == 2
-        stmt_new(0, d"", ex_call(d"list_free", args))
-    elsif kind == 6
-        stmt_new(0, d"", ex_call(d"list_free", args))
-    elsif kind == 7
-        stmt_new(0, d"", ex_call(d"dict_free", args))
-    elsif kind == 3
-        stmt_new(0, d"", ex_call(d"bytes_free", args))
-    elsif kind == 4
-        stmt_new(0, d"", ex_call(d"dict_free", args))
-    elsif kind == 5
-        stmt_new(0, d"", ex_call(d"enum_free", args))
-    else
-        stmt_new(0, d"", ex_call(d"free", args))
-
-# Frees live[from..] in reverse order.
-fn dr_push_frees(c: Int, out: Int, from: Int, i: Int) -> Int ! alloc
-    if i < from
-        0
-    else
-        _p = vec_push(out, dr_free_stmt(c, vec_get(dr_live(c), i)))
-        dr_push_frees(c, out, from, i - 1)
-
-fn dr_xform_if_arms(c: Int, arms: Int, i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
+fn dr_copy_vec(v: Int, i: Int, out: Int) -> Int ! alloc
+    if i >= vec_len(v)
         out
     else
-        arm = vec_get(arms, i)
-        na = vec_new()
-        _a = vec_push(na, vec_get(arm, 0))
-        _b = vec_push(na, dr_xform_block(c, vec_get(arm, 1)))
-        _p = vec_push(out, na)
-        dr_xform_if_arms(c, arms, i + 1, n, out)
+        _p = vec_push(out, vec_get(v, i))
+        dr_copy_vec(v, i + 1, out)
 
-fn dr_xform_expr(c: Int, e: Int) -> Int ! alloc
-    if e == 0
-        0
-    elsif ex_kind(e) == EX_IF()
-        then_b = dr_xform_block(c, vec_get(e, 2))
-        arms = dr_xform_if_arms(c, vec_get(e, 4), 0, vec_len(vec_get(e, 4)), vec_new())
-        else_b = 0
-        if vec_get(e, 3) != 0
-            else_b = dr_xform_block(c, vec_get(e, 3))
-        ex_if(vec_get(e, 1), then_b, else_b, arms)
-    elsif ex_kind(e) == EX_WHILE()
-        ex_while(vec_get(e, 1), dr_xform_block(c, vec_get(e, 2)))
-    else
-        e
-
-# Returns 1 when a `return` ended the statement list.
-fn dr_xform_stmts(c: Int, stmts: Int, i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        st = vec_get(stmts, i)
-        k = vec_get(st, 0)
-        if k == 2
-            _r = dr_xform_return(c, st, out)
-            1
-        else
-            _s = dr_xform_stmt(c, st, k, out)
-            dr_xform_stmts(c, stmts, i + 1, n, out)
-
-fn dr_xform_stmt(c: Int, st: Int, k: Int, out: Int) -> Int ! alloc
-    if k == 1
-        name = vec_get(st, 1)
-        ex = vec_get(st, 2)
-        cand = 0
-        if vec_get(st, 4) == 1
-            cand = dr_candidate(c, name, vec_get(st, 3), ex)
-        elsif dr_is_accumulate(name, ex) == 0
-            cand = dr_candidate(c, name, 0, ex)
-        ns = vec_new()
-        _a = vec_push(ns, vec_get(st, 0))
-        _b = vec_push(ns, name)
-        _c = vec_push(ns, dr_xform_expr(c, ex))
-        _d = vec_push(ns, vec_get(st, 3))
-        _e = vec_push(ns, vec_get(st, 4))
-        _f = vec_push(ns, vec_get(st, 5))
-        _g = vec_push(ns, vec_get(st, 6))
-        _h = vec_push(ns, vec_get(st, 7))
-        _p = vec_push(out, ns)
-        if cand != 0
-            _k = map_put(vec_get(c, 5), name, cand)
-            vec_push(dr_live(c), name)
-        else
-            0
-    elsif k == 0
-        ns = stmt_new(0, d"", dr_xform_expr(c, vec_get(st, 2)))
-        vec_push(out, ns)
-    else
-        vec_push(out, st)
-
-fn dr_xform_return(c: Int, st: Int, out: Int) -> Int ! alloc
-    live = dr_live(c)
-    if vec_len(live) == 0
-        vec_push(out, st)
-    else
-        v = vec_get(st, 2)
-        rv = 0
-        if v != 0
-            tmp = dr_next_tmp(c)
-            _l = vec_push(out, stmt_let(tmp, 0, v))
-            rv = ex_ident(tmp)
-        _f = dr_push_frees(c, out, 0, vec_len(live) - 1)
-        vec_push(out, stmt_new(2, d"", rv))
-
-fn dr_xform_block(c: Int, b: Int) -> Int ! alloc
-    if b == 0
-        0
-    else
-        mark = vec_len(dr_live(c))
-        nb = block_new()
-        out = block_stmts(nb)
-        stmts = block_stmts(b)
-        diverged = dr_xform_stmts(c, stmts, 0, vec_len(stmts), out)
-        # Statements after a `return` stay as they were.
-        if diverged == 1
-            _rest = dr_copy_after_return(stmts, out, 0, vec_len(stmts))
-        else
-            _rest = 0
-        tail = dr_xform_expr(c, block_tail(b))
-        if diverged == 0
-            if vec_len(dr_live(c)) > mark
-                tail = dr_finish_block(c, out, tail, mark)
-        _t = dr_truncate(c, mark)
-        _s = block_set_tail(nb, tail)
-        nb
-
-# Appends the frees of this block's own locals; returns the new tail.
-fn dr_finish_block(c: Int, out: Int, tail: Int, mark: Int) -> Int ! alloc
-    last = vec_len(dr_live(c)) - 1
-    if tail != 0
-        if ex_kind(tail) == EX_WHILE()
-            _w = vec_push(out, stmt_new(0, d"", tail))
-            _f = dr_push_frees(c, out, mark, last)
-            0
-        else
-            tmp = dr_next_tmp(c)
-            _l = vec_push(out, stmt_let(tmp, 0, tail))
-            _f = dr_push_frees(c, out, mark, last)
-            ex_ident(tmp)
-    else
-        _f = dr_push_frees(c, out, mark, last)
-        0
-
-# Copies the statements after the first `return` verbatim.
-fn dr_copy_after_return(stmts: Int, out: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    elsif vec_get(vec_get(stmts, i), 0) == 2
-        dr_copy_rest(stmts, out, i + 1, n)
-    else
-        dr_copy_after_return(stmts, out, i + 1, n)
-
-fn dr_copy_rest(stmts: Int, out: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _p = vec_push(out, vec_get(stmts, i))
-        dr_copy_rest(stmts, out, i + 1, n)
-
-fn dr_seed_params(c: Int, params: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        nm = vec_get(vec_get(params, i), 0)
-        _a = dr_bind(c, nm)
-        _b = map_put(vec_get(c, 2), nm, 1)
-        dr_seed_params(c, params, i + 1, n)
-
-# Escape facts of `f` under the read-only assumptions `ro`.
-fn dr_facts(f: Int, variants: Int, ro: Int) -> Int ! alloc
-    c = dr_new()
-    _v = vec_set(c, 6, variants)
-    _r = vec_set(c, 9, ro)
-    params = vec_get(f, 1)
-    _s = dr_seed_params(c, params, 0, vec_len(params))
-    _w = dr_block(c, vec_get(f, 2))
-    _p = dr_propagate(c)
-    c
-
-# Per fn, per parameter: 1 when the fn only reads it. Optimistic fixpoint, as `drops.rs`.
-fn dr_read_only(prog: Int, variants: Int) -> Int ! alloc
-    ro = map_new()
-    fns = prog_fns(prog)
-    _i = dr_ro_init(ro, fns, 0, vec_len(fns))
-    _l = dr_ro_loop(ro, fns, variants)
-    ro
-
-fn dr_ro_init(ro: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = vec_get(fns, i)
-        flags = vec_new()
-        _a = dr_ro_ones(flags, vec_len(vec_get(f, 1)))
-        _b = map_put(ro, vec_get(f, 0), flags)
-        dr_ro_init(ro, fns, i + 1, n)
-
-fn dr_ro_ones(flags: Int, n: Int) -> Int ! alloc
-    if n == 0
-        0
-    else
-        _a = vec_push(flags, 1)
-        dr_ro_ones(flags, n - 1)
-
-fn dr_ro_loop(ro: Int, fns: Int, variants: Int) -> Int ! alloc
-    if dr_ro_pass(ro, fns, variants, 0, vec_len(fns), 0) == 1
-        dr_ro_loop(ro, fns, variants)
-    else
-        0
-
-# One sweep; returns 1 when some parameter lost its read-only flag.
-fn dr_ro_pass(ro: Int, fns: Int, variants: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
-    if i >= n
-        changed
-    else
-        f = vec_get(fns, i)
-        c = dr_facts(f, variants, ro)
-        flags = map_get(ro, vec_get(f, 0))
-        params = vec_get(f, 1)
-        ch = dr_ro_params(c, flags, params, 0, vec_len(params))
-        any = if ch == 1
-            1
-        else
-            changed
-        dr_ro_pass(ro, fns, variants, i + 1, n, any)
-
-fn dr_ro_params(c: Int, flags: Int, params: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        ch = if vec_get(flags, i) == 1
-            if map_get(vec_get(c, 0), vec_get(vec_get(params, i), 0)) != 0
-                _s = vec_set(flags, i, 0)
-                1
-            else
-                0
-        else
-            0
-        rest = dr_ro_params(c, flags, params, i + 1, n)
-        if ch == 1
-            1
-        else
-            rest
-
-# The body of `f` with scope-end frees inserted.
-# `denv` is `[variants, modes, read-only params]` as `drop_env_from_prog` builds it.
-fn drops_body(f: Int, denv: Int) -> Int ! alloc
-    body = vec_get(f, 2)
-    c = dr_facts(f, vec_get(denv, 0), vec_get(denv, 2))
-    dr_xform_block(c, body)

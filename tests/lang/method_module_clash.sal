@@ -1,0 +1,7 @@
+# exit: 33
+# selfhost-xfail: methods are Rust bootstrap only for now
+import "mods/method_t1.sal" as a
+import "mods/method_t2.sal" as b
+
+fn main() -> Int
+    a.mk1().get() + b.mk2().get()

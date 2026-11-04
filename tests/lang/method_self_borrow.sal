@@ -1,0 +1,12 @@
+# exit: 5
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct N
+    name: String
+    k: Int
+
+method N.size(self borrow, extra: Int) -> Int
+    str_len(self.name) + extra
+
+fn main() -> Int ! alloc
+    n = N(strdup(d"hi"), 1)
+    n.size(1) + n.size(0)

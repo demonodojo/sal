@@ -1,0 +1,738 @@
+# Typed AST: the owned form of what `ast.sal` builds as `Int` handles. `to_typed` converts a
+# parsed program handle once; a pass that takes `TProgram` reads it with `match` and struct
+# fields instead of positional `vec_get`. Strings share storage with the handle AST, so a typed
+# tree is never freed.
+#
+# `XNone` stands for an absent expression (handle 0): a missing block tail, `else` or `let` type.
+import ast
+
+struct TParam
+    name: String
+    ty: String
+    mode: Int
+
+struct TField
+    name: String
+    ty: String
+
+struct TStruct
+    name: String
+    fields: List[TField]
+    layout_c: Int
+    tparams: List[String]
+    is_frame: Int
+
+struct TVariant
+    name: String
+    fields: List[String]
+
+struct TEnum
+    name: String
+    variants: List[TVariant]
+    tparams: List[String]
+
+# A pattern: kind 0 `_`, 1 binding `name`, 2 integer `ival`, 3 variant (`qual.`)`name(args)`.
+struct TPat
+    kind: Int
+    ival: Int
+    name: String
+    qual: String
+    args: List[TPat]
+
+struct TArm
+    pat: TPat
+    body: Expr
+
+struct TElsif
+    cond: Expr
+    body: TBlock
+
+struct TBlock
+    stmts: List[TStmt]
+    tail: Expr
+
+# `kind` 0 expression, 1 binding or assignment (`is_let` tells them apart), 2 `return`, 3 field assignment.
+# `id` names the statement across a pass (the handle it came from, 0 for one a pass creates).
+struct TStmt
+    kind: Int
+    name: String
+    expr: Expr
+    ty: String
+    is_let: Int
+    target: Expr
+    frozen: Int
+    stack: Int
+    id: Int
+
+enum Expr
+    XNone
+    XInt(Int)
+    XFloat(Int, String)
+    XStr(String)
+    XIdent(String)
+    XBin(String, Expr, Expr)
+    XCall(String, List[Expr], String)
+    XTo(String, Expr)
+    XOn(String, TBlock, Int, Int)
+    XTensor(Int, Int, List[String])
+    XIf(Expr, TBlock, TBlock, Int, List[TElsif])
+    XWhile(Expr, TBlock)
+    XField(Expr, String)
+    XBool(Int)
+    XLambda(String, Expr)
+    XUnary(String, Expr)
+    XMatch(Expr, List[TArm])
+    XTry(Expr)
+
+struct TFn
+    name: String
+    params: List[TParam]
+    body: TBlock
+    ret: String
+    no_heap: Int
+    fx: List[Int]
+    tparams: List[String]
+
+struct TProgram
+    fns: List[TFn]
+    imports: List[String]
+    structs: List[TStruct]
+    aliases: List[String]
+    enums: List[TEnum]
+
+# Slot `i` of a handle, 0 when the vec is shorter (nodes rebuilt by `qualify` keep fewer slots).
+fn tt_slot(h: Int, i: Int) -> Int ! alloc
+    if i < vec_len(h)
+        vec_get(h, i)
+    else
+        0
+
+# ---- handle text helpers ----
+fn tt_str(h: Int) -> String ! alloc
+    if h == 0
+        d""
+    else
+        str_from_int(h)
+
+fn tt_strs(hs: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, strdup(tt_str(vec_get(hs, i))))
+        tt_strs(hs, i + 1, n, out)
+
+fn tt_ints(vs: Int, i: Int, n: Int, out: List[Int]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, vec_get(vs, i))
+        tt_ints(vs, i + 1, n, out)
+
+fn tt_str_list(hs: Int) -> List[String] ! alloc
+    out = list_new[String]()
+    _a = tt_strs(hs, 0, vec_len(hs), out)
+    out
+
+# ---- expressions ----
+fn tt_exprs(hs: Int, i: Int, n: Int, out: List[Expr]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tt_expr(vec_get(hs, i)))
+        tt_exprs(hs, i + 1, n, out)
+
+fn tt_expr(h: Int) -> Expr ! alloc
+    if h == 0
+        XNone
+    else
+        tt_expr_kind(h, vec_get(h, 0))
+
+fn tt_expr_kind(h: Int, k: Int) -> Expr ! alloc
+    if k == EX_INT()
+        XInt(vec_get(h, 1))
+    elsif k == EX_FLOAT()
+        XFloat(vec_get(h, 1), tt_str(vec_get(h, 2)))
+    elsif k == EX_STRING()
+        XStr(tt_str(vec_get(h, 1)))
+    elsif k == EX_IDENT()
+        XIdent(tt_str(vec_get(h, 1)))
+    elsif k == EX_BINARY()
+        XBin(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)), tt_expr(vec_get(h, 3)))
+    elsif k == EX_CALL()
+        args = list_new[Expr]()
+        _a = tt_exprs(vec_get(h, 2), 0, vec_len(vec_get(h, 2)), args)
+        XCall(tt_str(vec_get(h, 1)), args, tt_str(ex_call_type_args(h)))
+    elsif k == EX_TO()
+        XTo(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)))
+    elsif k == EX_ON()
+        XOn(tt_str(vec_get(h, 1)), tt_block(vec_get(h, 2)), tt_slot(h, 3), tt_slot(h, 4))
+    elsif k == EX_TENSOR()
+        XTensor(vec_get(h, 1), vec_get(h, 2), tt_str_list(tensor_lit_data(h)))
+    elsif k == EX_IF()
+        tt_if(h)
+    elsif k == EX_WHILE()
+        XWhile(tt_expr(vec_get(h, 1)), tt_block(vec_get(h, 2)))
+    elsif k == EX_FIELD()
+        XField(tt_expr(vec_get(h, 1)), tt_str(vec_get(h, 2)))
+    elsif k == EX_BOOL()
+        XBool(vec_get(h, 1))
+    elsif k == EX_LAMBDA()
+        XLambda(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)))
+    elsif k == EX_UNARY()
+        XUnary(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)))
+    elsif k == EX_MATCH()
+        arms = list_new[TArm]()
+        _a = tt_arms(vec_get(h, 2), 0, vec_len(vec_get(h, 2)), arms)
+        XMatch(tt_expr(vec_get(h, 1)), arms)
+    else
+        XTry(tt_expr(vec_get(h, 1)))
+
+fn tt_if(h: Int) -> Expr ! alloc
+    elsifs = list_new[TElsif]()
+    _a = tt_elsifs(vec_get(h, 4), 0, vec_len(vec_get(h, 4)), elsifs)
+    eb = tt_slot(h, 3)
+    has_else = if eb == 0
+        0
+    else
+        1
+    XIf(tt_expr(vec_get(h, 1)), tt_block(vec_get(h, 2)), tt_block(eb), has_else, elsifs)
+
+fn tt_elsifs(hs: Int, i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(hs, i)
+        _a = list_push(out, TElsif(tt_expr(vec_get(arm, 0)), tt_block(vec_get(arm, 1))))
+        tt_elsifs(hs, i + 1, n, out)
+
+fn tt_arms(hs: Int, i: Int, n: Int, out: List[TArm]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = vec_get(hs, i)
+        _a = list_push(out, TArm(tt_pat(vec_get(arm, 0)), tt_expr(vec_get(arm, 1))))
+        tt_arms(hs, i + 1, n, out)
+
+fn tt_pats(hs: Int, i: Int, n: Int, out: List[TPat]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tt_pat(vec_get(hs, i)))
+        tt_pats(hs, i + 1, n, out)
+
+fn tt_pat(h: Int) -> TPat ! alloc
+    args = list_new[TPat]()
+    kind = vec_get(h, 0)
+    if kind == 3
+        _a = tt_pats(vec_get(h, 3), 0, vec_len(vec_get(h, 3)), args)
+        TPat(3, 0, tt_str(vec_get(h, 1)), tt_str(vec_get(h, 2)), args)
+    elsif kind == 2
+        TPat(2, vec_get(h, 1), d"", d"", args)
+    elsif kind == 1
+        TPat(1, 0, tt_str(vec_get(h, 1)), d"", args)
+    else
+        TPat(0, 0, d"", d"", args)
+
+# ---- statements and blocks ----
+fn tt_stmts(hs: Int, i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tt_stmt(vec_get(hs, i)))
+        tt_stmts(hs, i + 1, n, out)
+
+fn tt_stmt(h: Int) -> TStmt ! alloc
+    TStmt(vec_get(h, 0), tt_str(tt_slot(h, 1)), tt_expr(tt_slot(h, 2)), tt_str(tt_slot(h, 3)), tt_slot(h, 4), tt_expr(tt_slot(h, 5)), tt_slot(h, 6), tt_slot(h, 7), h)
+
+fn tt_block(h: Int) -> TBlock ! alloc
+    stmts = list_new[TStmt]()
+    if h == 0
+        TBlock(stmts, XNone)
+    else
+        _a = tt_stmts(block_stmts(h), 0, vec_len(block_stmts(h)), stmts)
+        TBlock(stmts, tt_expr(block_tail(h)))
+
+# ---- items ----
+fn tt_params(hs: Int, i: Int, n: Int, out: List[TParam]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = vec_get(hs, i)
+        _a = list_push(out, TParam(strdup(tt_str(vec_get(p, 0))), strdup(tt_str(vec_get(p, 1))), param_mode(p)))
+        tt_params(hs, i + 1, n, out)
+
+fn tt_fn(h: Int) -> TFn ! alloc
+    params = list_new[TParam]()
+    _a = tt_params(vec_get(h, 1), 0, vec_len(vec_get(h, 1)), params)
+    fx = list_new[Int]()
+    _b = tt_ints(fndef_effects(h), 0, vec_len(fndef_effects(h)), fx)
+    TFn(tt_str(vec_get(h, 0)), params, tt_block(vec_get(h, 2)), tt_str(fndef_ret(h)), fndef_no_heap(h), fx, tt_str_list(fndef_type_params(h)))
+
+fn tt_fns(hs: Int, i: Int, n: Int, out: List[TFn]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tt_fn(vec_get(hs, i)))
+        tt_fns(hs, i + 1, n, out)
+
+fn tt_fields(hs: Int, i: Int, n: Int, out: List[TField]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = vec_get(hs, i)
+        _a = list_push(out, TField(strdup(tt_str(vec_get(f, 0))), strdup(tt_str(vec_get(f, 1)))))
+        tt_fields(hs, i + 1, n, out)
+
+fn tt_struct(h: Int) -> TStruct ! alloc
+    fields = list_new[TField]()
+    _a = tt_fields(structdef_fields(h), 0, vec_len(structdef_fields(h)), fields)
+    TStruct(tt_str(structdef_name(h)), fields, structdef_layout_c(h), tt_str_list(structdef_params(h)), structdef_is_frame(h))
+
+fn tt_structs(hs: Int, i: Int, n: Int, out: List[TStruct]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tt_struct(vec_get(hs, i)))
+        tt_structs(hs, i + 1, n, out)
+
+fn tt_variants(hs: Int, i: Int, n: Int, out: List[TVariant]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = vec_get(hs, i)
+        _a = list_push(out, TVariant(tt_str(vec_get(v, 0)), tt_str_list(vec_get(v, 1))))
+        tt_variants(hs, i + 1, n, out)
+
+fn tt_enum(h: Int) -> TEnum ! alloc
+    vs = list_new[TVariant]()
+    _a = tt_variants(vec_get(h, 1), 0, vec_len(vec_get(h, 1)), vs)
+    TEnum(tt_str(vec_get(h, 0)), vs, tt_str_list(vec_get(h, 2)))
+
+fn tt_enums(hs: Int, i: Int, n: Int, out: List[TEnum]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tt_enum(vec_get(hs, i)))
+        tt_enums(hs, i + 1, n, out)
+
+# Aliases are `[text handle or 0]`, one per import.
+fn tt_aliases(pr: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, strdup(tt_str(prog_import_alias_at(pr, i))))
+        tt_aliases(pr, i + 1, n, out)
+
+# The typed form of a program handle.
+fn to_typed(pr: Int) -> TProgram ! alloc
+    fns = list_new[TFn]()
+    _a = tt_fns(prog_fns(pr), 0, vec_len(prog_fns(pr)), fns)
+    structs = list_new[TStruct]()
+    _b = tt_structs(prog_structs(pr), 0, vec_len(prog_structs(pr)), structs)
+    enums = list_new[TEnum]()
+    _c = tt_enums(prog_enums(pr), 0, vec_len(prog_enums(pr)), enums)
+    aliases = list_new[String]()
+    _d = tt_aliases(pr, 0, vec_len(prog_imports(pr)), aliases)
+    TProgram(fns, tt_str_list(prog_imports(pr)), structs, aliases, enums)
+
+# ---- release ----
+# `tp_free` returns the boxes and lists of a typed tree. Strings stay: they share storage with the
+# handle AST, except in lists, which own copies (`list_free` releases them).
+fn tp_free(tp: TProgram) -> Int ! alloc
+    _a = tp_free_fns(tp.fns, 0, list_len(tp.fns))
+    _b = list_free(tp.fns)
+    _c = tp_free_structs(tp.structs, 0, list_len(tp.structs))
+    _d = list_free(tp.structs)
+    _e = tp_free_enums(tp.enums, 0, list_len(tp.enums))
+    _f = list_free(tp.enums)
+    _g = list_free(tp.imports)
+    list_free(tp.aliases)
+
+fn tp_free_fns(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        _a = tp_free_block(f.body)
+        _c = list_free(f.fx)
+        _d = list_free(f.params)
+        _e = list_free(f.tparams)
+        tp_free_fns(fns, i + 1, n)
+
+fn tp_free_structs(sts: List[TStruct], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(sts, i)
+        _a = list_free(st.fields)
+        _b = list_free(st.tparams)
+        tp_free_structs(sts, i + 1, n)
+
+fn tp_free_enums(es: List[TEnum], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        e = list_get(es, i)
+        _v = tp_free_variants(e.variants, 0, list_len(e.variants))
+        _t = list_free(e.tparams)
+        _a = list_free(e.variants)
+        tp_free_enums(es, i + 1, n)
+
+fn tp_free_variants(vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_free(list_get(vs, i).fields)
+        tp_free_variants(vs, i + 1, n)
+
+fn tp_free_block(b: TBlock) -> Int ! alloc
+    _a = tp_free_stmts(b.stmts, 0, list_len(b.stmts))
+    _b = list_free(b.stmts)
+    tp_free_expr(b.tail)
+
+fn tp_free_stmts(stmts: List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        _a = tp_free_expr(st.expr)
+        _b = tp_free_expr(st.target)
+        tp_free_stmts(stmts, i + 1, n)
+
+fn tp_free_exprs(xs: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = tp_free_expr(list_get(xs, i))
+        tp_free_exprs(xs, i + 1, n)
+
+fn tp_free_elsifs(xs: List[TElsif], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(xs, i)
+        _a = tp_free_expr(a.cond)
+        _b = tp_free_block(a.body)
+        tp_free_elsifs(xs, i + 1, n)
+
+fn tp_free_pat(p: TPat) -> Int ! alloc
+    _a = tp_free_pats(p.args, 0, list_len(p.args))
+    list_free(p.args)
+
+fn tp_free_pats(ps: List[TPat], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = tp_free_pat(list_get(ps, i))
+        tp_free_pats(ps, i + 1, n)
+
+fn tp_free_arms(xs: List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(xs, i)
+        _a = tp_free_pat(a.pat)
+        _b = tp_free_expr(a.body)
+        tp_free_arms(xs, i + 1, n)
+
+fn tp_free_expr(e: Expr) -> Int ! alloc
+    _a = tp_free_children(e)
+    enum_free(e)
+
+# Children the box owns are released by `enum_free`; the others (built by calls or from locals)
+# are released here, so nothing is freed twice whichever way the tree was built.
+fn tp_free_children(e: Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) => tp_free_pair(e, l, r)
+        XCall(name, args, targs) => tp_free_call(args)
+        XTo(place, inner) => tp_free_one(e, 1, inner)
+        XOn(place, body, is_kern, has_index) => tp_free_block(body)
+        XIf(cond, then_b, else_b, has_else, elsifs) => tp_free_if(e, cond, then_b, else_b, elsifs)
+        XWhile(cond, body) => tp_free_while(e, cond, body)
+        XField(base, field) => tp_free_one(e, 0, base)
+        XLambda(param, body) => tp_free_one(e, 1, body)
+        XUnary(op, inner) => tp_free_one(e, 1, inner)
+        XTry(inner) => tp_free_one(e, 0, inner)
+        XMatch(scrut, arms) => tp_free_match(e, scrut, arms)
+        _ => 0
+
+# Frees `child`, field `i` of `e`, unless the box of `e` owns it.
+fn tp_free_one(e: Expr, i: Int, child: Expr) -> Int ! alloc
+    if enum_owns(e, i) == 1
+        0
+    else
+        tp_free_expr(child)
+
+fn tp_free_pair(e: Expr, l: Expr, r: Expr) -> Int ! alloc
+    _x = tp_free_one(e, 1, l)
+    tp_free_one(e, 2, r)
+
+fn tp_free_call(args: List[Expr]) -> Int ! alloc
+    _x = tp_free_exprs(args, 0, list_len(args))
+    list_free(args)
+
+fn tp_free_if(e: Expr, cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif]) -> Int ! alloc
+    _x = tp_free_one(e, 0, cond)
+    _y = tp_free_block(then_b)
+    _z = tp_free_block(else_b)
+    _w = tp_free_elsifs(elsifs, 0, list_len(elsifs))
+    list_free(elsifs)
+
+fn tp_free_while(e: Expr, cond: Expr, body: TBlock) -> Int ! alloc
+    _x = tp_free_one(e, 0, cond)
+    tp_free_block(body)
+
+fn tp_free_match(e: Expr, scrut: Expr, arms: List[TArm]) -> Int ! alloc
+    _x = tp_free_one(e, 0, scrut)
+    _y = tp_free_arms(arms, 0, list_len(arms))
+    list_free(arms)
+
+# ---- deep copies ----
+# A copy shares nothing with the original, so either can be released alone.
+fn tc_exprs(xs: List[Expr], i: Int, n: Int, out: List[Expr]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tc_expr(list_get(xs, i)))
+        tc_exprs(xs, i + 1, n, out)
+
+fn tc_list(xs: List[Expr]) -> List[Expr] ! alloc
+    out = list_new[Expr]()
+    _a = tc_exprs(xs, 0, list_len(xs), out)
+    out
+
+fn tc_strs(xs: List[String]) -> List[String] ! alloc
+    out = list_new[String]()
+    _a = tc_strs_go(xs, 0, list_len(xs), out)
+    out
+
+fn tc_strs_go(xs: List[String], i: Int, n: Int, out: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, strdup(list_get(xs, i)))
+        tc_strs_go(xs, i + 1, n, out)
+
+fn tc_expr(e: Expr) -> Expr ! alloc
+    match e
+        XNone => XNone
+        XInt(v) => XInt(v)
+        XFloat(bits, txt) => XFloat(bits, strdup(txt))
+        XStr(s) => XStr(strdup(s))
+        XIdent(s) => XIdent(strdup(s))
+        XBin(op, l, r) => XBin(strdup(op), tc_expr(l), tc_expr(r))
+        XCall(name, args, targs) => XCall(strdup(name), tc_list(args), strdup(targs))
+        XTo(place, inner) => XTo(strdup(place), tc_expr(inner))
+        XOn(place, body, kern, idx) => XOn(strdup(place), tc_block(body), kern, idx)
+        XTensor(nr, nc, data) => XTensor(nr, nc, tc_strs(data))
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(tc_expr(cond), tc_block(then_b), tc_block(else_b), has_else, tc_elsifs(elsifs))
+        XWhile(cond, body) => XWhile(tc_expr(cond), tc_block(body))
+        XField(base, field) => XField(tc_expr(base), strdup(field))
+        XBool(v) => XBool(v)
+        XLambda(param, body) => XLambda(strdup(param), tc_expr(body))
+        XUnary(op, inner) => XUnary(strdup(op), tc_expr(inner))
+        XMatch(scrut, arms) => XMatch(tc_expr(scrut), tc_arms(arms))
+        XTry(inner) => XTry(tc_expr(inner))
+
+fn tc_elsifs(xs: List[TElsif]) -> List[TElsif] ! alloc
+    out = list_new[TElsif]()
+    _a = tc_elsifs_go(xs, 0, list_len(xs), out)
+    out
+
+fn tc_elsifs_go(xs: List[TElsif], i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(xs, i)
+        _a = list_push(out, TElsif(tc_expr(a.cond), tc_block(a.body)))
+        tc_elsifs_go(xs, i + 1, n, out)
+
+fn tc_arms(xs: List[TArm]) -> List[TArm] ! alloc
+    out = list_new[TArm]()
+    _a = tc_arms_go(xs, 0, list_len(xs), out)
+    out
+
+fn tc_arms_go(xs: List[TArm], i: Int, n: Int, out: List[TArm]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(xs, i)
+        _a = list_push(out, TArm(tc_pat(a.pat), tc_expr(a.body)))
+        tc_arms_go(xs, i + 1, n, out)
+
+fn tc_pats(xs: List[TPat]) -> List[TPat] ! alloc
+    out = list_new[TPat]()
+    _a = tc_pats_go(xs, 0, list_len(xs), out)
+    out
+
+fn tc_pats_go(xs: List[TPat], i: Int, n: Int, out: List[TPat]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tc_pat(list_get(xs, i)))
+        tc_pats_go(xs, i + 1, n, out)
+
+fn tc_pat(p: TPat) -> TPat ! alloc
+    TPat(p.kind, p.ival, strdup(p.name), strdup(p.qual), tc_pats(p.args))
+
+fn tc_stmt(s: TStmt) -> TStmt ! alloc
+    TStmt(s.kind, strdup(s.name), tc_expr(s.expr), strdup(s.ty), s.is_let, tc_expr(s.target), s.frozen, s.stack, s.id)
+
+fn tc_stmts(xs: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, tc_stmt(list_get(xs, i)))
+        tc_stmts(xs, i + 1, n, out)
+
+fn tc_block(b: TBlock) -> TBlock ! alloc
+    out = list_new[TStmt]()
+    _a = tc_stmts(b.stmts, 0, list_len(b.stmts), out)
+    TBlock(out, tc_expr(b.tail))
+
+# ---- back to handles ----
+# For passes that still hand a tree to handle code. Strings are copied: the handle AST never
+# releases its text, while a typed tree may.
+fn fh_str(s: String) -> String ! alloc
+    strdup(s)
+
+fn fh_exprs(xs: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, fh_expr(list_get(xs, i)))
+        fh_exprs(xs, i + 1, n, out)
+
+fn fh_expr(e: Expr) -> Int ! alloc
+    match e
+        XNone => 0
+        XInt(v) => ex_int(v)
+        XFloat(bits, txt) => ex_float(bits, fh_str(txt))
+        XStr(s) => ex_string(fh_str(s))
+        XIdent(s) => ex_ident(fh_str(s))
+        XBin(op, l, r) => ex_binary(fh_str(op), fh_expr(l), fh_expr(r))
+        XCall(name, args, targs) => fh_call(name, args, targs)
+        XTo(place, inner) => ex_to(fh_str(place), fh_expr(inner))
+        XOn(place, body, kern, idx) => fh_on(place, body, kern, idx)
+        XTensor(nr, nc, data) => ex_tensor_data(nr, nc, fh_strs(data))
+        XIf(cond, then_b, else_b, has_else, elsifs) => fh_if(cond, then_b, else_b, has_else, elsifs)
+        XWhile(cond, body) => ex_while(fh_expr(cond), fh_block(body))
+        XField(base, field) => ex_field(fh_expr(base), fh_str(field))
+        XBool(v) => ex_bool(v)
+        XLambda(param, body) => ex_lambda(fh_str(param), fh_expr(body))
+        XUnary(op, inner) => ex_unary(fh_str(op), fh_expr(inner))
+        XMatch(scrut, arms) => fh_match(scrut, arms)
+        XTry(inner) => ex_try(fh_expr(inner))
+
+fn fh_strs(xs: List[String]) -> Int ! alloc
+    out = vec_new()
+    _a = fh_strs_go(xs, 0, list_len(xs), out)
+    out
+
+fn fh_strs_go(xs: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, str_as_int(strdup(list_get(xs, i))))
+        fh_strs_go(xs, i + 1, n, out)
+
+fn fh_call(name: String, args: List[Expr], targs: String) -> Int ! alloc
+    av = vec_new()
+    _a = fh_exprs(args, 0, list_len(args), av)
+    e = ex_call(fh_str(name), av)
+    if str_len(targs) > 0
+        _t = ex_call_set_type_args(e, str_as_int(fh_str(targs)))
+        e
+    else
+        e
+
+fn fh_on(place: String, body: TBlock, kern: Int, idx: Int) -> Int ! alloc
+    e = ex_on(fh_str(place), fh_block(body))
+    if kern != 0
+        _k = ex_on_set_kernel(e, idx)
+        e
+    else
+        e
+
+fn fh_if(cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif]) -> Int ! alloc
+    arms = vec_new()
+    _a = fh_elsifs(elsifs, 0, list_len(elsifs), arms)
+    eb = if has_else == 1
+        fh_block(else_b)
+    else
+        0
+    ex_if(fh_expr(cond), fh_block(then_b), eb, arms)
+
+fn fh_elsifs(xs: List[TElsif], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(xs, i)
+        arm = vec_new()
+        _a = vec_push(arm, fh_expr(a.cond))
+        _b = vec_push(arm, fh_block(a.body))
+        _c = vec_push(out, arm)
+        fh_elsifs(xs, i + 1, n, out)
+
+fn fh_match(scrut: Expr, arms: List[TArm]) -> Int ! alloc
+    av = vec_new()
+    _a = fh_arms(arms, 0, list_len(arms), av)
+    ex_match(fh_expr(scrut), av)
+
+fn fh_arms(xs: List[TArm], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(xs, i)
+        arm = vec_new()
+        _a = vec_push(arm, fh_pat(a.pat))
+        _b = vec_push(arm, fh_expr(a.body))
+        _c = vec_push(out, arm)
+        fh_arms(xs, i + 1, n, out)
+
+fn fh_pats(xs: List[TPat], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, fh_pat(list_get(xs, i)))
+        fh_pats(xs, i + 1, n, out)
+
+fn fh_pat(p: TPat) -> Int ! alloc
+    args = vec_new()
+    _a = fh_pats(p.args, 0, list_len(p.args), args)
+    if p.kind == 3
+        pat_new(3, str_as_int(fh_str(p.name)), str_as_int(fh_str(p.qual)), args)
+    elsif p.kind == 2
+        pat_new(2, p.ival, 0, args)
+    elsif p.kind == 1
+        pat_new(1, str_as_int(fh_str(p.name)), 0, args)
+    else
+        pat_new(0, 0, 0, args)
+
+fn fh_ty(s: String) -> Int ! alloc
+    if str_len(s) == 0
+        0
+    else
+        str_as_int(strdup(s))
+
+fn fh_stmt(s: TStmt) -> Int ! alloc
+    h = stmt_new(s.kind, fh_str(s.name), fh_expr(s.expr))
+    _a = vec_set(h, 3, fh_ty(s.ty))
+    _b = vec_set(h, 4, s.is_let)
+    _c = vec_set(h, 5, fh_expr(s.target))
+    _d = vec_set(h, 6, s.frozen)
+    _e = vec_set(h, 7, s.stack)
+    h
+
+fn fh_stmts(xs: List[TStmt], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = vec_push(out, fh_stmt(list_get(xs, i)))
+        fh_stmts(xs, i + 1, n, out)
+
+fn fh_block(b: TBlock) -> Int ! alloc
+    h = block_new()
+    _a = fh_stmts(b.stmts, 0, list_len(b.stmts), block_stmts(h))
+    _b = block_set_tail(h, fh_expr(b.tail))
+    h

@@ -1,0 +1,10 @@
+# error: E_EFFECT
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct N
+    name: String
+
+method N.len() -> Int ! alloc
+    str_len(self.name)
+
+fn main() -> Int
+    N("x").len()

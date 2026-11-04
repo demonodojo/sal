@@ -1,0 +1,7 @@
+# error: E_TYPE
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct P
+    x: Int
+
+fn main() -> Int
+    P.nope(1).x

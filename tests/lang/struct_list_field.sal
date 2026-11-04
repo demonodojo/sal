@@ -1,0 +1,19 @@
+# exit: 5
+struct F
+    name: String
+    k: Int
+
+struct P
+    fns: List[F]
+    tag: Int
+
+fn mk() -> P ! alloc
+    fs = list_new[F]()
+    _b = list_push(fs, F("abc", 5))
+    P(fs, 9)
+
+fn main() -> Int ! io, alloc
+    tp = mk()
+    fns = tp.fns
+    f = list_get(fns, 0)
+    f.k

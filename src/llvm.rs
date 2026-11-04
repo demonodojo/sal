@@ -469,6 +469,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_enum_set(i64, i64, i64)\n");
     s.push_str("declare void @sal_enum_free(i64)\n");
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
+    s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_field(i64, i64)\n");
     s.push_str("declare i64 @sal_vec_len(ptr)\n");
     s.push_str("declare void @sal_vec_free(ptr)\n");
@@ -2971,6 +2972,13 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
         }
+        "sal_enum_owns" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_enum_owns(i64 {a}, i64 {b})\n"));
+            }
+        }
         "sal_enum_free" => {
             let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             s.push_str(&format!("  call void @sal_enum_free(i64 {a})\n"));
@@ -3647,6 +3655,7 @@ fn emit_inst_list(
                     cur_block,
                     tensor.as_deref_mut(),
                 );
+                alias_live_branch(s, else_body, else_val, dest, carried, |c| &c.else_val);
                 return emit_inst_list(
                     suffix,
                     str_globals,
@@ -3692,6 +3701,7 @@ fn emit_inst_list(
                     cur_block,
                     tensor.as_deref_mut(),
                 );
+                alias_live_branch(s, then_body, then_val, dest, carried, |c| &c.then_val);
                 return emit_inst_list(
                     suffix,
                     str_globals,
@@ -4320,6 +4330,32 @@ fn emit_inst_list(
         i += 1;
     }
     (ret, cur_block.clone(), false)
+}
+
+/// Names the values of the branch that falls through as the `if`'s result and carried
+/// variables, when the other branch returns and no join block exists.
+fn alias_live_branch(
+    s: &mut String,
+    body: &[IrInst],
+    val: &str,
+    dest: &str,
+    carried: &[crate::ir::IfCarry],
+    pick: impl Fn(&crate::ir::IfCarry) -> &str,
+) {
+    let consts = const_int_map_from(body);
+    let operand = |v: &str| {
+        if consts.contains_key(v) || v.chars().all(|c| c.is_ascii_digit()) {
+            i64_operand(v, &consts)
+        } else {
+            format!("%{v}")
+        }
+    };
+    if !val.is_empty() {
+        s.push_str(&format!("  %{dest} = add i64 0, {}\n", operand(val)));
+    }
+    for carry in carried {
+        s.push_str(&format!("  %{} = add i64 0, {}\n", carry.dest, operand(pick(carry))));
+    }
 }
 
 fn const_int_map_from(instructions: &[IrInst]) -> HashMap<String, i64> {

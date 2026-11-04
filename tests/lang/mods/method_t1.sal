@@ -1,0 +1,8 @@
+struct T
+    v: Int
+
+method T.get() -> Int
+    self.v + 1
+
+fn mk1() -> T
+    T(10)

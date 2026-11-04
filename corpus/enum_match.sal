@@ -1,0 +1,19 @@
+enum Shape
+    Dot
+    Circle(Int)
+    Rect(Int, Int)
+    Named(String)
+
+fn area(s: Shape) -> Int ! alloc
+    match s
+        Circle(r) => r * r * 3
+        Rect(w, h) => w * h
+        Named(n) => str_len(n)
+        _ => 0
+
+fn main() -> Int ! alloc
+    a = area(Circle(2))
+    b = area(Rect(3, 4))
+    c = area(Named(strdup(d"abc")))
+    d = area(Dot)
+    a + b + c + d

@@ -1,0 +1,15 @@
+# exit: 11
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct P
+    x: Int
+    y: Int
+
+method P.sum() -> Int
+    self.x + self.y
+
+method P.scaled(k: Int) -> P
+    P(self.x * k, self.y * k)
+
+fn main() -> Int
+    p = P(1, 2)
+    p.scaled(3).sum() + p.sum() - 1

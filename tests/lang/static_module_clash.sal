@@ -1,0 +1,7 @@
+# exit: 8
+# selfhost-xfail: methods are Rust bootstrap only for now
+import "mods/static_pt.sal" as a
+import "mods/static_pt2.sal" as b
+
+fn main() -> Int
+    a.mk().sum() + b.mk().sum()

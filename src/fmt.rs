@@ -106,15 +106,28 @@ fn format_fn(f: &FnDef) -> String {
     if f.no_heap {
         s.push_str("@no_heap\n");
     }
-    s.push_str(&format!("fn {}", f.name));
+    match (&f.receiver, f.method_kind) {
+        (Some(t), MethodKind::Static) => s.push_str(&format!("static {}.{}", t, f.name)),
+        (Some(t), MethodKind::Init) => s.push_str(&format!("init {}", t)),
+        (Some(t), MethodKind::Method) => s.push_str(&format!("method {}.{}", t, f.name)),
+        (None, _) => s.push_str(&format!("fn {}", f.name)),
+    }
     if !f.type_params.is_empty() {
         s.push('[');
         s.push_str(&f.type_params.join(", "));
         s.push(']');
     }
     s.push('(');
+    let mut wrote = false;
+    if f.receiver.is_some() && f.self_mode != ParamMode::Inferred {
+        s.push_str(match f.self_mode {
+            ParamMode::Take => "self take",
+            _ => "self borrow",
+        });
+        wrote = true;
+    }
     for (i, p) in f.params.iter().enumerate() {
-        if i > 0 {
+        if i > 0 || wrote {
             s.push_str(", ");
         }
         s.push_str(&p.name);
@@ -126,8 +139,11 @@ fn format_fn(f: &FnDef) -> String {
             ParamMode::Inferred => {}
         }
     }
-    s.push_str(") -> ");
-    s.push_str(&format_type(&f.ret));
+    s.push(')');
+    if f.receiver.is_none() || f.method_kind != MethodKind::Init {
+        s.push_str(" -> ");
+        s.push_str(&format_type(&f.ret));
+    }
     if !f.effects.is_empty() {
         s.push_str(" ! ");
         for (i, e) in f.effects.iter().enumerate() {

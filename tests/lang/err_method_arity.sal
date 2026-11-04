@@ -1,0 +1,10 @@
+# error: E_TYPE
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct P
+    x: Int
+
+method P.add(k: Int) -> Int
+    self.x + k
+
+fn main() -> Int
+    P(1).add(1, 2)

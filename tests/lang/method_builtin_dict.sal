@@ -1,0 +1,14 @@
+# exit: 7
+# selfhost-xfail: methods are Rust bootstrap only for now
+fn main() -> Int ! alloc
+    d = dict_new[String, Int]()
+    d.put("a", 5)
+    hit = if d.has("a")
+        7
+    else
+        0
+    miss = if d.has("b")
+        100
+    else
+        0
+    hit + miss

@@ -1,0 +1,11 @@
+# error: E_TYPE
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct P
+    x: Int
+
+static P.make(n: Int) -> P
+    P(n)
+
+fn main() -> Int
+    p = P(1)
+    p.make(2).x

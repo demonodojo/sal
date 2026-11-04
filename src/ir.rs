@@ -504,6 +504,14 @@ fn collect_moved_expr(
                             }
                         }
                     }
+                } else {
+                    // A builtin (`list_push`, `dict_put`, ...) or a struct/variant constructor
+                    // keeps what it is given.
+                    for a in args {
+                        if let Expr::Ident { name: arg, .. } = a {
+                            moved.insert(arg.clone());
+                        }
+                    }
                 }
             }
             for a in args {
@@ -1155,10 +1163,48 @@ fn scalar_kind(ty: &crate::ast::Type) -> i64 {
     }
 }
 
-fn container_kinds(fname: &str, type_args: &[crate::ast::TypeArg]) -> Vec<i64> {
+/// Kind of a `List[S]` whose elements are flat structs (two to twenty fields, each
+/// Int, Float, Bool or String): `4 | n << 4 | mask << 12`, bit i of `mask` set when
+/// field i is a String. The runtime frees and copies such blocks.
+pub(crate) fn flat_struct_kind(def: &crate::ast::StructDef) -> Option<i64> {
+    let n = def.fields.len();
+    if !def.type_params.is_empty() || !(2..=20).contains(&n) {
+        return None;
+    }
+    let mut mask = 0i64;
+    for (i, f) in def.fields.iter().enumerate() {
+        match &f.ty {
+            crate::ast::Type::Named { name, args, .. } if args.is_empty() => match name.as_str() {
+                "Int" | "Float" | "Bool" => {}
+                "String" => mask |= 1 << i,
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    Some(4 | (n as i64) << 4 | mask << 12)
+}
+
+fn type_kind(t: &crate::ast::Type, structs: &HashMap<String, crate::ast::StructDef>) -> i64 {
+    if let crate::ast::Type::Named { name, args, .. } = t {
+        if args.is_empty() {
+            if let Some(k) = structs.get(name).and_then(flat_struct_kind) {
+                return k;
+            }
+        }
+    }
+    scalar_kind(t)
+}
+
+fn container_kinds(
+    fname: &str,
+    type_args: &[crate::ast::TypeArg],
+    structs: &HashMap<String, crate::ast::StructDef>,
+) -> Vec<i64> {
     let kinds: Vec<i64> = type_args
         .iter()
         .filter_map(|a| match a {
+            crate::ast::TypeArg::Type(t) if fname == "list_new" => Some(type_kind(t, structs)),
             crate::ast::TypeArg::Type(t) => Some(scalar_kind(t)),
             crate::ast::TypeArg::Dim(_) => None,
         })
@@ -1271,6 +1317,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "list_free"
             | "dict_free"
             | "enum_free"
+            | "enum_owns"
             | "bytes_free"
             | "bytes_new"
             | "bytes_len"
@@ -1585,7 +1632,7 @@ fn lower_expr(
                 }
             }
             if fname == "list_new" || fname == "dict_new" {
-                let kinds = container_kinds(&fname, type_args);
+                let kinds = container_kinds(&fname, type_args, &strings.structs);
                 let mut call_args = Vec::new();
                 for k in kinds {
                     *counter += 1;
@@ -2362,8 +2409,25 @@ fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
                 _ => None,
             }
         }
-        Expr::Call { func, .. } => match func.as_ref() {
+        Expr::Call { func, args, .. } => match func.as_ref() {
             Expr::Ident { name, .. } if strings.structs.contains_key(name) => Some(name.clone()),
+            // `list_get(xs, i).f`: the element type of `xs`. (A field shares its base's span,
+            // so the call's own recorded type is shadowed by the field's.)
+            Expr::Ident { name, .. } if name == "list_get" || name == "list_pop" => {
+                match args.first().and_then(|a| strings.expr_type(a)) {
+                    Some(crate::ast::Type::Named { name: l, args: targs, .. }) if l == "List" => {
+                        match targs.first() {
+                            Some(crate::ast::Type::Named { name, args, .. })
+                                if args.is_empty() && strings.structs.contains_key(name) =>
+                            {
+                                Some(name.clone())
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            }
             Expr::Ident { name, .. } => strings.fn_struct_rets.get(name).cloned(),
             _ => None,
         },

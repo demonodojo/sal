@@ -1,0 +1,17 @@
+# exit: 9
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct P
+    x: Int
+    y: Int
+
+static P.origin() -> P
+    P(0, 0)
+
+static P.diag(n: Int) -> P
+    P(n, n)
+
+static P.sum2(a: P, b: P) -> Int
+    a.x + a.y + b.x + b.y
+
+fn main() -> Int
+    P.sum2(P.diag(2), P.origin()) + P.sum2(P.diag(1), P.diag(1)) + 1

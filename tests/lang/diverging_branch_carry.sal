@@ -1,0 +1,10 @@
+# exit: 1
+fn f(n: Int) -> Int
+    k = 0
+    if n > 3
+        k = 5
+        return 1
+    k + 2
+
+fn main() -> Int
+    f(5)

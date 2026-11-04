@@ -1,0 +1,13 @@
+# exit: 6
+# selfhost-xfail: methods are Rust bootstrap only for now
+struct C
+    n: Int
+
+method C.add(k: Int) -> C
+    C(self.n + k)
+
+fn make() -> C
+    C(0)
+
+fn main() -> Int
+    make().add(1).add(2).add(3).n
