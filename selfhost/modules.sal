@@ -2,6 +2,8 @@
 import result
 import lexer
 import parser
+import methods
+import infer
 import checks
 import tast
 
@@ -312,6 +314,8 @@ fn path_key(p: String) -> String ! io, alloc
 struct Mod
     key: String
     path: String
+    # Dotted calls of the module, resolved once the graph is loaded (see `methods_resolve_graph`).
+    ndots: Int
 
 struct Graph
     mods: List[Mod]
@@ -385,22 +389,23 @@ fn load_module_recursive(path: String, proot: String, order: Graph, visited: Int
         src = read_file(path)
         pre = preprocess(src)
         errs = list_new[String]()
-        tp = parse_program(pre, errs)
+        nd = list_new[Int]()
+        tp = parse_program_deferred(pre, errs, nd)
         msg = errs_take(errs)
         if str_len(msg) > 0
             result_err_str(msg)
         else
-            load_parsed_module(tp, key, path, proot, order, visited, stack, sp)
+            load_parsed_module(tp, list_get(nd, 0), key, path, proot, order, visited, stack, sp)
 
 # Loads the imports of the parsed module `tp`, then adds it to the graph after them.
-fn load_parsed_module(tp: TProgram, key: String, path: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_parsed_module(tp: TProgram, ndots: Int, key: String, path: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     _ps = stack_set_at(stack, sp, str_as_int(key))
     step = load_imports_of(tp, path, proot, order, visited, stack, sp + 1)
     if result_is_err(step) == 1
         step
     else
         _v = vec_push(visited, str_as_int(key))
-        _o = list_push(order.mods, Mod(strdup(key), strdup(path)))
+        _o = list_push(order.mods, Mod(strdup(key), strdup(path), ndots))
         _t = list_push(order.progs, tp)
         result_ok(0)
 
@@ -673,3 +678,91 @@ fn graph_source_digest_go(order: Graph, i: Int, n: Int, acc: String) -> String !
         piece = int_to_str(h)
         acc = acc + piece + ":"
         graph_source_digest_go(order, i + 1, n, acc)
+
+# ---- modules ----
+# A module graph resolves its dotted calls after every module is parsed: a receiver may be a type
+# imported from another module. Each module is inferred against the items of all modules (the union
+# below, whose function names are the ones the caller sees) and only its own functions are rewritten.
+fn methods_resolve_graph(order: Graph) -> Int ! io, alloc
+    if graph_any_dots(order.mods, 0, list_len(order.mods)) == 0
+        0
+    else
+        u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum]())
+        _u = union_progs(order.progs, 0, list_len(order.progs), u)
+        methods_resolve_modules(order, u, 0, list_len(order.progs))
+
+fn graph_any_dots(mods: List[Mod], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif list_get(mods, i).ndots > 0
+        1
+    else
+        graph_any_dots(mods, i + 1, n)
+
+fn methods_resolve_modules(order: Graph, u: TProgram, i: Int, n: Int) -> Int ! io, alloc
+    if i >= n
+        0
+    else
+        _r = methods_resolve_one(order, u, i)
+        methods_resolve_modules(order, u, i + 1, n)
+
+fn methods_resolve_one(order: Graph, u: TProgram, i: Int) -> Int ! io, alloc
+    nd = list_get(order.mods, i).ndots
+    if nd == 0
+        0
+    else
+        tp = list_get(order.progs, i)
+        start = fns_before(order.progs, i, 0, 0)
+        c = ic_build(TProgram(u.fns, u.imports, u.structs, tp.aliases, u.enums), nd, 1)
+        _r = infer_program_go(c, start, start + list_len(tp.fns))
+        fns = list_new[TFn]()
+        _m = mr_fns(tp.fns, 0, list_len(tp.fns), c.res, fns)
+        _f = ic_free(c)
+        _s = list_set(order.progs, i, TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums))
+        0
+
+# Number of functions of the modules before `i` (their order in the union).
+fn fns_before(progs: List[TProgram], i: Int, k: Int, acc: Int) -> Int ! alloc
+    if k >= i
+        acc
+    else
+        fns_before(progs, i, k + 1, acc + list_len(list_get(progs, k).fns))
+
+fn union_progs(progs: List[TProgram], k: Int, n: Int, u: TProgram) -> Int ! alloc
+    if k >= n
+        0
+    else
+        tp = list_get(progs, k)
+        _a = union_fns(u.fns, tp.fns, 0, list_len(tp.fns))
+        _b = union_strs(u.imports, tp.imports, 0, list_len(tp.imports))
+        _c = union_structs(u.structs, tp.structs, 0, list_len(tp.structs))
+        _d = union_enums(u.enums, tp.enums, 0, list_len(tp.enums))
+        union_progs(progs, k + 1, n, u)
+
+fn union_fns(dst: List[TFn], src: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(dst, list_get(src, i))
+        union_fns(dst, src, i + 1, n)
+
+fn union_strs(dst: List[String], src: List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(dst, list_get(src, i))
+        union_strs(dst, src, i + 1, n)
+
+fn union_structs(dst: List[TStruct], src: List[TStruct], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(dst, list_get(src, i))
+        union_structs(dst, src, i + 1, n)
+
+fn union_enums(dst: List[TEnum], src: List[TEnum], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(dst, list_get(src, i))
+        union_enums(dst, src, i + 1, n)

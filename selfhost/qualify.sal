@@ -371,7 +371,12 @@ fn qx_call_name(nm: String, ctx: Int, links: Int) -> String ! alloc
     else
         lk = resolve_qualified_item(ctx, links, vec_get(pair, 0), vec_get(pair, 1))
         if lk == 0
-            strdup(nm)
+            # `T.f(..)` on a local type renamed by a clash (`T` -> `mod__T`): the qualifier follows.
+            renamed = map_get(vec_get(ctx, 2), str_as_int(strdup(str_from_int(vec_get(pair, 0)))))
+            if renamed != 0
+                strdup(str_from_int(renamed) + "." + str_from_int(vec_get(pair, 1)))
+            else
+                strdup(nm)
         else
             strdup(str_from_int(lk))
 
@@ -608,7 +613,24 @@ fn local_renames(tp: TProgram, clash: Int, modid: String) -> Int ! alloc
     r = map_new()
     _a = local_renames_fns(tp.fns, 0, list_len(tp.fns), clash, modid, r)
     _b = local_renames_structs(tp.structs, 0, list_len(tp.structs), clash, modid, r)
+    _c = local_renames_methods(tp.fns, 0, list_len(tp.fns), r)
     r
+
+# A method or static of a renamed type follows its type: `T__m` -> `mod__T__m`.
+fn local_renames_methods(fns: List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        rv = map_get(r, str_as_int(f.recv))
+        if str_len(f.recv) > 0
+            if rv != 0
+                _p = map_put(r, str_as_int(f.name), str_as_int(str_from_int(rv) + "__" + str_slice(f.name, str_len(f.recv) + 2, str_len(f.name))))
+                local_renames_methods(fns, i + 1, n, r)
+            else
+                local_renames_methods(fns, i + 1, n, r)
+        else
+            local_renames_methods(fns, i + 1, n, r)
 
 fn local_renames_fns(fns: List[TFn], i: Int, n: Int, clash: Int, modid: String, r: Int) -> Int ! alloc
     if i >= n

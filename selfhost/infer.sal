@@ -28,6 +28,7 @@ struct IC
     rec: Int
     vtab: HT
     enums: List[TEnum]
+    aliases: List[String]
 
 fn ic_new(tp: TProgram) -> IC ! alloc
     ic_build(tp, 0, 0)
@@ -50,7 +51,7 @@ fn ic_build(tp: TProgram, nres: Int, rec: Int) -> IC ! alloc
     _e = infer_names_enums(names, arity, vtab, tnames, tp.enums, 0, list_len(tp.enums))
     _t = infer_type_names_structs(tnames, tp.structs, 0, list_len(tp.structs))
     imports = list_len(tp.imports)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, ht_new(nres + 4), rec, vtab, tp.enums)
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, ht_new(nres + 4), rec, vtab, tp.enums, tp.aliases)
 
 fn ic_free(c: IC) -> Int ! alloc
     _a = tenv_free(c.env)
@@ -430,12 +431,35 @@ fn infer_dotted(c: IC, name: String, p: Int, args: List[Expr], targs: String) ->
     ta = mth_targs(targs)
     if p == 0
         infer_instance(c, fld, args, ta, id, d"i")
+    elsif infer_is_alias(c.aliases, q, 0) == 1
+        # `alias.f(..)` names an item of the imported module, even when a local `alias` exists.
+        infer_module_item(c, q, fld, args, ta)
     elsif str_len(tenv_type(c.env, q)) > 0
         infer_instance(c, fld, infer_with_local(q, args), ta, id, d"l")
     elsif infer_is_user_type(c, q) == 1
         infer_static(c, q, fld, args, ta, id)
     else
         infer_dotted_other(c, q, fld, args, ta, id)
+
+fn infer_is_alias(aliases: List[String], q: String, i: Int) -> Int ! alloc
+    if i >= list_len(aliases)
+        0
+    elsif str_len(list_get(aliases, i)) > 0
+        if str_eq(list_get(aliases, i), q) == 1
+            1
+        else
+            infer_is_alias(aliases, q, i + 1)
+    else
+        infer_is_alias(aliases, q, i + 1)
+
+# `alias.f(args)`: the function `f` of the imported module (qualify links it by name).
+fn infer_module_item(c: IC, q: String, fld: String, args: List[Expr], ta: String) -> String ! alloc
+    if ic_get(c.sigs, fld) > 0
+        infer_call(c, fld, args)
+    else
+        _a = infer_args_free(c, args, 0)
+        _f = ic_fail(c, "module `" + q + "` has no item `" + fld + "`")
+        d"Unknown"
 
 # `[q] ++ args`: the local `q` as the receiver of a call.
 fn infer_with_local(q: String, args: List[Expr]) -> List[Expr] ! alloc

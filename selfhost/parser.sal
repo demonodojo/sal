@@ -1515,6 +1515,33 @@ fn parse_program(src: String, errs: List[String]) -> TProgram ! alloc
     _f = list_push(flags, 0)
     parse_program_post(parse_program_raw(src, errs, flags), src, errs, flags)
 
+# Like `parse_program`, but the dotted calls stay for `methods_resolve_graph`, which resolves them
+# with the items of every module in view. `out` gets the dotted-call count of the program.
+fn parse_program_deferred(src: String, errs: List[String], out: List[Int]) -> TProgram ! alloc
+    flags = list_new[Int]()
+    _f = list_push(flags, 0)
+    parse_program_deferred_post(parse_program_raw(src, errs, flags), src, errs, flags, out)
+
+fn parse_program_deferred_post(tp: TProgram, src: String, errs: List[String], flags: List[Int], out: List[Int]) -> TProgram ! alloc
+    ndots = list_get(flags, 0)
+    _z = list_free(flags)
+    _o = list_push(out, ndots)
+    if list_len(errs) > 0
+        tp
+    elsif str_contains(src, "break") == 1
+        parse_program_check(desugar_break(tp, errs), errs, ndots)
+    else
+        parse_program_check(tp, errs, ndots)
+
+fn parse_program_check(tp: TProgram, errs: List[String], ndots: Int) -> TProgram ! alloc
+    if list_len(errs) > 0
+        tp
+    elsif ndots > 0
+        _c = methods_check_defs(tp, errs)
+        tp
+    else
+        tp
+
 fn parse_program_post(tp: TProgram, src: String, errs: List[String], flags: List[Int]) -> TProgram ! alloc
     ndots = list_get(flags, 0)
     _z = list_free(flags)
