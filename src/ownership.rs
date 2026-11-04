@@ -250,6 +250,7 @@ fn track_stmt(
     frozen: &mut HashSet<String>,
 ) -> DiagResult<bool> {
     match st {
+        Stmt::Break { .. } => Ok(false),
         Stmt::Let {
             name,
             ty,
@@ -728,6 +729,10 @@ fn is_borrow_fn(name: &str) -> bool {
             | "list_set"
             | "list_pop"
             | "dict_has"
+            | "dict_len"
+            | "dict_remove"
+            | "dict_keys"
+            | "dict_values"
             | "list_len"
     )
 }

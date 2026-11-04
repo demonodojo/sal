@@ -2,6 +2,7 @@
 # of lower_expr in src/ir.rs. Each op reads the shapes of its operands from the
 # bindings, emits the same instructions, and registers the shape of its result.
 import ast
+import tast
 import ir
 
 fn vec_copy(src: Int) -> Int ! alloc
@@ -17,7 +18,7 @@ fn copy_into(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         copy_into(src, dst, i + 1, n)
 
 # Register the shape of SSA value `ssa`; dims use -1 for a dynamic axis.
-fn reg_tensor(cx: Int, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) -> Int ! alloc
+fn reg_tensor(cx: Cx, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) -> Int ! alloc
     b = bind_new(ssa, ssa)
     _t = bind_set_tensor(b, 1)
     _e = bind_set_elem(b, elem)
@@ -29,7 +30,7 @@ fn reg_tensor(cx: Int, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) ->
     0
 
 # Same shape as `src`, for results that keep their operand's type.
-fn reg_like(cx: Int, ssa: Int, src: Int) -> Int ! alloc
+fn reg_like(cx: Cx, ssa: Int, src: Int) -> Int ! alloc
     if src == 0
         0
     else
@@ -42,10 +43,10 @@ fn ir_rebind(dest: Int, src: Int) -> Int ! alloc
     _c = vec_push(inst, src)
     inst
 
-fn push_call(cx: Int, dest: Int, fname: String, args: Int, has_dest: Int) -> Int ! alloc
+fn push_call(cx: Cx, dest: Int, fname: String, args: Int, has_dest: Int) -> Int ! alloc
     ir_push(cx, ir_call(dest, str_as_int(fname), args, has_dest))
 
-fn const_dim(cx: Int, n: Int) -> Int ! alloc
+fn const_dim(cx: Cx, n: Int) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, n)
     d
@@ -54,7 +55,7 @@ fn int_text(n: Int) -> Int ! alloc
     str_as_int(int_to_str(n))
 
 # ---- matmul ----
-fn matmul_lead_go(cx: Int, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn matmul_lead_go(cx: Cx, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
@@ -64,7 +65,7 @@ fn matmul_lead_go(cx: Int, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int !
         matmul_lead_go(cx, b, name, i + 1, n, r)
 
 # Batch `m`: the product of every leading axis but the last two.
-fn matmul_batch_m(cx: Int, lhs: Int) -> Int ! alloc
+fn matmul_batch_m(cx: Cx, lhs: Int) -> Int ! alloc
     b = find_tensor(cx, lhs)
     if b == 0
         const_dim(cx, 1)
@@ -74,7 +75,7 @@ fn matmul_batch_m(cx: Int, lhs: Int) -> Int ! alloc
         first = axis_len_from_dim(cx, lhs, bind_dims(b), bind_concrete(b), 0)
         matmul_lead_go(cx, b, lhs, 1, bind_ndims(b) - 2, first)
 
-fn matmul_dims(cx: Int, lhs: Int, rhs: Int) -> Int ! alloc
+fn matmul_dims(cx: Cx, lhs: Int, rhs: Int) -> Int ! alloc
     out = vec_new()
     _m = vec_push(out, matmul_batch_m(cx, lhs))
     _k = vec_push(out, axis_len(cx, lhs, 0))
@@ -94,7 +95,7 @@ fn matmul_out_conc(lb: Int, rb: Int, n: Int, out: Int) -> Int ! alloc
     else
         0
 
-fn lower_matmul_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_matmul_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     lhs = vec_get(arg_names, 0)
     rhs = vec_get(arg_names, 1)
     mkn = matmul_dims(cx, lhs, rhs)
@@ -136,7 +137,7 @@ fn lower_matmul_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
     else
         0
 
-fn lower_qmatmul_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_qmatmul_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     a = vec_get(arg_names, 0)
     w = vec_get(arg_names, 1)
     mkn = matmul_dims(cx, a, w)
@@ -151,22 +152,23 @@ fn lower_qmatmul_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
     push_call(cx, d, d"sal_qmatmul_f32", args, 1)
 
 # ---- reshape / transpose / softmax ----
-fn int_args(args: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn int_arg_push(a: Expr, out: Int) -> Int ! alloc
+    match a
+        XInt(v) => vec_push(out, v)
+        _ => 0
+
+fn int_args(args: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        a = vec_get(args, i)
-        if ex_kind(a) == EX_INT()
-            _p = vec_push(out, vec_get(a, 1))
-        else
-            _p = 0
+        _p = int_arg_push(list_get(args, i), out)
         int_args(args, i + 1, n, out)
 
-fn lower_reshape_op(cx: Int, d: Int, args: Int, arg_names: Int) -> Int ! alloc
+fn lower_reshape_op(cx: Cx, d: Int, args: List[Expr], arg_names: Int) -> Int ! alloc
     src = vec_get(arg_names, 0)
     b = find_tensor(cx, src)
     if b != 0
-        nd = int_args(args, 1, vec_len(args), vec_new())
+        nd = int_args(args, 1, list_len(args), vec_new())
         if vec_len(nd) > 0
             _r = reg_tensor(cx, d, bind_elem(b), bind_place(b), nd, vec_copy(nd))
         else
@@ -198,7 +200,7 @@ fn transpose_is_copy(b: Int) -> Int ! alloc
     else
         1
 
-fn lower_transpose_copy(cx: Int, d: Int, src: Int, b: Int) -> Int ! alloc
+fn lower_transpose_copy(cx: Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     r = fresh(cx)
     _a = push_const_int(cx, r, tdim(b, 0))
     c = fresh(cx)
@@ -216,7 +218,7 @@ fn lower_transpose_copy(cx: Int, d: Int, src: Int, b: Int) -> Int ! alloc
     _w = vec_push(args, c)
     push_call(cx, d, d"sal_transpose_f32", args, 1)
 
-fn lower_transpose_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_transpose_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     src = vec_get(arg_names, 0)
     b = find_tensor(cx, src)
     if transpose_is_copy(b) == 1
@@ -224,7 +226,7 @@ fn lower_transpose_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
     else
         lower_transpose_view(cx, d, src, b)
 
-fn lower_transpose_view(cx: Int, d: Int, src: Int, b: Int) -> Int ! alloc
+fn lower_transpose_view(cx: Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     if b != 0
         dims = vec_copy(bind_dims(b))
         n = vec_len(dims)
@@ -240,19 +242,23 @@ fn lower_transpose_view(cx: Int, d: Int, src: Int, b: Int) -> Int ! alloc
     ir_push(cx, ir_rebind(d, src))
 
 # softmax(x, axis) with a literal axis; the shape is registered either way.
-fn lower_softmax_axis_op(cx: Int, d: Int, args: Int, arg_names: Int) -> Int ! alloc
+fn lower_softmax_axis_op(cx: Cx, d: Int, args: List[Expr], arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     _r = reg_like(cx, d, b)
-    ax = vec_get(args, 1)
-    if ex_kind(ax) == EX_INT()
-        argv = vec_new()
-        _a = vec_push(argv, input)
-        _b = vec_push(argv, int_text(vec_get(ax, 1)))
-        _p = push_call(cx, d, d"sal_softmax_axis_f32", argv, 1)
-        1
-    else
-        0
+    softmax_axis_call(cx, d, input, list_get(args, 1))
+
+fn softmax_axis_call(cx: Cx, d: Int, input: Int, ax: Expr) -> Int ! alloc
+    match ax
+        XInt(v) => softmax_axis_emit(cx, d, input, v)
+        _ => 0
+
+fn softmax_axis_emit(cx: Cx, d: Int, input: Int, axis: Int) -> Int ! alloc
+    argv = vec_new()
+    _a = vec_push(argv, input)
+    _b = vec_push(argv, int_text(axis))
+    _p = push_call(cx, d, d"sal_softmax_axis_f32", argv, 1)
+    1
 
 # ---- attention / rope / silu ----
 # An axis as the literal the runtime takes: the extent when known, else `name_d<i>`.
@@ -269,7 +275,7 @@ fn dim_lit_or_name(b: Int, name: Int, idx: Int, fallback: String) -> Int ! alloc
         else
             axis_len_dim(name, idx)
 
-fn lower_attention_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_attention_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     q = vec_get(arg_names, 0)
     k = vec_get(arg_names, 1)
     qb = find_tensor(cx, q)
@@ -306,7 +312,7 @@ fn lower_attention_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
     _p = push_call(cx, d, d"sal_attention_f32", args, 1)
     reg_like(cx, d, qb)
 
-fn lower_rope_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_rope_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     seq = 0
@@ -329,7 +335,7 @@ fn lower_rope_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
     _p = push_call(cx, d, d"sal_rope", args, 1)
     reg_like(cx, d, b)
 
-fn lower_silu_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_silu_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     args = vec_new()
     _a = vec_push(args, input)
@@ -350,7 +356,7 @@ fn dims_elems_or_one(b: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         else
             0 - 1
 
-fn lower_tensor_append_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_tensor_append_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     cache = vec_get(arg_names, 0)
     row = vec_get(arg_names, 1)
     rb = find_tensor(cx, row)
@@ -405,7 +411,7 @@ fn lower_tensor_append_op(cx: Int, d: Int, arg_names: Int) -> Int ! alloc
 
 # ---- dispatch ----
 # Lowers `fname(args)` when it is a shape-aware tensor builtin; returns 1 when handled.
-fn lower_tensor_builtin(cx: Int, fname: Int, args: Int, arg_names: Int, d: Int) -> Int ! alloc
+fn lower_tensor_builtin(cx: Cx, fname: String, args: List[Expr], arg_names: Int, d: Int) -> Int ! alloc
     n = vec_len(arg_names)
     if str_eq(fname, "reshape") == 1
         if n >= 2

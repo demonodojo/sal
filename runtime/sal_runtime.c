@@ -2245,16 +2245,36 @@ void *sal_dict_new(int64_t key_kind, int64_t val_kind) {
 
 int64_t sal_dict_has(void *dp, const char *key);
 
-/* Frees a dict. Keys are borrowed (never released); String values are owned. */
+/* String keys (key_kind 3) are borrowed from the caller. Int keys arrive as the
+ * integer itself in the pointer slot; the dict stores them as an owned decimal
+ * string, so the map keeps working on strings. `sal_dict_key` gives the lookup
+ * key for a call (into `buf` for an Int). */
+static int sal_dict_str_keys(const SalDict *d) {
+    return d->key_kind == 3;
+}
+
+static const char *sal_dict_key(const SalDict *d, const char *key, char *buf) {
+    if (sal_dict_str_keys(d)) {
+        return key;
+    }
+    snprintf(buf, 32, "%lld", (long long)(intptr_t)key);
+    return buf;
+}
+
+/* Frees a dict. String keys are borrowed (never released), Int keys are owned;
+ * String values are owned. */
 void sal_dict_free(void *dp) {
     SalDict *d = (SalDict *)dp;
     if (!d) {
         return;
     }
-    if (d->val_kind == 3) {
-        for (size_t i = 0; i < d->map.nslots; i++) {
-            if (d->map.slots[i].key) {
+    for (size_t i = 0; i < d->map.nslots; i++) {
+        if (d->map.slots[i].key) {
+            if (d->val_kind == 3) {
                 sal_free((void *)(uintptr_t)d->map.slots[i].val);
+            }
+            if (!sal_dict_str_keys(d)) {
+                sal_free((void *)(uintptr_t)d->map.slots[i].key);
             }
         }
     }
@@ -2264,21 +2284,29 @@ void sal_dict_free(void *dp) {
 
 void *sal_dict_put(void *dp, const char *key, int64_t val) {
     SalDict *d = (SalDict *)dp;
-    if (!d || !key) {
+    if (!d || (sal_dict_str_keys(d) && !key)) {
         return dp;
     }
-    if (d->val_kind == 3 && sal_dict_has(dp, key)) {
-        sal_free((void *)(uintptr_t)sal_map_get(&d->map, key));
+    char buf[32];
+    const char *k = sal_dict_key(d, key, buf);
+    int present = sal_dict_has(dp, key);
+    if (present && d->val_kind == 3) {
+        sal_free((void *)(uintptr_t)sal_map_get(&d->map, k));
     }
-    (void)sal_map_put(&d->map, key, val);
+    if (!present && !sal_dict_str_keys(d)) {
+        k = sal_str_from_cstr(k);
+    }
+    (void)sal_map_put(&d->map, k, val);
     return d;
 }
 
 int64_t sal_dict_has(void *dp, const char *key) {
     SalDict *d = (SalDict *)dp;
-    if (!d || !key || !d->map.nslots) {
+    if (!d || (sal_dict_str_keys(d) && !key) || !d->map.nslots) {
         return 0;
     }
+    char buf[32];
+    key = sal_dict_key(d, key, buf);
     size_t mask = d->map.nslots - 1;
     size_t i = sal_map_hash(key) & mask;
     for (size_t step = 0; step < d->map.nslots; step++) {
@@ -2297,9 +2325,11 @@ int64_t sal_dict_has(void *dp, const char *key) {
  * `Some(v)` (variant 1) the box [2, v]. A String value is copied out. */
 int64_t sal_dict_get(void *dp, const char *key) {
     SalDict *d = (SalDict *)dp;
-    if (!d || !key || !d->map.nslots) {
+    if (!d || (sal_dict_str_keys(d) && !key) || !d->map.nslots) {
         return 0;
     }
+    char buf[32];
+    key = sal_dict_key(d, key, buf);
     size_t mask = d->map.nslots - 1;
     size_t i = sal_map_hash(key) & mask;
     for (size_t step = 0; step < d->map.nslots; step++) {
@@ -2318,6 +2348,105 @@ int64_t sal_dict_get(void *dp, const char *key) {
         i = (i + 1) & mask;
     }
     return 0;
+}
+
+/* Number of entries. */
+int64_t sal_dict_len(void *dp) {
+    SalDict *d = (SalDict *)dp;
+    return d ? (int64_t)d->map.fill : 0;
+}
+
+/* Removes `key` (releasing a String value and an Int key's text). Returns 1 if
+ * it was there, else 0. Backward-shift deletion keeps the linear-probing chains
+ * intact. */
+int64_t sal_dict_remove(void *dp, const char *key) {
+    SalDict *d = (SalDict *)dp;
+    if (!d || (sal_dict_str_keys(d) && !key) || !d->map.nslots) {
+        return 0;
+    }
+    char buf[32];
+    key = sal_dict_key(d, key, buf);
+    size_t mask = d->map.nslots - 1;
+    size_t i = sal_map_hash(key) & mask;
+    size_t step = 0;
+    for (; step < d->map.nslots; step++) {
+        if (!d->map.slots[i].key) {
+            return 0;
+        }
+        if (strcmp(d->map.slots[i].key, key) == 0) {
+            break;
+        }
+        i = (i + 1) & mask;
+    }
+    if (step == d->map.nslots) {
+        return 0;
+    }
+    if (d->val_kind == 3) {
+        sal_free((void *)(uintptr_t)d->map.slots[i].val);
+    }
+    if (!sal_dict_str_keys(d)) {
+        sal_free((void *)(uintptr_t)d->map.slots[i].key);
+    }
+    size_t j = i;
+    for (;;) {
+        j = (j + 1) & mask;
+        if (!d->map.slots[j].key) {
+            break;
+        }
+        size_t k = sal_map_hash(d->map.slots[j].key) & mask;
+        int within = (i <= j) ? (i < k && k <= j) : (i < k || k <= j);
+        if (within) {
+            continue;
+        }
+        d->map.slots[i] = d->map.slots[j];
+        i = j;
+    }
+    d->map.slots[i].key = NULL;
+    d->map.slots[i].val = 0;
+    d->map.fill--;
+    return 1;
+}
+
+/* A fresh List of the keys (String keys are copied: the list owns them; Int keys
+ * are the integers). The order is unspecified. */
+void *sal_dict_keys(void *dp) {
+    SalDict *d = (SalDict *)dp;
+    void *out = sal_list_new_typed(d ? d->key_kind : 0);
+    if (!d || !out) {
+        return out;
+    }
+    for (size_t i = 0; i < d->map.nslots; i++) {
+        if (d->map.slots[i].key) {
+            int64_t raw;
+            if (sal_dict_str_keys(d)) {
+                raw = (int64_t)(uintptr_t)sal_strdup(d->map.slots[i].key);
+            } else {
+                raw = (int64_t)strtoll(d->map.slots[i].key, NULL, 10);
+            }
+            sal_list_push(out, raw);
+        }
+    }
+    return out;
+}
+
+/* A fresh List of the values, in the same order as `sal_dict_keys` (String
+ * values are copied). */
+void *sal_dict_values(void *dp) {
+    SalDict *d = (SalDict *)dp;
+    void *out = sal_list_new_typed(d && d->val_kind == 3 ? 3 : 0);
+    if (!d || !out) {
+        return out;
+    }
+    for (size_t i = 0; i < d->map.nslots; i++) {
+        if (d->map.slots[i].key) {
+            int64_t raw = d->map.slots[i].val;
+            if (d->val_kind == 3) {
+                raw = (int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)raw);
+            }
+            sal_list_push(out, raw);
+        }
+    }
+    return out;
 }
 
 #ifndef SAL_SOSO

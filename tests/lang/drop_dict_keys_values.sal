@@ -1,0 +1,17 @@
+# exit: 17
+# selfhost-xfail: Dict methods are Rust bootstrap only for now
+fn count(d: Dict[String, String]) -> Int ! alloc
+    ks = d.keys()
+    vs = d.values()
+    ks.len() + vs.len()
+
+fn main() -> Int ! alloc
+    d = Dict.new[String, String]()
+    d.put("a", "x")
+    d.put("b", "y")
+    i = 0
+    total = 0
+    while i < 4
+        total = total + count(d)
+        i = i + 1
+    total + 1

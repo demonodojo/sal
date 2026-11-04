@@ -460,6 +460,7 @@ fn collect_moved_stmt(
     moved: &mut HashSet<String>,
 ) {
     match st {
+        Stmt::Break { .. } => {}
         Stmt::Let { init, .. } => {
             if let Expr::Ident { name, .. } = init {
                 moved.insert(name.clone());
@@ -605,6 +606,7 @@ fn collect_assigned_block(body: &Block, names: &mut HashSet<String>) {
 
 fn collect_assigned_stmt(st: &Stmt, names: &mut HashSet<String>) {
     match st {
+        Stmt::Break { .. } => {}
         Stmt::Assign { target, value, .. } => {
             if let Expr::Ident { name, .. } = target {
                 names.insert(name.clone());
@@ -683,6 +685,7 @@ fn lower_stmt(
         _ => {}
     }
     match st {
+        Stmt::Break { .. } => return false,
         Stmt::Let { name, ty, init, .. } => {
             let v = lower_expr(
                 init,
@@ -1231,7 +1234,7 @@ fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     if matches!(
         fname,
         "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
-            | "dict_put" | "dict_get" | "dict_has" | "list_free" | "dict_free" | "enum_free"
+            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free"
     ) {
         return format!("sal_{fname}");
     }
@@ -1346,6 +1349,10 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "dict_put"
             | "dict_get"
             | "dict_has"
+            | "dict_len"
+            | "dict_remove"
+            | "dict_keys"
+            | "dict_values"
             | "list_set"
             | "list_pop"
             | "clang"

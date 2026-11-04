@@ -433,10 +433,10 @@ fn qx_args(xs: List[Expr], i: Int, n: Int, ctx: Int, links: Int, out: List[Expr]
         _a = list_push(out, qx(list_get(xs, i), ctx, links))
         qx_args(xs, i + 1, n, ctx, links, out)
 
-fn qx_call(nm: String, args: List[Expr], ctx: Int, links: Int) -> Expr ! alloc
+fn qx_call(nm: String, args: List[Expr], targs: String, ctx: Int, links: Int) -> Expr ! alloc
     out = list_new[Expr]()
     _a = qx_args(args, 0, list_len(args), ctx, links, out)
-    XCall(qx_call_name(nm, ctx, links), out, d"")
+    XCall(qx_call_name(nm, ctx, links), out, strdup(targs))
 
 fn qx_elsifs(xs: List[TElsif], i: Int, n: Int, ctx: Int, links: Int, out: List[TElsif]) -> Int ! alloc
     if i >= n
@@ -454,7 +454,7 @@ fn qx_elsif_list(xs: List[TElsif], ctx: Int, links: Int) -> List[TElsif] ! alloc
 fn qx(e: Expr, ctx: Int, links: Int) -> Expr ! alloc
     match e
         XField(base, fld) => qx_field(base, fld, ctx, links)
-        XCall(nm, args, targs) => qx_call(nm, args, ctx, links)
+        XCall(nm, args, targs) => qx_call(nm, args, targs, ctx, links)
         XBin(op, l, r) => XBin(strdup(op), qx(l, ctx, links), qx(r, ctx, links))
         XIf(cond, then_b, else_b, has_else, elsifs) => XIf(qx(cond, ctx, links), qx_block(then_b, ctx, links), qx_block(else_b, ctx, links), has_else, qx_elsif_list(elsifs, ctx, links))
         XWhile(cond, body) => XWhile(qx(cond, ctx, links), qx_block(body, ctx, links))

@@ -1,0 +1,16 @@
+# exit: 33
+# selfhost-xfail: break is Rust bootstrap only for now
+fn main() -> Int
+    # sums 1..=10 but stops once the running total passes 30; the code after
+    # the `if` must not run on the iteration that breaks.
+    total = 0
+    after = 0
+    i = 1
+    while i <= 10
+        total = total + i
+        if total > 30
+            break
+        after = after + 1
+        i = i + 1
+    # total 36 at i = 8; `after` counted 7 iterations: 36 - 7 + 4 = 33
+    total - after + 4

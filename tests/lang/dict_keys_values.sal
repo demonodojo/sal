@@ -1,0 +1,34 @@
+# exit: 26
+# selfhost-xfail: Dict methods are Rust bootstrap only for now
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = Dict.new[String, Int]()
+    d.put("one", 1)
+    d.put("two", 2)
+    d.put("three", 3)
+    ks = d.keys()
+    vs = d.values()
+    # key lengths 3 + 3 + 5 = 11, plus values 1 + 2 + 3 = 6
+    total = 0
+    i = 0
+    while i < ks.len()
+        total = total + ks.get(i).len()
+        i = i + 1
+    j = 0
+    while j < vs.len()
+        total = total + vs.get(j)
+        j = j + 1
+    # each key looks up its own value: 1 + 2 + 3 = 6
+    k = 0
+    looked = 0
+    while k < ks.len()
+        got = match d.get(ks.get(k))
+            Some(v) => v
+            None => 100
+        looked = looked + got
+        k = k + 1
+    # 17 + 6 + 3
+    total + looked + d.len()

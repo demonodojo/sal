@@ -1,0 +1,4 @@
+# error: E_TYPE
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    dict_len(xs)

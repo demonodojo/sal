@@ -1,0 +1,24 @@
+# exit: 150
+# selfhost-xfail: Dict methods are Rust bootstrap only for now
+fn main() -> Int ! alloc
+    keep = List.new[String]()
+    d = Dict.new[String, Int]()
+    i = 0
+    while i < 300
+        k = int_to_str(i)
+        d.put(k, i)
+        keep.push(k)
+        i = i + 1
+    # remove the even ones; the odd ones have to survive the chain shifts
+    j = 0
+    while j < 300
+        if j % 2 == 0
+            d.remove(int_to_str(j))
+        j = j + 1
+    found = 0
+    m = 0
+    while m < 300
+        if d.has(int_to_str(m))
+            found = found + 1
+        m = m + 1
+    found

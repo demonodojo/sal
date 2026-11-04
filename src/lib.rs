@@ -9,6 +9,7 @@ pub mod fmt;
 pub mod fuse;
 pub mod incremental;
 pub mod interp;
+pub mod loops;
 pub mod infer;
 pub mod methods;
 pub mod modules;

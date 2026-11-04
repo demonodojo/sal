@@ -220,6 +220,12 @@ pub enum Stmt {
         value: Option<Expr>,
         span: Span,
     },
+    /// `break`: leaves the innermost `while`. Only valid as a statement of a
+    /// loop body (also inside its `if`/`elsif`/`else` blocks); `loops::desugar_break`
+    /// rewrites it before type checking, so later passes never see it.
+    Break {
+        span: Span,
+    },
     /// `while cond` newline indent body. The condition is evaluated each iteration.
     While {
         cond: Expr,

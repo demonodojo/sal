@@ -1,0 +1,9 @@
+# exit: 14
+# selfhost-xfail: break is Rust bootstrap only for now
+fn main() -> Int
+    i = 0
+    while true
+        if i == 7
+            break
+        i = i + 1
+    i * 2

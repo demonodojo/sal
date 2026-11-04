@@ -19,6 +19,7 @@ pub fn expand_interpolation(prog: &mut Program) {
 fn block(b: &mut Block) {
     for st in &mut b.stmts {
         match st {
+            Stmt::Break { .. } => {}
             Stmt::Let { init, .. } => expr(init),
             Stmt::Expr(e) => expr(e),
             Stmt::Assign { target, value, .. } => {

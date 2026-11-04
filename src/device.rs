@@ -50,6 +50,7 @@ fn check_stmt_devices(
     string_frames: &HashSet<String>,
 ) -> DiagResult<()> {
     match st {
+        Stmt::Break { .. } => Ok(()),
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr_devices(init, env, expected, string_frames)?;
             env.insert(name.clone(), ty.clone().unwrap_or(ity));

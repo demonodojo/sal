@@ -520,6 +520,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_dict_put(ptr, ptr, i64)\n");
     s.push_str("declare i64 @sal_dict_get(ptr, ptr)\n");
     s.push_str("declare i64 @sal_dict_has(ptr, ptr)\n");
+    s.push_str("declare i64 @sal_dict_len(ptr)\n");
+    s.push_str("declare i64 @sal_dict_remove(ptr, ptr)\n");
+    s.push_str("declare ptr @sal_dict_keys(ptr)\n");
+    s.push_str("declare ptr @sal_dict_values(ptr)\n");
     s.push_str("declare ptr @sal_list_set(ptr, i64, i64)\n");
     s.push_str("declare i64 @sal_list_pop(ptr)\n\n");
 
@@ -3272,6 +3276,35 @@ fn emit_runtime_or_user_call(
             let k = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_dict_has(ptr {a}, ptr {k})\n"));
+            }
+        }
+        "sal_dict_len" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_dict_len(ptr {a})\n"));
+            }
+        }
+        "sal_dict_remove" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let k = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_dict_remove(ptr {a}, ptr {k})\n"));
+            } else {
+                s.push_str(&format!("  call i64 @sal_dict_remove(ptr {a}, ptr {k})\n"));
+            }
+        }
+        "sal_dict_keys" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_dict_keys(ptr {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_dict_values" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_dict_values(ptr {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
         }
         "sal_dict_get" => {

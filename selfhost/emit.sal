@@ -11,6 +11,8 @@ import cache
 import checks
 import tshape
 import tir
+import tast
+import ttypes
 
 fn resolve_module_graph_qualified(source_path: String, proot: String, order: Graph) -> Int ! io, alloc
     g = resolve_module_graph(source_path, proot, order)
@@ -442,9 +444,32 @@ fn emit_ir_from_prog_with_extra(prog: Int, extra: Int) -> String ! alloc
     ir = lower_program_with_callables(prog, extra)
     ir_to_text(ir)
 
-fn emit_ir_from_prog_with_types(prog: Int, extra: Int, types: Int) -> String ! alloc
-    ir = lower_program_with_types(prog, extra, graph_types_structs(types), graph_types_fnrets(types), graph_types_enums(types))
+fn emit_ir_from_prog_with_types(prog: Int, extra: Int, types: Int, env: TEnv) -> String ! alloc
+    ir = lower_program_with_types(prog, extra, env, graph_types_enums(types))
     ir_to_text(ir)
+
+# The typed environment of a module graph: every module's structs and fn results, as
+# `graph_types` collects them for the handle typers.
+fn tenv_for_graph(order: Graph) -> TEnv ! alloc
+    env = TEnv(list_new[String](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[String](), list_new[String](), list_new[Int]())
+    _a = tenv_graph_fill(env, order, 0, list_len(order.progs))
+    env
+
+fn tenv_graph_fill(env: TEnv, order: Graph, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        tp = list_get(order.progs, i)
+        _a = tenv_push_structs(env.structs, tp.structs, 0, list_len(tp.structs))
+        _b = tenv_fill(env, tp.fns, 0, list_len(tp.fns))
+        tenv_graph_fill(env, order, i + 1, n)
+
+fn tenv_push_structs(out: List[TStruct], src: List[TStruct], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, list_get(src, i))
+        tenv_push_structs(out, src, i + 1, n)
 
 # Types visible across the module graph: `[fnrets, structs]`, the mirror of the
 # bootstrap's StringEnv::from_module_graph.
@@ -515,7 +540,11 @@ fn emit_ir_from_graph(order: Graph, source_path: String) -> Int ! alloc
     else
         extra = extra
     root_prog = graph_root_prog(order)
-    result_ok_str(emit_ir_from_prog_with_types(root_prog, extra, graph_types(order)))
+    env = tenv_for_graph(order)
+    text = emit_ir_from_prog_with_types(root_prog, extra, graph_types(order), env)
+    _f = tenv_free(env)
+    _g = list_free(env.structs)
+    result_ok_str(text)
 
 fn emit_ir_from_path(source_path: String) -> Int ! io, alloc
     proot = project_root()
@@ -2295,7 +2324,7 @@ fn emit_c_fns(fns: Int, i: Int, n: Int, user: Int, acc: String, allow_main: Int,
         idx = idx + 1
     out
 
-fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: Int, linkable: Int, types: Int) -> String ! alloc
+fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: Int, linkable: Int, types: Int, env: TEnv) -> String ! alloc
     pool = lit_pool_new()
     _ty = lit_pool_set_types(pool, graph_types_fnrets(types), graph_types_structs(types))
     _vg = variants_register(lit_pool_variants(pool), lit_pool_variant_fields(pool), graph_types_enums(types), 0, vec_len(graph_types_enums(types)))
@@ -2307,7 +2336,7 @@ fn emit_c_from_ast_module(prog: Int, callables: Int, externs: Int, allow_main: I
     fns = prog_fns(prog)
     acc = emit_forward_decls(fns, 0, vec_len(fns), acc, allow_main, linkable)
     acc = acc + "\n"
-    irmod = lower_program_with_types(prog, callables, graph_types_structs(types), graph_types_fnrets(types), graph_types_enums(types))
+    irmod = lower_program_with_types(prog, callables, env, graph_types_enums(types))
     body = emit_c_fns(fns, 0, vec_len(fns), callables, d"", allow_main, linkable, pool, irmod)
     lits = lit_pool_globals(pool)
     if str_len(lits) > 0
@@ -2333,7 +2362,12 @@ fn fns_have_main(fns: Int, i: Int, n: Int) -> Int ! alloc
 
 fn emit_c_from_ast(prog: Int) -> String ! alloc
     user = user_fns_from_prog(prog)
-    emit_c_from_ast_module(prog, user, vec_new(), 1, 0, prog_types(prog))
+    tp = to_typed(prog)
+    env = tenv_new(tp)
+    text = emit_c_from_ast_module(prog, user, vec_new(), 1, 0, prog_types(prog), env)
+    _a = tenv_free(env)
+    _b = tp_free(tp)
+    text
 
 fn prog_types(prog: Int) -> Int ! alloc
     v = vec_new()
@@ -2353,7 +2387,7 @@ fn obj_list_prefix(obj_list: String) -> String ! alloc
     else
         obj_list
 
-fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot: String, out_path: String, obj_list: String, types: Int) -> Int ! io, alloc
+fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot: String, out_path: String, obj_list: String, types: Int, env: TEnv) -> Int ! io, alloc
     if i >= n
         lrc = call_link_objs(obj_list, out_path)
         if lrc == 0
@@ -2369,7 +2403,7 @@ fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot
         else
             callables = result_unwrap(cstep)
             externs = extern_fn_arity(graph, i, callables)
-            ccode = emit_c_from_ast_module(mod_h(graph, i), callables, externs, allow_main, 1, types)
+            ccode = emit_c_from_ast_module(mod_h(graph, i), callables, externs, allow_main, 1, types, env)
             cpath = tmp_path("m" + int_to_str(i) + ".c")
             opath = tmp_path("m" + int_to_str(i) + ".o")
             _w = write_file(cpath, ccode)
@@ -2378,10 +2412,14 @@ fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot
             else
                 prefix = obj_list_prefix(obj_list)
                 objs2 = prefix + opath
-                emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2, types)
+                emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2, types, env)
 
 fn emit_c_compile_graph(order: Graph, root_key: String, out_path: String, proot: String) -> Int ! io, alloc
-    emit_c_compile_graph_go(order, 0, list_len(order.mods), root_key, proot, out_path, d"", graph_types(order))
+    env = tenv_for_graph(order)
+    r = emit_c_compile_graph_go(order, 0, list_len(order.mods), root_key, proot, out_path, d"", graph_types(order), env)
+    _f = tenv_free(env)
+    _g = list_free(env.structs)
+    r
 
 fn emit_c(src: String) -> Int ! alloc
     emit_c_from_prog_result(src)

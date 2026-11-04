@@ -327,3 +327,23 @@ fn fresh_string_passed_to_a_reader_is_bound_and_freed() {
     let lit = ir_of("temporary_lit", "fn main() -> Int ! alloc\n    str_len(\"abc\")\n");
     assert_eq!(frees(&lit), 0, "{lit}");
 }
+
+#[test]
+fn dict_keys_and_values_lists_are_freed_at_scope_end() {
+    let ir = ir_of(
+        "dict_keys_values_free",
+        "fn main() -> Int ! alloc\n    d = dict_new[String, String]()\n    d.put(\"a\", \"x\")\n    ks = d.keys()\n    vs = d.values()\n    ks.len() + vs.len()\n",
+    );
+    // `ks`, `vs` and `d` each get their `*_free`.
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 2, "{ir}");
+    assert_eq!(ir.matches("func: \"sal_dict_free\"").count(), 1, "{ir}");
+}
+
+#[test]
+fn dict_keys_list_that_escapes_is_not_freed() {
+    let ir = ir_of(
+        "dict_keys_escape",
+        "fn names() -> List[String] ! alloc\n    d = dict_new[String, Int]()\n    d.put(\"a\", 1)\n    ks = d.keys()\n    ks\n",
+    );
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 0, "{ir}");
+}

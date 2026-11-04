@@ -134,6 +134,7 @@ fn scan_block(b: &Block, used: &mut EffectsUsed, strings: &mut StringEnv) {
 
 fn scan_stmt(st: &Stmt, used: &mut EffectsUsed, strings: &mut StringEnv) {
     match st {
+        Stmt::Break { .. } => {}
         Stmt::Let { name, ty, init, .. } => {
             scan_expr(init, used, strings);
             strings.note_init(name, ty.as_ref(), init);
@@ -183,7 +184,7 @@ fn scan_expr(e: &Expr, used: &mut EffectsUsed, strings: &mut StringEnv) {
                         used.io = true;
                     }
                     "str_concat" | "str_append" | "strdup" | "select_str" | "argv" | "str_slice"
-                    | "int_to_str" | "char_to_str" | "vec_new" | "image_new" | "list_new" | "dict_new"
+                    | "int_to_str" | "char_to_str" | "vec_new" | "image_new" | "list_new" | "dict_new" | "dict_keys" | "dict_values"
                     | "bytes_new" | "bytes_to_str" | "bytes_view" | "bytes_view_mem" | "tmp_path"
                     | "exec_capture" | "getenv" | "realpath" => {
                         used.alloc = true;

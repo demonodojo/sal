@@ -216,6 +216,7 @@ fn format_stmt(st: &Stmt, indent: usize) -> String {
             Some(v) => format!("return {}", format_expr(v, indent)),
             None => "return".to_string(),
         },
+        Stmt::Break { .. } => "break".to_string(),
         Stmt::While { cond, body, .. } => {
             let mut s = format!("while {}\n", format_expr(cond, indent));
             s.push_str(&format_block(body, indent + 1));

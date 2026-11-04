@@ -1233,6 +1233,23 @@ fn drops_body(f: Int, denv: Int) -> Int ! alloc
     _p = list_free(params)
     out
 
+# `drops_body` over a typed fn: the transformed body as an tree whose texts are handle strings (not owned by its boxes),
+# so `tp_free_block` releases the boxes and the IR can keep the texts. The fn itself is only read.
+fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
+    body = tc_block(f.body)
+    h = list_new[Int]()
+    _h = list_push(h, 0)
+    hoisted = dr_hoist_block(h, body)
+    c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2))
+    res = dr_xform_block(c, hoisted)
+    out = tt_block(fh_block(res))
+    _a = dr_free(c)
+    _b = tp_free_block(res)
+    _d = tp_free_block(hoisted)
+    _e = tp_free_block(body)
+    _g = list_free(h)
+    out
+
 # ---- legacy handle helpers (callers in fuse.sal and emit.sal) ----
 # Builtins whose String arguments are only read.
 fn dr_borrows(name: String) -> Int ! alloc

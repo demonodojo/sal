@@ -495,6 +495,7 @@ fn rename_type_refs(ty: &mut Type, renames: &HashMap<String, String>) {
 fn rename_block_refs(block: &mut Block, renames: &HashMap<String, String>) {
     for st in &mut block.stmts {
         match st {
+            Stmt::Break { .. } => {}
             Stmt::Let { ty, init, .. } => {
                 if let Some(t) = ty {
                     rename_type_refs(t, renames);
@@ -600,6 +601,7 @@ fn qualify_block(block: &mut Block, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diag
 
 fn qualify_stmt(st: &mut Stmt, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnostic>> {
     match st {
+        Stmt::Break { .. } => {}
         Stmt::Let { ty, init, .. } => {
             if let Some(t) = ty {
                 qualify_type(t, ctx)?;

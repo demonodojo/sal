@@ -1,0 +1,8 @@
+# error: E_TYPE
+fn main() -> Int
+    while true
+        x = if true
+            break
+        else
+            1
+    0

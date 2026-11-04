@@ -1,0 +1,41 @@
+# exit: 62
+# selfhost-xfail: Dict methods are Rust bootstrap only for now
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = Dict.new[Int, Int]()
+    d.put(5, 7)
+    d.put(0, 20)
+    d.put(-3, 30)
+    d.put(5, 8)
+    a = match d.get(5)
+        Some(v) => v
+        None => 0
+    z = match d.get(0)
+        Some(v) => v
+        None => 0
+    n = match d.get(-3)
+        Some(v) => v
+        None => 0
+    miss = if d.has(99)
+        100
+    else
+        0
+    gone = if d.remove(0)
+        1
+    else
+        0
+    after = if d.has(0)
+        100
+    else
+        0
+    ks = d.keys()
+    sum = 0
+    i = 0
+    while i < ks.len()
+        sum = sum + ks.get(i)
+        i = i + 1
+    # a 8 + z 20 + n 30 + gone 1 + len 2 + keys (5 + -3) 2 = 63, minus 1
+    a + z + n + gone + d.len() + sum + miss + after - 1

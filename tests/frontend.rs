@@ -874,3 +874,42 @@ fn fmt_keeps_parentheses_around_the_receiver_of_a_call() {
     assert_eq!(out, src);
     assert_fmt_idempotent(src);
 }
+
+#[test]
+fn break_parses_as_a_statement_and_fmt_is_idempotent() {
+    use sal_compiler::ast::{Item, Stmt};
+    let src = "fn main() -> Int\n    while true\n        if true\n            break\n        0\n    1\n";
+    let prog = assert_parse(src);
+    let Item::Fn(f) = &prog.items[0] else { panic!("fn") };
+    let Stmt::While { body, .. } = &f.body.stmts[0] else { panic!("while") };
+    // `if true` + `break` inside it, then the tail `0`.
+    let sal_compiler::ast::Expr::If { then_block, .. } = (match &body.stmts[0] {
+        Stmt::Expr(e) => e,
+        other => panic!("{other:?}"),
+    }) else {
+        panic!("if")
+    };
+    assert!(matches!(then_block.stmts[0], Stmt::Break { .. }), "{then_block:?}");
+    assert_fmt_idempotent(src);
+    assert!(format_program(&prog).contains("            break\n"));
+}
+
+#[test]
+fn break_desugars_to_a_flag_before_type_checking() {
+    use sal_compiler::ast::{Item, Stmt};
+    let src = "fn main() -> Int\n    while true\n        break\n    0\n";
+    let mut prog = assert_parse(src);
+    sal_compiler::loops::desugar_break(&mut prog).expect("desugar");
+    let Item::Fn(f) = &prog.items[0] else { panic!("fn") };
+    // `let __brk1 = 0` then the guarded `while __brk1 == 0`; no `Break` is left.
+    assert!(matches!(&f.body.stmts[0], Stmt::Let { name, .. } if name == "__brk1"), "{:?}", f.body);
+    assert!(matches!(&f.body.stmts[1], Stmt::While { .. }), "{:?}", f.body);
+    assert!(!format!("{:?}", f.body).contains("Break"), "{:?}", f.body);
+}
+
+#[test]
+fn break_outside_a_loop_is_rejected() {
+    let mut prog = assert_parse("fn main() -> Int\n    break\n    0\n");
+    let err = sal_compiler::loops::desugar_break(&mut prog).unwrap_err();
+    assert_eq!(err[0].code, sal_compiler::diag::ErrorCode::EType, "{err:?}");
+}

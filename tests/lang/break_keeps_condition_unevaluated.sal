@@ -1,0 +1,15 @@
+# exit: 3
+# selfhost-xfail: break is Rust bootstrap only for now
+fn main() -> Int ! alloc
+    # After a `break` the loop condition does not run again: `xs.get(i)` would
+    # be out of bounds at i = 3.
+    xs = List.new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    i = 0
+    while xs.get(i) > 0
+        i = i + 1
+        if i == 3
+            break
+    i

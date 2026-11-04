@@ -38,6 +38,10 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("Dict", "get") => "dict_get",
         ("Dict", "put") => "dict_put",
         ("Dict", "has") => "dict_has",
+        ("Dict", "len") => "dict_len",
+        ("Dict", "remove") => "dict_remove",
+        ("Dict", "keys") => "dict_keys",
+        ("Dict", "values") => "dict_values",
         ("Bytes", "len") => "bytes_len",
         ("Bytes", "get_u8") => "bytes_get_u8",
         ("Bytes", "get_u16") => "bytes_get_u16",
@@ -84,6 +88,7 @@ pub fn builtin_static(ty: &str, name: &str) -> Option<(&'static str, usize)> {
 pub fn has_field_calls(prog: &Program) -> bool {
     fn blk(b: &Block) -> bool {
         b.stmts.iter().any(|st| match st {
+            Stmt::Break { .. } => false,
             Stmt::Let { init, .. } => ex(init),
             Stmt::Expr(e) => ex(e),
             Stmt::Assign { target, value, .. } => ex(target) || ex(value),
@@ -218,6 +223,7 @@ pub type Resolved = HashMap<(u32, u32), (String, bool)>;
 fn block(b: &mut Block, r: &Resolved) {
     for st in &mut b.stmts {
         match st {
+            Stmt::Break { .. } => {}
             Stmt::Let { init, .. } => expr(init, r),
             Stmt::Expr(e) => expr(e, r),
             Stmt::Assign { target, value, .. } => {

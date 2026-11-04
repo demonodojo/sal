@@ -164,6 +164,7 @@ fn load_module_recursive(
     })?;
     let mut program = parse(&crate::interp::with_prelude_enums(&src)).map_err(|d| vec![d])?;
     crate::interp::expand_interpolation(&mut program);
+    crate::loops::desugar_break(&mut program)?;
     let has_methods = crate::methods::has_methods(&program);
     crate::methods::desugar_method_defs(&mut program)?;
 

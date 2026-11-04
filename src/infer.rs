@@ -289,6 +289,7 @@ fn unit_type(span: Span) -> Type {
 
 fn stmt_span(st: &Stmt) -> Span {
     match st {
+        Stmt::Break { span } => *span,
         Stmt::Let { span, .. } => *span,
         Stmt::Expr(e) => e.span(),
         Stmt::Assign { span, .. } => *span,
@@ -401,6 +402,7 @@ fn check_stmt(
     entries: &mut Vec<ExprTypeEntry>,
 ) -> DiagResult<bool> {
     match st {
+        Stmt::Break { .. } => Ok(false),
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr(init, env, ctx, types, entries)?;
             if let Some(decl) = ty {
@@ -1666,6 +1668,9 @@ fn infer_call(
         "list_set" => infer_list_set(args, env, ctx, types, entries, span),
         "list_pop" => infer_list_pop(args, env, ctx, types, entries, span),
         "dict_has" => infer_dict_has(args, env, ctx, types, entries, span),
+        "dict_len" | "dict_remove" | "dict_keys" | "dict_values" => {
+            infer_dict_extra(name, args, env, ctx, types, entries, span)
+        }
         "list_len" => {
             if let Some(a) = args.first() {
                 check_expr(a, env, ctx, types, entries)?;
@@ -3350,6 +3355,49 @@ fn infer_dict_has(
         )]);
     }
     Ok(Type::Named { name: "Bool".into(), args: vec![], span })
+}
+
+/// `dict_len(d)` → Int, `dict_remove(d, k)` → Bool (was the key there?),
+/// `dict_keys(d)` → `List[K]`, `dict_values(d)` → `List[V]` (fresh lists; the
+/// String keys and values are copies).
+fn infer_dict_extra(
+    fname: &str,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let want = if fname == "dict_remove" { 2 } else { 1 };
+    if args.len() != want {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("{fname} expects {want} argument(s)"),
+            span,
+        )]);
+    }
+    let dty = check_expr(&args[0], env, ctx, types, entries)?;
+    let (kty, vty) = dict_kv(&dty).ok_or_else(|| {
+        vec![Diagnostic::new(ErrorCode::EType, format!("{fname} expects a Dict"), span)]
+    })?;
+    let named = |n: &str| Type::Named { name: n.into(), args: vec![], span };
+    match fname {
+        "dict_len" => Ok(named("Int")),
+        "dict_keys" => Ok(list_type(kty, span)),
+        "dict_values" => Ok(list_type(vty, span)),
+        _ => {
+            let kt = check_expr(&args[1], env, ctx, types, entries)?;
+            if !types_compatible(&kt, &kty) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "dict key type mismatch",
+                    args[1].span(),
+                )]);
+            }
+            Ok(named("Bool"))
+        }
+    }
 }
 
 fn infer_dict_new(type_args: &[TypeArg], span: Span) -> DiagResult<Type> {

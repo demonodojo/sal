@@ -147,6 +147,7 @@ impl Hoist {
         let mut stmts = Vec::new();
         for st in b.stmts {
             match st {
+                Stmt::Break { span } => stmts.push(Stmt::Break { span }),
                 Stmt::Let { name, ty, init, frozen, stack, span } => {
                     let init = self.expr(init, &mut stmts);
                     stmts.push(Stmt::Let { name, ty, init, frozen, stack, span });
@@ -267,6 +268,10 @@ fn borrows_args(name: &str) -> bool {
             | "list_pop"
             | "dict_get"
             | "dict_has"
+            | "dict_len"
+            | "dict_remove"
+            | "dict_keys"
+            | "dict_values"
             | "enum_owns"
             | "bytes_len"
             | "bytes_get_u8"
@@ -315,6 +320,9 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
                 Some(("list_free", true))
             } else if name == "list_new" && list_elem_args(type_args) {
                 Some(("list_free", list_owns_elems(type_args)))
+            } else if matches!(name.as_str(), "dict_keys" | "dict_values") {
+                // A fresh list whose String elements are copies the list owns.
+                Some(("list_free", true))
             } else if name == "dict_new" && dict_args(type_args) {
                 Some(("dict_free", dict_owns_values(type_args)))
             } else {
@@ -653,6 +661,7 @@ fn block(b: &Block, f: &mut Facts) {
         let outer = f.cur;
         let live = f.opaque == 0;
         match st {
+            Stmt::Break { .. } => {}
             Stmt::Let { name, init, span, .. } => {
                 f.cur = live.then(|| stmt_key(*span));
                 f.bind(name);
@@ -849,6 +858,7 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
             continue;
         }
         match st {
+            Stmt::Break { span } => stmts.push(Stmt::Break { span }),
             Stmt::Let { name, ty, init, frozen, stack, span } => {
                 let cand = cx.candidate(&name, &ty, &init);
                 let init = xform_expr(init, cx);

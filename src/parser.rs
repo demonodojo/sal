@@ -698,6 +698,15 @@ impl Parser {
                 self.skip_newlines();
                 continue;
             }
+            if self.at(TokenKind::Break) {
+                if let Some(e) = pending_expr.take() {
+                    stmts.push(Stmt::Expr(e));
+                }
+                let sp = self.bump().span;
+                stmts.push(Stmt::Break { span: sp });
+                self.skip_newlines();
+                continue;
+            }
             if self.at(TokenKind::While) {
                 if let Some(e) = pending_expr.take() {
                     stmts.push(Stmt::Expr(e));
@@ -1645,6 +1654,7 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         | (Kernel, Kernel)
         | (In, In)
         | (Return, Return)
+        | (Break, Break)
         | (True, True)
         | (False, False)
         | (Import, Import)

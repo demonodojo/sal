@@ -1,0 +1,21 @@
+# exit: 5
+# selfhost-xfail: break is Rust bootstrap only for now
+fn main() -> Int
+    # `break` in an `elsif` and in an `else`.
+    n = 0
+    i = 0
+    while i < 100
+        if i == 1000
+            n = n + 100
+        elsif i == 3
+            break
+        else
+            n = n + 1
+        i = i + 1
+    k = 0
+    while true
+        if k < 2
+            k = k + 1
+        else
+            break
+    n + k

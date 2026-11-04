@@ -83,7 +83,7 @@ Pendiente, por orden:
 
 ## Plan de migración del resto a tipos con dueño
 
-Estado: `attrs`, `device`, `effects`, `ownership`, `infer` y `drops` son tipados (`tast.sal`, `ttypes.sal`, `thash.sal`). El resto sigue en asas `Int`: `parser`, `qualify`, `modules`, `tensorops`, `ir`, `fuse`, `emit`, `ast.sal` (los tipadores de cadenas), `std/` y `standard/`.
+Estado: `attrs`, `device`, `effects`, `ownership`, `infer`, `drops`, `tensorops`, `ir` y `fuse` (entrada) son tipados (`tast.sal`, `ttypes.sal`, `thash.sal`). El resto sigue en asas `Int`: `parser`, `qualify`, `modules`, `emit`, `ast.sal` (los tipadores de cadenas, que `emit` aún usa), `std/` y `standard/`.
 
 No hay un primer paso independiente: `qualify` y `modules` mutan los programas de asas que guarda el grafo de módulos, y ese grafo lo consumen `fuse` y `emit`; `fuse` llama a `tensorops` y a los tipadores de `ast.sal`, que `emit` comparte; el parser produce las asas que todos leen. Cada módulo que se migre sin los vecinos necesita un puente (`to_typed` hacia delante, `fh_*` hacia atrás), y solo `drops` se pudo aislar así.
 
@@ -102,7 +102,7 @@ Avance del paso 1: `qualify.sal` califica el cuerpo de cada función sobre el á
 (`qx_*`, con `tt_block` al entrar y `fh_block` al salir); los tipos de parámetros y retorno, los
 renombres de funciones y structs y la tabla de enlaces siguen en asas. Se conservan las
 peculiaridades del pase anterior (solo desciende por campo, llamada, binario, `if`, `while`, `to`
-y `on`; una llamada reconstruida pierde los argumentos de tipo y un `on` sus banderas de kernel).
+y `on`; una llamada reconstruida conserva sus argumentos de tipo (antes los perdía, y `list_new[String]()` de un módulo calificado salía con el tipo de elemento 0) y un `on` sus banderas de kernel).
 Paso 1 cerrado: el grafo es un `struct Graph { mods: List[Mod], progs: List[TProgram] }`
 (`Mod { key, path, h }` es plano para que `list_get` lo copie entero; el programa tipado del módulo
 `i` es `progs[i]`) y un módulo se nombra por su índice. `h` es la vista en asas que aún leen
@@ -119,5 +119,6 @@ literales de tensor); los operandos se convierten a asa con `ih` (copia, 0 para 
 porque las tablas de `cc` guardan las claves sin copiarlas. Con esto `emit.sal` ya no lee asas de
 IR. Siguen en asas: `tensorops`, `ir.sal` (contexto `cx` y binds), `fuse.sal` (que produce las
 asas de IR) y los tipadores de `ast.sal`.
+Avance del paso 2 (entrada): `tensorops.sal`, `ir.sal` y `fuse.sal` leen `Expr`/`TBlock`/`TStmt` y tipan con `TEnv` (`texpr_type`, `tbinary_is_string_concat`, `tt_struct_find`) en lugar de `ex_kind`/`vec_get`/`strenv_*`. El contexto `cx` es ahora `struct Cx` (contador, instrucciones y acumulador en listas de una celda; `env: TEnv` compartido por todas las funciones del programa y truncado a 0 en cada una). `lower_program_with_types(prog, extra, env, enums)` recibe el `TEnv` del grafo (`tenv_for_graph` en `emit.sal`; `tenv_new` para un solo módulo) y convierte `prog` con `to_typed` tras `infer_param_modes`. `drops_body_t` es `drops_body` sin el puente `fh_*`. Siguen en asas, por decisión de alcance: la IR que produce `fuse` (`ir_*`, binds, regiones, `vm` de variantes), `drop_env_from_prog` y los tipadores de `ast.sal` que `emit` comparte (`spine_acc`, `add_left_is_acc` conservan su forma de asas). `drops_body_t` devuelve el cuerpo vía `fh_block`/`tt_block` para que sus cajas no posean el texto (la IR lo guarda por asa hasta `ir_to_text`) y `lower_fn` pueda liberarlas.
 Regla aprendida: un struct con `String` y con un campo struct anidado no se copia en `list_get`
 (sin bits de tipo), así que su local libera dos veces; los elementos de lista deben ser planos.

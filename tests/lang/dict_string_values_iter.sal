@@ -1,0 +1,16 @@
+# exit: 9
+# selfhost-xfail: Dict methods are Rust bootstrap only for now
+fn main() -> Int ! alloc
+    d = Dict.new[String, String]()
+    d.put("x", "abc")
+    d.put("y", "defgh")
+    d.put("z", "i")
+    vs = d.values()
+    n = 0
+    i = 0
+    while i < vs.len()
+        n = n + vs.get(i).len()
+        i = i + 1
+    d.remove("y")
+    ws = d.values()
+    n + ws.len() - 2 + d.len() - 2
