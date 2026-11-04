@@ -1,7 +1,6 @@
 # IR values: instructions, binds, regions, and tensor shapes.
 # lower_program lives in fuse.sal so fusion can read this module without an import cycle.
 import lexer
-import ast
 import tast
 import ttypes
 
@@ -74,7 +73,7 @@ struct Cx
     variants: Int
     env: TEnv
 
-fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: Int) -> Cx ! alloc
+fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum]) -> Cx ! alloc
     ctr = list_new[Int]()
     _a = list_push(ctr, 0)
     insts = list_new[Int]()
@@ -82,7 +81,7 @@ fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: Int) -> Cx ! alloc
     acc = list_new[Int]()
     _c = list_push(acc, 0)
     vm = map_new()
-    _m = variants_fill(vm, enums, 0, vec_len(enums))
+    _m = variants_fill(vm, enums, 0, list_len(enums))
     Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env)
 
 # Releases the one-slot lists; the env is the caller's.
@@ -95,21 +94,20 @@ fn cx_free(cx: Cx) -> Int ! alloc
 fn cx_variants(cx: Cx) -> Int ! alloc
     cx.variants
 
-fn variants_fill(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+fn variants_fill(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        ed = vec_get(enums, i)
-        vs = vec_get(ed, 1)
-        _a = variants_fill_go(m, vec_get(ed, 0), vs, 0, vec_len(vs))
+        ed = list_get(enums, i)
+        _a = variants_fill_go(m, str_as_int(ed.name), ed.variants, 0, list_len(ed.variants))
         variants_fill(m, enums, i + 1, n)
 
-fn variants_fill_go(m: Int, ename: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+fn variants_fill_go(m: Int, ename: Int, vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        v = vec_get(vs, i)
-        nf = vec_len(vec_get(v, 1))
+        v = list_get(vs, i)
+        nf = list_len(v.fields)
         tag = if nf == 0
             if i == 0
                 0
@@ -117,13 +115,14 @@ fn variants_fill_go(m: Int, ename: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
                 i + 1
         else
             i + 1
-        if map_get(m, vec_get(v, 0)) == 0
+        key = str_as_int(v.name)
+        if map_get(m, key) == 0
             rec = vec_new()
             _a = vec_push(rec, ename)
             _b = vec_push(rec, i)
             _c = vec_push(rec, nf)
             _d = vec_push(rec, tag)
-            _e = map_put(m, vec_get(v, 0), rec)
+            _e = map_put(m, key, rec)
             variants_fill_go(m, ename, vs, i + 1, n)
         else
             variants_fill_go(m, ename, vs, i + 1, n)
@@ -143,9 +142,6 @@ fn cx_acc(cx: Cx) -> Int ! alloc
 fn cx_set_acc(cx: Cx, name: Int) -> Int ! alloc
     _s = list_set(cx.acc, 0, name)
     0
-
-fn struct_map_from_prog(prog: Int) -> Int ! alloc
-    prog_structs(prog)
 
 fn fill_fn_map(m: Int, names: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -873,23 +869,6 @@ fn drop_name_for(inner: Expr) -> Int ! alloc
         XIdent(name) => str_as_int(name)
         _ => str_as_int(d"tmp")
 
-fn else_block_for_elsifs(else_b: Int, arms: Int) -> Int ! alloc
-    n = vec_len(arms)
-    if n == 0
-        else_b
-    else
-        else_block_for_elsifs_go(else_b, arms, n - 1)
-
-fn else_block_for_elsifs_go(else_b: Int, arms: Int, i: Int) -> Int ! alloc
-    arm = vec_get(arms, i)
-    nested = ex_if(vec_get(arm, 0), vec_get(arm, 1), else_b, vec_new())
-    blk = block_new()
-    _t = block_set_tail(blk, nested)
-    if i == 0
-        blk
-    else
-        else_block_for_elsifs_go(blk, arms, i - 1)
-
 # The `else` of an `if` with `elsif` arms: each arm nests as an `if` in the else of the one before.
 fn elsifs_else_block(else_b: TBlock, arms: List[TElsif]) -> TBlock ! alloc
     n = list_len(arms)
@@ -948,6 +927,13 @@ fn collect_fn_names(fns: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         f = vec_get(fns, i)
         _p = vec_push(out, vec_get(f, 0))
         collect_fn_names(fns, i + 1, n, out)
+
+fn collect_fn_names_t(fns: List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        _p = vec_push(out, str_as_int(list_get(fns, i).name))
+        collect_fn_names_t(fns, i + 1, n, out)
 
 fn merge_callable_names_go(extra: Int, i: Int, n: Int, names: Int) -> Int ! alloc
     if i >= n

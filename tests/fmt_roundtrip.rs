@@ -188,7 +188,7 @@ fn fmt_preserves_ir_on_language_corpus() {
             }
         }
     }
-    copy_tree(&root.join("tests/lang/mods"), &work.join("mods"));
+    copy_tree(&root.join("tests/lang"), &work);
     let ir = |f: &Path| {
         Command::new(env!("CARGO_BIN_EXE_sal"))
             .args(["emit", "ir"])
@@ -197,19 +197,27 @@ fn fmt_preserves_ir_on_language_corpus() {
             .output()
             .unwrap()
     };
-    let mut files: Vec<_> = std::fs::read_dir(root.join("tests/lang"))
-        .unwrap()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "sal"))
-        .collect();
+    fn programs(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "mods" && n != "target") {
+                    programs(&p, out);
+                }
+            } else if p.extension().is_some_and(|x| x == "sal") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    programs(&root.join("tests/lang"), &mut files);
     files.sort();
     let mut compared = 0;
     let mut failures = Vec::new();
     for f in files {
         let src = std::fs::read_to_string(&f).unwrap();
         let Ok(prog) = parse(&src) else { continue };
-        let name = f.file_name().unwrap();
+        let name = f.strip_prefix(root.join("tests/lang")).unwrap();
         // Same path before and after: module-qualified names derive from it.
         let file = work.join(name);
         std::fs::write(&file, &src).unwrap();
@@ -223,7 +231,7 @@ fn fmt_preserves_ir_on_language_corpus() {
         if !b.status.success() || a.stdout != b.stdout {
             failures.push(format!(
                 "{}: IR changes after fmt\n{}",
-                name.to_string_lossy(),
+                name.display(),
                 String::from_utf8_lossy(&b.stderr)
             ));
         }

@@ -2,9 +2,9 @@
 # value (String, tensor, struct) moves when it is bound, returned, passed to a
 # move fn or sent with `to`; using it afterwards is E_MOVED. It reads the typed AST
 # (`tast.sal`) and types names with the typed environment (`ttypes.sal`).
-import ast
 import result
 import tast
+import tytext
 import ttypes
 import thash
 
@@ -890,32 +890,3 @@ fn own_mode_table(tp: TProgram) -> HT ! alloc
     table = ht_new(list_len(tp.fns))
     _a = own_table_explicit(table, tp.fns, 0, list_len(tp.fns))
     own_table_fix(tp, table, 0)
-
-# Writes the inferred modes into the parameters of the handle AST that spell none.
-fn own_apply_modes(params: Int, modes: String, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        pm = vec_get(params, i)
-        if param_mode(pm) == 0
-            _m = param_set_mode(pm, own_mode_at(modes, i))
-            own_apply_modes(params, modes, i + 1, n)
-        else
-            own_apply_modes(params, modes, i + 1, n)
-
-fn infer_modes_go(table: HT, fns: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = vec_get(fns, i)
-        _a = own_apply_modes(vec_get(f, 1), ht_get(table, str_from_int(vec_get(f, 0))), 0, vec_len(vec_get(f, 1)))
-        infer_modes_go(table, fns, i + 1, n)
-
-# Fills in `borrow` / `take` on each parameter that does not spell one. Idempotent.
-fn infer_param_modes(prog: Int) -> Int ! alloc
-    tp = to_typed(prog)
-    table = own_mode_table(tp)
-    fns = prog_fns(prog)
-    _a = infer_modes_go(table, fns, 0, vec_len(fns))
-    _b = ht_free(table)
-    tp_free(tp)

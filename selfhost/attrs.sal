@@ -2,7 +2,6 @@
 # src/ownership.rs: `@layout(c)` fields, `@no_heap` fns, `@stack` types and
 # assignments to `@frozen` bindings. (`@stack` initializers that allocate are
 # caught by the effects pass.) It reads the typed AST (`tast.sal`).
-import ast
 import result
 import effects
 import tast

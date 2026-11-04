@@ -1,4 +1,4 @@
-//! Language conformance: every `tests/lang/*.sal` states its expected result in
+//! Language conformance: every `tests/lang/<area>/*.sal` states its expected result in
 //! leading `#` comments, written by hand (not taken from a compiler):
 //!
 //! - `# exit: N`      the program builds and exits with N (low byte)
@@ -76,16 +76,28 @@ fn check(path: &Path, spec: &Spec, out_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Every test program under `dir`, one subdirectory per area. `mods/` holds
+/// helper modules imported by tests (no header of their own) and is skipped.
+fn collect_programs(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n != "mods" && n != "target") {
+                collect_programs(&path, out);
+            }
+        } else if path.extension().is_some_and(|x| x == "sal") {
+            out.push(path);
+        }
+    }
+}
+
 #[test]
 fn language_conformance() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/lang");
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-lang");
     std::fs::create_dir_all(&out_dir).unwrap();
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "sal"))
-        .collect();
+    let mut files = Vec::new();
+    collect_programs(&dir, &mut files);
     files.sort();
     assert!(files.len() >= 30, "conformance corpus shrank");
     let mut failures = Vec::new();
@@ -97,7 +109,7 @@ fn language_conformance() {
             "{}: no `# exit:` or `# error:` header",
             path.display()
         );
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let name = path.strip_prefix(&dir).unwrap().display().to_string();
         match (check(path, &spec, &out_dir), &spec.xfail) {
             (Ok(()), None) => {}
             (Err(why), None) => failures.push(format!("{name}: {why}")),

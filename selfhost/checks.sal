@@ -8,22 +8,21 @@ import device
 import tast
 
 # Ok(0), or Err(message) for the first violation in `prog`.
-fn check_program(prog: Int) -> Int ! alloc
-    check_program_with(prog, 0)
+fn check_program(tp: TProgram) -> Int ! alloc
+    none = list_new[TProgram]()
+    r = check_program_in(tp, none)
+    _f = list_free(none)
+    r
 
-# `progs`: every program of the module graph (0 when single-file).
-fn check_program_with(prog: Int, progs: Int) -> Int ! alloc
-    tp = to_typed(prog)
+# `progs`: every program of the module graph (empty when single-file).
+fn check_program_in(tp: TProgram, progs: List[TProgram]) -> Int ! alloc
     ty = infer_program(tp)
     if result_is_err(ty) == 1
-        _f = tp_free(tp)
         ty
     else
-        r = check_typed(tp, prog, progs)
-        _f = tp_free(tp)
-        r
+        check_typed(tp, progs)
 
-fn check_typed(tp: TProgram, prog: Int, progs: Int) -> Int ! alloc
+fn check_typed(tp: TProgram, progs: List[TProgram]) -> Int ! alloc
     at = check_attrs(tp)
     if result_is_err(at) == 1
         at

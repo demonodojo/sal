@@ -7,8 +7,8 @@
 # name to `[1 (has fields) or 2 (unit), per-field "may own heap memory" flags]` and
 # `struct:Name` to a flat struct's per-field "is a String" flags; `ro`: fn name to its parameters'
 # read-only flags) are still handle maps built by `fuse.sal`, so they are `Int` fields here.
-import ast
 import tast
+import tytext
 import tshape
 
 # Name to number; a missing name reads 0.
@@ -1074,12 +1074,10 @@ fn dr_facts(params: List[TParam], body: TBlock, variants: Int, ro: Int) -> DC ! 
     c
 
 # Per fn, per parameter: 1 when the fn only reads it. Optimistic fixpoint, as `drops.rs`.
-fn dr_read_only(prog: Int, variants: Int) -> Int ! alloc
-    tp = to_typed(prog)
+fn dr_read_only_t(tp: TProgram, variants: Int) -> Int ! alloc
     ro = map_new()
     _i = dr_ro_init(ro, tp.fns, 0, list_len(tp.fns))
     _l = dr_ro_loop(ro, tp.fns, variants)
-    _f = tp_free(tp)
     ro
 
 fn dr_ro_init(ro: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
@@ -1214,9 +1212,8 @@ fn dr_hoist_block(h: List[Int], b: TBlock) -> TBlock ! alloc
     TBlock(out, tail)
 
 # The body of the typed fn `f` with scope-end releases inserted. `denv` is
-# `[variants, modes, read-only params]` as `drop_env_from_prog` builds it. The result goes back
-# through `fh_block`/`tt_block`, so its texts are handle strings the boxes do not own:
-# `tp_free_block` releases the boxes and the IR can keep the texts. The fn itself is only read.
+# `[variants, modes, read-only params]` as `drop_env_t` builds it. The result is a view copy
+# (`tv_block`): its texts are copies no box owns, so the intermediate trees release everything. The fn itself is only read.
 fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
     body = tc_block(f.body)
     h = list_new[Int]()
@@ -1224,7 +1221,7 @@ fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
     hoisted = dr_hoist_block(h, body)
     c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2))
     res = dr_xform_block(c, hoisted)
-    out = tt_block(fh_block(res))
+    out = tv_block(res)
     _a = dr_free(c)
     _b = tp_free_block(res)
     _d = tp_free_block(hoisted)
@@ -1327,44 +1324,26 @@ fn dr_returns_fresh(name: String) -> Int ! alloc
     else
         0
 
-fn dr_is_string_operand(e: Int) -> Int ! alloc
-    k = ex_kind(e)
-    if k == EX_STRING()
-        1
-    elsif k == EX_CALL()
-        dr_returns_fresh(str_from_int(vec_get(e, 1)))
-    else
-        0
-
-# A `+` chain is a string concatenation when some operand is syntactically a string.
-fn dr_add_is_string_chain(e: Int) -> Int ! alloc
-    if ex_kind(e) == EX_BINARY()
-        if str_eq(vec_get(e, 1), "add") == 1
-            if dr_add_is_string_chain(vec_get(e, 2)) == 1
-                1
-            else
-                dr_is_string_operand(vec_get(e, 3))
-        else
-            0
-    else
-        dr_is_string_operand(e)
-
-# A value certainly owned by whoever stores it: a literal, a fresh-string call or a
-# string `+` chain.
-fn dr_is_fresh_value(e: Int) -> Int ! alloc
-    k = ex_kind(e)
-    if k == EX_BINARY()
-        dr_add_is_string_chain(e)
-    else
-        dr_is_string_operand(e)
-
 # A field typed Int, Float or Bool cannot alias heap memory.
-fn dr_field_owned(fty: Int) -> Int ! alloc
-    if ty_text_matches(fty, str_as_int(d"Int")) == 1
+fn trim_type_piece(t: String) -> String ! alloc
+    n = str_len(t)
+    if n > 0
+        if str_char(t, n - 1) == 32
+            trim_type_piece(str_slice(t, 0, n - 1))
+        else
+            t
+    else
+        t
+
+fn dr_field_owned_t(fty: String) -> Int ! alloc
+    t = trim_type_piece(fty)
+    if str_len(t) == 0
+        1
+    elsif str_eq(t, "Int") == 1
         0
-    elsif ty_text_matches(fty, str_as_int(d"Float")) == 1
+    elsif str_eq(t, "Float") == 1
         0
-    elsif ty_text_matches(fty, str_as_int(d"Bool")) == 1
+    elsif str_eq(t, "Bool") == 1
         0
     else
         1

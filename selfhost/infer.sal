@@ -2,7 +2,6 @@
 # of src/infer.rs. Tensors, containers and builtins whose signature is not modelled
 # here have type `Unknown`, which is compatible with everything. It reads the typed AST
 # (`tast.sal`); a type is its text and "" stands for an absent one.
-import ast
 import tshape
 import result
 import tast

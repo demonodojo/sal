@@ -1,10 +1,7 @@
-# Typed AST: the owned form of what `ast.sal` builds as `Int` handles. `to_typed` converts a
-# parsed program handle once; a pass that takes `TProgram` reads it with `match` and struct
-# fields instead of positional `vec_get`. Strings share storage with the handle AST, so a typed
-# tree is never freed.
+# Typed AST: what `parser.sal` builds and every pass reads, with `match` and struct fields.
+# `tp_free*` returns the boxes and lists of a tree; its strings stay.
 #
 # `XNone` stands for an absent expression (handle 0): a missing block tail, `else` or `let` type.
-import ast
 
 struct TParam
     name: String
@@ -100,244 +97,9 @@ struct TProgram
     aliases: List[String]
     enums: List[TEnum]
 
-# Slot `i` of a handle, 0 when the vec is shorter (nodes rebuilt by `qualify` keep fewer slots).
-fn tt_slot(h: Int, i: Int) -> Int ! alloc
-    if i < vec_len(h)
-        vec_get(h, i)
-    else
-        0
-
-# ---- handle text helpers ----
-fn tt_str(h: Int) -> String ! alloc
-    if h == 0
-        d""
-    else
-        str_from_int(h)
-
-fn tt_strs(hs: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, strdup(tt_str(vec_get(hs, i))))
-        tt_strs(hs, i + 1, n, out)
-
-fn tt_ints(vs: Int, i: Int, n: Int, out: List[Int]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, vec_get(vs, i))
-        tt_ints(vs, i + 1, n, out)
-
-fn tt_str_list(hs: Int) -> List[String] ! alloc
-    out = list_new[String]()
-    _a = tt_strs(hs, 0, vec_len(hs), out)
-    out
-
-# ---- expressions ----
-fn tt_exprs(hs: Int, i: Int, n: Int, out: List[Expr]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, tt_expr(vec_get(hs, i)))
-        tt_exprs(hs, i + 1, n, out)
-
-fn tt_expr(h: Int) -> Expr ! alloc
-    if h == 0
-        XNone
-    else
-        tt_expr_kind(h, vec_get(h, 0))
-
-fn tt_expr_kind(h: Int, k: Int) -> Expr ! alloc
-    if k == EX_INT()
-        XInt(vec_get(h, 1))
-    elsif k == EX_FLOAT()
-        XFloat(vec_get(h, 1), tt_str(vec_get(h, 2)))
-    elsif k == EX_STRING()
-        XStr(tt_str(vec_get(h, 1)))
-    elsif k == EX_IDENT()
-        XIdent(tt_str(vec_get(h, 1)))
-    elsif k == EX_BINARY()
-        XBin(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)), tt_expr(vec_get(h, 3)))
-    elsif k == EX_CALL()
-        args = list_new[Expr]()
-        _a = tt_exprs(vec_get(h, 2), 0, vec_len(vec_get(h, 2)), args)
-        XCall(tt_str(vec_get(h, 1)), args, tt_str(ex_call_type_args(h)))
-    elsif k == EX_TO()
-        XTo(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)))
-    elsif k == EX_ON()
-        XOn(tt_str(vec_get(h, 1)), tt_block(vec_get(h, 2)), tt_slot(h, 3), tt_slot(h, 4))
-    elsif k == EX_TENSOR()
-        XTensor(vec_get(h, 1), vec_get(h, 2), tt_str_list(tensor_lit_data(h)))
-    elsif k == EX_IF()
-        tt_if(h)
-    elsif k == EX_WHILE()
-        XWhile(tt_expr(vec_get(h, 1)), tt_block(vec_get(h, 2)))
-    elsif k == EX_FIELD()
-        XField(tt_expr(vec_get(h, 1)), tt_str(vec_get(h, 2)))
-    elsif k == EX_BOOL()
-        XBool(vec_get(h, 1))
-    elsif k == EX_LAMBDA()
-        XLambda(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)))
-    elsif k == EX_UNARY()
-        XUnary(tt_str(vec_get(h, 1)), tt_expr(vec_get(h, 2)))
-    elsif k == EX_MATCH()
-        arms = list_new[TArm]()
-        _a = tt_arms(vec_get(h, 2), 0, vec_len(vec_get(h, 2)), arms)
-        XMatch(tt_expr(vec_get(h, 1)), arms)
-    else
-        XTry(tt_expr(vec_get(h, 1)))
-
-fn tt_if(h: Int) -> Expr ! alloc
-    elsifs = list_new[TElsif]()
-    _a = tt_elsifs(vec_get(h, 4), 0, vec_len(vec_get(h, 4)), elsifs)
-    eb = tt_slot(h, 3)
-    has_else = if eb == 0
-        0
-    else
-        1
-    XIf(tt_expr(vec_get(h, 1)), tt_block(vec_get(h, 2)), tt_block(eb), has_else, elsifs)
-
-fn tt_elsifs(hs: Int, i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        arm = vec_get(hs, i)
-        _a = list_push(out, TElsif(tt_expr(vec_get(arm, 0)), tt_block(vec_get(arm, 1))))
-        tt_elsifs(hs, i + 1, n, out)
-
-fn tt_arms(hs: Int, i: Int, n: Int, out: List[TArm]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        arm = vec_get(hs, i)
-        _a = list_push(out, TArm(tt_pat(vec_get(arm, 0)), tt_expr(vec_get(arm, 1))))
-        tt_arms(hs, i + 1, n, out)
-
-fn tt_pats(hs: Int, i: Int, n: Int, out: List[TPat]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, tt_pat(vec_get(hs, i)))
-        tt_pats(hs, i + 1, n, out)
-
-fn tt_pat(h: Int) -> TPat ! alloc
-    args = list_new[TPat]()
-    kind = vec_get(h, 0)
-    if kind == 3
-        _a = tt_pats(vec_get(h, 3), 0, vec_len(vec_get(h, 3)), args)
-        TPat(3, 0, tt_str(vec_get(h, 1)), tt_str(vec_get(h, 2)), args)
-    elsif kind == 2
-        TPat(2, vec_get(h, 1), d"", d"", args)
-    elsif kind == 1
-        TPat(1, 0, tt_str(vec_get(h, 1)), d"", args)
-    else
-        TPat(0, 0, d"", d"", args)
-
-# ---- statements and blocks ----
-fn tt_stmts(hs: Int, i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, tt_stmt(vec_get(hs, i)))
-        tt_stmts(hs, i + 1, n, out)
-
-fn tt_stmt(h: Int) -> TStmt ! alloc
-    TStmt(vec_get(h, 0), tt_str(tt_slot(h, 1)), tt_expr(tt_slot(h, 2)), tt_str(tt_slot(h, 3)), tt_slot(h, 4), tt_expr(tt_slot(h, 5)), tt_slot(h, 6), tt_slot(h, 7), h)
-
-fn tt_block(h: Int) -> TBlock ! alloc
-    stmts = list_new[TStmt]()
-    if h == 0
-        TBlock(stmts, XNone)
-    else
-        _a = tt_stmts(block_stmts(h), 0, vec_len(block_stmts(h)), stmts)
-        TBlock(stmts, tt_expr(block_tail(h)))
-
-# ---- items ----
-fn tt_params(hs: Int, i: Int, n: Int, out: List[TParam]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        p = vec_get(hs, i)
-        _a = list_push(out, TParam(strdup(tt_str(vec_get(p, 0))), strdup(tt_str(vec_get(p, 1))), param_mode(p)))
-        tt_params(hs, i + 1, n, out)
-
-fn tt_fn(h: Int) -> TFn ! alloc
-    params = list_new[TParam]()
-    _a = tt_params(vec_get(h, 1), 0, vec_len(vec_get(h, 1)), params)
-    fx = list_new[Int]()
-    _b = tt_ints(fndef_effects(h), 0, vec_len(fndef_effects(h)), fx)
-    TFn(tt_str(vec_get(h, 0)), params, tt_block(vec_get(h, 2)), tt_str(fndef_ret(h)), fndef_no_heap(h), fx, tt_str_list(fndef_type_params(h)))
-
-fn tt_fns(hs: Int, i: Int, n: Int, out: List[TFn]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, tt_fn(vec_get(hs, i)))
-        tt_fns(hs, i + 1, n, out)
-
-fn tt_fields(hs: Int, i: Int, n: Int, out: List[TField]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = vec_get(hs, i)
-        _a = list_push(out, TField(strdup(tt_str(vec_get(f, 0))), strdup(tt_str(vec_get(f, 1)))))
-        tt_fields(hs, i + 1, n, out)
-
-fn tt_struct(h: Int) -> TStruct ! alloc
-    fields = list_new[TField]()
-    _a = tt_fields(structdef_fields(h), 0, vec_len(structdef_fields(h)), fields)
-    TStruct(tt_str(structdef_name(h)), fields, structdef_layout_c(h), tt_str_list(structdef_params(h)), structdef_is_frame(h))
-
-fn tt_structs(hs: Int, i: Int, n: Int, out: List[TStruct]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, tt_struct(vec_get(hs, i)))
-        tt_structs(hs, i + 1, n, out)
-
-fn tt_variants(hs: Int, i: Int, n: Int, out: List[TVariant]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        v = vec_get(hs, i)
-        _a = list_push(out, TVariant(tt_str(vec_get(v, 0)), tt_str_list(vec_get(v, 1))))
-        tt_variants(hs, i + 1, n, out)
-
-fn tt_enum(h: Int) -> TEnum ! alloc
-    vs = list_new[TVariant]()
-    _a = tt_variants(vec_get(h, 1), 0, vec_len(vec_get(h, 1)), vs)
-    TEnum(tt_str(vec_get(h, 0)), vs, tt_str_list(vec_get(h, 2)))
-
-fn tt_enums(hs: Int, i: Int, n: Int, out: List[TEnum]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, tt_enum(vec_get(hs, i)))
-        tt_enums(hs, i + 1, n, out)
-
-# Aliases are `[text handle or 0]`, one per import.
-fn tt_aliases(pr: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = list_push(out, strdup(tt_str(prog_import_alias_at(pr, i))))
-        tt_aliases(pr, i + 1, n, out)
-
-# The typed form of a program handle.
-fn to_typed(pr: Int) -> TProgram ! alloc
-    fns = list_new[TFn]()
-    _a = tt_fns(prog_fns(pr), 0, vec_len(prog_fns(pr)), fns)
-    structs = list_new[TStruct]()
-    _b = tt_structs(prog_structs(pr), 0, vec_len(prog_structs(pr)), structs)
-    enums = list_new[TEnum]()
-    _c = tt_enums(prog_enums(pr), 0, vec_len(prog_enums(pr)), enums)
-    aliases = list_new[String]()
-    _d = tt_aliases(pr, 0, vec_len(prog_imports(pr)), aliases)
-    TProgram(fns, tt_str_list(prog_imports(pr)), structs, aliases, enums)
-
 # ---- release ----
-# `tp_free` returns the boxes and lists of a typed tree. Strings stay: they share storage with the
-# handle AST, except in lists, which own copies (`list_free` releases them).
+# `tp_free` returns the boxes and lists of a typed tree. Strings stay, except in lists, which own
+# copies (`list_free` releases them).
 fn tp_free(tp: TProgram) -> Int ! alloc
     _a = tp_free_fns(tp.fns, 0, list_len(tp.fns))
     _b = list_free(tp.fns)
@@ -590,263 +352,97 @@ fn tc_block(b: TBlock) -> TBlock ! alloc
     _a = tc_stmts(b.stmts, 0, list_len(b.stmts), out)
     TBlock(out, tc_expr(b.tail))
 
-# ---- back to handles ----
-# For passes that still hand a tree to handle code. Strings are copied: the handle AST never
-# releases its text, while a typed tree may.
-fn fh_str(s: String) -> String ! alloc
-    strdup(s)
+# ---- view copies ----
+# Like `tc_*`, but each text is a leaked copy the boxes do not own (`str_from_int` of a handle is
+# not fresh), so `tp_free*` releases the tree and whoever kept the texts (the IR) still reads them.
+fn tv_s(s: String) -> String ! alloc
+    str_from_int(str_as_int(strdup(s)))
 
-fn fh_exprs(xs: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
+fn tv_exprs(xs: List[Expr], i: Int, n: Int, out: List[Expr]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = vec_push(out, fh_expr(list_get(xs, i)))
-        fh_exprs(xs, i + 1, n, out)
+        _a = list_push(out, tv_expr(list_get(xs, i)))
+        tv_exprs(xs, i + 1, n, out)
 
-fn fh_expr(e: Expr) -> Int ! alloc
+fn tv_list(xs: List[Expr]) -> List[Expr] ! alloc
+    out = list_new[Expr]()
+    _a = tv_exprs(xs, 0, list_len(xs), out)
+    out
+
+fn tv_expr(e: Expr) -> Expr ! alloc
     match e
-        XNone => 0
-        XInt(v) => ex_int(v)
-        XFloat(bits, txt) => ex_float(bits, fh_str(txt))
-        XStr(s) => ex_string(fh_str(s))
-        XIdent(s) => ex_ident(fh_str(s))
-        XBin(op, l, r) => ex_binary(fh_str(op), fh_expr(l), fh_expr(r))
-        XCall(name, args, targs) => fh_call(name, args, targs)
-        XTo(place, inner) => ex_to(fh_str(place), fh_expr(inner))
-        XOn(place, body, kern, idx) => fh_on(place, body, kern, idx)
-        XTensor(nr, nc, data) => ex_tensor_data(nr, nc, fh_strs(data))
-        XIf(cond, then_b, else_b, has_else, elsifs) => fh_if(cond, then_b, else_b, has_else, elsifs)
-        XWhile(cond, body) => ex_while(fh_expr(cond), fh_block(body))
-        XField(base, field) => ex_field(fh_expr(base), fh_str(field))
-        XBool(v) => ex_bool(v)
-        XLambda(param, body) => ex_lambda(fh_str(param), fh_expr(body))
-        XUnary(op, inner) => ex_unary(fh_str(op), fh_expr(inner))
-        XMatch(scrut, arms) => fh_match(scrut, arms)
-        XTry(inner) => ex_try(fh_expr(inner))
+        XNone => XNone
+        XInt(v) => XInt(v)
+        XFloat(bits, txt) => XFloat(bits, tv_s(txt))
+        XStr(s) => XStr(tv_s(s))
+        XIdent(s) => XIdent(tv_s(s))
+        XBin(op, l, r) => XBin(tv_s(op), tv_expr(l), tv_expr(r))
+        XCall(name, args, targs) => XCall(tv_s(name), tv_list(args), tv_s(targs))
+        XTo(place, inner) => XTo(tv_s(place), tv_expr(inner))
+        XOn(place, body, kern, idx) => XOn(tv_s(place), tv_block(body), kern, idx)
+        XTensor(nr, nc, data) => XTensor(nr, nc, tc_strs(data))
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(tv_expr(cond), tv_block(then_b), tv_block(else_b), has_else, tv_elsifs(elsifs))
+        XWhile(cond, body) => XWhile(tv_expr(cond), tv_block(body))
+        XField(base, field) => XField(tv_expr(base), tv_s(field))
+        XBool(v) => XBool(v)
+        XLambda(param, body) => XLambda(tv_s(param), tv_expr(body))
+        XUnary(op, inner) => XUnary(tv_s(op), tv_expr(inner))
+        XMatch(scrut, arms) => XMatch(tv_expr(scrut), tv_arms(arms))
+        XTry(inner) => XTry(tv_expr(inner))
 
-fn fh_strs(xs: List[String]) -> Int ! alloc
-    out = vec_new()
-    _a = fh_strs_go(xs, 0, list_len(xs), out)
+fn tv_elsifs(xs: List[TElsif]) -> List[TElsif] ! alloc
+    out = list_new[TElsif]()
+    _a = tv_elsifs_go(xs, 0, list_len(xs), out)
     out
 
-fn fh_strs_go(xs: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = vec_push(out, str_as_int(strdup(list_get(xs, i))))
-        fh_strs_go(xs, i + 1, n, out)
-
-fn fh_call(name: String, args: List[Expr], targs: String) -> Int ! alloc
-    av = vec_new()
-    _a = fh_exprs(args, 0, list_len(args), av)
-    e = ex_call(fh_str(name), av)
-    if str_len(targs) > 0
-        _t = ex_call_set_type_args(e, str_as_int(fh_str(targs)))
-        e
-    else
-        e
-
-fn fh_on(place: String, body: TBlock, kern: Int, idx: Int) -> Int ! alloc
-    e = ex_on(fh_str(place), fh_block(body))
-    if kern != 0
-        _k = ex_on_set_kernel(e, idx)
-        e
-    else
-        e
-
-fn fh_if(cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif]) -> Int ! alloc
-    arms = vec_new()
-    _a = fh_elsifs(elsifs, 0, list_len(elsifs), arms)
-    eb = if has_else == 1
-        fh_block(else_b)
-    else
-        0
-    ex_if(fh_expr(cond), fh_block(then_b), eb, arms)
-
-fn fh_elsifs(xs: List[TElsif], i: Int, n: Int, out: Int) -> Int ! alloc
+fn tv_elsifs_go(xs: List[TElsif], i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
     if i >= n
         0
     else
         a = list_get(xs, i)
-        arm = vec_new()
-        _a = vec_push(arm, fh_expr(a.cond))
-        _b = vec_push(arm, fh_block(a.body))
-        _c = vec_push(out, arm)
-        fh_elsifs(xs, i + 1, n, out)
+        _a = list_push(out, TElsif(tv_expr(a.cond), tv_block(a.body)))
+        tv_elsifs_go(xs, i + 1, n, out)
 
-fn fh_match(scrut: Expr, arms: List[TArm]) -> Int ! alloc
-    av = vec_new()
-    _a = fh_arms(arms, 0, list_len(arms), av)
-    ex_match(fh_expr(scrut), av)
+fn tv_arms(xs: List[TArm]) -> List[TArm] ! alloc
+    out = list_new[TArm]()
+    _a = tv_arms_go(xs, 0, list_len(xs), out)
+    out
 
-fn fh_arms(xs: List[TArm], i: Int, n: Int, out: Int) -> Int ! alloc
+fn tv_arms_go(xs: List[TArm], i: Int, n: Int, out: List[TArm]) -> Int ! alloc
     if i >= n
         0
     else
         a = list_get(xs, i)
-        arm = vec_new()
-        _a = vec_push(arm, fh_pat(a.pat))
-        _b = vec_push(arm, fh_expr(a.body))
-        _c = vec_push(out, arm)
-        fh_arms(xs, i + 1, n, out)
+        _a = list_push(out, TArm(tv_pat(a.pat), tv_expr(a.body)))
+        tv_arms_go(xs, i + 1, n, out)
 
-fn fh_pats(xs: List[TPat], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = vec_push(out, fh_pat(list_get(xs, i)))
-        fh_pats(xs, i + 1, n, out)
-
-fn fh_pat(p: TPat) -> Int ! alloc
-    args = vec_new()
-    _a = fh_pats(p.args, 0, list_len(p.args), args)
-    if p.kind == 3
-        pat_new(3, str_as_int(fh_str(p.name)), str_as_int(fh_str(p.qual)), args)
-    elsif p.kind == 2
-        pat_new(2, p.ival, 0, args)
-    elsif p.kind == 1
-        pat_new(1, str_as_int(fh_str(p.name)), 0, args)
-    else
-        pat_new(0, 0, 0, args)
-
-fn fh_ty(s: String) -> Int ! alloc
-    if str_len(s) == 0
-        0
-    else
-        str_as_int(strdup(s))
-
-fn fh_stmt(s: TStmt) -> Int ! alloc
-    h = stmt_new(s.kind, fh_str(s.name), fh_expr(s.expr))
-    _a = vec_set(h, 3, fh_ty(s.ty))
-    _b = vec_set(h, 4, s.is_let)
-    _c = vec_set(h, 5, fh_expr(s.target))
-    _d = vec_set(h, 6, s.frozen)
-    _e = vec_set(h, 7, s.stack)
-    h
-
-fn fh_stmts(xs: List[TStmt], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = vec_push(out, fh_stmt(list_get(xs, i)))
-        fh_stmts(xs, i + 1, n, out)
-
-fn fh_block(b: TBlock) -> Int ! alloc
-    h = block_new()
-    _a = fh_stmts(b.stmts, 0, list_len(b.stmts), block_stmts(h))
-    _b = block_set_tail(h, fh_expr(b.tail))
-    h
-
-# ---- whole programs back to handles ----
-fn fh_str_vec(xs: List[String]) -> Int ! alloc
-    fh_strs(xs)
-
-fn fh_params(xs: List[TParam], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        p = list_get(xs, i)
-        h = param_new(fh_str(p.name), fh_str(p.ty))
-        _m = param_set_mode(h, p.mode)
-        _a = vec_push(out, h)
-        fh_params(xs, i + 1, n, out)
-
-fn fh_ints(xs: List[Int]) -> Int ! alloc
-    out = vec_new()
-    _a = fh_ints_go(xs, 0, list_len(xs), out)
+fn tv_pats(xs: List[TPat]) -> List[TPat] ! alloc
+    out = list_new[TPat]()
+    _a = tv_pats_go(xs, 0, list_len(xs), out)
     out
 
-fn fh_ints_go(xs: List[Int], i: Int, n: Int, out: Int) -> Int ! alloc
+fn tv_pats_go(xs: List[TPat], i: Int, n: Int, out: List[TPat]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = vec_push(out, list_get(xs, i))
-        fh_ints_go(xs, i + 1, n, out)
+        _a = list_push(out, tv_pat(list_get(xs, i)))
+        tv_pats_go(xs, i + 1, n, out)
 
-fn fh_fn(f: TFn) -> Int ! alloc
-    params = vec_new()
-    _a = fh_params(f.params, 0, list_len(f.params), params)
-    h = fndef_new(fh_str(f.name), params, fh_block(f.body))
-    _r = fndef_set_ret(h, fh_ty(f.ret))
-    _n = fndef_set_no_heap(h, f.no_heap)
-    _e = vec_set(h, 5, fh_ints(f.fx))
-    _t = vec_set(h, 6, fh_strs(f.tparams))
-    h
+fn tv_pat(p: TPat) -> TPat ! alloc
+    TPat(p.kind, p.ival, tv_s(p.name), tv_s(p.qual), tv_pats(p.args))
 
-fn fh_fns(xs: List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
+fn tv_stmt(s: TStmt) -> TStmt ! alloc
+    TStmt(s.kind, tv_s(s.name), tv_expr(s.expr), tv_s(s.ty), s.is_let, tv_expr(s.target), s.frozen, s.stack, s.id)
+
+fn tv_stmts(xs: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = vec_push(out, fh_fn(list_get(xs, i)))
-        fh_fns(xs, i + 1, n, out)
+        _a = list_push(out, tv_stmt(list_get(xs, i)))
+        tv_stmts(xs, i + 1, n, out)
 
-fn fh_fields(xs: List[TField], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = list_get(xs, i)
-        pr = vec_new()
-        _a = vec_push(pr, str_as_int(fh_str(f.name)))
-        _b = vec_push(pr, fh_ty(f.ty))
-        _c = vec_push(out, pr)
-        fh_fields(xs, i + 1, n, out)
-
-fn fh_struct(s: TStruct) -> Int ! alloc
-    fields = vec_new()
-    _a = fh_fields(s.fields, 0, list_len(s.fields), fields)
-    h = structdef_new(fh_str(s.name), fields)
-    _l = structdef_set_layout_c(h, s.layout_c)
-    _p = structdef_set_params(h, fh_strs(s.tparams))
-    _f = structdef_set_frame(h, s.is_frame)
-    h
-
-fn fh_structs(xs: List[TStruct], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = vec_push(out, fh_struct(list_get(xs, i)))
-        fh_structs(xs, i + 1, n, out)
-
-fn fh_variants(xs: List[TVariant], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        v = list_get(xs, i)
-        _a = vec_push(out, variant_new(fh_str(v.name), fh_strs(v.fields)))
-        fh_variants(xs, i + 1, n, out)
-
-fn fh_enums(xs: List[TEnum], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        e = list_get(xs, i)
-        vs = vec_new()
-        _v = fh_variants(e.variants, 0, list_len(e.variants), vs)
-        _a = vec_push(out, enumdef_new(fh_str(e.name), fh_strs(e.tparams), vs))
-        fh_enums(xs, i + 1, n, out)
-
-# One alias per import, 0 when it has none.
-fn fh_aliases(xs: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = vec_push(out, fh_ty(list_get(xs, i)))
-        fh_aliases(xs, i + 1, n, out)
-
-fn fh_program(tp: TProgram) -> Int ! alloc
-    pr = prog_new()
-    _a = fh_fns(tp.fns, 0, list_len(tp.fns), prog_fns(pr))
-    _b = vec_set(pr, 1, fh_strs(tp.imports))
-    _c = fh_structs(tp.structs, 0, list_len(tp.structs), prog_structs(pr))
-    al = vec_new()
-    _d = fh_aliases(tp.aliases, 0, list_len(tp.aliases), al)
-    _e = vec_set(pr, 3, al)
-    _f = fh_enums(tp.enums, 0, list_len(tp.enums), prog_enums(pr))
-    pr
-
-# The program rebuilt from its typed form; the typed tree is released.
-fn fh_roundtrip(pr: Int) -> Int ! alloc
-    tp = to_typed(pr)
-    h = fh_program(tp)
-    _f = tp_free(tp)
-    h
+fn tv_block(b: TBlock) -> TBlock ! alloc
+    out = list_new[TStmt]()
+    _a = tv_stmts(b.stmts, 0, list_len(b.stmts), out)
+    TBlock(out, tv_expr(b.tail))

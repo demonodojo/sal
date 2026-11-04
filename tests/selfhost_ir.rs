@@ -947,7 +947,7 @@ const PARITY_FILES: &[&str] = &[
     "examples/std_io_smoke.sal",
     "examples/transformer_gpu.sal",
     "pkg.sal",
-    "selfhost/ast.sal",
+    "selfhost/tytext.sal",
     "selfhost/attrs.sal",
     "selfhost/cache.sal",
     "selfhost/checks.sal",
@@ -1292,11 +1292,20 @@ fn selfhost_binaries_behave_like_bootstrap_binaries() {
 fn selfhost_meets_language_conformance() {
     let stage1 = compile_selfhost(false);
     let dir = root().join("tests/lang");
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("tests/lang")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "sal"))
-        .collect();
+    fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("tests/lang").flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "mods" && n != "target") {
+                    collect(&path, out);
+                }
+            } else if path.extension().is_some_and(|x| x == "sal") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    collect(&dir, &mut files);
     files.sort();
     let mut failures = Vec::new();
     for path in files {

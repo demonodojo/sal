@@ -1,7 +1,6 @@
 # Typed form of the IR that `fuse` builds: instructions, functions, regions and fused ops.
 # Everything is a flat struct (Strings, Ints and Lists) so `list_get` copies an element whole.
 # Bridge: `ti_module` reads the handle IR; `ti_free_module` releases the typed copy.
-import ast
 import ir
 import tast
 
@@ -260,3 +259,29 @@ fn ti_free_fns(fs: List[IrFn], i: Int, n: Int) -> Int ! alloc
 fn ti_free_module(fs: List[IrFn]) -> Int ! alloc
     _a = ti_free_fns(fs, 0, list_len(fs))
     list_free(fs)
+
+# ---- handle text helpers (the IR is still built from handles) ----
+# Slot `i` of a handle, 0 when the vec is shorter.
+fn tt_slot(h: Int, i: Int) -> Int ! alloc
+    if i < vec_len(h)
+        vec_get(h, i)
+    else
+        0
+
+fn tt_str(h: Int) -> String ! alloc
+    if h == 0
+        d""
+    else
+        str_from_int(h)
+
+fn tt_strs(hs: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, strdup(tt_str(vec_get(hs, i))))
+        tt_strs(hs, i + 1, n, out)
+
+fn tt_str_list(hs: Int) -> List[String] ! alloc
+    out = list_new[String]()
+    _a = tt_strs(hs, 0, vec_len(hs), out)
+    out

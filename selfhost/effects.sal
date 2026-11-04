@@ -1,6 +1,5 @@
 # Effects pass, the mirror of src/effects.rs: a fn body may only use the
 # effects its signature declares. It reads the typed AST (`tast.sal`).
-import ast
 import result
 import tast
 import ttypes
@@ -352,40 +351,26 @@ fn fx_callees_typed(m: Callees, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
         _p = callees_add(m, f.name, fx_mask(f.fx))
         fx_callees_typed(m, fns, i + 1, n)
 
-# Same for a program handle of another module.
-fn fx_callees_add(m: Callees, prog: Int) -> Int ! alloc
-    fns = prog_fns(prog)
-    fx_callees_go(m, fns, 0, vec_len(fns))
-
-fn fx_callees_go(m: Callees, fns: Int, i: Int, n: Int) -> Int ! alloc
+fn fx_callees_progs(m: Callees, progs: List[TProgram], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = vec_get(fns, i)
-        e = fndef_effects(f)
-        _p = callees_add(m, str_from_int(vec_get(f, 0)), vec_get(e, 0) + vec_get(e, 1) * 2 + vec_get(e, 2) * 4 + vec_get(e, 3) * 8 + vec_get(e, 4) * 16)
-        fx_callees_go(m, fns, i + 1, n)
-
-fn fx_callees_progs(m: Callees, progs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = fx_callees_add(m, vec_get(progs, i))
+        _a = fx_callees_typed(m, list_get(progs, i).fns, 0, list_len(list_get(progs, i).fns))
         fx_callees_progs(m, progs, i + 1, n)
 
 # Ok(0), or Err(message) for the first fn using an undeclared effect.
 fn check_effects(tp: TProgram) -> Int ! alloc
-    check_effects_with(tp, 0)
+    none = list_new[TProgram]()
+    r = check_effects_with(tp, none)
+    _f = list_free(none)
+    r
 
-# Same, counting the fns of `progs` (program handles of every module of the graph; 0 for none).
-fn check_effects_with(tp: TProgram, progs: Int) -> Int ! alloc
+# Same, counting the fns of `progs` (every module of the graph; empty for none).
+fn check_effects_with(tp: TProgram, progs: List[TProgram]) -> Int ! alloc
     env = tenv_new(tp)
     callees = callees_new()
     _a = fx_callees_typed(callees, tp.fns, 0, list_len(tp.fns))
-    if progs != 0
-        _b = fx_callees_progs(callees, progs, 0, vec_len(progs))
-    else
-        _b = 0
+    _b = fx_callees_progs(callees, progs, 0, list_len(progs))
     used = fx_new(callees)
     r = check_effects_go(tp, 0, list_len(tp.fns), env, used)
     _f = tenv_free(env)

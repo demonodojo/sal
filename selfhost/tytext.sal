@@ -1,0 +1,125 @@
+# Helpers over type text (`List[Int]`, `Map[String, Int]`) and builtin names, shared by the passes.
+
+fn ty_is_string(ty: String) -> Int ! alloc
+    if str_eq(ty, "String") == 1
+        1
+    else
+        str_eq(ty, "String ") == 1
+
+fn call_returns_string(name: String) -> Int ! alloc
+    if str_eq(name, "argv") == 1
+        1
+    elsif str_eq(name, "read_file") == 1
+        1
+    elsif str_eq(name, "str_concat") == 1
+        1
+    elsif str_eq(name, "str_append") == 1
+        1
+    elsif str_eq(name, "str_from_int") == 1
+        1
+    elsif str_eq(name, "realpath") == 1
+        1
+    else
+        call_returns_string2(name)
+
+fn call_returns_string2(name: String) -> Int ! alloc
+    if str_eq(name, "str_slice") == 1
+        1
+    elsif str_eq(name, "int_to_str") == 1
+        1
+    elsif str_eq(name, "char_to_str") == 1
+        1
+    elsif str_eq(name, "strdup") == 1
+        1
+    else
+        call_returns_string3(name)
+
+fn call_returns_string3(name: String) -> Int ! alloc
+    if str_eq(name, "select_str") == 1
+        1
+    elsif str_eq(name, "tmp_path") == 1
+        1
+    elsif str_eq(name, "exec_capture") == 1
+        1
+    elsif str_eq(name, "getenv") == 1
+        1
+    elsif str_eq(name, "ir_text") == 1
+        1
+    else
+        0
+
+# Builtins whose String result is a fresh heap temporary nobody else owns.
+fn call_allocates_fresh_string(name: String) -> Int ! alloc
+    if str_eq(name, "int_to_str") == 1
+        1
+    elsif str_eq(name, "char_to_str") == 1
+        1
+    elsif str_eq(name, "str_slice") == 1
+        1
+    elsif str_eq(name, "strdup") == 1
+        1
+    else
+        str_eq(name, "read_file")
+
+# `i`-th top-level type argument of `Name[A, B]`, or 0. Nested brackets are kept whole.
+fn nth_type_arg(t: String, i: Int) -> Int ! alloc
+    open = ty_find_open(t, 0)
+    if open < 0
+        0
+    else
+        nth_type_arg_go(str_slice(t, open + 1, str_len(t) - 1), i, 0, 0, 0)
+
+fn nth_type_arg_go(s: String, want: Int, pos: Int, start: Int, k: Int) -> Int ! alloc
+    n = str_len(s)
+    if pos >= n
+        if k == want
+            str_as_int(trim_spaces(str_slice(s, start, n)))
+        else
+            0
+    else
+        c = str_char(s, pos)
+        if c == 91
+            nth_type_arg_go(s, want, ty_skip_brackets(s, pos + 1, 1), start, k)
+        elsif c == 44
+            if k == want
+                str_as_int(trim_spaces(str_slice(s, start, pos)))
+            else
+                nth_type_arg_go(s, want, pos + 1, pos + 1, k + 1)
+        else
+            nth_type_arg_go(s, want, pos + 1, start, k)
+
+fn ty_find_open(t: String, i: Int) -> Int ! alloc
+    if i >= str_len(t)
+        0 - 1
+    elsif str_char(t, i) == 91
+        i
+    else
+        ty_find_open(t, i + 1)
+
+# Position after the `]` that closes the bracket opened before `pos` (depth 1).
+fn ty_skip_brackets(s: String, pos: Int, depth: Int) -> Int ! alloc
+    if pos >= str_len(s)
+        pos
+    else
+        c = str_char(s, pos)
+        if c == 91
+            ty_skip_brackets(s, pos + 1, depth + 1)
+        elsif c == 93
+            if depth == 1
+                pos + 1
+            else
+                ty_skip_brackets(s, pos + 1, depth - 1)
+        else
+            ty_skip_brackets(s, pos + 1, depth)
+
+fn trim_spaces(s: String) -> String ! alloc
+    n = str_len(s)
+    if n > 0
+        if str_char(s, 0) == 32
+            trim_spaces(str_slice(s, 1, n))
+        elsif str_char(s, n - 1) == 32
+            trim_spaces(str_slice(s, 0, n - 1))
+        else
+            s
+    else
+        s

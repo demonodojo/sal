@@ -1,8 +1,8 @@
 # Local String/Float typer over the typed AST (`tast.sal`): the mirror of the handle typer in
 # `ast.sal` (`expr_type`, `strenv_*`). A type is its text; "" means unknown. The environment
 # keeps its own copies of every name and type, so freeing it never touches the AST.
-import ast
 import tast
+import tytext
 import tshape
 
 struct TEnv
@@ -205,7 +205,7 @@ fn tt_field_type(structs: List[TStruct], sname: String, field: String) -> String
 
 # ---- expressions ----
 fn tt_call_returns_string(name: String) -> Int ! alloc
-    call_returns_string(str_as_int(name))
+    call_returns_string(name)
 
 fn tt_matmul(env: TEnv, args: List[Expr]) -> String ! alloc
     if list_len(args) == 2

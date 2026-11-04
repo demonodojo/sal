@@ -30,14 +30,14 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Texto canónico, JSON del AST | `src/fmt.rs`, `src/ast.rs` | `tests/parse_and_fmt.rs` |
 | Tipos, formas, lugares, `borrow`/`take`; tensores en binops; `frame`→struct; `where` | `src/infer.rs`, `src/typed.rs`, `src/modules.rs` | `tests/semantics.rs` |
 | Moves, efectos, dispositivos; frame con `String` y `to` | `src/ownership.rs`, `src/effects.rs`, `src/device.rs`, `src/diag.rs` | `tests/semantics.rs` |
-| Atributos `@frozen`/`@stack`/`@no_heap`/`@layout(c)` | `src/attrs.rs`, `src/layout.rs`, `src/lexer.rs`, `src/parser.rs` | `tests/lang/attr_*.sal` vía `tests/lang.rs` |
-| Interpolación `"a{x}"` | `src/interp.rs`, `src/string_expr.rs` | `tests/lang/*.sal`, `tests/run_hello.rs` |
-| Calificadores, alias, símbolos `modid__nombre` | `src/qualify.rs`, `src/modules.rs` | `tests/lang/mods/`, `tests/toolchain.rs` |
-| Métodos de tipos básicos (`x.sqrt()`, `s.len()`), mate de `Float` (`float_*`, libm, `E_TARGET` en soso) | `src/methods.rs` (tabla), `src/infer.rs`, `src/llvm.rs`, `runtime/kernels.c` | `tests/lang/method_*.sal`, `tests/lang/err_float_math_*.sal`, `tests/semantics.rs` |
+| Atributos `@frozen`/`@stack`/`@no_heap`/`@layout(c)` | `src/attrs.rs`, `src/layout.rs`, `src/lexer.rs`, `src/parser.rs` | `tests/lang/attributes/attr_*.sal` vía `tests/lang.rs` |
+| Interpolación `"a{x}"` | `src/interp.rs`, `src/string_expr.rs` | `tests/lang/<área>/*.sal`, `tests/run_hello.rs` |
+| Calificadores, alias, símbolos `modid__nombre` | `src/qualify.rs`, `src/modules.rs` | `tests/lang/modules/mods/`, `tests/toolchain.rs` |
+| Métodos de tipos básicos (`x.sqrt()`, `s.len()`), mate de `Float` (`float_*`, libm, `E_TARGET` en soso) | `src/methods.rs` (tabla), `src/infer.rs`, `src/llvm.rs`, `runtime/kernels.c` | `tests/lang/methods/method_*.sal`, `tests/lang/numeric/err_float_math_*.sal`, `tests/semantics.rs` |
 | Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |
 | Destino linux/soso, `syscall` | `src/target.rs`, `runtime/soso/linux_host_syscall.c`, `src/llvm.rs` | `tests/soso_target.rs`, `tests/cli_target.rs`, `tests/std_io_linux.rs` |
-| Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
-| `free` / `list_free` / `dict_free` / `enum_free` / `bytes_free` de locales al salir de ámbito (se inserta antes de `lower_program`; un valor pasado a una función de usuario se libera si su parámetro es de solo lectura, `read_only_params`; `lower_program` infiere antes los modos `borrow`/`take`) | `src/drops.rs`, `src/ir.rs` | `tests/drops.rs`, `tests/lang/drop_*.sal`; espejo en `selfhost/drops.sal` |
+| Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/<área>/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
+| `free` / `list_free` / `dict_free` / `enum_free` / `bytes_free` de locales al salir de ámbito (se inserta antes de `lower_program`; un valor pasado a una función de usuario se libera si su parámetro es de solo lectura, `read_only_params`; `lower_program` infiere antes los modos `borrow`/`take`) | `src/drops.rs`, `src/ir.rs` | `tests/drops.rs`, `tests/lang/drops/drop_*.sal`; espejo en `selfhost/drops.sal` |
 | SSA, `TensorBin`/`TensorUnary`, `ColumnBin`, fusión, `peak_bytes` | `src/ir.rs`, `src/fuse.rs` | `tests/forward_ir.rs` |
 | Heaps, kernels, `load`, `.salt`; `sal_tensor_bin_f32`, `sal_tensor_cmp_f32`, … | `runtime/sal_runtime.c`, `runtime/sal_runtime.h`, `runtime/kernels.c`, `src/llvm.rs` | `tests/kernels.rs`, `tests/exec_matmul.rs`, `tests/exec_column.rs`, `tests/exec_salt.rs` |
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |

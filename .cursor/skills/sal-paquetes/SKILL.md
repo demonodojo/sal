@@ -59,6 +59,6 @@ Directorio del fichero que importa → raíz del proyecto → `sal_modules/` →
 
 ## Tests
 
-`tests/toolchain.rs`: `fetch_*`, `import_not_found_when_lock_package_missing_from_cache`, `sal_modules_import_resolves_inside_the_project`, `install_git_dep_*`, `install_path_dep_*`, `install_std_dep_*`, `install_rejects_*`, `install_github_release_dep_picks_highest_matching_release`. Fijan `SAL_PACKAGES` en un tempdir y usan repos `file://`: no tocan red ni `~/.sal`. Módulos: `tests/lang/mods/` y `tests/import_graph/`. Selfhost: `cargo test --test selfhost_ir selfhost_resolves_git`.
+`tests/toolchain.rs`: `fetch_*`, `import_not_found_when_lock_package_missing_from_cache`, `sal_modules_import_resolves_inside_the_project`, `install_git_dep_*`, `install_path_dep_*`, `install_std_dep_*`, `install_rejects_*`, `install_github_release_dep_picks_highest_matching_release`. Fijan `SAL_PACKAGES` en un tempdir y usan repos `file://`: no tocan red ni `~/.sal`. Módulos: `tests/lang/modules/mods/` y `tests/import_graph/`. Selfhost: `cargo test --test selfhost_ir selfhost_resolves_git`.
 
 Un cambio de resolución se hace en `src/modules.rs` **y** `selfhost/modules.sal`; la descarga solo en Rust. Ver [sal-autohospedaje](../sal-autohospedaje/SKILL.md).

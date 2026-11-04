@@ -52,7 +52,7 @@ Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@resource`, 
 - `@no_heap`: la función asigna, recibe o devuelve un tipo de heap, o tiene un `let` de heap.
 - `@layout(c)`: campos solo `Int`, `Float` o `Bool`.
 
-Dueño: `src/attrs.rs` y su espejo `selfhost/attrs.sal`. Tests: `tests/lang/attr_*.sal`.
+Dueño: `src/attrs.rs` y su espejo `selfhost/attrs.sal`. Tests: `tests/lang/attributes/attr_*.sal`.
 
 `Float` es f64 y no es elemento de tensor (`E_TENSOR_ELEM`). Elementos: `F32`, `F16`, `BF16`, `I8`.
 

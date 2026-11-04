@@ -65,7 +65,7 @@ En `tests/selfhost_ir.rs`:
 |------|----------|
 | `selfhost_ir_matches_bootstrap_on_parity_files` | La IR del selfhost coincide con la del arranque en todo `.sal` del repo que el arranque baja (incluido `selfhost/`) |
 | `selfhost_binaries_behave_like_bootstrap_binaries` | Mismo código de salida y stdout en ejemplos y corpus (salvo `examples/infer/tiny_*`, que imprimen tiempos) |
-| `selfhost_meets_language_conformance` | Cumple `tests/lang/*.sal`; salta los que llevan `# xfail:` o `# selfhost-xfail:` |
+| `selfhost_meets_language_conformance` | Cumple `tests/lang/**/*.sal`; salta los que llevan `# xfail:` o `# selfhost-xfail:` |
 | `selfhost_matches_bootstrap_on_every_repo_program` | Compara ambos compiladores en `examples/`, `corpus/`, `tests/`, `std/`, `benches/` |
 | `selfhost_resolves_git_package_import`, `selfhost_import_*`, `selfhost_instrumented_clean_on_hello`, `selfhost_model_package_tests_exit_zero` | Módulos, paquetes, instrumentación, modelos |
 

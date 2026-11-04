@@ -1,7 +1,7 @@
 # Fusion, peak_bytes, and the lowering that builds fused regions.
 # lower_program calls fusion; fusion reads ir.sal. Keeping both here avoids an import cycle.
-import ast
 import tast
+import tytext
 import ttypes
 import ir
 import tensorops
@@ -413,22 +413,6 @@ fn str_add_name(env: TEnv, left: Expr, into_acc: Int) -> Int ! alloc
     else
         str_as_int(d"sal_str_concat")
 
-# Handle forms, read by the AST-to-C path in emit.sal.
-# `left` is the accumulator of an `x = x + ...` chain being lowered.
-fn add_left_is_acc(left: Int, acc: Int) -> Int ! alloc
-    if acc == 0
-        0
-    elsif ex_kind(left) == EX_IDENT()
-        str_eq(vec_get(left, 1), acc)
-    else
-        0
-
-fn spine_acc(left: Int, acc: Int) -> Int ! alloc
-    if ex_kind(left) == EX_BINARY()
-        acc
-    else
-        0
-
 # `left` is the accumulator of an `x = x + ...` chain being lowered.
 fn tadd_left_is_acc(left: Expr, acc: Int) -> Int ! alloc
     if acc == 0
@@ -447,14 +431,14 @@ fn tspine_acc(left: Expr, acc: Int) -> Int ! alloc
 fn tadd_right_is_fresh_temp(env: TEnv, right: Expr) -> Int ! alloc
     match right
         XBin(op, l, r) => tbinary_is_string_concat(env, right)
-        XCall(name, args, targs) => call_allocates_fresh_string(str_as_int(name))
+        XCall(name, args, targs) => call_allocates_fresh_string(name)
         _ => 0
 
 # A left operand that is a fresh-string call: the first `str_concat` of a chain copies from it
 # and must release it.
 fn tadd_left_is_fresh_call(left: Expr) -> Int ! alloc
     match left
-        XCall(name, args, targs) => call_allocates_fresh_string(str_as_int(name))
+        XCall(name, args, targs) => call_allocates_fresh_string(name)
         _ => 0
 
 fn lower_str_add(cx: Cx, left: Expr, right: Expr) -> Int ! alloc
@@ -774,59 +758,14 @@ fn scalar_kind_text(txt: String, i: Int, j: Int) -> Int ! alloc
     else
         0
 
-# Kind of a field type for flat-struct lists: 0 Int/Float/Bool, 1 String, -1 other.
-fn flat_field_class(ty: Int) -> Int ! alloc
-    if ty == 0
-        0 - 1
-    else
-        t = trim_type_piece(str_from_int(ty))
-        if str_eq(t, "String") == 1
-            1
-        elsif str_eq(t, "Int") == 1
-            0
-        elsif str_eq(t, "Float") == 1
-            0
-        elsif str_eq(t, "Bool") == 1
-            0
-        else
-            0 - 1
-
-# Bit mask of the String fields of `sd`, or -1 when a field is not Int/Float/Bool/String.
-fn flat_mask(fields: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
-    if i >= n
-        acc
-    else
-        c = flat_field_class(vec_get(vec_get(fields, i), 1))
-        if c < 0
-            0 - 1
-        elsif c == 1
-            flat_mask(fields, i + 1, n, acc + shift_left_one(i))
-        else
-            flat_mask(fields, i + 1, n, acc)
-
 fn shift_left_one(i: Int) -> Int ! alloc
     if i == 0
         1
     else
         2 * shift_left_one(i - 1)
 
-# `4 | n << 4 | mask << 12` for `List[S]` of a flat struct `S`, else -1.
-fn flat_struct_kind(sd: Int) -> Int ! alloc
-    n = structdef_field_count(sd)
-    if vec_len(structdef_params(sd)) > 0
-        0 - 1
-    elsif n < 2
-        0 - 1
-    elsif n > 20
-        0 - 1
-    else
-        mask = flat_mask(structdef_fields(sd), 0, n, 0)
-        if mask < 0
-            0 - 1
-        else
-            4 + n * 16 + mask * 4096
-
-# Typed twin of `flat_field_class`/`flat_mask`/`flat_struct_kind`.
+# Kind of a field type for flat-struct lists: 0 Int/Float/Bool, 1 String, -1 other; bit mask of
+# the String fields of a struct, or -1 when a field is not Int/Float/Bool/String.
 fn tflat_field_class(ty: String) -> Int ! alloc
     if str_len(ty) == 0
         0 - 1
@@ -882,16 +821,6 @@ fn list_elem_kind(cx: Cx, txt: String, i: Int, j: Int) -> Int ! alloc
             scalar_kind_text(txt, i, j)
         else
             k
-
-fn trim_type_piece(t: String) -> String ! alloc
-    n = str_len(t)
-    if n > 0
-        if str_char(t, n - 1) == 32
-            trim_type_piece(str_slice(t, 0, n - 1))
-        else
-            t
-    else
-        t
 
 # `list_new[T]()` passes the element kind; `dict_new[K, V]()` passes both.
 fn lower_container_new(cx: Cx, name: String, txt: String, d: Int, nkinds: Int) -> Int ! alloc
@@ -1757,7 +1686,7 @@ fn mv_take_args(params: Int, args: List[Expr], i: Int, n: Int, names: Int) -> In
     elsif i >= vec_len(params)
         0
     else
-        if param_mode(vec_get(params, i)) == 2
+        if vec_get(params, i) == 2
             _a = mv_add(names, list_get(args, i))
         else
             _a = 0
@@ -1828,26 +1757,27 @@ fn mv_expr(e: Expr, names: Int, md: Int) -> Int ! alloc
         _ => 0
 
 # ---- drops ----
-# 1 when `name` is a parameter whose mode is not `take`.
-fn param_not_taken(params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
+# 1 when `name` is a parameter whose mode is not `take`; `modes` holds the effective mode of
+# each parameter.
+fn param_not_taken(params: List[TParam], modes: Int, name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif str_eq(list_get(params, i).name, name) == 1
-        if list_get(params, i).mode == 2
+        if vec_get(modes, i) == 2
             0
         else
             1
     else
-        param_not_taken(params, name, i + 1, n)
+        param_not_taken(params, modes, name, i + 1, n)
 
 # Distinct local names bound in the env, sorted, with struct types only.
-fn drop_candidates(cx: Cx, params: List[TParam], i: Int, n: Int, out: Int) -> Int ! alloc
+fn drop_candidates(cx: Cx, params: List[TParam], modes: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
         nm = list_get(cx.env.names, i)
         # A parameter is dropped here only when it takes ownership.
-        if param_not_taken(params, nm, 0, list_len(params)) == 0
+        if param_not_taken(params, modes, nm, 0, list_len(params)) == 0
             if assigned_has(out, str_as_int(nm), 0, vec_len(out)) == 0
                 if tt_struct_find(cx_structs(cx), tenv_type(cx.env, nm)) >= 0
                     _p = vec_push(out, str_as_int(nm))
@@ -1858,7 +1788,7 @@ fn drop_candidates(cx: Cx, params: List[TParam], i: Int, n: Int, out: Int) -> In
                 _s = 0
         else
             _s = 0
-        drop_candidates(cx, params, i + 1, n, out)
+        drop_candidates(cx, params, modes, i + 1, n, out)
 
 fn drop_fields(cx: Cx, base: Int, sd: TStruct, fields: List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1895,10 +1825,17 @@ fn drop_locals(cx: Cx, names: Int, moved: Int, i: Int, n: Int) -> Int ! alloc
 fn drop_struct_fields(cx: Cx, base: Int, sd: TStruct) -> Int ! alloc
     drop_fields(cx, base, sd, sd.fields, 0, list_len(sd.fields))
 
+fn fn_modes_of(md: Int, name: String) -> Int ! alloc
+    ms = map_get(md, str_as_int(name))
+    if ms == 0
+        vec_new()
+    else
+        ms
+
 fn emit_struct_drops(cx: Cx, f: TFn, body: TBlock, md: Int) -> Int ! alloc
     moved = vec_new()
     _m = mv_block(body, moved, md)
-    names = drop_candidates(cx, f.params, 0, tenv_len(cx.env), vec_new())
+    names = drop_candidates(cx, f.params, fn_modes_of(md, f.name), 0, tenv_len(cx.env), vec_new())
     drop_locals(cx, names, moved, 0, vec_len(names))
 
 # Instructions without a trailing Return, which is returned separately (0 when none).
@@ -1925,7 +1862,7 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
 
 # The IR keeps identifier and literal texts by handle until `ir_to_text`; `drops_body_t` returns
 # a tree whose boxes do not own them, so releasing the body here leaves them intact.
-fn lower_fn(f: TFn, fn_names: Int, fm: Int, env: TEnv, enums: Int, denv: Int) -> Int ! alloc
+fn lower_fn(f: TFn, fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum], denv: Int) -> Int ! alloc
     _t = tenv_truncate(env, 0)
     cx = cx_new(fn_names, fm, env, enums)
     _a = lower_params(cx, f.params, 0, list_len(f.params))
@@ -2027,115 +1964,112 @@ fn try_lower_tensor_bin_go(cx: Cx, op: String, tensor_ssa: Int, other_ssa: Int, 
         1
 
 # Lowers a module whose own structs and fn results are the only ones in scope.
-fn lower_program(prog: Int) -> Int ! alloc
-    lower_program_with_callables(prog, vec_new())
-
-fn lower_program_with_callables(prog: Int, extra: Int) -> Int ! alloc
-    tp = to_typed(prog)
+fn lower_program_with_callables(tp: TProgram, extra: Int) -> Int ! alloc
     env = tenv_new(tp)
-    ir = lower_program_with_types(prog, extra, env, prog_enums(prog))
+    ir = lower_program_typed(tp, extra, env, tp.enums)
     _a = tenv_free(env)
-    _b = tp_free(tp)
     ir
 
-# `env` may cover the whole module graph, so `+` types imported struct fields and imported fn
-# results the way the bootstrap does; the caller releases it.
-fn lower_program_with_types(prog: Int, extra: Int, env: TEnv, em: Int) -> Int ! alloc
-    fns = prog_fns(prog)
-    names = collect_fn_names(fns, 0, vec_len(fns), vec_new())
+fn lower_program_typed(tp: TProgram, extra: Int, env: TEnv, em: List[TEnum]) -> Int ! alloc
+    names = collect_fn_names_t(tp.fns, 0, list_len(tp.fns), vec_new())
     names = merge_callable_names(extra, names)
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
-    _im = infer_param_modes(prog)
-    tp = to_typed(prog)
-    denv = drop_env_from_prog(prog)
-    _l = lower_fns(tp.fns, names, fm, env, em, denv, 0, list_len(tp.fns), out)
-    _f = tp_free(tp)
-    out
+    denv = drop_env_t(tp)
+    lower_fns(tp.fns, names, fm, env, em, denv, 0, list_len(tp.fns), out)
 
-# `[variants, modes]`: the variant table and, per fn name, its parameters (with their modes).
-fn drop_env_from_prog(prog: Int) -> Int ! alloc
+# `[variants, modes, read-only params]`: the variant table, per fn name the effective mode of
+# each parameter (0 copy, 1 borrow, 2 take), and the read-only flags.
+fn drop_env_t(tp: TProgram) -> Int ! alloc
     denv = vec_new()
-    _a = vec_push(denv, variant_map_from_prog(prog))
+    _a = vec_push(denv, variant_map_t(tp))
     modes = map_new()
-    fns = prog_fns(prog)
-    _m = modes_fill(modes, fns, 0, vec_len(fns))
+    table = own_mode_table(tp)
+    _m = modes_fill_t(modes, table, tp.fns, 0, list_len(tp.fns))
+    _h = ht_free(table)
     _b = vec_push(denv, modes)
-    _c = vec_push(denv, dr_read_only(prog, vec_get(denv, 0)))
+    _c = vec_push(denv, dr_read_only_t(tp, vec_get(denv, 0)))
     denv
 
-fn modes_fill(m: Int, fns: Int, i: Int, n: Int) -> Int ! alloc
+fn modes_fill_t(m: Int, table: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = vec_get(fns, i)
-        _p = map_put(m, vec_get(f, 0), vec_get(f, 1))
-        modes_fill(m, fns, i + 1, n)
+        f = list_get(fns, i)
+        ms = vec_new()
+        _k = modes_vec(ms, ht_get(table, f.name), 0, list_len(f.params))
+        _p = map_put(m, str_as_int(strdup(f.name)), ms)
+        modes_fill_t(m, table, fns, i + 1, n)
+
+fn modes_vec(out: Int, text: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(out, own_mode_at(text, i))
+        modes_vec(out, text, i + 1, n)
 
 # Variant name -> [1 when it has fields or 2 when unit, per-field "may own heap" flags].
-fn variant_map_from_prog(prog: Int) -> Int ! alloc
+fn variant_map_t(tp: TProgram) -> Int ! alloc
     m = map_new()
-    enums = prog_enums(prog)
-    _a = variant_map_enums(m, enums, 0, vec_len(enums))
-    sts = prog_structs(prog)
-    _b = flat_map_structs(m, sts, 0, vec_len(sts))
+    _a = variant_map_enums_t(m, tp.enums, 0, list_len(tp.enums))
+    _b = flat_map_structs_t(m, tp.structs, 0, list_len(tp.structs))
     m
 
-# Flat structs (see `flat_struct_kind`) go in the same table under `struct:Name`, as the
+# Flat structs (see `tflat_struct_kind`) go in the same table under `struct:Name`, as the
 # per-field "is a String" flags.
-fn flat_map_structs(m: Int, sts: Int, i: Int, n: Int) -> Int ! alloc
+fn flat_map_structs_t(m: Int, sts: List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        sd = vec_get(sts, i)
-        if flat_struct_kind(sd) >= 0
+        sd = list_get(sts, i)
+        if tflat_struct_kind(sd) >= 0
             flags = vec_new()
-            _f = flat_string_flags(flags, structdef_fields(sd), 0, structdef_field_count(sd))
-            _p = map_put(m, str_as_int("struct:" + str_from_int(structdef_name(sd))), flags)
-            flat_map_structs(m, sts, i + 1, n)
+            _f = flat_string_flags_t(flags, sd.fields, 0, list_len(sd.fields))
+            _p = map_put(m, str_as_int("struct:" + sd.name), flags)
+            flat_map_structs_t(m, sts, i + 1, n)
         else
-            flat_map_structs(m, sts, i + 1, n)
+            flat_map_structs_t(m, sts, i + 1, n)
 
-fn flat_string_flags(out: Int, fields: Int, i: Int, n: Int) -> Int ! alloc
+fn flat_string_flags_t(out: Int, fields: List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = vec_push(out, flat_field_class(vec_get(vec_get(fields, i), 1)))
-        flat_string_flags(out, fields, i + 1, n)
+        _p = vec_push(out, tflat_field_class(list_get(fields, i).ty))
+        flat_string_flags_t(out, fields, i + 1, n)
 
-fn variant_map_enums(m: Int, enums: Int, i: Int, n: Int) -> Int ! alloc
+fn variant_map_enums_t(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        vs = vec_get(vec_get(enums, i), 1)
-        _a = variant_map_go(m, vs, 0, vec_len(vs))
-        variant_map_enums(m, enums, i + 1, n)
+        ed = list_get(enums, i)
+        _a = variant_map_go_t(m, ed.variants, 0, list_len(ed.variants))
+        variant_map_enums_t(m, enums, i + 1, n)
 
-fn variant_map_go(m: Int, vs: Int, i: Int, n: Int) -> Int ! alloc
+fn variant_map_go_t(m: Int, vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        v = vec_get(vs, i)
+        v = list_get(vs, i)
         rec = vec_new()
-        if vec_len(vec_get(v, 1)) == 0
+        if list_len(v.fields) == 0
             _k = vec_push(rec, 2)
         else
             _k = vec_push(rec, 1)
         flags = vec_new()
-        _f = variant_field_flags(vec_get(v, 1), 0, vec_len(vec_get(v, 1)), flags)
+        _f = variant_field_flags_t(v.fields, 0, list_len(v.fields), flags)
         _g = vec_push(rec, flags)
-        _p = map_put(m, vec_get(v, 0), rec)
-        variant_map_go(m, vs, i + 1, n)
+        _p = map_put(m, str_as_int(strdup(v.name)), rec)
+        variant_map_go_t(m, vs, i + 1, n)
 
-fn variant_field_flags(fields: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn variant_field_flags_t(fields: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = vec_push(out, dr_field_owned(vec_get(fields, i)))
-        variant_field_flags(fields, i + 1, n, out)
+        _p = vec_push(out, dr_field_owned_t(list_get(fields, i)))
+        variant_field_flags_t(fields, i + 1, n, out)
 
-fn lower_fns(fns: List[TFn], names: Int, fm: Int, env: TEnv, em: Int, denv: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_fns(fns: List[TFn], names: Int, fm: Int, env: TEnv, em: List[TEnum], denv: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else

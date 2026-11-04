@@ -26,7 +26,7 @@ Las guías detalladas por área están en `.claude/skills/` (enlace a `.cursor/s
 | `std/` | Biblioteca estándar y preludio en sal (`std/prelude.sal`, `std/io`, `http`, `json`, `text`) |
 | `standard/` | Linter de estilo `standard`, escrito en sal |
 | `corpus/`, `examples/` | Programas de paridad y ejemplos |
-| `tests/` | Tests de Rust; `tests/lang/*.sal` (conformidad), `tests/sal/` (tests de `std`) |
+| `tests/` | Tests de Rust; `tests/lang/<área>/*.sal` (conformidad, un subdirectorio por área), `tests/sal/` (tests de `std`) |
 
 Orden de pases: `parse` → `expand_interpolation` → `infer_program` → `attrs` → `check_effects` → `check_ownership` → `check_devices` → `TypedProgram` → `insert_drops` → `lower_program` → `fuse_module` → LLVM → Clang. No saltes un pase ni compruebes en uno posterior lo que ya tiene dueño.
 
@@ -35,7 +35,7 @@ Orden de pases: `parse` → `expand_interpolation` → `infer_program` → `attr
 - **Todo cambio de lenguaje toca, en el mismo cambio**: la SPEC, el subplan del pase, el pase dueño y los tests que ejercitan lo nuevo. Un test que sigue pasando con el código viejo no cuenta.
 - Un diagnóstico nuevo se afirma con su código `E_*` exacto; un programa válido, con el árbol, tipo, IR o ejecución exactos.
 - Si la construcción vive en los dos compiladores, el test del arranque no sustituye al del selfhost. Un pase nuevo de `src/<x>.rs` debería tener su `selfhost/<x>.sal`.
-- Hueco conocido de conformidad: se marca en la cabecera de `tests/lang/*.sal` (`# xfail: motivo` para el arranque, `# selfhost-xfail: motivo` para el selfhost) con motivo concreto. Al arreglarlo, **quita la marca** en el mismo cambio. Antes de afirmar que algo está soportado, mira si su test la lleva (`grep -l xfail tests/lang/*.sal`).
+- Hueco conocido de conformidad: se marca en la cabecera de `tests/lang/*/*.sal` (`# xfail: motivo` para el arranque, `# selfhost-xfail: motivo` para el selfhost) con motivo concreto. Al arreglarlo, **quita la marca** en el mismo cambio. Antes de afirmar que algo está soportado, mira si su test la lleva (`grep -rl xfail tests/lang`).
 - Los resultados esperados de `tests/lang` se escriben a mano según la SPEC; no se copian de la salida de un compilador.
 - No describas el selfhost como equivalente al arranque en lo que el subplan lista como pendiente.
 - Los métodos de tipos básicos (`s.len()`, `xs.push(v)`), `method`/`static`/`init` y `List.new[T]()` están solo en el arranque hasta portarlos a selfhost. No toques `selfhost/` por ello sin que el usuario lo pida.
@@ -43,6 +43,7 @@ Orden de pases: `parse` → `expand_interpolation` → `infer_program` → `attr
 ## Estilo de fuente `.sal`
 
 - Sangría de espacios (un tabulador es `E_PARSE`), comentarios con `#`, última expresión del bloque es el valor.
+- Al programar en sal, prefiere los métodos a las funciones: `s.len()` mejor que `str_len(s)`, `xs.push(v)` mejor que `list_push(xs, v)`, y `method T.f()` mejor que `fn f(t: T)` cuando `T` es un tipo propio del módulo. Excepción: el código de `selfhost/` (y lo que este compila) sigue con funciones hasta que los métodos se porten; ahí no los uses sin que el usuario lo pida.
 - Todo `.sal` editado pasa por `standard check`; usa `standard fix` y revisa el diff. Si una práctica se repite y ninguna regla la cubre, amplía `standard` en el mismo cambio (cop + `run_all_cops` + fixtures `_in/_out` + test en `tests/standard.rs`).
 - `sal fmt` es idempotente y no aplica las reglas de `standard`.
 

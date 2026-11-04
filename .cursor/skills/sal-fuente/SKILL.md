@@ -68,7 +68,7 @@ Los tipos básicos tienen métodos que son el builtin con el receptor primero (t
 ## Memoria y efectos
 
 - Move por defecto. Copy solo en `Int`, `Float`, `Bool` y structs triviales.
-- Un `struct` es un valor: asignar un campo en una copia o en un callee no cambia el original (`tests/lang/struct_value_alias.sal`). Un struct de un solo campo es un newtype transparente.
+- Un `struct` es un valor: asignar un campo en una copia o en un callee no cambia el original (`tests/lang/structs/struct_value_alias.sal`). Un struct de un solo campo es un newtype transparente.
 - Un valor único se usa una vez. El segundo uso es `E_MOVED`.
 - El préstamo dura el argumento de la llamada. No hay locales de tipo referencia.
 - `load` exige `! io, alloc` y deja el tensor en `cpu`.
