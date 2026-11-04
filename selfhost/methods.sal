@@ -1,0 +1,187 @@
+# Methods: `method T.name(params)` is sugar for `fn T__name(self: T, params)` and `p.name(args)` for
+# `T__name(p, args)`, `T` being the inferred type of `p`. `static T.name(..)` is `fn T__name(..)`, called as
+# `T.name(args)`; `init T(..)` is `fn T__new(..) -> T`, called as `T.new(args)`. Mirror of `src/methods.rs`.
+#
+# The parser already builds `T__name` (see `TFn.recv`, `TFn.mkind`) and parses the calls as dotted ones
+# stamped with `@id` (see `infer.sal`). Two steps, both before the semantic passes (which only see direct
+# calls):
+# - `methods_check_defs` rejects a receiver that is not a user type, `__` in a name and duplicates.
+# - `prepare_methods` infers the program once, recording what each dotted call resolved to (`infer_record`),
+#   and rewrites those calls. What did not resolve keeps its dotted name and fails in the regular inference.
+import tast
+import infer
+import thash
+
+fn mr_fail(errs: List[String], msg: String) -> Int ! alloc
+    if list_len(errs) == 0
+        _a = list_push(errs, msg)
+        0
+    else
+        0
+
+# ---- definitions ----
+fn methods_enum_ok(enums: List[TEnum], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(enums, i).name, name) == 1
+        if list_len(list_get(enums, i).tparams) == 0
+            1
+        else
+            0
+    else
+        methods_enum_ok(enums, name, i + 1, n)
+
+fn methods_struct_ok(sts: List[TStruct], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(sts, i).name, name) == 1
+        if list_len(list_get(sts, i).tparams) == 0
+            1
+        else
+            0
+    else
+        methods_struct_ok(sts, name, i + 1, n)
+
+# Is there another function called `name`, apart from the one at `at`?
+fn methods_dup(fns: List[TFn], name: String, at: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif i == at
+        methods_dup(fns, name, at, i + 1, n)
+    elsif str_eq(list_get(fns, i).name, name) == 1
+        1
+    else
+        methods_dup(fns, name, at, i + 1, n)
+
+fn methods_check_defs(tp: TProgram, errs: List[String]) -> Int ! alloc
+    methods_check_go(tp, 0, list_len(tp.fns), errs)
+
+fn methods_check_go(tp: TProgram, i: Int, n: Int, errs: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    elsif list_len(errs) > 0
+        0
+    else
+        _c = methods_check_fn(tp, list_get(tp.fns, i), i, errs)
+        methods_check_go(tp, i + 1, n, errs)
+
+fn methods_check_fn(tp: TProgram, f: TFn, at: Int, errs: List[String]) -> Int ! alloc
+    if f.mkind == 0
+        0
+    else
+        part = str_slice(f.name, str_len(f.recv) + 2, str_len(f.name))
+        if methods_struct_ok(tp.structs, f.recv, 0, list_len(tp.structs)) + methods_enum_ok(tp.enums, f.recv, 0, list_len(tp.enums)) == 0
+            mr_fail(errs, "method receiver `" + f.recv + "` must be a non-generic struct, enum or frame defined in this module")
+        elsif str_contains(f.recv, "__") + str_contains(part, "__") > 0
+            mr_fail(errs, "`__` is reserved: method `" + f.recv + "." + part + "`")
+        elsif methods_dup(tp.fns, f.name, at, 0, list_len(tp.fns)) == 1
+            mr_fail(errs, "method `" + f.recv + "." + part + "` is already defined")
+        else
+            0
+
+# ---- calls ----
+# `ndots` sizes the table of resolutions (the number of dotted calls and methods the parser saw).
+fn prepare_methods(tp: TProgram, ndots: Int, errs: List[String]) -> TProgram ! alloc
+    _d = methods_check_defs(tp, errs)
+    if list_len(errs) > 0
+        tp
+    else
+        methods_resolve(tp, ic_build(tp, ndots, 1))
+
+fn methods_resolve(tp: TProgram, c: IC) -> TProgram ! alloc
+    _r = infer_program_go(c, 0, list_len(tp.fns))
+    fns = list_new[TFn]()
+    _a = mr_fns(tp.fns, 0, list_len(tp.fns), c.res, fns)
+    _f = ic_free(c)
+    TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums)
+
+fn mr_fns(xs: List[TFn], i: Int, n: Int, res: HT, out: List[TFn]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(xs, i)
+        _p = list_push(out, TFn(f.name, f.params, mr_block(f.body, res), f.ret, f.no_heap, f.fx, f.tparams, f.recv, f.mkind))
+        mr_fns(xs, i + 1, n, res, out)
+
+fn mr_block(b: TBlock, res: HT) -> TBlock ! alloc
+    out = list_new[TStmt]()
+    _a = mr_stmts(b.stmts, 0, list_len(b.stmts), res, out)
+    TBlock(out, mr_expr(b.tail, res))
+
+fn mr_stmts(xs: List[TStmt], i: Int, n: Int, res: HT, out: List[TStmt]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(xs, i)
+        _p = list_push(out, TStmt(st.kind, st.name, mr_expr(st.expr, res), st.ty, st.is_let, mr_expr(st.target, res), st.frozen, st.stack, st.id))
+        mr_stmts(xs, i + 1, n, res, out)
+
+fn mr_exprs(xs: List[Expr], i: Int, n: Int, res: HT, out: List[Expr]) -> List[Expr] ! alloc
+    if i >= n
+        out
+    else
+        _p = list_push(out, mr_expr(list_get(xs, i), res))
+        mr_exprs(xs, i + 1, n, res, out)
+
+fn mr_elsifs(xs: List[TElsif], i: Int, n: Int, res: HT, out: List[TElsif]) -> List[TElsif] ! alloc
+    if i >= n
+        out
+    else
+        a = list_get(xs, i)
+        _p = list_push(out, TElsif(mr_expr(a.cond, res), mr_block(a.body, res)))
+        mr_elsifs(xs, i + 1, n, res, out)
+
+fn mr_arms(xs: List[TArm], i: Int, n: Int, res: HT, out: List[TArm]) -> List[TArm] ! alloc
+    if i >= n
+        out
+    else
+        a = list_get(xs, i)
+        _p = list_push(out, TArm(a.pat, mr_expr(a.body, res)))
+        mr_arms(xs, i + 1, n, res, out)
+
+fn mr_expr(e: Expr, res: HT) -> Expr ! alloc
+    match e
+        XCall(name, args, targs) => mr_call(name, mr_exprs(args, 0, list_len(args), res, list_new[Expr]()), targs, res)
+        XBin(op, l, r) => XBin(op, mr_expr(l, res), mr_expr(r, res))
+        XTo(place, inner) => XTo(place, mr_expr(inner, res))
+        XOn(place, body, kern, idx) => XOn(place, mr_block(body, res), kern, idx)
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(mr_expr(cond, res), mr_block(then_b, res), mr_block(else_b, res), has_else, mr_elsifs(elsifs, 0, list_len(elsifs), res, list_new[TElsif]()))
+        XWhile(cond, body) => XWhile(mr_expr(cond, res), mr_block(body, res))
+        XField(base, field) => XField(mr_expr(base, res), field)
+        XLambda(param, body) => XLambda(param, mr_expr(body, res))
+        XUnary(op, inner) => XUnary(op, mr_expr(inner, res))
+        XTry(inner) => XTry(mr_expr(inner, res))
+        XMatch(scrut, arms) => XMatch(mr_expr(scrut, res), mr_arms(arms, 0, list_len(arms), res, list_new[TArm]()))
+        XNone => XNone
+        XInt(v) => XInt(v)
+        XFloat(bits, txt) => XFloat(bits, txt)
+        XStr(s) => XStr(s)
+        XIdent(s) => XIdent(s)
+        XTensor(nr, nc, data) => XTensor(nr, nc, data)
+        XBool(v) => XBool(v)
+
+# `args` are already rewritten. The resolution is `kind` + target: `i` the receiver is already the first
+# argument (`.name`), `l` it is the local before the dot (`q.name`), `s` a static call.
+fn mr_call(name: String, args: List[Expr], targs: String, res: HT) -> Expr ! alloc
+    id = mth_id(targs)
+    if str_len(id) == 0
+        XCall(name, args, targs)
+    else
+        val = ht_get(res, id)
+        if str_len(val) == 0
+            XCall(name, args, mth_targs(targs))
+        else
+            mr_resolved(name, args, mth_targs(targs), str_char(val, 0), str_slice(val, 1, str_len(val)))
+
+fn mr_resolved(name: String, args: List[Expr], ta: String, kind: Int, target: String) -> Expr ! alloc
+    if kind == 108
+        XCall(target, mr_with_local(name, args), ta)
+    else
+        XCall(target, args, ta)
+
+# `q.name(args)` on a local `q`: the call takes `q` first.
+fn mr_with_local(name: String, args: List[Expr]) -> List[Expr] ! alloc
+    out = list_new[Expr]()
+    _a = list_push(out, XIdent(str_slice(name, 0, mth_dot(name, 0, str_len(name)))))
+    _b = infer_push_exprs(out, args, 0, list_len(args))
+    out

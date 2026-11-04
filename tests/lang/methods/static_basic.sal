@@ -1,5 +1,4 @@
 # exit: 9
-# selfhost-xfail: methods are Rust bootstrap only for now
 struct P
     x: Int
     y: Int

@@ -1,5 +1,4 @@
 # exit: 150
-# selfhost-xfail: Dict methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     keep = List.new[String]()
     d = Dict.new[String, Int]()

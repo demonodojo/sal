@@ -1,6 +1,8 @@
 # Typed AST: what `parser.sal` builds and every pass reads, with `match` and struct fields.
 # `tp_free*` returns the boxes and lists of a tree; its strings stay.
 #
+# `TFn.mkind`: 0 plain `fn`, 1 `method`, 2 `static`, 3 `init`; `recv` is the receiver type ("" for `fn`)
+# and `name` the mangled `Recv__name` (`Recv__new` for an `init`).
 # `XNone` stands for an absent expression (handle 0): a missing block tail, `else` or `let` type.
 
 struct TParam
@@ -89,6 +91,8 @@ struct TFn
     no_heap: Int
     fx: List[Int]
     tparams: List[String]
+    recv: String
+    mkind: Int
 
 struct TProgram
     fns: List[TFn]

@@ -1,5 +1,4 @@
 # exit: 83
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     x = 16.0
     r = x.sqrt()

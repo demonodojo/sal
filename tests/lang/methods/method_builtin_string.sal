@@ -1,5 +1,4 @@
 # exit: 9
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     s = str_slice("hello world", 0, 5)
     t = s.slice(1, 3)

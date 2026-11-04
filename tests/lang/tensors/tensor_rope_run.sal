@@ -1,5 +1,4 @@
 # exit: 0
-# selfhost-xfail: selfhost has no lowering for rope outside the model programs
 # position 0 rotates by angle 0, so the order of the values is kept
 fn main() -> Int ! alloc
     a = tensor[[1.0, 4.0, 2.0, 3.0]]

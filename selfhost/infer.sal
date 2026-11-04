@@ -24,8 +24,16 @@ struct IC
     tnames: HT
     arity: HT
     has_imports: Int
+    res: HT
+    rec: Int
+    vtab: HT
+    enums: List[TEnum]
 
 fn ic_new(tp: TProgram) -> IC ! alloc
+    ic_build(tp, 0, 0)
+
+# `rec` = 1 records the resolution of every dotted call in `res` (see `infer_record`); `nres` sizes it.
+fn ic_build(tp: TProgram, nres: Int, rec: Int) -> IC ! alloc
     n = list_len(tp.fns) + list_len(tp.structs) + list_len(tp.enums) + 4
     nv = ic_count_variants(tp.enums, 0, list_len(tp.enums), 0)
     ret = list_new[String]()
@@ -36,12 +44,13 @@ fn ic_new(tp: TProgram) -> IC ! alloc
     names = ht_new(n + nv)
     tnames = ht_new(n)
     arity = ht_new(nv)
+    vtab = ht_new(nv * 2)
     _s = infer_sigs_go(sigs, tp.fns, 0, list_len(tp.fns))
     _g = infer_names_fns(names, tp.fns, 0, list_len(tp.fns))
-    _e = infer_names_enums(names, arity, tnames, tp.enums, 0, list_len(tp.enums))
+    _e = infer_names_enums(names, arity, vtab, tnames, tp.enums, 0, list_len(tp.enums))
     _t = infer_type_names_structs(tnames, tp.structs, 0, list_len(tp.structs))
     imports = list_len(tp.imports)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports)
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, ht_new(nres + 4), rec, vtab, tp.enums)
 
 fn ic_free(c: IC) -> Int ! alloc
     _a = tenv_free(c.env)
@@ -51,6 +60,8 @@ fn ic_free(c: IC) -> Int ! alloc
     _e = ht_free(c.sigs)
     _f = ht_free(c.names)
     _g = ht_free(c.tnames)
+    _h = ht_free(c.res)
+    _v = ht_free(c.vtab)
     ht_free(c.arity)
 
 fn ic_count_variants(enums: List[TEnum], i: Int, n: Int, acc: Int) -> Int ! alloc
@@ -164,24 +175,56 @@ fn infer_names_fns(m: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
         _p = ht_put(m, list_get(fns, i).name, "1")
         infer_names_fns(m, fns, i + 1, n)
 
-# Variants as bare names and with their arity, and the enums as type names.
-fn infer_names_enums(names: HT, arity: HT, tnames: HT, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
+# Variants as bare names and with their arity, and the enums as type names. `vtab` maps the variant
+# of a non-generic enum to its enum (`name`: index + 1) and its position (`name#`: index + 1).
+fn infer_names_enums(names: HT, arity: HT, vtab: HT, tnames: HT, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         e = list_get(enums, i)
-        _a = infer_names_variants(names, arity, e.variants, 0, list_len(e.variants))
+        _a = infer_names_variants(names, arity, vtab, e.variants, 0, list_len(e.variants), i, list_len(e.tparams))
         _b = ht_put(tnames, e.name, int_to_str(1 + list_len(e.tparams)))
-        infer_names_enums(names, arity, tnames, enums, i + 1, n)
+        infer_names_enums(names, arity, vtab, tnames, enums, i + 1, n)
 
-fn infer_names_variants(names: HT, arity: HT, vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
+fn infer_names_variants(names: HT, arity: HT, vtab: HT, vs: List[TVariant], i: Int, n: Int, ei: Int, generic: Int) -> Int ! alloc
     if i >= n
         0
     else
         v = list_get(vs, i)
         _p = ht_put(names, v.name, "1")
         _q = ht_put(arity, v.name, int_to_str(1 + list_len(v.fields)))
-        infer_names_variants(names, arity, vs, i + 1, n)
+        _r = infer_vtab_put(vtab, v.name, ei, i, generic)
+        infer_names_variants(names, arity, vtab, vs, i + 1, n, ei, generic)
+
+fn infer_vtab_put(vtab: HT, name: String, ei: Int, vi: Int, generic: Int) -> Int ! alloc
+    if generic > 0
+        0
+    else
+        _a = ht_put(vtab, name, int_to_str(ei + 1))
+        ht_put(vtab, name + "#", int_to_str(vi + 1))
+
+# The enum a variant of a non-generic enum builds ("Unknown" for any other).
+fn infer_variant_ty(c: IC, name: String) -> String ! alloc
+    ei = ic_get(c.vtab, name) - 1
+    if ei < 0
+        d"Unknown"
+    else
+        list_get(c.enums, ei).name
+
+# The type of payload field `j` of that variant ("Unknown" when it is not known).
+fn infer_variant_field_ty(c: IC, name: String, j: Int) -> String ! alloc
+    ei = ic_get(c.vtab, name) - 1
+    if ei < 0
+        d"Unknown"
+    else
+        vi = ic_get(c.vtab, name + "#") - 1
+        fields = list_get(list_get(c.enums, ei).variants, vi).fields
+        if j >= list_len(fields)
+            d"Unknown"
+        elsif str_len(list_get(fields, j)) == 0
+            d"Unknown"
+        else
+            list_get(fields, j)
 
 fn infer_type_names_structs(m: HT, v: List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -309,6 +352,12 @@ fn infer_args(c: IC, args: List[Expr], i: Int, n: Int, tys: List[String]) -> Int
         _t = list_push(tys, strdup(infer_expr(c, list_get(args, i))))
         infer_args(c, args, i + 1, n, tys)
 
+# Types the arguments from `i` on for their errors only.
+fn infer_args_free(c: IC, args: List[Expr], i: Int) -> Int ! alloc
+    tys = list_new[String]()
+    _a = infer_args(c, args, i, list_len(args), tys)
+    list_free(tys)
+
 fn infer_user_args(c: IC, name: String, params: List[TParam], tys: List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
@@ -323,19 +372,537 @@ fn infer_user_args(c: IC, name: String, params: List[TParam], tys: List[String],
         else
             infer_user_args(c, name, params, tys, i + 1, n)
 
+# ---- method calls ----
+# A dotted call is `.m` (the receiver is the first argument), `q.m` with `q` a local (the receiver), a
+# type (a `static`/`init`, or a built-in constructor) or a module (left alone). The parser stamps its
+# type arguments with `@id`; `methods.sal` rewrites the call to `T__m(recv, ..)` from what is recorded here.
+fn mth_at(t: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_char(t, i) == 64
+        i
+    else
+        mth_at(t, i + 1, n)
+
+fn mth_dot(t: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_char(t, i) == 46
+        i
+    else
+        mth_dot(t, i + 1, n)
+
+# The type arguments of a stamped `targs`.
+fn mth_targs(t: String) -> String ! alloc
+    p = mth_at(t, 0, str_len(t))
+    if p < 0
+        t
+    else
+        str_slice(t, 0, p)
+
+# The stamp ("" when none).
+fn mth_id(t: String) -> String ! alloc
+    p = mth_at(t, 0, str_len(t))
+    if p < 0
+        d""
+    else
+        str_slice(t, p + 1, str_len(t))
+
+fn infer_record(c: IC, id: String, val: String) -> Int ! alloc
+    if c.rec == 0
+        0
+    elsif str_len(id) == 0
+        0
+    else
+        ht_put(c.res, id, val)
+
+fn infer_call_t(c: IC, name: String, args: List[Expr], targs: String) -> String ! alloc
+    p = mth_dot(name, 0, str_len(name))
+    if p < 0
+        infer_call_ta(c, name, args, targs)
+    else
+        infer_dotted(c, name, p, args, targs)
+
+fn infer_dotted(c: IC, name: String, p: Int, args: List[Expr], targs: String) -> String ! alloc
+    q = str_slice(name, 0, p)
+    fld = str_slice(name, p + 1, str_len(name))
+    id = mth_id(targs)
+    ta = mth_targs(targs)
+    if p == 0
+        infer_instance(c, fld, args, ta, id, d"i")
+    elsif str_len(tenv_type(c.env, q)) > 0
+        infer_instance(c, fld, infer_with_local(q, args), ta, id, d"l")
+    elsif infer_is_user_type(c, q) == 1
+        infer_static(c, q, fld, args, ta, id)
+    else
+        infer_dotted_other(c, q, fld, args, ta, id)
+
+# `[q] ++ args`: the local `q` as the receiver of a call.
+fn infer_with_local(q: String, args: List[Expr]) -> List[Expr] ! alloc
+    out = list_new[Expr]()
+    _a = list_push(out, XIdent(strdup(q)))
+    _b = infer_push_exprs(out, args, 0, list_len(args))
+    out
+
+fn infer_push_exprs(out: List[Expr], xs: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, list_get(xs, i))
+        infer_push_exprs(out, xs, i + 1, n)
+
+fn infer_is_user_type(c: IC, q: String) -> Int ! alloc
+    if tt_struct_find(c.env.structs, q) >= 0
+        1
+    elsif ic_get(c.tnames, q) != 0
+        1
+    else
+        0
+
+# `T.name(args)` where `T` is a user type: the `static` or `init` `T__name`.
+fn infer_static(c: IC, q: String, fld: String, args: List[Expr], ta: String, id: String) -> String ! alloc
+    mangled = q + "__" + fld
+    si = ic_get(c.sigs, mangled)
+    if str_len(ta) > 0
+        _a = infer_args_free(c, args, 0)
+        _f = ic_fail(c, "`" + q + "." + fld + "` takes no type arguments")
+        d"Unknown"
+    elsif si == 0
+        _a = infer_args_free(c, args, 0)
+        _f = ic_fail(c, "type `" + q + "` has no static `" + fld + "`")
+        d"Unknown"
+    elsif list_get(c.fns, si - 1).mkind < 2
+        _f = ic_fail(c, "`" + q + "." + fld + "` is an instance method: call it on a value, `x." + fld + "(...)`")
+        d"Unknown"
+    else
+        r = infer_call(c, mangled, args)
+        _r = infer_record(c, id, "s" + mangled)
+        r
+
+# `recv.name(args)`: `args[0]` is the receiver, typed once and bound as `__recv` so a chain of calls
+# is inferred in linear time.
+fn infer_instance(c: IC, fld: String, args: List[Expr], ta: String, id: String, kind: String) -> String ! alloc
+    rty = infer_expr(c, list_get(args, 0))
+    if ic_failed(c) == 1
+        d"Unknown"
+    elsif str_len(ta) > 0
+        _f = ic_fail(c, "method `" + fld + "` takes no type arguments")
+        d"Unknown"
+    elsif str_len(rty) == 0
+        infer_unresolved(c, args)
+    elsif ty_is(rty, "Unknown") == 1
+        infer_unresolved(c, args)
+    else
+        infer_instance_on(c, rty, infer_type_base(ts_trim(rty), 0, str_len(ts_trim(rty))), fld, args, id, kind)
+
+# The receiver's type is not known here: type the rest of the arguments and leave the call as it is.
+fn infer_unresolved(c: IC, args: List[Expr]) -> String ! alloc
+    _a = infer_args_free(c, args, 1)
+    d"Unknown"
+
+fn infer_instance_on(c: IC, rty: String, base: String, fld: String, args: List[Expr], id: String, kind: String) -> String ! alloc
+    bi = mth_builtin(base, fld)
+    mangled = base + "__" + fld
+    si = ic_get(c.sigs, mangled)
+    if str_len(bi) > 0
+        infer_recv_call(c, rty, bi, args, id, kind)
+    elsif si == 0
+        _f = ic_fail(c, "type `" + base + "` has no method `" + fld + "`")
+        d"Unknown"
+    elsif list_get(c.fns, si - 1).mkind >= 2
+        _f = ic_fail(c, "`" + base + "." + fld + "` is static: call it as `" + base + "." + fld + "(...)`")
+        d"Unknown"
+    else
+        infer_recv_call(c, rty, mangled, args, id, kind)
+
+# The call `target(recv, rest..)` with the receiver bound to `__recv` (typed once).
+fn infer_recv_call(c: IC, rty: String, target: String, args: List[Expr], id: String, kind: String) -> String ! alloc
+    mark = tenv_len(c.env)
+    _b = tenv_bind(c.env, "__recv", rty)
+    args2 = list_new[Expr]()
+    _p = list_push(args2, XIdent(d"__recv"))
+    _q = infer_push_from(args2, args, 1, list_len(args))
+    r = infer_call(c, target, args2)
+    _s = tenv_truncate(c.env, mark)
+    _r = infer_record(c, id, kind + target)
+    r
+
+fn infer_push_from(out: List[Expr], xs: List[Expr], i: Int, n: Int) -> Int ! alloc
+    infer_push_exprs_from(out, xs, i, n)
+
+fn infer_push_exprs_from(out: List[Expr], xs: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, list_get(xs, i))
+        infer_push_exprs_from(out, xs, i + 1, n)
+
+# `q.name(args)` with `q` neither a local nor a user type: the constructor of a built-in type
+# (`List.new[Int]()`, `Dict.new[String, Int]()`, `Bytes.new(n)`, `String.from_char(c)`) or a module member
+# (not ours to check).
+fn infer_dotted_other(c: IC, q: String, fld: String, args: List[Expr], ta: String, id: String) -> String ! alloc
+    sb = mth_static(q, fld)
+    if str_len(sb) > 0
+        infer_builtin_static(c, q, fld, sb, args, ta, id)
+    elsif infer_is_builtin_type(q) == 1
+        _a = infer_args_free(c, args, 0)
+        _f = ic_fail(c, "type `" + q + "` has no static `" + fld + "`")
+        d"Unknown"
+    else
+        _a = infer_args_free(c, args, 0)
+        d"Unknown"
+
+fn infer_is_builtin_type(q: String) -> Int ! alloc
+    if str_eq(q, "List") + str_eq(q, "Dict") + str_eq(q, "Bytes") + str_eq(q, "String") > 0
+        1
+    elsif str_eq(q, "Int") + str_eq(q, "Float") + str_eq(q, "Bool") > 0
+        1
+    else
+        0
+
+fn infer_builtin_static(c: IC, q: String, fld: String, sb: String, args: List[Expr], ta: String, id: String) -> String ! alloc
+    want = mth_static_targs(q, fld)
+    got = infer_dotted_targ_count(ta)
+    if got != want
+        _a = infer_args_free(c, args, 0)
+        _f = ic_fail(c, "`" + q + "." + fld + "` takes " + int_to_str(want) + " type argument(s), found " + int_to_str(got) + ": write `" + q + "." + fld + "[...](...)`")
+        d"Unknown"
+    else
+        r = infer_call_ta(c, sb, args, ta)
+        _r = infer_record(c, id, "s" + sb)
+        r
+
+# The number of type arguments in `ta`, the text between the brackets of `f[ta](..)`.
+fn infer_dotted_targ_count(ta: String) -> Int ! alloc
+    if str_len(ta) == 0
+        0
+    else
+        t = "X[" + ta + "]"
+        infer_targ_count(t, 0, str_len(t), 0, 0, 0)
+
+# The builtin a method of a built-in type calls with the receiver first ("" when there is none).
+# Mirror of `builtin_method` in `src/methods.rs`.
+fn mth_builtin(base: String, fld: String) -> String ! alloc
+    if str_eq(base, "String") + str_eq(fld, "len") == 2
+        d"str_len"
+    elsif str_eq(base, "String") + str_eq(fld, "eq") == 2
+        d"str_eq"
+    elsif str_eq(base, "String") + str_eq(fld, "contains") == 2
+        d"str_contains"
+    elsif str_eq(base, "String") + str_eq(fld, "slice") == 2
+        d"str_slice"
+    elsif str_eq(base, "String") + str_eq(fld, "char") == 2
+        d"str_char"
+    elsif str_eq(base, "String") + str_eq(fld, "hash") == 2
+        d"str_hash"
+    elsif str_eq(base, "String") + str_eq(fld, "concat") == 2
+        d"str_concat"
+    elsif str_eq(base, "String") + str_eq(fld, "append") == 2
+        d"str_append"
+    elsif str_eq(base, "String") + str_eq(fld, "skip") == 2
+        d"str_skip"
+    elsif str_eq(base, "List") + str_eq(fld, "len") == 2
+        d"list_len"
+    elsif str_eq(base, "List") + str_eq(fld, "push") == 2
+        d"list_push"
+    elsif str_eq(base, "List") + str_eq(fld, "get") == 2
+        d"list_get"
+    elsif str_eq(base, "List") + str_eq(fld, "set") == 2
+        d"list_set"
+    elsif str_eq(base, "List") + str_eq(fld, "pop") == 2
+        d"list_pop"
+    elsif str_eq(base, "Dict") + str_eq(fld, "get") == 2
+        d"dict_get"
+    elsif str_eq(base, "Dict") + str_eq(fld, "put") == 2
+        d"dict_put"
+    elsif str_eq(base, "Dict") + str_eq(fld, "has") == 2
+        d"dict_has"
+    elsif str_eq(base, "Dict") + str_eq(fld, "len") == 2
+        d"dict_len"
+    elsif str_eq(base, "Dict") + str_eq(fld, "remove") == 2
+        d"dict_remove"
+    elsif str_eq(base, "Dict") + str_eq(fld, "keys") == 2
+        d"dict_keys"
+    elsif str_eq(base, "Dict") + str_eq(fld, "values") == 2
+        d"dict_values"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "len") == 2
+        d"bytes_len"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "get_u8") == 2
+        d"bytes_get_u8"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "get_u16") == 2
+        d"bytes_get_u16"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "get_u32") == 2
+        d"bytes_get_u32"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "get_i64") == 2
+        d"bytes_get_i64"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "set_u8") == 2
+        d"bytes_set_u8"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "set_u16") == 2
+        d"bytes_set_u16"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "set_u32") == 2
+        d"bytes_set_u32"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "set_i64") == 2
+        d"bytes_set_i64"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "fill") == 2
+        d"bytes_fill"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "copy") == 2
+        d"bytes_copy"
+    elsif str_eq(base, "Int") + str_eq(fld, "to_str") == 2
+        d"int_to_str"
+    elsif str_eq(base, "Int") + str_eq(fld, "to_float") == 2
+        d"int_to_float"
+    elsif str_eq(base, "Float") + str_eq(fld, "to_int") == 2
+        d"float_to_int"
+    elsif str_eq(base, "Float") + str_eq(fld, "to_str") == 2
+        d"f64_bits_to_str"
+    elsif str_eq(base, "Float") + str_eq(fld, "sqrt") == 2
+        d"float_sqrt"
+    elsif str_eq(base, "Float") + str_eq(fld, "abs") == 2
+        d"float_abs"
+    elsif str_eq(base, "Float") + str_eq(fld, "floor") == 2
+        d"float_floor"
+    elsif str_eq(base, "Float") + str_eq(fld, "ceil") == 2
+        d"float_ceil"
+    elsif str_eq(base, "Float") + str_eq(fld, "sin") == 2
+        d"float_sin"
+    elsif str_eq(base, "Float") + str_eq(fld, "cos") == 2
+        d"float_cos"
+    elsif str_eq(base, "Float") + str_eq(fld, "exp") == 2
+        d"float_exp"
+    elsif str_eq(base, "Float") + str_eq(fld, "log") == 2
+        d"float_log"
+    elsif str_eq(base, "Float") + str_eq(fld, "pow") == 2
+        d"float_pow"
+    else
+        d""
+
+# The builtin a constructor `Type.name(..)` of a built-in type calls ("" when there is none) and how many type
+# arguments it takes. Mirror of `builtin_static` in `src/methods.rs`.
+fn mth_static(ty: String, name: String) -> String ! alloc
+    if str_eq(ty, "List") + str_eq(name, "new") == 2
+        d"list_new"
+    elsif str_eq(ty, "Dict") + str_eq(name, "new") == 2
+        d"dict_new"
+    elsif str_eq(ty, "Bytes") + str_eq(name, "new") == 2
+        d"bytes_new"
+    elsif str_eq(ty, "String") + str_eq(name, "from_char") == 2
+        d"char_to_str"
+    else
+        d""
+
+fn mth_static_targs(ty: String, name: String) -> Int ! alloc
+    if str_eq(ty, "List") + str_eq(name, "new") == 2
+        1
+    elsif str_eq(ty, "Dict") + str_eq(name, "new") == 2
+        2
+    else
+        0
+
 fn infer_call(c: IC, name: String, args: List[Expr]) -> String ! alloc
+    infer_call_ta(c, name, args, d"")
+
+# `targs` is the text of the type arguments (`list_new[Int]()`).
+fn infer_call_ta(c: IC, name: String, args: List[Expr], targs: String) -> String ! alloc
     tys = list_new[String]()
-    r = infer_call_go(c, name, args, tys)
+    r = infer_call_go(c, name, args, tys, targs)
     _f = list_free(tys)
     r
 
-fn infer_call_go(c: IC, name: String, args: List[Expr], tys: List[String]) -> String ! alloc
+fn infer_call_go(c: IC, name: String, args: List[Expr], tys: List[String], targs: String) -> String ! alloc
     si = ic_get(c.sigs, name)
     if si != 0
         infer_user_call(c, name, list_get(c.fns, si - 1), args, tys)
     else
         _a = infer_args(c, args, 0, list_len(args), tys)
-        infer_builtin_call(c, name, args, tys)
+        infer_builtin_call(c, name, args, tys, targs)
+
+# ---- typed builtins ----
+# The result of the builtins whose signature matters to methods: the containers, the string and float helpers.
+# "" when `name` is not one of them. Mirror of the matching cases of `src/infer.rs`.
+fn infer_typed_builtin(c: IC, name: String, tys: List[String], targs: String) -> String ! alloc
+    if str_eq(name, "list_new") == 1
+        infer_t_list_new(targs)
+    elsif str_eq(name, "dict_new") == 1
+        infer_t_dict_new(targs)
+    elsif infer_t_is_list(name) == 1
+        infer_t_list(c, name, tys)
+    elsif infer_t_is_dict(name) == 1
+        infer_t_dict(c, name, tys)
+    elsif str_eq(name, "bytes_new") == 1
+        d"Bytes"
+    elsif infer_t_is_int(name) == 1
+        d"Int"
+    elsif infer_t_is_float(name) == 1
+        infer_t_float(c, name, tys)
+    elsif str_eq(name, "int_to_float") == 1
+        d"Float"
+    elsif str_eq(name, "f64_bits_to_str") == 1
+        d"String"
+    else
+        d""
+
+fn infer_t_list_new(targs: String) -> String ! alloc
+    if str_len(targs) == 0
+        d"List[Int]"
+    else
+        "List[" + targs + "]"
+
+fn infer_t_dict_new(targs: String) -> String ! alloc
+    if infer_dotted_targ_count(targs) >= 2
+        "Dict[" + targs + "]"
+    else
+        d"Dict[String, Int]"
+
+fn infer_t_is_list(name: String) -> Int ! alloc
+    if str_eq(name, "list_len") + str_eq(name, "list_push") + str_eq(name, "list_get") + str_eq(name, "list_set") + str_eq(name, "list_pop") > 0
+        1
+    else
+        0
+
+fn infer_t_is_dict(name: String) -> Int ! alloc
+    if str_eq(name, "dict_get") + str_eq(name, "dict_put") + str_eq(name, "dict_has") + str_eq(name, "dict_len") > 0
+        1
+    elsif str_eq(name, "dict_remove") + str_eq(name, "dict_keys") + str_eq(name, "dict_values") > 0
+        1
+    else
+        0
+
+# Builtins that give an `Int`.
+fn infer_t_is_int(name: String) -> Int ! alloc
+    if str_eq(name, "str_len") + str_eq(name, "str_eq") + str_eq(name, "str_contains") + str_eq(name, "str_char") + str_eq(name, "str_skip") + str_eq(name, "str_hash") > 0
+        1
+    elsif str_eq(name, "bytes_len") + str_eq(name, "bytes_get_u8") + str_eq(name, "bytes_get_u16") + str_eq(name, "bytes_get_u32") + str_eq(name, "bytes_get_i64") > 0
+        1
+    elsif str_eq(name, "bytes_set_u8") + str_eq(name, "bytes_set_u16") + str_eq(name, "bytes_set_u32") + str_eq(name, "bytes_set_i64") + str_eq(name, "bytes_fill") + str_eq(name, "bytes_copy") + str_eq(name, "float_to_int") > 0
+        1
+    else
+        0
+
+fn infer_t_is_float(name: String) -> Int ! alloc
+    if str_eq(name, "float_sqrt") + str_eq(name, "float_abs") + str_eq(name, "float_floor") + str_eq(name, "float_ceil") + str_eq(name, "float_sin") > 0
+        1
+    elsif str_eq(name, "float_cos") + str_eq(name, "float_exp") + str_eq(name, "float_log") + str_eq(name, "float_pow") > 0
+        1
+    else
+        0
+
+fn infer_t_float(c: IC, name: String, tys: List[String]) -> String ! alloc
+    _a = infer_t_float_args(c, name, tys, 0)
+    d"Float"
+
+fn infer_t_float_args(c: IC, name: String, tys: List[String], i: Int) -> Int ! alloc
+    if i >= list_len(tys)
+        0
+    elsif ty_compat(list_get(tys, i), "Float") == 0
+        ic_fail(c, name + " expects Float, found " + ty_msg(list_get(tys, i)))
+    else
+        infer_t_float_args(c, name, tys, i + 1)
+
+# The type of argument `i`, "Unknown" when there is none.
+fn infer_t_arg(tys: List[String], i: Int) -> String ! alloc
+    if i >= list_len(tys)
+        d"Unknown"
+    else
+        list_get(tys, i)
+
+fn infer_t_list(c: IC, name: String, tys: List[String]) -> String ! alloc
+    xs = infer_t_arg(tys, 0)
+    if infer_t_wrong_kind(xs, "List[") == 1
+        _f = ic_fail(c, name + " expects a List")
+        d"Unknown"
+    else
+        infer_t_list_op(c, name, tys, xs, tt_list_elem(ts_trim(xs)))
+
+fn infer_t_list_op(c: IC, name: String, tys: List[String], xs: String, elem: String) -> String ! alloc
+    if str_eq(name, "list_len") == 1
+        d"Int"
+    elsif str_eq(name, "list_push") == 1
+        _a = infer_t_elem_ok(c, tys, 1, elem)
+        xs
+    elsif str_eq(name, "list_set") == 1
+        _a = infer_t_elem_ok(c, tys, 2, elem)
+        xs
+    elsif str_len(elem) == 0
+        d"Unknown"
+    else
+        elem
+
+fn infer_t_elem_ok(c: IC, tys: List[String], i: Int, elem: String) -> Int ! alloc
+    if str_len(elem) == 0
+        0
+    elsif i >= list_len(tys)
+        0
+    elsif ty_compat(list_get(tys, i), elem) == 0
+        ic_fail(c, "list element type mismatch: expected " + ty_msg(elem) + ", found " + ty_msg(list_get(tys, i)))
+    else
+        0
+
+# A scalar, or a container of the other kind (`Unknown` and generics pass).
+fn infer_t_wrong_kind(t: String, prefix: String) -> Int ! alloc
+    tt = ts_trim(t)
+    if ty_is_scalar(t) == 1
+        1
+    elsif str_eq(str_slice(tt, 0, str_len(prefix)), prefix) == 1
+        0
+    elsif str_eq(str_slice(tt, 0, 5), "Dict[") + str_eq(str_slice(tt, 0, 5), "List[") > 0
+        1
+    else
+        0
+
+fn infer_t_dict(c: IC, name: String, tys: List[String]) -> String ! alloc
+    d = infer_t_arg(tys, 0)
+    if infer_t_wrong_kind(d, "Dict[") == 1
+        _f = ic_fail(c, name + " expects a Dict")
+        d"Unknown"
+    else
+        infer_t_dict_op(c, name, tys, d, tt_arg(ts_trim(d), 0), tt_arg(ts_trim(d), 1))
+
+fn infer_t_dict_op(c: IC, name: String, tys: List[String], d: String, k: String, v: String) -> String ! alloc
+    if str_eq(name, "dict_len") == 1
+        d"Int"
+    elsif str_eq(name, "dict_keys") == 1
+        infer_t_wrap_list(k)
+    elsif str_eq(name, "dict_values") == 1
+        infer_t_wrap_list(v)
+    elsif str_eq(name, "dict_get") == 1
+        _a = infer_t_key_ok(c, tys, k)
+        infer_t_wrap(d"Option", v)
+    elsif str_eq(name, "dict_put") == 1
+        _a = infer_t_key_ok(c, tys, k)
+        _b = infer_t_dict_val_ok(c, tys, v)
+        d
+    else
+        _a = infer_t_key_ok(c, tys, k)
+        d"Bool"
+
+fn infer_t_wrap_list(elem: String) -> String ! alloc
+    infer_t_wrap(d"List", elem)
+
+fn infer_t_wrap(head: String, arg: String) -> String ! alloc
+    if str_len(arg) == 0
+        d"Unknown"
+    else
+        head + "[" + arg + "]"
+
+fn infer_t_key_ok(c: IC, tys: List[String], k: String) -> Int ! alloc
+    if str_len(k) == 0
+        0
+    elsif list_len(tys) < 2
+        0
+    elsif ty_compat(list_get(tys, 1), k) == 0
+        ic_fail(c, "dict key type mismatch")
+    else
+        0
+
+fn infer_t_dict_val_ok(c: IC, tys: List[String], v: String) -> Int ! alloc
+    if str_len(v) == 0
+        0
+    elsif list_len(tys) < 3
+        0
+    elsif ty_compat(list_get(tys, 2), v) == 0
+        ic_fail(c, "dict value type mismatch")
+    else
+        0
 
 fn infer_user_call(c: IC, name: String, f: TFn, args: List[Expr], tys: List[String]) -> String ! alloc
     if list_len(args) != list_len(f.params)
@@ -350,7 +917,15 @@ fn infer_user_call(c: IC, name: String, f: TFn, args: List[Expr], tys: List[Stri
         else
             f.ret
 
-fn infer_builtin_call(c: IC, name: String, args: List[Expr], tys: List[String]) -> String ! alloc
+# Builtins typed here take priority over the older cases below.
+fn infer_builtin_call(c: IC, name: String, args: List[Expr], tys: List[String], targs: String) -> String ! alloc
+    t = infer_typed_builtin(c, name, tys, targs)
+    if str_len(t) > 0
+        t
+    else
+        infer_builtin_call_old(c, name, args, tys)
+
+fn infer_builtin_call_old(c: IC, name: String, args: List[Expr], tys: List[String]) -> String ! alloc
     si = tt_struct_find(c.env.structs, name)
     if si >= 0
         infer_struct_call(c, name, list_get(c.env.structs, si), args, tys)
@@ -402,7 +977,7 @@ fn infer_variant_call(c: IC, name: String, args: List[Expr]) -> String ! alloc
         _f = ic_fail(c, "variant `" + name + "` expects " + int_to_str(want) + " payload field(s), found " + int_to_str(list_len(args)))
         d"Unknown"
     else
-        d"Unknown"
+        infer_variant_ty(c, name)
 
 fn infer_matmul_call(c: IC, tys: List[String]) -> String ! alloc
     if list_len(tys) == 2
@@ -977,7 +1552,7 @@ fn infer_ident(c: IC, name: String) -> String ! alloc
         else
             t
     elsif ic_get(c.names, name) != 0
-        d"Unknown"
+        infer_variant_ty(c, name)
     elsif infer_imported_variant(c, name) == 1
         d"Unknown"
     else
@@ -1168,7 +1743,7 @@ fn infer_expr_go(c: IC, e: Expr) -> String ! alloc
         XIdent(name) => infer_ident(c, name)
         XBin(op, l, r) => infer_binary(c, op, l, r)
         XUnary(op, inner) => infer_unary(c, op, inner)
-        XCall(name, args, targs) => infer_call(c, name, args)
+        XCall(name, args, targs) => infer_call_t(c, name, args, targs)
         XField(base, field) => infer_field(c, base, field)
         XIf(cond, then_b, else_b, has_else, elsifs) => infer_if(c, cond, then_b, else_b, has_else, elsifs)
         XTo(place, inner) => infer_expr(c, inner)
@@ -1228,12 +1803,16 @@ fn infer_tail_value(c: IC, e: Expr) -> Int ! alloc
     0
 
 fn infer_pattern_binds(c: IC, p: TPat) -> Int ! alloc
+    infer_pattern_binds_ty(c, p, d"Unknown")
+
+# Binds the names of `p`, which matches a value of type `ty`; a variant's payload binds its field types.
+fn infer_pattern_binds_ty(c: IC, p: TPat, ty: String) -> Int ! alloc
     if p.kind == 1
-        tenv_bind(c.env, p.name, "Unknown")
+        tenv_bind(c.env, p.name, ty)
     elsif p.kind == 3
         want = ic_get(c.arity, p.name)
         _f = infer_pattern_arity(c, p, want)
-        infer_pattern_list(c, p.args, 0, list_len(p.args))
+        infer_pattern_list(c, p, 0, list_len(p.args))
     else
         0
 
@@ -1246,12 +1825,12 @@ fn infer_pattern_arity(c: IC, p: TPat, want: Int) -> Int ! alloc
     else
         0
 
-fn infer_pattern_list(c: IC, ps: List[TPat], i: Int, n: Int) -> Int ! alloc
+fn infer_pattern_list(c: IC, p: TPat, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = infer_pattern_binds(c, list_get(ps, i))
-        infer_pattern_list(c, ps, i + 1, n)
+        _a = infer_pattern_binds_ty(c, list_get(p.args, i), infer_variant_field_ty(c, p.name, i))
+        infer_pattern_list(c, p, i + 1, n)
 
 fn infer_match_arms(c: IC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n

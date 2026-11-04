@@ -1,5 +1,4 @@
 # exit: 17
-# selfhost-xfail: Dict methods are Rust bootstrap only for now
 fn count(d: Dict[String, String]) -> Int ! alloc
     ks = d.keys()
     vs = d.values()

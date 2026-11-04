@@ -1,5 +1,4 @@
 # exit: 5
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     n = 42
     n.to_str().len() + "abc".len()

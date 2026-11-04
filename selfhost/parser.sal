@@ -3,6 +3,7 @@ import result
 import lexer
 import tast
 import loops
+import methods
 
 # Parser state: the token lists plus `st = [index, has_err, group depth, last statement id]` and `msg = [error text]`.
 # The lists are shared by every copy of the struct, so `list_set` on them is the mutation.
@@ -19,6 +20,7 @@ fn parser_new(toks: Toks) -> Parser ! alloc
     _b = list_push(st, 0)
     _c = list_push(st, 0)
     _n = list_push(st, 0)
+    _o = list_push(st, 0)
     msg = list_new[String]()
     _d = list_push(msg, d"")
     Parser(toks.kinds, toks.texts, toks.ivals, st, msg)
@@ -409,7 +411,7 @@ fn parse_postfix_go(pr: Parser, e: Expr) -> Expr ! alloc
         _d = p_advance(pr)
         if tok_kind(pr, p_peek(pr)) == TK_IDENT()
             t = p_advance(pr)
-            parse_postfix_go(pr, XField(e, tok_own(pr, t)))
+            parse_postfix_member(pr, e, tok_own(pr, t))
         else
             e
     elsif tok_kind(pr, p_peek(pr)) == TK_LPAREN()
@@ -424,6 +426,48 @@ fn parse_postfix_go(pr: Parser, e: Expr) -> Expr ! alloc
             e
     else
         e
+
+# After `e.name`: a method call (with optional type arguments, `List.new[Int]()`) or a field.
+fn parse_postfix_member(pr: Parser, e: Expr, fld: String) -> Expr ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
+        _a = p_advance(pr)
+        text = parse_type_text_go(pr, 1, d"")
+        parse_method_call(pr, e, fld, trim_closing_bracket(text))
+    elsif tok_kind(pr, p_peek(pr)) == TK_LPAREN()
+        parse_method_call(pr, e, fld, d"")
+    else
+        parse_postfix_go(pr, XField(e, fld))
+
+# `base.fld(args)`. On a bare identifier it is `base.fld` as a qualified call (a module member, a
+# static call `T.new(..)` or a method of the local `base`: `methods.sal` tells them apart); on any
+# other receiver it is `.fld` with the receiver as first argument.
+fn parse_method_call(pr: Parser, base: Expr, fld: String, targs: String) -> Expr ! alloc
+    if tok_kind(pr, p_peek(pr)) != TK_LPAREN()
+        _e = p_set_err(pr, d"parse error: expected ( after the type arguments")
+        base
+    else
+        _a = p_advance(pr)
+        _g = p_enter_group(pr)
+        args = list_new[Expr]()
+        nm = parse_method_target(base, fld, args)
+        args = parse_arg_list(pr, args)
+        _h = p_leave_group(pr)
+        parse_postfix_go(pr, XCall(nm, args, targs + "@" + int_to_str(p_note_dot(pr))))
+
+# Counts a dotted call or a method definition (see `prepare_methods`); returns a fresh id for the call.
+fn p_note_dot(pr: Parser) -> Int ! alloc
+    _a = list_set(pr.st, 4, list_get(pr.st, 4) + 1)
+    p_next_id(pr)
+
+# The call name for `base.fld`; a receiver that is not a bare identifier goes first in `args`.
+fn parse_method_target(base: Expr, fld: String, args: List[Expr]) -> String ! alloc
+    match base
+        XIdent(q) => qualified_name(strdup(q), fld)
+        _ => parse_method_target_expr(base, fld, args)
+
+fn parse_method_target_expr(base: Expr, fld: String, args: List[Expr]) -> String ! alloc
+    _a = list_push(args, base)
+    "." + fld
 
 fn parse_postfix(pr: Parser) -> Expr ! alloc
     parse_postfix_go(pr, parse_primary(pr))
@@ -1226,10 +1270,114 @@ fn parse_fn(pr: Parser, no_heap: Int) -> TFn ! alloc
         _f = p_skip_nls(pr)
         _g = p_accept(pr, TK_INDENT())
         body = parse_block_after_indent(pr)
-        TFn(name, params, body, ret, no_heap, fx, tparams)
+        TFn(name, params, body, ret, no_heap, fx, tparams, d"", 0)
     else
         _e = p_set_err(pr, d"parse error: expected function name")
-        TFn(d"_bad", list_new[TParam](), empty_block(), d"", 0, fx_list_new(), list_new[String]())
+        TFn(d"_bad", list_new[TParam](), empty_block(), d"", 0, fx_list_new(), list_new[String](), d"", 0)
+
+# 1 `method`, 2 `static`, 3 `init` when the next token starts such an item and an identifier follows.
+fn parse_method_kw(pr: Parser) -> Int ! alloc
+    t = p_peek(pr)
+    if tok_kind(pr, t + 1) != TK_IDENT()
+        0
+    elsif str_eq(tok_text(pr, t), d"method") == 1
+        1
+    elsif str_eq(tok_text(pr, t), d"static") == 1
+        2
+    elsif str_eq(tok_text(pr, t), d"init") == 1
+        3
+    else
+        0
+
+fn method_bad() -> TFn ! alloc
+    TFn(d"_bad", list_new[TParam](), empty_block(), d"", 0, fx_list_new(), list_new[String](), d"", 0)
+
+# `method T.name(self, params) -> R`, `static T.name(params) -> R` and `init T(params) ! fx`: a function
+# `T__name` (`T__new` for `init`, which returns a `T`); a method takes `self: T` first.
+fn parse_method_item(pr: Parser, mk: Int) -> TFn ! alloc
+    _k = p_advance(pr)
+    _n = p_note_dot(pr)
+    rt = p_advance(pr)
+    recv = tok_own(pr, rt)
+    if mk == 3
+        parse_method_sig(pr, mk, recv, d"new", list_new[String]())
+    elsif p_accept(pr, TK_DOT()) == 0
+        _e = p_set_err(pr, d"parse error: expected . after the receiver type")
+        method_bad()
+    elsif tok_kind(pr, p_peek(pr)) != TK_IDENT()
+        _e = p_set_err(pr, d"parse error: expected method name")
+        method_bad()
+    else
+        nt = p_advance(pr)
+        name = tok_own(pr, nt)
+        tparams = parse_type_params(pr)
+        if list_len(tparams) > 0
+            _e = p_set_err(pr, d"parse error: a method takes no type parameters")
+            method_bad()
+        else
+            parse_method_sig(pr, mk, recv, name, tparams)
+
+fn parse_method_sig(pr: Parser, mk: Int, recv: String, name: String, tparams: List[String]) -> TFn ! alloc
+    _b = p_accept(pr, TK_LPAREN())
+    params = list_new[TParam]()
+    _s = parse_self_param(pr, mk, recv, params)
+    params = parse_params(pr, params)
+    _n = p_skip_nls(pr)
+    _c = p_accept(pr, TK_RPAREN())
+    ret = parse_method_ret(pr, mk, recv)
+    fx = fx_list_new()
+    _e = parse_effects(pr, fx)
+    _f = p_skip_nls(pr)
+    _g = p_accept(pr, TK_INDENT())
+    body = parse_block_after_indent(pr)
+    TFn(recv + "__" + name, params, body, ret, 0, fx, tparams, recv, mk)
+
+fn parse_method_ret(pr: Parser, mk: Int, recv: String) -> String ! alloc
+    if mk == 3
+        strdup(recv)
+    else
+        parse_fn_ret(pr)
+
+# A method always takes `self: T` first; the source only spells it to set the mode: `self`, `self take`
+# or `self borrow` (then a comma, or the end of the list).
+fn parse_self_param(pr: Parser, mk: Int, recv: String, params: List[TParam]) -> Int ! alloc
+    if mk != 1
+        0
+    else
+        _s = p_skip_nls(pr)
+        t = p_peek(pr)
+        if tok_kind(pr, t) != TK_IDENT()
+            parse_self_push(params, recv, 0)
+        elsif str_eq(tok_text(pr, t), d"self") == 0
+            parse_self_push(params, recv, 0)
+        elsif parse_self_follows(pr, t + 1) == 0
+            _e = p_set_err(pr, d"parse error: `self` is implicit in a method: write `self`, `self take` or `self borrow`")
+            0
+        else
+            _a = p_advance(pr)
+            mode = parse_param_mode(pr)
+            _c = p_accept(pr, TK_COMMA())
+            parse_self_push(params, recv, mode)
+
+fn parse_self_push(params: List[TParam], recv: String, mode: Int) -> Int ! alloc
+    _p = list_push(params, TParam(d"self", recv + " ", mode))
+    0
+
+fn parse_self_follows(pr: Parser, t: Int) -> Int ! alloc
+    k = tok_kind(pr, t)
+    if k == TK_COMMA()
+        1
+    elsif k == TK_RPAREN()
+        1
+    elsif k == TK_IDENT()
+        if str_eq(tok_text(pr, t), d"take") == 1
+            1
+        elsif str_eq(tok_text(pr, t), d"borrow") == 1
+            1
+        else
+            0
+    else
+        0
 
 fn parse_import_path_dots(pr: Parser, path: String) -> String ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_DOT()
@@ -1320,6 +1468,9 @@ fn parse_program_go(pr: Parser, it: Items) -> Int ! alloc
         if str_eq(tok_text(pr, p_peek(pr)), d"struct") == 1
             _s = list_push(it.structs, parse_struct(pr, 0))
             parse_program_go(pr, it)
+        elsif parse_method_kw(pr) > 0
+            _m = list_push(it.fns, parse_method_item(pr, parse_method_kw(pr)))
+            parse_program_go(pr, it)
         else
             _d = p_advance(pr)
             parse_program_go(pr, it)
@@ -1357,26 +1508,38 @@ fn errs_take(errs: List[String]) -> String ! alloc
         msg
 
 # The parsed program. A parse error leaves its message in `errs` (empty otherwise) and the
-# program is then whatever was read before it. `break` is rewritten away (see `loops.sal`).
+# program is then whatever was read before it. `break` is rewritten away (see `loops.sal`) and
+# methods resolved (see `methods.sal`).
 fn parse_program(src: String, errs: List[String]) -> TProgram ! alloc
-    tp = parse_program_raw(src, errs)
-    if str_contains(src, "break") == 1
-        parse_program_breaks(tp, errs)
+    flags = list_new[Int]()
+    _f = list_push(flags, 0)
+    parse_program_post(parse_program_raw(src, errs, flags), src, errs, flags)
+
+fn parse_program_post(tp: TProgram, src: String, errs: List[String], flags: List[Int]) -> TProgram ! alloc
+    ndots = list_get(flags, 0)
+    _z = list_free(flags)
+    if list_len(errs) > 0
+        tp
+    elsif str_contains(src, "break") == 1
+        parse_program_methods(desugar_break(tp, errs), errs, ndots)
+    else
+        parse_program_methods(tp, errs, ndots)
+
+fn parse_program_methods(tp: TProgram, errs: List[String], ndots: Int) -> TProgram ! alloc
+    if list_len(errs) > 0
+        tp
+    elsif ndots > 0
+        prepare_methods(tp, ndots, errs)
     else
         tp
 
-fn parse_program_breaks(tp: TProgram, errs: List[String]) -> TProgram ! alloc
-    if list_len(errs) == 0
-        desugar_break(tp, errs)
-    else
-        tp
-
-fn parse_program_raw(src: String, errs: List[String]) -> TProgram ! alloc
+fn parse_program_raw(src: String, errs: List[String], flags: List[Int]) -> TProgram ! alloc
     pr = parser_new(lex(src))
     it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[String](), list_new[String]())
     _a = p_skip_nls(pr)
     _b = parse_program_go(pr, it)
     msg = parse_program_error(pr, list_len(it.fns), list_len(it.structs), list_len(it.enums), src)
+    _n = list_set(flags, 0, list_get(pr.st, 4))
     _f = parser_free(pr)
     if str_len(msg) > 0
         _e = list_push(errs, msg)

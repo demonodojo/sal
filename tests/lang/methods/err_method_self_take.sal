@@ -1,5 +1,4 @@
 # error: E_MOVED
-# selfhost-xfail: methods are Rust bootstrap only for now
 struct N
     name: String
 

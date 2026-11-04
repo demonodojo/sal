@@ -1,5 +1,4 @@
 # error: E_MOVED
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     names = list_new[String]()
     s = strdup(d"a")

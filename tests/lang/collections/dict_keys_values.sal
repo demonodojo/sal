@@ -1,5 +1,4 @@
 # exit: 26
-# selfhost-xfail: Dict methods are Rust bootstrap only for now
 enum Option[T]
     None
     Some(T)

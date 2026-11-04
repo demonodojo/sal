@@ -1,5 +1,4 @@
 # exit: 3
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn pick(method: Int) -> Int
     method
 

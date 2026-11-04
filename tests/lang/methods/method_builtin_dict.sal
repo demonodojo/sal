@@ -1,5 +1,4 @@
 # exit: 7
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     d = dict_new[String, Int]()
     d.put("a", 5)

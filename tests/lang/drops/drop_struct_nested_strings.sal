@@ -1,5 +1,4 @@
 # exit: 20
-# selfhost-xfail: nested struct drops and methods are Rust bootstrap only for now
 struct P
     name: String
     tag: String

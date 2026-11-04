@@ -1,5 +1,4 @@
 # exit: 12
-# selfhost-xfail: methods are Rust bootstrap only for now
 enum Shape
     Sq(Int)
     Rect(Int, Int)

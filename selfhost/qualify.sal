@@ -464,7 +464,7 @@ fn qualify_fns(fns: List[TFn], i: Int, n: Int, ctx: Int, links: Int, r: Int, out
         _p = qualify_params(f.params, 0, list_len(f.params), ctx, links, params)
         fx = list_new[Int]()
         _x = ints_copy(f.fx, 0, list_len(f.fx), fx)
-        _a = list_push(out, TFn(link_or_same(r, f.name), params, qx_block(f.body, ctx, links), qualify_type_text(f.ret, ctx, links), f.no_heap, fx, tc_strs(f.tparams)))
+        _a = list_push(out, TFn(link_or_same(r, f.name), params, qx_block(f.body, ctx, links), qualify_type_text(f.ret, ctx, links), f.no_heap, fx, tc_strs(f.tparams), strdup(f.recv), f.mkind))
         qualify_fns(fns, i + 1, n, ctx, links, r, out)
 
 fn fields_copy(fs: List[TField], i: Int, n: Int, out: List[TField]) -> Int ! alloc

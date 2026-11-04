@@ -1,5 +1,4 @@
 # exit: 16
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     xs = List.new[Int]()
     xs.push(4)

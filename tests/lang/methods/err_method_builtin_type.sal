@@ -1,5 +1,4 @@
 # error: E_TYPE
-# selfhost-xfail: methods are Rust bootstrap only for now
 method Int.double() -> Int
     self * 2
 

@@ -1,5 +1,4 @@
 # error: E_TYPE
-# selfhost-xfail: methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     xs = List.new()
     xs.len()

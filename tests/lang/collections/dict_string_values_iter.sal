@@ -1,5 +1,4 @@
 # exit: 9
-# selfhost-xfail: Dict methods are Rust bootstrap only for now
 fn main() -> Int ! alloc
     d = Dict.new[String, String]()
     d.put("x", "abc")
