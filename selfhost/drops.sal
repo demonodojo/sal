@@ -1419,7 +1419,15 @@ fn dr_list_elem(ty: String, variants: Int) -> String ! alloc
     if str_eq(ty_base(t), "List") == 0
         d""
     else
-        dr_struct_of(tt_arg(t, 0), variants)
+        dr_struct_of(dr_ty_arg0(t), variants)
+
+# The first type argument of a type text (`S` of `List[S]`), "" when there is none.
+fn dr_ty_arg0(t: String) -> String ! alloc
+    h = nth_type_arg(t, 0)
+    if h == 0
+        d""
+    else
+        str_from_int(h)
 
 # The struct `t` when a copy of it can be released ("" otherwise).
 fn dr_struct_of(txt: String, variants: Int) -> String ! alloc
@@ -1463,8 +1471,11 @@ fn dr_lists_new(m: NM, name: String, fname: String, targs: String, variants: Int
 # A `while` body is scanned too (as `Stmt::While` is in src/drops.rs).
 fn dr_lists_expr(m: NM, e: Expr, variants: Int) -> Int ! alloc
     match e
-        XWhile(cond, body) => dr_lists_stmts(m, body.stmts, 0, list_len(body.stmts), variants)
+        XWhile(cond, body) => dr_lists_block(m, body, variants)
         _ => 0
+
+fn dr_lists_block(m: NM, b: TBlock, variants: Int) -> Int ! alloc
+    dr_lists_stmts(m, b.stmts, 0, list_len(b.stmts), variants)
 
 fn dr_is_elem_read(e: Expr) -> Int ! alloc
     match e

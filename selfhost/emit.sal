@@ -2371,7 +2371,7 @@ fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main
     _e1 = enums_push(enums, genums, 0, list_len(genums))
     _e2 = enums_push(enums, tp.enums, 0, list_len(tp.enums))
     _vr = variants_register(lit_pool_variants(pool), lit_pool_variant_fields(pool), enums, 0, list_len(enums))
-    _dv = vec_set(pool, 8, drop_env_t(tp))
+    _dv = vec_set(pool, 8, drop_env_t(tp, env.structs, enums))
     acc = runtime_decls()
     acc = acc + "#include <stdint.h>\n"
     acc = emit_extern_decls(externs, 0, vec_len(externs), acc)

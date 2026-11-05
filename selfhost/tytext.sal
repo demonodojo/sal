@@ -96,6 +96,14 @@ fn ty_find_open(t: String, i: Int) -> Int ! alloc
     else
         ty_find_open(t, i + 1)
 
+# The base name of a type text (`List` of `List [Int ]`), spaces trimmed.
+fn ty_base(t: String) -> String ! alloc
+    open = ty_find_open(t, 0)
+    if open < 0
+        trim_spaces(t)
+    else
+        trim_spaces(str_slice(t, 0, open))
+
 # Position after the `]` that closes the bracket opened before `pos` (depth 1).
 fn ty_skip_brackets(s: String, pos: Int, depth: Int) -> Int ! alloc
     if pos >= str_len(s)

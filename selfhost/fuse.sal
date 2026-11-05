@@ -792,7 +792,7 @@ fn shift_left_one(i: Int) -> Int ! alloc
 fn desc_type_text(structs: List[TStruct], enums: List[TEnum], txt: String, owned: Int) -> String ! alloc
     base = desc_base_text(structs, enums, txt, owned)
     if owned == 1
-        d"+" + base
+        "+" + base
     else
         base
 
@@ -844,7 +844,7 @@ fn desc_struct_text(structs: List[TStruct], enums: List[TEnum], name: String, de
             if str_contains(body, d"?") == 1
                 d""
             else
-                d"S(" + body + d")"
+                "S(" + body + ")"
 
 fn desc_fields_text(structs: List[TStruct], enums: List[TEnum], fields: List[TField], i: Int, n: Int, depth: Int, acc: String) -> String ! alloc
     if i >= n
@@ -1894,14 +1894,6 @@ fn drop_field_fn(structs: List[TStruct], ty: String, g: Int, depth: Int) -> Stri
     else
         drop_struct_fn(structs, t, g, depth)
 
-# The base name of a type text (`List` of `List [Int ]`), spaces trimmed.
-fn ty_base(t: String) -> String ! alloc
-    open = ty_find_open(t, 0)
-    if open < 0
-        trim_spaces(t)
-    else
-        trim_spaces(str_slice(t, 0, open))
-
 # "struct" when the field is a struct the glue releases into (it holds a String or a container).
 fn drop_struct_fn(structs: List[TStruct], t: String, g: Int, depth: Int) -> String ! alloc
     si = tt_struct_find(structs, t)
@@ -2453,14 +2445,16 @@ fn lower_program_typed(tp: TProgram, extra: Int, env: TEnv, em: List[TEnum]) -> 
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
-    denv = drop_env_t(tp)
+    denv = drop_env_t(tp, env.structs, em)
     lower_fns(tp.fns, names, fm, env, em, denv, 0, list_len(tp.fns), out)
 
 # `[variants, modes, read-only params]`: the variant table, per fn name the effective mode of
 # each parameter (0 copy, 1 borrow, 2 take), and the read-only flags.
-fn drop_env_t(tp: TProgram) -> Int ! alloc
+# `structs`/`enums` are the whole module graph's (the imported ones included), as the drops pass
+# of src/drops.rs sees them; the variants are the module's own.
+fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] borrow) -> Int ! alloc
     denv = vec_new()
-    _a = vec_push(denv, variant_map_t(tp))
+    _a = vec_push(denv, variant_map_t(tp, structs, enums))
     modes = map_new()
     table = own_mode_table(tp)
     _m = modes_fill_t(modes, table, tp.fns, 0, list_len(tp.fns))
@@ -2626,11 +2620,20 @@ fn modes_vec(out: Int, text: String, i: Int, n: Int) -> Int ! alloc
         modes_vec(out, text, i + 1, n)
 
 # Variant name -> [1 when it has fields or 2 when unit, per-field "may own heap" flags].
-fn variant_map_t(tp: TProgram) -> Int ! alloc
+fn variant_map_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] borrow) -> Int ! alloc
     m = map_new()
     _a = variant_map_enums_t(m, tp.enums, 0, list_len(tp.enums))
-    _b = flat_map_structs_t(m, tp.structs, tp.enums, 0, list_len(tp.structs))
+    _k = enum_keys_t(m, enums, 0, list_len(enums))
+    _b = flat_map_structs_t(m, structs, enums, 0, list_len(structs))
     m
+
+# `enum:Name` for every enum of the module graph.
+fn enum_keys_t(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = map_put(m, str_as_int("enum:" + list_get(enums, i).name), 1)
+        enum_keys_t(m, enums, i + 1, n)
 
 # Structs a list can own (see `desc_struct_text`) go in the same table under `struct:Name`, with
 # the class of each field (`field_class_text`).
