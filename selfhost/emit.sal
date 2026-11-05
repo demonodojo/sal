@@ -3181,6 +3181,73 @@ fn cir_is_stub(f: String) -> Int ! alloc
     else
         0
 
+# Struct scope-end field releases (espejo de `emit_struct_drops` en fuse.sal).
+fn emit_c_struct_scope_frees(tf: TFn, body: TBlock, denv: Int, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
+    md = vec_get(denv, 1)
+    fr = fr_new(tc.env, tc.enums, md)
+    _w = fr_blk(fr, body)
+    moved = vec_new()
+    _m = mv_block(body, moved, md)
+    cands = vec_new()
+    _c = drop_candidates_env(tc.env, tf.params, fn_modes_of(md, tf.name), 0, tenv_len(tc.env), cands)
+    emit_c_drop_struct_locals(cands, moved, fr, user, stmts, tc, 0, vec_len(cands))
+
+fn emit_c_drop_struct_locals(cands: Int, moved: Int, fr: FRC, user: Int, stmts: Int, tc: Tc, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = vec_get(cands, i)
+        if assigned_has(moved, nm, 0, vec_len(moved)) == 0
+            if assigned_has(fr.al, nm, 0, vec_len(fr.al)) == 0
+                local = str_from_int(nm)
+                ty = tenv_type(tc.env, local)
+                si = tt_struct_find(tc.env.structs, ty)
+                if si >= 0
+                    g = drop_glue_bits(fr, nm)
+                    sd = list_get(tc.env.structs, si)
+                    _f = emit_c_drop_fields(local, sd, sd.fields, 0, list_len(sd.fields), g, fr, local, d"", user, stmts, tc, 0)
+        emit_c_drop_struct_locals(cands, moved, fr, user, stmts, tc, i + 1, n)
+
+fn emit_c_drop_fields(local: String, sd: TStruct borrow, fields: List[TField], i: Int, n: Int, g: Int, fr: FRC, root: String, path_p: String, user: Int, stmts: Int, tc: Tc, depth: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        fld = list_get(fields, i)
+        path = if str_len(path_p) == 0
+            fld.name
+        else
+            path_p + d"." + fld.name
+        taint = fr_ct_has(fr, root, path)
+        fnm = drop_field_fn(tc.env.structs, tc.enums, fld.ty, g, depth, taint)
+        if str_len(fnm) == 0
+            _z = 0
+        elsif str_eq(fnm, "sal_free") == 1
+            if fr_sm_has(fr, root, path) == 1
+                _z = 0
+            else
+                _p = emit_c_drop_call(local, fld.name, fnm, user, stmts, tc)
+        elsif str_eq(fnm, "sal_enum_free") == 1
+            if fr_sm_has(fr, root, path) == 1
+                _z = 0
+            else
+                _p = emit_c_drop_call(local, fld.name, fnm, user, stmts, tc)
+        elsif str_eq(fnm, "struct") == 1
+            _n = emit_c_drop_nested(local, fld, sd, i, g, fr, root, path, user, stmts, tc, depth)
+        else
+            _p = emit_c_drop_call(local, fld.name, fnm, user, stmts, tc)
+        emit_c_drop_fields(local, sd, fields, i + 1, n, g, fr, root, path_p, user, stmts, tc, depth)
+
+fn emit_c_drop_call(local: String, field: String, fnm: String, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
+    base = XIdent(strdup(local))
+    slot = emit_c_field(base, field, user, stmts, tc)
+    vec_push(stmts, str_as_int("  " + fnm + "((void*)(uintptr_t)" + slot + ");\n"))
+
+fn emit_c_drop_nested(local: String, fld: TField, sd: TStruct borrow, idx: Int, g: Int, fr: FRC, root: String, path: String, user: Int, stmts: Int, tc: Tc, depth: Int) -> Int ! alloc
+    inner = list_get(tc.env.structs, tt_struct_find(tc.env.structs, trim_type_piece(fld.ty)))
+    base = XIdent(strdup(local))
+    slot = emit_c_field(base, fld.name, user, stmts, tc)
+    emit_c_drop_fields(local, inner, inner.fields, 0, list_len(inner.fields), g, fr, root, path, user, stmts, tc, depth + 1)
+
 # Integer ops are C operators; `f`-prefixed ops (Float) go through `sal_fop`.
 fn cir_binary(cc: Int, dest: Int, op: String, l: String, r: String) -> Int ! alloc
     if str_char(op, 0) == 102

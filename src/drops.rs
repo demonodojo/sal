@@ -436,52 +436,104 @@ fn owned_return_fns(prog: &Program) -> HashSet<String> {
     out
 }
 
+fn owned_block_string(b: &Block, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
+    for st in &b.stmts {
+        if let Stmt::Return { value: Some(v), .. } = st {
+            if !owned_string_expr(v, params, fresh_locals) {
+                return false;
+            }
+        }
+    }
+    b.tail
+        .as_ref()
+        .is_some_and(|t| owned_string_expr(t, params, fresh_locals))
+}
+
+fn owned_string_expr(e: &Expr, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
+    match e {
+        Expr::Block(b) => owned_block_string(b, params, fresh_locals),
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            owned_block_string(then_block, params, fresh_locals)
+                && else_block
+                    .as_ref()
+                    .is_some_and(|eb| owned_block_string(eb, params, fresh_locals))
+        }
+        Expr::Match { arms, .. } => arms.iter().all(|a| owned_string_expr(&a.body, params, fresh_locals)),
+        _ => owned_string_return(e, params, fresh_locals),
+    }
+}
+
 fn owned_return_body(f: &FnDef) -> bool {
     let b = &f.body;
+    let params: HashSet<String> = f.params.iter().map(|p| p.name.clone()).collect();
     let mut fresh_locals: HashSet<String> = HashSet::new();
     let mut ok = true;
     for st in &b.stmts {
         match st {
             Stmt::Let { name, init, .. } => {
                 if is_branching(init) {
-                    ok = false;
-                }
-                if fresh_builtin(init) && binds_once(&b.stmts, name) {
+                    if !owned_string_expr(init, &params, &fresh_locals) {
+                        ok = false;
+                    } else if binds_once(&b.stmts, name) {
+                        fresh_locals.insert(name.clone());
+                    }
+                } else if fresh_builtin(init) && binds_once(&b.stmts, name) {
                     fresh_locals.insert(name.clone());
                 }
             }
             // `s = v` without a type is a binding too (the parser makes it an assignment).
             Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => {
                 if is_branching(value) {
-                    ok = false;
-                }
-                if fresh_builtin(value) && binds_once(&b.stmts, name) {
+                    if !owned_string_expr(value, &params, &fresh_locals) {
+                        ok = false;
+                    } else if binds_once(&b.stmts, name) {
+                        fresh_locals.insert(name.clone());
+                    }
+                } else if fresh_builtin(value) && binds_once(&b.stmts, name) {
                     fresh_locals.insert(name.clone());
                 }
             }
-            Stmt::Expr(e) if is_branching(e) => ok = false,
-            Stmt::Assign { value, .. } if is_branching(value) => ok = false,
             Stmt::While { .. } => ok = false,
             _ => {}
         }
     }
-    let fresh = |e: &Expr| fresh_builtin(e) || matches!(e, Expr::Ident { name, .. } if fresh_locals.contains(name));
     let mut returns = Vec::new();
     for st in &b.stmts {
         if let Stmt::Return { value: Some(v), .. } = st {
             returns.push(v);
         }
     }
-    let tail_ok = match &b.tail {
-        Some(t) => !is_branching(t) && fresh(t),
-        None => false,
-    };
-    ok && tail_ok && returns.iter().all(|v| !is_branching(v) && fresh(v))
+    let tail_ok = b
+        .tail
+        .as_ref()
+        .is_some_and(|t| owned_string_expr(t, &params, &fresh_locals));
+    ok && tail_ok && returns.iter().all(|v| owned_string_expr(v, &params, &fresh_locals))
 }
 
 /// A builtin whose result is a fresh `String` (see `fresh_kind`), without the user fns.
 fn fresh_builtin(e: &Expr) -> bool {
     matches!(fresh_kind_builtin(e), Some("free"))
+}
+
+/// A `String` the caller owns: a fresh builtin, a fresh local, or a field read of a parameter
+/// (`return n.name` after `take`).
+fn owned_string_return(e: &Expr, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
+    if fresh_builtin(e) {
+        return true;
+    }
+    if matches!(e, Expr::Ident { name, .. } if fresh_locals.contains(name)) {
+        return true;
+    }
+    if let Expr::Field { base, .. } = e {
+        if let Expr::Ident { name, .. } = base.as_ref() {
+            return params.contains(name);
+        }
+    }
+    false
 }
 
 fn fresh_kind_builtin(e: &Expr) -> Option<&'static str> {
@@ -635,6 +687,10 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             } else if matches!(name.as_str(), "dict_keys" | "dict_values") {
                 // A fresh list whose String elements are copies the list owns.
                 Some(("list_free", true))
+            } else if name == "dict_get" {
+                Some(("enum_free", false))
+            } else if name == "bytes_view" || name == "bytes_view_mem" {
+                Some(("bytes_free", false))
             } else if name == "dict_new" && dict_args(type_args) {
                 Some(("dict_free", dict_owns_values(type_args)))
             } else {
@@ -642,6 +698,14 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             }
         }
         Expr::Binary { op: BinOp::Add, .. } if add_is_string_chain(init) => Some(("free", false)),
+        Expr::TensorLit { .. } => Some(("tensor_free", false)),
+        Expr::Match { scrutinee, .. } => match scrutinee.as_ref() {
+            Expr::Call { func, .. } => {
+                matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get")
+                    .then_some(("enum_free", false))
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -665,7 +729,16 @@ fn list_owns_elems(type_args: &[TypeArg]) -> bool {
 }
 
 fn dict_owns_values(type_args: &[TypeArg]) -> bool {
-    matches!(type_args, [_, TypeArg::Type(Type::Named { name, .. })] if name == "String")
+    match type_args {
+        [_, TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() => {
+            matches!(name.as_str(), "String") || is_ownable_enum(name) || is_ownable_struct(name)
+        }
+        _ => false,
+    }
+}
+
+fn is_ownable_enum(name: &str) -> bool {
+    is_enum_type(name)
 }
 
 /// A value whose ownership is certainly the container's once stored: a string
@@ -694,18 +767,22 @@ fn list_elem_args(type_args: &[TypeArg]) -> bool {
     }
 }
 
-/// `dict_new[K, V]()` with `K` Int or String and `V` Int, Float, Bool or String.
+/// `dict_new[K, V]()` with `K` Int or String and `V` a flat scalar, String, enum or describable struct.
 fn dict_args(type_args: &[TypeArg]) -> bool {
-    let scalar = |t: &TypeArg, names: &[&str]| match t {
+    let key_ok = |t: &TypeArg| match t {
         TypeArg::Type(Type::Named { name, args, .. }) => {
-            args.is_empty() && names.contains(&name.as_str())
+            args.is_empty() && matches!(name.as_str(), "Int" | "String")
         }
         _ => false,
     };
-    match type_args {
-        [k, v] => scalar(k, &["Int", "String"]) && scalar(v, &["Int", "Float", "Bool", "String"]),
+    let val_ok = |t: &TypeArg| match t {
+        TypeArg::Type(Type::Named { name, args, .. }) if args.is_empty() => matches!(
+            name.as_str(),
+            "Int" | "Float" | "Bool" | "String"
+        ) || is_ownable_enum(name) || is_ownable_struct(name),
         _ => false,
-    }
+    };
+    matches!(type_args, [k, v] if key_ok(k) && val_ok(v))
 }
 
 /// A `+` chain is a string concatenation (so its result is a fresh string) when
@@ -750,6 +827,8 @@ struct Facts {
     opaque: u32,
     loop_depth: u32,
     bind_depth: HashMap<String, u32>,
+    /// Inside a struct constructor call: value arguments move out fully (not soft).
+    hard_move: u32,
 }
 
 impl Facts {
@@ -784,16 +863,21 @@ fn arg(a: &Expr, safe: bool, f: &mut Facts) {
     }
     if let Expr::Ident { name, .. } = a {
         if !safe {
-            match f.cur {
-                Some(key) if f.bind_depth.get(name).is_some_and(|d| *d == f.loop_depth) => {
-                    f.soft.insert(name.clone());
-                    let v = f.sites.entry(key).or_default();
-                    if !v.contains(name) {
-                        v.push(name.clone());
+            if f.hard_move > 0 {
+                f.escaped.insert(name.clone());
+                f.soft.remove(name);
+            } else {
+                match f.cur {
+                    Some(key) if f.bind_depth.get(name).is_some_and(|d| *d == f.loop_depth) => {
+                        f.soft.insert(name.clone());
+                        let v = f.sites.entry(key).or_default();
+                        if !v.contains(name) {
+                            v.push(name.clone());
+                        }
                     }
-                }
-                _ => {
-                    f.escaped.insert(name.clone());
+                    _ => {
+                        f.escaped.insert(name.clone());
+                    }
                 }
             }
         }
@@ -810,6 +894,10 @@ fn expr(e: &Expr, f: &mut Facts) {
         }
         Expr::Call { func, args, .. } => {
             let borrow = matches!(func.as_ref(), Expr::Ident { name, .. } if borrows_args(name));
+            let hard = matches!(func.as_ref(), Expr::Ident { name, .. } if is_ownable_struct(name));
+            if hard {
+                f.hard_move += 1;
+            }
             if !matches!(func.as_ref(), Expr::Ident { .. }) {
                 expr(func, f);
             }
@@ -820,6 +908,9 @@ fn expr(e: &Expr, f: &mut Facts) {
             for (i, a) in args.iter().enumerate() {
                 let reads = ro.as_ref().and_then(|r| r.get(i)).copied().unwrap_or(false);
                 arg(a, borrow || reads, f);
+            }
+            if hard {
+                f.hard_move -= 1;
             }
         }
         Expr::Lambda { params, body, .. } => {
@@ -1112,6 +1203,14 @@ impl Ctx {
         if let Some(k) = struct_copy_kind("", e) {
             return Some(k);
         }
+        if let Expr::Match { scrutinee, .. } = e {
+            if matches!(
+                scrutinee.as_ref(),
+                Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get")
+            ) {
+                return Some("enum_free");
+            }
+        }
         fresh_kind(e, &self.facts.variants).map(|(k, _)| k)
     }
 }
@@ -1251,6 +1350,11 @@ fn clear_moved(cx: &Ctx, key: (u32, u32), span: Span, out: &mut Vec<Stmt>) {
     }
 }
 
+/// A local that fully escaped is released elsewhere; drop it from the pending list.
+fn drop_escaped_from_live(cx: &mut Ctx) {
+    cx.live.retain(|(n, _, _)| !cx.facts.escaped.contains(n));
+}
+
 fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
     match e {
         Expr::If { cond, then_block, elsifs, else_block, span } => Expr::If {
@@ -1285,6 +1389,7 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                 let init = xform_expr(init, cx);
                 stmts.push(Stmt::Let { name: name.clone(), ty, init, frozen, stack, span });
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
+                drop_escaped_from_live(cx);
                 if let Some((k, flagged)) = cand {
                     if flagged {
                         stmts.push(flag_init(&name, span));
@@ -1306,6 +1411,7 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                 let value = xform_expr(value, cx);
                 stmts.push(Stmt::Assign { target, value, span });
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
+                drop_escaped_from_live(cx);
                 if let Some(d) = decl {
                     if d.2 {
                         stmts.push(flag_init(&d.0, span));
@@ -1328,6 +1434,7 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                     None => stmts.push(Stmt::Expr(xform_expr(e, cx))),
                 }
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
+                drop_escaped_from_live(cx);
             }
             Stmt::While { cond, body, span } => {
                 let body = xform_block(body, cx);
@@ -1355,7 +1462,9 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                     };
                     clear_moved(cx, stmt_key(span), span, &mut stmts);
                     for (n, k, fl) in cx.live.iter().rev() {
-                        stmts.push(release(n, k, *fl, span));
+                        if !cx.facts.escaped.contains(n) {
+                            stmts.push(release(n, k, *fl, span));
+                        }
                     }
                     stmts.push(Stmt::Return { value, span });
                 }
@@ -1380,12 +1489,16 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                     span,
                 });
                 for (n, k, fl) in own.iter().rev() {
-                    stmts.push(release(n, k, *fl, span));
+                    if !cx.facts.escaped.contains(n) {
+                        stmts.push(release(n, k, *fl, span));
+                    }
                 }
                 tail = Some(Box::new(Expr::Ident { name, span }));
             } else {
                 for (n, k, fl) in own.iter().rev() {
-                    stmts.push(release(n, k, *fl, b.span));
+                    if !cx.facts.escaped.contains(n) {
+                        stmts.push(release(n, k, *fl, b.span));
+                    }
                 }
             }
         }

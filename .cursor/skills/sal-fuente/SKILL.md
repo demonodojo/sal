@@ -78,14 +78,16 @@ Prefiere el método a la función builtin siempre que exista. Tabla completa en 
 | `int_to_str(n)` | `n.to_str()` |
 | `dict_put(d, k, v)` / `dict_get(d, k)` | `d.put(k, v)` / `d.get(k)` |
 
+`standard` reescribe esas llamadas (`Style/Method`), y el resto de la tabla de la SPEC. `str_concat` y `str_append` siguen yendo a `+`.
+
 Esto aplica también a `selfhost/` y a los tests de `tests/lang`. Dentro de un `struct` o `enum` propio, `method T.f()` en vez de `fn f(t: T)` (ver [sal-autoridad](../sal-autoridad/SKILL.md)).
 
 ## Sentencias y variables sin uso
 
 - Una expresión que devuelve valor puede ir como sentencia suelta: `xs.push(v)`, `g(2)`, `xs.pop()`. No hace falta ligarla.
 - No asignes a una variable que no vas a usar. `_a = xs.push(v)` no aporta nada y añade un nombre que leer. El `_nombre` solo tiene sentido cuando el alias importa al pase de liberación (un `list_push` ligado a `_nombre` presta el contenedor en vez de escaparlo, ver SPEC), y en ese caso el nombre es la razón de existir.
-- Un valor fresco que se descarta (`xs.pop()` de una lista dueña, `int_to_str(n)`, `xs.get(i)`) se libera en esa misma sentencia: no hace falta ligarlo para soltarlo.
-- Una función de usuario cuyo `String` de retorno es siempre fresco (`return` y cola son builtins frescos o locales ligados una vez a uno) entrega un valor que el llamante posee. Con cualquier `if`, `match` o `while` en su nivel superior, no. Las funciones matemáticas de `Float` toman `Float` (`Int` es `E_TYPE`) y usan libm: en `soso` son `E_TARGET`. `sal fmt` conserva los paréntesis de la base: `(a - b).abs()`. Un método inexistente es `E_TYPE`. Los métodos solo existen en el arranque (Rust): un test que los use lleva `# selfhost-xfail:`.
+- Un valor fresco que se descarta (`xs.pop()` de una lista dueña, `int_to_str(n)`, `xs.get(i)`, `match dict_get(d, k) …` como sentencia) se libera en esa misma sentencia: no hace falta ligarlo para soltarlo (SPEC «Liberación de locales»).
+- Una función de usuario cuyo `String` de retorno es siempre fresco entrega un valor que el llamante posee: cada `return` y la cola son frescos; un `if`/`match` de nivel superior vale si **cada** rama lo es; un `while` de nivel superior la excluye. Detalle en [sal-memoria](../sal-memoria/SKILL.md). Las funciones matemáticas de `Float` toman `Float` (`Int` es `E_TYPE`) y usan libm: en `soso` son `E_TARGET`. `sal fmt` conserva los paréntesis de la base: `(a - b).abs()`. Un método inexistente es `E_TYPE`. Los métodos solo existen en el arranque (Rust): un test que los use lleva `# selfhost-xfail:`.
 
 ## Memoria y efectos
 
@@ -182,7 +184,7 @@ Las primitivas `matmul`, `softmax`, `map`, `reduce`, `reshape`, `transpose`, `re
 | Herramienta | Alcance |
 |-------------|---------|
 | `sal fmt` | Sangría, forma canónica del AST, idempotencia sintáctica |
-| `standard` | Convenciones de texto: `d"…"` en lugar de `strdup("…")`, `+` en lugar de `str_concat` / `str_append`, `"…"` (no `d"…"`) en operandos de `+`, `elsif` donde aplique la regla |
+| `standard` | Convenciones de texto: `d"…"` en lugar de `strdup("…")`, `+` en lugar de `str_concat` / `str_append`, `"…"` (no `d"…"`) en operandos de `+`, `elsif` donde aplique la regla, y el método (`s.len()`, `xs.push(v)`, `List.new[T]()`) en lugar de la función builtin |
 
 Orden habitual al cerrar un fichero `.sal`: `sal fmt` (stdout o editor), luego `standard check`; si hay avisos de una práctica ya cubierta, `standard fix` y revisar el diff.
 

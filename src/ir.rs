@@ -258,11 +258,18 @@ pub fn lower_program_with_callables_env(
             // then on: for the callers' struct glue it takes the argument, even though
             // the parameter is only borrowed (the callee's own glue stays as it is).
             let releasing = releases_param_fields(f);
+            let handed = params_string_field_hand_out(f, &strings.structs);
             param_modes.insert(
                 f.name.clone(),
                 f.params
                     .iter()
-                    .map(|p| if releasing.contains(&p.name) { ParamMode::Take } else { p.mode })
+                    .map(|p| {
+                        if releasing.contains(&p.name) || handed.contains(&p.name) {
+                            ParamMode::Take
+                        } else {
+                            p.mode
+                        }
+                    })
                     .collect(),
             );
         }
@@ -317,7 +324,7 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
                 if let Expr::Ident { name, .. } = func.as_ref() {
                     if matches!(
                         name.as_str(),
-                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free"
+                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free" | "tensor_free"
                     ) {
                         for a in args {
                             if let Some(r) = root(a) {
@@ -366,6 +373,76 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
     blk(&f.body, &mut all);
     all.retain(|n| params.contains(n.as_str()));
     all
+}
+
+/// Parameters whose `String` field is returned by value (`return p.name`).
+fn params_string_field_hand_out(
+    f: &FnDef,
+    structs: &HashMap<String, crate::ast::StructDef>,
+) -> HashSet<String> {
+    let param_names: HashSet<String> = f.params.iter().map(|p| p.name.clone()).collect();
+    let mut out = HashSet::new();
+    let mut note = |e: &Expr| {
+        let mut fields = Vec::new();
+        let Some(root) = field_chain_root(e, &mut fields) else {
+            return;
+        };
+        if !param_names.contains(root) {
+            return;
+        }
+        let Some(mut ty) = f.params.iter().find(|p| p.name == root).map(|p| p.ty.clone()) else {
+            return;
+        };
+        for fname in &fields {
+            ty = match struct_field_type(&ty, fname, structs) {
+                Some(t) => t,
+                None => return,
+            };
+        }
+        if matches!(
+            ty,
+            crate::ast::Type::Named { name, args, .. }
+                if name == "String" && args.is_empty()
+        ) {
+            out.insert(root.to_string());
+        }
+    };
+    for st in &f.body.stmts {
+        if let Stmt::Return { value: Some(v), .. } = st {
+            note(v);
+        }
+    }
+    if let Some(t) = &f.body.tail {
+        note(t);
+    }
+    out
+}
+
+fn struct_field_type(
+    ty: &crate::ast::Type,
+    field: &str,
+    structs: &HashMap<String, crate::ast::StructDef>,
+) -> Option<crate::ast::Type> {
+    let crate::ast::Type::Named { name, args, .. } = ty else {
+        return None;
+    };
+    let sdef = structs.get(name)?;
+    if !args.is_empty() {
+        return None;
+    }
+    sdef.fields.iter().find(|f| f.name == field).map(|f| f.ty.clone())
+}
+
+fn field_chain_root<'a>(e: &'a Expr, fields: &mut Vec<&'a str>) -> Option<&'a str> {
+    match e {
+        Expr::Field { base, field, .. } => {
+            let root = field_chain_root(base, fields)?;
+            fields.push(field);
+            Some(root)
+        }
+        Expr::Ident { name, .. } => Some(name),
+        _ => None,
+    }
 }
 
 fn lower_fn(
@@ -539,10 +616,15 @@ fn emit_struct_string_drops(
     let moved = moved_bindings(f, param_modes);
     let alias = list_alias_locals(f, strings);
     let reads = field_reads(f, strings, param_modes);
+    let effective_modes = param_modes
+        .get(&f.name)
+        .cloned()
+        .unwrap_or_else(|| f.params.iter().map(|p| p.mode).collect());
     let own_mode: HashMap<&str, ParamMode> = f
         .params
         .iter()
-        .map(|p| (p.name.as_str(), p.mode))
+        .zip(effective_modes.iter())
+        .map(|(p, m)| (p.name.as_str(), *m))
         .collect();
     let mut names: Vec<String> = strings.struct_types.keys().cloned().collect();
     names.sort();
@@ -571,7 +653,20 @@ fn emit_struct_string_drops(
             nested: !reads.struct_valued.contains(&name),
             containers: !reads.heap_moved.contains(&name),
         };
-        free_struct_strings(&base, sdef, strings, glue, 0, counter, instructions);
+        let skip = reads.strings_moved.get(&name);
+        free_struct_strings(
+            &base,
+            sdef,
+            strings,
+            glue,
+            0,
+            counter,
+            instructions,
+            skip,
+            "",
+            Some(&reads),
+            &name,
+        );
     }
 }
 
@@ -594,14 +689,22 @@ enum FieldDrop<'a> {
 
 /// The glue of one field type. A struct owns what was moved into it, so its
 /// `String`, `Bytes` and flat `List` / `Dict` fields are released with it.
-/// Containers of `String` are left alone: the compiler cannot tell whether every
-/// element was a fresh value, and a double free is worse than a leak.
+/// Containers of `String` are released when every stored value was fresh (see
+/// `FieldReads::container_tainted`); otherwise they are left alone.
 fn field_drop<'a>(
     ty: &crate::ast::Type,
     strings: &'a StringEnv,
     glue: Glue,
     depth: u32,
+    reads: Option<&FieldReads>,
+    root: &str,
+    path: &str,
 ) -> Option<FieldDrop<'a>> {
+    let tainted = reads.is_some_and(|r| {
+        r.container_tainted
+            .get(root)
+            .is_some_and(|s| s.contains(path))
+    });
     let flat = |t: &crate::ast::Type| {
         matches!(t, crate::ast::Type::Named { name, args, .. }
             if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool"))
@@ -612,10 +715,26 @@ fn field_drop<'a>(
     match (name.as_str(), args.as_slice()) {
         ("String", []) => Some(FieldDrop::Call("sal_free")),
         ("Bytes", []) if glue.containers => Some(FieldDrop::Call("sal_bytes_free")),
+        (_, []) if strings.enums.contains_key(name) => Some(FieldDrop::Call("sal_enum_free")),
         ("List", [e]) if glue.containers && flat(e) => Some(FieldDrop::Call("sal_list_free")),
+        ("List", [crate::ast::Type::Named { name, args, .. }])
+            if glue.containers && args.is_empty() && name == "String" && !tainted =>
+        {
+            Some(FieldDrop::Call("sal_list_free"))
+        }
         ("Dict", [k, v])
             if glue.containers
                 && flat(v)
+                && matches!(k, crate::ast::Type::Named { name, args, .. }
+                    if args.is_empty() && matches!(name.as_str(), "Int" | "String")) =>
+        {
+            Some(FieldDrop::Call("sal_dict_free"))
+        }
+        ("Dict", [k, crate::ast::Type::Named { name: vn, args: va, .. }])
+            if glue.containers
+                && va.is_empty()
+                && vn == "String"
+                && !tainted
                 && matches!(k, crate::ast::Type::Named { name, args, .. }
                     if args.is_empty() && matches!(name.as_str(), "Int" | "String")) =>
         {
@@ -642,12 +761,26 @@ fn free_struct_strings(
     depth: u32,
     counter: &mut u32,
     instructions: &mut Vec<IrInst>,
+    strings_moved: Option<&HashSet<String>>,
+    path_prefix: &str,
+    reads: Option<&FieldReads>,
+    root: &str,
 ) {
     let transparent = is_transparent_struct(sdef);
     for (i, field) in sdef.fields.iter().enumerate() {
-        let Some(action) = field_drop(&field.ty, strings, glue, depth) else {
+        let path = if path_prefix.is_empty() {
+            field.name.clone()
+        } else {
+            format!("{path_prefix}.{}", field.name)
+        };
+        let Some(action) = field_drop(&field.ty, strings, glue, depth, reads, root, &path) else {
             continue;
         };
+        if matches!(action, FieldDrop::Call("sal_free") | FieldDrop::Call("sal_enum_free"))
+            && strings_moved.is_some_and(|s| s.contains(&path))
+        {
+            continue;
+        }
         let ssa = if transparent {
             base.to_string()
         } else {
@@ -668,7 +801,19 @@ fn free_struct_strings(
                 args: vec![ssa],
             }),
             FieldDrop::Struct(inner) => {
-                free_struct_strings(&ssa, inner, strings, glue, depth + 1, counter, instructions)
+                free_struct_strings(
+                    &ssa,
+                    inner,
+                    strings,
+                    glue,
+                    depth + 1,
+                    counter,
+                    instructions,
+                    strings_moved,
+                    &path,
+                    reads,
+                    root,
+                )
             }
         }
     }
@@ -680,7 +825,7 @@ fn struct_has_heap(def: &crate::ast::StructDef, strings: &StringEnv, glue: Glue,
         && def
             .fields
             .iter()
-            .any(|f| field_drop(&f.ty, strings, glue, depth).is_some())
+            .any(|f| field_drop(&f.ty, strings, glue, depth, None, "", "").is_some())
 }
 
 /// What a function does with the fields of its struct locals, for the glue.
@@ -694,6 +839,10 @@ struct FieldReads {
     /// assignment value, `return`, block tail, or an argument of a call that may
     /// keep it. The new owner releases it, so the local must not.
     heap_moved: HashSet<String>,
+    /// Root local -> dot-paths of `String` fields handed out by value (`return n.name`).
+    strings_moved: HashMap<String, HashSet<String>>,
+    /// Root local -> dot-paths of `List[String]` / `Dict` of `String` tainted by a non-fresh store.
+    container_tainted: HashMap<String, HashSet<String>>,
 }
 
 fn field_reads(
@@ -734,8 +883,24 @@ fn field_reads(
                 };
                 let last = k + 1 == fields.len();
                 if let crate::ast::Type::Named { name, args, .. } = &fd.ty {
-                    if last && moving && matches!(name.as_str(), "List" | "Dict" | "Bytes") {
-                        self.out.heap_moved.insert(root.to_string());
+                    if last && moving {
+                        if matches!(name.as_str(), "List" | "Dict" | "Bytes") {
+                            self.out.heap_moved.insert(root.to_string());
+                        } else if name == "String" && args.is_empty() {
+                            let path = fields.join(".");
+                            self.out
+                                .strings_moved
+                                .entry(root.to_string())
+                                .or_default()
+                                .insert(path);
+                        } else if args.is_empty() && self.strings.enums.contains_key(name) {
+                            let path = fields.join(".");
+                            self.out
+                                .strings_moved
+                                .entry(root.to_string())
+                                .or_default()
+                                .insert(path);
+                        }
                     }
                     if let Some(next) = strings.structs.get(name).filter(|_| args.is_empty()) {
                         if last {
@@ -767,6 +932,21 @@ fn field_reads(
                         Expr::Ident { name, .. } => Some(name.as_str()),
                         _ => None,
                     };
+                    if matches!(callee, Some("list_push" | "list_set" | "dict_put"))
+                        && args.len() >= 2
+                    {
+                        if let (Some((root, path)), Some(v)) =
+                            (container_field_path(&args[0]), args.last())
+                        {
+                            if !crate::drops::is_fresh_value(v) {
+                                self.out
+                                    .container_tainted
+                                    .entry(root)
+                                    .or_default()
+                                    .insert(path);
+                            }
+                        }
+                    }
                     for (i, a) in args.iter().enumerate() {
                         let keeps = match callee {
                             Some(n) => match self.modes.get(n) {
@@ -843,6 +1023,33 @@ fn field_reads(
     let mut w = Walk { strings, modes: param_modes, out: FieldReads::default() };
     w.blk(&f.body);
     w.out
+}
+
+fn field_root_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Ident { name, .. } => Some(name.clone()),
+        Expr::Field { base, .. } => field_root_name(base),
+        _ => None,
+    }
+}
+
+fn field_dot_path(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Ident { .. } => Some(String::new()),
+        Expr::Field { base, field, .. } => {
+            let mut p = field_dot_path(base)?;
+            if !p.is_empty() {
+                p.push('.');
+            }
+            p.push_str(field);
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+fn container_field_path(e: &Expr) -> Option<(String, String)> {
+    Some((field_root_name(e)?, field_dot_path(e)?))
 }
 
 fn moved_bindings(f: &FnDef, param_modes: &HashMap<String, Vec<ParamMode>>) -> HashSet<String> {
@@ -1681,16 +1888,65 @@ fn type_desc(
     "i".into()
 }
 
-/// Runtime kinds of `dict_new[K, V]()`: the key and the value (`scalar_kind`).
-fn dict_kinds(type_args: &[crate::ast::TypeArg]) -> Vec<i64> {
-    let kinds: Vec<i64> = type_args
+fn struct_val_kind(
+    name: &str,
+    structs: &HashMap<String, crate::ast::StructDef>,
+    _enums: &HashMap<String, crate::ast::EnumDef>,
+) -> Option<i64> {
+    let sd = structs.get(name)?;
+    if !sd.type_params.is_empty() || sd.fields.len() < 2 {
+        return None;
+    }
+    let mut kind = 4i64 | ((sd.fields.len() as i64) << 4);
+    for (i, f) in sd.fields.iter().enumerate() {
+        if matches!(&f.ty, crate::ast::Type::Named { name, args, .. } if args.is_empty() && name == "String") {
+            kind |= 1 << (12 + i);
+        }
+    }
+    Some(kind)
+}
+
+fn dict_val_kind(
+    ty: &crate::ast::Type,
+    structs: &HashMap<String, crate::ast::StructDef>,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+) -> i64 {
+    let crate::ast::Type::Named { name, args, .. } = ty else {
+        return 0;
+    };
+    if !args.is_empty() {
+        return 0;
+    }
+    match name.as_str() {
+        "String" => 3,
+        n if enums.get(n).is_some_and(|e| e.type_params.is_empty()) => 5,
+        n => struct_val_kind(n, structs, enums).unwrap_or(0),
+    }
+}
+
+/// Runtime kinds of `dict_new[K, V]()`: the key and the value.
+fn dict_kinds(
+    type_args: &[crate::ast::TypeArg],
+    structs: &HashMap<String, crate::ast::StructDef>,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+) -> Vec<i64> {
+    let mut out = vec![0i64, 0];
+    for (i, a) in type_args
         .iter()
         .filter_map(|a| match a {
-            crate::ast::TypeArg::Type(t) => Some(scalar_kind(t)),
+            crate::ast::TypeArg::Type(t) => Some(t),
             crate::ast::TypeArg::Dim(_) => None,
         })
-        .collect();
-    vec![kinds.first().copied().unwrap_or(0), kinds.get(1).copied().unwrap_or(0)]
+        .take(2)
+        .enumerate()
+    {
+        out[i] = if i == 0 {
+            scalar_kind(a)
+        } else {
+            dict_val_kind(a, structs, enums)
+        };
+    }
+    out
 }
 
 fn matmul_runtime_name(tensors: &HashMap<String, TensorInfo>, lhs: &str) -> String {
@@ -1706,7 +1962,7 @@ fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     if matches!(
         fname,
         "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
-            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free"
+            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free" | "tensor_free"
     ) {
         return format!("sal_{fname}");
     }
@@ -2176,7 +2432,7 @@ fn lower_expr(
                 return dest;
             }
             if fname == "dict_new" {
-                let kinds = dict_kinds(type_args);
+                let kinds = dict_kinds(type_args, &strings.structs, &strings.enums);
                 let mut call_args = Vec::new();
                 for k in kinds {
                     *counter += 1;
@@ -3178,18 +3434,7 @@ fn lower_match_switch(
                 let mut body = Vec::new();
                 let mut arm_env = env.clone();
                 note_variant_binding(&arm.pattern, scrut_ty.as_ref(), strings);
-                for (i, a) in args.iter().enumerate() {
-                    if let Pattern::Ident(bind, _) = a {
-                        *counter += 1;
-                        let payload = format!("t{counter}");
-                        body.push(IrInst::EnumField {
-                            dest: payload.clone(),
-                            value: scrut.clone(),
-                            index: i as u32,
-                        });
-                        arm_env.insert(bind.clone(), payload);
-                    }
-                }
+                bind_variant_pattern_args(&scrut, args, &mut body, &mut arm_env, counter);
                 let value = lower_expr(
                     &arm.body,
                     &mut body,
@@ -3256,6 +3501,46 @@ fn note_variant_binding(pat: &Pattern, scrut_ty: Option<&Type>, strings: &mut St
     }
 }
 
+/// Bind names from a variant's payload fields (`EnumField` per index). Nested
+/// `Variant` patterns bind from the extracted sub-value.
+fn bind_variant_pattern_args(
+    scrut: &str,
+    args: &[Pattern],
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+) {
+    for (i, a) in args.iter().enumerate() {
+        bind_one_match_payload(scrut, i as u32, a, instructions, env, counter);
+    }
+}
+
+fn bind_one_match_payload(
+    scrut: &str,
+    field_index: u32,
+    pat: &Pattern,
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+) {
+    *counter += 1;
+    let payload = format!("t{counter}");
+    instructions.push(IrInst::EnumField {
+        dest: payload.clone(),
+        value: scrut.to_string(),
+        index: field_index,
+    });
+    match pat {
+        Pattern::Ident(bind, _) => {
+            env.insert(bind.clone(), payload);
+        }
+        Pattern::Variant { args, .. } => {
+            bind_variant_pattern_args(&payload, args, instructions, env, counter);
+        }
+        Pattern::Wild(_) | Pattern::Int(_, _) => {}
+    }
+}
+
 fn match_arm_cond(
     scrut: &str,
     pat: &Pattern,
@@ -3313,18 +3598,7 @@ fn match_arm_cond(
                 left: low,
                 right: vtag.to_string(),
             });
-            for (i, a) in args.iter().enumerate() {
-                if let Pattern::Ident(bind, _) = a {
-                    *counter += 1;
-                    let payload = format!("t{counter}");
-                    instructions.push(IrInst::EnumField {
-                        dest: payload.clone(),
-                        value: scrut.to_string(),
-                        index: i as u32,
-                    });
-                    env.insert(bind.clone(), payload);
-                }
-            }
+            bind_variant_pattern_args(scrut, args, instructions, &mut env, counter);
             (tag_tmp, env)
         }
     }

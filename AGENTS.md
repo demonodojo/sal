@@ -86,7 +86,7 @@ Una tarea no está hecha hasta que pasa el test del pase y cubre lo añadido. `c
 - `cargo test` en paralelo hace fallar ~11 tests de `tests/selfhost_ir.rs` por interferencia: córrelos con `-- --test-threads=1` (igual `tests/bins.rs` y `tests/standard.rs`).
 - `target/` pesa varios GB y los tests de selfhost dejan temporales; la cuota de disco se llena. Antes de borrar nada en `target/` o `/tmp`, avisa al usuario.
 - Sin `--instrument` el binario no lleva sondas, tampoco con `--release`.
-- Conocido sin arreglar: uso tras liberar cuando `fn consume(n: N) -> String` devuelve `n.name` (el llamador comparte buffer con `n` y lo libera al salir). Afecta al trabajo de drops (`src/drops.rs`, `selfhost/drops.sal`).
+- Huecos de liberación cerrados y pendientes: `.cursor/skills/sal-memoria/SKILL.md`.
 
 ## Release
 

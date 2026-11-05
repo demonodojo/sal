@@ -497,6 +497,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_list_free(ptr)\n");
     s.push_str("declare void @sal_dict_free(ptr)\n");
     s.push_str("declare void @sal_bytes_free(ptr)\n");
+    s.push_str("declare void @sal_tensor_free(i64)\n");
     s.push_str("declare ptr @sal_bytes_new(i64)\n");
     s.push_str("declare i64 @sal_bytes_len(ptr)\n");
     s.push_str("declare i64 @sal_bytes_fill(ptr, i64, i64, i64)\n");
@@ -3017,6 +3018,13 @@ fn emit_runtime_or_user_call(
         "sal_enum_free" => {
             let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             s.push_str(&format!("  call void @sal_enum_free(i64 {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_tensor_free" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            s.push_str(&format!("  call void @sal_tensor_free(i64 {a})\n"));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }

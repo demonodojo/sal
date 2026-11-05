@@ -775,6 +775,7 @@ int64_t sal_vec_len(void *vp) {
 typedef struct {
     uint8_t *data;
     int64_t len;
+    int32_t view;
 } SalBytes;
 
 static SalBytes *bytes_from_handle(void *vp) {
@@ -795,6 +796,7 @@ void *sal_bytes_new(int64_t len) {
         sal_panic("bytes_new: oom");
     }
     b->len = len;
+    b->view = 0;
     return b;
 }
 
@@ -804,7 +806,7 @@ void sal_bytes_free(void *vp) {
     if (!b) {
         return;
     }
-    if (b->data) {
+    if (!b->view && b->data) {
         sal_xfree(b->data);
     }
     sal_xfree(b);
@@ -904,6 +906,7 @@ void *sal_bytes_view(void *vp, int64_t off, int64_t len) {
     }
     v->data = parent->data + (size_t)off;
     v->len = len;
+    v->view = 1;
     return v;
 }
 
@@ -917,6 +920,7 @@ void *sal_bytes_view_mem(int64_t data, int64_t len) {
     }
     v->data = (uint8_t *)(uintptr_t)data;
     v->len = len;
+    v->view = 1;
     return v;
 }
 
@@ -2367,6 +2371,21 @@ static const char *sal_dict_key(const SalDict *d, const char *key, char *buf) {
     return buf;
 }
 
+static void dict_val_release(int32_t val_kind, int64_t val) {
+    if (val_kind == 3) {
+        sal_free((void *)(uintptr_t)val);
+    } else if (val_kind == 5) {
+        sal_enum_free(val);
+    } else if ((val_kind & 15) == 4) {
+        int owned = 0;
+        const char *desc = desc_from_kind((int64_t)val_kind, &owned);
+        desc_free(desc, val);
+        if (owned) {
+            free((void *)desc);
+        }
+    }
+}
+
 /* Frees a dict. String keys are borrowed (never released), Int keys are owned;
  * String values are owned. */
 void sal_dict_free(void *dp) {
@@ -2376,9 +2395,7 @@ void sal_dict_free(void *dp) {
     }
     for (size_t i = 0; i < d->map.nslots; i++) {
         if (d->map.slots[i].key) {
-            if (d->val_kind == 3) {
-                sal_free((void *)(uintptr_t)d->map.slots[i].val);
-            }
+            dict_val_release(d->val_kind, d->map.slots[i].val);
             if (!sal_dict_str_keys(d)) {
                 sal_free((void *)(uintptr_t)d->map.slots[i].key);
             }
@@ -2396,8 +2413,8 @@ void *sal_dict_put(void *dp, const char *key, int64_t val) {
     char buf[32];
     const char *k = sal_dict_key(d, key, buf);
     int present = sal_dict_has(dp, key);
-    if (present && d->val_kind == 3) {
-        sal_free((void *)(uintptr_t)sal_map_get(&d->map, k));
+    if (present) {
+        dict_val_release(d->val_kind, (int64_t)(intptr_t)sal_map_get(&d->map, k));
     }
     if (!present && !sal_dict_str_keys(d)) {
         k = sal_str_from_cstr(k);
@@ -2446,8 +2463,21 @@ int64_t sal_dict_get(void *dp, const char *key) {
             int64_t raw = d->map.slots[i].val;
             if (d->val_kind == 3) {
                 raw = (int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)raw);
+            } else if (d->val_kind == 5) {
+                raw = sal_enum_copy(raw);
+            } else if ((d->val_kind & 15) == 4) {
+                int owned = 0;
+                const char *desc = desc_from_kind((int64_t)d->val_kind, &owned);
+                raw = desc_copy(desc, raw);
+                if (owned) {
+                    free((void *)desc);
+                }
             }
             int64_t some = sal_enum_new(2, 1);
+            if (d->val_kind == 3) {
+                int64_t *box = (int64_t *)(intptr_t)some;
+                box[0] = 2 | ((int64_t)1 << 8);
+            }
             sal_enum_set(some, 0, raw);
             return some;
         }
@@ -2487,9 +2517,7 @@ int64_t sal_dict_remove(void *dp, const char *key) {
     if (step == d->map.nslots) {
         return 0;
     }
-    if (d->val_kind == 3) {
-        sal_free((void *)(uintptr_t)d->map.slots[i].val);
-    }
+    dict_val_release(d->val_kind, d->map.slots[i].val);
     if (!sal_dict_str_keys(d)) {
         sal_free((void *)(uintptr_t)d->map.slots[i].key);
     }
@@ -3094,6 +3122,14 @@ static int ptr_in_active_region(const void *p) {
         }
     }
     return 0;
+}
+
+/* Releases a tensor buffer (place heap allocation behind an i64 handle). */
+void sal_tensor_free(int64_t handle) {
+    if (handle == 0) {
+        return;
+    }
+    sal_place_free((void *)(intptr_t)handle);
 }
 
 void sal_place_free(void *p) {

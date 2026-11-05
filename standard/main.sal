@@ -5,249 +5,189 @@ import cop_elsif
 import cop_stringplus
 import cop_plusliteral
 import cop_unusedbinding
+import cop_method
 
-fn run_lex(src: Int) -> Int ! alloc
+struct CopsResult
+    status: Int
+    offs: List[Off]
+
+struct LineCol
+    line: Int
+    col: Int
+
+fn run_lex(src: String) -> Lex ! alloc
     lex(src)
 
-fn run_all_cops(src: Int) -> Int ! alloc
-    lr = run_lex(src)
-    st = lex_result_status(lr)
-    if st != LEX_OK()
-        pack = vec_new()
-        _s = vec_push(pack, st)
-        _o = vec_push(pack, vec_new())
-        pack
+fn run_all_cops(src: String) -> CopsResult ! alloc
+    lx = run_lex(src)
+    offs = List.new[Off]()
+    if lx.status != LEX_OK()
+        CopsResult(lx.status, offs)
     else
-        toks = lex_result_tokens(lr)
-        a = cop_dupstring(src, toks)
-        b = cop_elsif(src, toks)
-        c = cop_stringplus(src, toks)
-        d = cop_plusliteral(src, toks)
-        e = cop_unusedbinding(src, toks)
-        ab = merge_off_lists(a, b)
-        abc = merge_off_lists(ab, c)
-        abcd = merge_off_lists(abc, d)
-        offs = merge_off_lists(abcd, e)
-        pack = vec_new()
-        _s = vec_push(pack, LEX_OK())
-        _o = vec_push(pack, offs)
-        pack
+        cop_dupstring(src, lx, offs)
+        cop_elsif(src, lx, offs)
+        cop_stringplus(src, lx, offs)
+        cop_plusliteral(src, lx, offs)
+        cop_unusedbinding(src, lx, offs)
+        cop_method(src, lx, offs)
+        CopsResult(LEX_OK(), offs)
 
-fn cops_pack_status(p: Int) -> Int ! alloc
-    vec_get(p, 0)
-
-fn cops_pack_offs(p: Int) -> Int ! alloc
-    vec_get(p, 1)
-
-fn byte_line_col(src: Int, pos: Int, i: Int, line: Int, col: Int) -> Int ! alloc
+fn byte_line_col(src: String, pos: Int, i: Int, line: Int, col: Int) -> LineCol ! alloc
     if i >= pos
-        pack = vec_new()
-        vec_push(pack, line)
-        vec_push(pack, col)
-        pack
+        LineCol(line, col)
     else
-        c = str_char(src, i)
+        c = src.char(i)
         if c == 10
             byte_line_col(src, pos, i + 1, line + 1, 1)
         else
             byte_line_col(src, pos, i + 1, line, col + 1)
 
-fn lc_line(p: Int) -> Int ! alloc
-    vec_get(p, 0)
-
-fn lc_col(p: Int) -> Int ! alloc
-    vec_get(p, 1)
-
-fn format_off(path: Int, src: Int, o: Int) -> Int ! alloc
-    start = off_start(o)
+fn format_off(path: String, src: String, o: Off) -> String ! alloc
+    start = o.start
     lc = byte_line_col(src, start, 0, 1, 1)
-    ln = str_as_int(int_to_str(lc_line(lc)))
-    cl = str_as_int(int_to_str(lc_col(lc)))
-    acc = str_as_int(str_concat(path, strdup(":")))
-    acc = str_as_int(str_append(acc, ln))
-    acc = str_as_int(str_append(acc, strdup(":")))
-    acc = str_as_int(str_append(acc, cl))
-    acc = str_as_int(str_append(acc, strdup(": ")))
-    acc = str_as_int(str_append(acc, off_code(o)))
-    acc = str_as_int(str_append(acc, strdup(": ")))
-    str_as_int(str_append(acc, off_msg(o)))
+    path + ":" + lc.line.to_str() + ":" + lc.col.to_str() + ": " + o.code + ": " + o.msg
 
-fn json_escape(s: Int) -> Int ! alloc
-    json_escape_go(s, 0, str_len(s), str_as_int(strdup("")))
+fn json_escape(s: String) -> String ! alloc
+    json_escape_go(s, 0, s.len(), d"")
 
-fn json_escape_go(s: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn json_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        piece = json_escape_byte(str_char(s, i))
-        acc2 = str_as_int(str_append(acc, piece))
-        json_escape_go(s, i + 1, n, acc2)
+        piece = json_escape_byte(s.char(i))
+        json_escape_go(s, i + 1, n, acc + piece)
 
-fn json_escape_byte(c: Int) -> Int ! alloc
+fn json_escape_byte(c: Int) -> String ! alloc
     if c == 34
-        str_as_int(strdup("\\\""))
+        d"\\\""
     elsif c == 92
-        str_as_int(strdup("\\\\"))
+        d"\\\\"
     elsif c == 10
-        str_as_int(strdup("\\n"))
+        d"\\n"
     elsif c == 13
-        str_as_int(strdup("\\r"))
+        d"\\r"
     elsif c == 9
-        str_as_int(strdup("\\t"))
+        d"\\t"
     elsif c < 32
         json_u(c)
     else
-        str_as_int(char_to_str(c))
+        String.from_char(c)
 
-fn hex_digit(n: Int) -> Int ! alloc
+fn hex_digit(n: Int) -> String ! alloc
     if n < 10
-        str_as_int(char_to_str(48 + n))
+        String.from_char(48 + n)
     else
-        str_as_int(char_to_str(87 + n))
+        String.from_char(87 + n)
 
-fn json_u(c: Int) -> Int ! alloc
+fn json_u(c: Int) -> String ! alloc
     hi = c / 16
     lo = c - hi * 16
-    acc = str_as_int(strdup("\\u00"))
-    acc2 = str_as_int(str_append(acc, hex_digit(hi)))
-    str_as_int(str_append(acc2, hex_digit(lo)))
+    "\\u00" + hex_digit(hi) + hex_digit(lo)
 
-fn json_fix(fix: Int) -> Int ! alloc
-    if fix == 0
-        str_as_int(strdup("null"))
+fn json_fix(o: Off) -> String ! alloc
+    if o.has_fix() == 0
+        d"null"
     else
-        acc = str_as_int(strdup("\""))
-        acc2 = str_as_int(str_append(acc, json_escape(fix)))
-        str_as_int(str_append(acc2, strdup("\"")))
+        "\"" + json_escape(o.fix) + "\""
 
-fn format_off_json(src: Int, o: Int) -> Int ! alloc
-    start = off_start(o)
-    endb = off_end(o)
+fn format_off_json(src: String, o: Off) -> String ! alloc
+    start = o.start
+    endb = o.end
     lc = byte_line_col(src, start, 0, 1, 1)
-    acc = str_as_int(strdup("{{\"code\":\""))
-    acc = str_as_int(str_append(acc, json_escape(off_code(o))))
-    acc = str_as_int(str_append(acc, strdup("\",\"message\":\"")))
-    acc = str_as_int(str_append(acc, json_escape(off_msg(o))))
-    acc = str_as_int(str_append(acc, strdup("\",\"span\":{{\"start\":")))
-    acc = str_as_int(str_append(acc, int_to_str(start)))
-    acc = str_as_int(str_append(acc, strdup(",\"end\":")))
-    acc = str_as_int(str_append(acc, int_to_str(endb)))
-    acc = str_as_int(str_append(acc, strdup(",\"line\":")))
-    acc = str_as_int(str_append(acc, int_to_str(lc_line(lc))))
-    acc = str_as_int(str_append(acc, strdup(",\"col\":")))
-    acc = str_as_int(str_append(acc, int_to_str(lc_col(lc))))
-    acc = str_as_int(str_append(acc, strdup("}},\"fix\":")))
-    acc = str_as_int(str_append(acc, json_fix(off_fix(o))))
-    str_as_int(str_append(acc, strdup("}}")))
+    "{{\"code\":\"" + json_escape(o.code) + "\",\"message\":\"" + json_escape(o.msg) + "\",\"span\":{{\"start\":" + start.to_str() + ",\"end\":" + endb.to_str() + ",\"line\":" + lc.line.to_str() + ",\"col\":" + lc.col.to_str() + "}},\"fix\":" + json_fix(o) + "}}"
 
-fn print_offs_json(src: Int, offs: Int) -> Int ! io, alloc
-    print_offs_json_go(src, offs, 0, vec_len(offs))
+fn print_offs_json(src: String, offs: List[Off]) -> Int ! io, alloc
+    print_offs_json_go(src, offs, 0, offs.len())
 
-fn print_offs_json_go(src: Int, offs: Int, i: Int, n: Int) -> Int ! io, alloc
+fn print_offs_json_go(src: String, offs: List[Off], i: Int, n: Int) -> Int ! io, alloc
     if i >= n
         0
     else
-        o = vec_get(offs, i)
+        o = offs.get(i)
         line = format_off_json(src, o)
-        msg = str_as_int(str_concat(line, strdup("\n")))
-        eprint_str(msg)
+        eprint_str(line + "\n")
         print_offs_json_go(src, offs, i + 1, n)
 
-fn print_offs(path: Int, src: Int, offs: Int) -> Int ! io, alloc
-    print_offs_go(path, src, offs, 0, vec_len(offs))
+fn print_offs(path: String, src: String, offs: List[Off]) -> Int ! io, alloc
+    print_offs_go(path, src, offs, 0, offs.len())
 
-fn print_offs_go(path: Int, src: Int, offs: Int, i: Int, n: Int) -> Int ! io, alloc
+fn print_offs_go(path: String, src: String, offs: List[Off], i: Int, n: Int) -> Int ! io, alloc
     if i >= n
         0
     else
-        o = vec_get(offs, i)
+        o = offs.get(i)
         line = format_off(path, src, o)
-        msg = str_as_int(str_concat(line, strdup("\n")))
-        eprint_str(msg)
+        eprint_str(line + "\n")
         print_offs_go(path, src, offs, i + 1, n)
 
-fn count_offs(offs: Int) -> Int ! alloc
-    vec_len(offs)
-
-fn fix_to_point(src: Int, pass: Int, max_pass: Int) -> Int ! alloc
+fn fix_to_point(src: String, pass: Int, max_pass: Int) -> String ! alloc
     if pass >= max_pass
         src
     else
         pack = run_all_cops(src)
-        if cops_pack_status(pack) != LEX_OK()
+        if pack.status != LEX_OK()
             src
         else
-            offs = cops_pack_offs(pack)
-            best = pick_best_fix(offs)
-            if best < 0
+            next = apply_all_fixes(src, pack.offs)
+            if src.eq(next) == 1
                 src
             else
-                o = vec_get(offs, best)
-                s0 = off_start(o)
-                s1 = off_end(o)
-                fix = off_fix(o)
-                next = patch_one(src, s0, s1, fix)
-                if str_eq(src, next) == 1
-                    src
-                else
-                    fix_to_point(next, pass + 1, max_pass)
+                fix_to_point(next, pass + 1, max_pass)
 
-fn run_check(path: Int, src: Int, as_json: Int) -> Int ! io, alloc
+fn run_check(path: String, src: String, as_json: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
-    if cops_pack_status(pack) != LEX_OK()
-        _e = eprint_str(str_as_int(strdup("lex error\n")))
+    if pack.status != LEX_OK()
+        eprint_str(d"lex error\n")
         2
     else
-        offs = cops_pack_offs(pack)
-        n = count_offs(offs)
+        n = pack.offs.len()
         if n == 0
             0
         elsif as_json == 1
-            _p = print_offs_json(src, offs)
+            print_offs_json(src, pack.offs)
             1
         else
-            _p = print_offs(path, src, offs)
+            print_offs(path, src, pack.offs)
             1
 
 fn wants_json() -> Int ! alloc
-    flag = str_as_int(argv(3))
-    val = str_as_int(argv(4))
-    if str_eq(flag, "--error-format") == 1
-        if str_eq(val, "json") == 1
+    flag = argv(3)
+    val = argv(4)
+    if flag.eq("--error-format") == 1
+        if val.eq("json") == 1
             1
         else
             0
     else
         0
 
-fn run_fix(path: Int, src: Int) -> Int ! io, alloc
+fn run_fix(path: String, src: String) -> Int ! io, alloc
     pack = run_all_cops(src)
-    if cops_pack_status(pack) != LEX_OK()
-        _e = eprint_str(str_as_int(strdup("lex error\n")))
+    if pack.status != LEX_OK()
+        eprint_str(d"lex error\n")
         2
     else
         fixed = fix_to_point(src, 0, 16)
         write_file(path, fixed)
         pack2 = run_all_cops(fixed)
-        if cops_pack_status(pack2) != LEX_OK()
+        if pack2.status != LEX_OK()
             2
         else
-            offs2 = cops_pack_offs(pack2)
-            n = count_offs(offs2)
+            n = pack2.offs.len()
             if n == 0
                 0
             else
-                _p = print_offs(path, fixed, offs2)
+                print_offs(path, fixed, pack2.offs)
                 1
 
 fn main() -> Int ! io, alloc
-    cmd = str_as_int(argv(1))
-    path = str_as_int(argv(2))
-    src = str_as_int(read_file(path))
-    if str_eq(cmd, "check") == 1
+    cmd = argv(1)
+    path = argv(2)
+    src = read_file(path)
+    if cmd.eq("check") == 1
         run_check(path, src, wants_json())
-    elsif str_eq(cmd, "fix") == 1
+    elsif cmd.eq("fix") == 1
         run_fix(path, src)
     else
-        _e = eprint_str(str_as_int(strdup("usage: check|fix FILE\n")))
+        eprint_str(d"usage: check|fix FILE\n")
         2

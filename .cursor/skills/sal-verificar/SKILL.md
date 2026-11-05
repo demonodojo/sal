@@ -18,6 +18,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 |---------|---------|
 | Lexer o parser | `cargo test --test frontend --test parse_and_fmt` |
 | Tipos, ownership, efectos, lugares (`frame`, ops columnares, …) | `cargo test --test semantics` |
+| Liberación de locales (`free`, cola de structs, fugas) | `cargo test --test drops`; criterio en [sal-memoria](../sal-memoria/SKILL.md) |
 | IR o fusión (`ColumnBin`, `TensorBin`, …) | `cargo test --test forward_ir` |
 | Runtime o kernels (matmul, **tensor bin**, …) | `cargo test --test kernels --test exec_matmul --test exec_column --test exec_salt` |
 | LLVM o enlace | `cargo test --test run_hello` |

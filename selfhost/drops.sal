@@ -384,7 +384,7 @@ fn owned_fns_put(m: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     else
         f = list_get(fns, i)
         _o = if ty_is_string(f.ret) == 1
-            if owned_fn_body(f.body) == 1
+            if owned_fn_body(f) == 1
                 map_put(m, str_as_int("ownfn:" + f.name), 1)
             else
                 0
@@ -394,14 +394,14 @@ fn owned_fns_put(m: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
 
 # The body is `return`ed fresh values only: every binding is fresh and bound once, no `if`,
 # `match` or `while` sits at its top level, and so do the returns and the tail.
-fn owned_fn_body(b: TBlock) -> Int ! alloc
+fn owned_fn_body(f: TFn) -> Int ! alloc
     locals = list_new[String]()
-    if owned_scan(b.stmts, 0, list_len(b.stmts), locals) == 0
+    if owned_scan(f.body.stmts, 0, list_len(f.body.stmts), locals) == 0
         0
-    elsif owned_tail_ok(b.tail, locals) == 0
+    elsif owned_tail_ok(f.body.tail, locals, f.params) == 0
         0
     else
-        owned_returns_ok(b.stmts, 0, list_len(b.stmts), locals)
+        owned_returns_ok(f.body.stmts, 0, list_len(f.body.stmts), locals, f.params)
 
 fn owned_scan(stmts: List[TStmt], i: Int, n: Int, locals: List[String]) -> Int ! alloc
     if i >= n
@@ -437,34 +437,49 @@ fn owned_bind_local(stmts: List[TStmt], st: TStmt, locals: List[String]) -> Int 
     else
         0
 
-fn owned_tail_ok(t: Expr, locals: List[String]) -> Int ! alloc
+fn owned_tail_ok(t: Expr, locals: List[String], params: List[TParam]) -> Int ! alloc
     match t
         XNone => 0
-        _ => owned_return_ok(t, locals)
+        _ => owned_return_ok(t, locals, params)
 
-fn owned_returns_ok(stmts: List[TStmt], i: Int, n: Int, locals: List[String]) -> Int ! alloc
+fn owned_returns_ok(stmts: List[TStmt], i: Int, n: Int, locals: List[String], params: List[TParam]) -> Int ! alloc
     if i >= n
         1
     else
         st = list_get(stmts, i)
         r = if st.kind == 2
-            owned_return_ok(st.expr, locals)
+            owned_return_ok(st.expr, locals, params)
         else
             1
         if r == 0
             0
         else
-            owned_returns_ok(stmts, i + 1, n, locals)
+            owned_returns_ok(stmts, i + 1, n, locals, params)
 
-fn owned_return_ok(v: Expr, locals: List[String]) -> Int ! alloc
+fn owned_return_ok(v: Expr, locals: List[String], params: List[TParam]) -> Int ! alloc
     match v
         XNone => 1
         _ => if owned_branches(v) == 1
             0
         elsif owned_fresh_builtin(v) == 1
             1
+        elsif owned_param_string_field(v, params) == 1
+            1
         else
             owned_local(v, locals)
+
+fn owned_param_string_field(v: Expr, params: List[TParam]) -> Int ! alloc
+    match v
+        XField(XIdent(name), field) => param_named(params, name, 0, list_len(params))
+        _ => 0
+
+fn param_named(params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(params, i).name, name) == 1
+        1
+    else
+        param_named(params, name, i + 1, n)
 
 fn owned_local(v: Expr, locals: List[String]) -> Int ! alloc
     match v
@@ -528,6 +543,10 @@ fn dr_fresh_call(c: DC, name: String, targs: String) -> Int ! alloc
     elsif str_eq(name, "dict_keys") + str_eq(name, "dict_values") == 1
         # A fresh list whose String elements are copies the list owns.
         6
+    elsif str_eq(name, "dict_get") == 1
+        5
+    elsif str_eq(name, "bytes_view") + str_eq(name, "bytes_view_mem") == 1
+        3
     else
         0
 

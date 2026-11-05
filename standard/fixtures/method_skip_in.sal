@@ -1,0 +1,16 @@
+fn list_len(xs: Int) -> Int
+    xs
+
+fn main() -> Int
+    m.str_len(s)
+    m . list_push(xs, 1)
+    list_new()
+    dict_new[Int]()
+    list_new[Int, String]()
+    bytes_new[Int](1)
+    str_len[Int](s)
+    float_abs(a, b)
+    bytes_fill_u32(b, 0, 1, 2)
+    str_from_int(n)
+    s.len()
+    0

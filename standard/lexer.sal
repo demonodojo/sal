@@ -1,5 +1,11 @@
 # Lexer for standard: tokens carry byte spans into the original source.
 
+struct Lex
+    status: Int
+    kinds: List[Int]
+    starts: List[Int]
+    ends: List[Int]
+
 fn TK_EOF() -> Int
     0
 
@@ -54,285 +60,241 @@ fn LEX_ERR_TAB() -> Int
 fn LEX_ERR_STRING() -> Int
     2
 
-fn tok_new(kind: Int, start: Int, end: Int) -> Int ! alloc
-    v = vec_new()
-    vec_push(v, kind)
-    vec_push(v, start)
-    vec_push(v, end)
-    v
+method Lex.len() -> Int ! alloc
+    self.kinds.len()
 
-fn tok_kind(t: Int) -> Int ! alloc
-    vec_get(t, 0)
+method Lex.kind(i: Int) -> Int ! alloc
+    self.kinds.get(i)
 
-fn tok_start(t: Int) -> Int ! alloc
-    vec_get(t, 1)
+method Lex.start(i: Int) -> Int ! alloc
+    self.starts.get(i)
 
-fn tok_end(t: Int) -> Int ! alloc
-    vec_get(t, 2)
+method Lex.end(i: Int) -> Int ! alloc
+    self.ends.get(i)
 
-fn tok_text(src: Int, t: Int) -> Int ! alloc
-    str_as_int(str_slice(src, tok_start(t), tok_end(t)))
+method Lex.text(src: String, i: Int) -> String ! alloc
+    src.slice(self.start(i), self.end(i))
 
-fn kw_kind(text: Int) -> Int ! alloc
-    if str_eq(text, "if") == 1
+method Lex.push(kind: Int, start: Int, end: Int) -> Int ! alloc
+    self.kinds.push(kind)
+    self.starts.push(start)
+    _c = self.ends.push(end)
+    0
+
+fn lex_empty() -> Lex ! alloc
+    Lex(LEX_OK(), List.new[Int](), List.new[Int](), List.new[Int]())
+
+fn kw_kind(text: String) -> Int ! alloc
+    if text.eq("if") == 1
         TK_IF()
+    elsif text.eq("elsif") == 1
+        TK_ELSIF()
+    elsif text.eq("else") == 1
+        TK_ELSE()
     else
-        if str_eq(text, "elsif") == 1
-            TK_ELSIF()
-        else
-            if str_eq(text, "else") == 1
-                TK_ELSE()
-            else
-                TK_IDENT()
+        TK_IDENT()
 
-fn indent_stack_new() -> Int ! alloc
-    v = vec_new()
-    vec_push(v, 0)
-    v
+fn indent_stack_new() -> List[Int] ! alloc
+    st = List.new[Int]()
+    st.push(0)
+    st
 
-fn indent_top_at(st: Int, i: Int) -> Int ! alloc
+fn indent_top_at(st: List[Int], i: Int) -> Int ! alloc
     if i < 0
         0
     else
-        v = vec_get(st, i)
+        v = st.get(i)
         if v < 0
             indent_top_at(st, i - 1)
         else
             v
 
-fn indent_top(st: Int) -> Int ! alloc
-    n = vec_len(st)
+fn indent_top(st: List[Int]) -> Int ! alloc
+    n = st.len()
     indent_top_at(st, n - 1)
 
-fn indent_push(st: Int, col: Int) -> Int ! alloc
-    vec_push(st, col)
-    st
+fn indent_push(st: List[Int], col: Int) -> Int ! alloc
+    _p = st.push(col)
+    0
 
-fn indent_tombstone_at(st: Int, i: Int) -> Int ! alloc
+fn indent_tombstone_at(st: List[Int], i: Int) -> Int ! alloc
     if i < 0
         0
     else
-        v = vec_get(st, i)
+        v = st.get(i)
         if v < 0
             indent_tombstone_at(st, i - 1)
         else
-            _p = vec_set(st, i, 0 - 1)
+            _p = st.set(i, 0 - 1)
             0
 
-fn indent_pop(st: Int) -> Int ! alloc
-    n = vec_len(st)
+fn indent_pop(st: List[Int]) -> Int ! alloc
+    n = st.len()
     indent_tombstone_at(st, n - 1)
-    st
 
-fn skip_line_comment(src: Int, i: Int, n: Int) -> Int ! alloc
+fn skip_line_comment(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
-    str_skip(src, i, 4, 0)
+    src.skip(i, 4, 0)
 
-fn count_spaces_or_tab(src: Int, i: Int, n: Int) -> Int ! alloc
+fn count_spaces_or_tab(src: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        c = str_char(src, i)
+        c = src.char(i)
         if c == 32
             1 + count_spaces_or_tab(src, i + 1, n)
+        elsif c == 9
+            0 - 1
         else
-            if c == 9
-                0 - 1
-            else
-                0
+            0
 
-fn string_close_end(src: Int, open_quote: Int, n: Int) -> Int ! alloc
-    end = str_skip(src, open_quote + 1, 7, 0)
+fn string_close_end(src: String, open_quote: Int, n: Int) -> Int ! alloc
+    end = src.skip(open_quote + 1, 7, 0)
     if end >= n
         0 - 1
+    elsif src.char(end) == 34
+        end + 1
     else
-        if str_char(src, end) == 34
-            end + 1
-        else
-            0 - 1
+        0 - 1
 
-fn dedent_to_col(out: Int, st: Int, col: Int, pos: Int) -> Int ! alloc
+fn dedent_to_col(out: Lex, st: List[Int], col: Int, pos: Int) -> Int ! alloc
     top = indent_top(st)
     if col < top
-        _t = indent_pop(st)
-        t = tok_new(TK_DEDENT(), pos, pos)
-        vec_push(out, t)
+        indent_pop(st)
+        out.push(TK_DEDENT(), pos, pos)
         dedent_to_col(out, st, col, pos)
     else
         0
 
-fn lex_fail(err: Int) -> Int ! alloc
-    _s = vec_set(err, 0, 1)
+fn lex_fail(err: List[Int]) -> Int ! alloc
+    _s = err.set(0, 1)
     0
 
-fn lex_emit_string(src: Int, i: Int, n: Int, out: Int, st: Int, kind: Int, err: Int) -> Int ! alloc
+fn lex_emit_string(src: String, i: Int, n: Int, out: Lex, st: List[Int], kind: Int, err: List[Int]) -> Int ! alloc
     if kind == TK_DSTRING()
         end = string_close_end(src, i + 1, n)
         if end < 0
             lex_fail(err)
         else
-            t = tok_new(kind, i, end)
-            _p = vec_push(out, t)
+            out.push(kind, i, end)
             lex_go(src, end, n, out, st, 0, err)
     else
         end = string_close_end(src, i, n)
         if end < 0
             lex_fail(err)
         else
-            t = tok_new(kind, i, end)
-            _p = vec_push(out, t)
+            out.push(kind, i, end)
             lex_go(src, end, n, out, st, 0, err)
 
-fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int, err: Int) -> Int ! alloc
-    if vec_get(err, 0) == 1
+fn lex_go(src: String, i: Int, n: Int, out: Lex, st: List[Int], at_start: Int, err: List[Int]) -> Int ! alloc
+    if err.get(0) == 1
+        0
+    elsif i >= n
+        _d = dedent_to_col(out, st, 0, i)
+        out.push(TK_EOF(), i, i)
         0
     else
-        if i >= n
-            _d = dedent_to_col(out, st, 0, i)
-            t = tok_new(TK_EOF(), i, i)
-            _p = vec_push(out, t)
-            0
-        else
-            c = str_char(src, i)
-            if c == 35
-                j = skip_line_comment(src, i + 1, n)
-                lex_go(src, j, n, out, st, at_start, err)
+        c = src.char(i)
+        if c == 35
+            j = skip_line_comment(src, i + 1, n)
+            lex_go(src, j, n, out, st, at_start, err)
+        elsif at_start == 1
+            sp = count_spaces_or_tab(src, i, n)
+            if sp < 0
+                lex_fail(err)
             else
-                if at_start == 1
-                    sp = count_spaces_or_tab(src, i, n)
-                    if sp < 0
-                        lex_fail(err)
-                    else
-                        j = i + sp
-                        if j >= n
-                            lex_go(src, j, n, out, st, 1, err)
-                        else
-                            cj = str_char(src, j)
-                            if cj == 10
-                                lex_go(src, j + 1, n, out, st, 1, err)
-                            else
-                                if cj == 35
-                                    j2 = skip_line_comment(src, j + 1, n)
-                                    lex_go(src, j2, n, out, st, 1, err)
-                                else
-                                    top = indent_top(st)
-                                    if sp > top
-                                        _p = indent_push(st, sp)
-                                        t = tok_new(TK_INDENT(), i, j)
-                                        vec_push(out, t)
-                                        lex_go(src, j, n, out, st, 0, err)
-                                    else
-                                        _d = dedent_to_col(out, st, sp, i)
-                                        lex_go(src, j, n, out, st, 0, err)
+                j = i + sp
+                if j >= n
+                    lex_go(src, j, n, out, st, 1, err)
                 else
-                    if c == 10
-                        t = tok_new(TK_NL(), i, i + 1)
-                        _p = vec_push(out, t)
-                        lex_go(src, i + 1, n, out, st, 1, err)
+                    cj = src.char(j)
+                    if cj == 10
+                        lex_go(src, j + 1, n, out, st, 1, err)
+                    elsif cj == 35
+                        j2 = skip_line_comment(src, j + 1, n)
+                        lex_go(src, j2, n, out, st, 1, err)
                     else
-                        if c == 9
-                            lex_fail(err)
+                        top = indent_top(st)
+                        if sp > top
+                            indent_push(st, sp)
+                            out.push(TK_INDENT(), i, j)
+                            lex_go(src, j, n, out, st, 0, err)
                         else
-                            if c == 34
-                                lex_emit_string(src, i, n, out, st, TK_STRING(), err)
-                            else
-                                if c == 40
-                                    t = tok_new(TK_LPAREN(), i, i + 1)
-                                    _p = vec_push(out, t)
-                                    lex_go(src, i + 1, n, out, st, 0, err)
-                                else
-                                    if c == 41
-                                        t = tok_new(TK_RPAREN(), i, i + 1)
-                                        _p = vec_push(out, t)
-                                        lex_go(src, i + 1, n, out, st, 0, err)
-                                    else
-                                        if c == 61
-                                            t = tok_new(TK_EQ(), i, i + 1)
-                                            _p = vec_push(out, t)
-                                            lex_go(src, i + 1, n, out, st, 0, err)
-                                        else
-                                            if c == 44
-                                                t = tok_new(TK_COMMA(), i, i + 1)
-                                                _p = vec_push(out, t)
-                                                lex_go(src, i + 1, n, out, st, 0, err)
-                                            else
-                                                if c == 43
-                                                    t = tok_new(TK_PLUS(), i, i + 1)
-                                                    _p = vec_push(out, t)
-                                                    lex_go(src, i + 1, n, out, st, 0, err)
-                                                else
-                                                    if is_ident_start(c) == 1
-                                                        end = str_skip(src, i, 2, 0)
-                                                        text = str_as_int(str_slice(src, i, end))
-                                                        if str_eq(text, "d") == 1
-                                                            if end < n
-                                                                if str_char(src, end) == 34
-                                                                    free(text)
-                                                                    lex_emit_string(src, end - 1, n, out, st, TK_DSTRING(), err)
-                                                                else
-                                                                    kind = kw_kind(text)
-                                                                    t = tok_new(kind, i, end)
-                                                                    _p = vec_push(out, t)
-                                                                    free(text)
-                                                                    lex_go(src, end, n, out, st, 0, err)
-                                                            else
-                                                                kind = kw_kind(text)
-                                                                t = tok_new(kind, i, end)
-                                                                _p = vec_push(out, t)
-                                                                free(text)
-                                                                lex_go(src, end, n, out, st, 0, err)
-                                                        else
-                                                            kind = kw_kind(text)
-                                                            t = tok_new(kind, i, end)
-                                                            _p = vec_push(out, t)
-                                                            free(text)
-                                                            lex_go(src, end, n, out, st, 0, err)
-                                                    else
-                                                        j = str_skip(src, i, 8, 0)
-                                                        if j == i
-                                                            lex_go(src, i + 1, n, out, st, 0, err)
-                                                        else
-                                                            lex_go(src, j, n, out, st, 0, err)
-            0
+                            _d = dedent_to_col(out, st, sp, i)
+                            lex_go(src, j, n, out, st, 0, err)
+        elsif c == 10
+            out.push(TK_NL(), i, i + 1)
+            lex_go(src, i + 1, n, out, st, 1, err)
+        elsif c == 9
+            lex_fail(err)
+        elsif c == 34
+            lex_emit_string(src, i, n, out, st, TK_STRING(), err)
+        elsif c == 40
+            out.push(TK_LPAREN(), i, i + 1)
+            lex_go(src, i + 1, n, out, st, 0, err)
+        elsif c == 41
+            out.push(TK_RPAREN(), i, i + 1)
+            lex_go(src, i + 1, n, out, st, 0, err)
+        elsif c == 61
+            out.push(TK_EQ(), i, i + 1)
+            lex_go(src, i + 1, n, out, st, 0, err)
+        elsif c == 44
+            out.push(TK_COMMA(), i, i + 1)
+            lex_go(src, i + 1, n, out, st, 0, err)
+        elsif c == 43
+            out.push(TK_PLUS(), i, i + 1)
+            lex_go(src, i + 1, n, out, st, 0, err)
+        elsif is_ident_start(c) == 1
+            end = src.skip(i, 2, 0)
+            text = src.slice(i, end)
+            if text.eq("d") == 1
+                if end < n
+                    if src.char(end) == 34
+                        lex_emit_string(src, end - 1, n, out, st, TK_DSTRING(), err)
+                    else
+                        kind = kw_kind(text)
+                        out.push(kind, i, end)
+                        lex_go(src, end, n, out, st, 0, err)
+                else
+                    kind = kw_kind(text)
+                    out.push(kind, i, end)
+                    lex_go(src, end, n, out, st, 0, err)
+            else
+                kind = kw_kind(text)
+                out.push(kind, i, end)
+                lex_go(src, end, n, out, st, 0, err)
+        else
+            j = src.skip(i, 8, 0)
+            if j == i
+                lex_go(src, i + 1, n, out, st, 0, err)
+            else
+                lex_go(src, j, n, out, st, 0, err)
+        0
 
 fn is_ident_start(c: Int) -> Int
     if c >= 65
         if c <= 90
             1
-        else
-            if c >= 97
-                if c <= 122
-                    1
-                else
-                    0
+        elsif c >= 97
+            if c <= 122
+                1
             else
                 0
-    else
-        if c == 95
-            1
         else
             0
-
-fn lex_result_new(status: Int, toks: Int) -> Int ! alloc
-    r = vec_new()
-    vec_push(r, status)
-    vec_push(r, toks)
-    r
-
-fn lex_result_status(r: Int) -> Int ! alloc
-    vec_get(r, 0)
-
-fn lex_result_tokens(r: Int) -> Int ! alloc
-    vec_get(r, 1)
-
-fn lex(src: Int) -> Int ! alloc
-    out = vec_new()
-    st = indent_stack_new()
-    err = vec_new()
-    vec_push(err, 0)
-    n = str_len(src)
-    lex_go(src, 0, n, out, st, 1, err)
-    if vec_get(err, 0) == 1
-        lex_result_new(LEX_ERR_TAB(), vec_new())
+    elsif c == 95
+        1
     else
-        lex_result_new(LEX_OK(), out)
+        0
+
+fn lex(src: String) -> Lex ! alloc
+    out = lex_empty()
+    st = indent_stack_new()
+    err = List.new[Int]()
+    err.push(0)
+    n = src.len()
+    lex_go(src, 0, n, out, st, 1, err)
+    if err.get(0) == 1
+        Lex(LEX_ERR_TAB(), List.new[Int](), List.new[Int](), List.new[Int]())
+    else
+        Lex(LEX_OK(), out.kinds, out.starts, out.ends)

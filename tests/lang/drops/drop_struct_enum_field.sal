@@ -1,0 +1,12 @@
+# exit: 0
+enum E
+    Some(String)
+
+struct B
+    e: E
+    n: Int
+
+fn main() -> Int ! alloc
+    e = Some("a" + "b")
+    b = B(e, 1)
+    b.n

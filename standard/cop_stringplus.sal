@@ -2,301 +2,249 @@ import lexer
 import patch
 import util
 
-fn CODE_PLUS() -> Int ! alloc
-    str_as_int(strdup("Style/StringPlus"))
+fn CODE_PLUS() -> String ! alloc
+    d"Style/StringPlus"
 
-fn is_str_fun(name: Int) -> Int ! alloc
-    if str_eq(name, "str_concat") == 1
+struct ScanR
+    ok: Int
+    ci: Int
+    rp: Int
+
+struct TwoArgs
+    ok: Int
+    ce: Int
+    a1s: Int
+    a1e: Int
+    a2s: Int
+    a2e: Int
+
+struct StrCall
+    ok: Int
+    start: Int
+    end: Int
+    a1s: Int
+    a1e: Int
+    a2s: Int
+    a2e: Int
+    fk: Int
+
+struct ChainFix
+    ok: Int
+    start: Int
+    end: Int
+    fix: String
+
+fn is_str_fun(name: String) -> Int ! alloc
+    if name.eq("str_concat") == 1
         1
+    elsif name.eq("str_append") == 1
+        2
     else
-        if str_eq(name, "str_append") == 1
-            2
-        else
-            0
+        0
 
-fn prev_non_nl(toks: Int, i: Int) -> Int ! alloc
+fn prev_non_nl(lex: Lex, i: Int) -> Int ! alloc
     if i <= 0
         0 - 1
+    elsif lex.kind(i - 1) == TK_NL()
+        prev_non_nl(lex, i - 1)
     else
-        t = vec_get(toks, i - 1)
-        if tok_kind(t) == TK_NL()
-            prev_non_nl(toks, i - 1)
-        else
-            i - 1
+        i - 1
 
-fn next_non_nl(toks: Int, n: Int, i: Int) -> Int ! alloc
+fn next_non_nl(lex: Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         n
+    elsif lex.kind(i) == TK_NL()
+        next_non_nl(lex, n, i + 1)
     else
-        t = vec_get(toks, i)
-        if tok_kind(t) == TK_NL()
-            next_non_nl(toks, n, i + 1)
-        else
-            i
+        i
 
-fn join_plus(parts: Int) -> Int ! alloc
-    join_plus_go(parts, 0, vec_len(parts), str_as_int(strdup("")))
+fn join_plus(parts: List[String]) -> String ! alloc
+    join_plus_go(parts, 0, parts.len(), d"")
 
-fn join_plus_go(parts: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn join_plus_go(parts: List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        piece = vec_get(parts, i)
+        piece = parts.get(i)
         if i == 0
             join_plus_go(parts, i + 1, n, piece)
         else
-            mid = str_as_int(str_concat(str_concat(acc, strdup(" + ")), piece))
-            join_plus_go(parts, i + 1, n, mid)
+            join_plus_go(parts, i + 1, n, acc + " + " + piece)
 
-fn vec_from2(a: Int, b: Int) -> Int ! alloc
-    v = vec_new()
-    vec_push(v, a)
-    vec_push(v, b)
-    v
-
-fn parse_two_args(toks: Int, n: Int, lp: Int) -> Int ! alloc
-    out = vec_new()
-    vec_push(out, 0)
-    i = next_non_nl(toks, n, lp + 1)
+fn scan_paren(lex: Lex, n: Int, i: Int, depth: Int, ci: Int) -> ScanR ! alloc
     if i >= n
-        out
+        ScanR(0, 0, 0)
     else
-        a1s = tok_start(vec_get(toks, i))
-        st = scan_paren(toks, n, i, 1, 0 - 1)
-        if vec_get(st, 0) == 0
-            out
-        else
-            ci = vec_get(st, 1)
-            rp = vec_get(st, 2)
-            if ci < 0
-                out
-            else
-                a1e = tok_end(vec_get(toks, prev_non_nl(toks, ci)))
-                a2i = next_non_nl(toks, n, ci + 1)
-                a2s = tok_start(vec_get(toks, a2i))
-                a2e = tok_end(vec_get(toks, prev_non_nl(toks, rp)))
-                ce = tok_end(vec_get(toks, rp))
-                vec_set(out, 0, 1)
-                _ce = vec_push(out, ce)
-                _a1s = vec_push(out, a1s)
-                _a1e = vec_push(out, a1e)
-                _a2s = vec_push(out, a2s)
-                _a2e = vec_push(out, a2e)
-                out
-
-fn scan_paren(toks: Int, n: Int, i: Int, depth: Int, ci: Int) -> Int ! alloc
-    if i >= n
-        fail_scan()
-    else
-        t = vec_get(toks, i)
-        k = tok_kind(t)
+        k = lex.kind(i)
         if k == TK_LPAREN()
-            scan_paren(toks, n, i + 1, depth + 1, ci)
-        else
-            if k == TK_RPAREN()
-                d2 = depth - 1
-                if d2 == 0
-                    ok_scan(ci, i)
-                else
-                    scan_paren(toks, n, i + 1, d2, ci)
+            scan_paren(lex, n, i + 1, depth + 1, ci)
+        elsif k == TK_RPAREN()
+            d2 = depth - 1
+            if d2 == 0
+                ScanR(1, ci, i)
             else
-                if k == TK_COMMA()
-                    if depth == 1
-                        scan_paren(toks, n, i + 1, depth, i)
-                    else
-                        scan_paren(toks, n, i + 1, depth, ci)
-                else
-                    scan_paren(toks, n, i + 1, depth, ci)
-
-fn fail_scan() -> Int ! alloc
-    v = vec_new()
-    vec_push(v, 0)
-    v
-
-fn ok_scan(ci: Int, rp: Int) -> Int ! alloc
-    v = vec_new()
-    vec_push(v, 1)
-    vec_push(v, ci)
-    vec_push(v, rp)
-    v
-
-fn parse_call_at(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
-    pack = vec_new()
-    vec_push(pack, 0)
-    if i >= n
-        pack
-    else
-        t = vec_get(toks, i)
-        if tok_kind(t) != TK_IDENT()
-            pack
-        else
-            name = tok_text(src, t)
-            fk = is_str_fun(name)
-            free(name)
-            if fk == 0
-                pack
+                scan_paren(lex, n, i + 1, d2, ci)
+        elsif k == TK_COMMA()
+            if depth == 1
+                scan_paren(lex, n, i + 1, depth, i)
             else
-                j = skip_nl(toks, n, i + 1)
-                if j >= n
-                    pack
-                else
-                    if tok_kind(vec_get(toks, j)) != TK_LPAREN()
-                        pack
-                    else
-                        parsed = parse_two_args(toks, n, j)
-                        if vec_get(parsed, 0) == 0
-                            pack
-                        else
-                            vec_set(pack, 0, 1)
-                            vec_push(pack, tok_start(t))
-                            vec_push(pack, vec_get(parsed, 1))
-                            vec_push(pack, vec_get(parsed, 2))
-                            vec_push(pack, vec_get(parsed, 3))
-                            vec_push(pack, vec_get(parsed, 4))
-                            vec_push(pack, vec_get(parsed, 5))
-                            _fk = vec_push(pack, fk)
-                            pack
-
-fn pack_ok(p: Int) -> Int ! alloc
-    vec_get(p, 0)
-
-fn build_call_fix(src: Int, p: Int) -> Int ! alloc
-    a = str_as_int(str_slice(src, vec_get(p, 3), vec_get(p, 4)))
-    b = str_as_int(str_slice(src, vec_get(p, 5), vec_get(p, 6)))
-    join_plus(vec_from2(a, b))
-
-fn try_assign_chain(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
-    pack = vec_new()
-    vec_push(pack, 0)
-    if i >= n
-        pack
-    else
-        t = vec_get(toks, i)
-        if tok_kind(t) != TK_IDENT()
-            pack
+                scan_paren(lex, n, i + 1, depth, ci)
         else
-            var = tok_text(src, t)
-            j = skip_nl(toks, n, i + 1)
+            scan_paren(lex, n, i + 1, depth, ci)
+
+fn parse_two_args(lex: Lex, n: Int, lp: Int) -> TwoArgs ! alloc
+    i = next_non_nl(lex, n, lp + 1)
+    if i >= n
+        TwoArgs(0, 0, 0, 0, 0, 0)
+    else
+        a1s = lex.start(i)
+        st = scan_paren(lex, n, i, 1, 0 - 1)
+        if st.ok == 0
+            TwoArgs(0, 0, 0, 0, 0, 0)
+        elsif st.ci < 0
+            TwoArgs(0, 0, 0, 0, 0, 0)
+        else
+            a1e = lex.end(prev_non_nl(lex, st.ci))
+            a2i = next_non_nl(lex, n, st.ci + 1)
+            a2s = lex.start(a2i)
+            a2e = lex.end(prev_non_nl(lex, st.rp))
+            ce = lex.end(st.rp)
+            TwoArgs(1, ce, a1s, a1e, a2s, a2e)
+
+fn parse_call_at(src: String, lex: Lex, n: Int, i: Int) -> StrCall ! alloc
+    if i >= n
+        StrCall(0, 0, 0, 0, 0, 0, 0, 0)
+    elsif lex.kind(i) != TK_IDENT()
+        StrCall(0, 0, 0, 0, 0, 0, 0, 0)
+    else
+        name = lex.text(src, i)
+        fk = is_str_fun(name)
+        if fk == 0
+            StrCall(0, 0, 0, 0, 0, 0, 0, 0)
+        else
+            j = skip_nl(lex, n, i + 1)
             if j >= n
-                free(var)
-                pack
+                StrCall(0, 0, 0, 0, 0, 0, 0, 0)
+            elsif lex.kind(j) != TK_LPAREN()
+                StrCall(0, 0, 0, 0, 0, 0, 0, 0)
             else
-                if tok_kind(vec_get(toks, j)) != TK_EQ()
-                    free(var)
-                    pack
+                parsed = parse_two_args(lex, n, j)
+                if parsed.ok == 0
+                    StrCall(0, 0, 0, 0, 0, 0, 0, 0)
                 else
-                    k = skip_nl(toks, n, j + 1)
-                    call = parse_call_at(src, toks, n, k)
-                    if pack_ok(call) == 0
-                        free(var)
-                        pack
-                    else
-                        parts = vec_new()
-                        a = str_as_int(str_slice(src, vec_get(call, 3), vec_get(call, 4)))
-                        b = str_as_int(str_slice(src, vec_get(call, 5), vec_get(call, 6)))
-                        fk = vec_get(call, 7)
-                        if fk == 1
-                            _p = vec_push(parts, a)
-                            _q = vec_push(parts, b)
-                        else
-                            _p = vec_push(parts, a)
-                            _q = vec_push(parts, b)
-                        end_i = vec_get(call, 2)
-                        ti = tok_index_at_or_after(toks, n, end_i, 0)
-                        end_i = chain_append_lines(src, toks, n, ti, var, parts, end_i)
-                        rhs = join_plus(parts)
-                        head = str_as_int(str_concat(var, strdup(" = ")))
-                        fix = str_as_int(str_concat(head, rhs))
-                        vec_set(pack, 0, 1)
-                        vec_push(pack, tok_start(t))
-                        vec_push(pack, end_i)
-                        vec_push(pack, fix)
-                        free(var)
-                        pack
+                    StrCall(1, lex.start(i), parsed.ce, parsed.a1s, parsed.a1e, parsed.a2s, parsed.a2e, fk)
 
-fn tok_index_at_or_after(toks: Int, n: Int, byte_pos: Int, i: Int) -> Int ! alloc
+fn build_call_fix(src: String, call: StrCall) -> String ! alloc
+    a = src.slice(call.a1s, call.a1e)
+    b = src.slice(call.a2s, call.a2e)
+    parts = List.new[String]()
+    parts.push(a)
+    parts.push(b)
+    join_plus(parts)
+
+fn try_assign_chain(src: String, lex: Lex, n: Int, i: Int) -> ChainFix ! alloc
+    if i >= n
+        ChainFix(0, 0, 0, d"")
+    elsif lex.kind(i) != TK_IDENT()
+        ChainFix(0, 0, 0, d"")
+    else
+        var = lex.text(src, i)
+        j = skip_nl(lex, n, i + 1)
+        if j >= n
+            ChainFix(0, 0, 0, d"")
+        elsif lex.kind(j) != TK_EQ()
+            ChainFix(0, 0, 0, d"")
+        else
+            k = skip_nl(lex, n, j + 1)
+            call = parse_call_at(src, lex, n, k)
+            if call.ok == 0
+                ChainFix(0, 0, 0, d"")
+            else
+                parts = List.new[String]()
+                a = src.slice(call.a1s, call.a1e)
+                b = src.slice(call.a2s, call.a2e)
+                parts.push(a)
+                parts.push(b)
+                end_i = call.end
+                ti = tok_index_at_or_after(lex, n, end_i, 0)
+                end_i = chain_append_lines(src, lex, n, ti, var, parts, end_i)
+                rhs = join_plus(parts)
+                fix = var + " = " + rhs
+                ChainFix(1, lex.start(i), end_i, fix)
+
+fn tok_index_at_or_after(lex: Lex, n: Int, byte_pos: Int, i: Int) -> Int ! alloc
     if i >= n
         n
+    elsif lex.start(i) >= byte_pos
+        i
     else
-        t = vec_get(toks, i)
-        if tok_start(t) >= byte_pos
-            i
-        else
-            tok_index_at_or_after(toks, n, byte_pos, i + 1)
+        tok_index_at_or_after(lex, n, byte_pos, i + 1)
 
-fn chain_append_lines(src: Int, toks: Int, n: Int, i: Int, var: Int, parts: Int, end_byte: Int) -> Int ! alloc
-    i2 = skip_nl(toks, n, i)
+fn chain_append_lines(src: String, lex: Lex, n: Int, i: Int, var: String, parts: List[String], end_byte: Int) -> Int ! alloc
+    i2 = skip_nl(lex, n, i)
     if i2 >= n
         end_byte
+    elsif lex.kind(i2) == TK_DEDENT()
+        end_byte
+    elsif lex.kind(i2) != TK_IDENT()
+        end_byte
     else
-        t = vec_get(toks, i2)
-        if tok_kind(t) == TK_DEDENT()
+        name = lex.text(src, i2)
+        if name.eq(var) == 0
             end_byte
         else
-            if tok_kind(t) != TK_IDENT()
+            j = skip_nl(lex, n, i2 + 1)
+            if j >= n
+                end_byte
+            elsif lex.kind(j) != TK_EQ()
                 end_byte
             else
-                name = tok_text(src, t)
-                if str_eq(name, var) == 0
-                    free(name)
+                k = skip_nl(lex, n, j + 1)
+                call = parse_call_at(src, lex, n, k)
+                if call.ok == 0
+                    end_byte
+                elsif call.fk != 2
                     end_byte
                 else
-                    free(name)
-                    j = skip_nl(toks, n, i2 + 1)
-                    if j >= n
+                    a = src.slice(call.a1s, call.a1e)
+                    b = src.slice(call.a2s, call.a2e)
+                    if a.eq(var) == 0
                         end_byte
                     else
-                        if tok_kind(vec_get(toks, j)) != TK_EQ()
-                            end_byte
-                        else
-                            k = skip_nl(toks, n, j + 1)
-                            call = parse_call_at(src, toks, n, k)
-                            if pack_ok(call) == 0
-                                end_byte
-                            else
-                                if vec_get(call, 7) != 2
-                                    end_byte
-                                else
-                                    a = str_as_int(str_slice(src, vec_get(call, 3), vec_get(call, 4)))
-                                    b = str_as_int(str_slice(src, vec_get(call, 5), vec_get(call, 6)))
-                                    if str_eq(a, var) == 0
-                                        end_byte
-                                    else
-                                        vec_push(parts, b)
-                                        end2 = vec_get(call, 2)
-                                        ti = tok_index_at_or_after(toks, n, end2, 0)
-                                        chain_append_lines(src, toks, n, ti, var, parts, end2)
+                        parts.push(b)
+                        end2 = call.end
+                        ti = tok_index_at_or_after(lex, n, end2, 0)
+                        chain_append_lines(src, lex, n, ti, var, parts, end2)
 
-fn cop_stringplus(src: Int, toks: Int) -> Int ! alloc
-    offs = vec_new()
-    n = vec_len(toks)
-    offs = cop_plus_assign_go(src, toks, offs, 0, n)
-    cop_plus_call_go(src, toks, offs, 0, n)
+fn cop_stringplus(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+    n = lex.len()
+    cop_plus_assign_go(src, lex, offs, 0, n)
+    cop_plus_call_go(src, lex, offs, 0, n)
 
-fn cop_plus_assign_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        offs
-    else
-        ch = try_assign_chain(src, toks, n, i)
-        if pack_ok(ch) == 1
-            msg = str_as_int(strdup("use + instead of str_concat/str_append"))
-            o = off_new(CODE_PLUS(), msg, vec_get(ch, 1), vec_get(ch, 2), vec_get(ch, 3))
-            _p = vec_push(offs, o)
-            next_i = tok_index_at_or_after(toks, n, vec_get(ch, 2), 0)
-            cop_plus_assign_go(src, toks, offs, next_i, n)
-        else
-            cop_plus_assign_go(src, toks, offs, i + 1, n)
-
-fn inside_any_off(offs: Int, start: Int, end: Int) -> Int ! alloc
-    inside_off_go(offs, 0, vec_len(offs), start, end)
-
-fn inside_off_go(offs: Int, i: Int, n: Int, start: Int, end: Int) -> Int ! alloc
+fn cop_plus_assign_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        o = vec_get(offs, i)
-        s0 = off_start(o)
-        s1 = off_end(o)
+        ch = try_assign_chain(src, lex, n, i)
+        if ch.ok == 1
+            msg = d"use + instead of str_concat/str_append"
+            o = off_new(CODE_PLUS(), msg, ch.start, ch.end, 1, ch.fix)
+            _p = offs.push(o)
+            next_i = tok_index_at_or_after(lex, n, ch.end, 0)
+            cop_plus_assign_go(src, lex, offs, next_i, n)
+        else
+            cop_plus_assign_go(src, lex, offs, i + 1, n)
+
+fn inside_any_off(offs: List[Off], start: Int, end: Int) -> Int ! alloc
+    inside_off_go(offs, 0, offs.len(), start, end)
+
+fn inside_off_go(offs: List[Off], i: Int, n: Int, start: Int, end: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        o = offs.get(i)
+        s0 = o.start
+        s1 = o.end
         if start >= s0
             if end <= s1
                 1
@@ -305,21 +253,18 @@ fn inside_off_go(offs: Int, i: Int, n: Int, start: Int, end: Int) -> Int ! alloc
         else
             inside_off_go(offs, i + 1, n, start, end)
 
-fn cop_plus_call_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
+fn cop_plus_call_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
-        offs
+        0
     else
-        call = parse_call_at(src, toks, n, i)
-        if pack_ok(call) == 0
-            cop_plus_call_go(src, toks, offs, i + 1, n)
+        call = parse_call_at(src, lex, n, i)
+        if call.ok == 0
+            cop_plus_call_go(src, lex, offs, i + 1, n)
+        elsif inside_any_off(offs, call.start, call.end) == 1
+            cop_plus_call_go(src, lex, offs, call.end, n)
         else
-            cs = vec_get(call, 1)
-            ce = vec_get(call, 2)
-            if inside_any_off(offs, cs, ce) == 1
-                cop_plus_call_go(src, toks, offs, ce, n)
-            else
-                fix = build_call_fix(src, call)
-                msg = str_as_int(strdup("use + instead of str_concat/str_append"))
-                o = off_new(CODE_PLUS(), msg, cs, ce, fix)
-                _p = vec_push(offs, o)
-                cop_plus_call_go(src, toks, offs, ce, n)
+            fix = build_call_fix(src, call)
+            msg = d"use + instead of str_concat/str_append"
+            o = off_new(CODE_PLUS(), msg, call.start, call.end, 1, fix)
+            _p = offs.push(o)
+            cop_plus_call_go(src, lex, offs, call.end, n)

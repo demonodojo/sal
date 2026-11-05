@@ -1,0 +1,754 @@
+import lexer
+import patch
+
+struct Spec
+    mode: Int
+    argc: Int
+    method: String
+    ty: String
+    tyn: Int
+
+struct BracketInfo
+    ok: Int
+    end_after: Int
+    type_n: Int
+
+struct ScanArgs
+    ok: Int
+    rparen: Int
+    ncommas: Int
+    first: Int
+    any: Int
+
+struct ParsedCall
+    rparen: Int
+    open: Int
+    ncommas: Int
+    first: Int
+    any: Int
+    ty_lo: Int
+    ty_hi: Int
+    ty_n: Int
+
+fn spec_none() -> Spec ! alloc
+    Spec(0, 0, d"", d"", 0)
+
+fn spec_ok(s: Spec) -> Int
+    if s.mode == 0
+        0
+    else
+        1
+
+fn call_invalid() -> ParsedCall
+    ParsedCall(-1, 0, 0, -1, 0, -1, -1, 0)
+
+fn call_ok(c: ParsedCall) -> Int
+    if c.rparen < 0
+        0
+    else
+        1
+
+fn off_skip() -> Off ! alloc
+    Off(d"", d"", -1, -1, 0, d"")
+
+fn CODE_METHOD() -> String ! alloc
+    d"Style/Method"
+
+fn is_ws(c: Int) -> Int
+    if c == 32
+        1
+    elsif c == 10
+        1
+    elsif c == 13
+        1
+    elsif c == 9
+        1
+    else
+        0
+
+fn is_digit(c: Int) -> Int
+    if c >= 48
+        if c <= 57
+            1
+        else
+            0
+    else
+        0
+
+fn is_ident_char(c: Int) -> Int
+    if is_ident_start(c) == 1
+        1
+    else
+        is_digit(c)
+
+fn arg_count(ncommas: Int, any: Int) -> Int
+    if ncommas == 0
+        if any == 0
+            0
+        else
+            1
+    else
+        ncommas + 1
+
+fn spec_inst(method: String, argc: Int) -> Spec ! alloc
+    Spec(1, argc, method, d"", 0)
+
+fn spec_static(ty: String, method: String, tyn: Int, argc: Int) -> Spec ! alloc
+    Spec(2, argc, method, ty, tyn)
+
+fn method_of(name: String) -> Spec ! alloc
+    if name.eq("str_len") == 1
+        spec_inst(d"len", 1)
+    elsif name.eq("str_eq") == 1
+        spec_inst(d"eq", 2)
+    elsif name.eq("str_contains") == 1
+        spec_inst(d"contains", 2)
+    elsif name.eq("str_slice") == 1
+        spec_inst(d"slice", 3)
+    elsif name.eq("str_char") == 1
+        spec_inst(d"char", 2)
+    elsif name.eq("str_hash") == 1
+        spec_inst(d"hash", 2)
+    elsif name.eq("str_skip") == 1
+        spec_inst(d"skip", 4)
+    elsif name.eq("list_len") == 1
+        spec_inst(d"len", 1)
+    elsif name.eq("list_push") == 1
+        spec_inst(d"push", 2)
+    elsif name.eq("list_get") == 1
+        spec_inst(d"get", 2)
+    elsif name.eq("list_set") == 1
+        spec_inst(d"set", 3)
+    elsif name.eq("list_pop") == 1
+        spec_inst(d"pop", 1)
+    elsif name.eq("dict_get") == 1
+        spec_inst(d"get", 2)
+    elsif name.eq("dict_put") == 1
+        spec_inst(d"put", 3)
+    elsif name.eq("dict_has") == 1
+        spec_inst(d"has", 2)
+    elsif name.eq("dict_len") == 1
+        spec_inst(d"len", 1)
+    elsif name.eq("dict_remove") == 1
+        spec_inst(d"remove", 2)
+    elsif name.eq("dict_keys") == 1
+        spec_inst(d"keys", 1)
+    elsif name.eq("dict_values") == 1
+        spec_inst(d"values", 1)
+    elsif name.eq("bytes_len") == 1
+        spec_inst(d"len", 1)
+    elsif name.eq("bytes_get_u8") == 1
+        spec_inst(d"get_u8", 2)
+    elsif name.eq("bytes_get_u16") == 1
+        spec_inst(d"get_u16", 2)
+    elsif name.eq("bytes_get_u32") == 1
+        spec_inst(d"get_u32", 2)
+    elsif name.eq("bytes_get_i64") == 1
+        spec_inst(d"get_i64", 2)
+    elsif name.eq("bytes_set_u8") == 1
+        spec_inst(d"set_u8", 3)
+    elsif name.eq("bytes_set_u16") == 1
+        spec_inst(d"set_u16", 3)
+    elsif name.eq("bytes_set_u32") == 1
+        spec_inst(d"set_u32", 3)
+    elsif name.eq("bytes_set_i64") == 1
+        spec_inst(d"set_i64", 3)
+    elsif name.eq("bytes_fill") == 1
+        spec_inst(d"fill", 4)
+    elsif name.eq("bytes_copy") == 1
+        spec_inst(d"copy", 5)
+    elsif name.eq("int_to_str") == 1
+        spec_inst(d"to_str", 1)
+    elsif name.eq("int_to_float") == 1
+        spec_inst(d"to_float", 1)
+    elsif name.eq("float_to_int") == 1
+        spec_inst(d"to_int", 1)
+    elsif name.eq("f64_bits_to_str") == 1
+        spec_inst(d"to_str", 1)
+    elsif name.eq("float_sqrt") == 1
+        spec_inst(d"sqrt", 1)
+    elsif name.eq("float_abs") == 1
+        spec_inst(d"abs", 1)
+    elsif name.eq("float_floor") == 1
+        spec_inst(d"floor", 1)
+    elsif name.eq("float_ceil") == 1
+        spec_inst(d"ceil", 1)
+    elsif name.eq("float_sin") == 1
+        spec_inst(d"sin", 1)
+    elsif name.eq("float_cos") == 1
+        spec_inst(d"cos", 1)
+    elsif name.eq("float_exp") == 1
+        spec_inst(d"exp", 1)
+    elsif name.eq("float_log") == 1
+        spec_inst(d"log", 1)
+    elsif name.eq("float_pow") == 1
+        spec_inst(d"pow", 2)
+    elsif name.eq("list_new") == 1
+        spec_static(d"List", d"new", 1, 0)
+    elsif name.eq("dict_new") == 1
+        spec_static(d"Dict", d"new", 2, 0)
+    elsif name.eq("bytes_new") == 1
+        spec_static(d"Bytes", d"new", 0, 1)
+    elsif name.eq("char_to_str") == 1
+        spec_static(d"String", d"from_char", 0, 1)
+    else
+        spec_none()
+
+fn after_comment(src: String, hash_i: Int, n: Int) -> Int ! alloc
+    j = src.skip(hash_i + 1, 4, 0)
+    if j < n
+        if src.char(j) == 10
+            j + 1
+        else
+            j
+    else
+        j
+
+fn string_end(src: String, quote_i: Int, n: Int) -> Int ! alloc
+    end = src.skip(quote_i + 1, 7, 0)
+    if end < n
+        if src.char(end) == 34
+            end + 1
+        else
+            n
+    else
+        n
+
+fn is_dstring_at(src: String, i: Int, n: Int) -> Int ! alloc
+    if i + 1 >= n
+        0
+    elsif src.char(i) != 100
+        0
+    elsif src.char(i + 1) != 34
+        0
+    elsif i > 0
+        if is_ident_char(src.char(i - 1)) == 1
+            0
+        else
+            1
+    else
+        1
+
+fn skip_ws_cmt(src: String, i: Int, n: Int) -> Int ! alloc
+    j = i
+    go = 1
+    while go == 1
+        if j >= n
+            go = 0
+        else
+            c = src.char(j)
+            if is_ws(c) == 1
+                j = j + 1
+            elsif c == 35
+                j = after_comment(src, j, n)
+            else
+                go = 0
+    j
+
+fn scan_closer(src: String, i: Int, n: Int, open_c: Int, close_c: Int) -> Int ! alloc
+    j = i
+    depth = 0
+    found = 0 - 1
+    go = 1
+    while go == 1
+        if j >= n
+            go = 0
+        else
+            c = src.char(j)
+            if c == 35
+                j = after_comment(src, j, n)
+            elsif c == 34
+                j = string_end(src, j, n)
+            elsif is_dstring_at(src, j, n) == 1
+                j = string_end(src, j + 1, n)
+            elsif c == open_c
+                depth = depth + 1
+                j = j + 1
+            elsif c == close_c
+                depth = depth - 1
+                if depth == 0
+                    found = j
+                    go = 0
+                elsif depth < 0
+                    go = 0
+                else
+                    j = j + 1
+            else
+                j = j + 1
+    found
+
+# [end_after, nargs], or 0 when the brackets do not close.
+fn bracket_info(src: String, open_i: Int, n: Int) -> BracketInfo ! alloc
+    j = open_i
+    depth = 0
+    ncommas = 0
+    any = 0
+    end_after = 0 - 1
+    go = 1
+    while go == 1
+        if j >= n
+            go = 0
+        else
+            c = src.char(j)
+            if c == 35
+                j = after_comment(src, j, n)
+            elsif c == 34
+                j = string_end(src, j, n)
+                any = 1
+            elsif is_dstring_at(src, j, n) == 1
+                j = string_end(src, j + 1, n)
+                any = 1
+            elsif c == 91
+                if depth >= 1
+                    any = 1
+                depth = depth + 1
+                j = j + 1
+            elsif c == 93
+                depth = depth - 1
+                if depth == 0
+                    end_after = j + 1
+                    go = 0
+                elsif depth < 0
+                    go = 0
+                else
+                    any = 1
+                    j = j + 1
+            elsif c == 44
+                if depth == 1
+                    ncommas = ncommas + 1
+                else
+                    any = 1
+                j = j + 1
+            elsif is_ws(c) == 1
+                j = j + 1
+            else
+                any = 1
+                j = j + 1
+    if end_after < 0
+        BracketInfo(0, 0, 0)
+    else
+        BracketInfo(1, end_after, arg_count(ncommas, any))
+
+# [rparen, ncommas, first_comma, any], or 0.
+fn scan_args(src: String, open_i: Int, n: Int) -> ScanArgs ! alloc
+    j = open_i
+    depth_p = 0
+    depth_b = 0
+    ncommas = 0
+    first = 0 - 1
+    any = 0
+    rparen = 0 - 1
+    go = 1
+    while go == 1
+        if j >= n
+            go = 0
+        else
+            c = src.char(j)
+            if c == 35
+                j = after_comment(src, j, n)
+            elsif c == 34
+                j = string_end(src, j, n)
+                any = 1
+            elsif is_dstring_at(src, j, n) == 1
+                j = string_end(src, j + 1, n)
+                any = 1
+            elsif c == 40
+                if depth_p >= 1
+                    any = 1
+                depth_p = depth_p + 1
+                j = j + 1
+            elsif c == 41
+                depth_p = depth_p - 1
+                if depth_p == 0
+                    rparen = j
+                    go = 0
+                elsif depth_p < 0
+                    go = 0
+                else
+                    any = 1
+                    j = j + 1
+            elsif c == 91
+                depth_b = depth_b + 1
+                any = 1
+                j = j + 1
+            elsif c == 93
+                if depth_b > 0
+                    depth_b = depth_b - 1
+                any = 1
+                j = j + 1
+            elsif c == 44
+                if depth_p == 1
+                    if depth_b == 0
+                        if first < 0
+                            first = j
+                        ncommas = ncommas + 1
+                    else
+                        any = 1
+                else
+                    any = 1
+                j = j + 1
+            elsif is_ws(c) == 1
+                j = j + 1
+            else
+                any = 1
+                j = j + 1
+    if rparen < 0
+        ScanArgs(0, 0, 0, 0, 0)
+    else
+        ScanArgs(1, rparen, ncommas, first, any)
+
+# [rparen, open, ncommas, first, any, type_lo, type_hi, type_n]
+fn parse_call(src: String, name_end: Int, n: Int) -> ParsedCall ! alloc
+    i = skip_ws_cmt(src, name_end, n)
+    type_lo = 0 - 1
+    type_hi = 0 - 1
+    type_n = 0
+    if i < n
+        if src.char(i) == 91
+            info = bracket_info(src, i, n)
+            if info.ok == 0
+                return call_invalid()
+            type_lo = i
+            type_hi = info.end_after
+            type_n = info.type_n
+            i = skip_ws_cmt(src, type_hi, n)
+    if i >= n
+        return call_invalid()
+    if src.char(i) != 40
+        return call_invalid()
+    args = scan_args(src, i, n)
+    if args.ok == 0
+        return call_invalid()
+    ParsedCall(args.rparen, i, args.ncommas, args.first, args.any, type_lo, type_hi, type_n)
+
+fn call_argc(c: ParsedCall) -> Int ! alloc
+    arg_count(c.ncommas, c.any)
+
+fn call_matches(spec: Spec, call: ParsedCall) -> Int ! alloc
+    if spec.mode == 1
+        if call.ty_n != 0
+            0
+        elsif call_argc(call) != spec.argc
+            0
+        else
+            1
+    elsif call.ty_n != spec.tyn
+        0
+    elsif call_argc(call) != spec.argc
+        0
+    else
+        1
+
+fn plain_end(s: String, i: Int, n: Int) -> Int ! alloc
+    j = i
+    go = 1
+    while go == 1
+        if j >= n
+            go = 0
+        else
+            c = s.char(j)
+            if c == 35
+                go = 0
+            elsif c == 34
+                go = 0
+            elsif is_dstring_at(s, j, n) == 1
+                go = 0
+            else
+                j = j + 1
+    j
+
+fn strip_comments(s: String) -> String ! alloc
+    n = s.len()
+    acc = d""
+    i = 0
+    while i < n
+        c = s.char(i)
+        if c == 35
+            i = after_comment(s, i, n)
+        elsif c == 34
+            j = string_end(s, i, n)
+            piece = s.slice(i, j)
+            acc = acc + piece
+            i = j
+        elsif is_dstring_at(s, i, n) == 1
+            j = string_end(s, i + 1, n)
+            piece = s.slice(i, j)
+            acc = acc + piece
+            i = j
+        else
+            j = plain_end(s, i, n)
+            piece = s.slice(i, j)
+            acc = acc + piece
+            i = j
+    acc
+
+fn trim_left_at(s: String, n: Int) -> Int ! alloc
+    a = 0
+    go = 1
+    while go == 1
+        if a >= n
+            go = 0
+        elsif is_ws(s.char(a)) == 1
+            a = a + 1
+        else
+            go = 0
+    a
+
+fn trim_right_at(s: String, n: Int, lo: Int) -> Int ! alloc
+    b = n
+    go = 1
+    while go == 1
+        if b <= lo
+            go = 0
+        elsif is_ws(s.char(b - 1)) == 1
+            b = b - 1
+        else
+            go = 0
+    b
+
+fn trim_copy(s: String) -> String ! alloc
+    n = s.len()
+    a = trim_left_at(s, n)
+    if a >= n
+        d""
+    else
+        b = trim_right_at(s, n, a)
+        s.slice(a, b)
+
+fn clean_span(src: String, start: Int, end: Int) -> String ! alloc
+    if start >= end
+        d""
+    else
+        raw = src.slice(start, end)
+        trim_copy(strip_comments(raw))
+
+fn skip_spaces(s: String, i: Int, n: Int) -> Int ! alloc
+    j = i
+    go = 1
+    while go == 1
+        if j >= n
+            go = 0
+        elsif is_ws(s.char(j)) == 1
+            j = j + 1
+        else
+            go = 0
+    j
+
+fn parse_atom(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    else
+        c = s.char(i)
+        if c == 40
+            cl = scan_closer(s, i, n, 40, 41)
+            if cl < 0
+                0 - 1
+            else
+                cl + 1
+        elsif c == 34
+            string_end(s, i, n)
+        elsif is_dstring_at(s, i, n) == 1
+            string_end(s, i + 1, n)
+        elsif is_digit(c) == 1
+            j = s.skip(i, 3, 0)
+            if j < n
+                if s.char(j) == 46
+                    if j + 1 < n
+                        if is_digit(s.char(j + 1)) == 1
+                            0 - 1
+                        else
+                            j
+                    else
+                        0 - 1
+                else
+                    j
+            else
+                j
+        elsif is_ident_start(c) == 1
+            s.skip(i, 2, 0)
+        else
+            0 - 1
+
+fn parse_postfix(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    j = skip_spaces(s, i, n)
+    if j >= n
+        j
+    else
+        c = s.char(j)
+        if c == 46
+            k = skip_spaces(s, j + 1, n)
+            if k >= n
+                j
+            elsif is_ident_start(s.char(k)) == 0
+                j
+            else
+                parse_postfix(s, s.skip(k, 2, 0), n)
+        elsif c == 40
+            cl = scan_closer(s, j, n, 40, 41)
+            if cl < 0
+                j
+            else
+                parse_postfix(s, cl + 1, n)
+        elsif c == 91
+            cl = scan_closer(s, j, n, 91, 93)
+            if cl < 0
+                j
+            else
+                k = skip_spaces(s, cl + 1, n)
+                if k >= n
+                    j
+                elsif s.char(k) != 40
+                    j
+                else
+                    cl2 = scan_closer(s, k, n, 40, 41)
+                    if cl2 < 0
+                        j
+                    else
+                        parse_postfix(s, cl2 + 1, n)
+        else
+            j
+
+fn needs_paren(s: String borrow) -> Int ! alloc
+    n = s.len()
+    if n == 0
+        1
+    else
+        pos = parse_atom(s, 0, n)
+        if pos < 0
+            1
+        else
+            pos2 = parse_postfix(s, pos, n)
+            if pos2 == n
+                0
+            else
+                1
+
+fn wrap_paren(s: String) -> String ! alloc
+    "(" + s + ")"
+
+fn join_method(recv: String, method: String, rest: String) -> String ! alloc
+    recv + "." + method + "(" + rest + ")"
+
+fn build_inst(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
+    open = call.open
+    first = call.first
+    rp = call.rparen
+    recv_end = rp
+    if first >= 0
+        recv_end = first
+    recv = clean_span(src, open + 1, recv_end)
+    if recv.len() == 0
+        d""
+    else
+        rest = d""
+        if first >= 0
+            rest = clean_span(src, first + 1, rp)
+        if needs_paren(recv) == 1
+            join_method(wrap_paren(recv), spec.method, rest)
+        else
+            join_method(recv, spec.method, rest)
+
+fn build_static(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
+    open = call.open
+    rp = call.rparen
+    inside = clean_span(src, open + 1, rp)
+    types = d""
+    if call.ty_lo >= 0
+        types = src.slice(call.ty_lo, call.ty_hi)
+    a = spec.ty + "."
+    a = a + spec.method
+    a = a + types
+    a = a + "("
+    a = a + inside
+    a + ")"
+
+fn build_fix(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
+    if spec.mode == 1
+        build_inst(src, spec, call)
+    else
+        build_static(src, spec, call)
+
+fn method_msg(name: String, spec: Spec) -> String ! alloc
+    if spec.mode == 2
+        "use " + spec.ty + "." + spec.method + " instead of " + name
+    else
+        "use ." + spec.method + "() instead of " + name
+
+fn preceded_by_dot(src: String, start: Int) -> Int ! alloc
+    i = start - 1
+    go = 1
+    dot = 0
+    while go == 1
+        if i < 0
+            go = 0
+        else
+            c = src.char(i)
+            if c == 32
+                i = i - 1
+            elsif c == 9
+                i = i - 1
+            elsif c == 46
+                dot = 1
+                go = 0
+            else
+                go = 0
+    dot
+
+fn prev_is_fn(src: String, lex: Lex, i: Int) -> Int ! alloc
+    j = i - 1
+    go = 1
+    while go == 1
+        if j < 0
+            go = 0
+        else
+            k = lex.kind(j)
+            if k == TK_NL()
+                j = j - 1
+            elsif k == TK_INDENT()
+                j = j - 1
+            elsif k == TK_DEDENT()
+                j = j - 1
+            else
+                go = 0
+    if j < 0
+        0
+    elsif lex.kind(j) != TK_IDENT()
+        0
+    else
+        lex.text(src, j).eq("fn")
+
+fn consider(src: String, lex: Lex, n: Int, i: Int) -> Off ! alloc
+    if lex.kind(i) != TK_IDENT()
+        return off_skip()
+    if preceded_by_dot(src, lex.start(i)) == 1
+        return off_skip()
+    if prev_is_fn(src, lex, i) == 1
+        return off_skip()
+    name = lex.text(src, i)
+    spec = method_of(name)
+    if spec_ok(spec) == 0
+        return off_skip()
+    call = parse_call(src, lex.end(i), src.len())
+    if call_ok(call) == 0
+        return off_skip()
+    if call_matches(spec, call) == 0
+        return off_skip()
+    fix = build_fix(src, spec, call)
+    if fix.len() == 0
+        return off_skip()
+    msg = method_msg(name, spec)
+    off_new(CODE_METHOD(), msg, lex.start(i), call.rparen + 1, 1, fix)
+
+fn cop_method(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+    cop_method_go(src, lex, offs, 0, lex.len())
+
+fn cop_method_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        off = consider(src, lex, n, i)
+        if off.start < 0
+            cop_method_go(src, lex, offs, i + 1, n)
+        else
+            offs.push(off)
+            cop_method_go(src, lex, offs, i + 1, n)

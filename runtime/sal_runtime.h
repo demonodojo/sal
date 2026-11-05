@@ -162,6 +162,7 @@ int64_t sal_str_bytes_copy(void *dst, int64_t dst_off, const char *src);
 char *sal_bytes_to_str(void *b);
 void *sal_bytes_view(void *b, int64_t off, int64_t len);
 void *sal_bytes_view_mem(int64_t data, int64_t len);
+void sal_tensor_free(int64_t handle);
 int64_t sal_bytes_ptr(void *b);
 /* Panic if [idx, idx+width) is not within [0, len). Used by compiled bounds checks. */
 void sal_bytes_check(int64_t idx, int64_t width, int64_t len);

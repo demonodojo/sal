@@ -247,6 +247,49 @@ fn standard_check_unusedbinding_reports() {
     assert!(err.contains("Style/UnusedBinding"), "stderr: {err}");
 }
 
+#[test]
+fn standard_fix_method() {
+    let input = read_fixture("method_in.sal");
+    let (dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let want = read_fixture("method_out.sal");
+    assert_eq!(got, want);
+    let path = dir.path().join("input.sal");
+    let path_str = path.to_string_lossy().into_owned();
+    let out2 = run_standard(&["fix", &path_str]);
+    assert_eq!(out2.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out2.stderr));
+    let got2 = fs::read_to_string(&path).expect("read again");
+    assert_eq!(got2, want);
+}
+
+#[test]
+fn standard_check_method_reports() {
+    let path = root()
+        .join("standard/fixtures/method_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Style/Method"), "stderr: {err}");
+    assert!(err.contains("use .len() instead of str_len"), "stderr: {err}");
+    assert!(err.contains("use List.new instead of list_new"), "stderr: {err}");
+}
+
+#[test]
+fn standard_method_skip_is_clean() {
+    let input = read_fixture("method_skip_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, input);
+    let path = root()
+        .join("standard/fixtures/method_skip_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let check = run_standard(&["check", &path]);
+    assert_eq!(check.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&check.stderr));
+}
+
 /// A binding that is read (also inside `"{n}"`), or the last statement of its block (the value
 /// of the block), is not an offense.
 #[test]

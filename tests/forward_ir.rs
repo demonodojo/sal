@@ -228,3 +228,21 @@ fn show(s: String, h: Int) -> String ! alloc
         "str_from_int(h) is a borrowed handle, never freed:\n{cast}"
     );
 }
+
+#[test]
+fn nested_variant_match_binds_inner_ident() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(root.join("selfhost/drops.sal")).expect("drops.sal");
+    let p = parse(&src).expect("parse drops");
+    let ir = lower_program(&p);
+    let owned = ir
+        .functions
+        .iter()
+        .find(|f| f.name == "owned_param_string_field")
+        .expect("owned_param_string_field");
+    let text = format!("{owned:?}");
+    assert!(
+        text.contains(r#"func: "param_named", args: ["params", "t2""#),
+        "XField(XIdent(name), _) must bind the inner ident before calling param_named:\n{text}"
+    );
+}

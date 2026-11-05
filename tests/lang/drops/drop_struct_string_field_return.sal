@@ -1,0 +1,14 @@
+# exit: 0
+# Returning a struct's String field moves it: the callee frees the other fields only;
+# the caller owns the returned string.
+struct N
+    name: String
+    tag: String
+
+fn consume(n: N) -> String ! alloc
+    n.name
+
+fn main() -> Int ! alloc
+    n = N("a" + "b", "c" + "d")
+    s = consume(n)
+    str_len(s)

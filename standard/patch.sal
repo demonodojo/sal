@@ -1,80 +1,144 @@
 # Offense records and source patching.
 
-fn off_new(code: Int, msg: Int, start: Int, end: Int, fix: Int) -> Int ! alloc
-    o = vec_new()
-    vec_push(o, code)
-    vec_push(o, msg)
-    vec_push(o, start)
-    vec_push(o, end)
-    vec_push(o, fix)
-    o
+struct Off
+    code: String
+    msg: String
+    start: Int
+    end: Int
+    has_fix: Int
+    fix: String
 
-fn off_code(o: Int) -> Int ! alloc
-    vec_get(o, 0)
-
-fn off_msg(o: Int) -> Int ! alloc
-    vec_get(o, 1)
-
-fn off_start(o: Int) -> Int ! alloc
-    vec_get(o, 2)
-
-fn off_end(o: Int) -> Int ! alloc
-    vec_get(o, 3)
-
-fn off_fix(o: Int) -> Int ! alloc
-    vec_get(o, 4)
-
-fn off_has_fix(o: Int) -> Int ! alloc
-    f = off_fix(o)
-    if f == 0
-        0
-    else
+method Off.has_fix() -> Int
+    if self.has_fix == 1
         1
+    else
+        0
 
-fn patch_one(src: Int, start: Int, end: Int, repl: Int) -> Int ! alloc
-    left = str_as_int(str_slice(src, 0, start))
-    right = str_as_int(str_slice(src, end, str_len(src)))
-    mid = repl
-    acc = str_as_int(str_concat(left, mid))
-    str_as_int(str_concat(acc, right))
+fn off_new(code: String, msg: String, start: Int, end: Int, has_fix: Int, fix: String) -> Off ! alloc
+    Off(code, msg, start, end, has_fix, fix)
 
-fn pick_best_fix(offs: Int) -> Int ! alloc
-    n = vec_len(offs)
+fn patch_one(src: String, start: Int, end: Int, repl: String) -> String ! alloc
+    left = src.slice(0, start)
+    right = src.slice(end, src.len())
+    left + repl + right
+
+fn pick_best_fix(offs: List[Off]) -> Int ! alloc
+    n = offs.len()
     pick_best_go(offs, 0, n, 0 - 1, 0, 0)
 
-fn pick_best_go(offs: Int, i: Int, n: Int, best: Int, best_len: Int, best_start: Int) -> Int ! alloc
+fn pick_best_go(offs: List[Off], i: Int, n: Int, best: Int, best_len: Int, best_start: Int) -> Int ! alloc
     if i >= n
         best
     else
-        o = vec_get(offs, i)
-        if off_has_fix(o) == 0
+        o = offs.get(i)
+        if o.has_fix() == 0
             pick_best_go(offs, i + 1, n, best, best_len, best_start)
         else
-            s0 = off_start(o)
-            s1 = off_end(o)
+            s0 = o.start
+            s1 = o.end
             ln = s1 - s0
             if best < 0
                 pick_best_go(offs, i + 1, n, i, ln, s0)
-            else
-                if ln < best_len
+            elsif ln < best_len
+                pick_best_go(offs, i + 1, n, i, ln, s0)
+            elsif ln == best_len
+                if s0 > best_start
                     pick_best_go(offs, i + 1, n, i, ln, s0)
                 else
-                    if ln == best_len
-                        if s0 > best_start
-                            pick_best_go(offs, i + 1, n, i, ln, s0)
-                        else
-                            pick_best_go(offs, i + 1, n, best, best_len, best_start)
-                    else
-                        pick_best_go(offs, i + 1, n, best, best_len, best_start)
+                    pick_best_go(offs, i + 1, n, best, best_len, best_start)
+            else
+                pick_best_go(offs, i + 1, n, best, best_len, best_start)
 
-fn merge_off_lists(a: Int, b: Int) -> Int ! alloc
-    i = 0
-    n = vec_len(b)
-    merge_off_go(a, b, i, n)
-
-fn merge_off_go(a: Int, b: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        a
+# Apply every non-overlapping fix in one pass, rightmost first, so spans stay valid.
+fn apply_all_fixes(src: String, offs: List[Off]) -> String ! alloc
+    idxs = fix_indices(offs)
+    if idxs.len() == 0
+        src
     else
-        vec_push(a, vec_get(b, i))
-        merge_off_go(a, b, i + 1, n)
+        ordered = sort_idxs(offs, idxs, 0)
+        chosen = greedy_take(offs, ordered)
+        right = sort_idxs(offs, chosen, 1)
+        apply_right(src, offs, right, 0, right.len())
+
+fn fix_indices(offs: List[Off]) -> List[Int] ! alloc
+    v = List.new[Int]()
+    fix_indices_go(offs, v, 0, offs.len())
+
+fn fix_indices_go(offs: List[Off], v: List[Int], i: Int, n: Int) -> List[Int] ! alloc
+    if i >= n
+        v
+    elsif offs.get(i).has_fix() == 1
+        v.push(i)
+        fix_indices_go(offs, v, i + 1, n)
+    else
+        fix_indices_go(offs, v, i + 1, n)
+
+fn sort_idxs(offs: List[Off], idxs: List[Int], mode: Int) -> List[Int] ! alloc
+    sort_idxs_go(offs, idxs, mode, 1, idxs.len())
+
+fn sort_idxs_go(offs: List[Off], idxs: List[Int], mode: Int, i: Int, n: Int) -> List[Int] ! alloc
+    if i >= n
+        idxs
+    else
+        bubble_idx(offs, idxs, mode, i)
+        sort_idxs_go(offs, idxs, mode, i + 1, n)
+
+fn bubble_idx(offs: List[Off], idxs: List[Int], mode: Int, i: Int) -> List[Int] ! alloc
+    if i == 0
+        idxs
+    else
+        cur = idxs.get(i)
+        prev = idxs.get(i - 1)
+        if idx_before(offs, cur, prev, mode) == 1
+            idxs.set(i, prev)
+            idxs.set(i - 1, cur)
+            bubble_idx(offs, idxs, mode, i - 1)
+        else
+            idxs
+
+fn idx_before(offs: List[Off], ia: Int, ib: Int, mode: Int) -> Int ! alloc
+    a = offs.get(ia)
+    b = offs.get(ib)
+    if mode == 0
+        ea = a.end
+        eb = b.end
+        if ea < eb
+            1
+        elsif ea > eb
+            0
+        elsif a.start > b.start
+            1
+        else
+            0
+    elsif a.start > b.start
+        1
+    else
+        0
+
+fn greedy_take(offs: List[Off], sorted: List[Int]) -> List[Int] ! alloc
+    out = List.new[Int]()
+    st = List.new[Int]()
+    st.push(0 - 1)
+    greedy_take_go(offs, sorted, out, st, 0, sorted.len())
+
+fn greedy_take_go(offs: List[Off], sorted: List[Int], out: List[Int], st: List[Int], i: Int, n: Int) -> List[Int] ! alloc
+    if i >= n
+        out
+    else
+        ix = sorted.get(i)
+        o = offs.get(ix)
+        s = o.start
+        if s >= st.get(0)
+            out.push(ix)
+            st.set(0, o.end)
+            greedy_take_go(offs, sorted, out, st, i + 1, n)
+        else
+            greedy_take_go(offs, sorted, out, st, i + 1, n)
+
+fn apply_right(src: String, offs: List[Off], idxs: List[Int], i: Int, n: Int) -> String ! alloc
+    if i >= n
+        src
+    else
+        o = offs.get(idxs.get(i))
+        next = patch_one(src, o.start, o.end, o.fix)
+        apply_right(next, offs, idxs, i + 1, n)

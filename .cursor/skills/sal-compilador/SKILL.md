@@ -37,7 +37,7 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |
 | Destino linux/soso, `syscall` | `src/target.rs`, `runtime/soso/linux_host_syscall.c`, `src/llvm.rs` | `tests/soso_target.rs`, `tests/cli_target.rs`, `tests/std_io_linux.rs` |
 | Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/<área>/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
-| `free` / `list_free` / `dict_free` / `enum_free` / `bytes_free` de locales al salir de ámbito (se inserta antes de `lower_program`; un valor pasado a una función de usuario se libera si su parámetro es de solo lectura, `read_only_params`; `lower_program` infiere antes los modos `borrow`/`take`) | `src/drops.rs`, `src/ir.rs` | `tests/drops.rs`, `tests/lang/drops/drop_*.sal`; espejo en `selfhost/drops.sal` |
+| Liberación de locales y cola de struct (`insert_drops` antes de `lower_program`; `read_only_params`; cola en `ir.rs`; runtime `sal_dict_*`, vistas `bytes`, `sal_tensor_free`) | `src/drops.rs`, `src/ir.rs`, `runtime/sal_runtime.c` | `tests/drops.rs`, `tests/lang/drops/`; espejo `selfhost/drops.sal`, `selfhost/fuse.sal`, cola C en `selfhost/emit.sal` — criterio en [sal-memoria](../sal-memoria/SKILL.md) |
 | SSA, `TensorBin`/`TensorUnary`, `ColumnBin`, fusión, `peak_bytes` | `src/ir.rs`, `src/fuse.rs` | `tests/forward_ir.rs` |
 | Heaps, kernels, `load`, `.salt`; `sal_tensor_bin_f32`, `sal_tensor_cmp_f32`, … | `runtime/sal_runtime.c`, `runtime/sal_runtime.h`, `runtime/kernels.c`, `src/llvm.rs` | `tests/kernels.rs`, `tests/exec_matmul.rs`, `tests/exec_column.rs`, `tests/exec_salt.rs` |
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |
@@ -71,15 +71,9 @@ Operadores columnares: la bajada emite `IrInst::TensorBin` / `TensorUnary` (no `
 - Lambda de una sentencia: no es un valor que se guarde en `let` ni se devuelva (`E_TYPE` en el arranque).
 - Sin la flag `--instrument` el binario no lleva sondas, tampoco en `--release`.
 
-## Liberación automática (`src/drops.rs`)
+## Liberación
 
-Pase `insert_drops`, entre `check_devices`/`TypedProgram` y `lower_program` (ver el orden de pases). Su espejo es `selfhost/drops.sal`; el entorno de la fase (`drop_env_t` en `selfhost/fuse.sal`) pasa a `dr_*` el mapa de variantes con las claves `enum:`, `struct:`, `desc:` y `ownfn:`.
-
-- Un local se libera si su valor es **fresco** (`fresh_kind`): literal, builtin de `returns_fresh`, `+` de cadenas, `V(…)`, `list_new`/`dict_new`, una función de usuario de `OWNED_FNS`, o una copia de `list_get`/`list_pop` de una lista dueña (`owned_elems`).
-- **Descarte**: `discard_kind` liga el valor a `__dis<N>` y lo suelta en la misma sentencia. Comparte el contador `cx.tmp` con `__ret<N>`; cambiar el orden rompe la paridad de IR con el selfhost (`dr_next_tmp_p` lo replica).
-- `OWNED_FNS` (`owned_return_fns`) se calcula antes de transformar, solo con builtins, así no depende del orden de las funciones. `is_fresh_value` no cambia: lo usan `ir.rs` y el lowering del selfhost (`fuse.sal`, `emit.sal`), que no tienen el conjunto. El hoisting (`is_fresh_temp`, `dx_is_fresh_temp_v`) sí lo consulta.
-- Fugas conocidas (SPEC, ownership): `z = k` sobre una copia, enum dentro de un struct local, `Dict` con valores struct o enum, `list_pop` de una lista que no es dueña, `ys = xs.push(v)` (escapa), y funciones de usuario que no devuelven siempre frescos.
-- Un cambio en esta zona toca los dos compiladores en el mismo cambio y compara la IR: `sal emit ir f.sal` contra el `sal_*` del selfhost compilado (`sal build selfhost/main.sal`), en los tests de `tests/lang/drops`.
+El criterio (qué se suelta, la cola de los campos de un struct, la invariante y los huecos) está en [sal-memoria](../sal-memoria/SKILL.md). El pase es `insert_drops`, entre `check_devices`/`TypedProgram` y `lower_program`.
 
 ## Caché
 

@@ -179,6 +179,26 @@ fn bytes_view_keeps_the_parent_alive() {
         "fn f() -> Int ! alloc\n    b = bytes_new(8)\n    v = bytes_view(b, 0, 4)\n    bytes_len(v)\n",
     );
     assert!(ir.contains("op: \"eq\""), "{ir}");
+    assert_eq!(ir.matches("func: \"sal_bytes_free\"").count(), 2, "{ir}");
+}
+
+#[test]
+fn struct_enum_field_is_freed_with_glue() {
+    let ir = ir_of(
+        "struct_enum",
+        "enum E\n    Some(String)\n\nstruct B\n    e: E\n    n: Int\n\nfn main() -> Int ! alloc\n    e = Some(\"a\" + \"b\")\n    b = B(e, 1)\n    b.n\n",
+    );
+    assert_eq!(ir.matches("func: \"sal_enum_free\"").count(), 1, "{ir}");
+}
+
+#[test]
+fn dict_get_some_string_is_freed() {
+    let ir = ir_of(
+        "dict_get_free",
+        "enum Option[T]\n    None\n    Some(T)\n\nfn main() -> Int ! alloc\n    d = dict_new[String, String]()\n    d.put(\"a\", \"x\")\n    match dict_get(d, \"a\")\n        Some(v) => str_len(v)\n        None => 0\n    0\n",
+    );
+    assert_eq!(ir.matches("func: \"sal_enum_free\"").count(), 1, "{ir}");
+    assert_eq!(ir.matches("func: \"sal_dict_free\"").count(), 1, "{ir}");
 }
 
 #[test]
@@ -200,12 +220,12 @@ fn dict_is_freed_and_put_keeps_it_alive() {
 }
 
 #[test]
-fn dict_with_owned_struct_values_is_not_freed() {
+fn dict_with_struct_value_type_is_freed_at_scope_end() {
     let ir = ir_of(
         "dict_struct",
         "struct P\n    x: Int\n    y: Int\n\nfn f() -> Bool ! alloc\n    d = dict_new[String, P]()\n    dict_has(d, \"k\")\n",
     );
-    assert!(!ir.contains("sal_dict_free"), "{ir}");
+    assert_eq!(ir.matches("func: \"sal_dict_free\"").count(), 1, "{ir}");
 }
 
 #[test]
@@ -406,10 +426,28 @@ fn struct_glue_leaves_a_container_field_that_was_handed_on() {
 }
 
 #[test]
-fn struct_glue_skips_containers_of_strings() {
+fn struct_string_field_return_frees_callee_tag_and_caller_result() {
+    let ir = ir_of(
+        "field_return",
+        "struct N\n    name: String\n    tag: String\n\nfn consume(n: N) -> String ! alloc\n    n.name\n\nfn main() -> Int ! alloc\n    n = N(\"a\" + \"b\", \"c\" + \"d\")\n    s = consume(n)\n    str_len(s)\n",
+    );
+    assert_eq!(frees(&ir), 2, "{ir}");
+    assert!(
+        !ir.contains("fn: \"consume\"") || {
+            let start = ir.find("fn: \"consume\"").unwrap();
+            let end = ir[start..].find("fn: \"main\"").map(|o| start + o).unwrap_or(ir.len());
+            let callee = &ir[start..end];
+            callee.matches("func: \"sal_free\"").count() == 1
+        },
+        "{ir}"
+    );
+}
+
+#[test]
+fn struct_glue_frees_string_list_when_only_fresh_values() {
     let ir = ir_of(
         "glue_string_list",
         "struct B\n    names: List[String]\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = List.new[String]()\n    xs.push(\"a\" + \"b\")\n    b = B(xs, 3)\n    b.n\n",
     );
-    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 1, "{ir}");
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 2, "{ir}");
 }
