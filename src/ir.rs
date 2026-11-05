@@ -324,7 +324,7 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
                 if let Expr::Ident { name, .. } = func.as_ref() {
                     if matches!(
                         name.as_str(),
-                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free" | "tensor_free"
+                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free"
                     ) {
                         for a in args {
                             if let Some(r) = root(a) {
@@ -605,6 +605,79 @@ fn list_alias_locals(f: &FnDef, strings: &StringEnv) -> HashSet<String> {
     out
 }
 
+fn callee_transfers_struct_box_runtime(func: &str) -> bool {
+    matches!(func, "sal_list_push" | "sal_list_set" | "sal_dict_put")
+}
+
+fn scan_struct_box_shell(
+    insts: &[IrInst],
+    copies: &mut HashMap<String, u32>,
+    shell: &mut HashSet<String>,
+    loop_depth: u32,
+) {
+    for inst in insts {
+        match inst {
+            IrInst::While { cond_insts, body, .. } => {
+                scan_struct_box_shell(cond_insts, copies, shell, loop_depth + 1);
+                scan_struct_box_shell(body, copies, shell, loop_depth + 1);
+            }
+            IrInst::If { then_body, else_body, .. } => {
+                scan_struct_box_shell(then_body, copies, shell, loop_depth);
+                scan_struct_box_shell(else_body, copies, shell, loop_depth);
+            }
+            IrInst::Call { func, args, dest, .. } => {
+                if func == "sal_list_get" || func == "sal_list_pop" {
+                    if let Some(d) = dest {
+                        copies.insert(d.clone(), loop_depth);
+                    }
+                } else if callee_transfers_struct_box_runtime(func) {
+                    if let Some(v) = args.get(1) {
+                        copies.remove(v);
+                        shell.remove(v);
+                    }
+                } else if !func.starts_with("sal_") {
+                    if let Some(v) = args.first() {
+                        if copies.get(v).is_some_and(|d| *d == 0) {
+                            shell.insert(v.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// After fusion, free struct-copy boxes passed into scalarizing calls (see `emit_struct_box_shell_drops`).
+pub fn finish_module_box_shell_drops(m: &mut IrModule) {
+    for f in &mut m.functions {
+        emit_struct_box_shell_drops(&mut f.instructions);
+    }
+}
+
+/// After a scalarizing user call, free the `list_get` struct box once the local is done with.
+fn emit_struct_box_shell_drops(instructions: &mut Vec<IrInst>) {
+    let mut copies: HashMap<String, u32> = HashMap::new();
+    let mut shell: HashSet<String> = HashSet::new();
+    scan_struct_box_shell(instructions, &mut copies, &mut shell, 0);
+    if shell.is_empty() {
+        return;
+    }
+    let drops: Vec<IrInst> = shell
+        .into_iter()
+        .map(|v| IrInst::Call {
+            dest: None,
+            func: "sal_struct_free_box".into(),
+            args: vec![v],
+        })
+        .collect();
+    if let Some(ret) = instructions.iter().rposition(|i| matches!(i, IrInst::Return { .. })) {
+        instructions.splice(ret..ret, drops);
+    } else {
+        instructions.extend(drops);
+    }
+}
+
 fn emit_struct_string_drops(
     f: &FnDef,
     instructions: &mut Vec<IrInst>,
@@ -719,6 +792,14 @@ fn field_drop<'a>(
         ("List", [e]) if glue.containers && flat(e) => Some(FieldDrop::Call("sal_list_free")),
         ("List", [crate::ast::Type::Named { name, args, .. }])
             if glue.containers && args.is_empty() && name == "String" && !tainted =>
+        {
+            Some(FieldDrop::Call("sal_list_free"))
+        }
+        ("List", [crate::ast::Type::Named { name: sn, args, .. }])
+            if glue.containers
+                && args.is_empty()
+                && !tainted
+                && crate::ir::struct_desc(sn, &strings.structs, &strings.enums).is_some() =>
         {
             Some(FieldDrop::Call("sal_list_free"))
         }
@@ -1962,7 +2043,7 @@ fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     if matches!(
         fname,
         "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
-            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free" | "tensor_free"
+            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free"
     ) {
         return format!("sal_{fname}");
     }
@@ -2049,6 +2130,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "dict_free"
             | "enum_free"
             | "struct_free"
+            | "struct_free_box"
             | "enum_owns"
             | "bytes_free"
             | "bytes_new"

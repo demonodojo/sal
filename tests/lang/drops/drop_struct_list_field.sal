@@ -1,0 +1,14 @@
+# exit: 3
+struct P
+    name: String
+    n: Int
+
+struct W
+    xs: List[P]
+    n: Int
+
+fn main() -> Int ! alloc
+    xs = List.new[P]()
+    xs.push(P("a" + "b", 1))
+    w = W(xs, 2)
+    w.n

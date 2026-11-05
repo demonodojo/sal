@@ -7,7 +7,7 @@ use crate::ast::{Item, Program};
 use crate::device::check_devices;
 use crate::diag::{Diagnostic, ErrorCode};
 use crate::effects::check_effects_with_infer;
-use crate::fuse::fuse_module;
+use crate::fuse::fuse_module_opts;
 use crate::incremental::{
     cache_key_with_deps, cache_path, import_graph_digest, is_cache_hit, ll_cache_path,
     load_cached_meta, obj_cache_path, store_cached_meta, CacheMeta, CompileFlags,
@@ -125,6 +125,7 @@ fn compile_program_at(
         &strings_env,
         opts,
         true,
+        Path::new("<input>"),
     )?;
     if !opts.skip_link {
         require_device_toolchain(&opts.device)?;
@@ -198,6 +199,7 @@ fn compile_file_with_imports(
             &strings_env,
             opts,
             is_root,
+            &m.path,
         )?;
         all_cache_hit &= artifacts.cache_hit;
         if is_root {
@@ -278,6 +280,7 @@ fn compile_single_module(
     strings_env: &StringEnv,
     opts: &CompileOptions,
     emit_entry_main: bool,
+    module_path: &Path,
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
     if opts.toolchain.target == crate::target::Target::Soso {
         // Walk typed AST fields, never source text (a string "gpu" is ordinary data).
@@ -300,7 +303,8 @@ fn compile_single_module(
     let prev_meta = load_cached_meta(&meta_file);
 
     let mut ir = lower_program_with_callables_env(program, callables, strings_env.clone());
-    fuse_module(&mut ir);
+    let box_shell = !module_path.components().any(|c| c.as_os_str() == "selfhost");
+    fuse_module_opts(&mut ir, box_shell);
     let ir_text = ir_to_text(&ir);
 
     let (llvm, llvm_writes) = if cache_hit && ll_path.is_file() {

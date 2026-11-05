@@ -136,6 +136,18 @@ fn is_ownable_struct(name: &str) -> bool {
     OWNABLE.with(|f| f.borrow().contains_key(name))
 }
 
+/// The callee takes ownership of a describable struct's box (`list_push`, a ctor, …).
+fn callee_transfers_struct_box(name: &str) -> bool {
+    matches!(name, "list_push" | "list_set" | "dict_put") || is_ownable_struct(name)
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ArgMove {
+    Read,
+    TransferBox,
+    TakeFields,
+}
+
 /// `S(a, b, ..)` of a struct a list can own, whose String fields are fresh values, whose
 /// enum fields are variant constructors and whose struct fields are fresh constructors:
 /// the list that stores it owns the blocks, boxes and strings.
@@ -223,7 +235,10 @@ fn list_elem_structs(f: &FnDef) -> HashMap<String, String> {
     }
     fn note(name: &str, init: &Expr, out: &mut HashMap<String, String>) {
         if let Expr::Call { func, type_args, .. } = init {
-            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_new") {
+            if matches!(
+                func.as_ref(),
+                Expr::Ident { name, .. } if matches!(name.as_str(), "list_new" | "list_new_owned")
+            ) {
                 if let [TypeArg::Type(Type::Named { name: sn, args, .. })] = type_args.as_slice() {
                     if args.is_empty() && is_ownable_struct(sn) {
                         out.insert(name.to_string(), sn.clone());
@@ -829,6 +844,8 @@ struct Facts {
     bind_depth: HashMap<String, u32>,
     /// Inside a struct constructor call: value arguments move out fully (not soft).
     hard_move: u32,
+    /// Struct copies (`list_get`) passed to a user fn: only the fields move; the malloc box stays.
+    box_shell: HashSet<String>,
 }
 
 impl Facts {
@@ -847,7 +864,8 @@ fn stmt_key(sp: Span) -> (u32, u32) {
     (sp.start, sp.end)
 }
 
-fn arg(a: &Expr, safe: bool, f: &mut Facts) {
+fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
+    let safe = mov == ArgMove::Read;
     // A field read in a moving position (`return t.name`, `x = t.name`, an argument the callee
     // keeps) hands out a value that aliases the base: the base must not be released.
     if !safe {
@@ -870,6 +888,9 @@ fn arg(a: &Expr, safe: bool, f: &mut Facts) {
                 match f.cur {
                     Some(key) if f.bind_depth.get(name).is_some_and(|d| *d == f.loop_depth) => {
                         f.soft.insert(name.clone());
+                        if mov == ArgMove::TakeFields {
+                            f.box_shell.insert(name.clone());
+                        }
                         let v = f.sites.entry(key).or_default();
                         if !v.contains(name) {
                             v.push(name.clone());
@@ -877,6 +898,9 @@ fn arg(a: &Expr, safe: bool, f: &mut Facts) {
                     }
                     _ => {
                         f.escaped.insert(name.clone());
+                        if mov == ArgMove::TakeFields {
+                            f.box_shell.insert(name.clone());
+                        }
                     }
                 }
             }
@@ -905,9 +929,20 @@ fn expr(e: &Expr, f: &mut Facts) {
                 Expr::Ident { name, .. } => f.ro.get(name).cloned(),
                 _ => None,
             };
+            let callee = match func.as_ref() {
+                Expr::Ident { name, .. } => name.as_str(),
+                _ => "",
+            };
             for (i, a) in args.iter().enumerate() {
                 let reads = ro.as_ref().and_then(|r| r.get(i)).copied().unwrap_or(false);
-                arg(a, borrow || reads, f);
+                let mov = if borrow || reads {
+                    ArgMove::Read
+                } else if hard || callee_transfers_struct_box(callee) {
+                    ArgMove::TransferBox
+                } else {
+                    ArgMove::TakeFields
+                };
+                arg(a, mov, f);
             }
             if hard {
                 f.hard_move -= 1;
@@ -922,10 +957,10 @@ fn expr(e: &Expr, f: &mut Facts) {
             f.opaque -= 1;
         }
         Expr::Binary { left, right, .. } => {
-            arg(left, true, f);
-            arg(right, true, f);
+            arg(left, ArgMove::Read, f);
+            arg(right, ArgMove::Read, f);
         }
-        Expr::Unary { expr: x, .. } => arg(x, true, f),
+        Expr::Unary { expr: x, .. } => arg(x, ArgMove::Read, f),
         Expr::Block(b) => {
             f.opaque += 1;
             block(b, f);
@@ -941,15 +976,15 @@ fn expr(e: &Expr, f: &mut Facts) {
             block(body, f);
             f.opaque -= 1;
         }
-        Expr::To { expr: x, .. } => arg(x, false, f),
+        Expr::To { expr: x, .. } => arg(x, ArgMove::TakeFields, f),
         Expr::TensorLit { rows, .. } => {
             for row in rows {
                 for c in row {
-                    arg(c, false, f);
+                    arg(c, ArgMove::TakeFields, f);
                 }
             }
         }
-        Expr::Field { base, .. } => arg(base, true, f),
+        Expr::Field { base, .. } => arg(base, ArgMove::Read, f),
         Expr::Match { scrutinee, arms, .. } => {
             // Variant patterns only read the box; a bare binding aliases the whole value.
             let binds_whole = arms.iter().any(|a| {
@@ -962,7 +997,11 @@ fn expr(e: &Expr, f: &mut Facts) {
                 }
                 f.matches.push((name.clone(), bound));
             }
-            arg(scrutinee, !binds_whole, f);
+            arg(
+                scrutinee,
+                if binds_whole { ArgMove::TakeFields } else { ArgMove::Read },
+                f,
+            );
             f.opaque += 1;
             for a in arms {
                 pattern(&a.pattern, f);
@@ -975,7 +1014,7 @@ fn expr(e: &Expr, f: &mut Facts) {
             walk_if(e, f);
             f.opaque -= 1;
         }
-        Expr::Try { expr: x, .. } => arg(x, false, f),
+        Expr::Try { expr: x, .. } => arg(x, ArgMove::TakeFields, f),
     }
 }
 
@@ -985,10 +1024,10 @@ fn walk_if(e: &Expr, f: &mut Facts) {
     let Expr::If { cond, then_block, elsifs, else_block, .. } = e else {
         return;
     };
-    arg(cond, true, f);
+    arg(cond, ArgMove::Read, f);
     block(then_block, f);
     for a in elsifs {
-        arg(&a.cond, true, f);
+        arg(&a.cond, ArgMove::Read, f);
         block(&a.body, f);
     }
     if let Some(b) = else_block {
@@ -997,11 +1036,11 @@ fn walk_if(e: &Expr, f: &mut Facts) {
 }
 
 /// An expression in a position `xform_expr` rewrites.
-fn top(e: &Expr, safe: bool, f: &mut Facts) {
+fn top(e: &Expr, mov: ArgMove, f: &mut Facts) {
     if matches!(e, Expr::If { .. }) {
         walk_if(e, f);
     } else {
-        arg(e, safe, f);
+        arg(e, mov, f);
     }
 }
 
@@ -1077,7 +1116,7 @@ fn push_stmt(e: &Expr, f: &mut Facts) -> bool {
         }
     }
     for a in &args[1..] {
-        arg(a, false, f);
+        arg(a, ArgMove::TransferBox, f);
     }
     true
 }
@@ -1091,7 +1130,7 @@ fn block(b: &Block, f: &mut Facts) {
             Stmt::Let { name, init, span, .. } => {
                 f.cur = live.then(|| stmt_key(*span));
                 f.bind(name);
-                top(init, false, f);
+                top(init, ArgMove::TakeFields, f);
             }
             Stmt::Expr(e) => {
                 f.cur = live.then(|| stmt_key(e.span()));
@@ -1114,18 +1153,18 @@ fn block(b: &Block, f: &mut Facts) {
                 }
                 let discard = matches!(target, Expr::Ident { name, .. } if name.starts_with('_'));
                 if !(discard && push_stmt(value, f)) {
-                    top(value, false, f);
+                    top(value, ArgMove::TakeFields, f);
                 }
             }
             Stmt::Return { value, span } => {
                 f.cur = live.then(|| stmt_key(*span));
                 if let Some(v) = value {
-                    arg(v, false, f);
+                    arg(v, ArgMove::TakeFields, f);
                 }
             }
             Stmt::While { cond, body, .. } => {
                 f.cur = None;
-                arg(cond, true, f);
+                arg(cond, ArgMove::Read, f);
                 f.loop_depth += 1;
                 block(body, f);
                 f.loop_depth -= 1;
@@ -1136,7 +1175,7 @@ fn block(b: &Block, f: &mut Facts) {
     if let Some(t) = &b.tail {
         let outer = f.cur;
         f.cur = None;
-        top(t, false, f);
+        top(t, ArgMove::TakeFields, f);
         f.cur = outer;
     }
 }
@@ -1154,6 +1193,8 @@ struct Ctx {
     tmp: u32,
     /// Locals built as `list_new_owned[E]()`: enum lists the pass releases (see `own_enum_list`).
     owned_elems: HashMap<String, &'static str>,
+    /// Struct copies whose box was freed right after a scalarizing call (`clear_moved`).
+    shell_freed: HashSet<String>,
 }
 
 /// An enum list the pass releases is built as `list_new_owned`, so the lowering stores the
@@ -1247,7 +1288,7 @@ impl Ctx {
         }
         let ok = !self.params.contains(name)
             && self.facts.bindings.get(name) == Some(&1)
-            && !self.facts.escaped.contains(name);
+            && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
         ok.then_some((kind, self.facts.soft.contains(name)))
     }
 }
@@ -1256,14 +1297,151 @@ fn is_copy_scalar(t: &Type) -> bool {
     matches!(t, Type::Named { name, args, .. } if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool"))
 }
 
+/// Locals bound to a `list_get` copy of a describable struct (for box-shell release).
+fn mark_box_shell_calls_expr(e: &Expr, copies: &HashMap<String, &'static str>, facts: &mut Facts) {
+    match e {
+        Expr::Call { func, args, .. } => {
+            let user = matches!(func.as_ref(), Expr::Ident { name, .. }
+                if !borrows_args(name) && !callee_transfers_struct_box(name));
+            if user {
+                for a in args {
+                    if let Expr::Ident { name, .. } = a {
+                        if copies.contains_key(name) {
+                            facts.box_shell.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            if !matches!(func.as_ref(), Expr::Ident { .. }) {
+                mark_box_shell_calls_expr(func, copies, facts);
+            }
+            for a in args {
+                mark_box_shell_calls_expr(a, copies, facts);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            mark_box_shell_calls_expr(left, copies, facts);
+            mark_box_shell_calls_expr(right, copies, facts);
+        }
+        Expr::Unary { expr, .. } => mark_box_shell_calls_expr(expr, copies, facts),
+        Expr::Field { base, .. } => mark_box_shell_calls_expr(base, copies, facts),
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            mark_box_shell_calls_expr(cond, copies, facts);
+            mark_box_shell_calls(then_block, copies, facts);
+            for e in elsifs {
+                mark_box_shell_calls_expr(&e.cond, copies, facts);
+                mark_box_shell_calls(&e.body, copies, facts);
+            }
+            if let Some(b) = else_block {
+                mark_box_shell_calls(b, copies, facts);
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            mark_box_shell_calls_expr(scrutinee, copies, facts);
+            for a in arms {
+                mark_box_shell_calls_expr(&a.body, copies, facts);
+            }
+        }
+        Expr::Block(b) => mark_box_shell_calls(b, copies, facts),
+        Expr::Lambda { body, .. } => mark_box_shell_calls_expr(body, copies, facts),
+        Expr::On { body, .. } => mark_box_shell_calls(body, copies, facts),
+        Expr::To { expr, .. } => mark_box_shell_calls_expr(expr, copies, facts),
+        Expr::Try { expr, .. } => mark_box_shell_calls_expr(expr, copies, facts),
+        Expr::TensorLit { rows, .. } => {
+            for row in rows {
+                for el in row {
+                    mark_box_shell_calls_expr(el, copies, facts);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn mark_box_shell_calls(b: &Block, copies: &HashMap<String, &'static str>, facts: &mut Facts) {
+    for st in &b.stmts {
+        match st {
+            Stmt::Expr(e) => mark_box_shell_calls_expr(e, copies, facts),
+            Stmt::While { body, .. } => mark_box_shell_calls(body, copies, facts),
+            Stmt::Let { init, .. } | Stmt::Assign { value: init, .. } => {
+                mark_box_shell_calls_expr(init, copies, facts);
+            }
+            _ => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        mark_box_shell_calls_expr(t, copies, facts);
+    }
+}
+
+fn struct_copy_locals(b: &Block, elems: &HashMap<String, String>, out: &mut HashMap<String, &'static str>) {
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { name, init, .. } | Stmt::Assign { target: Expr::Ident { name, .. }, value: init, .. } => {
+                if let Some(k) = struct_copy_kind(name, init)
+                    .or_else(|| struct_copy_from_list(init, elems))
+                    .or_else(|| struct_copy_from_types(init))
+                {
+                    out.insert(name.clone(), k);
+                }
+            }
+            Stmt::While { body, .. } => struct_copy_locals(body, elems, out),
+            _ => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        if let Expr::Block(b) = t.as_ref() {
+            struct_copy_locals(b, elems, out);
+        }
+    }
+}
+
+fn struct_copy_from_types(init: &Expr) -> Option<&'static str> {
+    let Expr::Call { func, span, .. } = init else {
+        return None;
+    };
+    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") {
+        return None;
+    }
+    let ty = EXPR_TYPES.with(|t| t.borrow().get(&(span.start, span.end)).cloned())?;
+    let Type::Named { name: sn, args, .. } = ty else {
+        return None;
+    };
+    if !args.is_empty() || !is_ownable_struct(&sn) {
+        return None;
+    }
+    let desc = STRUCT_DESC.with(|t| t.borrow().get(&sn).cloned())?;
+    Some(Box::leak(format!("struct:{desc}").into_boxed_str()))
+}
+
+fn struct_copy_from_list(init: &Expr, elems: &HashMap<String, String>) -> Option<&'static str> {
+    let Expr::Call { func, args, .. } = init else {
+        return None;
+    };
+    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") {
+        return None;
+    }
+    let Expr::Ident { name: xs, .. } = args.first()? else {
+        return None;
+    };
+    let sn = elems.get(xs)?;
+    let desc = STRUCT_DESC.with(|t| t.borrow().get(sn).cloned())?;
+    Some(Box::leak(format!("struct:{desc}").into_boxed_str()))
+}
+
 fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
-    let facts = fn_facts(f, variants, ro);
+    let mut facts = fn_facts(f, variants, ro);
+    let elems = list_elem_structs(f);
+    let mut copy_locals = HashMap::new();
+    struct_copy_locals(&f.body, &elems, &mut copy_locals);
+    mark_box_shell_calls(&f.body, &copy_locals, &mut facts);
     let mut cx = Ctx {
         facts,
         params: f.params.iter().map(|p| p.name.clone()).collect(),
         live: Vec::new(),
         tmp: 0,
         owned_elems: HashMap::new(),
+        shell_freed: HashSet::new(),
     };
     let span = f.body.span;
     let body = std::mem::replace(&mut f.body, Block { stmts: vec![], tail: None, span });
@@ -1285,6 +1463,16 @@ fn free_call(name: &str, release: &str, span: Span) -> Stmt {
     }
     Stmt::Expr(Expr::Call {
         func: Box::new(Expr::Ident { name: release.into(), span }),
+        type_args: vec![],
+        args: vec![Expr::Ident { name: name.into(), span }],
+        span,
+    })
+}
+
+/// Frees only the malloc block of a struct copy after its fields were scalarized into a call.
+fn struct_box_free_call(name: &str, span: Span) -> Stmt {
+    Stmt::Expr(Expr::Call {
+        func: Box::new(Expr::Ident { name: "struct_free_box".into(), span }),
         type_args: vec![],
         args: vec![Expr::Ident { name: name.into(), span }],
         span,
@@ -1320,11 +1508,20 @@ fn flag_clear(name: &str, span: Span) -> Stmt {
 }
 
 /// The release of a live local: guarded by its flag when a statement may have moved it.
-fn release(name: &str, kind: &str, flagged: bool, span: Span) -> Stmt {
+fn release(name: &str, kind: &str, flagged: bool, box_shell: bool, span: Span) -> Stmt {
     let call = free_call(name, kind, span);
     if !flagged {
         return call;
     }
+    let else_block = if kind.starts_with("struct:") && box_shell {
+        Some(Block {
+            stmts: vec![struct_box_free_call(name, span)],
+            tail: None,
+            span,
+        })
+    } else {
+        None
+    };
     Stmt::Expr(Expr::If {
         cond: Box::new(Expr::Binary {
             op: BinOp::Eq,
@@ -1334,17 +1531,23 @@ fn release(name: &str, kind: &str, flagged: bool, span: Span) -> Stmt {
         }),
         then_block: Block { stmts: vec![call], tail: None, span },
         elsifs: vec![],
-        else_block: None,
+        else_block,
         span,
     })
 }
 
 /// Clears the flag of every flagged live local the statement at `key` moved.
-fn clear_moved(cx: &Ctx, key: (u32, u32), span: Span, out: &mut Vec<Stmt>) {
+fn clear_moved(cx: &mut Ctx, key: (u32, u32), span: Span, out: &mut Vec<Stmt>) {
     if let Some(names) = cx.facts.sites.get(&key) {
         for n in names {
             if cx.live.iter().any(|(l, _, fl)| l == n && *fl) {
                 out.push(flag_clear(n, span));
+                if cx.facts.box_shell.contains(n)
+                    && cx.live.iter().any(|(l, k, _)| l == n && k.starts_with("struct:"))
+                {
+                    out.push(struct_box_free_call(n, span));
+                    cx.shell_freed.insert(n.clone());
+                }
             }
         }
     }
@@ -1352,7 +1555,9 @@ fn clear_moved(cx: &Ctx, key: (u32, u32), span: Span, out: &mut Vec<Stmt>) {
 
 /// A local that fully escaped is released elsewhere; drop it from the pending list.
 fn drop_escaped_from_live(cx: &mut Ctx) {
-    cx.live.retain(|(n, _, _)| !cx.facts.escaped.contains(n));
+    cx.live.retain(|(n, _, _)| {
+        !cx.facts.escaped.contains(n) || cx.facts.box_shell.contains(n)
+    });
 }
 
 fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
@@ -1429,7 +1634,7 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                         let t = format!("__dis{}", cx.tmp);
                         let init = xform_expr(e, cx);
                         stmts.push(Stmt::Let { name: t.clone(), ty: None, init, frozen: false, stack: false, span });
-                        stmts.push(release(&t, k, false, span));
+                        stmts.push(release(&t, k, false, false, span));
                     }
                     None => stmts.push(Stmt::Expr(xform_expr(e, cx))),
                 }
@@ -1462,8 +1667,8 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                     };
                     clear_moved(cx, stmt_key(span), span, &mut stmts);
                     for (n, k, fl) in cx.live.iter().rev() {
-                        if !cx.facts.escaped.contains(n) {
-                            stmts.push(release(n, k, *fl, span));
+                        if !cx.facts.escaped.contains(n) && !cx.shell_freed.contains(n) {
+                            stmts.push(release(n, k, *fl, cx.facts.box_shell.contains(n), span));
                         }
                     }
                     stmts.push(Stmt::Return { value, span });
@@ -1489,15 +1694,22 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                     span,
                 });
                 for (n, k, fl) in own.iter().rev() {
-                    if !cx.facts.escaped.contains(n) {
-                        stmts.push(release(n, k, *fl, span));
+                    if !cx.facts.escaped.contains(n) && !cx.shell_freed.contains(n) {
+                        stmts.push(release(n, k, *fl, cx.facts.box_shell.contains(n), span));
                     }
                 }
                 tail = Some(Box::new(Expr::Ident { name, span }));
             } else {
                 for (n, k, fl) in own.iter().rev() {
-                    if !cx.facts.escaped.contains(n) {
-                        stmts.push(release(n, k, *fl, b.span));
+                    if cx.facts.box_shell.contains(n)
+                        && k.starts_with("struct:")
+                        && !cx.shell_freed.contains(n)
+                    {
+                        stmts.push(struct_box_free_call(n, b.span));
+                        cx.shell_freed.insert(n.clone());
+                    }
+                    if !cx.facts.escaped.contains(n) && !cx.shell_freed.contains(n) {
+                        stmts.push(release(n, k, *fl, cx.facts.box_shell.contains(n), b.span));
                     }
                 }
             }

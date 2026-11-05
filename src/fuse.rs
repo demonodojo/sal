@@ -3,8 +3,15 @@ use crate::ir::{FusedOp, IrModule};
 /// Pase de fusión: epílogos de map/relu sobre matmul se conservan como MapEpilogue
 /// (sin buffer intermedio). Una sola región por bloque `on` ya viene de `lower`.
 pub fn fuse_module(m: &mut IrModule) {
+    fuse_module_opts(m, true);
+}
+
+pub fn fuse_module_opts(m: &mut IrModule, box_shell_drops: bool) {
     for f in &mut m.functions {
         fuse_function(f);
+    }
+    if box_shell_drops {
+        crate::ir::finish_module_box_shell_drops(m);
     }
 }
 

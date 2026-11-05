@@ -1,0 +1,16 @@
+# exit: 8
+struct P
+    name: String
+    n: Int
+
+fn read_n(p: P) -> Int ! alloc
+    p.n
+
+fn main() -> Int ! alloc
+    xs = List.new[P]()
+    i = 0
+    while i < 5
+        xs.push(P(i.to_str(), i))
+        i = i + 1
+    o = xs.get(2)
+    read_n(o) + o.name.len() + xs.len()

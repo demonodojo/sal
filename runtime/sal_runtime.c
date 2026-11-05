@@ -2155,6 +2155,14 @@ void sal_struct_free(int64_t raw, const char *desc) {
     desc_free(desc, raw);
 }
 
+/* Frees only the malloc block of a struct copy after its fields were moved out (scalarized call). */
+void sal_struct_free_box(int64_t raw) {
+    if (raw < 4096) {
+        return;
+    }
+    sal_xfree((void *)(uintptr_t)raw);
+}
+
 static int64_t desc_copy(const char *d, int64_t raw) {
     if (*d == 'E') {
         return sal_enum_copy(raw);

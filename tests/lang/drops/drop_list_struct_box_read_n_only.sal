@@ -1,0 +1,13 @@
+# exit: 1
+struct P
+    name: String
+    n: Int
+
+fn read_n(p: P) -> Int ! alloc
+    p.n
+
+fn main() -> Int ! alloc
+    xs = List.new[P]()
+    xs.push(P("a", 1))
+    o = xs.get(0)
+    read_n(o)

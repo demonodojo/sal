@@ -62,6 +62,7 @@ struct DC
     kinds: NM
     tainted: NM
     soft: NM
+    box_shell: NM
     born: NM
     owned_enums: NM
     lists: NM
@@ -81,7 +82,8 @@ fn dr_new(variants: Int, ro: Int, lists: NM) -> DC ! alloc
     _b = list_push(cells, 0)
     _c = list_push(cells, 0)
     _d = list_push(cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro)
+    _e = list_push(cells, 0)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro)
 
 fn dr_free(c: DC) -> Int ! alloc
     _l = nm_free(c.lists)
@@ -92,6 +94,7 @@ fn dr_free(c: DC) -> Int ! alloc
     _d = nm_free(c.kinds)
     _e = nm_free(c.tainted)
     _f = nm_free(c.soft)
+    _f2 = nm_free(c.box_shell)
     _g = nm_free(c.born)
     _g2 = nm_free(c.owned_enums)
     _h = list_free(c.live)
@@ -315,6 +318,15 @@ fn dx_list_owns(targs: String) -> Int ! alloc
 
 fn dr_flat_rec(c: DC, name: String) -> Int ! alloc
     map_get(c.variants, str_as_int("struct:" + name))
+
+# `list_push`, a struct ctor, … take the whole box; a user fn only scalarizes the fields.
+fn dr_transfers_box(c: DC, name: String) -> Int ! alloc
+    if str_eq(name, "list_push") + str_eq(name, "list_set") + str_eq(name, "dict_put") > 0
+        1
+    elsif dr_flat_rec(c, name) != 0
+        1
+    else
+        0
 
 # `list_new[S]()` of a flat struct: the list owns the element blocks and their strings.
 fn dx_list_flat(c: DC, targs: String) -> Int ! alloc
@@ -598,17 +610,18 @@ fn dx_leftmost_bin(op: String, l: Expr, e: Expr) -> String ! alloc
         d""
 
 # ---- escape facts ----
-fn dr_arg(c: DC, a: Expr, safe: Int) -> Int ! alloc
+# `mov`: 1 read, 2 transfer box, 3 take fields only.
+fn dr_arg(c: DC, a: Expr, mov: Int) -> Int ! alloc
     match a
         XNone => 0
-        XIdent(n) => dr_arg_ident(c, n, safe)
-        XField(base, field) => dr_arg_field(c, a, safe)
+        XIdent(n) => dr_arg_ident(c, n, mov)
+        XField(base, field) => dr_arg_field(c, a, mov)
         _ => dr_expr(c, a)
 
 # A field read in a moving position hands out a value that aliases its base: the base escapes.
-fn dr_arg_field(c: DC, a: Expr, safe: Int) -> Int ! alloc
+fn dr_arg_field(c: DC, a: Expr, mov: Int) -> Int ! alloc
     root = dr_field_root(a)
-    _e = if safe == 0
+    _e = if mov != 1
         if str_len(root) == 0
             0
         else
@@ -623,26 +636,33 @@ fn dr_field_root(e: Expr) -> String ! alloc
         XIdent(name) => name
         _ => d""
 
-fn dr_arg_ident(c: DC, n: String, safe: Int) -> Int ! alloc
-    if safe == 0
-        dr_arg_escape(c, n)
+fn dr_arg_ident(c: DC, n: String, mov: Int) -> Int ! alloc
+    if mov != 1
+        dr_arg_escape(c, n, mov)
     else
         0
 
-fn dr_arg_escape(c: DC, name: String) -> Int ! alloc
-    if dr_cell(c, 1) == 0
+fn dr_arg_escape(c: DC, name: String, mov: Int) -> Int ! alloc
+    if dr_cell(c, 4) > 0
+        _s = nm_put(c.soft, name, 0)
+        dr_escape(c, name)
+    elsif dr_cell(c, 1) == 0
         dr_escape(c, name)
     elsif nm_get(c.born, name) == dr_cell(c, 3) + 1
         dr_soft(c, dr_cell(c, 1), name)
+        if mov == 3
+            nm_put(c.box_shell, name, 1)
+        else
+            0
     else
         dr_escape(c, name)
 
 # An `if` in a position `dr_xform_expr` rewrites: its branches are visited.
-fn dr_top(c: DC, e: Expr, safe: Int) -> Int ! alloc
+fn dr_top(c: DC, e: Expr, mov: Int) -> Int ! alloc
     if dx_is_if(e) == 1
         dr_walk_if(c, e)
     else
-        dr_arg(c, e, safe)
+        dr_arg(c, e, mov)
 
 fn dr_walk_if(c: DC, e: Expr) -> Int ! alloc
     match e
@@ -660,17 +680,23 @@ fn dr_walk_if_parts(c: DC, cond: Expr, then_b: TBlock, else_b: TBlock, has_else:
 
 # Arguments of a call: bare identifiers are only read when the callee borrows them
 # (`safe`) or its parameter at that position is read-only (`ro`, 0 when not a user fn).
-fn dr_call_args(c: DC, args: List[Expr], i: Int, n: Int, safe: Int, ro: Int) -> Int ! alloc
+fn dr_call_args(c: DC, callee: String, args: List[Expr], i: Int, n: Int, borrow: Int, ro: Int, hard: Int) -> Int ! alloc
     if i >= n
         0
     else
         reads = dr_ro_at(ro, i)
-        mode = if safe == 1
+        mov = if borrow == 1
             1
+        elsif reads == 1
+            1
+        elsif hard == 1
+            2
+        elsif dr_transfers_box(c, callee) == 1
+            2
         else
-            reads
-        _a = dr_arg(c, list_get(args, i), mode)
-        dr_call_args(c, args, i + 1, n, safe, ro)
+            3
+        _a = dr_arg(c, list_get(args, i), mov)
+        dr_call_args(c, callee, args, i + 1, n, borrow, ro, hard)
 
 fn dr_ro_at(ro: Int, i: Int) -> Int ! alloc
     if ro == 0
@@ -800,18 +826,35 @@ fn dr_if_arms(c: DC, arms: List[TElsif], i: Int, n: Int) -> Int ! alloc
 fn dr_expr(c: DC, e: Expr) -> Int ! alloc
     match e
         XIdent(n) => dr_escape(c, n)
-        XCall(name, args, targs, xp) => dr_call_args(c, args, 0, list_len(args), dr_borrows(name), map_get(c.ro, str_as_int(name)))
+        XCall(name, args, targs, xp) => dr_call(c, name, args)
         XLambda(param, body) => dr_lambda(c, param, body)
         XBin(op, l, r) => dr_binary(c, l, r)
         XUnary(op, inner) => dr_arg(c, inner, 1)
         XOn(place, body, kern, idx) => dr_on(c, body)
-        XTo(place, inner) => dr_arg(c, inner, 0)
+        XTo(place, inner) => dr_arg(c, inner, 3)
         XField(base, field) => dr_arg(c, base, 1)
         XMatch(scrut, arms) => dr_match(c, scrut, arms)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_if_nested(c, e)
         XWhile(cond, body) => dr_while(c, cond, body)
-        XTry(inner) => dr_arg(c, inner, 0)
+        XTry(inner) => dr_arg(c, inner, 3)
         _ => 0
+
+fn dr_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
+    hard = dr_flat_rec(c, name)
+    if hard != 0
+        _h = dr_set(c, 4, dr_cell(c, 4) + 1)
+    else
+        _z = 0
+    ro = map_get(c.ro, str_as_int(name))
+    hflag = if hard != 0
+        1
+    else
+        0
+    _a = dr_call_args(c, name, args, 0, list_len(args), dr_borrows(name), ro, hflag)
+    if hard != 0
+        dr_set(c, 4, dr_cell(c, 4) - 1)
+    else
+        0
 
 fn dr_lambda(c: DC, param: String, body: Expr) -> Int ! alloc
     _b = dr_bind(c, param)
@@ -851,7 +894,7 @@ fn dr_match(c: DC, scrut: Expr, arms: List[TArm]) -> Int ! alloc
     else
         0
     if dr_binds_whole(c, arms, 0, list_len(arms)) == 1
-        _s = dr_arg(c, scrut, 0)
+        _s = dr_arg(c, scrut, 3)
         0
     else
         _s = dr_arg(c, scrut, 1)
@@ -999,7 +1042,7 @@ fn dr_args_from(c: DC, args: List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = dr_arg(c, list_get(args, i), 0)
+        _a = dr_arg(c, list_get(args, i), 2)
         dr_args_from(c, args, i + 1, n)
 
 # Statements whose escapes a transform step can follow up with a flag clear.
@@ -1019,10 +1062,10 @@ fn dr_stmt_go(c: DC, st: TStmt) -> Int ! alloc
     if st.kind == 1
         dr_stmt_bind(c, st)
     elsif st.kind == 2
-        dr_arg(c, st.expr, 0)
+        dr_arg(c, st.expr, 3)
     elsif st.kind == 3
         _a = dr_expr(c, st.target)
-        dr_top(c, st.expr, 0)
+        dr_top(c, st.expr, 3)
     else
         dr_stmt_expr(c, st.expr)
 
@@ -1037,7 +1080,7 @@ fn dr_stmt_expr(c: DC, ex: Expr) -> Int ! alloc
 fn dr_stmt_bind(c: DC, st: TStmt) -> Int ! alloc
     if st.is_let == 1
         _b = dr_bind(c, st.name)
-        dr_top(c, st.expr, 0)
+        dr_top(c, st.expr, 3)
     elsif dr_is_accumulate(st.name, st.expr) == 0
         _b = dr_bind(c, st.name)
         dr_stmt_assign(c, st)
@@ -1049,9 +1092,9 @@ fn dr_stmt_assign(c: DC, st: TStmt) -> Int ! alloc
         if dr_push_stmt(c, st.expr) == 1
             0
         else
-            dr_top(c, st.expr, 0)
+            dr_top(c, st.expr, 3)
     else
-        dr_top(c, st.expr, 0)
+        dr_top(c, st.expr, 3)
 
 fn dr_stmts(c: DC, stmts: List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1064,7 +1107,7 @@ fn dr_block(c: DC, b: TBlock) -> Int ! alloc
     _a = dr_stmts(c, b.stmts, 0, list_len(b.stmts))
     outer = dr_cell(c, 1)
     _n = dr_set(c, 1, 0)
-    r = dr_top(c, b.tail, 0)
+    r = dr_top(c, b.tail, 3)
     _t = dr_set(c, 1, outer)
     r
 
@@ -1160,7 +1203,10 @@ fn dr_candidate_go2(c: DC, name: String, kind: Int) -> Int ! alloc
     elsif nm_get(c.defs, name) != 1
         0
     elsif nm_get(c.esc, name) != 0
-        0
+        if nm_get(c.box_shell, name) != 0
+            kind
+        else
+            0
     else
         kind
 
@@ -1171,7 +1217,9 @@ fn dr_plain(e: Expr) -> TStmt ! alloc
     TStmt(0, d"", e, d"", 0, XNone, 0, 0, 0)
 
 fn dr_free_fn(kind: Int) -> String ! alloc
-    if kind == 8
+    if kind == 9
+        d"struct_free_box"
+    elsif kind == 8
         d"struct_free"
     elsif kind == 2
         d"list_free"
@@ -1209,7 +1257,28 @@ fn dr_release_stmt(c: DC, name: String) -> TStmt ! alloc
         flag = XIdent("__live_" + name)
         one = XInt(1)
         cond = XBin(d"eq", flag, one)
-        dr_plain(XIf(cond, TBlock(stmts, XNone), dr_empty_block(), 0, list_new[TElsif]()))
+        else_b = if nm_get(c.kinds, name) == 8
+            if nm_get(c.box_shell, name) != 0
+                dr_box_shell_else(name)
+            else
+                dr_empty_block()
+        else
+            dr_empty_block()
+        has_else = if nm_get(c.kinds, name) == 8
+            if nm_get(c.box_shell, name) != 0
+                1
+            else
+                0
+        else
+            0
+        dr_plain(XIf(cond, TBlock(stmts, XNone), else_b, has_else, list_new[TElsif]()))
+
+fn dr_box_shell_else(name: String) -> TBlock ! alloc
+    stmts = list_new[TStmt]()
+    args = list_new[Expr]()
+    _a = list_push(args, XIdent(strdup(name)))
+    _b = list_push(stmts, dr_plain(XCall(d"struct_free_box", args, d"", 0)))
+    TBlock(stmts, XNone)
 
 fn dr_flag_init(name: String) -> TStmt ! alloc
     TStmt(1, "__live_" + name, XInt(1), d"", 1, XNone, 0, 0, 0)

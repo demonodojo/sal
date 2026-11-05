@@ -1895,6 +1895,11 @@ fn drop_field_fn(structs: List[TStruct], enums: List[TEnum], ty: String, g: Int,
                 d""
             else
                 d"sal_list_free"
+        elsif str_len(desc_struct_text(structs, enums, elem, 0)) > 0
+            if tainted == 1
+                d""
+            else
+                d"sal_list_free"
         else
             d""
     elsif str_eq(base, "Dict") == 1
@@ -2549,6 +2554,7 @@ fn lower_program_typed(tp: TProgram, extra: Int, env: TEnv, em: List[TEnum]) -> 
     out = vec_new()
     denv = drop_env_t(tp, env.structs, em)
     lower_fns(tp.fns, names, fm, env, em, denv, 0, list_len(tp.fns), out)
+    out
 
 # `[variants, modes, read-only params]`: the variant table, per fn name the effective mode of
 # each parameter (0 copy, 1 borrow, 2 take), and the read-only flags.

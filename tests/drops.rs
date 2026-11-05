@@ -444,6 +444,72 @@ fn struct_string_field_return_frees_callee_tag_and_caller_result() {
 }
 
 #[test]
+fn list_get_struct_passed_to_fn_frees_box_shell_not_full_struct() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn read_n(p: P) -> Int ! alloc\n    p.n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    read_n(o)\n";
+    let p = sal_compiler::parser::parse(src).expect("parse");
+    let mut ir_mod = sal_compiler::ir::lower_program(&p);
+    sal_compiler::fuse::fuse_module(&mut ir_mod);
+    let ir = sal_compiler::ir::ir_to_text(&ir_mod);
+    assert!(
+        ir.contains("func: \"sal_struct_free_box\""),
+        "box shell must be released after scalarized call:\n{ir}"
+    );
+    assert!(
+        !ir.contains("func: \"sal_struct_free\"") || ir.matches("func: \"sal_struct_free\"").count() <= 1,
+        "full struct_free must not run when fields were passed:\n{ir}"
+    );
+}
+
+#[test]
+fn bootstrap_module_ir_frees_list_get_struct_box() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn read_n(p: P) -> Int ! alloc\n    p.n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    read_n(o)\n";
+    let path = std::env::temp_dir().join(format!("sal-bootstrap-box-{}.sal", std::process::id()));
+    std::fs::write(&path, src).unwrap();
+    let graph = sal_compiler::modules::resolve_module_graph(&path, &root()).expect("graph");
+    let root_mod = graph.order.last().expect("root");
+    let callables = sal_compiler::modules::callable_fn_names(root_mod, &graph);
+    let infer_out =
+        sal_compiler::modules::infer_module(root_mod, &graph, sal_compiler::target::Target::Linux)
+            .expect("infer");
+    let graph_progs: Vec<&sal_compiler::ast::Program> =
+        graph.order.iter().map(|m| &m.program).collect();
+    let strings = sal_compiler::string_expr::StringEnv::from_module_graph(&graph_progs)
+        .with_infer(&infer_out);
+    let mut ir = sal_compiler::ir::lower_program_with_callables_env(
+        &root_mod.program,
+        &callables,
+        strings,
+    );
+    sal_compiler::fuse::fuse_module(&mut ir);
+    let ir = sal_compiler::ir::ir_to_text(&ir);
+    assert!(
+        ir.contains("func: \"sal_struct_free_box\""),
+        "module pipeline must emit box shell free:\n{ir}"
+    );
+}
+
+#[test]
+fn list_get_struct_pushed_does_not_free_box_shell() {
+    let ir = ir_of(
+        "struct_box_push",
+        "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    ys = list_new[P]()\n    list_push(ys, o)\n    list_len(ys)\n",
+    );
+    assert!(
+        !ir.contains("func: \"sal_struct_free_box\""),
+        "container took the box; no shell free:\n{ir}"
+    );
+}
+
+#[test]
+fn struct_glue_frees_owned_struct_list_field() {
+    let ir = ir_of(
+        "struct_list_field",
+        "struct P\n    name: String\n    n: Int\n\nstruct W\n    xs: List[P]\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = List.new[P]()\n    xs.push(P(\"a\" + \"b\", 1))\n    w = W(xs, 2)\n    w.n\n",
+    );
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 2, "{ir}");
+}
+
+#[test]
 fn struct_glue_frees_string_list_when_only_fresh_values() {
     let ir = ir_of(
         "glue_string_list",
