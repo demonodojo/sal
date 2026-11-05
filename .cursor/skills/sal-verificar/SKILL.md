@@ -67,7 +67,8 @@ cargo run --bin standard -- fix path/to/file.sal
 - `standard check` avisa de estilo (`Style/*`); `standard fix` parchea el fichero. No sustituye a `sal check` ni a `sal fmt`.
 - `emit ast` es el JSON que `sal compile --ast` vuelve a aceptar.
 - `--error-format json` es una línea de stderr por diagnóstico, con `code`, `message`, `span` (`start`/`end` en bytes UTF-8; `line` y `col` desde 1) y `hint`.
-- `--instrument` cambia el binario. Un programa limpio sale 0. Un evento (`LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`) sale distinto de 0.
+- `--instrument` cambia el binario. Un evento (`LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`) se imprime en stderr como JSON (`{"code":"LEAK","site":"…"}`) y el proceso sale con 2. Pero el código de salida también es el resultado del programa (`main` que devuelve 2 sale 2), así que **no** uses el código para detectar fugas: mira stderr.
+- Comprobar fugas de un programa: `sal build --instrument f.sal -o f.bin && SAL_INSTRUMENT_STRICT=1 ./f.bin 2>&1 >/dev/null | grep -o 'LEAK[^}]*'`. Sin salida, limpio. `SAL_INSTRUMENT_STRICT=1` reporta también los sitios que el modo normal deja pasar (cadenas y cajas de structs del AST del selfhost).
 - `sal check` acepta un programa de GPU o TPU aunque falte el dispositivo. `sal build --device gpu` o `tpu` falla con `E_DEVICE_MISSING` si no está el toolchain.
 - Tras añadir o cambiar dependencias git en `Sal.toml`, ejecutar `sal fetch` desde la raíz del proyecto (donde está el manifiesto). Los tests de paquetes usan repos `file://` y fijan `SAL_PACKAGES` en un tempdir; no dependen de red.
 - `--target linux|soso` (global). `syscall` solo existe en esos dos; en otro destino es `E_TARGET`.

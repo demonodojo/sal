@@ -1,0 +1,194 @@
+import lexer
+import patch
+import util
+
+fn CODE_UNUSED() -> Int ! alloc
+    str_as_int(d"Style/UnusedBinding")
+
+# `x = f(…)` as a statement whose name nothing else in the function reads: the binding only
+# keeps a name that is never used. The call stays as a statement (`xs.push(v)` likewise).
+fn cop_unusedbinding(src: Int, toks: Int) -> Int ! alloc
+    offs = vec_new()
+    n = vec_len(toks)
+    cop_unused_go(src, toks, offs, 0, n)
+
+fn cop_unused_go(src: Int, toks: Int, offs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        offs
+    elsif ub_offense_at(src, toks, n, i) == 1
+        t = vec_get(toks, i)
+        r = vec_get(toks, i + 2)
+        # The lexer does not start identifiers at `_`: a `_name` token begins one byte later.
+        start = ub_name_start(src, tok_start(t))
+        end = tok_start(r)
+        msg = str_as_int(d"unused binding: write the call as a statement")
+        fix = str_as_int(d"")
+        o = off_new(CODE_UNUSED(), msg, start, end, fix)
+        vec_push(offs, o)
+        cop_unused_go(src, toks, offs, i + 1, n)
+    else
+        cop_unused_go(src, toks, offs, i + 1, n)
+
+fn ub_name_start(src: Int, pos: Int) -> Int ! alloc
+    if pos > 0
+        if str_char(src, pos - 1) == 95
+            pos - 1
+        else
+            pos
+    else
+        pos
+
+# `name = call(…)` starts at token `i`, the statement is not the last of its block (a value
+# there is the block's result, and the binding is what makes it Unit), and no other token of
+# the enclosing item reads `name`.
+fn ub_offense_at(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
+    t = vec_get(toks, i)
+    if tok_kind(t) != TK_IDENT()
+        0
+    elsif ub_stmt_start(toks, i) == 0
+        0
+    elsif i + 3 >= n
+        0
+    elsif tok_kind(vec_get(toks, i + 1)) != TK_EQ()
+        0
+    else
+        p = ub_rhs_lparen(toks, n, i + 2)
+        if p < 0
+            0
+        else
+            ub_call_stmt_unused(src, toks, n, i, p)
+
+# The `(` of a call written as `f(` or as a method chain `a.b(` (the lexer drops the `.`):
+# identifiers, then the parenthesis. -1 when the right-hand side is not such a call.
+fn ub_rhs_lparen(toks: Int, n: Int, j: Int) -> Int ! alloc
+    if j >= n
+        0 - 1
+    elsif tok_kind(vec_get(toks, j)) != TK_IDENT()
+        0 - 1
+    elsif j + 1 >= n
+        0 - 1
+    elsif tok_kind(vec_get(toks, j + 1)) == TK_LPAREN()
+        j + 1
+    else
+        ub_rhs_lparen(toks, n, j + 1)
+
+fn ub_call_stmt_unused(src: Int, toks: Int, n: Int, i: Int, p: Int) -> Int ! alloc
+    close = ub_matching_rparen(toks, n, p, 0)
+    if close < 0
+        0
+    elsif ub_last_in_block(toks, n, close + 1) == 1
+        0
+    else
+        name = tok_text(src, vec_get(toks, i))
+        lo = ub_item_start(src, toks, i)
+        hi = ub_item_end(src, toks, n, i + 1)
+        if ub_reads(src, toks, lo, hi, i, name) == 1
+            0
+        else
+            1
+
+# Token index of the `)` matching the `(` at `j`, or -1.
+fn ub_matching_rparen(toks: Int, n: Int, j: Int, depth: Int) -> Int ! alloc
+    if j >= n
+        0 - 1
+    else
+        k = tok_kind(vec_get(toks, j))
+        if k == TK_LPAREN()
+            ub_matching_rparen(toks, n, j + 1, depth + 1)
+        elsif k == TK_RPAREN()
+            if depth == 1
+                j
+            else
+                ub_matching_rparen(toks, n, j + 1, depth - 1)
+        else
+            ub_matching_rparen(toks, n, j + 1, depth)
+
+# The statement ends its block: only newlines, then a dedent or the end of the file.
+fn ub_last_in_block(toks: Int, n: Int, j: Int) -> Int ! alloc
+    k = skip_nl(toks, n, j)
+    if k >= n
+        1
+    elsif tok_kind(vec_get(toks, k)) == TK_DEDENT()
+        1
+    else
+        0
+
+# The statement starts a line: first token, or after a newline, an indent or a dedent.
+fn ub_stmt_start(toks: Int, i: Int) -> Int ! alloc
+    if i == 0
+        1
+    else
+        k = tok_kind(vec_get(toks, i - 1))
+        if k == TK_NL()
+            1
+        elsif k == TK_INDENT()
+            1
+        elsif k == TK_DEDENT()
+            1
+        else
+            0
+
+# The item keywords that open a top-level item at the start of a line.
+fn ub_is_item_kw(src: Int, t: Int) -> Int ! alloc
+    if tok_kind(t) != TK_IDENT()
+        0
+    else
+        w = tok_text(src, t)
+        if str_eq(w, "fn") + str_eq(w, "method") + str_eq(w, "static") + str_eq(w, "init") == 0
+            0
+        else
+            ub_line_start(src, tok_start(t))
+
+fn ub_line_start(src: Int, pos: Int) -> Int ! alloc
+    if pos == 0
+        1
+    elsif str_char(src, pos - 1) == 10
+        1
+    else
+        0
+
+# Token index of the item that holds `i`: the last item keyword at or before it.
+fn ub_item_start(src: Int, toks: Int, i: Int) -> Int ! alloc
+    if i <= 0
+        0
+    elsif ub_is_item_kw(src, vec_get(toks, i)) == 1
+        i
+    else
+        ub_item_start(src, toks, i - 1)
+
+fn ub_item_end(src: Int, toks: Int, n: Int, j: Int) -> Int ! alloc
+    if j >= n
+        n
+    elsif ub_is_item_kw(src, vec_get(toks, j)) == 1
+        j
+    else
+        ub_item_end(src, toks, n, j + 1)
+
+# Does any token in [lo, hi) other than `skip` read `name`? A string that interpolates
+# `{name}` reads it too.
+fn ub_reads(src: Int, toks: Int, lo: Int, hi: Int, skip: Int, name: Int) -> Int ! alloc
+    if lo >= hi
+        0
+    elsif lo == skip
+        ub_reads(src, toks, lo + 1, hi, skip, name)
+    else
+        t = vec_get(toks, lo)
+        k = tok_kind(t)
+        if k == TK_IDENT()
+            if str_eq(tok_text(src, t), name) == 1
+                1
+            else
+                ub_reads(src, toks, lo + 1, hi, skip, name)
+        elsif k == TK_DSTRING()
+            ub_reads_str(src, toks, lo, hi, skip, name)
+        elsif k == TK_STRING()
+            ub_reads_str(src, toks, lo, hi, skip, name)
+        else
+            ub_reads(src, toks, lo + 1, hi, skip, name)
+
+# A string token that mentions `name` may interpolate it (`"a{name}"`): counted as a read.
+fn ub_reads_str(src: Int, toks: Int, lo: Int, hi: Int, skip: Int, name: Int) -> Int ! alloc
+    if str_contains(tok_text(src, vec_get(toks, lo)), name) == 1
+        1
+    else
+        ub_reads(src, toks, lo + 1, hi, skip, name)

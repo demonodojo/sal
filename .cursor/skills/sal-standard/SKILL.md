@@ -36,6 +36,7 @@ Salida de `check`: avisos en stderr (código tipo `Style/DupString`). Exit disti
 | `Style/Elsif` | `else` + bloque con un solo `if` → `elsif` (casos ambiguos solo avisan) |
 | `Style/StringPlus` | `str_concat` / `str_append` → `+`; cadenas de `var = str_append(var, …)` en varias líneas → una asignación con `+` |
 | `Style/PlusLiteral` | `d"…"` operando de `+` → `"…"` (el `+` ya copia; no hace falta dup en constantes) |
+| `Style/UnusedBinding` | `x = f(…)` o `x = a.f(…)` como sentencia cuyo nombre nadie más lee en su ítem (`fn`, `method`…) → la llamada sola. No aplica si la sentencia es la última de su bloque (su valor es el del bloque) ni si el nombre aparece en una cadena `"{x}"`. Su `fix` quita `x = ` y, con `_x`, el `_` |
 
 `sal fmt` **no** aplica estas sustituciones; para estilo de API de runtime usar `standard fix` o corregir a mano y dejar `standard check` limpio. La extensión de VS Code muestra los avisos de `standard check` junto a los `E_*`. Si el aviso trae reemplazo, la bombilla lo aplica; `SAL: Standard Fix` aplica `fix` al buffer entero.
 

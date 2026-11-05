@@ -1,0 +1,7 @@
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(1)
+    b = xs.len()
+    c = xs.len()
+    xs.push(c)
+    b

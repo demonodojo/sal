@@ -48,6 +48,8 @@ Prefijos existentes: `err_*` (el programa debe fallar), `attr_*` (atributos), `t
 3. Si el selfhost aún no la soporta, `# selfhost-xfail: por qué` (con motivo concreto, no «pendiente»). Si el arranque tampoco, `# xfail:`.
 4. Al arreglar el hueco, **quita la marca** en el mismo cambio.
 
+Los tests nuevos siguen el estilo de la skill [sal-fuente](../sal-fuente/SKILL.md): métodos en vez de builtins (`xs.push(v)`, `p.name.len()`), y sentencias sueltas en vez de `_a = …` (sin variables sin uso). Para medir fugas, el test de instrumentación (`tests/instrument_sal.rs`, `run_strict`) mira stderr, no el código de salida.
+
 Un test que solo pasa con el código viejo no cuenta; ver [sal-autoridad](../sal-autoridad/SKILL.md) y [sal-verificar](../sal-verificar/SKILL.md).
 
 ## Huecos conocidos hoy

@@ -71,6 +71,16 @@ Operadores columnares: la bajada emite `IrInst::TensorBin` / `TensorUnary` (no `
 - Lambda de una sentencia: no es un valor que se guarde en `let` ni se devuelva (`E_TYPE` en el arranque).
 - Sin la flag `--instrument` el binario no lleva sondas, tampoco en `--release`.
 
+## Liberación automática (`src/drops.rs`)
+
+Pase `insert_drops`, entre `check_devices`/`TypedProgram` y `lower_program` (ver el orden de pases). Su espejo es `selfhost/drops.sal`; el entorno de la fase (`drop_env_t` en `selfhost/fuse.sal`) pasa a `dr_*` el mapa de variantes con las claves `enum:`, `struct:`, `desc:` y `ownfn:`.
+
+- Un local se libera si su valor es **fresco** (`fresh_kind`): literal, builtin de `returns_fresh`, `+` de cadenas, `V(…)`, `list_new`/`dict_new`, una función de usuario de `OWNED_FNS`, o una copia de `list_get`/`list_pop` de una lista dueña (`owned_elems`).
+- **Descarte**: `discard_kind` liga el valor a `__dis<N>` y lo suelta en la misma sentencia. Comparte el contador `cx.tmp` con `__ret<N>`; cambiar el orden rompe la paridad de IR con el selfhost (`dr_next_tmp_p` lo replica).
+- `OWNED_FNS` (`owned_return_fns`) se calcula antes de transformar, solo con builtins, así no depende del orden de las funciones. `is_fresh_value` no cambia: lo usan `ir.rs` y el lowering del selfhost (`fuse.sal`, `emit.sal`), que no tienen el conjunto. El hoisting (`is_fresh_temp`, `dx_is_fresh_temp_v`) sí lo consulta.
+- Fugas conocidas (SPEC, ownership): `z = k` sobre una copia, enum dentro de un struct local, `Dict` con valores struct o enum, `list_pop` de una lista que no es dueña, `ys = xs.push(v)` (escapa), y funciones de usuario que no devuelven siempre frescos.
+- Un cambio en esta zona toca los dos compiladores en el mismo cambio y compara la IR: `sal emit ir f.sal` contra el `sal_*` del selfhost compilado (`sal build selfhost/main.sal`), en los tests de `tests/lang/drops`.
+
 ## Caché
 
 Clave: hash del AST tipado, versión del compilador y flags que cambian el binario (`--release`, `--instrument`, `--device`). Un acierto reutiliza el `.o` y marca `cache_hit`. No regenerar el objeto para «asegurar» el resultado.

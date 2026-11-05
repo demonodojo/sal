@@ -226,3 +226,35 @@ fn standard_check_clean_on_method_chain() {
     assert_eq!(fixed.status.code(), Some(0));
     assert_eq!(fs::read_to_string(&path).unwrap(), read_fixture("method_chain_skip_in.sal"));
 }
+
+#[test]
+fn standard_fix_unusedbinding() {
+    let input = read_fixture("unusedbinding_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("unusedbinding_out.sal"));
+}
+
+#[test]
+fn standard_check_unusedbinding_reports() {
+    let path = root()
+        .join("standard/fixtures/unusedbinding_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Style/UnusedBinding"), "stderr: {err}");
+}
+
+/// A binding that is read (also inside `"{n}"`), or the last statement of its block (the value
+/// of the block), is not an offense.
+#[test]
+fn standard_unusedbinding_skip_is_clean() {
+    let path = root()
+        .join("standard/fixtures/unusedbinding_skip_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
