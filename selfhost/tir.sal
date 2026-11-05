@@ -127,6 +127,8 @@ fn ti_inst(h: Int) -> Inst ! alloc
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 3), d"", d"", d"", d"", vec_get(h, 2), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_TBIN()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), ti_slot_s(h, 6), ti_slot_s(h, 7), vec_get(h, 3), vec_get(h, 8), 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+    elsif k == II_TUN()
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), d"", ti_slot_s(h, 6), vec_get(h, 3), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CALL()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 4), 0, 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_PLACE()

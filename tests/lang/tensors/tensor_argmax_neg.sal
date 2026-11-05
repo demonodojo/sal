@@ -1,4 +1,3 @@
-# selfhost-xfail: selfhost does not lower unary minus on tensors (it negates the handle)
 # exit: 2
 # negation flips the order: -0.5 is the largest
 fn main() -> Int ! alloc

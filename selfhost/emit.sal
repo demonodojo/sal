@@ -89,6 +89,8 @@ fn emit_inst(inst: Inst) -> String ! alloc
         emit_cf(inst)
     elsif k == II_TBIN()
         emit_tbin(inst)
+    elsif k == II_TUN()
+        emit_tun(inst)
     elsif k == II_CALL()
         emit_call(inst)
     elsif k == II_PLACE()
@@ -143,6 +145,10 @@ fn emit_tbin_scalar(scalar: Int) -> String ! alloc
         d"true"
     else
         d"false"
+
+fn emit_tun(inst: Inst) -> String ! alloc
+    elem = emit_elem_name(inst.n1)
+    "  TensorUnary {{ dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", input: " + ir_q() + inst.s3 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + " }}\n"
 
 fn emit_tbin(inst: Inst) -> String ! alloc
     elem = emit_elem_name(inst.n1)
@@ -2553,6 +2559,18 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: String, args: Int, ops: Int) -> Int
         _a = cc_line(cc, "  " + d + " = " + cir_tn_alloc(n) + ";\n")
         _b = cc_line(cc, "  " + cir_call_expr(cc, d"sal_silu_f32", cir_vec3(d, cir_arg(ops, 0), n)) + ";\n")
         0
+    elsif str_eq(fname, d"sal_relu") == 1
+        n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
+        _a = cc_line(cc, "  " + d + " = " + cir_tn_alloc(n) + ";\n")
+        _b = cc_line(cc, "  " + cir_call_expr(cc, d"sal_relu_f32", cir_vec3(d, cir_arg(ops, 0), n)) + ";\n")
+        0
+    elsif str_eq(fname, d"sal_rms_norm") == 1
+        # The epsilon is the bootstrap's literal (1e-5), passed as a double.
+        n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
+        _a = cc_line(cc, "  " + d + " = " + cir_tn_alloc(n) + ";\n")
+        _b = cc_line(cc, "  extern void sal_rms_norm_f32(float *, const float *, const float *, int64_t, double);\n")
+        _c = cc_line(cc, "  sal_rms_norm_f32((float *)(uintptr_t)" + d + ", (const float *)(uintptr_t)" + cir_arg(ops, 0) + ", (const float *)(uintptr_t)" + cir_arg(ops, 1) + ", " + n + ", 1e-5);\n")
+        0
     elsif str_eq(fname, d"sal_transpose_f32") == 1
         n = "(" + cir_arg(ops, 1) + " * " + cir_arg(ops, 2) + ")"
         _a = cc_line(cc, "  " + d + " = " + cir_tn_alloc(n) + ";\n")
@@ -2708,6 +2726,15 @@ fn cir_float_text(cc: Int, a: Int) -> String ! alloc
         c = map_get(vec_get(cc, 3), a)
         int_to_str(c)
 
+# `neg` over a tensor: the runtime kernel writes a fresh buffer of `len` floats.
+fn cir_tun(cc: Int, inst: Inst) -> Int ! alloc
+    d = inst.dest
+    input = cir_op(cc, ih(inst.s3))
+    len = cir_op(cc, ih(inst.s5))
+    _a = cc_line(cc, "  " + d + " = (int64_t)(uintptr_t)sal_tn_alloc(" + len + ");\n")
+    _b = cc_line(cc, "  extern void sal_tensor_neg_f32(float *, const float *, int64_t);\n")
+    cc_line(cc, "  sal_tensor_neg_f32((float *)(uintptr_t)" + d + ", (const float *)(uintptr_t)" + input + ", " + len + ");\n")
+
 fn cir_tbin_code(op: String) -> Int ! alloc
     if str_eq(op, d"add") == 1
         0
@@ -2763,6 +2790,8 @@ fn cir_inst(cc: Int, inst: Inst) -> Int ! alloc
         cir_call(cc, inst)
     elsif k == II_TBIN()
         cir_tbin(cc, inst)
+    elsif k == II_TUN()
+        cir_tun(cc, inst)
     elsif k == II_REBIND()
         cir_set(cc, dest, cir_op(cc, ih(inst.s1)))
     elsif k == II_PLACE()
@@ -2938,6 +2967,8 @@ fn cir_is_tensor_fn(insts: List[Inst]) -> Int ! alloc
         k = inst.kind
         if k == II_TBIN()
             found = 1
+        elsif k == II_TUN()
+            found = 1
         elsif k == II_REBIND()
             found = 1
         elsif k == II_PLACE()
@@ -2962,6 +2993,10 @@ fn cir_tensor_call(f: String) -> Int ! alloc
     elsif str_eq(f, d"sal_rope") == 1
         1
     elsif str_eq(f, d"sal_silu") == 1
+        1
+    elsif str_eq(f, d"sal_relu") == 1
+        1
+    elsif str_eq(f, d"sal_rms_norm") == 1
         1
     elsif str_eq(f, d"sal_softmax") == 1
         1

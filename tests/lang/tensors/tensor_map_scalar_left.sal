@@ -1,4 +1,3 @@
-# selfhost-xfail: selfhost has no tensor negate, so scalar - tensor is wrong
 # exit: 0
 fn main() -> Int ! alloc
     a = tensor[[1.0, 3.0, 2.0]]

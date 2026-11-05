@@ -736,6 +736,11 @@ fn infer_call_go(c: IC, name: String, args: List[Expr], tys: List[String], targs
     si = ic_get(c.sigs, name)
     if si != 0
         infer_user_call(c, name, list_get(c.fns, si - 1), args, tys)
+    elsif str_eq(tenv_type(c.env, name), "fn 1") == 1
+        _a = infer_args(c, args, 0, list_len(args), tys)
+        if list_len(args) != 1
+            _f = ic_fail(c, "`" + name + "` expects 1 argument(s), found " + int_to_str(list_len(args)))
+        d"Unknown"
     else
         _a = infer_args(c, args, 0, list_len(args), tys)
         infer_builtin_call(c, name, args, tys, targs)
@@ -1810,7 +1815,8 @@ fn infer_lambda(c: IC, param: String, body: Expr) -> String ! alloc
     _t = infer_expr(c, body)
     _q = list_set(c.allow, 0, 1)
     _s = tenv_truncate(c.env, mark)
-    d"Unknown"
+    # A lambda has one parameter; a local bound to it is called with one argument (`lambda_arity_error`).
+    d"fn 1"
 
 fn infer_match(c: IC, scrut: Expr, arms: List[TArm]) -> String ! alloc
     _t = infer_expr(c, scrut)

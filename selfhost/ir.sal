@@ -55,6 +55,9 @@ fn II_EFIELD() -> Int
 fn II_SWITCH() -> Int
     16
 
+fn II_TUN() -> Int
+    17
+
 # ---- Lower / IR ----
 # Lowering state of one function. The counter, the instruction list and the accumulator name live in
 # one-slot lists so a callee can update them; the rest are handle vecs/maps (the IR stays in handles).
@@ -234,6 +237,18 @@ fn ir_tbin(dest: Int, op: Int, elem: Int, place: Int, left: Int, right: Int, len
     _g = vec_push(inst, right)
     _h = vec_push(inst, len)
     _i = vec_push(inst, scalar)
+    inst
+
+# `TensorUnary`: `op` (only `neg`) over the tensor `input`, `len` elements of `elem`.
+fn ir_tun(dest: Int, op: Int, elem: Int, place: Int, input: Int, len: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_TUN())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, op)
+    _d = vec_push(inst, elem)
+    _e = vec_push(inst, place)
+    _f = vec_push(inst, input)
+    _g = vec_push(inst, len)
     inst
 
 fn ir_agg(dest: Int, sname: Int, fields: Int) -> Int ! alloc

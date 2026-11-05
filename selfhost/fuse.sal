@@ -546,8 +546,19 @@ fn tbinary_ir_op(env: TEnv, op: String, left: Expr, right: Expr) -> Int ! alloc
 fn lower_unary(cx: Cx, op: String, operand: Expr) -> Int ! alloc
     inner = lower_expr(cx, operand)
     d = fresh(cx)
-    uop = unary_ir_op(cx.env, op, operand)
-    _p = ir_push(cx, ir_bin(d, uop, inner, str_as_int(d"0")))
+    if str_eq(op, "neg") + expr_is_tensor(cx, operand) == 2
+        lower_tensor_neg(cx, operand, inner, d)
+    else
+        uop = unary_ir_op(cx.env, op, operand)
+        _p = ir_push(cx, ir_bin(d, uop, inner, str_as_int(d"0")))
+        d
+
+# `-t` on a tensor is a `TensorUnary` over the operand's own length and place.
+fn lower_tensor_neg(cx: Cx, operand: Expr, inner: Int, d: Int) -> Int ! alloc
+    b = tensor_operand_bind(cx, operand, inner)
+    len = tensor_len_operand(cx, b, inner)
+    _p = ir_push(cx, ir_tun(d, str_as_int(d"neg"), bind_elem(b), bind_place(b), inner, len))
+    register_tensor_ssa(cx, d, b)
     d
 
 fn unary_ir_op(env: TEnv, op: String, operand: Expr) -> Int ! alloc
@@ -1898,9 +1909,34 @@ fn try_lower_tensor_bin(cx: Cx, op: String, left_e: Expr, right_e: Expr, l: Int,
         if expr_is_tensor(cx, right_e) == 0
             0
         else
-            try_lower_tensor_bin_go(cx, op, r, l, right_e, left_e, d)
+            scalar_left_tensor_bin(cx, op, r, l, right_e, left_e, d)
     else
         try_lower_tensor_bin_go(cx, op, l, r, left_e, right_e, d)
+
+# `s op t`: the kernel takes the scalar on the right. `s - t` is `(-t) + s`; a comparison flips;
+# the other operators swap their operands (as `src/ir.rs` does).
+fn scalar_left_tensor_bin(cx: Cx, op: String, tensor_ssa: Int, scalar_ssa: Int, tensor_e: Expr, scalar_e: Expr, d: Int) -> Int ! alloc
+    if str_eq(op, "sub") == 1
+        b = tensor_operand_bind(cx, tensor_e, tensor_ssa)
+        len = tensor_len_operand(cx, b, tensor_ssa)
+        elem = bind_elem(b)
+        place = bind_place(b)
+        neg = fresh(cx)
+        _p = ir_push(cx, ir_tun(neg, str_as_int(d"neg"), elem, place, tensor_ssa, len))
+        register_tensor_ssa(cx, neg, b)
+        _q = ir_push(cx, ir_tbin(d, str_as_int(d"add"), elem, place, neg, scalar_ssa, len, 1))
+        register_tensor_ssa(cx, d, b)
+        1
+    elsif str_eq(op, "lt") == 1
+        try_lower_tensor_bin_go(cx, "gt", tensor_ssa, scalar_ssa, tensor_e, scalar_e, d)
+    elsif str_eq(op, "le") == 1
+        try_lower_tensor_bin_go(cx, "ge", tensor_ssa, scalar_ssa, tensor_e, scalar_e, d)
+    elsif str_eq(op, "gt") == 1
+        try_lower_tensor_bin_go(cx, "lt", tensor_ssa, scalar_ssa, tensor_e, scalar_e, d)
+    elsif str_eq(op, "ge") == 1
+        try_lower_tensor_bin_go(cx, "le", tensor_ssa, scalar_ssa, tensor_e, scalar_e, d)
+    else
+        try_lower_tensor_bin_go(cx, op, tensor_ssa, scalar_ssa, tensor_e, scalar_e, d)
 
 # Element count operand: a 1-D tensor keeps its symbolic axis; otherwise the
 # product of the extents as a constant (1 when an extent is unknown).

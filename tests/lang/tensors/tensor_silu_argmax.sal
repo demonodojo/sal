@@ -1,4 +1,3 @@
-# selfhost-xfail: selfhost does not lower unary minus on tensors (it negates the handle)
 # exit: 2
 # silu is increasing, so the order of -a is kept: -0.5 stays the largest
 fn main() -> Int ! alloc

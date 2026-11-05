@@ -1,4 +1,3 @@
-# selfhost-xfail: the selfhost does not check the arity of calls to local lambdas
 # error: E_TYPE
 fn main() -> Int
     f = x => x

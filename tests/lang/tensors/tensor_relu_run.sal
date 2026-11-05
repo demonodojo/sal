@@ -1,5 +1,4 @@
 # exit: 3
-# selfhost-xfail: selfhost has no lowering for relu outside matmul
 fn main() -> Int ! alloc
     a = tensor[[-1.0, 2.0, -0.5, 4.0]]
     argmax(relu(a), 4) + argmax(relu(-a), 4)
