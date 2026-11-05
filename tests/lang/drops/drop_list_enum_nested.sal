@@ -1,0 +1,24 @@
+# exit: 5
+enum Tok
+    End
+    Word(String, Int)
+
+enum Node
+    Leaf(Int)
+    Wrap(Tok, Int)
+
+fn total(n: Int) -> Int ! alloc
+    xs = list_new[Node]()
+    i = 0
+    while i < n
+        _a = list_push(xs, Wrap(Word(int_to_str(i), i), 1))
+        _b = list_push(xs, Leaf(i))
+        i = i + 1
+    g = list_get(xs, 0)
+    t = match g
+        Wrap(tk, k) => k
+        Leaf(v) => v
+    t + list_len(xs)
+
+fn main() -> Int ! alloc
+    total(2)

@@ -27,6 +27,41 @@ type ReadOnly = HashMap<String, Vec<bool>>;
 thread_local! {
     /// Flat structs (see `ir::flat_struct_kind`): name -> per-field "is a String".
     static FLATS: std::cell::RefCell<HashMap<String, Vec<bool>>> = std::cell::RefCell::new(HashMap::new());
+    /// Names of the enum types of the program (a `List[E]` of them owns its boxes).
+    static ENUM_TYPES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
+fn collect_enum_types(prog: &Program) {
+    let set = prog
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Enum(e) => Some(e.name.clone()),
+            _ => None,
+        })
+        .collect();
+    ENUM_TYPES.with(|f| *f.borrow_mut() = set);
+}
+
+fn is_enum_type(name: &str) -> bool {
+    ENUM_TYPES.with(|f| f.borrow().contains(name))
+}
+
+/// `list_new[E]()` of a user enum: the list owns the boxes stored in it.
+fn list_enum_arg(type_args: &[TypeArg]) -> bool {
+    matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && is_enum_type(name))
+}
+
+/// A variant constructor call `V(..)` builds a new box, and a unit variant `V` is a
+/// tag: both are fresh values for a list to own (a box owns the fresh fields it was
+/// built with, see `enum_owned_mask`).
+fn is_fresh_variant_ctor(e: &Expr, variants: &Variants) -> bool {
+    let has_fields = |name: &str| variants.get(name).is_some_and(|f| !f.is_empty());
+    match e {
+        Expr::Call { func, .. } => matches!(func.as_ref(), Expr::Ident { name, .. } if has_fields(name)),
+        Expr::Ident { name, .. } => variants.get(name.as_str()).is_some_and(|f| f.is_empty()),
+        _ => false,
+    }
 }
 
 fn collect_flats(prog: &Program) {
@@ -185,6 +220,7 @@ pub fn insert_drops(prog: &Program) -> Program {
         }
     }
     collect_flats(prog);
+    collect_enum_types(prog);
     let mut variants = Variants::new();
     for item in &prog.items {
         if let Item::Enum(e) = item {
@@ -317,6 +353,8 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             } else if name == "bytes_new" {
                 Some(("bytes_free", false))
             } else if name == "list_new" && list_flat_arg(type_args) {
+                Some(("list_free", true))
+            } else if name == "list_new" && list_enum_arg(type_args) {
                 Some(("list_free", true))
             } else if name == "list_new" && list_elem_args(type_args) {
                 Some(("list_free", list_owns_elems(type_args)))
@@ -646,7 +684,7 @@ fn push_stmt(e: &Expr, f: &mut Facts) -> bool {
     }
     // The stored value is the last argument (`list_push(xs, v)`, `list_set(xs, i, v)`, `dict_put(d, k, v)`).
     if let (Expr::Ident { name: container, .. }, Some(v)) = (&args[0], args.last()) {
-        if args.len() >= 2 && !is_fresh_value(v) && !is_fresh_flat_ctor(v) {
+        if args.len() >= 2 && !is_fresh_value(v) && !is_fresh_flat_ctor(v) && !is_fresh_variant_ctor(v, &f.variants) {
             f.tainted.insert(container.clone());
         }
     }
@@ -726,12 +764,41 @@ struct Ctx {
     params: HashSet<String>,
     live: Vec<(String, &'static str, bool)>,
     tmp: u32,
+    /// Locals built as `list_new_owned[E]()`: enum lists the pass releases (see `own_enum_list`).
+    owned_enums: HashSet<String>,
+}
+
+/// An enum list the pass releases is built as `list_new_owned`, so the lowering stores the
+/// element descriptor `E` and the list frees its boxes. Other enum lists keep `list_new`:
+/// their elements are borrowed, and `list_free` must not release them.
+fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashSet<String>) {
+    if !released {
+        return;
+    }
+    if let Expr::Call { func, type_args, .. } = init {
+        if let Expr::Ident { name: callee, .. } = func.as_mut() {
+            if callee == "list_new" && list_enum_arg(type_args) {
+                *callee = "list_new_owned".into();
+                owned.insert(name.to_string());
+            }
+        }
+    }
 }
 
 impl Ctx {
     /// The release function for a droppable local, if `name = init` declares one.
     fn candidate(&self, name: &str, ty: &Option<Type>, init: &Expr) -> Option<(&'static str, bool)> {
-        let (kind, owned) = fresh_kind(init, &self.facts.variants)?;
+        // `list_get(xs, i)` of an enum list is a deep copy of the box, fresh whoever owns `xs`.
+        let (kind, owned) = match init {
+            Expr::Call { func, args, .. }
+                if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get")
+                    && matches!(args.first(), Some(Expr::Ident { name: xs, .. })
+                        if self.owned_enums.contains(xs) && self.facts.bindings.get(xs) == Some(&1)) =>
+            {
+                ("enum_free", false)
+            }
+            _ => fresh_kind(init, &self.facts.variants)?,
+        };
         if owned && self.facts.tainted.contains(name) {
             return None;
         }
@@ -758,6 +825,7 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         params: f.params.iter().map(|p| p.name.clone()).collect(),
         live: Vec::new(),
         tmp: 0,
+        owned_enums: HashSet::new(),
     };
     let span = f.body.span;
     let body = std::mem::replace(&mut f.body, Block { stmts: vec![], tail: None, span });
@@ -861,6 +929,8 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
             Stmt::Break { span } => stmts.push(Stmt::Break { span }),
             Stmt::Let { name, ty, init, frozen, stack, span } => {
                 let cand = cx.candidate(&name, &ty, &init);
+                let mut init = init;
+                own_enum_list(&name, matches!(cand, Some((k, _)) if k == "list_free"), &mut init, &mut cx.owned_enums);
                 let init = xform_expr(init, cx);
                 stmts.push(Stmt::Let { name: name.clone(), ty, init, frozen, stack, span });
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
@@ -878,6 +948,10 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                     }
                     _ => None,
                 };
+                let mut value = value;
+                if let (Some((n, k, _)), Expr::Ident { .. }) = (&decl, &target) {
+                    own_enum_list(n, *k == "list_free", &mut value, &mut cx.owned_enums);
+                }
                 let value = xform_expr(value, cx);
                 stmts.push(Stmt::Assign { target, value, span });
                 clear_moved(cx, stmt_key(span), span, &mut stmts);

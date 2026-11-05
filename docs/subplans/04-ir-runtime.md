@@ -25,7 +25,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `const` entero, float o cadena | literales |
 | `copy` | tipo trivial |
 | `move` | último uso de un único |
-| `drop` | fin de ámbito de un único que sigue vivo. Hoy: `String`, `List` (Copy o `String`), `Dict` (valores escalares o `String`), caja de enum y `Bytes` locales frescos que no escapan, como `sal_free` / `sal_list_free` (el `list_new` lleva el descriptor del elemento como cadena: `i` escalar, `s` String, `S(…)` struct plano, `sal_list_new_desc`) / `sal_dict_free` / `sal_enum_free` / `sal_bytes_free` (`src/drops.rs`, espejo `selfhost/drops.sal`); el pase reescribe el AST con `free(x)` justo antes de bajar |
+| `drop` | fin de ámbito de un único que sigue vivo. Hoy: `String`, `List` (Copy o `String`), `Dict` (valores escalares o `String`), caja de enum y `Bytes` locales frescos que no escapan, como `sal_free` / `sal_list_free` (el `list_new` lleva el descriptor del elemento como cadena: `i` escalar o no poseído, `s` String, `E` caja de enum, `S(…)` struct plano, `sal_list_new_desc`; `list_new_owned[E]` lo marca como dueño de sus cajas, lo emite el pase de drops para las listas de enums que libera) / `sal_dict_free` / `sal_enum_free` / `sal_bytes_free` (`src/drops.rs`, espejo `selfhost/drops.sal`); el pase reescribe el AST con `free(x)` justo antes de bajar |
 | `borrow` | argumento prestado; el alcance es la llamada |
 | `alloca` | local de pila |
 | binario y unario | operadores de la gramática. `+` con izquierdo `String` es `sal_str_concat` (primer paso, o izquierdo `IDENT`) o `sal_str_append` (paso siguiente de la misma cadena). El derecho se pasa como el segundo argumento de esa llamada, aunque no sea `String` |

@@ -1,0 +1,24 @@
+# exit: 13
+enum Tok
+    End
+    Num(Int)
+    Word(String, Int)
+
+fn build(n: Int) -> Int ! alloc
+    ts = list_new[Tok]()
+    i = 0
+    while i < n
+        _a = list_push(ts, Word(int_to_str(i), i))
+        _b = list_push(ts, Num(i))
+        _c = list_push(ts, End)
+        i = i + 1
+    k = list_get(ts, 0)
+    total = match k
+        Word(s, c) => str_len(s) + c
+        Num(v) => v
+        End => 0
+    _d = list_set(ts, 1, Word("abc", 5))
+    total + list_len(ts)
+
+fn main() -> Int ! alloc
+    build(4)

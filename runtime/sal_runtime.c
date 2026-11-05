@@ -1826,20 +1826,21 @@ char *sal_ir_text(void *modp) {
 }
 
 /* Enum values: a unit variant is its tag (< 4096); a variant with fields is the
- * address of a box [tag, field0, field1, ...]. */
+ * address of a box [tag|kinds<<8, n, field0, field1, ...]. `kinds` says which
+ * fields the box owns (2 bits each: 1 a fresh String, 2 a fresh box). */
 int64_t sal_enum_new(int64_t tag, int64_t n) {
-    int64_t *b = (int64_t *)sal_xmalloc((size_t)(n + 1) * sizeof(int64_t), "enum_new");
+    int64_t *b = (int64_t *)sal_xmalloc((size_t)(n + 2) * sizeof(int64_t), "enum_new");
     b[0] = tag;
+    b[1] = n;
     return (int64_t)(intptr_t)b;
 }
 
 int64_t sal_enum_set(int64_t v, int64_t i, int64_t x) {
-    ((int64_t *)(intptr_t)v)[i + 1] = x;
+    ((int64_t *)(intptr_t)v)[i + 2] = x;
     return x;
 }
 
-/* Releases the box of an enum value; a unit variant (the bare tag) has none.
- * The header records which fields the box owns (fresh strings, fresh boxes); the rest are borrowed or owned elsewhere. */
+/* Releases the box of an enum value; a unit variant (the bare tag) has none. */
 void sal_enum_free(int64_t v) {
     if (v < 4096) {
         return;
@@ -1849,12 +1850,39 @@ void sal_enum_free(int64_t v) {
     for (int i = 0; i < 28 && (kinds >> (2 * i)) != 0; i++) {
         int64_t k = (kinds >> (2 * i)) & 3;
         if (k == 1) {
-            sal_free((void *)(intptr_t)b[1 + i]);
+            sal_free((void *)(intptr_t)b[2 + i]);
         } else if (k == 2) {
-            sal_enum_free(b[1 + i]);
+            sal_enum_free(b[2 + i]);
         }
     }
     sal_xfree(b);
+}
+
+/* A deep copy of an enum value: owned Strings and boxes are copied, the other
+ * fields are shared as they are (they are not owned by the box). */
+int64_t sal_enum_copy(int64_t v) {
+    if (v < 4096) {
+        return v;
+    }
+    int64_t *b = (int64_t *)(intptr_t)v;
+    int64_t n = b[1];
+    int64_t kinds = (int64_t)((uint64_t)b[0] >> 8);
+    int64_t *c = (int64_t *)sal_xmalloc((size_t)(n + 2) * sizeof(int64_t), "enum_copy");
+    c[0] = b[0];
+    c[1] = n;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t k = i < 28 ? (kinds >> (2 * i)) & 3 : 0;
+        int64_t x = b[2 + i];
+        if (k == 1) {
+            const char *str = (const char *)(intptr_t)x;
+            c[2 + i] = (int64_t)(intptr_t)sal_strdup(str ? str : "");
+        } else if (k == 2) {
+            c[2 + i] = sal_enum_copy(x);
+        } else {
+            c[2 + i] = x;
+        }
+    }
+    return (int64_t)(intptr_t)c;
 }
 
 /* 1 when the box of `v` owns its field `i` (a fresh string or box), so `enum_free` releases it. */
@@ -1872,7 +1900,7 @@ int64_t sal_enum_tag(int64_t v) {
 }
 
 int64_t sal_enum_field(int64_t v, int64_t i) {
-    return ((int64_t *)(intptr_t)v)[i + 1];
+    return ((int64_t *)(intptr_t)v)[i + 2];
 }
 
 void sal_vec_free(void *vp) {
@@ -2068,6 +2096,8 @@ int64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb) {
  *   s        String: owned by the list, released with free, copied with strdup
  *   S(d..)   flat struct: a malloc'd block of one i64 per field; field k is
  *            described by the k-th descriptor inside the parentheses
+ *   E        enum: a box (or a unit tag) that the list owns; sal_enum_free and
+ *            sal_enum_copy follow the box header
  * Legacy packed kinds (dict keys and values) are converted by `desc_from_kind`. */
 typedef struct {
     const char *desc;
@@ -2090,6 +2120,8 @@ static const char *desc_end(const char *d) {
 static void desc_free(const char *d, int64_t raw) {
     if (*d == 's') {
         sal_free((void *)(uintptr_t)raw);
+    } else if (*d == 'E') {
+        sal_enum_free(raw);
     } else if (*d == 'S') {
         int64_t *blk = (int64_t *)(uintptr_t)raw;
         if (!blk) {
@@ -2105,6 +2137,9 @@ static void desc_free(const char *d, int64_t raw) {
 }
 
 static int64_t desc_copy(const char *d, int64_t raw) {
+    if (*d == 'E') {
+        return sal_enum_copy(raw);
+    }
     if (*d == 's') {
         const char *str = (const char *)(uintptr_t)raw;
         return (int64_t)(uintptr_t)sal_strdup(str ? str : "");
@@ -2188,7 +2223,7 @@ void sal_list_free(void *vp) {
     if (!l) {
         return;
     }
-    if (*l->desc == 's' || *l->desc == 'S') {
+    if (*l->desc == 's' || *l->desc == 'S' || *l->desc == 'E') {
         for (size_t i = 0; i < l->vec.len; i++) {
             desc_free(l->desc, l->vec.data[i]);
         }
@@ -2237,7 +2272,7 @@ void *sal_list_set(void *vp, int64_t i, int64_t x) {
     if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_set: out of bounds");
     }
-    if (*l->desc == 's' || *l->desc == 'S') {
+    if (*l->desc == 's' || *l->desc == 'S' || *l->desc == 'E') {
         desc_free(l->desc, l->vec.data[i]);
     }
     l->vec.data[i] = x;

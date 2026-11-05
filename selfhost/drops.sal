@@ -63,6 +63,7 @@ struct DC
     tainted: NM
     soft: NM
     born: NM
+    owned_enums: NM
     live: List[String]
     site_ids: List[Int]
     site_names: List[String]
@@ -78,7 +79,7 @@ fn dr_new(variants: Int, ro: Int) -> DC ! alloc
     _b = list_push(cells, 0)
     _c = list_push(cells, 0)
     _d = list_push(cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro)
 
 fn dr_free(c: DC) -> Int ! alloc
     _a = nm_free(c.esc)
@@ -88,6 +89,7 @@ fn dr_free(c: DC) -> Int ! alloc
     _e = nm_free(c.tainted)
     _f = nm_free(c.soft)
     _g = nm_free(c.born)
+    _g2 = nm_free(c.owned_enums)
     _h = list_free(c.live)
     _i = list_free(c.site_ids)
     _j = list_free(c.site_names)
@@ -374,6 +376,8 @@ fn dr_fresh_call(c: DC, name: String, targs: String) -> Int ! alloc
 
 fn dr_fresh_list(c: DC, targs: String) -> Int ! alloc
     if dx_list_flat(c, targs) == 1
+        6
+    elsif dx_list_enum(c, targs) == 1
         6
     elsif dx_copy_elem_args(targs) == 1
         if dx_list_owns(targs) == 1
@@ -675,8 +679,80 @@ fn dr_is_alias_call(name: String) -> Int ! alloc
 fn dr_taint_unless_flat(c: DC, name: String, v: Expr) -> Int ! alloc
     if dx_is_fresh_flat_ctor(c, v) == 1
         0
+    elsif dx_is_fresh_variant(c, v) == 1
+        0
     else
         nm_put(c.tainted, name, 1)
+
+# A variant constructor call `V(..)` builds a new box, and a unit variant `V` is a tag: both
+# are fresh values for a list to own (see `is_fresh_variant_ctor` in src/drops.rs).
+fn dx_is_fresh_variant(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dr_variant_has_fields(c, name)
+        XIdent(name) => dx_unit_variant(c, name)
+        _ => 0
+
+fn dx_unit_variant(c: DC, name: String) -> Int ! alloc
+    rec = map_get(c.variants, str_as_int(name))
+    if rec == 0
+        0
+    elsif vec_get(rec, 0) == 2
+        1
+    else
+        0
+
+# `list_new[E]()` of an enum type: the list owns the boxes stored in it.
+fn dx_list_enum(c: DC, targs: String) -> Int ! alloc
+    t = trim_spaces(targs)
+    if str_len(t) == 0
+        0
+    elsif map_get(c.variants, str_as_int("enum:" + t)) != 0
+        1
+    else
+        0
+
+# `list_get(xs, i)` of an enum list bound to a local: a deep copy of the box, fresh whoever
+# owns `xs` (kind 5, `enum_free`).
+fn dx_list_get_enum(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dx_list_get_enum_call(c, name, args)
+        _ => 0
+
+fn dx_list_get_enum_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
+    if str_eq(name, "list_get") == 0
+        0
+    elsif list_len(args) == 0
+        0
+    else
+        first = list_get(args, 0)
+        if dx_is_ident(first) == 0
+            0
+        elsif nm_get(c.owned_enums, dx_ident(first)) == 0
+            0
+        elsif nm_get(c.defs, dx_ident(first)) != 1
+            0
+        else
+            1
+
+# An enum list the pass releases (kind 6) is built as `list_new_owned[E]()`: the lowering
+# stores the element descriptor `E` and the list frees its boxes. Other enum lists keep
+# `list_new` (their elements are borrowed). Remembers the owned locals (`dx_list_get_enum`).
+fn dr_own_enum_list(c: DC, name: String, cand: Int, e: Expr) -> Expr ! alloc
+    match e
+        XCall(fname, args, targs, xp) => dr_own_call(c, name, cand, fname, args, targs, xp, e)
+        _ => e
+
+fn dr_own_call(c: DC, name: String, cand: Int, fname: String, args: List[Expr], targs: String, xp: Int, e: Expr) -> Expr ! alloc
+    if cand != 6
+        e
+    elsif str_eq(fname, "list_new") == 0
+        e
+    elsif dx_list_enum(c, targs) == 0
+        e
+    else
+        _n = nm_put(c.owned_enums, name, 1)
+        XCall(d"list_new_owned", args, targs, xp)
+
 
 # `list_push(xs, v)` as a statement (or bound to a `_name`) discards the
 # returned alias of `xs`, so `xs` is only borrowed there. Returns 1 when handled.
@@ -789,7 +865,10 @@ fn dr_block(c: DC, b: TBlock) -> Int ! alloc
 
 # ---- transform ----
 fn dr_candidate(c: DC, name: String, ty: String, init: Expr) -> Int ! alloc
-    kind = dr_fresh_kind(c, init)
+    kind = if dx_list_get_enum(c, init) == 1
+        5
+    else
+        dr_fresh_kind(c, init)
     if kind == 0
         0
     elsif str_len(ty) != 0
@@ -961,7 +1040,8 @@ fn dr_xform_stmt(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
 
 fn dr_xform_bind(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
     cand = dr_bind_candidate(c, st)
-    _p = list_push(out, TStmt(st.kind, strdup(st.name), dr_xform_expr(c, st.expr), strdup(st.ty), st.is_let, tc_expr(st.target), st.frozen, st.stack, st.id))
+    init = dr_own_enum_list(c, st.name, cand, st.expr)
+    _p = list_push(out, TStmt(st.kind, strdup(st.name), dr_xform_expr(c, init), strdup(st.ty), st.is_let, tc_expr(st.target), st.frozen, st.stack, st.id))
     _m = dr_clear_moved(c, st.id, out)
     if cand != 0
         _k = nm_put(c.kinds, st.name, cand)

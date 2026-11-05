@@ -1543,23 +1543,35 @@ pub(crate) fn flat_struct_kind(def: &crate::ast::StructDef) -> Option<i64> {
 }
 
 /// Element descriptor of `list_new[T]()` (read by `sal_list_new_desc`): `i` a Copy
-/// scalar, `s` a String, `S(d..)` a flat struct whose field k is described by d_k.
+/// scalar, `s` a String, `E` an enum, `S(d..)` a flat struct whose field k is described by d_k.
 /// Any other element type is a Copy scalar here, as before the descriptors.
 pub(crate) fn list_desc(
     type_args: &[crate::ast::TypeArg],
     structs: &HashMap<String, crate::ast::StructDef>,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+    owned: bool,
 ) -> String {
     match type_args.first() {
-        Some(crate::ast::TypeArg::Type(t)) => type_desc(t, structs),
+        Some(crate::ast::TypeArg::Type(t)) => type_desc(t, structs, enums, owned),
         _ => "i".into(),
     }
 }
 
-fn type_desc(t: &crate::ast::Type, structs: &HashMap<String, crate::ast::StructDef>) -> String {
+/// `owned` is set only for the lists the drops pass releases (`list_new_owned`): an enum
+/// element is `E` there and `i` (borrowed) everywhere else.
+fn type_desc(
+    t: &crate::ast::Type,
+    structs: &HashMap<String, crate::ast::StructDef>,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+    owned: bool,
+) -> String {
     if let crate::ast::Type::Named { name, args, .. } = t {
         if args.is_empty() {
             if name == "String" {
                 return "s".into();
+            }
+            if enums.contains_key(name) {
+                return if owned { "E".into() } else { "i".into() };
             }
             if let Some(sd) = structs.get(name).filter(|sd| flat_struct_kind(sd).is_some()) {
                 let fields: String = sd
@@ -1710,6 +1722,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "bytes_ptr"
             | "syscall"
             | "list_new"
+            | "list_new_owned"
             | "list_push"
             | "list_len"
             | "list_get"
@@ -2006,13 +2019,13 @@ fn lower_expr(
                     return dest;
                 }
             }
-            if fname == "list_new" {
+            if fname == "list_new" || fname == "list_new_owned" {
                 // The element descriptor travels as a string constant (see `list_desc`).
                 *counter += 1;
                 let desc = format!("t{counter}");
                 instructions.push(IrInst::ConstString {
                     dest: desc.clone(),
-                    value: list_desc(type_args, &strings.structs),
+                    value: list_desc(type_args, &strings.structs, &strings.enums, fname == "list_new_owned"),
                 });
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),

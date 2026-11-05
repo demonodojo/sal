@@ -102,6 +102,7 @@ fn variants_fill(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
         0
     else
         ed = list_get(enums, i)
+        _k = map_put(m, str_as_int("enum:" + ed.name), 1)
         _a = variants_fill_go(m, str_as_int(ed.name), ed.variants, 0, list_len(ed.variants))
         variants_fill(m, enums, i + 1, n)
 

@@ -823,19 +823,28 @@ fn tflat_struct_kind(sd: TStruct) -> Int ! alloc
 # Element descriptor of `list_new[T]()` (read by `sal_list_new_desc`; `list_desc` in src/ir.rs):
 # `i` a Copy scalar or anything else, `s` a String, `S(d..)` a flat struct whose field k is
 # `s` for a String field and `i` otherwise.
-fn list_desc_text(cx: Cx, txt: String) -> String ! alloc
+fn list_desc_text(cx: Cx, txt: String, owned: Int) -> String ! alloc
     t = trim_type_piece(txt)
     si = tt_struct_find(cx_structs(cx), t)
     if str_eq(t, "String") == 1
         d"s"
     elsif si < 0
-        d"i"
+        list_enum_desc(cx, t, owned)
     else
         sd = list_get(cx_structs(cx), si)
         if tflat_struct_kind(sd) < 0
             d"i"
         else
             d"S(" + tflat_desc(sd.fields, 0, list_len(sd.fields), d"") + d")"
+
+# `E` for an owned list of an enum type, `i` otherwise.
+fn list_enum_desc(cx: Cx, t: String, owned: Int) -> String ! alloc
+    if owned == 0
+        d"i"
+    elsif map_get(cx_variants(cx), str_as_int("enum:" + t)) != 0
+        d"E"
+    else
+        d"i"
 
 fn tflat_desc(fields: List[TField], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -846,9 +855,9 @@ fn tflat_desc(fields: List[TField], i: Int, n: Int, acc: String) -> String ! all
         tflat_desc(fields, i + 1, n, acc + d"i")
 
 # `list_new[T]()`: the element descriptor travels as a string constant.
-fn lower_list_new(cx: Cx, txt: String, d: Int) -> Int ! alloc
+fn lower_list_new(cx: Cx, txt: String, d: Int, owned: Int) -> Int ! alloc
     dsc = fresh(cx)
-    _a = ir_push(cx, ir_cs(dsc, str_as_int(list_desc_text(cx, txt))))
+    _a = ir_push(cx, ir_cs(dsc, str_as_int(list_desc_text(cx, txt, owned))))
     argv = vec_new()
     _b = vec_push(argv, dsc)
     _p = ir_push(cx, ir_call(d, str_as_int(d"sal_list_new_desc"), argv, 1))
@@ -960,7 +969,9 @@ fn lower_call_runtime_go(cx: Cx, name: String, targs: String, args: List[Expr], 
     elsif lower_tensor_builtin(cx, name, args, arg_names, d) == 1
         d
     elsif str_eq(name, "list_new") == 1
-        lower_list_new(cx, targs, d)
+        lower_list_new(cx, targs, d, 0)
+    elsif str_eq(name, "list_new_owned") == 1
+        lower_list_new(cx, targs, d, 1)
     elsif str_eq(name, "dict_new") == 1
         lower_container_new(cx, name, targs, d, 2)
     else
@@ -2097,6 +2108,7 @@ fn variant_map_enums_t(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! allo
         0
     else
         ed = list_get(enums, i)
+        _k = map_put(m, str_as_int("enum:" + ed.name), 1)
         _a = variant_map_go_t(m, ed.variants, 0, list_len(ed.variants))
         variant_map_enums_t(m, enums, i + 1, n)
 

@@ -161,3 +161,19 @@ fn instrument_strict_reports_unfreed_string() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("LEAK"), "expected a leak report: {stderr}");
 }
+
+/// Lists of enums own their boxes (`list_free` releases them, `list_set` replaces
+/// one) and `list_get` results are fresh copies the compiler releases at scope end,
+/// so strict mode reports nothing.
+#[test]
+fn instrument_strict_enum_lists_are_clean() {
+    for (tag, file) in [
+        ("enum_owned", "drops/drop_list_enum_owned.sal"),
+        ("enum_nested", "drops/drop_list_enum_nested.sal"),
+    ] {
+        let src = std::fs::read_to_string(root().join("tests/lang").join(file)).expect("read");
+        let out = run_strict(&src, tag);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("LEAK"), "{file}: unexpected leak: {stderr}");
+    }
+}
