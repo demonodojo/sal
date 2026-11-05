@@ -16,7 +16,7 @@ use crate::infer::infer_program;
 use crate::ir::{ir_to_text, lower_program_with_callables_env};
 use crate::string_expr::StringEnv;
 use crate::layout::collect_layout_structs;
-use crate::llvm::{collect_host_tensors, emit_llvm_with_externs, LlvmOptions};
+use crate::llvm::{collect_host_tensors, emit_llvm_with_externs, take_unknown_callees, LlvmOptions};
 use crate::modules::{
     callable_fn_names, check_module_semantics, infer_module, resolve_module_graph, LoadedModule,
     ModuleGraph,
@@ -323,6 +323,16 @@ fn compile_single_module(
             &tensors,
             externs,
         );
+        let unknown = take_unknown_callees();
+        if !unknown.is_empty() {
+            let mut names = unknown;
+            names.sort();
+            names.dedup();
+            return Err(vec![internal_diag(format!(
+                "internal: no emitter for call(s) to {} (unresolved callee reached the backend)",
+                names.join(", ")
+            ))]);
+        }
         if let Some(parent) = ll_path.parent() {
             fs::create_dir_all(parent).map_err(|e| vec![internal_diag(e.to_string())])?;
         }

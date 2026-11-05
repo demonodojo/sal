@@ -333,6 +333,16 @@ fn hoist_allocas(text: &str) -> String {
     r
 }
 
+thread_local! {
+    /// Callees the emitter could not resolve during the last emission (see `take_unknown_callees`).
+    static UNKNOWN_CALLEES: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// The callees with no definition found while emitting, cleared (the emission then is invalid).
+pub fn take_unknown_callees() -> Vec<String> {
+    UNKNOWN_CALLEES.with(|u| std::mem::take(&mut *u.borrow_mut()))
+}
+
 pub fn emit_llvm(m: &IrModule, opts: &LlvmOptions) -> String {
     emit_llvm_with_tensors(m, opts, &HashMap::new())
 }
@@ -3404,6 +3414,23 @@ fn emit_runtime_or_user_call(
                 ));
             }
         }
+        "sal_transpose_f32" if args.len() == 3 => {
+            // A transpose outside the host-tensor path: the source is the handle of the tensor.
+            let src = ptr_arg(&args[0], s, tmp);
+            let rows = i64_operand(&args[1], consts);
+            let cols = i64_operand(&args[2], consts);
+            *tmp += 1;
+            let out = format!("trg_{tmp}");
+            s.push_str(&format!("  %{out}_n = mul i64 {rows}, {cols}\n"));
+            s.push_str(&format!("  %{out}_b = mul i64 %{out}_n, 4\n"));
+            s.push_str(&format!("  %{out} = call ptr @sal_place_malloc(i64 %{out}_b, i32 0)\n"));
+            s.push_str(&format!(
+                "  call void @sal_transpose_f32(ptr %{out}, ptr {src}, i64 {rows}, i64 {cols})\n"
+            ));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+            }
+        }
         "sal_index" | "index" => {
             let idx = args.get(1).map(String::as_str).unwrap_or("0");
             let idx_op = i64_operand(idx, consts);
@@ -3436,6 +3463,10 @@ fn emit_runtime_or_user_call(
             }
         }
         other => {
+            // No runtime function or user fn of this name reached the backend. The qualify pass
+            // rejects bare calls to fns the module cannot see (E_TYPE), so this is a compiler
+            // bug, reported as E_INTERNAL by the caller.
+            UNKNOWN_CALLEES.with(|u| u.borrow_mut().push(other.to_string()));
             if let Some(d) = dest {
                 s.push_str(&format!("  ; call {other} -> %{d}\n"));
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));

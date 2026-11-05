@@ -35,15 +35,18 @@ pub fn qualify_module_graph(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnosti
         check_flat_import_export_clashes(m, graph)?;
     }
 
+    let scopes = call_scopes(graph);
     let n = graph.order.len();
     for i in 0..n {
         let qualifiers = module_qualifiers(&graph.order[i], graph)?;
         let path = graph.order[i].path.clone();
+        let scope = &scopes[i];
         qualify_program(
             &mut graph.order[i].program,
             &qualifiers,
             &export_links,
             &variant_links,
+            scope,
         )?;
         rename_clashing_defs(&mut graph.order[i].program, &clashes, &modids, &path);
     }
@@ -51,12 +54,8 @@ pub fn qualify_module_graph(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnosti
 }
 
 fn needs_qualify(graph: &ModuleGraph) -> bool {
-    if graph.order.iter().any(|m| {
-        m.program
-            .items
-            .iter()
-            .any(|i| matches!(i, Item::Import(imp) if imp.alias.is_some()))
-    }) {
+    // Any import: the bare calls must be checked against what each module can see.
+    if graph.order.iter().any(|m| m.program.items.iter().any(|i| matches!(i, Item::Import(_)))) {
         return true;
     }
     !compute_clashing_names(graph).is_empty()
@@ -309,6 +308,18 @@ pub(crate) struct QualifyCtx<'a> {
     pub qualifiers: &'a ModuleQualifiers,
     pub export_links: &'a HashMap<PathBuf, HashMap<String, String>>,
     pub variant_links: &'a HashMap<PathBuf, HashMap<String, String>>,
+    pub scope: &'a CallScope,
+}
+
+/// What an unqualified call in one module may name (SPEC «Módulos»: a flat import brings the
+/// fns of the imported module and of its own flat imports into the importer's environment).
+pub(crate) struct CallScope {
+    /// Fns this module can call by their bare name: its own and those flat-imported.
+    pub visible: HashSet<String>,
+    /// Fns defined by any module of the graph.
+    pub known: HashSet<String>,
+    /// Names bound locally in this module (params, lets, lambda params): a call to one is a value.
+    pub bound: HashSet<String>,
 }
 
 fn resolve_export_link(
@@ -381,11 +392,13 @@ fn qualify_program(
     qualifiers: &ModuleQualifiers,
     export_links: &HashMap<PathBuf, HashMap<String, String>>,
     variant_links: &HashMap<PathBuf, HashMap<String, String>>,
+    scope: &CallScope,
 ) -> Result<(), Vec<Diagnostic>> {
     let ctx = QualifyCtx {
         qualifiers,
         export_links,
         variant_links,
+        scope,
     };
     for item in &mut prog.items {
         match item {
@@ -639,6 +652,20 @@ fn qualify_stmt(st: &mut Stmt, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnosti
     Ok(())
 }
 
+/// A bare call to a fn of another module must be visible from this one: defined here or
+/// flat-imported (transitively). Otherwise it is `E_TYPE` at the call.
+fn check_call_visible(name: &str, span: Span, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnostic>> {
+    let scope = ctx.scope;
+    if scope.known.contains(name) && !scope.visible.contains(name) && !scope.bound.contains(name) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("unknown function `{name}`: it is defined in a module this one does not import"),
+            span,
+        )]);
+    }
+    Ok(())
+}
+
 fn qualify_expr(expr: &mut Expr, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnostic>> {
     match expr {
         Expr::Call {
@@ -647,6 +674,9 @@ fn qualify_expr(expr: &mut Expr, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnos
             args,
             ..
         } => {
+            if let Expr::Ident { name, span } = &**func {
+                check_call_visible(name, *span, ctx)?;
+            }
             qualify_expr(func, ctx)?;
             for a in type_args {
                 if let TypeArg::Type(t) = a {
@@ -787,4 +817,145 @@ fn qualify_pattern(pat: &mut Pattern, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Di
         Pattern::Ident(_, _) | Pattern::Wild(_) | Pattern::Int(_, _) => {}
     }
     Ok(())
+}
+
+/// The call scope of every module of the graph (in `graph.order`), computed before any rename.
+fn call_scopes(graph: &ModuleGraph) -> Vec<CallScope> {
+    let own: HashMap<PathBuf, HashSet<String>> = graph
+        .order
+        .iter()
+        .map(|m| {
+            let names = m
+                .program
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Fn(f) => Some(f.name.clone()),
+                    _ => None,
+                })
+                .collect();
+            (path_key(&m.path), names)
+        })
+        .collect();
+    let known: HashSet<String> = own.values().flatten().cloned().collect();
+    graph
+        .order
+        .iter()
+        .map(|m| {
+            let mut visible = HashSet::new();
+            let mut seen = HashSet::new();
+            flat_visible(graph, &path_key(&m.path), &own, &mut seen, &mut visible);
+            CallScope {
+                visible,
+                known: known.clone(),
+                bound: bound_names_of(&m.program),
+            }
+        })
+        .collect()
+}
+
+/// The fns of module `key` and of its flat imports, transitively (aliased imports do not count).
+fn flat_visible(
+    graph: &ModuleGraph,
+    key: &PathBuf,
+    own: &HashMap<PathBuf, HashSet<String>>,
+    seen: &mut HashSet<PathBuf>,
+    out: &mut HashSet<String>,
+) {
+    if !seen.insert(key.clone()) {
+        return;
+    }
+    if let Some(names) = own.get(key) {
+        out.extend(names.iter().cloned());
+    }
+    let Some(m) = graph.order.iter().find(|m| &path_key(&m.path) == key) else {
+        return;
+    };
+    for item in &m.program.items {
+        let Item::Import(imp) = item else { continue };
+        if imp.alias.is_some() {
+            continue;
+        }
+        if let Some(dep) = resolve_import_path_with_manifest(&imp.path, &m.path, &graph.project_root) {
+            flat_visible(graph, &path_key(&dep), own, seen, out);
+        }
+    }
+}
+
+/// Names a module binds locally: fn params, `let`s, assignments and lambda params.
+fn bound_names_of(prog: &Program) -> HashSet<String> {
+    fn block(b: &Block, out: &mut HashSet<String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, init, .. } => {
+                    out.insert(name.clone());
+                    expr(init, out);
+                }
+                Stmt::Assign { target, value, .. } => {
+                    if let Expr::Ident { name, .. } = target {
+                        out.insert(name.clone());
+                    }
+                    expr(value, out);
+                }
+                Stmt::Expr(e) => expr(e, out),
+                Stmt::Return { value: Some(v), .. } => expr(v, out),
+                Stmt::While { cond, body, .. } => {
+                    expr(cond, out);
+                    block(body, out);
+                }
+                _ => {}
+            }
+        }
+        if let Some(t) = &b.tail {
+            expr(t, out);
+        }
+    }
+    fn expr(e: &Expr, out: &mut HashSet<String>) {
+        match e {
+            Expr::Lambda { params, body, .. } => {
+                out.extend(params.iter().cloned());
+                expr(body, out);
+            }
+            Expr::Call { func, args, .. } => {
+                expr(func, out);
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                expr(left, out);
+                expr(right, out);
+            }
+            Expr::Unary { expr: inner, .. } | Expr::Try { expr: inner, .. } | Expr::To { expr: inner, .. } => {
+                expr(inner, out)
+            }
+            Expr::Block(b) | Expr::On { body: b, .. } => block(b, out),
+            Expr::If { cond, then_block, elsifs, else_block, .. } => {
+                expr(cond, out);
+                block(then_block, out);
+                for a in elsifs {
+                    expr(&a.cond, out);
+                    block(&a.body, out);
+                }
+                if let Some(b) = else_block {
+                    block(b, out);
+                }
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                expr(scrutinee, out);
+                for a in arms {
+                    expr(&a.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = HashSet::new();
+    for item in &prog.items {
+        if let Item::Fn(f) = item {
+            out.extend(f.params.iter().map(|p| p.name.clone()));
+            block(&f.body, &mut out);
+        }
+    }
+    out
 }

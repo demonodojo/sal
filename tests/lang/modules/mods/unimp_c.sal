@@ -1,0 +1,4 @@
+import "unimp_b.sal"
+
+fn unimp_c_value() -> Int
+    unimp_helper() + 1

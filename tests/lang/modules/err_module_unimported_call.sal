@@ -1,0 +1,6 @@
+# error: E_TYPE
+import "mods/unimp_b.sal"
+import "mods/unimp_a.sal"
+
+fn main() -> Int
+    unimp_call()

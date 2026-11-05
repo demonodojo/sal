@@ -1,0 +1,5 @@
+# exit: 81
+import "mods/unimp_c.sal"
+
+fn main() -> Int
+    unimp_helper() + unimp_c_value()
