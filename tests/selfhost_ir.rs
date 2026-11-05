@@ -1435,3 +1435,51 @@ fn selfhost_matches_bootstrap_on_every_repo_program() {
     assert!(compared >= 40, "only {compared} programs compared");
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
+
+/// The `W_DEPRECATED` warning lines of a compilation, location included (`path:line:column`).
+fn deprecation_messages(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter(|l| l.starts_with("warning[W_DEPRECATED]: "))
+        .map(|l| l.to_string())
+        .collect()
+}
+
+#[test]
+fn selfhost_deprecation_warnings_match_bootstrap() {
+    let stage1 = compile_selfhost(false);
+    let dir = std::env::temp_dir().join(format!("sal-depwarn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.sal"),
+        "@deprecated(\"use two\")\nfn one() -> Int\n    1\n\nfn two() -> Int\n    2\n\n@deprecated(\"use Pt2\")\nstruct Pt\n    x: Int\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.sal"),
+        "import \"lib.sal\" as l\n\nfn use_pt(p: l.Pt) -> Int\n    p.x\n\nfn main() -> Int\n    l.one() + l.two()\n",
+    )
+    .unwrap();
+    let file = dir.join("main.sal");
+    let boot = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["check"])
+        .arg(&file)
+        .current_dir(root())
+        .output()
+        .expect("run sal check");
+    let self_out = Command::new(&stage1)
+        .arg(&file)
+        .arg("-o")
+        .arg(dir.join("out.bin"))
+        .env("SAL_SELFHOST_CACHE", dir.join("cache"))
+        .env("SAL_PROJECT_ROOT", root())
+        .current_dir(root())
+        .output()
+        .expect("run selfhost build");
+    let want = deprecation_messages(&String::from_utf8_lossy(&boot.stderr));
+    let got = deprecation_messages(&String::from_utf8_lossy(&self_out.stderr));
+    assert!(!want.is_empty(), "bootstrap printed no W_DEPRECATED warning");
+    assert_eq!(got, want, "selfhost warnings differ from the bootstrap's (location included)");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -374,7 +374,7 @@ fn dv_expr_go(c: DC, e: Expr) -> String ! alloc
         XBool(v) => d"Bool"
         XStr(s) => dv_string(c)
         XIdent(name) => dv_ident(c, name)
-        XCall(name, args, targs) => dv_call(c, name, args)
+        XCall(name, args, targs, xp) => dv_call(c, name, args)
         XOn(place, body, is_kern, has_index) => dv_on(c, place, body, is_kern, has_index)
         XTo(place, inner) => dv_to(c, place, inner)
         XBin(op, l, r) => dv_binary(c, l, r)

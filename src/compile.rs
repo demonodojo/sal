@@ -84,6 +84,10 @@ fn compile_program_at(
         return compile_file_with_imports(program, path, opts);
     }
 
+    print_warnings(&crate::deprecation::check_deprecations(&[(
+        std::path::PathBuf::from("<input>"),
+        program,
+    )]));
     let infer_out = infer_program(program)?;
     let strings_for_attrs = StringEnv::from_program(program).with_infer(&infer_out);
     crate::attrs::check_layout_structs(program)?;
@@ -130,12 +134,22 @@ fn compile_program_at(
     Ok(artifacts)
 }
 
+/// Prints the warnings of a compilation to stderr; they never stop it.
+pub fn print_warnings(warnings: &[crate::deprecation::Warning]) {
+    for w in warnings {
+        eprintln!("{}", w.format_human());
+    }
+}
+
 fn compile_file_with_imports(
     program: &Program,
     path: &Path,
     opts: &CompileOptions,
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
     let graph = resolve_module_graph(path, &opts.project_root)?;
+    let modules: Vec<(std::path::PathBuf, &Program)> =
+        graph.order.iter().map(|m| (m.path.clone(), &m.program)).collect();
+    print_warnings(&crate::deprecation::check_deprecations(&modules));
     for m in &graph.order {
         check_module_semantics(m, &graph, opts.toolchain.target)?;
     }

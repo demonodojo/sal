@@ -20,6 +20,10 @@ struct TStruct
     layout_c: Int
     tparams: List[String]
     is_frame: Int
+    # `@deprecated("…")` message; "" when the item has none.
+    deprecated: String
+    # Byte offsets of the identifiers of its field types, in order (see `TFn.tyat`).
+    tyat: String
 
 struct TVariant
     name: String
@@ -29,6 +33,9 @@ struct TEnum
     name: String
     variants: List[TVariant]
     tparams: List[String]
+    deprecated: String
+    # Byte offsets of the identifiers of its variant field types, in order (see `TFn.tyat`).
+    tyat: String
 
 # A pattern: kind 0 `_`, 1 binding `name`, 2 integer `ival`, 3 variant (`qual.`)`name(args)`.
 struct TPat
@@ -70,7 +77,8 @@ enum Expr
     XStr(String)
     XIdent(String)
     XBin(String, Expr, Expr)
-    XCall(String, List[Expr], String)
+    # The last field is the byte offset of the callee's name in the preprocessed source (0 when none).
+    XCall(String, List[Expr], String, Int)
     XTo(String, Expr)
     XOn(String, TBlock, Int, Int)
     XTensor(Int, Int, List[String])
@@ -93,6 +101,10 @@ struct TFn
     tparams: List[String]
     recv: String
     mkind: Int
+    deprecated: String
+    # Byte offsets of the identifiers written in its types, comma-separated, in the order the parser
+    # read them: the parameters (`self` first), the result, then the body. Qualifiers are not listed.
+    tyat: String
 
 struct TProgram
     fns: List[TFn]
@@ -210,7 +222,7 @@ fn tp_free_expr(e: Expr) -> Int ! alloc
 fn tp_free_children(e: Expr) -> Int ! alloc
     match e
         XBin(op, l, r) => tp_free_pair(e, l, r)
-        XCall(name, args, targs) => tp_free_call(args)
+        XCall(name, args, targs, xp) => tp_free_call(args)
         XTo(place, inner) => tp_free_one(e, 1, inner)
         XOn(place, body, is_kern, has_index) => tp_free_block(body)
         XIf(cond, then_b, else_b, has_else, elsifs) => tp_free_if(e, cond, then_b, else_b, elsifs)
@@ -287,7 +299,7 @@ fn tc_expr(e: Expr) -> Expr ! alloc
         XStr(s) => XStr(strdup(s))
         XIdent(s) => XIdent(strdup(s))
         XBin(op, l, r) => XBin(strdup(op), tc_expr(l), tc_expr(r))
-        XCall(name, args, targs) => XCall(strdup(name), tc_list(args), strdup(targs))
+        XCall(name, args, targs, xp) => XCall(strdup(name), tc_list(args), strdup(targs), xp)
         XTo(place, inner) => XTo(strdup(place), tc_expr(inner))
         XOn(place, body, kern, idx) => XOn(strdup(place), tc_block(body), kern, idx)
         XTensor(nr, nc, data) => XTensor(nr, nc, tc_strs(data))
@@ -382,7 +394,7 @@ fn tv_expr(e: Expr) -> Expr ! alloc
         XStr(s) => XStr(tv_s(s))
         XIdent(s) => XIdent(tv_s(s))
         XBin(op, l, r) => XBin(tv_s(op), tv_expr(l), tv_expr(r))
-        XCall(name, args, targs) => XCall(tv_s(name), tv_list(args), tv_s(targs))
+        XCall(name, args, targs, xp) => XCall(tv_s(name), tv_list(args), tv_s(targs), xp)
         XTo(place, inner) => XTo(tv_s(place), tv_expr(inner))
         XOn(place, body, kern, idx) => XOn(tv_s(place), tv_block(body), kern, idx)
         XTensor(nr, nc, data) => XTensor(nr, nc, tc_strs(data))

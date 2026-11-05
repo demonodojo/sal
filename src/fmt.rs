@@ -32,8 +32,16 @@ fn format_program_raw(p: &Program) -> String {
     out
 }
 
+/// `@deprecated("…")` line of an item, when it has one.
+fn deprecated_line(msg: &Option<String>) -> String {
+    match msg {
+        Some(m) => format!("@deprecated(\"{}\")\n", m.replace('\\', "\\\\").replace('"', "\\\"")),
+        None => String::new(),
+    }
+}
+
 fn format_struct(s: &StructDef) -> String {
-    let mut out = String::new();
+    let mut out = deprecated_line(&s.deprecated);
     if s.layout_c {
         out.push_str("@layout(c)\n");
     }
@@ -51,7 +59,8 @@ fn format_struct(s: &StructDef) -> String {
 }
 
 fn format_enum(e: &EnumDef) -> String {
-    let mut out = format!("enum {}", e.name);
+    let mut out = deprecated_line(&e.deprecated);
+    out.push_str(&format!("enum {}", e.name));
     if !e.type_params.is_empty() {
         out.push('[');
         out.push_str(&e.type_params.join(", "));
@@ -102,7 +111,7 @@ fn format_frame(f: &FrameDef) -> String {
 }
 
 fn format_fn(f: &FnDef) -> String {
-    let mut s = String::new();
+    let mut s = deprecated_line(&f.deprecated);
     if f.no_heap {
         s.push_str("@no_heap\n");
     }

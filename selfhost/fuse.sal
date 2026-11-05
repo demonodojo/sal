@@ -30,7 +30,7 @@ fn lower_args(cx: Cx, args: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
 
 fn collect_fused(e: Expr, cx: Cx, ops: Int) -> Int ! alloc
     match e
-        XCall(name, args, targs) => collect_fused_call_args(cx, ops, name, args)
+        XCall(name, args, targs, xp) => collect_fused_call_args(cx, ops, name, args)
         XBin(op, l, r) => collect_fused_bin_args(cx, ops, op, l, r)
         _ => 0
 
@@ -431,14 +431,14 @@ fn tspine_acc(left: Expr, acc: Int) -> Int ! alloc
 fn tadd_right_is_fresh_temp(env: TEnv, right: Expr) -> Int ! alloc
     match right
         XBin(op, l, r) => tbinary_is_string_concat(env, right)
-        XCall(name, args, targs) => call_allocates_fresh_string(name)
+        XCall(name, args, targs, xp) => call_allocates_fresh_string(name)
         _ => 0
 
 # A left operand that is a fresh-string call: the first `str_concat` of a chain copies from it
 # and must release it.
 fn tadd_left_is_fresh_call(left: Expr) -> Int ! alloc
     match left
-        XCall(name, args, targs) => call_allocates_fresh_string(name)
+        XCall(name, args, targs, xp) => call_allocates_fresh_string(name)
         _ => 0
 
 fn lower_str_add(cx: Cx, left: Expr, right: Expr) -> Int ! alloc
@@ -480,7 +480,7 @@ fn lower_expr(cx: Cx, e: Expr) -> Int ! alloc
         XTensor(nr, nc, data) => lower_tensor_lit(cx, data)
         XTo(place, inner) => lower_to(cx, place, inner)
         XOn(place, body, is_kern, has_index) => lower_on(cx, place, body)
-        XCall(name, args, targs) => lower_call(cx, name, args, targs)
+        XCall(name, args, targs, xp) => lower_call(cx, name, args, targs)
         XField(base, field) => lower_field(cx, base, field)
         XIf(cond, then_b, else_b, has_else, elsifs) => lower_if(cx, cond, then_b, else_b, elsifs)
         XWhile(cond, body) => lower_while(cx, cond, body)
@@ -981,7 +981,7 @@ fn frame_name_for_where(cx: Cx, e: Expr) -> Int ! alloc
     match e
         XNone => 0
         XIdent(name) => where_struct_type(cx, tenv_type(cx.env, name))
-        XCall(callee, args, targs) => where_call_frame(cx, e, callee)
+        XCall(callee, args, targs, xp) => where_call_frame(cx, e, callee)
         _ => where_struct_type(cx, texpr_type(cx.env, e))
 
 fn where_call_frame(cx: Cx, e: Expr, callee: String) -> Int ! alloc
@@ -1063,7 +1063,7 @@ fn enum_owned_mask(cx: Cx, args: List[Expr], i: Int, n: Int, scale: Int, acc: In
 
 fn nested_variant_kind(cx: Cx, a: Expr) -> Int ! alloc
     match a
-        XCall(name, inner, targs) => nested_call_kind(cx, name, inner)
+        XCall(name, inner, targs, xp) => nested_call_kind(cx, name, inner)
         _ => 0
 
 fn nested_call_kind(cx: Cx, name: String, inner: List[Expr]) -> Int ! alloc
@@ -1400,7 +1400,7 @@ fn assigned_expr(e: Expr, names: Int) -> Int ! alloc
         XIf(cond, then_b, else_b, has_else, elsifs) => assigned_if(cond, then_b, else_b, elsifs, names)
         XOn(place, body, is_kern, has_index) => assigned_block(body, names)
         XWhile(cond, body) => assigned_while(cond, body, names)
-        XCall(name, args, targs) => assigned_args(args, 0, list_len(args), names)
+        XCall(name, args, targs, xp) => assigned_args(args, 0, list_len(args), names)
         XBin(op, l, r) => assigned_bin(l, r, names)
         XUnary(op, inner) => assigned_expr(inner, names)
         XTo(place, inner) => assigned_expr(inner, names)
@@ -1526,7 +1526,7 @@ fn lower_value_tail(cx: Cx, tail: Expr) -> Int ! alloc
 # call result keeps the shape registered for its SSA value.
 fn bind_load_tensor(cx: Cx, name: Int, call: Expr) -> Int ! alloc
     match call
-        XCall(fname, args, targs) => bind_load_go(cx, name, fname, targs)
+        XCall(fname, args, targs, xp) => bind_load_go(cx, name, fname, targs)
         _ => 0
 
 fn bind_load_go(cx: Cx, name: Int, fname: String, targs: String) -> Int ! alloc
@@ -1755,7 +1755,7 @@ fn mv_if(cond: Expr, then_b: TBlock, else_b: TBlock, arms: List[TElsif], names: 
 
 fn mv_expr(e: Expr, names: Int, md: Int) -> Int ! alloc
     match e
-        XCall(name, args, targs) => mv_call(name, args, names, md)
+        XCall(name, args, targs, xp) => mv_call(name, args, names, md)
         XBin(op, l, r) => mv_pair(l, r, names, md)
         XUnary(op, inner) => mv_expr(inner, names, md)
         XTo(place, inner) => mv_expr(inner, names, md)

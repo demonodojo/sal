@@ -58,7 +58,7 @@ Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `
 
 ## Atributos en el arranque
 
-`@frozen` y `@stack` delante de `let`; `@no_heap` delante de `fn`; `@layout(c)` delante de `struct`. Cualquier otro `@…` es `E_PARSE`. Las violaciones semánticas de un atributo admitido son `E_TYPE`.
+`@frozen` y `@stack` delante de `let`; `@no_heap` delante de `fn`; `@layout(c)` delante de `struct`. Cualquier otro `@…` es `E_PARSE`. Las violaciones semánticas de un atributo admitido son `E_TYPE`. `@deprecated("texto")` delante de `fn`, `method`, `struct` o `enum` no es error: cada uso emite `W_DEPRECATED` (aviso en stderr, la compilación sigue). Lo implementa `src/deprecation.rs` sobre el grafo cualificado (`compile.rs` lo imprime); sin cadena es `E_PARSE`. El selfhost aún no lo parsea (`tests/lang/attributes/deprecated_fn_still_runs.sal` lleva `selfhost-xfail`).
 
 ## Fuera de arranque
 

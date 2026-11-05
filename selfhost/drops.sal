@@ -176,7 +176,7 @@ fn dx_is_ident(e: Expr) -> Int ! alloc
 
 fn dx_is_call(e: Expr) -> Int ! alloc
     match e
-        XCall(name, args, targs) => 1
+        XCall(name, args, targs, xp) => 1
         _ => 0
 
 fn dx_is_none(e: Expr) -> Int ! alloc
@@ -197,7 +197,7 @@ fn dx_is_if(e: Expr) -> Int ! alloc
 fn dx_is_string_operand(e: Expr) -> Int ! alloc
     match e
         XStr(s) => 1
-        XCall(name, args, targs) => dr_returns_fresh(name)
+        XCall(name, args, targs, xp) => dr_returns_fresh(name)
         _ => 0
 
 # A `+` chain is a string concatenation when some operand is syntactically a string.
@@ -310,7 +310,7 @@ fn dx_list_flat(c: DC, targs: String) -> Int ! alloc
 # `S(a, b, ..)` of a flat struct whose String fields are all fresh values.
 fn dx_is_fresh_flat_ctor(c: DC, e: Expr) -> Int ! alloc
     match e
-        XCall(name, args, targs) => dx_flat_ctor(c, name, args)
+        XCall(name, args, targs, xp) => dx_flat_ctor(c, name, args)
         _ => 0
 
 fn dx_flat_ctor(c: DC, name: String, args: List[Expr]) -> Int ! alloc
@@ -348,7 +348,7 @@ fn dr_variant_has_fields(c: DC, name: String) -> Int ! alloc
 fn dr_fresh_kind(c: DC, e: Expr) -> Int ! alloc
     match e
         XStr(s) => 1
-        XCall(name, args, targs) => dr_fresh_call(c, name, targs)
+        XCall(name, args, targs, xp) => dr_fresh_call(c, name, targs)
         XBin(op, l, r) => dr_fresh_bin(op, e)
         _ => 0
 
@@ -601,7 +601,7 @@ fn dr_if_arms(c: DC, arms: List[TElsif], i: Int, n: Int) -> Int ! alloc
 fn dr_expr(c: DC, e: Expr) -> Int ! alloc
     match e
         XIdent(n) => dr_escape(c, n)
-        XCall(name, args, targs) => dr_call_args(c, args, 0, list_len(args), dr_borrows(name), map_get(c.ro, str_as_int(name)))
+        XCall(name, args, targs, xp) => dr_call_args(c, args, 0, list_len(args), dr_borrows(name), map_get(c.ro, str_as_int(name)))
         XLambda(param, body) => dr_lambda(c, param, body)
         XBin(op, l, r) => dr_binary(c, l, r)
         XUnary(op, inner) => dr_arg(c, inner, 1)
@@ -682,7 +682,7 @@ fn dr_taint_unless_flat(c: DC, name: String, v: Expr) -> Int ! alloc
 # returned alias of `xs`, so `xs` is only borrowed there. Returns 1 when handled.
 fn dr_push_stmt(c: DC, e: Expr) -> Int ! alloc
     match e
-        XCall(name, args, targs) => dr_push_call(c, name, args)
+        XCall(name, args, targs, xp) => dr_push_call(c, name, args)
         _ => 0
 
 fn dr_push_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
@@ -855,7 +855,7 @@ fn dr_free_fn(kind: Int) -> String ! alloc
 fn dr_free_stmt(c: DC, name: String) -> TStmt ! alloc
     args = list_new[Expr]()
     _a = list_push(args, XIdent(strdup(name)))
-    dr_plain(XCall(strdup(dr_free_fn(nm_get(c.kinds, name))), args, d""))
+    dr_plain(XCall(strdup(dr_free_fn(nm_get(c.kinds, name))), args, d"", 0))
 
 # The release of a live local, guarded by its flag when a statement may have moved it.
 fn dr_release_stmt(c: DC, name: String) -> TStmt ! alloc
@@ -1170,7 +1170,7 @@ fn dr_hoist_arms(h: List[Int], arms: List[TElsif], i: Int, n: Int, out: List[TEl
 
 fn dr_hoist_expr(h: List[Int], e: Expr, out: List[TStmt]) -> Expr ! alloc
     match e
-        XCall(name, args, targs) => dr_hoist_call(h, name, args, targs, out)
+        XCall(name, args, targs, xp) => dr_hoist_call(h, name, args, targs, out)
         XBin(op, l, r) => dr_hoist_bin(h, op, l, r, out)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_hoist_if(h, cond, then_b, else_b, has_else, elsifs)
         XWhile(cond, body) => XWhile(tc_expr(cond), dr_hoist_block(h, body))
@@ -1179,7 +1179,7 @@ fn dr_hoist_expr(h: List[Int], e: Expr, out: List[TStmt]) -> Expr ! alloc
 fn dr_hoist_call(h: List[Int], name: String, args: List[Expr], targs: String, out: List[TStmt]) -> Expr ! alloc
     res = list_new[Expr]()
     _a = dr_hoist_args(h, args, 0, list_len(args), dr_reads_string_arg(name), out, res)
-    XCall(strdup(name), res, strdup(targs))
+    XCall(strdup(name), res, strdup(targs), 0)
 
 fn dr_hoist_bin(h: List[Int], op: String, l: Expr, r: Expr, out: List[TStmt]) -> Expr ! alloc
     nl = dr_hoist_expr(h, l, out)

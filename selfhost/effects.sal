@@ -224,7 +224,7 @@ fn fx_scan_to(place: String, inner: Expr, used: Fx, env: TEnv) -> Int ! alloc
 
 fn fx_scan_expr(e: Expr, used: Fx, env: TEnv) -> Int ! alloc
     match e
-        XCall(name, args, targs) => fx_scan_call(name, args, used, env)
+        XCall(name, args, targs, xp) => fx_scan_call(name, args, used, env)
         XTo(place, inner) => fx_scan_to(place, inner, used, env)
         XOn(place, body, is_kern, has_index) => fx_scan_on(place, body, used, env)
         XBin(op, l, r) => fx_scan_binary(op, l, r, used, env)

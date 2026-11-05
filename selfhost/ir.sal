@@ -298,9 +298,13 @@ fn ir_switch(dest: Int, scrut: Int, arms: Int, default_body: Int, default_val: I
     inst
 
 fn ir_call_free(arg: Int) -> Int ! alloc
+    ir_call_named(arg, str_as_int(d"sal_free"))
+
+# A call of the runtime function `func` (a handle) on `arg`, for a release.
+fn ir_call_named(arg: Int, func: Int) -> Int ! alloc
     args = vec_new()
     _a = vec_push(args, arg)
-    ir_call(0, str_as_int(d"sal_free"), args, 0)
+    ir_call(0, func, args, 0)
 
 fn ir_call(dest: Int, func: Int, args: Int, has_dest: Int) -> Int ! alloc
     inst = vec_new()

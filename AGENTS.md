@@ -13,7 +13,7 @@ Las guías detalladas por área están en `.claude/skills/` (enlace a `.cursor/s
 2. [docs/subplans/](docs/subplans/) fija archivos, algoritmo y tests de cada pase (el estado del selfhost está en `07-selfhost.md`).
 3. Si SPEC y código divergen, no arregles uno a ojo: avisa al usuario y cierra la divergencia en el mismo cambio.
 4. No ampliar la superficie del lenguaje porque un diseño la mencione: lo reservado es `E_PARSE` hasta su fase.
-5. Códigos de error cerrados: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_TARGET` (solo destino), `E_INTERNAL` (solo fallos del compilador). No inventes códigos ni eventos de instrumentación.
+5. Códigos de error cerrados: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_TARGET` (solo destino), `E_INTERNAL` (solo fallos del compilador). Avisos, que no son errores ni paran la compilación: `W_DEPRECATED` (uso de un item `@deprecated`). No inventes códigos ni eventos de instrumentación.
 6. La gramática es recursiva por la izquierda (`1 - 2 - 3` = `(1 - 2) - 3`); prefijos y lambda asocian a la derecha.
 
 ## Estructura
@@ -38,12 +38,12 @@ Orden de pases: `parse` → `expand_interpolation` → `infer_program` → `attr
 - Hueco conocido de conformidad: se marca en la cabecera de `tests/lang/*/*.sal` (`# xfail: motivo` para el arranque, `# selfhost-xfail: motivo` para el selfhost) con motivo concreto. Al arreglarlo, **quita la marca** en el mismo cambio. Antes de afirmar que algo está soportado, mira si su test la lleva (`grep -rl xfail tests/lang`).
 - Los resultados esperados de `tests/lang` se escriben a mano según la SPEC; no se copian de la salida de un compilador.
 - No describas el selfhost como equivalente al arranque en lo que el subplan lista como pendiente.
-- Los métodos de tipos básicos (`s.len()`, `xs.push(v)`), `method`/`static`/`init` y `List.new[T]()` están solo en el arranque hasta portarlos a selfhost. No toques `selfhost/` por ello sin que el usuario lo pida.
+- Los métodos (`method`/`static`/`init`, los de tipos básicos como `s.len()`, `xs.push(v)`, y `List.new[T]()`) están en los dos compiladores: los cubren `tests/lang/methods` y `selfhost_meets_language_conformance`.
 
 ## Estilo de fuente `.sal`
 
 - Sangría de espacios (un tabulador es `E_PARSE`), comentarios con `#`, última expresión del bloque es el valor.
-- Al programar en sal, prefiere los métodos a las funciones: `s.len()` mejor que `str_len(s)`, `xs.push(v)` mejor que `list_push(xs, v)`, y `method T.f()` mejor que `fn f(t: T)` cuando `T` es un tipo propio del módulo. Excepción: el código de `selfhost/` (y lo que este compila) sigue con funciones hasta que los métodos se porten; ahí no los uses sin que el usuario lo pida.
+- Al programar en sal, prefiere los métodos a las funciones: `s.len()` mejor que `str_len(s)`, `xs.push(v)` mejor que `list_push(xs, v)`, y `method T.f()` mejor que `fn f(t: T)` cuando `T` es un tipo propio del módulo. Vale también para `selfhost/`.
 - Todo `.sal` editado pasa por `standard check`; usa `standard fix` y revisa el diff. Si una práctica se repite y ninguna regla la cubre, amplía `standard` en el mismo cambio (cop + `run_all_cops` + fixtures `_in/_out` + test en `tests/standard.rs`).
 - `sal fmt` es idempotente y no aplica las reglas de `standard`.
 

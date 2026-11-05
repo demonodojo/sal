@@ -309,7 +309,7 @@ fn texpr_type(env: TEnv, e: Expr) -> String ! alloc
     match e
         XStr(s) => d"String"
         XFloat(bits, txt) => d"Float"
-        XCall(name, args, targs) => tt_call_type(env, name, args, targs)
+        XCall(name, args, targs, xp) => tt_call_type(env, name, args, targs)
         XTensor(nr, nc, data) => "Tensor[F32, " + int_to_str(nr) + ", " + int_to_str(nc) + "] on cpu"
         XIdent(name) => tenv_type(env, name)
         XUnary(op, inner) => tt_unary_type(env, op, inner)

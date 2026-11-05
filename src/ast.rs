@@ -89,6 +89,9 @@ pub struct FnDef {
     pub body: Block,
     #[serde(default)]
     pub no_heap: bool,
+    /// `@deprecated("…")`: the message of the `W_DEPRECATED` warning at each use.
+    #[serde(default)]
+    pub deprecated: Option<String>,
     pub span: Span,
 }
 
@@ -404,6 +407,9 @@ pub struct StructDef {
     pub fields: Vec<StructField>,
     #[serde(default)]
     pub layout_c: bool,
+    /// `@deprecated("…")`: the message of the `W_DEPRECATED` warning at each use.
+    #[serde(default)]
+    pub deprecated: Option<String>,
     pub span: Span,
 }
 
@@ -420,6 +426,9 @@ pub struct EnumDef {
     #[serde(default)]
     pub type_params: Vec<String>,
     pub variants: Vec<EnumVariant>,
+    /// `@deprecated("…")`: the message of the `W_DEPRECATED` warning at each use.
+    #[serde(default)]
+    pub deprecated: Option<String>,
     pub span: Span,
 }
 

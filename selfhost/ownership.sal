@@ -550,7 +550,7 @@ fn track_expr_live(c: OC, e: Expr) -> String ! alloc
 fn track_expr_go(c: OC, e: Expr) -> String ! alloc
     match e
         XIdent(name) => track_use(c, e, name)
-        XCall(name, args, targs) => track_call(c, name, args, e)
+        XCall(name, args, targs, xp) => track_call(c, name, args, e)
         XBin(op, l, r) => track_binary(c, op, l, r)
         XUnary(op, inner) => track_expr(c, inner)
         XTry(inner) => track_expr(c, inner)

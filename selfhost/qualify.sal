@@ -405,10 +405,23 @@ fn qx_args(xs: List[Expr], i: Int, n: Int, ctx: Int, links: Int, out: List[Expr]
         _a = list_push(out, qx(list_get(xs, i), ctx, links))
         qx_args(xs, i + 1, n, ctx, links, out)
 
-fn qx_call(nm: String, args: List[Expr], targs: String, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_call(nm: String, args: List[Expr], targs: String, ctx: Int, links: Int, xp: Int) -> Expr ! alloc
     out = list_new[Expr]()
     _a = qx_args(args, 0, list_len(args), ctx, links, out)
-    XCall(qx_call_name(nm, ctx, links), out, strdup(targs))
+    XCall(qx_call_name(nm, ctx, links), out, strdup(targs), qx_call_pos(nm, xp, ctx))
+
+# A call through a module qualifier is placed at its qualifier (the start of `alias.f`), as the
+# bootstrap reports it; the position of any other call is kept.
+fn qx_call_pos(nm: String, xp: Int, ctx: Int) -> Int ! alloc
+    pair = split_qual_member(nm)
+    if pair == 0
+        xp
+    elsif xp <= 0
+        xp
+    elsif qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), vec_get(pair, 0)) == 0
+        xp
+    else
+        xp - str_len(nm)
 
 fn qx_elsifs(xs: List[TElsif], i: Int, n: Int, ctx: Int, links: Int, out: List[TElsif]) -> Int ! alloc
     if i >= n
@@ -426,7 +439,7 @@ fn qx_elsif_list(xs: List[TElsif], ctx: Int, links: Int) -> List[TElsif] ! alloc
 fn qx(e: Expr, ctx: Int, links: Int) -> Expr ! alloc
     match e
         XField(base, fld) => qx_field(base, fld, ctx, links)
-        XCall(nm, args, targs) => qx_call(nm, args, targs, ctx, links)
+        XCall(nm, args, targs, xp) => qx_call(nm, args, targs, ctx, links, xp)
         XBin(op, l, r) => XBin(strdup(op), qx(l, ctx, links), qx(r, ctx, links))
         XIf(cond, then_b, else_b, has_else, elsifs) => XIf(qx(cond, ctx, links), qx_block(then_b, ctx, links), qx_block(else_b, ctx, links), has_else, qx_elsif_list(elsifs, ctx, links))
         XWhile(cond, body) => XWhile(qx(cond, ctx, links), qx_block(body, ctx, links))
@@ -604,7 +617,7 @@ fn qualify_fns(fns: List[TFn], i: Int, n: Int, ctx: Int, links: Int, r: Int, out
         _p = qualify_params(f.params, 0, list_len(f.params), ctx, links, params)
         fx = list_new[Int]()
         _x = ints_copy(f.fx, 0, list_len(f.fx), fx)
-        _a = list_push(out, TFn(link_or_same(r, f.name), params, qx_block(f.body, ctx, links), qualify_type_text(f.ret, ctx, links), f.no_heap, fx, tc_strs(f.tparams), strdup(f.recv), f.mkind))
+        _a = list_push(out, TFn(link_or_same(r, f.name), params, qx_block(f.body, ctx, links), qualify_type_text(f.ret, ctx, links), f.no_heap, fx, tc_strs(f.tparams), strdup(f.recv), f.mkind, strdup(f.deprecated), f.tyat))
         qualify_fns(fns, i + 1, n, ctx, links, r, out)
 
 fn fields_copy(fs: List[TField], i: Int, n: Int, out: List[TField]) -> Int ! alloc
@@ -622,7 +635,7 @@ fn qualify_structs(sts: List[TStruct], i: Int, n: Int, r: Int, out: List[TStruct
         s = list_get(sts, i)
         fields = list_new[TField]()
         _f = fields_copy(s.fields, 0, list_len(s.fields), fields)
-        _a = list_push(out, TStruct(link_or_same(r, s.name), fields, s.layout_c, tc_strs(s.tparams), s.is_frame))
+        _a = list_push(out, TStruct(link_or_same(r, s.name), fields, s.layout_c, tc_strs(s.tparams), s.is_frame, strdup(s.deprecated), s.tyat))
         qualify_structs(sts, i + 1, n, r, out)
 
 # Replaces module `mi` of the graph with its qualified copy; enums are moved across.

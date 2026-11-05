@@ -1,0 +1,11 @@
+# exit: 3
+# A use of a deprecated fn warns on stderr and still compiles and runs.
+@deprecated("use new_f")
+fn old_f() -> Int
+    1
+
+fn new_f() -> Int
+    2
+
+fn main() -> Int
+    old_f() + new_f()

@@ -100,7 +100,7 @@ fn mr_fns(xs: List[TFn], i: Int, n: Int, res: HT, out: List[TFn]) -> Int ! alloc
         0
     else
         f = list_get(xs, i)
-        _p = list_push(out, TFn(f.name, f.params, mr_block(f.body, res), f.ret, f.no_heap, f.fx, f.tparams, f.recv, f.mkind))
+        _p = list_push(out, TFn(f.name, f.params, mr_block(f.body, res), f.ret, f.no_heap, f.fx, f.tparams, f.recv, f.mkind, f.deprecated, f.tyat))
         mr_fns(xs, i + 1, n, res, out)
 
 fn mr_block(b: TBlock, res: HT) -> TBlock ! alloc
@@ -141,7 +141,7 @@ fn mr_arms(xs: List[TArm], i: Int, n: Int, res: HT, out: List[TArm]) -> List[TAr
 
 fn mr_expr(e: Expr, res: HT) -> Expr ! alloc
     match e
-        XCall(name, args, targs) => mr_call(name, mr_exprs(args, 0, list_len(args), res, list_new[Expr]()), targs, res)
+        XCall(name, args, targs, xp) => mr_call(name, mr_exprs(args, 0, list_len(args), res, list_new[Expr]()), targs, res, xp)
         XBin(op, l, r) => XBin(op, mr_expr(l, res), mr_expr(r, res))
         XTo(place, inner) => XTo(place, mr_expr(inner, res))
         XOn(place, body, kern, idx) => XOn(place, mr_block(body, res), kern, idx)
@@ -162,22 +162,22 @@ fn mr_expr(e: Expr, res: HT) -> Expr ! alloc
 
 # `args` are already rewritten. The resolution is `kind` + target: `i` the receiver is already the first
 # argument (`.name`), `l` it is the local before the dot (`q.name`), `s` a static call.
-fn mr_call(name: String, args: List[Expr], targs: String, res: HT) -> Expr ! alloc
+fn mr_call(name: String, args: List[Expr], targs: String, res: HT, xp: Int) -> Expr ! alloc
     id = mth_id(targs)
     if str_len(id) == 0
-        XCall(name, args, targs)
+        XCall(name, args, targs, xp)
     else
         val = ht_get(res, id)
         if str_len(val) == 0
-            XCall(name, args, mth_targs(targs))
+            XCall(name, args, mth_targs(targs), xp)
         else
-            mr_resolved(name, args, mth_targs(targs), str_char(val, 0), str_slice(val, 1, str_len(val)))
+            mr_resolved(name, args, mth_targs(targs), str_char(val, 0), str_slice(val, 1, str_len(val)), xp)
 
-fn mr_resolved(name: String, args: List[Expr], ta: String, kind: Int, target: String) -> Expr ! alloc
+fn mr_resolved(name: String, args: List[Expr], ta: String, kind: Int, target: String, xp: Int) -> Expr ! alloc
     if kind == 108
-        XCall(target, mr_with_local(name, args), ta)
+        XCall(target, mr_with_local(name, args), ta, xp)
     else
-        XCall(target, args, ta)
+        XCall(target, args, ta, xp)
 
 # `q.name(args)` on a local `q`: the call takes `q` first.
 fn mr_with_local(name: String, args: List[Expr]) -> List[Expr] ! alloc

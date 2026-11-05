@@ -2340,6 +2340,7 @@ pub fn frame_as_struct(f: &FrameDef) -> StructDef {
         })
         .collect();
     StructDef {
+        deprecated: None,
         name: f.name.clone(),
         type_params: f.type_params.clone(),
         fields,

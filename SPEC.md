@@ -248,7 +248,7 @@ El árbol es `Binary(Sub, Binary(Sub, 1, 2), 3)`.
 
 ### Atributos
 
-El arranque admite cuatro atributos, cada uno en un solo sitio. Pueden ir en líneas propias antes del item o del `let`. Cualquier otro nombre, un atributo en otro sitio, un argumento que no sea el indicado o un `@` suelto es `E_PARSE`.
+El arranque admite cinco atributos, cada uno en un solo sitio. Pueden ir en líneas propias antes del item o del `let`. Cualquier otro nombre, un atributo en otro sitio, un argumento que no sea el indicado o un `@` suelto es `E_PARSE`.
 
 | Atributo | Va delante de | Regla (la violación es `E_TYPE`) |
 |----------|---------------|----------------------------------|
@@ -256,8 +256,11 @@ El arranque admite cuatro atributos, cada uno en un solo sitio. Pueden ir en lí
 | `@stack` | `let` | El tipo es de stack y construirlo no asigna |
 | `@no_heap` | `fn` | La función no asigna, no recibe ni devuelve un tipo de heap y no tiene `let` de heap |
 | `@layout(c)` | `struct` | Los campos son solo `Int`, `Float` o `Bool`; `@layout(otro)` es `E_PARSE` |
+| `@deprecated("texto")` | `fn`, `method`, `struct`, `enum` | No es error: cada uso del item emite el aviso `W_DEPRECATED` con el texto y la compilación sigue. El argumento es una cadena; sin ella es `E_PARSE` |
 
 Un tipo es de stack si es `Int`, `Float`, `Bool`, `Unit` o un `struct` sin argumentos de tipo cuyos campos lo son. `String`, `List`, `Dict`, `Tensor`, funciones y genéricos son de heap.
+
+`@deprecated` marca un item para retirarlo. Un uso es una llamada al item (función, método ya resuelto a `T__m`, o constructor), o un tipo que lo nombra en una firma, en un `let` o en un campo. Se cuentan los usos desde cualquier módulo del grafo, con alias o sin él, y se miran después de cualificar los nombres. El aviso tiene la forma `warning[W_DEPRECATED]: \`nombre\` is deprecated: texto (fichero:línea:columna)` en stderr. Un aviso no cambia el resultado de la compilación ni el código de salida; `W_DEPRECATED` no es un código de error y no aparece en la lista de errores de compilación.
 
 ### Reservado
 
@@ -439,6 +442,8 @@ Little-endian: magic `SALT`, versión u16, elem u8, rank u8, dims u64[], payload
 `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_PARSE`, `E_TYPE`, `E_TARGET`.
 
 `E_TARGET`: la construcción no existe en el destino de compilación (`--target`), p. ej. `syscall` fuera de `soso` y `linux`. `E_INTERNAL` es un fallo del compilador, no de un programa.
+
+Avisos (no son errores y no paran la compilación): `W_DEPRECATED`, uso de un item marcado con `@deprecated`.
 
 ## Instrumentación (`--instrument`)
 

@@ -1,0 +1,30 @@
+# exit: 9
+# Every kind of item takes @deprecated; a use of each still runs (the warnings go to stderr).
+@deprecated("use Pt2")
+struct Pt
+    x: Int
+
+@deprecated("use Col2")
+enum Col
+    Red
+    Blue(Int)
+
+struct Box
+    v: Int
+
+method Box.get() -> Int
+    self.v
+
+@deprecated("use get2")
+method Box.old() -> Int
+    self.v + 1
+
+fn score(c: Col) -> Int
+    match c
+        Red => 0
+        Blue(n) => n
+
+fn main() -> Int
+    p = Pt(2)
+    b = Box(3)
+    p.x + b.get() + b.old() + score(Blue(1)) + score(Red) - 1

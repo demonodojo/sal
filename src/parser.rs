@@ -9,6 +9,7 @@ pub fn parse(source: &str) -> Result<Program, Diagnostic> {
         tokens,
         pos: 0,
         group: 0,
+        deprecated: None,
     };
     let mut items = Vec::new();
     p.skip_layout();
@@ -28,6 +29,8 @@ struct Parser {
     pos: usize,
     /// Depth of `(` and `[`. Inside it, newlines are not statement breaks.
     group: i32,
+    /// The message of an `@deprecated("…")` read by `parse_attrs`, taken by the item it precedes.
+    deprecated: Option<String>,
 }
 
 impl Parser {
@@ -89,6 +92,19 @@ impl Parser {
                     self.expect(TokenKind::RParen, "expected ) after @layout(c")?;
                 }
                 "frozen" | "stack" | "no_heap" => {}
+                "deprecated" => {
+                    self.expect(TokenKind::LParen, "expected (\"message\") after @deprecated")?;
+                    let TokenKind::String(msg) = self.peek().kind.clone() else {
+                        return Err(Diagnostic::new(
+                            ErrorCode::EParse,
+                            "@deprecated takes a string message",
+                            sp,
+                        ));
+                    };
+                    self.bump();
+                    self.expect(TokenKind::RParen, "expected ) after @deprecated message")?;
+                    self.deprecated = Some(msg);
+                }
                 _ => {
                     return Err(Diagnostic::new(
                         ErrorCode::EParse,
@@ -103,8 +119,8 @@ impl Parser {
         Ok(attrs)
     }
 
-    fn reject_attrs(attrs: &[(String, Span)], allowed: &str) -> Result<(), Diagnostic> {
-        match attrs.iter().find(|(n, _)| n != allowed) {
+    fn reject_attrs(attrs: &[(String, Span)], allowed: &[&str]) -> Result<(), Diagnostic> {
+        match attrs.iter().find(|(n, _)| !allowed.contains(&n.as_str())) {
             Some((n, sp)) => Err(Diagnostic::new(
                 ErrorCode::EParse,
                 format!("@{n} is not allowed here"),
@@ -117,16 +133,24 @@ impl Parser {
     fn parse_item(&mut self) -> Result<Item, Diagnostic> {
         if matches!(self.peek().kind, TokenKind::Attr(_)) {
             let attrs = self.parse_attrs()?;
+            let deprecated = self.deprecated.take();
             return match self.parse_item()? {
                 Item::Fn(mut f) => {
-                    Self::reject_attrs(&attrs, "no_heap")?;
-                    f.no_heap = !attrs.is_empty();
+                    Self::reject_attrs(&attrs, &["no_heap", "deprecated"])?;
+                    f.no_heap = attrs.iter().any(|(n, _)| n == "no_heap");
+                    f.deprecated = deprecated;
                     Ok(Item::Fn(f))
                 }
                 Item::Struct(mut st) => {
-                    Self::reject_attrs(&attrs, "layout")?;
-                    st.layout_c = !attrs.is_empty();
+                    Self::reject_attrs(&attrs, &["layout", "deprecated"])?;
+                    st.layout_c = attrs.iter().any(|(n, _)| n == "layout");
+                    st.deprecated = deprecated;
                     Ok(Item::Struct(st))
+                }
+                Item::Enum(mut en) => {
+                    Self::reject_attrs(&attrs, &["deprecated"])?;
+                    en.deprecated = deprecated;
+                    Ok(Item::Enum(en))
                 }
                 _ => Err(Diagnostic::new(
                     ErrorCode::EParse,
@@ -320,6 +344,7 @@ impl Parser {
             self.bump();
         }
         Ok(StructDef {
+            deprecated: None,
             name,
             type_params,
             fields,
@@ -370,6 +395,7 @@ impl Parser {
             self.bump();
         }
         Ok(EnumDef {
+            deprecated: None,
             name,
             type_params,
             variants,
@@ -451,6 +477,7 @@ impl Parser {
         }
         let span = body.span;
         Ok(FnDef {
+            deprecated: None,
             name,
             receiver: None,
             self_mode,

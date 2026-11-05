@@ -1772,7 +1772,7 @@ fn infer_expr_go(c: IC, e: Expr) -> String ! alloc
         XIdent(name) => infer_ident(c, name)
         XBin(op, l, r) => infer_binary(c, op, l, r)
         XUnary(op, inner) => infer_unary(c, op, inner)
-        XCall(name, args, targs) => infer_call_t(c, name, args, targs)
+        XCall(name, args, targs, xp) => infer_call_t(c, name, args, targs)
         XField(base, field) => infer_field(c, base, field)
         XIf(cond, then_b, else_b, has_else, elsifs) => infer_if(c, cond, then_b, else_b, has_else, elsifs)
         XTo(place, inner) => infer_expr(c, inner)

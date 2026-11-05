@@ -212,15 +212,22 @@ struct Toks
     kinds: List[Int]
     texts: List[String]
     ivals: List[Int]
+    # Byte offset of each token in the preprocessed source (see `lex_go`); `cur` holds the offset the
+    # lexer is at and is released once lexing ends.
+    offs: List[Int]
+    cur: List[Int]
 
 fn toks_new() -> Toks ! alloc
-    Toks(list_new[Int](), list_new[String](), list_new[Int]())
+    cur = list_new[Int]()
+    _c = list_push(cur, 0)
+    Toks(list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), cur)
 
 # Appends a token; the text is copied, so the caller keeps its own.
 fn tok_push(out: Toks, kind: Int, text: String, ival: Int) -> Int ! alloc
     _a = list_push(out.kinds, kind)
     _b = list_push(out.texts, strdup(text))
     _c = list_push(out.ivals, ival)
+    _d = list_push(out.offs, list_get(out.cur, 0))
     0
 
 fn kw_kind(text: String) -> Int ! alloc
@@ -490,7 +497,12 @@ fn dedent_to_col(out: Toks, st: List[Int], col: Int) -> Int ! alloc
     else
         0
 
+# Every step records its offset first, so a token pushed by a step starts at that offset.
 fn lex_go(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int) -> Int ! alloc
+    _s = list_set(out.cur, 0, i)
+    lex_step(src, i, n, out, st, at_start)
+
+fn lex_step(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int) -> Int ! alloc
     if i >= n
         dedent_to_col(out, st, 0)
         _p = tok_push(out, TK_EOF(), d"", 0)
@@ -811,6 +823,7 @@ fn lex(src: String) -> Toks ! alloc
     st = indent_stack_new()
     _a = lex_go(src, 0, str_len(src), out, st, 1)
     _f = list_free(st)
+    _g = list_free(out.cur)
     out
 
 fn preprocess_scan(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc
