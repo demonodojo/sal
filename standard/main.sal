@@ -42,8 +42,8 @@ fn cops_pack_offs(p: Int) -> Int ! alloc
 fn byte_line_col(src: Int, pos: Int, i: Int, line: Int, col: Int) -> Int ! alloc
     if i >= pos
         pack = vec_new()
-        _a = vec_push(pack, line)
-        _b = vec_push(pack, col)
+        vec_push(pack, line)
+        vec_push(pack, col)
         pack
     else
         c = str_char(src, i)
@@ -150,7 +150,7 @@ fn print_offs_json_go(src: Int, offs: Int, i: Int, n: Int) -> Int ! io, alloc
         o = vec_get(offs, i)
         line = format_off_json(src, o)
         msg = str_as_int(str_concat(line, strdup("\n")))
-        _e = eprint_str(msg)
+        eprint_str(msg)
         print_offs_json_go(src, offs, i + 1, n)
 
 fn print_offs(path: Int, src: Int, offs: Int) -> Int ! io, alloc
@@ -163,7 +163,7 @@ fn print_offs_go(path: Int, src: Int, offs: Int, i: Int, n: Int) -> Int ! io, al
         o = vec_get(offs, i)
         line = format_off(path, src, o)
         msg = str_as_int(str_concat(line, strdup("\n")))
-        _e = eprint_str(msg)
+        eprint_str(msg)
         print_offs_go(path, src, offs, i + 1, n)
 
 fn count_offs(offs: Int) -> Int ! alloc
@@ -227,7 +227,7 @@ fn run_fix(path: Int, src: Int) -> Int ! io, alloc
         2
     else
         fixed = fix_to_point(src, 0, 16)
-        _wr = write_file(path, fixed)
+        write_file(path, fixed)
         pack2 = run_all_cops(fixed)
         if cops_pack_status(pack2) != LEX_OK()
             2

@@ -56,9 +56,9 @@ fn LEX_ERR_STRING() -> Int
 
 fn tok_new(kind: Int, start: Int, end: Int) -> Int ! alloc
     v = vec_new()
-    _a = vec_push(v, kind)
-    _b = vec_push(v, start)
-    _c = vec_push(v, end)
+    vec_push(v, kind)
+    vec_push(v, start)
+    vec_push(v, end)
     v
 
 fn tok_kind(t: Int) -> Int ! alloc
@@ -87,7 +87,7 @@ fn kw_kind(text: Int) -> Int ! alloc
 
 fn indent_stack_new() -> Int ! alloc
     v = vec_new()
-    _p = vec_push(v, 0)
+    vec_push(v, 0)
     v
 
 fn indent_top_at(st: Int, i: Int) -> Int ! alloc
@@ -105,7 +105,7 @@ fn indent_top(st: Int) -> Int ! alloc
     indent_top_at(st, n - 1)
 
 fn indent_push(st: Int, col: Int) -> Int ! alloc
-    _p = vec_push(st, col)
+    vec_push(st, col)
     st
 
 fn indent_tombstone_at(st: Int, i: Int) -> Int ! alloc
@@ -121,7 +121,7 @@ fn indent_tombstone_at(st: Int, i: Int) -> Int ! alloc
 
 fn indent_pop(st: Int) -> Int ! alloc
     n = vec_len(st)
-    _t = indent_tombstone_at(st, n - 1)
+    indent_tombstone_at(st, n - 1)
     st
 
 fn skip_line_comment(src: Int, i: Int, n: Int) -> Int ! alloc
@@ -156,7 +156,7 @@ fn dedent_to_col(out: Int, st: Int, col: Int, pos: Int) -> Int ! alloc
     if col < top
         _t = indent_pop(st)
         t = tok_new(TK_DEDENT(), pos, pos)
-        _q = vec_push(out, t)
+        vec_push(out, t)
         dedent_to_col(out, st, col, pos)
     else
         0
@@ -219,7 +219,7 @@ fn lex_go(src: Int, i: Int, n: Int, out: Int, st: Int, at_start: Int, err: Int) 
                                     if sp > top
                                         _p = indent_push(st, sp)
                                         t = tok_new(TK_INDENT(), i, j)
-                                        _q = vec_push(out, t)
+                                        vec_push(out, t)
                                         lex_go(src, j, n, out, st, 0, err)
                                     else
                                         _d = dedent_to_col(out, st, sp, i)
@@ -315,8 +315,8 @@ fn is_ident_start(c: Int) -> Int
 
 fn lex_result_new(status: Int, toks: Int) -> Int ! alloc
     r = vec_new()
-    _a = vec_push(r, status)
-    _b = vec_push(r, toks)
+    vec_push(r, status)
+    vec_push(r, toks)
     r
 
 fn lex_result_status(r: Int) -> Int ! alloc
@@ -329,9 +329,9 @@ fn lex(src: Int) -> Int ! alloc
     out = vec_new()
     st = indent_stack_new()
     err = vec_new()
-    _z = vec_push(err, 0)
+    vec_push(err, 0)
     n = str_len(src)
-    _g = lex_go(src, 0, n, out, st, 1, err)
+    lex_go(src, 0, n, out, st, 1, err)
     if vec_get(err, 0) == 1
         lex_result_new(LEX_ERR_TAB(), vec_new())
     else

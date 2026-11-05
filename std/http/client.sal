@@ -15,7 +15,7 @@ fn http_read_chunk(fd: Int, cap: Int) -> String ! io, alloc
         d""
     else
         slice = bytes_new(n)
-        _cp = bytes_copy(slice, 0, buf, 0, n)
+        bytes_copy(slice, 0, buf, 0, n)
         http_bytes_to_str(slice, 0, n, d"")
 
 fn http_read_all(fd: Int, max: Int) -> String ! io, alloc
@@ -133,7 +133,7 @@ fn http_request_loopback(port: Int, method: String, path: String, body: String, 
         d""
     else
         req = method + d" " + path + d" HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: " + int_to_str(str_len(body)) + d"\r\nConnection: close\r\n\r\n" + body
-        _w = write_str_fd(fd, req)
+        write_str_fd(fd, req)
         out = http_read_body(fd, 1048576)
         _c = close_fd(fd)
         out

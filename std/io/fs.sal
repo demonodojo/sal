@@ -32,7 +32,7 @@ fn write_file_path(path: String, data: String) -> Int ! io, alloc
         fd
     else
         n = write_str_fd(fd, data)
-        _c = close_fd(fd)
+        close_fd(fd)
         n
 
 fn stat_file_size(path: String) -> Int ! io, alloc

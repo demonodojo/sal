@@ -50,13 +50,13 @@ fn join_plus_go(parts: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
 
 fn vec_from2(a: Int, b: Int) -> Int ! alloc
     v = vec_new()
-    _p = vec_push(v, a)
-    _q = vec_push(v, b)
+    vec_push(v, a)
+    vec_push(v, b)
     v
 
 fn parse_two_args(toks: Int, n: Int, lp: Int) -> Int ! alloc
     out = vec_new()
-    _z = vec_push(out, 0)
+    vec_push(out, 0)
     i = next_non_nl(toks, n, lp + 1)
     if i >= n
         out
@@ -76,7 +76,7 @@ fn parse_two_args(toks: Int, n: Int, lp: Int) -> Int ! alloc
                 a2s = tok_start(vec_get(toks, a2i))
                 a2e = tok_end(vec_get(toks, prev_non_nl(toks, rp)))
                 ce = tok_end(vec_get(toks, rp))
-                _ok = vec_set(out, 0, 1)
+                vec_set(out, 0, 1)
                 _ce = vec_push(out, ce)
                 _a1s = vec_push(out, a1s)
                 _a1e = vec_push(out, a1e)
@@ -110,19 +110,19 @@ fn scan_paren(toks: Int, n: Int, i: Int, depth: Int, ci: Int) -> Int ! alloc
 
 fn fail_scan() -> Int ! alloc
     v = vec_new()
-    _a = vec_push(v, 0)
+    vec_push(v, 0)
     v
 
 fn ok_scan(ci: Int, rp: Int) -> Int ! alloc
     v = vec_new()
-    _a = vec_push(v, 1)
-    _b = vec_push(v, ci)
-    _c = vec_push(v, rp)
+    vec_push(v, 1)
+    vec_push(v, ci)
+    vec_push(v, rp)
     v
 
 fn parse_call_at(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
     pack = vec_new()
-    _z = vec_push(pack, 0)
+    vec_push(pack, 0)
     if i >= n
         pack
     else
@@ -147,13 +147,13 @@ fn parse_call_at(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
                         if vec_get(parsed, 0) == 0
                             pack
                         else
-                            _ok = vec_set(pack, 0, 1)
-                            _cs = vec_push(pack, tok_start(t))
-                            _ce = vec_push(pack, vec_get(parsed, 1))
-                            _a1s = vec_push(pack, vec_get(parsed, 2))
-                            _a1e = vec_push(pack, vec_get(parsed, 3))
-                            _a2s = vec_push(pack, vec_get(parsed, 4))
-                            _a2e = vec_push(pack, vec_get(parsed, 5))
+                            vec_set(pack, 0, 1)
+                            vec_push(pack, tok_start(t))
+                            vec_push(pack, vec_get(parsed, 1))
+                            vec_push(pack, vec_get(parsed, 2))
+                            vec_push(pack, vec_get(parsed, 3))
+                            vec_push(pack, vec_get(parsed, 4))
+                            vec_push(pack, vec_get(parsed, 5))
                             _fk = vec_push(pack, fk)
                             pack
 
@@ -167,7 +167,7 @@ fn build_call_fix(src: Int, p: Int) -> Int ! alloc
 
 fn try_assign_chain(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
     pack = vec_new()
-    _z = vec_push(pack, 0)
+    vec_push(pack, 0)
     if i >= n
         pack
     else
@@ -207,10 +207,10 @@ fn try_assign_chain(src: Int, toks: Int, n: Int, i: Int) -> Int ! alloc
                         rhs = join_plus(parts)
                         head = str_as_int(str_concat(var, strdup(" = ")))
                         fix = str_as_int(str_concat(head, rhs))
-                        _ok = vec_set(pack, 0, 1)
-                        _st = vec_push(pack, tok_start(t))
-                        _en = vec_push(pack, end_i)
-                        _fx = vec_push(pack, fix)
+                        vec_set(pack, 0, 1)
+                        vec_push(pack, tok_start(t))
+                        vec_push(pack, end_i)
+                        vec_push(pack, fix)
                         free(var)
                         pack
 
@@ -262,7 +262,7 @@ fn chain_append_lines(src: Int, toks: Int, n: Int, i: Int, var: Int, parts: Int,
                                     if str_eq(a, var) == 0
                                         end_byte
                                     else
-                                        _p = vec_push(parts, b)
+                                        vec_push(parts, b)
                                         end2 = vec_get(call, 2)
                                         ti = tok_index_at_or_after(toks, n, end2, 0)
                                         chain_append_lines(src, toks, n, ti, var, parts, end2)

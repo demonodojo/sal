@@ -2,11 +2,11 @@
 
 fn off_new(code: Int, msg: Int, start: Int, end: Int, fix: Int) -> Int ! alloc
     o = vec_new()
-    _a = vec_push(o, code)
-    _b = vec_push(o, msg)
-    _c = vec_push(o, start)
-    _d = vec_push(o, end)
-    _e = vec_push(o, fix)
+    vec_push(o, code)
+    vec_push(o, msg)
+    vec_push(o, start)
+    vec_push(o, end)
+    vec_push(o, fix)
     o
 
 fn off_code(o: Int) -> Int ! alloc
@@ -76,5 +76,5 @@ fn merge_off_go(a: Int, b: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         a
     else
-        _p = vec_push(a, vec_get(b, i))
+        vec_push(a, vec_get(b, i))
         merge_off_go(a, b, i + 1, n)
