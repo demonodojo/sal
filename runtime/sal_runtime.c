@@ -2133,8 +2133,14 @@ static void desc_free(const char *d, int64_t raw) {
             desc_free(f, blk[i]);
             f = desc_end(f);
         }
-        free(blk);
+        sal_xfree(blk);
     }
+}
+
+/* Allocates the box of a multi-field struct value: n i64 slots, through the
+ * instrumented allocator so `--instrument` tracks it. */
+int64_t sal_struct_new(int64_t n) {
+    return (int64_t)(intptr_t)sal_xmalloc((size_t)(n > 0 ? n : 1) * sizeof(int64_t), "struct_new");
 }
 
 /* Releases a struct value that a copy (`list_get`) handed out: its fields and the box. */
@@ -2162,7 +2168,7 @@ static int64_t desc_copy(const char *d, int64_t raw) {
         for (const char *f = d + 2; *f && *f != ')'; f = desc_end(f)) {
             n++;
         }
-        int64_t *dst = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * 8);
+        int64_t *dst = (int64_t *)sal_xmalloc((size_t)(n > 0 ? n : 1) * 8, "struct_copy");
         const char *f = d + 2;
         for (int i = 0; i < n; i++, f = desc_end(f)) {
             dst[i] = desc_copy(f, src[i]);

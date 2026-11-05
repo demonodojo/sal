@@ -192,3 +192,15 @@ fn instrument_strict_list_pop_and_match_temps_are_clean() {
         assert!(!stderr.contains("LEAK"), "{file}: unexpected leak: {stderr}");
     }
 }
+
+/// Struct boxes (`struct_new`) of an owned struct list and the copy `list_get` hands out are
+/// freed by the compiler: strict mode reports no live block.
+#[test]
+fn instrument_strict_struct_list_boxes_are_clean() {
+    let src = std::fs::read_to_string(root().join("tests/lang/drops/drop_list_struct_fields_copy.sal"))
+        .expect("read");
+    let out = run_strict(&src, "struct_list");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert_eq!(out.status.code(), Some(8), "stderr: {stderr}");
+}

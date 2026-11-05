@@ -488,6 +488,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_enum_set(i64, i64, i64)\n");
     s.push_str("declare void @sal_enum_free(i64)\n");
     s.push_str("declare void @sal_struct_free(i64, ptr)\n");
+    s.push_str("declare i64 @sal_struct_new(i64)\n");
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
     s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_field(i64, i64)\n");
@@ -2527,8 +2528,8 @@ fn float_op_text(dest: &str, op: &str, l: &str, r: &str) -> String {
 fn emit_agg_alloc(dest: &str, ops: &[String], s: &mut String, tmp: &mut u32) {
     *tmp += 1;
     let buf = format!("agb{tmp}");
-    let bytes = (ops.len().max(1)) * 8;
-    s.push_str(&format!("  %{buf} = call ptr @malloc(i64 {bytes})\n"));
+    s.push_str(&format!("  %{buf}i = call i64 @sal_struct_new(i64 {})\n", ops.len().max(1)));
+    s.push_str(&format!("  %{buf} = inttoptr i64 %{buf}i to ptr\n"));
     if ops.is_empty() {
         s.push_str(&format!("  store i64 0, ptr %{buf}\n"));
     }

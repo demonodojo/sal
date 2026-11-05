@@ -205,6 +205,7 @@ void sal_instrument_shutdown(void) {
     }
     /* The selfhost compiler still keeps strings and handles alive on purpose, so
      * by default those sites are not reported (tensor and container leaks are).
+     * Struct boxes of the selfhost AST are in that group too.
      * SAL_INSTRUMENT_STRICT=1 reports every live block: a program whose locals
      * the compiler frees must come out clean. */
     int strict = getenv("SAL_INSTRUMENT_STRICT") != NULL;
@@ -257,7 +258,9 @@ void sal_instrument_shutdown(void) {
             strcmp(s, "tmp_path") == 0 || strcmp(s, "vec_new") == 0 ||
             strcmp(s, "getenv") == 0 || strcmp(s, "append") == 0 ||
             strcmp(s, "ir") == 0 || strcmp(s, "map") == 0 ||
-            strcmp(s, "lex") == 0);
+            strcmp(s, "lex") == 0 ||
+            /* struct boxes that the selfhost AST keeps until exit (items of a module) */
+            strcmp(s, "struct_new") == 0);
         if (!ephemeral) {
             break;
         }
