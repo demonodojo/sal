@@ -7,7 +7,7 @@ fn main() -> Int ! alloc
     xs = List.new[P]()
     i = 0
     while i < 5
-        _a = xs.push(P(i.to_str(), i))
+        xs.push(P(i.to_str(), i))
         i = i + 1
     o = xs.get(2)
     o.n + o.name.len() + xs.len()

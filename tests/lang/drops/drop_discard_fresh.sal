@@ -1,0 +1,18 @@
+# exit: 4
+# A fresh value discarded as a statement is released where it is dropped: the struct and the
+# String that `pop` gives up, and the copy `get` hands out.
+struct P
+    name: String
+    n: Int
+
+fn main() -> Int ! alloc
+    xs = List.new[P]()
+    xs.push(P("a", 1))
+    xs.set(0, P("c", 3))
+    xs.push(P("b", 2))
+    xs.pop()
+    xs.get(0)
+    ss = List.new[String]()
+    ss.push("q")
+    ss.pop()
+    xs.len() + ss.len() + xs.get(0).n

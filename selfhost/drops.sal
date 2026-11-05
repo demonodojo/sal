@@ -157,9 +157,13 @@ fn dr_truncate(c: DC, mark: Int) -> Int ! alloc
         0
 
 fn dr_next_tmp(c: DC) -> String ! alloc
+    dr_next_tmp_p(c, "__ret")
+
+# The next temporary name with prefix `p`; `__ret` and `__dis` share the counter.
+fn dr_next_tmp_p(c: DC, p: String) -> String ! alloc
     n = dr_cell(c, 0) + 1
     _s = dr_set(c, 0, n)
-    "__ret" + int_to_str(n)
+    p + int_to_str(n)
 
 # Trimmed type text equals `name`.
 fn dr_tm(t: String, name: String) -> Int ! alloc
@@ -786,6 +790,7 @@ fn dr_own_call(c: DC, name: String, cand: Int, fname: String, args: List[Expr], 
         _n = nm_put(c.owned_enums, name, 5)
         XCall(d"list_new_owned", args, targs, xp)
     elsif dx_list_flat(c, targs) == 1
+        nm_put(c.owned_enums, name, 8)
         XCall(d"list_new_owned", args, targs, xp)
     elsif dx_list_string(targs) == 1
         _s = nm_put(c.owned_enums, name, 1)
@@ -912,6 +917,8 @@ fn dr_candidate(c: DC, name: String, ty: String, init: Expr) -> Int ! alloc
     er = dx_elem_release(c, init)
     sd = if er == 0
         dx_struct_copy(c, init)
+    elsif er == 8
+        dx_owned_struct_desc(c, init)
     else
         0
     _r = if sd != 0
@@ -947,13 +954,20 @@ fn dr_candidate_go(c: DC, name: String, kind: Int) -> Int ! alloc
 
 # `list_get(xs, i)` of a list whose element struct a copy can release: the descriptor handle
 # (`struct:` release, kind 8), 0 otherwise.
+# `list_get` of a struct list the local does not own: a copy (`list_pop` only moves out of owned lists).
 fn dx_struct_copy(c: DC, e: Expr) -> Int ! alloc
     match e
-        XCall(name, args, targs, xp) => dx_struct_copy_call(c, name, args)
+        XCall(name, args, targs, xp) => dx_copy_get(c, name, args)
         _ => 0
 
+fn dx_copy_get(c: DC, name: String, args: List[Expr]) -> Int ! alloc
+    if name.eq("list_get") == 0
+        0
+    else
+        dx_struct_copy_call(c, name, args)
+
 fn dx_struct_copy_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
-    if str_eq(name, "list_get") == 0
+    if name.eq("list_get") + name.eq("list_pop") == 0
         0
     elsif list_len(args) == 0
         0
@@ -967,6 +981,13 @@ fn dx_struct_copy_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
                 0
             else
                 map_get(c.variants, str_as_int("desc:" + str_from_int(s)))
+
+# `list_get`/`list_pop` of an owned struct list: the element is a box the local releases
+# with `struct_free` under the list's element descriptor.
+fn dx_owned_struct_desc(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dx_struct_copy_call(c, name, args)
+        _ => 0
 
 # Kinds whose container owns its elements.
 fn dr_kind_owned(kind: Int) -> Int ! alloc
@@ -1117,11 +1138,51 @@ fn dr_xform_stmt(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
     if st.kind == 1
         dr_xform_bind(c, st, out)
     elsif st.kind == 0
-        _p = list_push(out, dr_plain(dr_xform_expr(c, st.expr)))
+        _d = dr_discard(c, st.expr, out)
+        if _d == 0
+            _p = list_push(out, dr_plain(dr_xform_expr(c, st.expr)))
+            0
+        else
+            0
         dr_clear_moved(c, st.id, out)
     else
         _p = list_push(out, tc_stmt(st))
         dr_clear_moved(c, st.id, out)
+
+# A fresh value discarded as a statement is bound to a `__dis` temporary and released there
+# (the same rule as the bootstrap's `discard_kind`). Returns 1 when it was handled.
+fn dr_discard(c: DC, e: Expr, out: List[TStmt]) -> Int ! alloc
+    k = dr_discard_kind(c, e)
+    if k == 0
+        0
+    else
+        sd = if k == 8
+            dx_owned_struct_desc(c, e)
+        else
+            0
+        tmp = dr_next_tmp_p(c, "__dis")
+        init = dr_xform_expr(c, e)
+        _l = list_push(out, TStmt(1, strdup(tmp), init, d"", 1, XNone, 0, 0, 0))
+        _f = list_push(out, dr_discard_free(tmp, k, sd))
+        1
+
+fn dr_discard_kind(c: DC, e: Expr) -> Int ! alloc
+    er = dx_elem_release(c, e)
+    if er != 0
+        er
+    elsif dx_struct_copy(c, e) != 0
+        8
+    else
+        dr_fresh_kind(c, e)
+
+fn dr_discard_free(name: String, k: Int, sd: Int) -> TStmt ! alloc
+    args = list_new[Expr]()
+    _a = list_push(args, XIdent(strdup(name)))
+    if k == 8
+        _d = list_push(args, XStr(strdup(str_from_int(sd))))
+    else
+        _e = 0
+    dr_plain(XCall(strdup(dr_free_fn(k)), args, d"", 0))
 
 fn dr_xform_bind(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
     cand = dr_bind_candidate(c, st)

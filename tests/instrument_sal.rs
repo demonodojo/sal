@@ -204,3 +204,23 @@ fn instrument_strict_struct_list_boxes_are_clean() {
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
     assert_eq!(out.status.code(), Some(8), "stderr: {stderr}");
 }
+
+/// A struct popped from an owned struct list is a box the local releases: strict mode is clean.
+#[test]
+fn instrument_strict_list_pop_struct_is_clean() {
+    let src = std::fs::read_to_string(root().join("tests/lang/drops/drop_list_pop_struct.sal")).expect("read");
+    let out = run_strict(&src, "pop_struct");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert_eq!(out.status.code(), Some(3), "stderr: {stderr}");
+}
+
+/// A fresh value discarded as a statement (`pop`, `get`) is released where it is dropped.
+#[test]
+fn instrument_strict_discarded_fresh_values_are_clean() {
+    let src = std::fs::read_to_string(root().join("tests/lang/drops/drop_discard_fresh.sal")).expect("read");
+    let out = run_strict(&src, "discard_fresh");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert_eq!(out.status.code(), Some(4), "stderr: {stderr}");
+}

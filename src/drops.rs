@@ -548,6 +548,16 @@ fn list_flat_arg(type_args: &[TypeArg]) -> bool {
     matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && is_ownable_struct(name))
 }
 
+/// The descriptor of a struct list's element (`list_new[P]()`), when the struct is describable.
+fn list_flat_desc(type_args: &[TypeArg]) -> Option<String> {
+    match type_args {
+        [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && is_ownable_struct(name) => {
+            STRUCT_DESC.with(|t| t.borrow().get(name).cloned())
+        }
+        _ => None,
+    }
+}
+
 fn list_owns_elems(type_args: &[TypeArg]) -> bool {
     matches!(type_args, [TypeArg::Type(Type::Named { name, .. })] if name == "String")
 }
@@ -971,9 +981,36 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashMa
                     owned.insert(name.to_string(), "enum_free");
                 } else if list_string_arg(type_args) {
                     owned.insert(name.to_string(), "free");
+                } else if let Some(desc) = list_flat_desc(type_args) {
+                    // A struct element moved out by `list_pop`, or copied by `list_get`, is a
+                    // box the local releases with `struct_free` (see `struct_copy_kind`).
+                    owned.insert(name.to_string(), Box::leak(format!("struct:{desc}").into_boxed_str()));
                 }
             }
         }
+    }
+}
+
+impl Ctx {
+    /// The release of a value an expression statement discards: a fresh value (see
+    /// `fresh_kind`), a copy `list_get` hands out, or an element an owned list gives up
+    /// (`list_pop`). `None` when the statement keeps nothing to release.
+    fn discard_kind(&self, e: &Expr) -> Option<&'static str> {
+        if let Expr::Call { func, args, .. } = e {
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") {
+                if let Some(Expr::Ident { name: xs, .. }) = args.first() {
+                    if self.facts.bindings.get(xs) == Some(&1) {
+                        if let Some(k) = self.owned_elems.get(xs) {
+                            return Some(*k);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(k) = struct_copy_kind("", e) {
+            return Some(k);
+        }
+        fresh_kind(e, &self.facts.variants).map(|(k, _)| k)
     }
 }
 
@@ -1176,7 +1213,18 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
             }
             Stmt::Expr(e) => {
                 let span = e.span();
-                stmts.push(Stmt::Expr(xform_expr(e, cx)));
+                // A fresh value discarded as a statement (`xs.pop()`, `int_to_str(n)`) has no name
+                // to be released by: bind it to a temporary and release it.
+                match cx.discard_kind(&e) {
+                    Some(k) => {
+                        cx.tmp += 1;
+                        let t = format!("__dis{}", cx.tmp);
+                        let init = xform_expr(e, cx);
+                        stmts.push(Stmt::Let { name: t.clone(), ty: None, init, frozen: false, stack: false, span });
+                        stmts.push(release(&t, k, false, span));
+                    }
+                    None => stmts.push(Stmt::Expr(xform_expr(e, cx))),
+                }
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
             }
             Stmt::While { cond, body, span } => {
