@@ -2137,6 +2137,14 @@ static void desc_free(const char *d, int64_t raw) {
     }
 }
 
+/* Releases a struct value that a copy (`list_get`) handed out: its fields and the box. */
+void sal_struct_free(int64_t raw, const char *desc) {
+    if (raw < 4096 || !desc) {
+        return;
+    }
+    desc_free(desc, raw);
+}
+
 static int64_t desc_copy(const char *d, int64_t raw) {
     if (*d == 'E') {
         return sal_enum_copy(raw);

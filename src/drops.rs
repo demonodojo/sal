@@ -25,21 +25,21 @@ type Variants = HashMap<String, Vec<bool>>;
 type ReadOnly = HashMap<String, Vec<bool>>;
 
 thread_local! {
+    /// Type of each expression by span (from the inference, `StringEnv::types`).
+    static EXPR_TYPES: std::cell::RefCell<HashMap<(u32, u32), Type>> = std::cell::RefCell::new(HashMap::new());
+    /// The descriptor of each ownable struct (`ir::struct_desc`), for copies released at scope end.
+    static STRUCT_DESC: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
     /// Structs a list can own (see `ir::struct_desc`): name -> the class of each field.
     static OWNABLE: std::cell::RefCell<HashMap<String, Vec<FieldOwn>>> = std::cell::RefCell::new(HashMap::new());
     /// Names of the enum types of the program (a `List[E]` of them owns its boxes).
     static ENUM_TYPES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
-fn collect_enum_types(prog: &Program) {
-    let set = prog
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Enum(e) => Some(e.name.clone()),
-            _ => None,
-        })
-        .collect();
+fn collect_enum_types(enums: &HashMap<String, EnumDef>) {
+    let set = enums
+        .keys()
+        .cloned()
+        .collect::<HashSet<String>>();
     ENUM_TYPES.with(|f| *f.borrow_mut() = set);
 }
 
@@ -79,11 +79,8 @@ enum FieldOwn {
     Struct,
 }
 
-fn collect_ownable(prog: &Program) {
-    let structs: HashMap<String, StructDef> =
-        prog.items.iter().filter_map(|i| if let Item::Struct(s) = i { Some((s.name.clone(), s.clone())) } else { None }).collect();
-    let enums: HashMap<String, EnumDef> =
-        prog.items.iter().filter_map(|i| if let Item::Enum(e) = i { Some((e.name.clone(), e.clone())) } else { None }).collect();
+/// The program's structs and enums, the imported ones included (as the lowering sees them).
+fn collect_ownable(structs: &HashMap<String, StructDef>, enums: &HashMap<String, EnumDef>) {
     let mut m = HashMap::new();
     for sd in structs.values() {
         if crate::ir::struct_desc(&sd.name, &structs, &enums).is_none() {
@@ -102,6 +99,35 @@ fn collect_ownable(prog: &Program) {
         m.insert(sd.name.clone(), kinds);
     }
     OWNABLE.with(|f| *f.borrow_mut() = m);
+    let descs = structs
+        .keys()
+        .filter_map(|n| crate::ir::struct_desc(n, &structs, &enums).map(|d| (n.clone(), d)))
+        .collect();
+    STRUCT_DESC.with(|f| *f.borrow_mut() = descs);
+}
+
+/// The release kind of a copy `list_get(xs, i)` of a describable struct: the copy is a deep
+/// copy (`desc_copy`), fresh whoever owns `xs`. `struct:<desc>` names the release.
+fn struct_copy_kind(local: &str, init: &Expr) -> Option<&'static str> {
+    let Expr::Call { func, span, .. } = init else {
+        return None;
+    };
+    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") {
+        return None;
+    }
+    // A hoisted temporary records its struct; otherwise the call's own recorded type.
+    let sn = match TMP_STRUCTS.with(|t| t.borrow().get(local).cloned()) {
+        Some(sn) => sn,
+        None => match EXPR_TYPES.with(|t| t.borrow().get(&(span.start, span.end)).cloned()) {
+            Some(Type::Named { name: sn, args, .. }) if args.is_empty() => sn,
+            _ => return None,
+        },
+    };
+    if !is_ownable_struct(&sn) {
+        return None;
+    }
+    let desc = STRUCT_DESC.with(|t| t.borrow().get(&sn).cloned())?;
+    Some(Box::leak(format!("struct:{desc}").into_boxed_str()))
 }
 
 fn is_ownable_struct(name: &str) -> bool {
@@ -160,6 +186,68 @@ fn is_fresh_temp(e: &Expr) -> bool {
 
 struct Hoist {
     n: u32,
+    /// The function being hoisted: its temporaries get names unique across the program.
+    fn_name: String,
+    /// Local lists of the function (`xs`, a parameter or `xs = list_new[S]()`) -> the struct `S`.
+    elems: HashMap<String, String>,
+}
+
+thread_local! {
+    /// Struct type of each `list_get(..).f` temporary (`__tmp_<fn>_<n>`), for the lowering.
+    static TMP_STRUCTS: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// The struct type of each field-read temporary, for `StringEnv::struct_types`.
+pub fn tmp_struct_types() -> HashMap<String, String> {
+    TMP_STRUCTS.with(|t| t.borrow().clone())
+}
+
+/// The struct `S` of each local list of `f` of type `List[S]` (by a parameter or by
+/// `xs = list_new[S]()`), for the field-read temporaries.
+fn list_elem_structs(f: &FnDef) -> HashMap<String, String> {
+    fn elem_of(t: &Type) -> Option<String> {
+        match t {
+            Type::Named { name, args, .. } if name == "List" => match args.first() {
+                Some(Type::Named { name, args, .. }) if args.is_empty() && is_ownable_struct(name) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn note(name: &str, init: &Expr, out: &mut HashMap<String, String>) {
+        if let Expr::Call { func, type_args, .. } = init {
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_new") {
+                if let [TypeArg::Type(Type::Named { name: sn, args, .. })] = type_args.as_slice() {
+                    if args.is_empty() && is_ownable_struct(sn) {
+                        out.insert(name.to_string(), sn.clone());
+                    }
+                }
+            }
+        }
+    }
+    fn block(b: &Block, out: &mut HashMap<String, String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, init, .. } => note(name, init, out),
+                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => note(name, value, out),
+                Stmt::While { body, .. } => block(body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for p in &f.params {
+        if let Some(sn) = elem_of(&p.ty) {
+            out.insert(p.name.clone(), sn);
+        }
+    }
+    block(&f.body, &mut out);
+    out
+}
+
+/// `list_get(..)` or `list_pop(..)`: a read of an element of a list.
+fn is_elem_read(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop"))
 }
 
 impl Hoist {
@@ -198,6 +286,48 @@ impl Hoist {
                 let left = Box::new(self.expr(*left, out));
                 let right = Box::new(self.expr(*right, out));
                 Expr::Binary { op, left, right, span }
+            }
+            // `list_get(xs, i).f`: the element copy is bound to a local first, so the scope-end
+            // release frees it (`struct_copy_kind`).
+            Expr::Field { base, field, span } => {
+                let base = self.expr(*base, out);
+                // Only the element of a list whose struct a copy can release is bound (the copy must
+                // be typed for the lowering, which `struct_types` gives the temporary).
+                let elem_struct = match &base {
+                    Expr::Call { args, .. } if is_elem_read(&base) => match args.first() {
+                        Some(Expr::Ident { name: xs, .. }) => self.elems.get(xs).cloned(),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let base = if let Some(sn) = elem_struct {
+                    self.n += 1;
+                    let name = format!("__tmp_{}_{}", self.fn_name, self.n);
+                    let bsp = base.span();
+                    TMP_STRUCTS.with(|t| t.borrow_mut().insert(name.clone(), sn));
+                    let fake = Span { start: u32::MAX - self.n, end: u32::MAX - self.n, line: 0, col: 0 };
+                    out.push(Stmt::Let { name: name.clone(), ty: None, init: base, frozen: false, stack: false, span: fake });
+                    Expr::Ident { name, span: bsp }
+                } else {
+                    base
+                };
+                Expr::Field { base: Box::new(base), field, span }
+            }
+            // `match list_get(xs, i) { … }`: the element read is bound to a local first, so the
+            // scope-end release frees a copy that owned lists hand out (`candidate`).
+            Expr::Match { scrutinee, arms, span } => {
+                let scrutinee = self.expr(*scrutinee, out);
+                let scrutinee = if is_elem_read(&scrutinee) {
+                    self.n += 1;
+                    let name = format!("__tmp{}", self.n);
+                    let ssp = scrutinee.span();
+                    let fake = Span { start: u32::MAX - self.n, end: u32::MAX - self.n, line: 0, col: 0 };
+                    out.push(Stmt::Let { name: name.clone(), ty: None, init: scrutinee, frozen: false, stack: false, span: fake });
+                    Expr::Ident { name, span: ssp }
+                } else {
+                    scrutinee
+                };
+                Expr::Match { scrutinee: Box::new(scrutinee), arms, span }
             }
             Expr::If { cond, then_block, elsifs, else_block, span } => Expr::If {
                 cond,
@@ -245,17 +375,24 @@ impl Hoist {
     }
 }
 
-pub fn insert_drops(prog: &Program) -> Program {
+pub fn insert_drops(
+    prog: &Program,
+    types: &HashMap<(u32, u32), Type>,
+    structs: &HashMap<String, StructDef>,
+    enums: &HashMap<String, EnumDef>,
+) -> Program {
+    EXPR_TYPES.with(|t| *t.borrow_mut() = types.clone());
+    collect_ownable(structs, enums);
+    collect_enum_types(enums);
     let mut hoisted = prog.clone();
     for item in &mut hoisted.items {
         if let Item::Fn(f) = item {
+            let elems = list_elem_structs(f);
             let span = f.body.span;
             let body = std::mem::replace(&mut f.body, Block { stmts: vec![], tail: None, span });
-            f.body = Hoist { n: 0 }.block(body);
+            f.body = Hoist { n: 0, fn_name: f.name.clone(), elems }.block(body);
         }
     }
-    collect_ownable(prog);
-    collect_enum_types(prog);
     let mut variants = Variants::new();
     for item in &prog.items {
         if let Item::Enum(e) = item {
@@ -520,6 +657,19 @@ fn stmt_key(sp: Span) -> (u32, u32) {
 }
 
 fn arg(a: &Expr, safe: bool, f: &mut Facts) {
+    // A field read in a moving position (`return t.name`, `x = t.name`, an argument the callee
+    // keeps) hands out a value that aliases the base: the base must not be released.
+    if !safe {
+        let mut root: &Expr = a;
+        let mut is_field = false;
+        while let Expr::Field { base, .. } = root {
+            root = base;
+            is_field = true;
+        }
+        if let (true, Expr::Ident { name, .. }) = (is_field, root) {
+            f.escaped.insert(name.clone());
+        }
+    }
     if let Expr::Ident { name, .. } = a {
         if !safe {
             match f.cur {
@@ -800,13 +950,13 @@ struct Ctx {
     live: Vec<(String, &'static str, bool)>,
     tmp: u32,
     /// Locals built as `list_new_owned[E]()`: enum lists the pass releases (see `own_enum_list`).
-    owned_enums: HashSet<String>,
+    owned_elems: HashMap<String, &'static str>,
 }
 
 /// An enum list the pass releases is built as `list_new_owned`, so the lowering stores the
 /// element descriptor `E` and the list frees its boxes. Other enum lists keep `list_new`:
 /// their elements are borrowed, and `list_free` must not release them.
-fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashSet<String>) {
+fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashMap<String, &'static str>) {
     if !released {
         return;
     }
@@ -814,9 +964,13 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashSe
         if let Expr::Ident { name: callee, .. } = func.as_mut() {
             if callee == "list_new" && (list_enum_arg(type_args) || list_flat_arg(type_args) || list_string_arg(type_args)) {
                 *callee = "list_new_owned".into();
-                // Only an owned enum list hands out `enum_free` copies (`candidate`).
+                // What an owned list hands out (`list_get`, `list_pop`) is a fresh value of its
+                // element kind: a box (`enum_free`) or a string (`free`). Struct elements are
+                // not tracked here.
                 if list_enum_arg(type_args) {
-                    owned.insert(name.to_string());
+                    owned.insert(name.to_string(), "enum_free");
+                } else if list_string_arg(type_args) {
+                    owned.insert(name.to_string(), "free");
                 }
             }
         }
@@ -826,16 +980,24 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashSe
 impl Ctx {
     /// The release function for a droppable local, if `name = init` declares one.
     fn candidate(&self, name: &str, ty: &Option<Type>, init: &Expr) -> Option<(&'static str, bool)> {
-        // `list_get(xs, i)` of an enum list is a deep copy of the box, fresh whoever owns `xs`.
-        let (kind, owned) = match init {
+        // `list_get(xs, i)` is a deep copy of the element, and `list_pop(xs)` moves it out of
+        // the list: either way a fresh value of the owned list's element kind.
+        let elem_release = match init {
             Expr::Call { func, args, .. }
-                if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get")
-                    && matches!(args.first(), Some(Expr::Ident { name: xs, .. })
-                        if self.owned_enums.contains(xs) && self.facts.bindings.get(xs) == Some(&1)) =>
+                if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") =>
             {
-                ("enum_free", false)
+                match args.first() {
+                    Some(Expr::Ident { name: xs, .. }) if self.facts.bindings.get(xs) == Some(&1) => {
+                        self.owned_elems.get(xs).copied()
+                    }
+                    _ => None,
+                }
             }
-            _ => fresh_kind(init, &self.facts.variants)?,
+            _ => None,
+        };
+        let (kind, owned) = match elem_release.or_else(|| struct_copy_kind(name, init)) {
+            Some(k) => (k, false),
+            None => fresh_kind(init, &self.facts.variants)?,
         };
         if owned && self.facts.tainted.contains(name) {
             return None;
@@ -863,7 +1025,7 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         params: f.params.iter().map(|p| p.name.clone()).collect(),
         live: Vec::new(),
         tmp: 0,
-        owned_enums: HashSet::new(),
+        owned_elems: HashMap::new(),
     };
     let span = f.body.span;
     let body = std::mem::replace(&mut f.body, Block { stmts: vec![], tail: None, span });
@@ -871,6 +1033,18 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
 }
 
 fn free_call(name: &str, release: &str, span: Span) -> Stmt {
+    if let Some(desc) = release.strip_prefix("struct:") {
+        // `struct_free(copy, desc)`: the copy's fields and its box.
+        return Stmt::Expr(Expr::Call {
+            func: Box::new(Expr::Ident { name: "struct_free".into(), span }),
+            type_args: vec![],
+            args: vec![
+                Expr::Ident { name: name.into(), span },
+                Expr::String { value: desc.into(), parts: vec![], span },
+            ],
+            span,
+        });
+    }
     Stmt::Expr(Expr::Call {
         func: Box::new(Expr::Ident { name: release.into(), span }),
         type_args: vec![],
@@ -968,7 +1142,7 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
             Stmt::Let { name, ty, init, frozen, stack, span } => {
                 let cand = cx.candidate(&name, &ty, &init);
                 let mut init = init;
-                own_enum_list(&name, matches!(cand, Some((k, _)) if k == "list_free"), &mut init, &mut cx.owned_enums);
+                own_enum_list(&name, matches!(cand, Some((k, _)) if k == "list_free"), &mut init, &mut cx.owned_elems);
                 let init = xform_expr(init, cx);
                 stmts.push(Stmt::Let { name: name.clone(), ty, init, frozen, stack, span });
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
@@ -988,7 +1162,7 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                 };
                 let mut value = value;
                 if let (Some((n, k, _)), Expr::Ident { .. }) = (&decl, &target) {
-                    own_enum_list(n, *k == "list_free", &mut value, &mut cx.owned_enums);
+                    own_enum_list(n, *k == "list_free", &mut value, &mut cx.owned_elems);
                 }
                 let value = xform_expr(value, cx);
                 stmts.push(Stmt::Assign { target, value, span });

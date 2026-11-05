@@ -243,11 +243,13 @@ fn assign_accumulates_string(target: &str, value: &Expr, strings: &StringEnv) ->
 pub fn lower_program_with_callables_env(
     prog: &Program,
     callable_fns: &HashMap<String, ()>,
-    strings: StringEnv,
+    mut strings: StringEnv,
 ) -> IrModule {
     let fn_names = callable_fns;
     let moded = crate::ownership::infer_param_modes(prog);
-    let dropped = crate::drops::insert_drops(&moded);
+    let dropped = crate::drops::insert_drops(&moded, &strings.types, &strings.structs, &strings.enums);
+    // The field-read temporaries the drops pass made have struct types the lowering needs.
+    strings.struct_types.extend(crate::drops::tmp_struct_types());
     let prog = &dropped;
     let mut param_modes: HashMap<String, Vec<ParamMode>> = HashMap::new();
     for item in &prog.items {
@@ -315,7 +317,7 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
                 if let Expr::Ident { name, .. } = func.as_ref() {
                     if matches!(
                         name.as_str(),
-                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free"
+                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free"
                     ) {
                         for a in args {
                             if let Some(r) = root(a) {
@@ -1704,7 +1706,7 @@ fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     if matches!(
         fname,
         "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
-            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free"
+            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free"
     ) {
         return format!("sal_{fname}");
     }
@@ -1790,6 +1792,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "list_free"
             | "dict_free"
             | "enum_free"
+            | "struct_free"
             | "enum_owns"
             | "bytes_free"
             | "bytes_new"

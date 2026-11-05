@@ -177,3 +177,18 @@ fn instrument_strict_enum_lists_are_clean() {
         assert!(!stderr.contains("LEAK"), "{file}: unexpected leak: {stderr}");
     }
 }
+
+/// A value popped from an owned list, or read with `list_get` straight into a `match`, is a
+/// fresh copy the compiler releases at scope end: strict mode reports nothing.
+#[test]
+fn instrument_strict_list_pop_and_match_temps_are_clean() {
+    for (tag, file) in [
+        ("pop_enum", "drops/drop_list_pop_enum.sal"),
+        ("match_temp", "drops/drop_match_list_get_temp.sal"),
+    ] {
+        let src = std::fs::read_to_string(root().join("tests/lang").join(file)).expect("read");
+        let out = run_strict(&src, tag);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("LEAK"), "{file}: unexpected leak: {stderr}");
+    }
+}

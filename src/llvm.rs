@@ -477,6 +477,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_enum_new(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_set(i64, i64, i64)\n");
     s.push_str("declare void @sal_enum_free(i64)\n");
+    s.push_str("declare void @sal_struct_free(i64, ptr)\n");
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
     s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_field(i64, i64)\n");
@@ -2992,6 +2993,14 @@ fn emit_runtime_or_user_call(
             let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_enum_owns(i64 {a}, i64 {b})\n"));
+            }
+        }
+        "sal_struct_free" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let d = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            s.push_str(&format!("  call void @sal_struct_free(i64 {a}, ptr {d})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
         }
         "sal_enum_free" => {

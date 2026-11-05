@@ -179,6 +179,7 @@ int64_t sal_list_len(void *v);
 int64_t sal_list_get(void *v, int64_t i);
 /* Element descriptor: "i" Copy scalar, "s" String, "S(d..)" flat struct (see sal_runtime.c). */
 void *sal_list_new_desc(const char *desc);
+void sal_struct_free(int64_t raw, const char *desc);
 /* Legacy packed kind: 0 Int, 1 Float (bits), 2 Bool, 3 String, 4|n<<4|mask<<12 flat struct. */
 void *sal_list_new_typed(int64_t elem_kind);
 int64_t sal_list_get_typed(void *v, int64_t i);

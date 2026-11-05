@@ -2643,6 +2643,7 @@ fn flat_map_structs_t(m: Int, sts: List[TStruct], enums: List[TEnum], i: Int, n:
             flags = vec_new()
             _f = field_classes_t(flags, enums, sd.fields, 0, list_len(sd.fields))
             _p = map_put(m, str_as_int("struct:" + sd.name), flags)
+            _d = map_put(m, str_as_int("desc:" + sd.name), str_as_int(desc_struct_text(sts, enums, sd.name, 0)))
             flat_map_structs_t(m, sts, enums, i + 1, n)
         else
             flat_map_structs_t(m, sts, enums, i + 1, n)
