@@ -224,3 +224,14 @@ fn instrument_strict_discarded_fresh_values_are_clean() {
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
     assert_eq!(out.status.code(), Some(4), "stderr: {stderr}");
 }
+
+/// A user fn whose every result is a fresh String hands its caller an owned value: the caller
+/// releases it, however it is used.
+#[test]
+fn instrument_strict_user_fn_string_is_clean() {
+    let src = std::fs::read_to_string(root().join("tests/lang/drops/drop_user_fn_string_owned.sal")).expect("read");
+    let out = run_strict(&src, "user_fn_string");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert_eq!(out.status.code(), Some(3), "stderr: {stderr}");
+}

@@ -1,0 +1,14 @@
+# exit: 3
+# A user fn whose every result is a fresh String hands its caller an owned value: bound,
+# discarded or used in place, it is released where the caller drops it.
+fn make(i: Int) -> String ! alloc
+    int_to_str(i)
+
+fn tag(i: Int) -> String ! alloc
+    s = int_to_str(i + 1)
+    s
+
+fn main() -> Int ! alloc
+    make(4)
+    a = tag(5)
+    a.len() + make(42).len()

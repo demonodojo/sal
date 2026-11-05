@@ -2455,6 +2455,7 @@ fn lower_program_typed(tp: TProgram, extra: Int, env: TEnv, em: List[TEnum]) -> 
 fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] borrow) -> Int ! alloc
     denv = vec_new()
     _a = vec_push(denv, variant_map_t(tp, structs, enums))
+    _o = owned_fns_put(vec_get(denv, 0), tp.fns, 0, list_len(tp.fns))
     modes = map_new()
     table = own_mode_table(tp)
     _m = modes_fill_t(modes, table, tp.fns, 0, list_len(tp.fns))

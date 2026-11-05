@@ -231,11 +231,19 @@ fn dx_is_fresh_value(e: Expr) -> Int ! alloc
         XBin(op, l, r) => dx_add_is_string_chain(e)
         _ => dx_is_string_operand(e)
 
-fn dx_is_fresh_temp(e: Expr) -> Int ! alloc
+# A fresh temporary the hoist binds: a fresh value, or a call to a user fn the caller owns.
+fn dx_is_fresh_temp_v(vm: Int, e: Expr) -> Int ! alloc
     match e
         XNone => 0
         XStr(s) => 0
+        XCall(name, args, targs, xp) => dx_is_fresh_call_v(vm, e, name)
         _ => dx_is_fresh_value(e)
+
+fn dx_is_fresh_call_v(vm: Int, e: Expr, name: String) -> Int ! alloc
+    if dr_owned_name(vm, name) == 1
+        1
+    else
+        dx_is_fresh_value(e)
 
 # `list_new[T]()` with T Int, Float, Bool or String (or no type argument).
 fn dx_copy_elem_args(targs: String) -> Int ! alloc
@@ -362,6 +370,133 @@ fn dr_variant_has_fields(c: DC, name: String) -> Int ! alloc
     else
         0
 
+# User fns whose `String` result the caller owns (`owned_return_fns` in src/drops.rs): the
+# variant map holds `ownfn:<name>` for each of them.
+fn dr_owned_name(vm: Int, name: String) -> Int ! alloc
+    if map_get(vm, str_as_int("ownfn:" + name)) == 1
+        1
+    else
+        0
+
+fn owned_fns_put(m: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        _o = if ty_is_string(f.ret) == 1
+            if owned_fn_body(f.body) == 1
+                map_put(m, str_as_int("ownfn:" + f.name), 1)
+            else
+                0
+        else
+            0
+        owned_fns_put(m, fns, i + 1, n)
+
+# The body is `return`ed fresh values only: every binding is fresh and bound once, no `if`,
+# `match` or `while` sits at its top level, and so do the returns and the tail.
+fn owned_fn_body(b: TBlock) -> Int ! alloc
+    locals = list_new[String]()
+    if owned_scan(b.stmts, 0, list_len(b.stmts), locals) == 0
+        0
+    elsif owned_tail_ok(b.tail, locals) == 0
+        0
+    else
+        owned_returns_ok(b.stmts, 0, list_len(b.stmts), locals)
+
+fn owned_scan(stmts: List[TStmt], i: Int, n: Int, locals: List[String]) -> Int ! alloc
+    if i >= n
+        1
+    else
+        st = list_get(stmts, i)
+        ok = owned_stmt(stmts, st, locals)
+        if ok == 0
+            0
+        else
+            owned_scan(stmts, i + 1, n, locals)
+
+fn owned_stmt(stmts: List[TStmt], st: TStmt, locals: List[String]) -> Int ! alloc
+    if st.kind == 2
+        1
+    elsif owned_branches(st.expr) == 1
+        0
+    elsif st.kind == 0
+        1 - dx_is_while(st.expr)
+    elsif st.kind == 1
+        _b = owned_bind_local(stmts, st, locals)
+        1
+    else
+        1
+
+# A binding whose value is fresh and that is bound once is a local the return may hand out.
+fn owned_bind_local(stmts: List[TStmt], st: TStmt, locals: List[String]) -> Int ! alloc
+    if owned_fresh_builtin(st.expr) == 0
+        0
+    elsif owned_binds(stmts, 0, list_len(stmts), st.name) == 1
+        _p = list_push(locals, strdup(st.name))
+        1
+    else
+        0
+
+fn owned_tail_ok(t: Expr, locals: List[String]) -> Int ! alloc
+    match t
+        XNone => 0
+        _ => owned_return_ok(t, locals)
+
+fn owned_returns_ok(stmts: List[TStmt], i: Int, n: Int, locals: List[String]) -> Int ! alloc
+    if i >= n
+        1
+    else
+        st = list_get(stmts, i)
+        r = if st.kind == 2
+            owned_return_ok(st.expr, locals)
+        else
+            1
+        if r == 0
+            0
+        else
+            owned_returns_ok(stmts, i + 1, n, locals)
+
+fn owned_return_ok(v: Expr, locals: List[String]) -> Int ! alloc
+    match v
+        XNone => 1
+        _ => if owned_branches(v) == 1
+            0
+        elsif owned_fresh_builtin(v) == 1
+            1
+        else
+            owned_local(v, locals)
+
+fn owned_local(v: Expr, locals: List[String]) -> Int ! alloc
+    match v
+        XIdent(name) => dr_in_live(locals, name, 0, list_len(locals))
+        _ => 0
+
+# How often the statements bind `name` (a `let` or a first assignment).
+fn owned_binds(stmts: List[TStmt], i: Int, n: Int, name: String) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        here = if st.kind == 1
+            str_eq(st.name, name)
+        else
+            0
+        here + owned_binds(stmts, i + 1, n, name)
+
+# A builtin whose `String` result is fresh, without the user fns (`fresh_builtin` in src/drops.rs).
+fn owned_fresh_builtin(e: Expr) -> Int ! alloc
+    match e
+        XStr(s) => 1
+        XCall(name, args, targs, xp) => dr_returns_fresh(name)
+        XBin(op, l, r) => dx_add_is_string_chain(e)
+        _ => 0
+
+fn owned_branches(e: Expr) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => 1
+        XMatch(scrut, arms) => 1
+        _ => 0
+
 # How a fresh local is released: 0 none, 1 `free`, 2 `list_free`, 3 `bytes_free`, 4 `dict_free`,
 # 5 `enum_free` (box of a variant with fields), 6 a list that owns its elements, 7 a dict that does.
 fn dr_fresh_kind(c: DC, e: Expr) -> Int ! alloc
@@ -379,6 +514,8 @@ fn dr_fresh_bin(op: String, e: Expr) -> Int ! alloc
 
 fn dr_fresh_call(c: DC, name: String, targs: String) -> Int ! alloc
     if dr_returns_fresh(name) == 1
+        1
+    elsif dr_owned_name(c.variants, name) == 1
         1
     elsif dr_variant_has_fields(c, name) == 1
         5
@@ -1370,6 +1507,7 @@ fn dr_ro_params(c: DC, flags: Int, params: List[TParam], i: Int, n: Int) -> Int 
 struct HC
     k: List[Int]
     lists: NM
+    vm: Int
 
 fn dr_hoist_args(h: HC, args: List[Expr], i: Int, n: Int, reads: Int, out: List[TStmt], res: List[Expr]) -> Int ! alloc
     if i >= n
@@ -1377,7 +1515,7 @@ fn dr_hoist_args(h: HC, args: List[Expr], i: Int, n: Int, reads: Int, out: List[
     else
         a = dr_hoist_expr(h, list_get(args, i), out)
         if reads == 1
-            if dx_is_fresh_temp(a) == 1
+            if dx_is_fresh_temp_v(h.vm, a) == 1
                 k = list_get(h.k, 0) + 1
                 _s = list_set(h.k, 0, k)
                 name = "__tmp" + int_to_str(k)
@@ -1583,7 +1721,7 @@ fn dr_hoist_block(h: HC, b: TBlock) -> TBlock ! alloc
 # (`tv_block`): its texts are copies no box owns, so the intermediate trees release everything. The fn itself is only read.
 fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
     body = tc_block(f.body)
-    h = HC(list_new[Int](), dr_lists_of(f.params, body, vec_get(denv, 0)))
+    h = HC(list_new[Int](), dr_lists_of(f.params, body, vec_get(denv, 0)), vec_get(denv, 0))
     _h = list_push(h.k, 0)
     hoisted = dr_hoist_block(h, body)
     c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2), h.lists)

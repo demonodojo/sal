@@ -33,6 +33,8 @@ thread_local! {
     static OWNABLE: std::cell::RefCell<HashMap<String, Vec<FieldOwn>>> = std::cell::RefCell::new(HashMap::new());
     /// Names of the enum types of the program (a `List[E]` of them owns its boxes).
     static ENUM_TYPES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// User fns whose `String` result is always fresh: the caller owns it (see `owned_return_fns`).
+    static OWNED_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
 fn collect_enum_types(enums: &HashMap<String, EnumDef>) {
@@ -181,7 +183,12 @@ fn reads_string_arg(name: &str) -> bool {
 
 /// A fresh string that is not a literal: a temporary somebody must release.
 fn is_fresh_temp(e: &Expr) -> bool {
-    !matches!(e, Expr::String { .. }) && is_fresh_value(e)
+    !matches!(e, Expr::String { .. }) && (is_fresh_value(e) || is_owned_call(e))
+}
+
+/// A call to a user fn whose `String` result the caller owns (see `owned_return_fns`).
+fn is_owned_call(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if OWNED_FNS.with(|f| f.borrow().contains(name))))
 }
 
 struct Hoist {
@@ -384,6 +391,7 @@ pub fn insert_drops(
     EXPR_TYPES.with(|t| *t.borrow_mut() = types.clone());
     collect_ownable(structs, enums);
     collect_enum_types(enums);
+    OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog));
     let mut hoisted = prog.clone();
     for item in &mut hoisted.items {
         if let Item::Fn(f) = item {
@@ -410,6 +418,100 @@ pub fn insert_drops(
         }
     }
     out
+}
+
+/// The user fns that return a `String` the caller owns: every `return` value and the tail is a
+/// fresh builtin value or a local bound once to one (and never assigned again). A fn with a
+/// branching or looping statement at the top level is not analysed, so no `return` hides in
+/// it. Computed from the builtins only, so the result does not depend on the fn order.
+fn owned_return_fns(prog: &Program) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for item in &prog.items {
+        if let Item::Fn(f) = item {
+            if crate::string_expr::is_string_type(&f.ret) && owned_return_body(f) {
+                out.insert(f.name.clone());
+            }
+        }
+    }
+    out
+}
+
+fn owned_return_body(f: &FnDef) -> bool {
+    let b = &f.body;
+    let mut fresh_locals: HashSet<String> = HashSet::new();
+    let mut ok = true;
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { name, init, .. } => {
+                if is_branching(init) {
+                    ok = false;
+                }
+                if fresh_builtin(init) && binds_once(&b.stmts, name) {
+                    fresh_locals.insert(name.clone());
+                }
+            }
+            // `s = v` without a type is a binding too (the parser makes it an assignment).
+            Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => {
+                if is_branching(value) {
+                    ok = false;
+                }
+                if fresh_builtin(value) && binds_once(&b.stmts, name) {
+                    fresh_locals.insert(name.clone());
+                }
+            }
+            Stmt::Expr(e) if is_branching(e) => ok = false,
+            Stmt::Assign { value, .. } if is_branching(value) => ok = false,
+            Stmt::While { .. } => ok = false,
+            _ => {}
+        }
+    }
+    let fresh = |e: &Expr| fresh_builtin(e) || matches!(e, Expr::Ident { name, .. } if fresh_locals.contains(name));
+    let mut returns = Vec::new();
+    for st in &b.stmts {
+        if let Stmt::Return { value: Some(v), .. } = st {
+            returns.push(v);
+        }
+    }
+    let tail_ok = match &b.tail {
+        Some(t) => !is_branching(t) && fresh(t),
+        None => false,
+    };
+    ok && tail_ok && returns.iter().all(|v| !is_branching(v) && fresh(v))
+}
+
+/// A builtin whose result is a fresh `String` (see `fresh_kind`), without the user fns.
+fn fresh_builtin(e: &Expr) -> bool {
+    matches!(fresh_kind_builtin(e), Some("free"))
+}
+
+fn fresh_kind_builtin(e: &Expr) -> Option<&'static str> {
+    match e {
+        Expr::String { .. } => Some("free"),
+        Expr::Call { func, .. } => match func.as_ref() {
+            Expr::Ident { name, .. } if returns_fresh(name) => Some("free"),
+            _ => None,
+        },
+        Expr::Binary { op: BinOp::Add, .. } if add_is_string_chain(e) => Some("free"),
+        _ => None,
+    }
+}
+
+/// An `if` or `match` expression at the top of a statement or tail: it may hold a `return`.
+fn is_branching(e: &Expr) -> bool {
+    matches!(e, Expr::If { .. } | Expr::Match { .. })
+}
+
+/// `name` is bound by exactly one top-level statement, and that binding is the only one.
+fn binds_once(stmts: &[Stmt], name: &str) -> bool {
+    stmts
+        .iter()
+        .filter(|st| match st {
+            Stmt::Let { name: n, .. } => n == name,
+            Stmt::Assign { target: Expr::Ident { name: n, .. }, .. } => n == name,
+            _ => false,
+        })
+        .count()
+        == 1
 }
 
 /// Optimistic fixpoint: every parameter starts read-only and loses that when its fn lets
@@ -518,7 +620,7 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             let Expr::Ident { name, .. } = func.as_ref() else {
                 return None;
             };
-            if returns_fresh(name) {
+            if returns_fresh(name) || OWNED_FNS.with(|f| f.borrow().contains(name)) {
                 Some(("free", false))
             } else if variants.get(name.as_str()).is_some_and(|f| !f.is_empty()) {
                 Some(("enum_free", false))
