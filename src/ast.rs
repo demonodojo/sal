@@ -253,7 +253,7 @@ pub enum Expr {
     },
     String {
         value: String,
-        /// Structured interpolation parts; empty when the string has no `{…}`.
+        /// Structured interpolation parts from `f"…"`; empty for plain `"…"`.
         #[serde(default)]
         parts: Vec<StringPart>,
         span: Span,
@@ -334,7 +334,7 @@ pub enum Expr {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum StringPart {
     Lit(String),
-    /// Simple `{name}` interpolation (identifier only in this phase).
+    /// Simple `#{name}` interpolation (identifier only in this phase).
     Interp(String),
 }
 

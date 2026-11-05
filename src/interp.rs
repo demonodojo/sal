@@ -1,4 +1,4 @@
-//! String interpolation: `"a{x}b"` is `"a" + x + "b"`.
+//! String interpolation: `f"a#{x}b"` is `"a" + x + "b"`.
 //!
 //! The parser keeps the structured `parts` on the literal (formatters need
 //! them); this pass, run before type checking, replaces each interpolated

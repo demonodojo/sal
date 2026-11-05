@@ -31,7 +31,7 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Tipos, formas, lugares, `borrow`/`take`; tensores en binops; `frame`→struct; `where` | `src/infer.rs`, `src/typed.rs`, `src/modules.rs` | `tests/semantics.rs` |
 | Moves, efectos, dispositivos; frame con `String` y `to` | `src/ownership.rs`, `src/effects.rs`, `src/device.rs`, `src/diag.rs` | `tests/semantics.rs` |
 | Atributos `@frozen`/`@stack`/`@no_heap`/`@layout(c)` | `src/attrs.rs`, `src/layout.rs`, `src/lexer.rs`, `src/parser.rs` | `tests/lang/attributes/attr_*.sal` vía `tests/lang.rs` |
-| Interpolación `"a{x}"` | `src/interp.rs`, `src/string_expr.rs` | `tests/lang/<área>/*.sal`, `tests/run_hello.rs` |
+| Interpolación `f"a#{x}"` | `src/interp.rs`, `src/string_expr.rs` | `tests/lang/<área>/*.sal`, `tests/run_hello.rs` |
 | Calificadores, alias, símbolos `modid__nombre` | `src/qualify.rs`, `src/modules.rs` | `tests/lang/modules/mods/`, `tests/toolchain.rs` |
 | Métodos de tipos básicos (`x.sqrt()`, `s.len()`), mate de `Float` (`float_*`, libm, `E_TARGET` en soso) | `src/methods.rs` (tabla), `src/infer.rs`, `src/llvm.rs`, `runtime/kernels.c` | `tests/lang/methods/method_*.sal`, `tests/lang/numeric/err_float_math_*.sal`, `tests/semantics.rs` |
 | Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |

@@ -16,7 +16,7 @@ Mientras haya un `(` o un `[` sin cerrar, un salto de línea emite `NEWLINE` y n
 
 ## Gramática
 
-Los no terminales van en minúsculas. `ε` es la producción vacía. `IDENT`, `INT`, `FLOAT`, `STRING` y `DSTRING` son terminales del lexer. Lo demás entre comillas es terminal.
+Los no terminales van en minúsculas. `ε` es la producción vacía. `IDENT`, `INT`, `FLOAT`, `STRING`, `DSTRING` y `FSTRING` son terminales del lexer. Lo demás entre comillas es terminal.
 
 ### Programa
 
@@ -167,6 +167,7 @@ primary      → INT
              | "false"
              | STRING
              | DSTRING
+             | FSTRING
              | IDENT
              | "(" expr ")"
              | tensor_lit
@@ -232,9 +233,11 @@ place        → "cpu" | "gpu" | "tpu" | IDENT
 
 ### Cadenas
 
-`STRING` admite `{IDENT}`. `{{` y `}}` son una llave literal. Cualquier otra cosa entre llaves es `E_PARSE`.
+`STRING` es una cadena entre comillas dobles con escapes `\` habituales. No interpola: `{` y `}` son texto.
 
-`DSTRING` es el identificador `d` inmediatamente seguido de `STRING`, sin espacio entre ambos. Es azúcar de `strdup` aplicado a esa cadena: el árbol es una llamada a `Ident("strdup")` con un argumento `STRING`, no un literal. Misma interpolación y escapes que `STRING`. Un `d` suelto o seguido de espacio sigue siendo `IDENT`.
+`DSTRING` es el identificador `d` inmediatamente seguido de `STRING`, sin espacio entre ambos. Es azúcar de `strdup` aplicado a esa cadena: el árbol es una llamada a `Ident("strdup")` con un argumento `STRING`, no un literal. No interpola. Un `d` suelto o seguido de espacio sigue siendo `IDENT`.
+
+`FSTRING` es el identificador `f` inmediatamente seguido de `STRING`, sin espacio entre ambos. Dentro admite `#{IDENT}`; `##{` es la secuencia literal `#{`. Cualquier otro `#{…}` mal formado es `E_PARSE`. Un `f` suelto o seguido de espacio sigue siendo `IDENT`. Antes de la comprobación de tipos, cada `FSTRING` con interpolación se reescribe a una cadena de `+` que concatena literales y variables (`String`).
 
 En `add`, si el operando izquierdo es `String`, `+` concatena con efecto `alloc` y el resultado es `String`. El operando derecho también tiene que ser `String`; si no lo es, es `E_TYPE` (con la pista de usar `str_from_int(...)` o `int_to_str(...)`). Si el derecho es `String` y el izquierdo no, es `E_TYPE`. Un asa `Int` que en realidad es un puntero a cadena se tiende con `str_from_int` (identidad sin coste, como `str_as_int` en sentido contrario). La decisión «es concatenación» la toma el tipo inferido del operando izquierdo —literal, variable, parámetro, campo de `struct`, resultado de una función con `-> String` o de un `if`—, no la forma sintáctica del árbol. La cadena asocia a la izquierda.
 

@@ -411,13 +411,14 @@ test("la gramática colorea las palabras del lexer", async () => {
       constant: { match: string };
       comment: { match: string };
       dstring: { begin: string };
+      fstring: { begin: string };
       "type-builtin": { match: string };
       "type-name": { match: string };
       tensor: { match: string };
       attribute: { match: string };
       functionDef: { captures: { "2": { name: string } } };
       "function-def": { captures: { "2": { name: string } } };
-      "string-content": { patterns: { name: string }[] };
+      "fstring-content": { patterns: { name: string }[] };
     };
   };
   const colored = new Set([
@@ -427,8 +428,9 @@ test("la gramática colorea las palabras del lexer", async () => {
   assert.deepEqual(colored, new Set(LEXER_WORDS));
   assert.match(grammar.repository.comment.match, /#/);
   assert.match(grammar.repository.dstring.begin, /d\\?"/);
+  assert.match(grammar.repository.fstring.begin, /f\\?"/);
   assert.ok(
-    grammar.repository["string-content"].patterns.some((pat) => pat.name === "meta.interpolation.sal"),
+    grammar.repository["fstring-content"].patterns.some((pat) => pat.name === "meta.interpolation.sal"),
   );
   assert.equal(
     grammar.repository["function-def"].captures["2"].name,

@@ -578,27 +578,48 @@ fn escape_string_text(text: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
-            '{' => out.push_str("{{"),
-            '}' => out.push_str("}}"),
             c => out.push(c),
         }
     }
 }
 
-/// A string literal back to source: escapes, literal braces and `{name}` parts.
+fn escape_fstring_lit(text: &str, out: &mut String) {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '#' if chars.peek() == Some(&'{') => {
+                out.push('#');
+                out.push('#');
+                chars.next();
+                out.push('{');
+            }
+            c => out.push(c),
+        }
+    }
+}
+
+/// A string literal back to source: plain `"…"` or `f"…#{name}…"`.
 fn format_string_literal(value: &str, parts: &[StringPart]) -> String {
-    let mut out = String::from("\"");
     if parts.is_empty() {
+        let mut out = String::from("\"");
         escape_string_text(value, &mut out);
-    } else {
-        for part in parts {
-            match part {
-                StringPart::Lit(t) => escape_string_text(t, &mut out),
-                StringPart::Interp(n) => {
-                    out.push('{');
-                    out.push_str(n);
-                    out.push('}');
-                }
+        out.push('"');
+        return out;
+    }
+    let mut out = String::from("f\"");
+    for part in parts {
+        match part {
+            StringPart::Lit(t) => escape_fstring_lit(t, &mut out),
+            StringPart::Interp(n) => {
+                out.push('#');
+                out.push('{');
+                out.push_str(n);
+                out.push('}');
             }
         }
     }

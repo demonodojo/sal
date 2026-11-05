@@ -658,19 +658,18 @@ fn parse_primary(pr: Parser) -> Expr ! alloc
         XFloat(tok_ival(pr, t), tok_own(pr, t))
     elsif k == TK_STRING()
         _a = p_advance(pr)
-        if tok_ival(pr, t) == 1
-            _e = p_set_err(pr, d"parse error: invalid string interpolation")
-        else
-            _e = 0
-        string_literal_expr(pr, t)
-    elsif k == TK_DSTRING()
+        XStr(tok_own(pr, t))
+    elsif k == TK_FSTRING()
         _a = p_advance(pr)
         if tok_ival(pr, t) == 1
             _e = p_set_err(pr, d"parse error: invalid string interpolation")
         else
             _e = 0
+        fstring_literal_expr(pr, t)
+    elsif k == TK_DSTRING()
+        _a = p_advance(pr)
         args = list_new[Expr]()
-        _b = list_push(args, string_literal_expr(pr, t))
+        _b = list_push(args, XStr(tok_own(pr, t)))
         XCall(d"strdup", args, d"", 0)
     elsif k == TK_IF()
         parse_if(pr)
@@ -756,9 +755,8 @@ fn parse_if(pr: Parser) -> Expr ! alloc
     else
         XIf(cond, then_b, empty_block(), 0, arms)
 
-# A string literal; `"a{x}b"` becomes the chain `"a" + x + "b"` (the chain
-# starts with a literal so `+` concatenates and copies `x`).
-fn string_literal_expr(pr: Parser, t: Int) -> Expr ! alloc
+# `f"a#{x}b"` becomes `"a" + x + "b"` (the chain starts with a literal).
+fn fstring_literal_expr(pr: Parser, t: Int) -> Expr ! alloc
     if tok_ival(pr, t) == 2
         raw = tok_text(pr, t)
         interp_chain(raw, 0, str_len(raw), d"", XNone)
@@ -771,25 +769,25 @@ fn interp_chain(raw: String, i: Int, n: Int, lit: String, left: Expr) -> Expr ! 
         interp_flush(left, lit)
     else
         c = str_char(raw, i)
-        if c == 123
+        if c == 35
             if i + 1 < n
-                if str_char(raw, i + 1) == 123
-                    interp_chain(raw, i + 2, n, lit + char_to_str(123), left)
-                else
-                    close = find_char(raw, 125, i + 1, n)
-                    name = str_slice(raw, i + 1, close)
+                if str_char(raw, i + 1) == 35
+                    if i + 2 < n
+                        if str_char(raw, i + 2) == 123
+                            interp_chain(raw, i + 3, n, lit + d"#" + char_to_str(123), left)
+                        else
+                            interp_chain(raw, i + 2, n, lit + char_to_str(35), left)
+                    else
+                        interp_chain(raw, i + 2, n, lit + char_to_str(35), left)
+                elsif str_char(raw, i + 1) == 123
+                    close = find_char(raw, 125, i + 2, n)
+                    name = str_slice(raw, i + 2, close)
                     l1 = interp_flush(left, lit)
                     interp_chain(raw, close + 1, n, d"", XBin(d"add", l1, XIdent(name)))
-            else
-                interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
-        elsif c == 125
-            if i + 1 < n
-                if str_char(raw, i + 1) == 125
-                    interp_chain(raw, i + 2, n, lit + char_to_str(125), left)
                 else
-                    interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
+                    interp_chain(raw, i + 1, n, lit + char_to_str(35), left)
             else
-                interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
+                interp_chain(raw, i + 1, n, lit + char_to_str(35), left)
         else
             interp_chain(raw, i + 1, n, lit + char_to_str(c), left)
 

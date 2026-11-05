@@ -159,15 +159,14 @@ fn ub_reads(src: String, lex: Lex, lo: Int, hi: Int, skip: Int, name: String) ->
                 1
             else
                 ub_reads(src, lex, lo + 1, hi, skip, name)
-        elsif k == TK_DSTRING()
-            ub_reads_str(src, lex, lo, hi, skip, name)
-        elsif k == TK_STRING()
-            ub_reads_str(src, lex, lo, hi, skip, name)
+        elsif k == TK_FSTRING()
+            ub_reads_fstr(src, lex, lo, hi, skip, name)
         else
             ub_reads(src, lex, lo + 1, hi, skip, name)
 
-fn ub_reads_str(src: String, lex: Lex, lo: Int, hi: Int, skip: Int, name: String) -> Int ! alloc
-    if lex.text(src, lo).contains(name) == 1
+fn ub_reads_fstr(src: String, lex: Lex, lo: Int, hi: Int, skip: Int, name: String) -> Int ! alloc
+    needle = d"#{" + name + d"}"
+    if lex.text(src, lo).contains(needle) == 1
         1
     else
         ub_reads(src, lex, lo + 1, hi, skip, name)

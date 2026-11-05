@@ -1,7 +1,7 @@
 fn f(xs: List[Int]) -> Int ! alloc
     xs.push(1)
     n = xs.len()
-    s = "n={n}"
+    s = f"n=#{n}"
     s.len()
 
 fn g(xs: List[Int]) -> Int ! alloc

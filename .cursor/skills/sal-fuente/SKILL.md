@@ -22,7 +22,7 @@ La superficie aceptada está en [SPEC.md](../../../SPEC.md). Un programa que el 
 - Items del arranque: `import`, `struct`, `enum`, `frame`, `fn`, `method`, `static`, `init`.
 - `match expr` con brazos `patrón => expr` (`_`, enteros, `Variante(x)`, `modulo.Variante(x)`).
 - `return` anticipado vale en cuerpo, `if`, `while` y `match`; no dentro de `on` ni de una lambda.
-- Interpolación `"a{x}"` (`x` tiene que ser `String`; `{{` y `}}` son llaves literales).
+- Interpolación `f"a#{x}"` (`x` tiene que ser `String`; en `"…"` y `d"…"` `{` y `}` son texto).
 
 Ejemplo mínimo:
 

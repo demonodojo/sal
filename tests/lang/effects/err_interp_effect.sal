@@ -1,6 +1,6 @@
 # error: E_EFFECT
 fn f(n: String) -> Int
-    s = "v={n}"
+    s = f"v=#{n}"
     0
 
 fn main() -> Int

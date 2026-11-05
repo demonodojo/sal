@@ -120,7 +120,7 @@ fn lambdas(x: Int) -> Int
     0
 
 fn text() -> String ! alloc
-    s = d"a{{b}}"
+    s = d"a{b}"
     t = "plain"
     s + t
 

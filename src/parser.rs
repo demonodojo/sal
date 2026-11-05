@@ -1246,11 +1246,15 @@ impl Parser {
             }
             TokenKind::String(s) => {
                 let sp = self.bump().span;
-                string_literal_expr(s, sp)
+                plain_string_literal_expr(s, sp)
+            }
+            TokenKind::FString(s) => {
+                let sp = self.bump().span;
+                fstring_literal_expr(s, sp)
             }
             TokenKind::DupString(s) => {
                 let sp = self.bump().span;
-                let arg = string_literal_expr(s, sp)?;
+                let arg = plain_string_literal_expr(s, sp)?;
                 Ok(Expr::Call {
                     func: Box::new(Expr::Ident {
                         name: "strdup".into(),
@@ -1597,15 +1601,17 @@ fn is_lvalue(e: &Expr) -> bool {
     matches!(e, Expr::Ident { .. } | Expr::Field { .. })
 }
 
-fn string_literal_expr(s: String, sp: Span) -> Result<Expr, Diagnostic> {
-    let parts = split_interpolation(&s, sp)?;
-    // `{{` / `}}` are brace escapes. When there is no real interpolation,
-    // fold them into the string value (IR blobs use Debug-like `{ … }`).
-    let value = if parts.is_empty() {
-        unescape_doubled_braces(&s)
-    } else {
-        s
-    };
+fn plain_string_literal_expr(s: String, sp: Span) -> Result<Expr, Diagnostic> {
+    Ok(Expr::String {
+        value: s,
+        parts: Vec::new(),
+        span: sp,
+    })
+}
+
+fn fstring_literal_expr(s: String, sp: Span) -> Result<Expr, Diagnostic> {
+    let parts = split_fstring_interpolation(&s, sp)?;
+    let value = if parts.is_empty() { s.clone() } else { s };
     Ok(Expr::String {
         value,
         parts,
@@ -1613,25 +1619,8 @@ fn string_literal_expr(s: String, sp: Span) -> Result<Expr, Diagnostic> {
     })
 }
 
-fn unescape_doubled_braces(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'{') {
-            chars.next();
-            out.push('{');
-        } else if c == '}' && chars.peek() == Some(&'}') {
-            chars.next();
-            out.push('}');
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-fn split_interpolation(s: &str, span: Span) -> Result<Vec<StringPart>, Diagnostic> {
-    if !s.contains('{') {
+fn split_fstring_interpolation(s: &str, span: Span) -> Result<Vec<StringPart>, Diagnostic> {
+    if !s.contains('#') {
         return Ok(Vec::new());
     }
     let mut parts = Vec::new();
@@ -1639,12 +1628,23 @@ fn split_interpolation(s: &str, span: Span) -> Result<Vec<StringPart>, Diagnosti
     let mut chars = s.chars().peekable();
     let mut saw_interp = false;
     while let Some(c) = chars.next() {
-        if c == '{' {
-            if chars.peek() == Some(&'{') {
+        if c == '#' {
+            if chars.peek() == Some(&'#') {
                 chars.next();
-                lit.push('{');
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    lit.push('#');
+                    lit.push('{');
+                    continue;
+                }
+                lit.push('#');
                 continue;
             }
+            if chars.peek() != Some(&'{') {
+                lit.push('#');
+                continue;
+            }
+            chars.next(); // '{'
             if !lit.is_empty() {
                 parts.push(StringPart::Lit(std::mem::take(&mut lit)));
             }
@@ -1678,17 +1678,6 @@ fn split_interpolation(s: &str, span: Span) -> Result<Vec<StringPart>, Diagnosti
             }
             saw_interp = true;
             parts.push(StringPart::Interp(name));
-        } else if c == '}' {
-            if chars.peek() == Some(&'}') {
-                chars.next();
-                lit.push('}');
-            } else {
-                return Err(Diagnostic::new(
-                    ErrorCode::EParse,
-                    "stray `}` in string",
-                    span,
-                ));
-            }
         } else {
             lit.push(c);
         }
@@ -1708,7 +1697,7 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         (Ident(x), Ident(y)) | (Attr(x), Attr(y)) => x == y,
         (Int(x), Int(y)) => x == y,
         (Float(x), Float(y)) => (x - y).abs() < f64::EPSILON,
-        (String(x), String(y)) => x == y,
+        (String(x), String(y)) | (DupString(x), DupString(y)) | (FString(x), FString(y)) => x == y,
         (Eof, Eof) | (Newline, Newline) | (Indent, Indent) | (Dedent, Dedent) => true,
         (Fn, Fn)
         | (Let, Let)

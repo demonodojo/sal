@@ -1,0 +1,46 @@
+fn is_digit(c: Int) -> Int
+    if c >= 48
+        if c <= 57
+            1
+        else
+            0
+    else
+        0
+
+fn both(a: Int, b: Int) -> Int
+    if a
+        if b
+            x = a + b
+            x
+        else
+            0
+    else
+        0
+
+fn calls(a: Int, b: Int) -> Int
+    if is_ok(a)
+        if is_ok(b)
+            1
+        else
+            0
+    else
+        0
+
+fn neg(a: Int, b: Int) -> Int
+    if !a
+        if !b
+            1
+        else
+            0
+    else
+        0
+
+fn after(a: Int, b: Int) -> Int
+    if a
+        if b
+            1
+        else
+            0
+    else
+        0
+    2

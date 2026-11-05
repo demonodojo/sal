@@ -120,16 +120,16 @@ fn emit_inst(inst: Inst) -> String ! alloc
         d""
 
 fn emit_ci(inst: Inst) -> String ! alloc
-    "  ConstInt {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + int_to_str(inst.n1) + " }}\n"
+    "  ConstInt { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + int_to_str(inst.n1) + " }\n"
 
 fn emit_cs(inst: Inst) -> String ! alloc
-    "  ConstString {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + ir_debug_escape_s(inst.s1) + ir_q() + " }}\n"
+    "  ConstString { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + ir_debug_escape_s(inst.s1) + ir_q() + " }\n"
 
 fn emit_bin(inst: Inst) -> String ! alloc
-    "  Binary {{ dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", left: " + ir_q() + inst.s2 + ir_q() + ", right: " + ir_q() + inst.s3 + ir_q() + " }}\n"
+    "  Binary { dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", left: " + ir_q() + inst.s2 + ir_q() + ", right: " + ir_q() + inst.s3 + ir_q() + " }\n"
 
 fn emit_cf(inst: Inst) -> String ! alloc
-    "  ConstFloat {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + inst.s1 + " }}\n"
+    "  ConstFloat { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + inst.s1 + " }\n"
 
 fn emit_elem_name(code: Int) -> String ! alloc
     if code == 1
@@ -149,12 +149,12 @@ fn emit_tbin_scalar(scalar: Int) -> String ! alloc
 
 fn emit_tun(inst: Inst) -> String ! alloc
     elem = emit_elem_name(inst.n1)
-    "  TensorUnary {{ dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", input: " + ir_q() + inst.s3 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + " }}\n"
+    "  TensorUnary { dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", input: " + ir_q() + inst.s3 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + " }\n"
 
 fn emit_tbin(inst: Inst) -> String ! alloc
     elem = emit_elem_name(inst.n1)
     sc = emit_tbin_scalar(inst.n2)
-    "  TensorBin {{ dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", left: " + ir_q() + inst.s3 + ir_q() + ", right: " + ir_q() + inst.s4 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + ", right_scalar: " + sc + " }}\n"
+    "  TensorBin { dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", left: " + ir_q() + inst.s3 + ir_q() + ", right: " + ir_q() + inst.s4 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + ", right_scalar: " + sc + " }\n"
 
 fn emit_call_dest(inst: Inst) -> String ! alloc
     if inst.n1 == 1
@@ -164,18 +164,18 @@ fn emit_call_dest(inst: Inst) -> String ! alloc
 
 fn emit_call(inst: Inst) -> String ! alloc
     destbit = emit_call_dest(inst)
-    pref = "  Call {{ dest: " + destbit + ", func: " + ir_q() + inst.s1 + ir_q() + ", args: ["
+    pref = "  Call { dest: " + destbit + ", func: " + ir_q() + inst.s1 + ir_q() + ", args: ["
     acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), pref)
-    acc + "] }}\n"
+    acc + "] }\n"
 
 fn emit_place(inst: Inst) -> String ! alloc
-    "  PlaceCopy {{ dest: " + ir_q() + inst.dest + ir_q() + ", from: " + ir_q() + inst.s1 + ir_q() + ", to_place: " + ir_q() + inst.s2 + ir_q() + " }}\n"
+    "  PlaceCopy { dest: " + ir_q() + inst.dest + ir_q() + ", from: " + ir_q() + inst.s1 + ir_q() + ", to_place: " + ir_q() + inst.s2 + ir_q() + " }\n"
 
 fn emit_ret(inst: Inst) -> String ! alloc
-    "  Return {{ value: " + ir_q() + inst.s1 + ir_q() + " }}\n"
+    "  Return { value: " + ir_q() + inst.s1 + ir_q() + " }\n"
 
 fn emit_drop(inst: Inst) -> String ! alloc
-    "  Drop {{ name: " + ir_q() + inst.s1 + ir_q() + " }}\n"
+    "  Drop { name: " + ir_q() + inst.s1 + ir_q() + " }\n"
 
 fn emit_if_comma(i: Int) -> String ! alloc
     if i > 0
@@ -218,7 +218,7 @@ fn strip_spaces_go(s: String, i: Int, n: Int) -> String ! alloc
         str_slice(s, i, n)
 
 fn emit_if_inst(inst: Inst) -> String ! alloc
-    acc = "  If {{ cond: " + ir_q() + inst.s1 + ir_q() + ", then_body: ["
+    acc = "  If { cond: " + ir_q() + inst.s1 + ir_q() + ", then_body: ["
     acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
     acc = acc + "], else_body: ["
     acc = emit_if_body(inst.b2, 0, list_len(inst.b2), acc)
@@ -238,31 +238,31 @@ fn emit_if_inst(inst: Inst) -> String ! alloc
         acc = acc + ", carried: ["
         acc = emit_carries(inst.rows, 0, list_len(inst.rows), acc)
         acc = acc + "]"
-    acc + " }}\n"
+    acc + " }\n"
 
 fn emit_rebind(inst: Inst) -> String ! alloc
-    "  TensorRebind {{ dest: " + ir_q() + inst.dest + ir_q() + ", src: " + ir_q() + inst.s1 + ir_q() + " }}\n"
+    "  TensorRebind { dest: " + ir_q() + inst.dest + ir_q() + ", src: " + ir_q() + inst.s1 + ir_q() + " }\n"
 
 fn emit_extract(inst: Inst) -> String ! alloc
-    "  Extract {{ dest: " + ir_q() + inst.dest + ir_q() + ", base: " + ir_q() + inst.s1 + ir_q() + ", struct_name: " + ir_q() + inst.s2 + ir_q() + ", field_index: " + int_to_str(inst.n1) + " }}\n"
+    "  Extract { dest: " + ir_q() + inst.dest + ir_q() + ", base: " + ir_q() + inst.s1 + ir_q() + ", struct_name: " + ir_q() + inst.s2 + ir_q() + ", field_index: " + int_to_str(inst.n1) + " }\n"
 
 fn emit_emake(inst: Inst) -> String ! alloc
-    acc = "  EnumMake {{ dest: " + ir_q() + inst.dest + ir_q()
+    acc = "  EnumMake { dest: " + ir_q() + inst.dest + ir_q()
     acc = acc + ", enum_name: " + ir_q() + inst.s1 + ir_q()
     acc = acc + ", variant_index: " + int_to_str(inst.n1) + ", payload: ["
     acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), acc)
-    acc + "], owned: " + int_to_str(inst.n2) + " }}\n"
+    acc + "], owned: " + int_to_str(inst.n2) + " }\n"
 
 fn emit_efield(inst: Inst) -> String ! alloc
-    "  EnumField {{ dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + inst.s1 + ir_q() + ", index: " + int_to_str(inst.n1) + " }}\n"
+    "  EnumField { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + inst.s1 + ir_q() + ", index: " + int_to_str(inst.n1) + " }\n"
 
 fn emit_switch(inst: Inst) -> String ! alloc
-    acc = "  Switch {{ scrut: " + ir_q() + inst.s1 + ir_q() + ", arms: ["
+    acc = "  Switch { scrut: " + ir_q() + inst.s1 + ir_q() + ", arms: ["
     acc = emit_switch_arms(inst.rows, 0, list_len(inst.rows), acc)
     acc = acc + "], default_body: ["
     acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
     acc = acc + "], default_val: " + ir_q() + inst.s2 + ir_q()
-    acc + ", dest: " + ir_q() + inst.dest + ir_q() + " }}\n"
+    acc + ", dest: " + ir_q() + inst.dest + ir_q() + " }\n"
 
 fn emit_switch_arms(arms: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -270,19 +270,19 @@ fn emit_switch_arms(arms: List[Inst], i: Int, n: Int, acc: String) -> String ! a
     else
         a = list_get(arms, i)
         acc = acc + emit_if_comma(i)
-        acc = acc + "SwitchArm {{ tag: " + int_to_str(a.n1) + ", body: ["
+        acc = acc + "SwitchArm { tag: " + int_to_str(a.n1) + ", body: ["
         acc = emit_if_body(a.b1, 0, list_len(a.b1), acc)
-        acc = acc + "], value: " + ir_q() + a.s1 + ir_q() + " }}"
+        acc = acc + "], value: " + ir_q() + a.s1 + ir_q() + " }"
         emit_switch_arms(arms, i + 1, n, acc)
 
 fn emit_agg(inst: Inst) -> String ! alloc
-    acc = "  Aggregate {{ dest: " + ir_q() + inst.dest + ir_q()
+    acc = "  Aggregate { dest: " + ir_q() + inst.dest + ir_q()
     acc = acc + ", struct_name: " + ir_q() + inst.s1 + ir_q() + ", fields: ["
     acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), acc)
-    acc + "] }}\n"
+    acc + "] }\n"
 
 fn emit_while_inst(inst: Inst) -> String ! alloc
-    acc = "  While {{ cond_insts: ["
+    acc = "  While { cond_insts: ["
     acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
     acc = acc + "], cond: " + ir_q() + inst.s1 + ir_q() + ", body: ["
     acc = emit_if_body(inst.b2, 0, list_len(inst.b2), acc)
@@ -291,7 +291,7 @@ fn emit_while_inst(inst: Inst) -> String ! alloc
         acc = acc + ", carried: ["
         acc = emit_while_carries(inst.rows, 0, list_len(inst.rows), acc)
         acc = acc + "]"
-    acc + " }}\n"
+    acc + " }\n"
 
 fn emit_while_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -299,9 +299,9 @@ fn emit_while_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! a
     else
         c = list_get(cs, i)
         acc = acc + emit_if_comma(i)
-        acc = acc + "WhileCarry {{ dest: " + ir_q() + c.dest + ir_q()
+        acc = acc + "WhileCarry { dest: " + ir_q() + c.dest + ir_q()
         acc = acc + ", incoming: " + ir_q() + c.s1 + ir_q()
-        acc = acc + ", updated: " + ir_q() + c.s2 + ir_q() + " }}"
+        acc = acc + ", updated: " + ir_q() + c.s2 + ir_q() + " }"
         emit_while_carries(cs, i + 1, n, acc)
 
 fn emit_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
@@ -310,9 +310,9 @@ fn emit_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     else
         c = list_get(cs, i)
         acc = acc + emit_if_comma(i)
-        acc = acc + "IfCarry {{ dest: " + ir_q() + c.dest + ir_q()
+        acc = acc + "IfCarry { dest: " + ir_q() + c.dest + ir_q()
         acc = acc + ", then_val: " + ir_q() + c.s1 + ir_q()
-        acc = acc + ", else_val: " + ir_q() + c.s2 + ir_q() + " }}"
+        acc = acc + ", else_val: " + ir_q() + c.s2 + ir_q() + " }"
         emit_carries(cs, i + 1, n, acc)
 
 fn emit_fused_word(fused: Int) -> String ! alloc
@@ -320,13 +320,13 @@ fn emit_fused_word(fused: Int) -> String ! alloc
 
 fn emit_peak_bytes(r: Region) -> String ! alloc
     if r.has_peak == 1
-        "{{\"" + r.place + "\": " + int_to_str(r.peak) + "}}"
+        "{\"" + r.place + "\": " + int_to_str(r.peak) + "}"
     else
-        d"{{}}"
+        d"{}"
 
 fn emit_peak_sym(r: Region) -> String ! alloc
     if r.has_sym == 1
-        " peak_symbolic={{\"" + r.place + "\": \"" + r.peak_sym + "\"}}"
+        " peak_symbolic={\"" + r.place + "\": \"" + r.peak_sym + "\"}"
     else
         d""
 
@@ -338,13 +338,13 @@ fn emit_region(r: Region) -> String ! alloc
     emit_region_ops(r.ops, 0, list_len(r.ops), acc)
 
 fn emit_op_matmul(op: FOp) -> String ! alloc
-    "    Matmul {{ lhs: " + ir_q() + op.a + ir_q() + ", rhs: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }}\n"
+    "    Matmul { lhs: " + ir_q() + op.a + ir_q() + ", rhs: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }\n"
 
 fn emit_op_epilogue(op: FOp) -> String ! alloc
-    "    MapEpilogue {{ op: " + ir_q() + op.a + ir_q() + ", input: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }}  # fused epilogue, no intermediate buffer\n"
+    "    MapEpilogue { op: " + ir_q() + op.a + ir_q() + ", input: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }  # fused epilogue, no intermediate buffer\n"
 
 fn emit_op_softmax(op: FOp) -> String ! alloc
-    "    Softmax {{ input: " + ir_q() + op.a + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }}\n"
+    "    Softmax { input: " + ir_q() + op.a + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }\n"
 
 fn emit_column_scalar(op: FOp) -> String ! alloc
     if op.nslots > 5
@@ -363,7 +363,7 @@ fn emit_column_scalar(op: FOp) -> String ! alloc
 
 fn emit_op_column(op: FOp) -> String ! alloc
     sc = emit_column_scalar(op)
-    "    ColumnBin {{ op: " + ir_q() + op.a + ir_q() + ", left: " + ir_q() + op.b + ir_q() + ", right: " + ir_q() + op.c + ir_q() + ", dest: " + ir_q() + op.d + ir_q() + ", scalar: " + sc + " }}\n"
+    "    ColumnBin { op: " + ir_q() + op.a + ir_q() + ", left: " + ir_q() + op.b + ir_q() + ", right: " + ir_q() + op.c + ir_q() + ", dest: " + ir_q() + op.d + ir_q() + ", scalar: " + sc + " }\n"
 
 fn emit_one_op(op: FOp) -> String ! alloc
     k = op.kind
@@ -843,15 +843,15 @@ fn lit_pool_find(s: Int, texts: Int, i: Int, n: Int) -> Int ! alloc
 fn sal_lit_decl_n(s: String, name: String, n: Int) -> String ! alloc
     init = select_str(str_len(s) == 0, d"\"\"", c_string_init(s))
     arr = n + 1
-    acc = d"static const struct {{ int64_t cap; int64_t len; char b["
+    acc = d"static const struct { int64_t cap; int64_t len; char b["
     acc = acc + int_to_str(arr)
-    acc = acc + "]; }} __attribute__((aligned(16))) "
+    acc = acc + "]; } __attribute__((aligned(16))) "
     acc = acc + name
-    acc = acc + " = {{ 0, "
+    acc = acc + " = { 0, "
     acc = acc + int_to_str(n)
     acc = acc + ", "
     acc = acc + init
-    acc + " }};\n"
+    acc + " };\n"
 
 fn sal_lit_decl(s: String, name: String) -> String ! alloc
     if str_len(s) == 0
@@ -877,7 +877,7 @@ fn ensure_sal_lit(s: Int, pool: Int) -> String ! alloc
         cast + ".b)"
 
 fn runtime_decls() -> String ! alloc
-    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_enum_new(int64_t tag, int64_t n);\nint64_t sal_enum_set(int64_t v, int64_t i, int64_t x);\nint64_t sal_enum_tag(int64_t v);\nint64_t sal_enum_owns(int64_t v, int64_t i);\nint64_t sal_enum_field(int64_t v, int64_t i);\nvoid sal_list_free(void *v);\nvoid *sal_list_new_desc(const char *desc);\nvoid sal_dict_free(void *v);\nvoid *sal_dict_new(int64_t key_kind, int64_t val_kind);\nvoid sal_enum_free(int64_t v);\nvoid sal_bytes_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) {{ return ((int64_t *)(uintptr_t)p)[-2]; }}\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) {{ int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }}\nstatic float *sal_tn_alloc(int64_t n) {{ return sal_tn_alloc_bytes(n, 4); }}\nstatic float *sal_tn_from(int64_t raw, int64_t n) {{ float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }}\nstatic float *sal_tn_copy(int64_t p) {{ if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }}\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) {{ double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) {{ case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; }} int64_t o; __builtin_memcpy(&o, &r, 8); return o; }}\n\n"
+    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_enum_new(int64_t tag, int64_t n);\nint64_t sal_enum_set(int64_t v, int64_t i, int64_t x);\nint64_t sal_enum_tag(int64_t v);\nint64_t sal_enum_owns(int64_t v, int64_t i);\nint64_t sal_enum_field(int64_t v, int64_t i);\nvoid sal_list_free(void *v);\nvoid *sal_list_new_desc(const char *desc);\nvoid sal_dict_free(void *v);\nvoid *sal_dict_new(int64_t key_kind, int64_t val_kind);\nvoid sal_enum_free(int64_t v);\nvoid sal_bytes_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) { return ((int64_t *)(uintptr_t)p)[-2]; }\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) { int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }\nstatic float *sal_tn_alloc(int64_t n) { return sal_tn_alloc_bytes(n, 4); }\nstatic float *sal_tn_from(int64_t raw, int64_t n) { float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }\nstatic float *sal_tn_copy(int64_t p) { if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) { double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) { case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; } int64_t o; __builtin_memcpy(&o, &r, 8); return o; }\n\n"
 
 fn names_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1179,11 +1179,11 @@ fn emit_c_logic(op: String, left: Expr, right: Expr, user: Int, stmts: Int, tc: 
         t = tmp_fresh(tc)
         _a = vec_push(stmts, str_as_int("  int64_t " + t + " = " + l + ";\n"))
         if str_eq(op, "and") == 1
-            _b = vec_push(stmts, str_as_int("  if (" + t + ") {{\n"))
+            _b = vec_push(stmts, str_as_int("  if (" + t + ") {\n"))
         else
-            _b = vec_push(stmts, str_as_int("  if (!" + t + ") {{\n"))
+            _b = vec_push(stmts, str_as_int("  if (!" + t + ") {\n"))
         _c = emit_c_move_stmts(sub, 0, vec_len(sub), stmts)
-        _d = vec_push(stmts, str_as_int("    " + t + " = (" + r + ") != 0;\n  }}\n"))
+        _d = vec_push(stmts, str_as_int("    " + t + " = (" + r + ") != 0;\n  }\n"))
         t
 
 fn emit_c_move_stmts(sub: Int, i: Int, n: Int, stmts: Int) -> Int ! alloc
@@ -1488,13 +1488,13 @@ fn emit_c_lambda_call(idx: Int, arg_parts: Int, user: Int, stmts: Int, tc: Tc) -
         str_from_int(vec_get(arg_parts, 0))
     else
         d"0"
-    _b = vec_push(stmts, str_as_int("  {{ int64_t " + list_get(tc.lam_params, idx) + " = " + arg + ";\n"))
+    _b = vec_push(stmts, str_as_int("  { int64_t " + list_get(tc.lam_params, idx) + " = " + arg + ";\n"))
     slen = tenv_len(tc.env)
     body_stmts = vec_new()
     val = emit_c_expr(list_get(tc.lam_bodies, idx), user, body_stmts, tc)
     _r = tenv_truncate(tc.env, slen)
     _c = append_stmts(stmts, body_stmts)
-    _d = vec_push(stmts, str_as_int("  " + tname + " = " + val + "; }}\n"))
+    _d = vec_push(stmts, str_as_int("  " + tname + " = " + val + "; }\n"))
     tname
 
 # `try x`: return the operand unchanged when it is the failing variant
@@ -1547,9 +1547,9 @@ fn emit_c_variant_make(tag: Int, arg_parts: Int) -> String ! alloc
     if vec_len(arg_parts) == 0
         int_to_str(tag) + "LL"
     else
-        pref = "({{ int64_t __e = sal_enum_new(" + int_to_str(tag) + "LL, " + int_to_str(vec_len(arg_parts)) + "LL); "
+        pref = "({ int64_t __e = sal_enum_new(" + int_to_str(tag) + "LL, " + int_to_str(vec_len(arg_parts)) + "LL); "
         sets = emit_c_variant_sets(arg_parts, 0, pref)
-        sets + "__e; }})"
+        sets + "__e; })"
 
 fn emit_c_variant_sets(arg_parts: Int, i: Int, acc: String) -> String ! alloc
     if i >= vec_len(arg_parts)
@@ -1561,9 +1561,9 @@ fn emit_c_variant_sets(arg_parts: Int, i: Int, acc: String) -> String ! alloc
 # Tensors are `float *` buffers from sal_place_malloc; the value is the pointer.
 fn emit_c_tensor_lit(data: List[String]) -> String ! alloc
     n = list_len(data)
-    acc = "({{ float *__t = (float *)sal_place_malloc(" + int_to_str(n * 4 + 4) + ", 0); "
+    acc = "({ float *__t = (float *)sal_place_malloc(" + int_to_str(n * 4 + 4) + ", 0); "
     acc = emit_c_tensor_cells(data, 0, n, acc)
-    acc + "(int64_t)(uintptr_t)__t; }})"
+    acc + "(int64_t)(uintptr_t)__t; })"
 
 fn emit_c_tensor_cells(data: List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -1574,7 +1574,7 @@ fn emit_c_tensor_cells(data: List[String], i: Int, n: Int, acc: String) -> Strin
 
 fn emit_c_load(arg_parts: Int, stmts: Int) -> String ! alloc
     _p = vec_push(stmts, str_as_int(d"  extern int64_t sal_load_f32();\n"))
-    "({{ int64_t __n = 0; (int64_t)(uintptr_t)sal_load_f32((const char *)(uintptr_t)(" + arg_at(arg_parts, 0) + "), &__n); }})"
+    "({ int64_t __n = 0; (int64_t)(uintptr_t)sal_load_f32((const char *)(uintptr_t)(" + arg_at(arg_parts, 0) + "), &__n); })"
 
 fn emit_c_matmul(args_e: List[Expr], arg_parts: Int, stmts: Int, tc: Tc) -> String ! alloc
     ta = str_as_int(texpr_type(tc.env, list_get(args_e, 0)))
@@ -1610,7 +1610,7 @@ fn emit_c_matmul_exit(tc: Tc, is_main: Int, val: String) -> String ! alloc
     else
         out = str_from_int(q)
         cnt = int_to_str(list_get(tc.mm_n, 0))
-        "({{ double __s = 0; for (int __i = 0; __i < " + cnt + "; __i++) __s += " + out + "[__i]; (int64_t)__s; }})"
+        "({ double __s = 0; for (int __i = 0; __i < " + cnt + "; __i++) __s += " + out + "[__i]; (int64_t)__s; })"
 
 # `print` of a String prints its text, of anything else the integer.
 fn emit_c_print(args_e: List[Expr], arg_parts: Int, tc: Tc) -> String ! alloc
@@ -1632,9 +1632,9 @@ fn emit_c_struct_ctor(arg_parts: Int) -> String ! alloc
     elsif n == 1
         str_from_int(vec_get(arg_parts, 0))
     else
-        acc = "({{ int64_t *__s = (int64_t *)malloc(" + int_to_str(n * 8) + "); "
+        acc = "({ int64_t *__s = (int64_t *)malloc(" + int_to_str(n * 8) + "); "
         acc = emit_c_ctor_slots(arg_parts, 0, n, acc)
-        acc + "(int64_t)__s; }})"
+        acc + "(int64_t)__s; })"
 
 fn emit_c_ctor_slots(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -1678,7 +1678,7 @@ fn emit_c_field_copy_ident(b: Expr, user: Int, stmts: Int, tc: Tc) -> Int ! allo
     else
         name = emit_c_expr(b, user, stmts, tc)
         bytes = int_to_str(list_len(list_get(tc.env.structs, si).fields) * 8)
-        line = "  " + name + " = ({{ int64_t *__d = (int64_t *)malloc(" + bytes + "); __builtin_memcpy(__d, (int64_t *)(" + name + "), " + bytes + "); (int64_t)__d; }});\n"
+        line = "  " + name + " = ({ int64_t *__d = (int64_t *)malloc(" + bytes + "); __builtin_memcpy(__d, (int64_t *)(" + name + "), " + bytes + "); (int64_t)__d; });\n"
         vec_push(stmts, str_as_int(line))
 
 fn arg_at(args: Int, i: Int) -> String ! alloc
@@ -1955,11 +1955,11 @@ fn pad_args(v: Int, n: Int) -> Int ! alloc
 # Bytes handles point at {uint8_t *data; int64_t len}; accesses are checked.
 fn emit_c_bytes_get(args: Int, width: Int) -> String ! alloc
     w = int_to_str(width)
-    "({{ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); uint64_t __v = 0; __builtin_memcpy(&__v, (char *)__b[0] + __i, " + w + "); (int64_t)__v; }})"
+    "({ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); uint64_t __v = 0; __builtin_memcpy(&__v, (char *)__b[0] + __i, " + w + "); (int64_t)__v; })"
 
 fn emit_c_bytes_set(args: Int, width: Int) -> String ! alloc
     w = int_to_str(width)
-    "({{ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; int64_t __x = " + arg_at(args, 2) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); __builtin_memcpy((char *)__b[0] + __i, &__x, " + w + "); (int64_t)0; }})"
+    "({ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; int64_t __x = " + arg_at(args, 2) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); __builtin_memcpy((char *)__b[0] + __i, &__x, " + w + "); (int64_t)0; })"
 
 fn emit_c_plain_runtime_call(fname: String, args: Int, stmts: Int) -> String ! alloc
     rname = "sal_" + fname
@@ -1971,14 +1971,14 @@ fn emit_c_plain_runtime_call(fname: String, args: Int, stmts: Int) -> String ! a
 fn emit_c_while(cond: Expr, body: TBlock, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     cond_stmts = vec_new()
     c = emit_c_expr(cond, user, cond_stmts, tc)
-    _q = vec_push(stmts, str_as_int(d"  while (1) {{\n"))
+    _q = vec_push(stmts, str_as_int(d"  while (1) {\n"))
     _a = append_stmts(stmts, cond_stmts)
     line = "    if (!(" + c + ")) break;\n"
     _b = vec_push(stmts, str_as_int(line))
     body_stmts = vec_new()
     _tv = emit_c_block(body, user, body_stmts, tc)
     _c = append_stmts(stmts, body_stmts)
-    _d = vec_push(stmts, str_as_int(d"  }}\n"))
+    _d = vec_push(stmts, str_as_int(d"  }\n"))
     d"0"
 
 fn emit_c_if(cond: Expr, then_b: TBlock, else_in: TBlock, elsifs: List[TElsif], user: Int, stmts: Int, tc: Tc) -> String ! alloc
@@ -1986,7 +1986,7 @@ fn emit_c_if(cond: Expr, then_b: TBlock, else_in: TBlock, elsifs: List[TElsif], 
     tname = tmp_fresh(tc)
     line = "  int64_t " + tname + ";\n"
     _p = vec_push(stmts, str_as_int(line))
-    line2 = "  if (" + c + ") {{\n"
+    line2 = "  if (" + c + ") {\n"
     _q = vec_push(stmts, str_as_int(line2))
     slen = tenv_len(tc.env)
     then_stmts = vec_new()
@@ -1995,7 +1995,7 @@ fn emit_c_if(cond: Expr, then_b: TBlock, else_in: TBlock, elsifs: List[TElsif], 
     _a = append_stmts(stmts, then_stmts)
     line3 = "    " + tname + " = " + then_val + ";\n"
     _r = vec_push(stmts, str_as_int(line3))
-    _s = vec_push(stmts, str_as_int(d"  }} else {{\n"))
+    _s = vec_push(stmts, str_as_int(d"  } else {\n"))
     else_stmts = vec_new()
     else_b = elsifs_else_block(else_in, elsifs)
     else_val = emit_c_block(else_b, user, else_stmts, tc)
@@ -2003,7 +2003,7 @@ fn emit_c_if(cond: Expr, then_b: TBlock, else_in: TBlock, elsifs: List[TElsif], 
     _b = append_stmts(stmts, else_stmts)
     line4 = "    " + tname + " = " + else_val + ";\n"
     _t = vec_push(stmts, str_as_int(line4))
-    _u = vec_push(stmts, str_as_int(d"  }}\n"))
+    _u = vec_push(stmts, str_as_int(d"  }\n"))
     tname
 
 # `match` over Int: integer literals, `_` and a binding name. Variant patterns
@@ -2023,7 +2023,7 @@ fn emit_c_match_close(stmts: Int, n: Int) -> Int ! alloc
     if n <= 0
         0
     else
-        _p = vec_push(stmts, str_as_int(d"  }}\n"))
+        _p = vec_push(stmts, str_as_int(d"  }\n"))
         emit_c_match_close(stmts, n - 1)
 
 # Emits the arm body into the then-block; returns the C name of nothing.
@@ -2034,7 +2034,7 @@ fn emit_c_arm_body(arm: TArm, tname: String, user: Int, stmts: Int, tc: Tc, slen
     _m = append_stmts(stmts, body_stmts)
     vec_push(stmts, str_as_int("    " + tname + " = " + val + ";\n"))
 
-# Returns the number of `else {{` blocks still open.
+# Returns the number of `else {` blocks still open.
 fn emit_c_match_arms(arms: List[TArm], i: Int, n: Int, sname: String, sty: String, tname: String, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
     if i >= n
         0
@@ -2043,9 +2043,9 @@ fn emit_c_match_arms(arms: List[TArm], i: Int, n: Int, sname: String, sty: Strin
         kind = arm.pat.kind
         slen = tenv_len(tc.env)
         if kind == 2
-            _h = vec_push(stmts, str_as_int("  if (" + sname + " == " + int_to_str(arm.pat.ival) + "LL) {{\n"))
+            _h = vec_push(stmts, str_as_int("  if (" + sname + " == " + int_to_str(arm.pat.ival) + "LL) {\n"))
             _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
-            _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
+            _e = vec_push(stmts, str_as_int(d"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif kind == 3
             code = variant_code(tc, str_as_int(arm.pat.name))
@@ -2053,25 +2053,25 @@ fn emit_c_match_arms(arms: List[TArm], i: Int, n: Int, sname: String, sty: Strin
                 d"0"
             else
                 "sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL"
-            _h = vec_push(stmts, str_as_int("  if (" + cond + ") {{\n"))
+            _h = vec_push(stmts, str_as_int("  if (" + cond + ") {\n"))
             _pb = emit_c_variant_binds(arm.pat.args, 0, sname, stmts, tc, arm.pat.name, sty)
             _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
-            _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
+            _e = vec_push(stmts, str_as_int(d"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif ident_pat_is_variant(arm.pat, tc) == 1
             code = variant_code(tc, str_as_int(arm.pat.name))
-            _h = vec_push(stmts, str_as_int("  if (sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL) {{\n"))
+            _h = vec_push(stmts, str_as_int("  if (sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL) {\n"))
             _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
-            _e = vec_push(stmts, str_as_int(d"  }} else {{\n"))
+            _e = vec_push(stmts, str_as_int(d"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         else
-            _h = vec_push(stmts, str_as_int(d"  {{\n"))
+            _h = vec_push(stmts, str_as_int(d"  {\n"))
             if kind == 1
                 _bind = vec_push(stmts, str_as_int("  int64_t " + arm.pat.name + " = " + sname + ";\n"))
             else
                 _bind = 0
             _x = emit_c_arm_body(arm, tname, user, stmts, tc, slen)
-            _e = vec_push(stmts, str_as_int(d"  }}\n"))
+            _e = vec_push(stmts, str_as_int(d"  }\n"))
             0
 
 fn ident_pat_is_variant(pat: TPat, tc: Tc) -> Int ! alloc
@@ -2244,7 +2244,7 @@ fn emit_c_fn_header(f: TFn, linkable: Int, allow_main: Int) -> String ! alloc
         else
             emit_c_fn_header_body(f.name, f.params, linkable)
     elsif str_eq(f.name, d"main") == 1
-        d"int main(int argc, char **argv) {{\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n"
+        d"int main(int argc, char **argv) {\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n"
     else
         emit_c_fn_header_body(f.name, f.params, linkable)
 
@@ -2254,13 +2254,13 @@ fn emit_c_fn_header_body(name: String, params: List[TParam], linkable: Int) -> S
     acc = pref + m
     acc = acc + "("
     acc = emit_params_c(params, 0, list_len(params), acc)
-    acc + ") {{\n"
+    acc + ") {\n"
 
 fn emit_c_fn_footer(is_main: Int, val: String) -> String ! alloc
     if is_main == 1
-        "  return (int)(" + val + ");\n}}\n\n"
+        "  return (int)(" + val + ");\n}\n\n"
     else
-        "  return " + val + ";\n}}\n\n"
+        "  return " + val + ";\n}\n\n"
 
 fn emit_decl_names_filtered(names: Int, i: Int, n: Int, skip: Int, acc: String) -> String ! alloc
     if i >= n
@@ -2388,7 +2388,7 @@ fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main
     # A library root still links as a program, like the bootstrap's entry stub.
     if allow_main == 1
         if fns_have_main(tp.fns, 0, list_len(tp.fns)) == 0
-            acc + "int main(int argc, char **argv) {{\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n  return 0;\n}}\n"
+            acc + "int main(int argc, char **argv) {\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n  return 0;\n}\n"
         else
             acc
     else
@@ -2601,7 +2601,7 @@ fn cir_shaped(cc: Int, dest: String, fname: String, ops: Int, shape: Int) -> Int
 fn cir_relu(cc: Int, dest: String, ops: Int, shape: Int) -> Int ! alloc
     input = cir_arg(ops, 0)
     if vec_get(shape, 0) < 0
-        _p = cc_line(cc, "  {{ extern void sal_panic(const char *); sal_panic(\"tensor op needs a shape known at compile time\"); }}\n")
+        _p = cc_line(cc, "  { extern void sal_panic(const char *); sal_panic(\"tensor op needs a shape known at compile time\"); }\n")
         cir_set(cc, str_as_int(dest), d"0")
     else
         n = "sal_tn_len(" + input + ")"
@@ -2719,7 +2719,7 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: String, args: Int, ops: Int) -> Int
     elsif str_eq(fname, d"sal_attention_f32") == 1
         cir_attention(cc, dest, ops)
     elsif str_eq(fname, d"sal_load") == 1
-        _a = cc_line(cc, "  {{ int64_t __n = 0; int64_t __b = " + cir_rt(cc, d"sal_load_f32", cir_vec2(cir_arg(ops, 0), d"(int64_t)&__n")) + "; " + d + " = (int64_t)(uintptr_t)sal_tn_from(__b, __n); }}\n")
+        _a = cc_line(cc, "  { int64_t __n = 0; int64_t __b = " + cir_rt(cc, d"sal_load_f32", cir_vec2(cir_arg(ops, 0), d"(int64_t)&__n")) + "; " + d + " = (int64_t)(uintptr_t)sal_tn_from(__b, __n); }\n")
         0
     elsif cir_is_stub(fname) == 1
         cir_set(cc, dest, d"0")
@@ -2954,7 +2954,7 @@ fn cir_ret(cc: Int, v: Int) -> Int ! alloc
     if q != 0
         if vec_get(cc, 10) == 1
             out = str_from_int(q)
-            val = "({{ double __s = 0; float *__o = (float *)(uintptr_t)" + out + "; for (int __i = 0; __i < " + int_to_str(vec_get(cc, 8)) + "; __i++) __s += __o[__i]; (int64_t)__s; }})"
+            val = "({ double __s = 0; float *__o = (float *)(uintptr_t)" + out + "; for (int __i = 0; __i < " + int_to_str(vec_get(cc, 8)) + "; __i++) __s += __o[__i]; (int64_t)__s; })"
     if vec_get(cc, 10) == 1
         cc_line(cc, "  return (int)(" + val + ");\n")
     else
@@ -2962,15 +2962,15 @@ fn cir_ret(cc: Int, v: Int) -> Int ! alloc
 
 fn cir_if(cc: Int, inst: Inst) -> Int ! alloc
     dest = ih(inst.dest)
-    _a = cc_line(cc, "  if (" + cir_op(cc, ih(inst.s1)) + ") {{\n")
+    _a = cc_line(cc, "  if (" + cir_op(cc, ih(inst.s1)) + ") {\n")
     _b = cir_insts(cc, inst.b1, 0, list_len(inst.b1))
     _c = cir_if_assign(cc, dest, ih(inst.s2))
     _d = cir_carry_assign(cc, inst.rows, 0, 1)
-    _e = cc_line(cc, "  }} else {{\n")
+    _e = cc_line(cc, "  } else {\n")
     _f = cir_insts(cc, inst.b2, 0, list_len(inst.b2))
     _g = cir_if_assign(cc, dest, ih(inst.s3))
     _h = cir_carry_assign(cc, inst.rows, 0, 2)
-    cc_line(cc, "  }}\n")
+    cc_line(cc, "  }\n")
 
 fn cir_if_assign(cc: Int, dest: Int, val: Int) -> Int ! alloc
     if dest == 0
@@ -2993,12 +2993,12 @@ fn cir_carry_assign(cc: Int, carried: List[Inst], i: Int, which: Int) -> Int ! a
 
 fn cir_while(cc: Int, inst: Inst) -> Int ! alloc
     _a = cir_carry_assign(cc, inst.rows, 0, 1)
-    _b = cc_line(cc, "  while (1) {{\n")
+    _b = cc_line(cc, "  while (1) {\n")
     _c = cir_insts(cc, inst.b1, 0, list_len(inst.b1))
     _d = cc_line(cc, "  if (!(" + cir_op(cc, ih(inst.s1)) + ")) break;\n")
     _e = cir_insts(cc, inst.b2, 0, list_len(inst.b2))
     _f = cir_carry_assign(cc, inst.rows, 0, 2)
-    cc_line(cc, "  }}\n")
+    cc_line(cc, "  }\n")
 
 # ---- locals ----
 fn cir_add_local(cc: Int, name: Int) -> Int ! alloc
@@ -3074,7 +3074,7 @@ fn cir_fn(f: TFn, irf: IrFn, user: Int, linkable: Int, allow_main: Int, pool: In
         acc = cir_decl_locals(cc, pnames, header)
         lines = vec_get(cc, 6)
         acc = append_stmt_strings(acc, lines, 0, vec_len(lines))
-        acc + "  return 0;\n}}\n\n"
+        acc + "  return 0;\n}\n\n"
 
 fn select_main(f: TFn, allow_main: Int) -> Int ! alloc
     if allow_main == 1

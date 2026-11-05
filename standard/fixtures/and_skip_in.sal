@@ -1,0 +1,36 @@
+fn differ(a: Int, b: Int) -> Int
+    if a
+        if b
+            1
+        else
+            2
+    else
+        0
+
+fn no_else(a: Int, b: Int) -> Int
+    if a
+        if b
+            1
+        else
+            0
+
+fn extra(a: Int, b: Int) -> Int
+    if a
+        if b
+            1
+        else
+            0
+        a
+    else
+        0
+
+fn with_elsif(a: Int, b: Int, c: Int) -> Int
+    if a
+        if b
+            1
+        else
+            0
+    elsif c
+        2
+    else
+        0

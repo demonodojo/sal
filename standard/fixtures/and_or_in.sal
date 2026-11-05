@@ -1,0 +1,26 @@
+fn f(a: Int, b: Int, c: Int) -> Int
+    if a || b
+        if c
+            1
+        else
+            0
+    else
+        0
+
+fn g(a: Int, b: Int, c: Int) -> Int
+    if a
+        if b || c
+            1
+        else
+            0
+    else
+        0
+
+fn h(a: Int, b: Int, c: Int) -> Int
+    if (a || b)
+        if c || a
+            1
+        else
+            0
+    else
+        0

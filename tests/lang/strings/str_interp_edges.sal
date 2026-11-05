@@ -1,8 +1,8 @@
-# exit: 7
-# "{a}{b}" = 3+2 chars, "[{{x}}]" keeps literal braces (5 chars)
+# exit: 9
+# f"#{a}#{b}" = 3+2 chars, "[{x}]" keeps literal braces (5 chars)
 fn main() -> Int ! alloc
     a = d"abc"
     b = d"de"
-    s = "{a}{b}"
-    t = "{{x}}"
+    s = f"#{a}#{b}"
+    t = "[{x}]"
     str_len(s) + str_len(t) - 1

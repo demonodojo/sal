@@ -24,9 +24,10 @@ El lexer no conoce la gramática de expresiones. Emite tokens e inserta layout:
 4. Un tabulador es `E_PARSE`.
 5. `->` es `Arrow`, `=>` es `FatArrow`, `==` `!=` `<=` `>=` son un token cada uno.
 6. Las palabras clave son las de la SPEC (`fn`, `let`, `if`, `elsif`, `else`, `match`, `on`, `to`, `kernel`, `return`, `import`, `try`, `struct`, `enum`, `frame`, `cpu`, `gpu`, `tpu`, `true`, `false`). `method`, `static` (solo al inicio de un item, seguidos de `Tipo.`), `init` (al inicio de un item, seguido de `Tipo(`), `borrow`, `take`, `io`, `alloc` y `panic` son `IDENT` que el parser reconoce en su sitio. `F32`, `F16`, `BF16` e `I8` también.
-7. `STRING` guarda el texto y, si hay `{IDENT}`, las partes `Lit` e `Interp`. `{{` y `}}` son escape. Otra interpolación es `E_PARSE`.
+7. `STRING` guarda el texto literal (escapes `\`); no escanea interpolación.
 8. Si un `IDENT` es exactamente `d` y el siguiente carácter es `"`, el lexer emite un solo token `DupString` (gramática `DSTRING`) con el contenido de la cadena; el span va desde la `d` hasta la comilla de cierre. El parser lo desazucará a `Call { func: Ident("strdup"), args: [String …] }`.
-9. El lexer cuenta `(` y `[` sin cerrar, fuera de cadenas y comentarios. Con esa profundidad mayor que cero, un salto de línea emite `NEWLINE` y no mide sangría: no hay `INDENT` ni `DEDENT`, y una sangría distinta no es `E_PARSE`. Al cerrar, la profundidad no baja de cero. El parser, con la misma profundidad, ignora `NEWLINE` antes de un operador, un operando, una coma o el cierre. Fuera, un salto de línea sigue terminando la sentencia.
+9. Si un `IDENT` es exactamente `f` y el siguiente carácter es `"`, el lexer emite un token `FString` (gramática `FSTRING`); el span va desde la `f` hasta la comilla de cierre. El parser guarda el texto y, si hay `#{IDENT}`, las partes `Lit` e `Interp`; `##{` es literal. Otra interpolación es `E_PARSE`.
+10. El lexer cuenta `(` y `[` sin cerrar, fuera de cadenas y comentarios. Con esa profundidad mayor que cero, un salto de línea emite `NEWLINE` y no mide sangría: no hay `INDENT` ni `DEDENT`, y una sangría distinta no es `E_PARSE`. Al cerrar, la profundidad no baja de cero. El parser, con la misma profundidad, ignora `NEWLINE` antes de un operador, un operando, una coma o el cierre. Fuera, un salto de línea sigue terminando la sentencia.
 
 Al final del fichero se cierran los `DEDENT` pendientes y se emite `EOF`.
 

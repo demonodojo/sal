@@ -2,6 +2,7 @@ import lexer
 import patch
 import cop_dupstring
 import cop_elsif
+import cop_and
 import cop_stringplus
 import cop_plusliteral
 import cop_unusedbinding
@@ -26,6 +27,7 @@ fn run_all_cops(src: String) -> CopsResult ! alloc
     else
         cop_dupstring(src, lx, offs)
         cop_elsif(src, lx, offs)
+        cop_and(src, lx, offs)
         cop_stringplus(src, lx, offs)
         cop_plusliteral(src, lx, offs)
         cop_unusedbinding(src, lx, offs)
@@ -94,7 +96,7 @@ fn format_off_json(src: String, o: Off) -> String ! alloc
     start = o.start
     endb = o.end
     lc = byte_line_col(src, start, 0, 1, 1)
-    "{{\"code\":\"" + json_escape(o.code) + "\",\"message\":\"" + json_escape(o.msg) + "\",\"span\":{{\"start\":" + start.to_str() + ",\"end\":" + endb.to_str() + ",\"line\":" + lc.line.to_str() + ",\"col\":" + lc.col.to_str() + "}},\"fix\":" + json_fix(o) + "}}"
+    "{\"code\":\"" + json_escape(o.code) + "\",\"message\":\"" + json_escape(o.msg) + "\",\"span\":{\"start\":" + start.to_str() + ",\"end\":" + endb.to_str() + ",\"line\":" + lc.line.to_str() + ",\"col\":" + lc.col.to_str() + "},\"fix\":" + json_fix(o) + "}"
 
 fn print_offs_json(src: String, offs: List[Off]) -> Int ! io, alloc
     print_offs_json_go(src, offs, 0, offs.len())
@@ -153,11 +155,8 @@ fn run_check(path: String, src: String, as_json: Int) -> Int ! io, alloc
 fn wants_json() -> Int ! alloc
     flag = argv(3)
     val = argv(4)
-    if flag.eq("--error-format") == 1
-        if val.eq("json") == 1
-            1
-        else
-            0
+    if flag.eq("--error-format") == 1 && val.eq("json") == 1
+        1
     else
         0
 

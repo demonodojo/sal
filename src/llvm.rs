@@ -1238,6 +1238,16 @@ fn emit_host_tensor_fn(
     }
 
     // Pre-allocate host tensors that feed matmul/load or place_copy.
+    let mut tensor_drops: HashSet<String> = HashSet::new();
+    for inst in &f.instructions {
+        if let IrInst::Call { func, args, .. } = inst {
+            if func == "sal_tensor_free" {
+                if let Some(a) = args.first() {
+                    tensor_drops.insert(a.clone());
+                }
+            }
+        }
+    }
     let mut needed: Vec<String> = Vec::new();
     for inst in &f.instructions {
         match inst {
@@ -1290,7 +1300,23 @@ fn emit_host_tensor_fn(
                     needed.push(src.clone());
                 }
             }
+            IrInst::Call { func, args, .. } if func == "sal_tensor_free" => {
+                for a in args {
+                    if !needed.contains(a) {
+                        needed.push(a.clone());
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+    let owner = match &entry {
+        HostFnEntry::Main => "main",
+        HostFnEntry::User => f.name.as_str(),
+    };
+    for (name, t) in tensors {
+        if t.owner_fn == owner && !needed.contains(name) {
+            needed.push(name.clone());
         }
     }
     for name in &needed {
@@ -1315,7 +1341,9 @@ fn emit_host_tensor_fn(
             }
             ptrs.insert(name.clone(), ptr.clone());
             buf_bytes.insert(name.clone(), nbytes);
-            owned.push(ptr);
+            if !tensor_drops.contains(name) {
+                owned.push(ptr);
+            }
         }
     }
 
@@ -3031,8 +3059,20 @@ fn emit_runtime_or_user_call(
             }
         }
         "sal_tensor_free" => {
-            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
-            s.push_str(&format!("  call void @sal_tensor_free(i64 {a})\n"));
+            let a = args.first().map(String::as_str).unwrap_or("0");
+            let op = if let Some(ptrs) = ptrs.as_ref() {
+                if let Some(p) = ptrs.get(a) {
+                    *tmp += 1;
+                    let h = format!("tf{tmp}");
+                    s.push_str(&format!("  %{h} = ptrtoint ptr %{p} to i64\n"));
+                    format!("%{h}")
+                } else {
+                    i64_operand(a, consts)
+                }
+            } else {
+                i64_operand(a, consts)
+            };
+            s.push_str(&format!("  call void @sal_tensor_free(i64 {op})\n"));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }

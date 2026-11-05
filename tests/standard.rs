@@ -290,6 +290,81 @@ fn standard_method_skip_is_clean() {
     assert_eq!(check.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&check.stderr));
 }
 
+#[test]
+fn standard_fix_and() {
+    let input = read_fixture("and_in.sal");
+    let (dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let want = read_fixture("and_out.sal");
+    assert_eq!(got, want);
+    let path = dir.path().join("input.sal");
+    let path_str = path.to_string_lossy().into_owned();
+    let out2 = run_standard(&["fix", &path_str]);
+    assert_eq!(out2.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out2.stderr));
+    let got2 = fs::read_to_string(&path).expect("read again");
+    assert_eq!(got2, want);
+}
+
+#[test]
+fn standard_check_and_reports() {
+    let path = root()
+        .join("standard/fixtures/and_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Style/And"), "stderr: {err}");
+    assert!(err.contains("use && instead of nested if"), "stderr: {err}");
+}
+
+#[test]
+fn standard_fix_and_or() {
+    let input = read_fixture("and_or_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("and_or_out.sal"));
+}
+
+#[test]
+fn standard_fix_and_two_passes() {
+    let input = read_fixture("and_two_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("and_two_out.sal"));
+}
+
+#[test]
+fn standard_and_skip_is_clean() {
+    let input = read_fixture("and_skip_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, input);
+    let path = root()
+        .join("standard/fixtures/and_skip_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let check = run_standard(&["check", &path]);
+    assert_eq!(check.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&check.stderr));
+}
+
+#[test]
+fn standard_and_comment_blocks_fix() {
+    let input = read_fixture("and_comment_in.sal");
+    let path = root()
+        .join("standard/fixtures/and_comment_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let check = run_standard(&["check", &path]);
+    assert_eq!(check.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&check.stderr);
+    assert!(err.contains("Style/And"), "stderr: {err}");
+    assert!(err.contains("comment blocks auto-fix"), "stderr: {err}");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, input);
+}
+
 /// A binding that is read (also inside `"{n}"`), or the last statement of its block (the value
 /// of the block), is not an offense.
 #[test]

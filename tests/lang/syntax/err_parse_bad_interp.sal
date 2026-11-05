@@ -1,4 +1,4 @@
 # error: E_PARSE
 fn main() -> Int ! alloc
-    s = "a{1}b"
+    s = f"a#{1}b"
     0

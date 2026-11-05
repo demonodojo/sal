@@ -11,6 +11,8 @@ pub enum TokenKind {
     String(String),
     /// `d"…"` — azúcar de `strdup("…")`; el parser desazucara a `Call`.
     DupString(String),
+    /// `f"…"` — cadena con interpolación `#{IDENT}`.
+    FString(String),
     Fn,
     Let,
     If,
@@ -313,7 +315,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     col += 1;
                 }
                 let txt = &source[start..i];
-                if txt == "d" && i < bytes.len() && bytes[i] == b'"' {
+                if (txt == "d" || txt == "f") && i < bytes.len() && bytes[i] == b'"' {
                     let s = read_quoted_string(
                         bytes,
                         source,
@@ -323,8 +325,13 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         start_line,
                         start_col,
                     )?;
+                    let kind = if txt == "d" {
+                        TokenKind::DupString(s)
+                    } else {
+                        TokenKind::FString(s)
+                    };
                     tokens.push(Token {
-                        kind: TokenKind::DupString(s),
+                        kind,
                         span: Span {
                             start: start as u32,
                             end: i as u32,
@@ -354,6 +361,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             single,
             TokenKind::String(_)
                 | TokenKind::DupString(_)
+                | TokenKind::FString(_)
                 | TokenKind::Int(_)
                 | TokenKind::Float(_)
                 | TokenKind::Attr(_)

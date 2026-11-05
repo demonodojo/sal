@@ -3,6 +3,7 @@
   "name": "sal",
   "patterns": [
     { "include": "#comment" },
+    { "include": "#fstring" },
     { "include": "#dstring" },
     { "include": "#string" },
     { "include": "#number" },
@@ -21,15 +22,20 @@
       "name": "comment.line.number-sign.sal",
       "match": "#.*$"
     },
-    "string-content": {
+    "string-escape": {
+      "name": "constant.character.escape.sal",
+      "match": "\\\\."
+    },
+    "fstring-content": {
       "patterns": [
+        { "include": "#string-escape" },
         {
           "name": "constant.character.escape.sal",
-          "match": "\\\\.|\\{\\{|\\}\\}"
+          "match": "##\\{"
         },
         {
           "name": "meta.interpolation.sal",
-          "match": "\\{[A-Za-z_][A-Za-z0-9_]*\\}"
+          "match": "#\\{[A-Za-z_][A-Za-z0-9_]*\\}"
         }
       ]
     },
@@ -37,13 +43,19 @@
       "name": "string.quoted.double.sal",
       "begin": "\"",
       "end": "\"",
-      "patterns": [{ "include": "#string-content" }]
+      "patterns": [{ "include": "#string-escape" }]
     },
     "dstring": {
       "name": "string.quoted.double.sal",
       "begin": "\\bd\"",
       "end": "\"",
-      "patterns": [{ "include": "#string-content" }]
+      "patterns": [{ "include": "#string-escape" }]
+    },
+    "fstring": {
+      "name": "string.quoted.double.interpolated.sal",
+      "begin": "\\bf\"",
+      "end": "\"",
+      "patterns": [{ "include": "#fstring-content" }]
     },
     "number": {
       "name": "constant.numeric.sal",

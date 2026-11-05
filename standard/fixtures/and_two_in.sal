@@ -1,0 +1,11 @@
+fn f(a: Int, b: Int, c: Int) -> Int
+    if a
+        if b
+            if c
+                1
+            else
+                0
+        else
+            0
+    else
+        0

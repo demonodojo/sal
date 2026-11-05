@@ -238,14 +238,14 @@ fn go(r: Result[Int, String]) -> Int ! io, alloc
 fn string_interpolation() {
     let src = "\
 fn greet(name: String) -> String
-    \"Hello, {name}\"
+    f\"Hello, #{name}\"
 ";
     let p = assert_parse(src);
     let Item::Fn(f) = &p.items[0] else { panic!() };
     let Some(Expr::String { value, parts, .. }) = f.body.tail.as_deref() else {
         panic!("expected string");
     };
-    assert_eq!(value, "Hello, {name}");
+    assert_eq!(value, "Hello, #{name}");
     assert_eq!(
         parts,
         &vec![
@@ -295,7 +295,7 @@ fn fmt_idempotent_examples_and_surface() {
     assert_fmt_idempotent(
         "\
 fn greet(name: String) -> String
-    \"Hello, {name}\"
+    f\"Hello, #{name}\"
 ",
     );
     assert_fmt_idempotent(
@@ -560,7 +560,7 @@ fn main() -> String ! alloc
 }
 
 #[test]
-fn dstring_interpolation_parts() {
+fn dstring_no_interpolation() {
     let src = "\
 fn greet(name: String) -> String ! alloc
     d\"Hello, {name}\"
@@ -574,13 +574,7 @@ fn greet(name: String) -> String ! alloc
         panic!("expected string arg");
     };
     assert_eq!(value, "Hello, {name}");
-    assert_eq!(
-        parts,
-        &vec![
-            StringPart::Lit("Hello, ".into()),
-            StringPart::Interp("name".into())
-        ]
-    );
+    assert!(parts.is_empty());
 }
 
 #[test]

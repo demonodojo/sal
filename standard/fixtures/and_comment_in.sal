@@ -1,0 +1,8 @@
+fn f(a: Int, b: Int) -> Int
+    if a
+        if b # keep
+            1
+        else
+            0
+    else
+        0

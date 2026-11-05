@@ -622,8 +622,9 @@ fn scan_struct_box_shell(
                 scan_struct_box_shell(body, copies, shell, loop_depth + 1);
             }
             IrInst::If { then_body, else_body, .. } => {
-                scan_struct_box_shell(then_body, copies, shell, loop_depth);
-                scan_struct_box_shell(else_body, copies, shell, loop_depth);
+                // A copy inside a branch does not dominate the function return.
+                scan_struct_box_shell(then_body, copies, shell, loop_depth + 1);
+                scan_struct_box_shell(else_body, copies, shell, loop_depth + 1);
             }
             IrInst::Call { func, args, dest, .. } => {
                 if func == "sal_list_get" || func == "sal_list_pop" {

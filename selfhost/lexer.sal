@@ -111,6 +111,9 @@ fn TK_DOT() -> Int
 fn TK_DSTRING() -> Int
     36
 
+fn TK_FSTRING() -> Int
+    59
+
 fn TK_STRUCT() -> Int
     37
 
@@ -447,52 +450,44 @@ fn string_end(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
     str_skip(src, i, 7, 0)
 
-fn unescape_braces(s: String, i: Int, n: Int, acc: String) -> String ! alloc
+# `##{` in an f-string becomes the literal `#{`.
+fn f_unescape_hash_lit(s: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         c = str_char(s, i)
-        if c == 123
+        if c == 35
             if i + 1 < n
-                c2 = str_char(s, i + 1)
-                if c2 == 123
-                    piece = char_to_str(123)
-                    acc2 = acc + piece
-                    free(piece)
-                    unescape_braces(s, i + 2, n, acc2)
+                if str_char(s, i + 1) == 35
+                    if i + 2 < n
+                        if str_char(s, i + 2) == 123
+                            acc2 = acc + d"#" + char_to_str(123)
+                            f_unescape_hash_lit(s, i + 3, n, acc2)
+                        else
+                            piece = char_to_str(35)
+                            acc2 = acc + piece
+                            free(piece)
+                            f_unescape_hash_lit(s, i + 1, n, acc2)
+                    else
+                        piece = char_to_str(35)
+                        acc2 = acc + piece
+                        free(piece)
+                        f_unescape_hash_lit(s, i + 1, n, acc2)
                 else
                     piece = char_to_str(c)
                     acc2 = acc + piece
                     free(piece)
-                    unescape_braces(s, i + 1, n, acc2)
+                    f_unescape_hash_lit(s, i + 1, n, acc2)
             else
                 piece = char_to_str(c)
                 acc2 = acc + piece
                 free(piece)
-                unescape_braces(s, i + 1, n, acc2)
-        elsif c == 125
-            if i + 1 < n
-                c2 = str_char(s, i + 1)
-                if c2 == 125
-                    piece = char_to_str(125)
-                    acc2 = acc + piece
-                    free(piece)
-                    unescape_braces(s, i + 2, n, acc2)
-                else
-                    piece = char_to_str(c)
-                    acc2 = acc + piece
-                    free(piece)
-                    unescape_braces(s, i + 1, n, acc2)
-            else
-                piece = char_to_str(c)
-                acc2 = acc + piece
-                free(piece)
-                unescape_braces(s, i + 1, n, acc2)
+                f_unescape_hash_lit(s, i + 1, n, acc2)
         else
             piece = char_to_str(c)
             acc2 = acc + piece
             free(piece)
-            unescape_braces(s, i + 1, n, acc2)
+            f_unescape_hash_lit(s, i + 1, n, acc2)
 
 fn dedent_to_col(out: Toks, st: List[Int], col: Int) -> Int ! alloc
     top = indent_top(st)
@@ -680,74 +675,73 @@ fn lex_pair(src: String, i: Int, n: Int, out: Toks, st: List[Int], next: Int, ki
     else
         lex_simple(src, i, n, out, st, kind1, 1)
 
-# `{{`/`}}` are literal braces; `{name}` needs an identifier. Anything else is
-# an invalid interpolation (returns 0).
-fn interp_ok(s: String, i: Int, n: Int) -> Int ! alloc
+# `##{` is literal; `#{name}` needs an identifier. Anything else is invalid (0).
+fn f_interp_ok(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         1
     else
         c = str_char(s, i)
-        if c == 123
+        if c == 35
             if i + 1 < n
-                if str_char(s, i + 1) == 123
-                    interp_ok(s, i + 2, n)
+                if str_char(s, i + 1) == 35
+                    if i + 2 < n
+                        if str_char(s, i + 2) == 123
+                            f_interp_ok(s, i + 3, n)
+                        else
+                            f_interp_ok(s, i + 2, n)
+                    else
+                        f_interp_ok(s, i + 2, n)
+                elsif str_char(s, i + 1) == 123
+                    f_interp_name(s, i + 2, n)
                 else
-                    interp_name(s, i + 1, n)
+                    f_interp_ok(s, i + 1, n)
             else
-                0
-        elsif c == 125
-            if i + 1 < n
-                if str_char(s, i + 1) == 125
-                    interp_ok(s, i + 2, n)
-                else
-                    0
-            else
-                0
+                f_interp_ok(s, i + 1, n)
         else
-            interp_ok(s, i + 1, n)
+            f_interp_ok(s, i + 1, n)
 
-# 1 when the text has a `{name}` interpolation (not `{{`).
-fn has_interp(s: String, i: Int, n: Int) -> Int ! alloc
+# 1 when the text has `#{name}` (not `##{`).
+fn f_has_interp(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         c = str_char(s, i)
-        if c == 123
+        if c == 35
             if i + 1 < n
-                if str_char(s, i + 1) == 123
-                    has_interp(s, i + 2, n)
-                else
+                if str_char(s, i + 1) == 35
+                    if i + 2 < n
+                        if str_char(s, i + 2) == 123
+                            f_has_interp(s, i + 3, n)
+                        else
+                            f_has_interp(s, i + 2, n)
+                    else
+                        f_has_interp(s, i + 2, n)
+                elsif str_char(s, i + 1) == 123
                     1
-            else
-                0
-        elsif c == 125
-            if i + 1 < n
-                if str_char(s, i + 1) == 125
-                    has_interp(s, i + 2, n)
                 else
-                    has_interp(s, i + 1, n)
+                    f_has_interp(s, i + 1, n)
             else
-                has_interp(s, i + 1, n)
+                f_has_interp(s, i + 1, n)
         else
-            has_interp(s, i + 1, n)
+            f_has_interp(s, i + 1, n)
 
-fn interp_name(s: String, i: Int, n: Int) -> Int ! alloc
+fn f_interp_name(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif is_ident_start(str_char(s, i)) == 0
         0
     else
-        interp_name_rest(s, i + 1, n)
+        f_interp_name_rest(s, i + 1, n)
 
-fn interp_name_rest(s: String, i: Int, n: Int) -> Int ! alloc
+fn f_interp_name_rest(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         c = str_char(s, i)
         if c == 125
-            interp_ok(s, i + 1, n)
+            f_interp_ok(s, i + 1, n)
         elsif is_ident_char(c) == 1
-            interp_name_rest(s, i + 1, n)
+            f_interp_name_rest(s, i + 1, n)
         else
             0
 
@@ -757,20 +751,22 @@ fn lex_quoted(src: String, i: Int, n: Int, out: Toks, st: List[Int], kind: Int) 
     end = string_end(src, i + 1, n)
     nraw = str_len(raw2)
     empty = d""
-    un = unescape_braces(raw2, 0, nraw, empty)
-    bad = 1 - interp_ok(raw2, 0, nraw)
-    # ival: 1 invalid interpolation, 2 interpolated (text stays raw), 0 plain.
-    ival = if bad == 1
-        1
-    elsif has_interp(raw2, 0, nraw) == 1
-        2
+    if kind == TK_FSTRING()
+        bad = 1 - f_interp_ok(raw2, 0, nraw)
+        # ival: 1 invalid, 2 interpolated (text stays raw), 0 plain f-string.
+        ival = if bad == 1
+            1
+        elsif f_has_interp(raw2, 0, nraw) == 1
+            2
+        else
+            0
+        if ival == 2
+            _p = tok_push(out, kind, raw2, ival)
+        else
+            un = f_unescape_hash_lit(raw2, 0, nraw, empty)
+            _p = tok_push(out, kind, un, ival)
     else
-        0
-    text = if ival == 2
-        raw2
-    else
-        un
-    _p = tok_push(out, kind, text, ival)
+        _p = tok_push(out, kind, raw2, 0)
     j = end
     if end < n
         j = end + 1
@@ -809,6 +805,19 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
                 if str_char(src, end) == 34
                     free(text)
                     lex_quoted(src, end, n, out, st, TK_DSTRING())
+                else
+                    kind = kw_kind(text)
+                    _p = tok_push(out, kind, text, 0)
+                    lex_go(src, end, n, out, st, 0)
+            else
+                kind = kw_kind(text)
+                _p = tok_push(out, kind, text, 0)
+                lex_go(src, end, n, out, st, 0)
+        elsif str_eq(text, "f") == 1
+            if end < n
+                if str_char(src, end) == 34
+                    free(text)
+                    lex_quoted(src, end, n, out, st, TK_FSTRING())
                 else
                     kind = kw_kind(text)
                     _p = tok_push(out, kind, text, 0)

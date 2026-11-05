@@ -67,11 +67,8 @@ fn is_ws(c: Int) -> Int
         0
 
 fn is_digit(c: Int) -> Int
-    if c >= 48
-        if c <= 57
-            1
-        else
-            0
+    if c >= 48 && c <= 57
+        1
     else
         0
 
