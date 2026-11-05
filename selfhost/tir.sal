@@ -69,6 +69,13 @@ fn ti_slot_s(v: Int, i: Int) -> String ! alloc
 fn ti_mk(kind: Int, dest: String, s1: String, s2: String, s3: String, s4: String, s5: String, n1: Int, n2: Int, n3: Int, strs: List[String], b1: List[Inst], b2: List[Inst], rows: List[Inst]) -> Inst ! alloc
     Inst(kind, dest, s1, s2, s3, s4, s5, n1, n2, n3, strs, b1, b2, rows)
 
+# The shape handle of a call (0 when the call carries none); it travels in `n2`.
+fn ti_call_shape(h: Int) -> Int ! alloc
+    if vec_len(h) > 5
+        vec_get(h, 5)
+    else
+        0
+
 fn ti_no_insts() -> List[Inst] ! alloc
     list_new[Inst]()
 
@@ -130,7 +137,7 @@ fn ti_inst(h: Int) -> Inst ! alloc
     elsif k == II_TUN()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), d"", ti_slot_s(h, 6), vec_get(h, 3), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CALL()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 4), 0, 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 4), ti_call_shape(h), 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_PLACE()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_RET()

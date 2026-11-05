@@ -1,0 +1,11 @@
+# exit: 7
+# A variant with fields is in scope when a plain import (no `as`) defines it, even if an aliased
+# module defines a variant of the same name: only the alias-only enums are closed (SPEC, Módulos).
+import "mods/en_flat.sal"
+import "mods/en1.sal" as one
+
+fn main() -> Int
+    c = pickt()
+    match c
+        Green(n) => n
+        _ => 0

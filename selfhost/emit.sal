@@ -2517,8 +2517,86 @@ fn cir_call(cc: Int, inst: Inst) -> Int ! alloc
     ops = cir_ops(cc, args, 0, vec_len(args), vec_new())
     if inst.n1 == 0
         cir_call_free(cc, fname, ops)
+    elsif cir_shaped_call(fname, inst.n2) == 1
+        cir_shaped(cc, inst.dest, fname, ops, inst.n2)
     else
         cir_call_dest(cc, dest, fname, args, ops)
+
+# Calls that carry a tensor shape (`ir_call_shaped`): the shape handle is non-zero.
+fn cir_shaped_call(fname: String, shape: Int) -> Int ! alloc
+    if shape == 0
+        0
+    elsif str_eq(fname, d"sal_softmax_axis_f32") == 1
+        1
+    elsif str_eq(fname, d"sal_reduce") == 1
+        1
+    elsif str_eq(fname, d"sal_relu") == 1
+        1
+    else
+        0
+
+fn cir_shaped(cc: Int, dest: String, fname: String, ops: Int, shape: Int) -> Int ! alloc
+    if str_eq(fname, d"sal_softmax_axis_f32") == 1
+        cir_softmax_axis(cc, dest, ops, shape)
+    elsif str_eq(fname, d"sal_relu") == 1
+        cir_relu(cc, dest, ops, shape)
+    else
+        cir_reduce(cc, dest, ops, shape)
+
+# `relu` of a buffer whose shape is not known at compile time panics, as the bootstrap does.
+fn cir_relu(cc: Int, dest: String, ops: Int, shape: Int) -> Int ! alloc
+    input = cir_arg(ops, 0)
+    if vec_get(shape, 0) < 0
+        _p = cc_line(cc, "  {{ extern void sal_panic(const char *); sal_panic(\"tensor op needs a shape known at compile time\"); }}\n")
+        cir_set(cc, str_as_int(dest), d"0")
+    else
+        n = "sal_tn_len(" + input + ")"
+        _a = cc_line(cc, "  " + dest + " = " + cir_tn_alloc(n) + ";\n")
+        _b = cc_line(cc, "  " + cir_call_expr(cc, d"sal_relu_f32", cir_vec3(dest, input, n)) + ";\n")
+        0
+
+# `softmax` over the last axis of a matrix, in place: the kernel takes (rows, row length). Unknown
+# shapes are one row of the whole buffer (the bootstrap leaves them to the length of the input).
+fn cir_softmax_axis(cc: Int, dest: String, ops: Int, shape: Int) -> Int ! alloc
+    input = cir_arg(ops, 0)
+    rows = vec_get(shape, 0)
+    cols = vec_get(shape, 1)
+    _x = cc_line(cc, "  extern void sal_softmax_axis_f32(float *, int64_t, int64_t);\n")
+    if rows < 0
+        _y = cc_line(cc, "  sal_softmax_axis_f32((float *)(uintptr_t)" + input + ", 1, sal_tn_len(" + input + "));\n")
+    else
+        _y = cc_line(cc, "  sal_softmax_axis_f32((float *)(uintptr_t)" + input + ", " + int_to_str(rows) + ", " + int_to_str(cols) + ");\n")
+    cir_set(cc, str_as_int(dest), input)
+
+# `reduce` of a matrix along an axis (`(outer, axis_len, inner)` as the bootstrap computes it);
+# the result is a fresh buffer of `outer * inner` floats. A shape or axis that does not fit is taken as
+# the whole buffer (one row).
+fn cir_reduce(cc: Int, dest: String, ops: Int, shape: Int) -> Int ! alloc
+    input = cir_arg(ops, 0)
+    rows = vec_get(shape, 0)
+    cols = vec_get(shape, 1)
+    axis = vec_get(shape, 2)
+    outer = 1
+    alen = sal_tn_len_text(input)
+    inner = 1
+    if rows < 0
+        _z = 0
+    elsif axis == 0 - 1
+        alen = int_to_str(rows * cols)
+    elsif axis == 0
+        alen = int_to_str(rows)
+        inner = cols
+    elsif axis == 1
+        outer = rows
+        alen = int_to_str(cols)
+    else
+        _z = 0
+    _x = cc_line(cc, "  extern void sal_reduce_strided_f32(const float *, float *, int64_t, int64_t, int64_t);\n")
+    _y = cc_line(cc, "  " + dest + " = (int64_t)(uintptr_t)sal_tn_alloc(" + int_to_str(outer * inner) + ");\n")
+    cc_line(cc, "  sal_reduce_strided_f32((const float *)(uintptr_t)" + input + ", (float *)(uintptr_t)" + dest + ", " + int_to_str(outer) + ", " + alen + ", " + int_to_str(inner) + ");\n")
+
+fn sal_tn_len_text(input: String) -> String ! alloc
+    "sal_tn_len(" + input + ")"
 
 fn cir_call_free(cc: Int, fname: String, ops: Int) -> Int ! alloc
     cc_line(cc, "  " + cir_call_expr(cc, fname, ops) + ";\n")

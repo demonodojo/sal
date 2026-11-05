@@ -1,0 +1,4 @@
+import "en_flat.sal"
+
+fn wrap_ok() -> Int
+    0

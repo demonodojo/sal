@@ -1,0 +1,11 @@
+# exit: 7
+# A plain import is transitive: the variants of a module that a flat import imports are in scope too,
+# even when an aliased module defines a variant of the same name.
+import "mods/flat_wrap.sal"
+import "mods/en1.sal" as one
+
+fn main() -> Int
+    c = pickt()
+    match c
+        Green(n) => n
+        _ => 0

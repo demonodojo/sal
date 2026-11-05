@@ -333,6 +333,19 @@ fn resolve_export_link(
     })
 }
 
+/// `alias.nombre` in an expression: an export, or else a variant of the module (`alias.Variante(..)`).
+fn resolve_export_or_variant(
+    ctx: &QualifyCtx<'_>,
+    dep_key: &PathBuf,
+    item: &str,
+    span: Span,
+) -> Result<String, Vec<Diagnostic>> {
+    match resolve_export_link(ctx, dep_key, item, span) {
+        Ok(link) => Ok(link),
+        Err(export_err) => resolve_variant_link(ctx, dep_key, item, span).or(Err(export_err)),
+    }
+}
+
 fn resolve_variant_link(
     ctx: &QualifyCtx<'_>,
     dep_key: &PathBuf,
@@ -647,7 +660,7 @@ fn qualify_expr(expr: &mut Expr, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnos
         Expr::Field { base, field, span } => {
             if let Expr::Ident { name: qual, .. } = &**base {
                 if let Some(dep) = qualifier_dep(ctx, qual) {
-                    let link = resolve_export_link(ctx, &dep, field, *span)?;
+                    let link = resolve_export_or_variant(ctx, &dep, field, *span)?;
                     *expr = Expr::Ident {
                         name: link,
                         span: *span,
@@ -753,7 +766,7 @@ fn qualify_pattern(pat: &mut Pattern, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Di
             args,
             span,
         } => {
-            if let Some(q) = qual.take() {
+            if let Some(q) = qual.clone() {
                 let dep = qualifier_dep(ctx, &q).ok_or_else(|| {
                     vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -761,7 +774,9 @@ fn qualify_pattern(pat: &mut Pattern, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Di
                         *span,
                     )]
                 })?;
-                let _ = resolve_export_link(ctx, &dep, name, *span)?;
+                // `alias.Variante` names a variant of the module (SPEC: `import … as alias`
+                // gives `alias.nombre` for calls, types and variant patterns); enums are not exports.
+                // The qualifier stays on the pattern: the type check reads it.
                 let vlink = resolve_variant_link(ctx, &dep, name, *span)?;
                 *name = vlink;
             }

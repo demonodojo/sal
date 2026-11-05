@@ -1,0 +1,8 @@
+# error: E_TYPE
+import "mods/en1.sal" as one
+
+fn main() -> Int
+    c = one.pick1()
+    match c
+        Green(n) => n
+        _ => 0

@@ -177,7 +177,25 @@ fn build_export_links_go(order: Graph, i: Int, n: Int, proot: String, links: Int
         tp = list_get(order.progs, i)
         links2 = push_fn_links_go(order, n, key, modid, tp.fns, 0, list_len(tp.fns), links)
         links3 = push_struct_links_go(order, n, key, modid, tp.structs, 0, list_len(tp.structs), links2)
-        build_export_links_go(order, i + 1, n, proot, links3)
+        links4 = push_variant_links_go(key, tp.enums, 0, list_len(tp.enums), links3)
+        build_export_links_go(order, i + 1, n, proot, links4)
+
+# `alias.Variante` names a variant of the module (SPEC: enums are not exports). Variants keep their
+# names in the selfhost, so the link is the name itself.
+fn push_variant_links_go(key: Int, enums: List[TEnum], i: Int, en: Int, links: Int) -> Int ! alloc
+    if i >= en
+        links
+    else
+        links2 = push_one_enum_variants(key, list_get(enums, i).variants, 0, list_len(list_get(enums, i).variants), links)
+        push_variant_links_go(key, enums, i + 1, en, links2)
+
+fn push_one_enum_variants(key: Int, vs: List[TVariant], j: Int, vn: Int, links: Int) -> Int ! alloc
+    if j >= vn
+        links
+    else
+        nm = str_as_int(list_get(vs, j).name)
+        links2 = links_push(links, key, nm, nm)
+        push_one_enum_variants(key, vs, j + 1, vn, links2)
 
 fn push_fn_links_go(order: Graph, n: Int, key: Int, modid: String, fns: List[TFn], i: Int, fn_n: Int, links: Int) -> Int ! alloc
     if i >= fn_n
@@ -324,7 +342,7 @@ fn qualify_type_handle(ty: Int, ctx: Int, links: Int) -> Int ! alloc
     if ty == 0
         0
     else
-        s = str_from_int(ty)
+        s = ts_trim(str_from_int(ty))
         pair = split_qual_member(s)
         if pair == 0
             renamed = map_get(vec_get(ctx, 2), str_as_int(ty_trim_go(s)))
@@ -414,7 +432,124 @@ fn qx(e: Expr, ctx: Int, links: Int) -> Expr ! alloc
         XWhile(cond, body) => XWhile(qx(cond, ctx, links), qx_block(body, ctx, links))
         XTo(place, inner) => XTo(strdup(place), qx(inner, ctx, links))
         XOn(place, body, kern, idx) => XOn(strdup(place), qx_block(body, ctx, links), 0, 0)
+        XMatch(scrut, arms) => XMatch(qx(scrut, ctx, links), qx_arms(arms, 0, list_len(arms), ctx, links, list_new[TArm]()))
         _ => tc_expr(e)
+
+fn qx_arms(xs: List[TArm], i: Int, n: Int, ctx: Int, links: Int, out: List[TArm]) -> List[TArm] ! alloc
+    if i >= n
+        out
+    else
+        a = list_get(xs, i)
+        _a = list_push(out, TArm(qx_pat(a.pat, ctx, links), qx(a.body, ctx, links)))
+        qx_arms(xs, i + 1, n, ctx, links, out)
+
+# Variant patterns of an arm. `alias.V` needs an alias whose module has `V`; a bare `V` must be a
+# variant of this module or of a module that is not reached only through an alias (SPEC, Módulos).
+# The errors go to the list in `ctx[3]`.
+fn qx_pat(p: TPat, ctx: Int, links: Int) -> TPat ! alloc
+    if p.kind == 3
+        qx_variant_check(p, ctx, links)
+    args = list_new[TPat]()
+    _b = qx_pat_list(p.args, 0, list_len(p.args), ctx, links, args)
+    TPat(p.kind, p.ival, strdup(p.name), strdup(p.qual), args)
+
+fn qx_pat_list(xs: List[TPat], i: Int, n: Int, ctx: Int, links: Int, out: List[TPat]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = list_push(out, qx_pat(list_get(xs, i), ctx, links))
+        qx_pat_list(xs, i + 1, n, ctx, links, out)
+
+fn qx_variant_check(p: TPat, ctx: Int, links: Int) -> Int ! alloc
+    if str_len(p.qual) > 0
+        dep = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(strdup(p.qual)))
+        if dep == 0
+            qx_err(ctx, "unknown qualifier `" + p.qual + "`")
+        elsif export_link_lookup(links, dep, str_as_int(strdup(p.name))) == 0
+            qx_err(ctx, "no variant `" + p.name + "` in that module")
+        else
+            0
+    elsif vec_has_name(vec_get(ctx, 4), p.name, 0, vec_len(vec_get(ctx, 4))) == 1
+        0
+    elsif alias_only_variant(vec_get(ctx, 5), links, p.name, 0, vec_len(vec_get(ctx, 5))) == 1
+        if alias_only_variant(vec_get(ctx, 6), links, p.name, 0, vec_len(vec_get(ctx, 6))) == 1
+            0
+        else
+            qx_err(ctx, "variant `" + p.name + "` is only reachable through its import alias")
+    else
+        0
+
+# The modules a module sees flat (imports without `as`, transitively; SPEC, Módulos), as keys in
+# `seen`. Their variants are in scope unqualified.
+fn flat_keys(order: Graph, mi: Int, proot: String, seen: Int) -> Int ! io, alloc
+    tp = list_get(order.progs, mi)
+    ctx = result_unwrap(module_qualifiers(order, mi, proot))
+    flat_keys_go(order, proot, tp, ctx, 0, list_len(tp.imports), seen)
+
+fn flat_keys_go(order: Graph, proot: String, tp: TProgram, ctx: Int, i: Int, n: Int, seen: Int) -> Int ! io, alloc
+    if i >= n
+        0
+    elsif str_len(list_get(tp.aliases, i)) != 0
+        flat_keys_go(order, proot, tp, ctx, i + 1, n, seen)
+    else
+        _a = flat_add_import(order, proot, ctx, implicit_qualifier(list_get(tp.imports, i)), seen)
+        flat_keys_go(order, proot, tp, ctx, i + 1, n, seen)
+
+# The module a plain import names is flat; so are the modules it imports flat.
+fn flat_add_import(order: Graph, proot: String, ctx: Int, qual: String, seen: Int) -> Int ! io, alloc
+    k = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(qual))
+    if k == 0
+        0
+    elsif vec_has_key(seen, k, 0, vec_len(seen)) == 1
+        0
+    else
+        _p = vec_push(seen, k)
+        j = graph_find_by_key(order, str_from_int(k), 0, list_len(order.mods))
+        if j >= 0
+            flat_keys(order, j, proot, seen)
+        else
+            0
+
+fn vec_has_key(v: Int, k: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif vec_get(v, i) == k
+        1
+    else
+        vec_has_key(v, k, i + 1, n)
+
+fn qx_err(ctx: Int, msg: String) -> Int ! alloc
+    vec_push(vec_get(ctx, 3), str_as_int(msg))
+
+fn vec_has_name(v: Int, name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(str_from_int(vec_get(v, i)), name) == 1
+        1
+    else
+        vec_has_name(v, name, i + 1, n)
+
+fn alias_only_variant(deps: Int, links: Int, name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif export_link_lookup(links, vec_get(deps, i), str_as_int(strdup(name))) != 0
+        1
+    else
+        alias_only_variant(deps, links, name, i + 1, n)
+
+fn own_variant_names(enums: List[TEnum], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        own_one_enum(list_get(enums, i).variants, 0, list_len(list_get(enums, i).variants), out)
+        own_variant_names(enums, i + 1, n, out)
+
+fn own_one_enum(vs: List[TVariant], j: Int, n: Int, out: Int) -> Int ! alloc
+    if j >= n
+        0
+    else
+        _a = vec_push(out, str_as_int(strdup(list_get(vs, j).name)))
+        own_one_enum(vs, j + 1, n, out)
 
 fn qx_stmt(s: TStmt, ctx: Int, links: Int) -> TStmt ! alloc
     TStmt(s.kind, strdup(s.name), qx(s.expr, ctx, links), strdup(s.ty), s.is_let, tc_expr(s.target), s.frozen, s.stack, s.id)
@@ -662,10 +797,35 @@ fn qualify_one_module(order: Graph, mi: Int, proot: String, links: Int, clash: I
         ctx = result_unwrap(ctx_step)
         path = mod_path_at(order, mi)
         modid = modid_from_path(path, proot)
-        renames = local_renames(list_get(order.progs, mi), clash, modid)
+        tp = list_get(order.progs, mi)
+        renames = local_renames(tp, clash, modid)
         _c = vec_push(ctx, renames)
+        errs = vec_new()
+        _e = vec_push(ctx, errs)
+        own = vec_new()
+        _o = own_variant_names(tp.enums, 0, list_len(tp.enums), own)
+        _w = vec_push(ctx, own)
+        _d = vec_push(ctx, alias_dep_keys(ctx, tp.aliases, 0, list_len(tp.aliases), vec_new()))
+        flat = vec_new()
+        _fl = flat_keys(order, mi, proot, flat)
+        _g = vec_push(ctx, flat)
         _q = qualify_typed(order, mi, ctx, links, renames)
-        result_ok(0)
+        if vec_len(errs) > 0
+            result_err_str(str_from_int(vec_get(errs, 0)))
+        else
+            result_ok(0)
+
+# The keys of the modules imported under an alias of this module.
+fn alias_dep_keys(ctx: Int, aliases: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        a = list_get(aliases, i)
+        if str_len(a) > 0
+            dep = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(strdup(a)))
+            if dep != 0
+                _p = vec_push(out, dep)
+        alias_dep_keys(ctx, aliases, i + 1, n, out)
 
 fn qualify_all_modules(order: Graph, n: Int, proot: String, links: Int) -> Int ! io, alloc
     clash = build_clash_map(order, n)

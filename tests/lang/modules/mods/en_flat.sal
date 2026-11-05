@@ -1,0 +1,6 @@
+enum Tone
+    Low
+    Green(Int)
+
+fn pickt() -> Tone
+    Green(7)

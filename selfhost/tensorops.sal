@@ -245,19 +245,68 @@ fn lower_softmax_axis_op(cx: Cx, d: Int, args: List[Expr], arg_names: Int) -> In
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     _r = reg_like(cx, d, b)
-    softmax_axis_call(cx, d, input, list_get(args, 1))
+    softmax_axis_call(cx, d, input, b, list_get(args, 1))
 
-fn softmax_axis_call(cx: Cx, d: Int, input: Int, ax: Expr) -> Int ! alloc
+fn softmax_axis_call(cx: Cx, d: Int, input: Int, b: Int, ax: Expr) -> Int ! alloc
     match ax
-        XInt(v) => softmax_axis_emit(cx, d, input, v)
+        XInt(v) => softmax_axis_emit(cx, d, input, b, v)
         _ => 0
 
-fn softmax_axis_emit(cx: Cx, d: Int, input: Int, axis: Int) -> Int ! alloc
+fn softmax_axis_emit(cx: Cx, d: Int, input: Int, b: Int, axis: Int) -> Int ! alloc
     argv = vec_new()
     _a = vec_push(argv, input)
     _b = vec_push(argv, int_text(axis))
-    _p = push_call(cx, d, d"sal_softmax_axis_f32", argv, 1)
+    shape = tensor_shape2(b, axis)
+    _p = ir_push(cx, ir_call_shaped(d, str_as_int(d"sal_softmax_axis_f32"), argv, 1, shape))
     1
+
+# The shape of a bind as `[rows, cols, axis]`; -1 for what is not a concrete matrix.
+fn tensor_shape2(b: Int, axis: Int) -> Int ! alloc
+    shp = vec_new()
+    if b == 0
+        _a = vec_push(shp, 0 - 1)
+        _c = vec_push(shp, 0 - 1)
+    else
+        _a = vec_push(shp, conc_at(b, 0))
+        _c = vec_push(shp, conc_at(b, 1))
+    _d = vec_push(shp, axis)
+    shp
+
+# Concrete extent `i` of a bind (-1 when unknown or absent).
+fn conc_at(b: Int, i: Int) -> Int ! alloc
+    conc = bind_concrete(b)
+    if bind_ndims(b) != 2
+        0 - 1
+    elsif i < vec_len(conc)
+        vec_get(conc, i)
+    else
+        0 - 1
+
+# `reduce(x, axis)` with a literal axis: the runtime reduces the rows or the columns of the matrix.
+fn lower_reduce_op(cx: Cx, d: Int, args: List[Expr], arg_names: Int) -> Int ! alloc
+    input = vec_get(arg_names, 0)
+    b = find_tensor(cx, input)
+    argv = vec_new()
+    _a = vec_push(argv, input)
+    _b = vec_push(argv, vec_get(arg_names, 1))
+    shape = tensor_shape2(b, reduce_axis_of(list_get(args, 1)))
+    _p = ir_push(cx, ir_call_shaped(d, str_as_int(d"sal_reduce"), argv, 1, shape))
+    1
+
+# `relu(x)`: the runtime maps the buffer; a shape not known at compile time is a runtime panic.
+fn lower_relu_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+    input = vec_get(arg_names, 0)
+    b = find_tensor(cx, input)
+    argv = vec_new()
+    _a = vec_push(argv, input)
+    shape = tensor_shape2(b, 0 - 1)
+    _p = ir_push(cx, ir_call_shaped(d, str_as_int(d"sal_relu"), argv, 1, shape))
+    1
+
+fn reduce_axis_of(ax: Expr) -> Int ! alloc
+    match ax
+        XInt(v) => v
+        _ => 0 - 2
 
 # ---- attention / rope / silu ----
 # An axis as the literal the runtime takes: the extent when known, else `name_d<i>`.
@@ -427,6 +476,20 @@ fn lower_tensor_builtin(cx: Cx, fname: String, args: List[Expr], arg_names: Int,
     elsif str_eq(fname, "softmax") == 1
         if n == 2
             lower_softmax_axis_op(cx, d, args, arg_names)
+        else
+            0
+    elsif str_eq(fname, "relu") == 1
+        if n == 1
+            _p = lower_relu_op(cx, d, arg_names)
+            1
+        else
+            0
+    elsif str_eq(fname, "reduce") == 1
+        if n == 2
+            if reduce_axis_of(list_get(args, 1)) == 0 - 2
+                0
+            else
+                lower_reduce_op(cx, d, args, arg_names)
         else
             0
     elsif str_eq(fname, "attention") == 1

@@ -182,6 +182,21 @@ fn type_text_is_mode(tx: String) -> Int ! alloc
     else
         str_eq(tx, "take")
 
+# `alias.Nombre` in a type: the qualifier and the name stay together (`one.Pt`).
+fn parse_type_text_dot(pr: Parser, depth: Int, acc: String) -> String ! alloc
+    _a = p_advance(pr)
+    t = p_peek(pr)
+    if tok_kind(pr, t) != TK_IDENT()
+        acc
+    else
+        tx = tok_text(pr, t)
+        _b = p_advance(pr)
+        base = if str_len(acc) > 0
+            str_slice(acc, 0, str_len(acc) - 1)
+        else
+            d""
+        parse_type_text_go(pr, depth, base + "." + tx + " ")
+
 fn parse_type_text_word(pr: Parser, depth: Int, acc: String, tx: String) -> String ! alloc
     _a = p_advance(pr)
     acc2 = acc + tx
@@ -196,6 +211,8 @@ fn parse_type_text_cont(pr: Parser, depth: Int, acc: String, t: Int, k: Int) -> 
         parse_type_text_go(pr, depth, acc)
     elsif k == TK_IDENT()
         parse_type_text_ident(pr, depth, acc, t)
+    elsif k == TK_DOT()
+        parse_type_text_dot(pr, depth, acc)
     elsif k == TK_ON()
         _a = p_advance(pr)
         piece = d"on "

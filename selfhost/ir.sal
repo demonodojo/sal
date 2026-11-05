@@ -311,6 +311,13 @@ fn ir_call(dest: Int, func: Int, args: Int, has_dest: Int) -> Int ! alloc
     _e = vec_push(inst, has_dest)
     inst
 
+# A call whose tensor shape the C emitter needs (`shape` = vec [rows, cols, axis], -1 when unknown).
+# The slot is not printed: the IR text is the bootstrap's.
+fn ir_call_shaped(dest: Int, func: Int, args: Int, has_dest: Int, shape: Int) -> Int ! alloc
+    inst = ir_call(dest, func, args, has_dest)
+    _a = vec_push(inst, shape)
+    inst
+
 fn ir_place(dest: Int, fr: Int, to_pl: Int) -> Int ! alloc
     inst = vec_new()
     _a = vec_push(inst, II_PLACE())

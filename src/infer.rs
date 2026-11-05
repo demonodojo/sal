@@ -14,6 +14,10 @@ pub struct InferOutput {
 pub struct TypeEnv {
     pub structs: HashMap<String, StructDef>,
     pub enums: HashMap<String, EnumDef>,
+    /// Enums reached only through an import alias (`alias.f()` returns one). They type the
+    /// values and the qualified variants (`alias.Variante`), but their variants are not in scope
+    /// unqualified (SPEC: `import … as alias` does not flatten).
+    pub opaque_enums: HashMap<String, EnumDef>,
     pub frames: HashMap<String, FrameDef>,
     /// Declared function signatures (name → params + return), for user calls.
     pub fns: HashMap<String, (Vec<Type>, Type)>,
@@ -28,11 +32,21 @@ pub struct TypeEnv {
     pub statics: std::collections::HashSet<String>,
 }
 
+impl TypeEnv {
+    /// The enum `name`; an opaque one only when the reference is qualified.
+    pub fn enum_named(&self, name: &str, qualified: bool) -> Option<&EnumDef> {
+        self.enums
+            .get(name)
+            .or_else(|| if qualified { self.opaque_enums.get(name) } else { None })
+    }
+}
+
 impl Default for TypeEnv {
     fn default() -> Self {
         Self {
             structs: HashMap::new(),
             enums: HashMap::new(),
+            opaque_enums: HashMap::new(),
             frames: HashMap::new(),
             fns: HashMap::new(),
             generic_ret: HashMap::new(),
@@ -196,7 +210,7 @@ fn check_type_well_formed(ty: &Type, types: &TypeEnv) -> DiagResult<()> {
                             *span,
                         )]);
                     }
-                } else if let Some(def) = types.enums.get(name) {
+                } else if let Some(def) = types.enum_named(name, true) {
                     if args.len() != def.type_params.len() {
                         return Err(vec![Diagnostic::new(
                             ErrorCode::EType,
@@ -940,7 +954,7 @@ fn bind_pattern(
             Ok(())
         }
         Pattern::Variant {
-            qual: _,
+            qual,
             name: variant,
             args,
             span,
@@ -957,7 +971,7 @@ fn bind_pattern(
                     *span,
                 )]);
             };
-            let Some(edef) = types.enums.get(enum_name) else {
+            let Some(edef) = types.enum_named(enum_name, qual.is_some()) else {
                 // Scrutinee is a named type we do not know as an enum — leave unbound.
                 return Ok(());
             };
@@ -1067,7 +1081,7 @@ fn find_enum_variant_call<'a>(
     variant: &str,
     types: &'a TypeEnv,
 ) -> Option<(&'a EnumDef, &'a crate::ast::EnumVariant)> {
-    for edef in types.enums.values() {
+    for edef in types.enums.values().chain(types.opaque_enums.values()) {
         if let Some(v) = edef.variants.iter().find(|v| v.name == variant) {
             return Some((edef, v));
         }

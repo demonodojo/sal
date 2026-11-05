@@ -436,6 +436,9 @@ pub fn type_env_for_module(
             if let Item::Fn(f) = item {
                 if !env.fns.contains_key(&f.name) {
                     crate::infer::register_fn(&mut env, f);
+                    // The types in its signature come with it (`one.pick1()` is a `Color`),
+                    // but the module's other types stay out of this module's scope.
+                    register_signature_types(&mut env, f, &dep.program.items);
                 }
             }
         }
@@ -549,4 +552,30 @@ pub fn check_module_semantics(
     crate::ownership::check_ownership(&module.program, &out)?;
     crate::device::check_devices(&module.program)?;
     Ok(())
+}
+
+/// Adds to `env` the struct and enum types named in the signature of `f` that `items` define.
+fn register_signature_types(env: &mut crate::infer::TypeEnv, f: &crate::ast::FnDef, items: &[Item]) {
+    let mut names: Vec<String> = f.params.iter().filter_map(|p| named_type(&p.ty)).collect();
+    names.extend(named_type(&f.ret));
+    for name in names {
+        for item in items {
+            match item {
+                Item::Struct(s) if s.name == name && !env.structs.contains_key(&name) => {
+                    env.structs.insert(name.clone(), s.clone());
+                }
+                Item::Enum(e) if e.name == name && !env.opaque_enums.contains_key(&name) => {
+                    env.opaque_enums.insert(name.clone(), e.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn named_type(ty: &crate::ast::Type) -> Option<String> {
+    match ty {
+        crate::ast::Type::Named { name, .. } => Some(name.clone()),
+        _ => None,
+    }
 }
