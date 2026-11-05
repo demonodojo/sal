@@ -73,6 +73,14 @@ enum Commands {
         kind: String,
         file: PathBuf,
     },
+    /// Compare the bootstrap IR of a file with the IR of a selfhost binary.
+    /// Prints the first differing line; exits 1 when they differ.
+    Parity {
+        file: PathBuf,
+        /// Selfhost binary (default: target/sal-out/selfhost-stage2, from `sal selfhost`).
+        #[arg(long)]
+        selfhost: Option<PathBuf>,
+    },
     /// Bootstrap selfhost, then recompile it with that binary (stage2).
     Selfhost {
         #[arg(long)]
@@ -201,29 +209,13 @@ fn main() {
         }
         Commands::Emit { kind, file } => {
             if kind == "ir" {
-                let graph = match resolve_module_graph(&file, &root) {
-                    Ok(g) => g,
+                match bootstrap_ir_text(&file, &root, toolchain.target) {
+                    Ok(text) => print!("{text}"),
                     Err(diags) => {
                         print_diags(&diags, "human");
                         std::process::exit(1);
                     }
-                };
-                let root_mod = graph.order.last().expect("empty module graph");
-                let callables = callable_fn_names(root_mod, &graph);
-                let infer_out = match infer_module(root_mod, &graph, toolchain.target) {
-                    Ok(o) => o,
-                    Err(diags) => {
-                        print_diags(&diags, "human");
-                        std::process::exit(1);
-                    }
-                };
-                let graph_progs: Vec<&sal_compiler::ast::Program> =
-                    graph.order.iter().map(|m| &m.program).collect();
-                let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
-                let mut ir =
-                    lower_program_with_callables_env(&root_mod.program, &callables, strings);
-                fuse_module(&mut ir);
-                print!("{}", ir_to_text(&ir));
+                }
                 return;
             }
             let src = std::fs::read_to_string(&file).expect("read");
@@ -271,6 +263,20 @@ fn main() {
                 other => {
                     eprintln!("unknown emit kind: {other}");
                     std::process::exit(1);
+                }
+            }
+        }
+        Commands::Parity { file, selfhost } => {
+            let bin = selfhost.unwrap_or_else(|| root.join("target/sal-out/selfhost-stage2"));
+            match parity_report(&file, &root, toolchain.target, &bin) {
+                Ok(None) => println!("parity ok: {}", file.display()),
+                Ok(Some(report)) => {
+                    print!("{report}");
+                    std::process::exit(1);
+                }
+                Err(msg) => {
+                    eprintln!("sal parity: {msg}");
+                    std::process::exit(2);
                 }
             }
         }
@@ -453,6 +459,86 @@ fn opts(
         device: device.to_string(),
         project_root: root.clone(),
         skip_link,
+    }
+}
+
+/// IR of `file` as the bootstrap compiler lowers it (the `sal emit ir` text).
+fn bootstrap_ir_text(
+    file: &PathBuf,
+    root: &PathBuf,
+    target: Target,
+) -> Result<String, Vec<Diagnostic>> {
+    let graph = resolve_module_graph(file, root)?;
+    let root_mod = graph.order.last().expect("empty module graph");
+    let callables = callable_fn_names(root_mod, &graph);
+    let infer_out = infer_module(root_mod, &graph, target)?;
+    let graph_progs: Vec<&sal_compiler::ast::Program> =
+        graph.order.iter().map(|m| &m.program).collect();
+    let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
+    let mut ir = lower_program_with_callables_env(&root_mod.program, &callables, strings);
+    fuse_module(&mut ir);
+    Ok(ir_to_text(&ir))
+}
+
+/// `None` when the bootstrap IR and the selfhost IR of `file` are identical;
+/// otherwise a report naming the first differing line of each.
+fn parity_report(
+    file: &PathBuf,
+    root: &PathBuf,
+    target: Target,
+    selfhost: &PathBuf,
+) -> Result<Option<String>, String> {
+    if !selfhost.exists() {
+        return Err(format!(
+            "no existe {} (ejecuta `sal selfhost` o pasa --selfhost <bin>)",
+            selfhost.display()
+        ));
+    }
+    let boot = bootstrap_ir_text(file, root, target).map_err(|diags| {
+        diags
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    let out = Command::new(selfhost)
+        .arg(file)
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("ejecutar {}: {e}", selfhost.display()))?;
+    if !out.status.success() {
+        return Err(format!(
+            "el selfhost falló en {}: {}",
+            file.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let self_ir = String::from_utf8_lossy(&out.stdout).into_owned();
+    if boot == self_ir {
+        return Ok(None);
+    }
+    let mut boot_lines = boot.lines();
+    let mut self_lines = self_ir.lines();
+    let mut line_no = 0usize;
+    loop {
+        line_no += 1;
+        match (boot_lines.next(), self_lines.next()) {
+            (Some(a), Some(b)) if a == b => continue,
+            (None, None) => {
+                return Ok(Some(format!(
+                    "parity FAIL: {} difiere solo en los saltos de línea o el final\n",
+                    file.display()
+                )));
+            }
+            (a, b) => {
+                return Ok(Some(format!(
+                    "parity FAIL: {} difiere en la línea {line_no}\n  arranque: {}\n  selfhost: {}\n",
+                    file.display(),
+                    a.unwrap_or("<fin>"),
+                    b.unwrap_or("<fin>")
+                )));
+            }
+        }
     }
 }
 

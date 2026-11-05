@@ -2062,77 +2062,139 @@ int64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb) {
     return rc;
 }
 
+/* Element descriptor: a string the compiler passes to `list_new` for each
+ * list type (see `src/ir.rs` and `selfhost/fuse.sal`):
+ *   i        Copy scalar (Int, Float, Bool): nothing to release or copy
+ *   s        String: owned by the list, released with free, copied with strdup
+ *   S(d..)   flat struct: a malloc'd block of one i64 per field; field k is
+ *            described by the k-th descriptor inside the parentheses
+ * Legacy packed kinds (dict keys and values) are converted by `desc_from_kind`. */
 typedef struct {
-    int32_t elem_kind;
+    const char *desc;
+    int desc_owned;
     SalVec vec;
 } SalList;
+
+/* The descriptor after `d` (which points at one descriptor). */
+static const char *desc_end(const char *d) {
+    if (*d == 'S') {
+        d += 2; /* "S(" */
+        while (*d && *d != ')') {
+            d = desc_end(d);
+        }
+        return *d ? d + 1 : d;
+    }
+    return *d ? d + 1 : d;
+}
+
+static void desc_free(const char *d, int64_t raw) {
+    if (*d == 's') {
+        sal_free((void *)(uintptr_t)raw);
+    } else if (*d == 'S') {
+        int64_t *blk = (int64_t *)(uintptr_t)raw;
+        if (!blk) {
+            return;
+        }
+        const char *f = d + 2;
+        for (int i = 0; *f && *f != ')'; i++) {
+            desc_free(f, blk[i]);
+            f = desc_end(f);
+        }
+        free(blk);
+    }
+}
+
+static int64_t desc_copy(const char *d, int64_t raw) {
+    if (*d == 's') {
+        const char *str = (const char *)(uintptr_t)raw;
+        return (int64_t)(uintptr_t)sal_strdup(str ? str : "");
+    }
+    if (*d == 'S') {
+        int64_t *src = (int64_t *)(uintptr_t)raw;
+        if (!src) {
+            return 0;
+        }
+        int n = 0;
+        for (const char *f = d + 2; *f && *f != ')'; f = desc_end(f)) {
+            n++;
+        }
+        int64_t *dst = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * 8);
+        const char *f = d + 2;
+        for (int i = 0; i < n; i++, f = desc_end(f)) {
+            dst[i] = desc_copy(f, src[i]);
+        }
+        return (int64_t)(uintptr_t)dst;
+    }
+    return raw;
+}
+
+/* The descriptor of a legacy packed kind: 0-2 Copy scalars, 3 String, and
+ * 4 | n << 4 | mask << 12 a flat struct whose field i is a String when bit i of
+ * mask is set. A struct descriptor is allocated and owned by the list. */
+static const char *desc_from_kind(int64_t k, int *owned) {
+    *owned = 0;
+    if (k == 3) {
+        return "s";
+    }
+    if ((k & 15) != 4) {
+        return "i";
+    }
+    int n = (int)((k >> 4) & 255);
+    char *buf = (char *)malloc((size_t)(3 + 2 * n));
+    int at = 0;
+    buf[at++] = 'S';
+    buf[at++] = '(';
+    for (int f = 0; f < n; f++) {
+        buf[at++] = ((k >> (12 + f)) & 1) ? 's' : 'i';
+    }
+    buf[at++] = ')';
+    buf[at] = 0;
+    *owned = 1;
+    return buf;
+}
 
 void *sal_list_new(void) {
     return sal_list_new_typed(0);
 }
 
-void *sal_list_new_typed(int64_t elem_kind) {
+/* `list_new[T]()`: `desc` is the element descriptor (a string constant). */
+void *sal_list_new_desc(const char *desc) {
     SalList *l = (SalList *)sal_xmalloc(sizeof(SalList), "list_new");
     if (!l) {
         return NULL;
     }
-    l->elem_kind = (int32_t)elem_kind;
+    l->desc = desc ? desc : "i";
+    l->desc_owned = 0;
     l->vec.data = NULL;
     l->vec.len = 0;
     l->vec.cap = 0;
     return l;
 }
 
-/* A list of flat structs has elem_kind 4 | n << 4 | mask << 12: `n` fields of one
- * i64 each in a malloc'd block, bit i of `mask` set when field i is a String. The
- * list owns its blocks and their strings. */
-static int sal_kind_is_struct(int32_t k) {
-    return (k & 15) == 4;
+/* A list built from a legacy packed kind (dict keys and values, select). */
+void *sal_list_new_typed(int64_t elem_kind) {
+    void *vp = sal_list_new_desc("i");
+    SalList *l = (SalList *)vp;
+    if (l) {
+        l->desc = desc_from_kind(elem_kind, &l->desc_owned);
+    }
+    return vp;
 }
 
-static void sal_struct_elem_free(int32_t k, int64_t raw) {
-    int64_t *blk = (int64_t *)(uintptr_t)raw;
-    if (!blk) {
-        return;
-    }
-    int n = (k >> 4) & 255;
-    for (int f = 0; f < n; f++) {
-        if ((k >> (12 + f)) & 1) {
-            sal_free((void *)(uintptr_t)blk[f]);
-        }
-    }
-    free(blk);
-}
-
-static int64_t sal_struct_elem_copy(int32_t k, int64_t raw) {
-    int64_t *src = (int64_t *)(uintptr_t)raw;
-    int n = (k >> 4) & 255;
-    int64_t *dst = (int64_t *)malloc((size_t)(n > 0 ? n : 1) * 8);
-    for (int f = 0; f < n; f++) {
-        dst[f] = src[f];
-        if ((k >> (12 + f)) & 1) {
-            const char *str = (const char *)(uintptr_t)src[f];
-            dst[f] = (int64_t)(uintptr_t)sal_strdup(str ? str : "");
-        }
-    }
-    return (int64_t)(uintptr_t)dst;
-}
-
-/* Frees a list. A String list owns its elements and releases them; Copy
- * elements (Int/Float/Bool) need nothing. */
+/* Frees a list. A list owns its elements as its descriptor says: Strings are
+ * released, flat structs release their blocks and String fields. */
 void sal_list_free(void *vp) {
     SalList *l = (SalList *)vp;
     if (!l) {
         return;
     }
-    if (l->elem_kind == 3) {
+    if (*l->desc == 's' || *l->desc == 'S') {
         for (size_t i = 0; i < l->vec.len; i++) {
-            sal_free((void *)(uintptr_t)l->vec.data[i]);
+            desc_free(l->desc, l->vec.data[i]);
         }
-    } else if (sal_kind_is_struct(l->elem_kind)) {
-        for (size_t i = 0; i < l->vec.len; i++) {
-            sal_struct_elem_free(l->elem_kind, l->vec.data[i]);
-        }
+    }
+    if (l->desc_owned) {
+        free((void *)l->desc);
     }
     free(l->vec.data);
     sal_xfree(l);
@@ -2175,10 +2237,8 @@ void *sal_list_set(void *vp, int64_t i, int64_t x) {
     if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_set: out of bounds");
     }
-    if (l->elem_kind == 3) {
-        sal_free((void *)(uintptr_t)l->vec.data[i]);
-    } else if (sal_kind_is_struct(l->elem_kind)) {
-        sal_struct_elem_free(l->elem_kind, l->vec.data[i]);
+    if (*l->desc == 's' || *l->desc == 'S') {
+        desc_free(l->desc, l->vec.data[i]);
     }
     l->vec.data[i] = x;
     return l;
@@ -2211,16 +2271,7 @@ int64_t sal_list_get_typed(void *vp, int64_t i) {
     if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_get: out of bounds");
     }
-    int64_t raw = l->vec.data[i];
-    if (l->elem_kind == 3) {
-        const char *s = (const char *)(uintptr_t)raw;
-        char *copy = sal_strdup(s ? s : "");
-        return (int64_t)(uintptr_t)copy;
-    }
-    if (sal_kind_is_struct(l->elem_kind)) {
-        return sal_struct_elem_copy(l->elem_kind, raw);
-    }
-    return raw;
+    return desc_copy(l->desc, l->vec.data[i]);
 }
 
 typedef struct {

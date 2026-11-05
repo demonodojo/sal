@@ -35,6 +35,8 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | `standard/` o cops de estilo | `cargo test --test standard -- --test-threads=1` |
 | `selfhost/`, preludio o `corpus/` | `cargo test --test selfhost_ir` y la skill [sal-autohospedaje](../sal-autohospedaje/SKILL.md) |
 
+Atajo: `scripts/test-area.sh <área>` ejecuta la fila correspondiente de esta tabla (`frontend`, `semantics`, `drops`, `ir`, `kernels`, `llvm`, `instrument`, `toolchain`, `lang`, `builtins`, `target`, `std`, `standard`, `selfhost`); sin argumento lista las áreas. Las áreas `standard` y `selfhost` van en serie (`--test-threads=1`).
+
 Si el test nuevo afirma un diagnóstico, el código tiene que ser el de la lista cerrada (`E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`; `E_TARGET` solo para destino).
 
 `cargo test` completo compila y ejecuta muchos programas y puede tardar; `selfhost_ir` compila el selfhost varias veces. Para un cambio acotado, ejecuta primero el test del pase y deja la suite entera para el cierre o el release.
@@ -53,6 +55,8 @@ cargo run -- fetch --update
 cargo run -- install
 cargo run -- test                       # tests/sal/test_*.sal
 cargo run -- selfhost                   # stage1 y stage2
+cargo run -- parity corpus/column_ops.sal          # IR arranque vs selfhost-stage2
+cargo run -- parity x.sal --selfhost <bin>         # otro binario selfhost
 cargo run -- --target soso check x.sal  # destino soso (kernel)
 cargo run -- add mylib --git https://github.com/org/mylib --version 0.1
 cargo run --bin standard -- check examples/hello.sal

@@ -496,7 +496,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_bytes_view_mem(i64, i64)\n");
     s.push_str("declare i64 @sal_bytes_ptr(ptr)\n");
     s.push_str("declare ptr @sal_list_new()\n");
-    s.push_str("declare ptr @sal_list_new_typed(i64)\n");
+    s.push_str("declare ptr @sal_list_new_desc(ptr)\n");
     s.push_str("declare ptr @sal_list_push(ptr, i64)\n");
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
@@ -3022,15 +3022,10 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
         }
-        "sal_list_new" => {
-            let kind = args
-                .first()
-                .map(|a| i64_operand(a, consts))
-                .unwrap_or_else(|| "0".into());
+        "sal_list_new_desc" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
-                s.push_str(&format!(
-                    "  %{d}_p = call ptr @sal_list_new_typed(i64 {kind})\n"
-                ));
+                s.push_str(&format!("  %{d}_p = call ptr @sal_list_new_desc(ptr {a})\n"));
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
         }

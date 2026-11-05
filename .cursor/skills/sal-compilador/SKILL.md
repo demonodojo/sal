@@ -84,3 +84,5 @@ Resolución de `import` (Rust y sal): directorio del fuente → raíz del proyec
 ## Otras órdenes de la CLI
 
 `sal test [dir]` compila y ejecuta cada `test_*.sal` (por defecto `tests/sal`); ver [sal-stdlib](../sal-stdlib/SKILL.md). `sal selfhost` compila `selfhost/` con el arranque y luego con ese binario (stage2); no está soportado con `--target soso`. `sal compile --ast` acepta el JSON de `sal emit ast`.
+
+`sal parity <fichero.sal> [--selfhost <bin>]` compara la IR que produce el arranque (la misma que `sal emit ir`) con la de un binario selfhost, por defecto `target/sal-out/selfhost-stage2` (hay que haber ejecutado `sal selfhost` antes). Si coinciden imprime `parity ok` y sale con 0; si no, imprime la primera línea que difiere de cada lado y sale con 1; si falta el binario, sale con 2. Es el primer paso para localizar una divergencia de IR antes de abrir `tests/selfhost_ir.rs`.

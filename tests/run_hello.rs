@@ -336,11 +336,13 @@ fn main() -> Int ! alloc
         skip_link: true,
     };
     let art = compile_source(src, &opts).expect("compile");
+    // `list_new[String]()` passes the descriptor "s" as a string constant.
     assert!(
-        art.llvm.contains("call ptr @sal_list_new_typed(i64 3)"),
+        art.llvm.contains("call ptr @sal_list_new_desc(ptr %"),
         "{}",
         art.llvm
     );
+    assert!(art.llvm.contains("c\"s\\00\""), "{}", art.llvm);
     assert!(
         art.llvm.contains("call ptr @sal_dict_new(i64 0, i64 2)"),
         "{}",

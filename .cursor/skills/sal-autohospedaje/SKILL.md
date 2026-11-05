@@ -69,6 +69,8 @@ En `tests/selfhost_ir.rs`:
 | `selfhost_matches_bootstrap_on_every_repo_program` | Compara ambos compiladores en `examples/`, `corpus/`, `tests/`, `std/`, `benches/` |
 | `selfhost_resolves_git_package_import`, `selfhost_import_*`, `selfhost_instrumented_clean_on_hello`, `selfhost_model_package_tests_exit_zero` | Módulos, paquetes, instrumentación, modelos |
 
+Para localizar una divergencia de IR antes de abrir el test: `cargo run -- parity <fichero.sal>` (con `sal selfhost` ejecutado antes) imprime la primera línea que difiere entre el arranque y `target/sal-out/selfhost-stage2`. Acepta `--selfhost <bin>` para otro binario.
+
 Un hueco que solo es del selfhost se marca en el `.sal` de `tests/lang/` con `# selfhost-xfail: motivo`; ver [sal-conformidad](../sal-conformidad/SKILL.md). Quitar el hueco al arreglarlo.
 
 ## Cierre

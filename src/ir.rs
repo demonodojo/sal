@@ -1542,37 +1542,51 @@ pub(crate) fn flat_struct_kind(def: &crate::ast::StructDef) -> Option<i64> {
     Some(4 | (n as i64) << 4 | mask << 12)
 }
 
-fn type_kind(t: &crate::ast::Type, structs: &HashMap<String, crate::ast::StructDef>) -> i64 {
+/// Element descriptor of `list_new[T]()` (read by `sal_list_new_desc`): `i` a Copy
+/// scalar, `s` a String, `S(d..)` a flat struct whose field k is described by d_k.
+/// Any other element type is a Copy scalar here, as before the descriptors.
+pub(crate) fn list_desc(
+    type_args: &[crate::ast::TypeArg],
+    structs: &HashMap<String, crate::ast::StructDef>,
+) -> String {
+    match type_args.first() {
+        Some(crate::ast::TypeArg::Type(t)) => type_desc(t, structs),
+        _ => "i".into(),
+    }
+}
+
+fn type_desc(t: &crate::ast::Type, structs: &HashMap<String, crate::ast::StructDef>) -> String {
     if let crate::ast::Type::Named { name, args, .. } = t {
         if args.is_empty() {
-            if let Some(k) = structs.get(name).and_then(flat_struct_kind) {
-                return k;
+            if name == "String" {
+                return "s".into();
+            }
+            if let Some(sd) = structs.get(name).filter(|sd| flat_struct_kind(sd).is_some()) {
+                let fields: String = sd
+                    .fields
+                    .iter()
+                    .map(|f| match &f.ty {
+                        crate::ast::Type::Named { name, .. } if name == "String" => 's',
+                        _ => 'i',
+                    })
+                    .collect();
+                return format!("S({fields})");
             }
         }
     }
-    scalar_kind(t)
+    "i".into()
 }
 
-fn container_kinds(
-    fname: &str,
-    type_args: &[crate::ast::TypeArg],
-    structs: &HashMap<String, crate::ast::StructDef>,
-) -> Vec<i64> {
+/// Runtime kinds of `dict_new[K, V]()`: the key and the value (`scalar_kind`).
+fn dict_kinds(type_args: &[crate::ast::TypeArg]) -> Vec<i64> {
     let kinds: Vec<i64> = type_args
         .iter()
         .filter_map(|a| match a {
-            crate::ast::TypeArg::Type(t) if fname == "list_new" => Some(type_kind(t, structs)),
             crate::ast::TypeArg::Type(t) => Some(scalar_kind(t)),
             crate::ast::TypeArg::Dim(_) => None,
         })
         .collect();
-    if fname == "dict_new" {
-        let k = kinds.first().copied().unwrap_or(0);
-        let v = kinds.get(1).copied().unwrap_or(0);
-        vec![k, v]
-    } else {
-        vec![kinds.first().copied().unwrap_or(0)]
-    }
+    vec![kinds.first().copied().unwrap_or(0), kinds.get(1).copied().unwrap_or(0)]
 }
 
 fn matmul_runtime_name(tensors: &HashMap<String, TensorInfo>, lhs: &str) -> String {
@@ -1992,8 +2006,23 @@ fn lower_expr(
                     return dest;
                 }
             }
-            if fname == "list_new" || fname == "dict_new" {
-                let kinds = container_kinds(&fname, type_args, &strings.structs);
+            if fname == "list_new" {
+                // The element descriptor travels as a string constant (see `list_desc`).
+                *counter += 1;
+                let desc = format!("t{counter}");
+                instructions.push(IrInst::ConstString {
+                    dest: desc.clone(),
+                    value: list_desc(type_args, &strings.structs),
+                });
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_list_new_desc".into(),
+                    args: vec![desc],
+                });
+                return dest;
+            }
+            if fname == "dict_new" {
+                let kinds = dict_kinds(type_args);
                 let mut call_args = Vec::new();
                 for k in kinds {
                     *counter += 1;
