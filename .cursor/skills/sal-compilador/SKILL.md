@@ -15,7 +15,7 @@ El arranque está en Rust (`src/`, binario `sal`, lib `sal_compiler`). Clang com
 
 ## Orden de pases
 
-`parse` → `expand_interpolation` (`src/interp.rs`) → `infer_program` → `attrs` (`check_layout_structs`, `check_stack_lets`, `check_no_heap_fns`) → `check_effects` → `check_ownership` → `check_devices` → `TypedProgram` → `insert_drops` → `lower_program` → `fuse_module` → LLVM → Clang.
+`parse` → `expand_interpolation` (`src/interp.rs`) → `infer_program` → `attrs` (`check_layout_structs`, `check_stack_lets`, `check_no_heap_fns`) → `check_effects` → `check_ownership` → `check_devices` → `TypedProgram` → `insert_drops` → `lower_program` → `fuse_module` (fusión de regiones +, si aplica, `finish_module_box_shell_drops`) → LLVM → Clang.
 
 Con módulos, `src/compile.rs` resuelve el grafo (`resolve_module_graph`), pasa `check_module_semantics` / `infer_module` por módulo y enlaza un objeto por módulo con el runtime. El destino (`--target linux|soso`, `src/target.rs`) entra en la inferencia: `syscall` fuera de soso/linux es `E_TARGET`.
 
@@ -37,8 +37,8 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |
 | Destino linux/soso, `syscall` | `src/target.rs`, `runtime/soso/linux_host_syscall.c`, `src/llvm.rs` | `tests/soso_target.rs`, `tests/cli_target.rs`, `tests/std_io_linux.rs` |
 | Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/<área>/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
-| Liberación de locales y cola de struct (`insert_drops` antes de `lower_program`; `read_only_params`; cola en `ir.rs`; runtime `sal_dict_*`, vistas `bytes`, `sal_tensor_free`) | `src/drops.rs`, `src/ir.rs`, `runtime/sal_runtime.c` | `tests/drops.rs`, `tests/lang/drops/`; espejo `selfhost/drops.sal`, `selfhost/fuse.sal`, cola C en `selfhost/emit.sal` — criterio en [sal-memoria](../sal-memoria/SKILL.md) |
-| SSA, `TensorBin`/`TensorUnary`, `ColumnBin`, fusión, `peak_bytes` | `src/ir.rs`, `src/fuse.rs` | `tests/forward_ir.rs` |
+| Liberación de locales y cola de struct (`insert_drops`; `struct_free_box`; cola `List[struct]` en `field_drop`; `sal_struct_free_box` en runtime) | `src/drops.rs`, `src/ir.rs`, `src/fuse.rs`, `runtime/sal_runtime.c` | `tests/drops.rs`, `tests/lang/drops/`, `tests/instrument_sal.rs`; espejo `selfhost/drops.sal`, `selfhost/fuse.sal` — [sal-memoria](../sal-memoria/SKILL.md) |
+| SSA, `TensorBin`/`TensorUnary`, `ColumnBin`, fusión, `peak_bytes`, caja de `list_get` tras fusión | `src/ir.rs`, `src/fuse.rs` (`fuse_module`, `fuse_module_opts`) | `tests/forward_ir.rs`, `tests/drops.rs` |
 | Heaps, kernels, `load`, `.salt`; `sal_tensor_bin_f32`, `sal_tensor_cmp_f32`, … | `runtime/sal_runtime.c`, `runtime/sal_runtime.h`, `runtime/kernels.c`, `src/llvm.rs` | `tests/kernels.rs`, `tests/exec_matmul.rs`, `tests/exec_column.rs`, `tests/exec_salt.rs` |
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |
 | Sondas, solo con `--instrument` | `runtime/instrument.c`, `src/llvm.rs` | `tests/instrument_events.rs`, `tests/instrument_leak.rs`, `tests/instrument_sal.rs` |
@@ -78,6 +78,8 @@ El criterio (qué se suelta, la cola de los campos de un struct, la invariante y
 ## Caché
 
 Clave: hash del AST tipado, versión del compilador y flags que cambian el binario (`--release`, `--instrument`, `--device`). Un acierto reutiliza el `.o` y marca `cache_hit`. No regenerar el objeto para «asegurar» el resultado.
+
+En el bucle multi-módulo de `compile_file`, cada `.sal` baja y fusiona por separado. Módulos cuyo path contiene el componente `selfhost` fusionan **sin** el pase IR de caja (`fuse_module_opts(..., false)`); el resto usa `fuse_module` completo. `sal emit ir` y `bootstrap_ir_text` siempre fusionan con caja activa.
 
 ## Módulos y paquetes
 

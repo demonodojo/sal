@@ -25,7 +25,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `const` entero, float o cadena | literales |
 | `copy` | tipo trivial |
 | `move` | último uso de un único |
-| `drop` | fin de ámbito de un local fresco que sigue vivo. `String`, `List` (descriptor `i`/`s`/`E`/`S(…)` vía `sal_list_new_desc`; `list_new_owned` y prefijo `+` marcan dueño de elementos), `Dict` (kinds en `sal_dict_new`: escalares, `String`, enum, struct empaquetado), caja de enum, `Bytes` (incl. cabecera de `bytes_view`), literal `tensor` (`sal_tensor_free` / `sal_place_free`), y copias de `list_get`/`struct_free` cuando aplica. `dict_get` → `Option` fresco (`enum_free`). Cola de struct en `lower_fn`: `sal_free`, `sal_enum_free`, contenedores y anidados (SPEC). Pase `insert_drops` en `src/drops.rs` / `selfhost/drops.sal` reescribe el AST antes de bajar; detalle en [03-semantics.md](03-semantics.md) y SPEC |
+| `drop` | fin de ámbito de un local fresco que sigue vivo. `String`, `List` (descriptor `i`/`s`/`E`/`S(…)` vía `sal_list_new_desc`; `list_new_owned` y prefijo `+` marcan dueño de elementos), `Dict` (kinds en `sal_dict_new`: escalares, `String`, enum, struct empaquetado), caja de enum, `Bytes` (incl. cabecera de `bytes_view`), literal `tensor` (`sal_tensor_free` / `sal_place_free`), copia completa de struct (`sal_struct_free`) y **solo la caja** de una copia cuyos campos se escalarizaron (`sal_struct_free_box`). `dict_get` → `Option` fresco (`enum_free`). Cola de struct en `lower_fn`: `sal_free`, `sal_enum_free`, `sal_list_free` (incl. `List[P]` describible), contenedores y anidados (SPEC). Pase `insert_drops` en `src/drops.rs` / `selfhost/drops.sal` reescribe el AST antes de bajar; detalle en [03-semantics.md](03-semantics.md) y SPEC |
 | `borrow` | argumento prestado; el alcance es la llamada |
 | `alloca` | local de pila |
 | `&&` y `||` | no son un `binary`: se bajan como un `if` (`a && b` → `if a then (b != 0) else false`; `a || b` → `if a then true else (b != 0)`), así que el operando derecho solo se evalúa en la rama que lo necesita. `b != 0` normaliza un `Int` a `0`/`1`. Se intercepta en `lower_expr` antes del caso general de `Binary` |
@@ -56,13 +56,25 @@ Sobre las instrucciones de un solo `on`, en orden:
 
 `reduce` y la suma de `softmax` recorren el eje en orden creciente de índice. La fusión no reordena esa reducción: el mismo fuente y los mismos datos dan el mismo número.
 
+### Caja de `list_get` tras fusión
+
+Después de `fuse_function` en cada `IrFunction`, `finish_module_box_shell_drops` (`src/ir.rs`, invocado desde `fuse_module` / `fuse_module_opts` en `src/fuse.rs`) recorre la IR ya fusionada:
+
+1. Destinos de `sal_list_get` / `sal_list_pop` en `loop_depth == 0` quedan registrados como copias de struct.
+2. Si esa copia es el primer argumento de una llamada de usuario (no `sal_*`, salvo `list_push` / `list_set` / `dict_put`, que transfieren la caja), se marca para `sal_struct_free_box`.
+3. Se inserta `Call { func: "sal_struct_free_box", args: [copia] }` **antes** del último `Return` de la función (nunca después del retorno).
+
+La misma regla no se aplica al compilar objetos de módulos cuyo path contiene el componente `selfhost` (`compile_file` → `fuse_module_opts(..., false)`), para evitar liberaciones al final de función sobre SSA definido dentro de bucles del propio compilador. `sal emit ir` y `bootstrap_ir_text` llaman `fuse_module` con el pase activo.
+
+Tests de IR: `tests/drops.rs` (`lower_program` + `fuse_module` antes de `ir_to_text`); ejecución estricta: `tests/instrument_sal.rs` (`struct_copy`).
+
 ## Runtime
 
 El programa sal no importa este runtime. Clang lo enlaza porque el compilador lo pide.
 
 El asignador de `String`, `vec` y `map` es `malloc`/`free` (en soso, el `malloc` de la plataforma); no hay arena. Heaps distintos para `cpu`, `gpu` y `tpu`, aunque la máquina no tenga GPU ni TPU: `sal run` ejecuta el bloque en el heap de ese actor. Con `sal build --device gpu` y `nvcc` disponible, el enlace define `SAL_USE_CUDA`: reservas y `to gpu` usan memoria de dispositivo, y `sal_matmul_f32` en el heap gpu llama al núcleo CUDA (`runtime/gpu_matmul.cu`). Sin CUDA, el mismo contrato se emula en host.
 
-`on gpu kernel i, j in …` baja a `KernelGrid` en la IR (bucles sobre la forma estática) y a `sal_on_enter` en dispositivo. `@shared` en el fuente sigue fuera del arranque; el mosaico gpu usa shared internamente. Hace falta reserva y liberación por lugar, `String`, `List[T]` con índice comprobado (`T` ∈ Int, Float, Bool, String), `Dict[K, V]` (`sal_dict_*`, distinto de `sal_map_*` del autohospedaje), `Tensor` con elemento y forma, `print` y `panic`.
+`on gpu kernel i, j in …` baja a `KernelGrid` en la IR (bucles sobre la forma estática) y a `sal_on_enter` en dispositivo. `@shared` en el fuente sigue fuera del arranque; el mosaico gpu usa shared internamente. Hace falta reserva y liberación por lugar, `String`, `List[T]` con índice comprobado (`T` ∈ Int, Float, Bool, String o struct describible en descriptor `S(…)`), `Dict[K, V]` (`sal_dict_*`, distinto de `sal_map_*` del autohospedaje), `Tensor` con elemento y forma, `print` y `panic`. Struct describible: `sal_struct_new` / `desc_copy` / `sal_struct_free` / `sal_struct_free_box` (solo el bloque de una copia escalarizada).
 
 `load` lee un `.salt`: magic `SALT`, versión u16, elem u8, rank u8, dims u64 little-endian, payload little-endian. El tensor resultante está en `cpu`. El `to` posterior es el único traslado. Si la reserva del dispositivo falla, el proceso termina con `E_OOM`: lugar, bytes pedidos y span de la región, en el JSON de diagnósticos.
 
@@ -80,8 +92,10 @@ El asignador de `String`, `vec` y `map` es `malloc`/`free` (en soso, el `malloc`
 - Un producto 2×2 conocido coincide con el número esperado, también leído de un `.salt`.
 - `sal run examples/hello.sal` termina en 42.
 - El LLVM del forward declara y llama a `sal_matmul_f32` y, si hay `to`, a `sal_place_copy`.
+- `cargo test --test drops` incluye `sal_struct_free_box` tras `read_n(o)` con `o = list_get` de struct, y `sal_list_free` de un campo `List[P]` en cola.
+- `SAL_INSTRUMENT_STRICT=1` sobre `tests/lang/drops/drop_list_struct_box_pass_fn.sal`: sin `LEAK` ni `struct_copy` residual.
 
 
 **Enums.** Una variante sin campos es su tag (`i64` < 4096); una con campos es un puntero a una caja `[tag|kinds<<8, n, campo0, …]` (`sal_enum_new/set/tag/field`). IR: `EnumMake { payload: Vec, owned }` (`owned`: dos bits por campo, 1 `String` fresco, 2 caja de enum fresca), `EnumTag`, `EnumField`, `Switch` sobre `EnumTag`. `dict_get` construye un `Some` del preludio; si el valor del dict es `String`, la cabecera del `Some` marca dueño del campo copiado. `list_set`, `list_pop`, `dict_has` y `dict_get` son builtins del runtime.
 
-**Instrumentación.** `SAL_INSTRUMENT_STRICT=1` hace que `sal_instrument_shutdown` informe de todo bloque vivo (por defecto se omiten los sitios de cadenas y asas que el selfhost aún deja vivos a propósito). `tests/instrument_sal.rs` comprueba que un programa cuyos locales libera el compilador sale limpio en modo estricto y que una cadena pasada a una función de usuario se informa como `LEAK`.
+**Instrumentación.** `SAL_INSTRUMENT_STRICT=1` hace que `sal_instrument_shutdown` informe de todo bloque vivo (por defecto se omiten los sitios de cadenas y asas que el selfhost aún deja vivos a propósito). `tests/instrument_sal.rs` comprueba que un programa cuyos locals libera el compilador sale limpio en modo estricto (incl. cajas `struct_copy` de `list_get` + llamada escalarizada) y que una cadena pasada a una función de usuario se informa como `LEAK`.

@@ -7,7 +7,8 @@ description: >-
   structs en src/ir.rs, runtime/sal_runtime.c, selfhost/drops.sal, la cola en
   selfhost/fuse.sal, emit.sal (cola C), tests/drops.rs, tests/lang/drops, o al
   hablar de free, list_free, dict_free, enum_free, bytes_free, tensor_free,
-  fugas, LEAK, uso tras liberar o doble liberación.
+  fugas, LEAK, uso tras liberar o doble liberación, struct_copy, list_get de
+  struct, struct_free_box o caja de struct.
 ---
 
 # Memoria
@@ -20,8 +21,9 @@ Invariante: una fuga es aceptable; una doble liberación o un uso tras liberar n
 
 | Qué | Arranque | Selfhost |
 |-----|----------|----------|
-| Locales (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free`, `tensor_free`, `struct_free`), antes de bajar | `src/drops.rs` (`insert_drops`) | `selfhost/drops.sal` (`drops_body_t`) |
-| Cola de campos de un struct (IR) | `src/ir.rs` (`free_struct_strings`, `field_reads`, `emit_struct_string_drops`) | `selfhost/fuse.sal` (`drop_fields`, `fr_*`, `emit_struct_drops`) |
+| Locales (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free`, `tensor_free`, `struct_free`, `struct_free_box`), antes de bajar | `src/drops.rs` (`insert_drops`) | `selfhost/drops.sal` (`drops_body_t`) |
+| Cola de campos de un struct (IR) | `src/ir.rs` (`free_struct_strings`, `field_reads`, `emit_struct_string_drops`, `field_drop`) | `selfhost/fuse.sal` (`drop_fields`, `fr_*`, `drop_field_fn`, `emit_struct_drops`) |
+| Caja de copia `list_get`/`list_pop` tras llamada escalarizada (IR, tras fusión) | `src/ir.rs` (`finish_module_box_shell_drops`), invocado desde `src/fuse.rs` (`fuse_module` / `fuse_module_opts`) | el arranque en `emit ir` / tests; ver nota selfhost abajo |
 | Cola en C (stage2) | — | `selfhost/emit.sal` (`emit_c_struct_scope_frees`, importa helpers de `fuse`) |
 | Movimiento parcial y `borrow`/`take` | `src/ownership.rs` | `selfhost/ownership.sal` |
 | Runtime (`sal_dict_*`, `sal_enum_*`, vistas `bytes`, `sal_tensor_free`) | `runtime/sal_runtime.c` | el mismo |
@@ -51,12 +53,31 @@ Otras reglas:
 - **`__live_x`**: escape solo en algunas ramas del mismo nivel de bucle.
 - **`list_push` / `list_set` / `dict_put`**: prestados como sentencia o `_nombre`; `ys = xs.push(v)` escapa.
 
+### Copia de struct (`list_get` / `list_pop`)
+
+Un `list_get` de lista de struct describible entrega una **caja** (`struct_copy` en instrumentación) más campos copiados. Hay que distinguir el destino del argumento:
+
+| Destino | Qué pasa con la caja | Local / bandera |
+|---------|----------------------|-----------------|
+| `list_push`, `list_set`, `dict_put` o ctor de struct (`hard_move`) | La caja la absorbe el contenedor o el ctor | `__live` a 0; no `struct_free` ni `struct_free_box` |
+| Función de usuario (parámetro struct; la bajada **escalariza** campos) | Se mueven los campos; la caja queda huérfana | `ArgMove::TakeFields`, `box_shell`; suelta con `struct_free_box` (solo el `malloc` del bloque) |
+| Solo lectura (`borrow`, builtin lector, arg read-only) | No mueve | `ArgMove::Read` |
+
+En **`src/drops.rs`**: `mark_box_shell_calls` recorre sentencias **y el tail** del bloque; `clear_moved` puede emitir `struct_free_box` al mover; `release` con bandera usa `if __live == 1` → `struct_free` else → `struct_free_box` cuando `box_shell`.
+
+En **`src/ir.rs`**, tras **`fuse_module`**: `scan_struct_box_shell` registra destinos de `sal_list_get`/`sal_list_pop` (solo si `loop_depth == 0` en esa función), marca el shell al pasar la copia a una llamada no-`sal_` que no transfiere caja, e inserta `sal_struct_free_box` **inmediatamente antes** del último `Return` (nunca después). Copias ligadas dentro de un `While`/`If` anidado no entran en el shell de fin de función (evita LLVM inválido).
+
+Runtime: **`sal_struct_free_box`** libera solo el bloque; **`sal_struct_free(desc)`** recorre campos y la caja (copia completa con bandera a 1).
+
+Al **compilar módulos bajo `selfhost/`**, `src/compile.rs` llama `fuse_module_opts(..., box_shell_drops: false)` para no aplicar ese pase IR al código del autohospedador (mismo motivo de ámbito/SSA en bucles del compilador). `sal emit ir` y tests del arranque siguen usando `fuse_module` con el pase activo.
+
 ## Cola de un struct
 
 La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `return`. Un struct local o parámetro `take` suelta:
 
 - `String` (`sal_free`), enum (`sal_enum_free`), `Bytes`, `List`/`Dict` de escalares Copy.
 - **`List[String]`** y **`Dict[..., String]`** si **`container_tainted`** no marca el campo (solo valores frescos guardados).
+- **`List[P]`** con **`P`** struct describible (misma regla de tainted/glue que `List[String]`): `sal_list_free` del campo cuando el struct local no se movió entero.
 - Structs anidados, salvo lectura del struct entero.
 
 `field_reads` recorta la cola:
@@ -82,11 +103,11 @@ Campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String
 
 | Se tocó | Comando |
 |---------|---------|
-| `src/drops.rs`, `src/ir.rs`, `tests/drops.rs` | `cargo test --test drops` |
-| `tests/lang/drops/` | `cargo test --test lang` |
-| Selfhost drops/fuse/emit | `cargo run -- emit ir` vs `parity`; `cargo test --test selfhost_ir -- --test-threads=1` |
-| Runtime | tests de drops + instrumentación |
+| `src/drops.rs`, `src/ir.rs`, `src/fuse.rs`, `tests/drops.rs` | `cargo test --test drops` |
+| `tests/lang/drops/` (p. ej. `drop_list_struct_box_pass_fn.sal`, `drop_struct_list_field.sal`) | `cargo test --test lang` |
+| Selfhost drops/fuse/emit | `cargo run -- parity <fichero>`; `cargo test --test selfhost_ir -- --test-threads=1` (paridad IR puede diferir en programas con caja si solo el arranque aplica el pase IR) |
+| Runtime | `tests/instrument_sal.rs` (`struct_copy`, caja tras `list_get`) + `tests/drops.rs` |
 
-`SAL_INSTRUMENT_STRICT=1` tras `sal build --instrument`: stderr (`LEAK`, `USE_AFTER_FREE`, `DOUBLE_FREE`).
+`SAL_INSTRUMENT_STRICT=1` tras `sal build --instrument`: stderr sin `LEAK` ni `struct_copy` residual en programas que el compilador debe cerrar (`USE_AFTER_FREE`, `DOUBLE_FREE` siguen siendo fallo duro).
 
 Un test que sigue pasando con el código viejo no cuenta. Quita `# xfail:` / `# selfhost-xfail:` al cerrar un hueco en el mismo cambio.

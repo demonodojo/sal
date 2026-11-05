@@ -39,7 +39,7 @@ Los módulos auxiliares viven en `tests/lang/modules/mods/` (no llevan cabecera 
 
 ## Convenciones de nombre
 
-Prefijos existentes: `err_*` (el programa debe fallar), `attr_*` (atributos), `tensor_*`, `struct_*`, `bytes_*`, `float_*`, `bitops`, etc. Un caso por comportamiento, con el nombre diciendo qué se afirma (`err_module_pattern_unknown_qualifier`).
+Prefijos existentes: `err_*` (el programa debe fallar), `attr_*` (atributos), `tensor_*`, `struct_*`, `bytes_*`, `float_*`, `bitops`, etc. En **`drops/`**, casos de cola y caja: p. ej. `drop_list_struct_box_pass_fn.sal` (`list_get` + fn escalarizada + uso posterior del struct), `drop_struct_list_field.sal` (`List[P]` en campo de struct). Un caso por comportamiento, con el nombre diciendo qué se afirma (`err_module_pattern_unknown_qualifier`).
 
 ## Cómo añadir una construcción
 
