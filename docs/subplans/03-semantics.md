@@ -48,6 +48,8 @@ Métodos (`method T.m(params)`, SPEC «Métodos»): son azúcar sobre `fn`, resu
 
 La lambda de una sentencia se tipa al usarla. `x => e` no es un valor de primera clase que se guarde: si se liga a un `let` o se devuelve, `E_TYPE` en este arranque. El parámetro no lleva tipo escrito; sale del callback (`map`).
 
+`&&` y `||` toman operandos de verdad (`Bool`, o `Int` donde distinto de cero es verdadero, como en una condición) y dan `Bool`. Un `Float`, `String` u otro tipo es `E_TYPE`. Una comparación escalar sigue siendo `Int`.
+
 Un `if` sin `else` tiene tipo `Unit`, aunque tenga `elsif`; la rama then y cada `elsif` se comprueban igual. Un `if` con `else` tiene el tipo de la rama then. Las ramas `elsif` se comprueban como el `else`.
 
 `return expr` termina la función con el tipo declarado; `return` sin expresión solo con retorno `Unit`. Prohibido dentro de `on` y de lambda (`E_TYPE`). Código inalcanzable tras un retorno seguro en el mismo bloque: `E_TYPE`. Bloque de función sin cola y sin retorno en todos los caminos: si el retorno no es `Unit`, `E_TYPE`. Rama de `if`/`match` con `return` diverge y no cuenta en el tipo de la expresión.

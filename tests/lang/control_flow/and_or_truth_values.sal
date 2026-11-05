@@ -1,0 +1,10 @@
+# exit: 0
+# stdout: 11
+fn main() -> Int ! io, alloc
+    # An `Int` operand is a truth value (nonzero is true), as in `if`; the result is 1 or 0
+    # whatever the operand held: `2 && 3` is true, `0 || 7` is true.
+    x = 2 && 3
+    y = 0 || 7
+    print_str(int_to_str(x))
+    print_str(int_to_str(y))
+    0

@@ -470,6 +470,62 @@ fn lower_fn(
     }
 }
 
+/// Struct locals bound to `list_get(xs, i)` whose element struct is not describable. Such a
+/// list hands out its boxes, not copies, so the glue must not release those locals' fields.
+fn list_alias_locals(f: &FnDef, strings: &StringEnv) -> HashSet<String> {
+    fn note(name: &str, init: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
+        let Expr::Call { func, .. } = init else {
+            return;
+        };
+        if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") {
+            return;
+        }
+        let Some(sn) = strings.struct_types.get(name) else {
+            return;
+        };
+        if struct_desc(sn, &strings.structs, &strings.enums).is_none() {
+            out.insert(name.to_string());
+        }
+    }
+    fn expr(e: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
+        match e {
+            Expr::If { then_block, elsifs, else_block, .. } => {
+                block(then_block, strings, out);
+                for a in elsifs {
+                    block(&a.body, strings, out);
+                }
+                if let Some(b) = else_block {
+                    block(b, strings, out);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for a in arms {
+                    expr(&a.body, strings, out);
+                }
+            }
+            Expr::Block(b) => block(b, strings, out),
+            _ => {}
+        }
+    }
+    fn block(b: &Block, strings: &StringEnv, out: &mut HashSet<String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, init, .. } => note(name, init, strings, out),
+                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => note(name, value, strings, out),
+                Stmt::While { body, .. } => block(body, strings, out),
+                Stmt::Expr(e) => expr(e, strings, out),
+                _ => {}
+            }
+        }
+        if let Some(t) = &b.tail {
+            expr(t, strings, out);
+        }
+    }
+    let mut out = HashSet::new();
+    block(&f.body, strings, &mut out);
+    out
+}
+
 fn emit_struct_string_drops(
     f: &FnDef,
     instructions: &mut Vec<IrInst>,
@@ -479,6 +535,7 @@ fn emit_struct_string_drops(
     param_modes: &HashMap<String, Vec<ParamMode>>,
 ) {
     let moved = moved_bindings(f, param_modes);
+    let alias = list_alias_locals(f, strings);
     let reads = field_reads(f, strings, param_modes);
     let own_mode: HashMap<&str, ParamMode> = f
         .params
@@ -488,7 +545,7 @@ fn emit_struct_string_drops(
     let mut names: Vec<String> = strings.struct_types.keys().cloned().collect();
     names.sort();
     for name in names {
-        if moved.contains(&name) {
+        if moved.contains(&name) || alias.contains(&name) {
             continue;
         }
         if let Some(mode) = own_mode.get(name.as_str()) {
@@ -1520,28 +1577,6 @@ fn scalar_kind(ty: &crate::ast::Type) -> i64 {
     }
 }
 
-/// Kind of a `List[S]` whose elements are flat structs (two to twenty fields, each
-/// Int, Float, Bool or String): `4 | n << 4 | mask << 12`, bit i of `mask` set when
-/// field i is a String. The runtime frees and copies such blocks.
-pub(crate) fn flat_struct_kind(def: &crate::ast::StructDef) -> Option<i64> {
-    let n = def.fields.len();
-    if !def.type_params.is_empty() || !(2..=20).contains(&n) {
-        return None;
-    }
-    let mut mask = 0i64;
-    for (i, f) in def.fields.iter().enumerate() {
-        match &f.ty {
-            crate::ast::Type::Named { name, args, .. } if args.is_empty() => match name.as_str() {
-                "Int" | "Float" | "Bool" => {}
-                "String" => mask |= 1 << i,
-                _ => return None,
-            },
-            _ => return None,
-        }
-    }
-    Some(4 | (n as i64) << 4 | mask << 12)
-}
-
 /// Element descriptor of `list_new[T]()` (read by `sal_list_new_desc`): `i` a Copy
 /// scalar, `s` a String, `E` an enum, `S(d..)` a flat struct whose field k is described by d_k.
 /// Any other element type is a Copy scalar here, as before the descriptors.
@@ -1551,14 +1586,77 @@ pub(crate) fn list_desc(
     enums: &HashMap<String, crate::ast::EnumDef>,
     owned: bool,
 ) -> String {
-    match type_args.first() {
+    let base = match type_args.first() {
         Some(crate::ast::TypeArg::Type(t)) => type_desc(t, structs, enums, owned),
         _ => "i".into(),
+    };
+    // `+` marks an owned list: its `list_free` releases the elements (see sal_list_new_desc).
+    if owned {
+        format!("+{base}")
+    } else {
+        base
     }
 }
 
 /// `owned` is set only for the lists the drops pass releases (`list_new_owned`): an enum
 /// element is `E` there and `i` (borrowed) everywhere else.
+/// Descriptor of a struct value (`S(d..)`, one slot per field): a non-generic struct
+/// whose fields are all describable, `None` otherwise (a List, Dict, Bytes, generic…).
+/// A nested struct is boxed in its parent's slot, an enum field is an enum box.
+pub(crate) fn struct_desc(
+    name: &str,
+    structs: &HashMap<String, crate::ast::StructDef>,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+) -> Option<String> {
+    struct_desc_at(name, structs, enums, 0)
+}
+
+fn struct_desc_at(
+    name: &str,
+    structs: &HashMap<String, crate::ast::StructDef>,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+    depth: u32,
+) -> Option<String> {
+    if depth > 16 {
+        return None;
+    }
+    let sd = structs.get(name)?;
+    // One-field structs are transparent (the value is the field), so they have no box.
+    if !sd.type_params.is_empty() || sd.fields.len() < 2 {
+        return None;
+    }
+    let mut out = String::from("S(");
+    for f in &sd.fields {
+        out.push_str(&field_desc(&f.ty, structs, enums, depth + 1)?);
+    }
+    out.push(')');
+    Some(out)
+}
+
+fn field_desc(
+    t: &crate::ast::Type,
+    structs: &HashMap<String, crate::ast::StructDef>,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+    depth: u32,
+) -> Option<String> {
+    let crate::ast::Type::Named { name, args, .. } = t else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    Some(match name.as_str() {
+        "Int" | "Float" | "Bool" => "i".into(),
+        "String" => "s".into(),
+        _ if enums.get(name).is_some_and(|e| e.type_params.is_empty()) => "E".into(),
+        _ => return struct_desc_at(name, structs, enums, depth),
+    })
+}
+
+/// Element descriptor of `T` in `list_new[T]()`. A struct is always described, so that
+/// `list_get` hands out a copy the caller may release (the glue of a struct local frees
+/// its fields). An enum is described only when `owned` (`list_new_owned`, set by the drops
+/// pass for the lists it releases): otherwise its boxes are borrowed and `list_get` aliases.
 fn type_desc(
     t: &crate::ast::Type,
     structs: &HashMap<String, crate::ast::StructDef>,
@@ -1570,19 +1668,11 @@ fn type_desc(
             if name == "String" {
                 return "s".into();
             }
-            if enums.contains_key(name) {
-                return if owned { "E".into() } else { "i".into() };
+            if owned && enums.get(name).is_some_and(|e| e.type_params.is_empty()) {
+                return "E".into();
             }
-            if let Some(sd) = structs.get(name).filter(|sd| flat_struct_kind(sd).is_some()) {
-                let fields: String = sd
-                    .fields
-                    .iter()
-                    .map(|f| match &f.ty {
-                        crate::ast::Type::Named { name, .. } if name == "String" => 's',
-                        _ => 'i',
-                    })
-                    .collect();
-                return format!("S({fields})");
+            if let Some(d) = struct_desc(name, structs, enums) {
+                return d;
             }
         }
     }
@@ -1818,6 +1908,53 @@ fn lower_expr(
             }
             name.clone()
         }
+        // `a && b` is `if a then b else false`; `a || b` is `if a then true else b`. The
+        // right operand runs only on the branch that needs it, so the short circuit is the
+        // same control flow the `if` already lowers.
+        Expr::Binary {
+            op: op @ (BinOp::And | BinOp::Or),
+            left,
+            right,
+            span,
+        } => {
+            let lit = |value: bool| Expr::Bool { value, span: *span };
+            let tail = |e: Expr| Block {
+                stmts: Vec::new(),
+                tail: Some(Box::new(e)),
+                span: *span,
+            };
+            // The result is a truth value: an `Int` right operand becomes `right != 0`
+            // (a `Bool` is already 0 or 1, so the comparison leaves it unchanged).
+            let truth = Expr::Binary {
+                op: BinOp::Ne,
+                left: right.clone(),
+                right: Box::new(Expr::Int { value: 0, span: *span }),
+                span: *span,
+            };
+            let (then_e, else_e) = if *op == BinOp::And {
+                (truth, lit(false))
+            } else {
+                (lit(true), truth)
+            };
+            let short = Expr::If {
+                cond: left.clone(),
+                then_block: tail(then_e),
+                elsifs: Vec::new(),
+                else_block: Some(tail(else_e)),
+                span: *span,
+            };
+            lower_expr(
+                &short,
+                instructions,
+                env,
+                counter,
+                regions,
+                tensors,
+                dim_params,
+                fn_names,
+                strings,
+            )
+        }
         Expr::Binary {
             op,
             left,
@@ -1900,6 +2037,7 @@ fn lower_expr(
                 BinOp::Le => "le",
                 BinOp::Gt => "gt",
                 BinOp::Ge => "ge",
+                BinOp::And | BinOp::Or => unreachable!("`&&` and `||` are lowered as `if`"),
             };
             let is_float = strings.expr_is_float(left) || strings.expr_is_float(right);
             let op_s = if is_float { format!("f{op_s}") } else { op_s.to_string() };
@@ -3494,6 +3632,7 @@ fn try_tensor_bin(
         BinOp::Le => "le",
         BinOp::Gt => "gt",
         BinOp::Ge => "ge",
+        BinOp::And | BinOp::Or => unreachable!("`&&` and `||` are lowered as `if`"),
     };
     let right_scalar = !expr_has_tensor(
         if std::ptr::eq(tensor_expr, left) {
@@ -3559,6 +3698,7 @@ fn collect_fused_ops(
                     BinOp::Le => "le",
                     BinOp::Gt => "gt",
                     BinOp::Ge => "ge",
+                    BinOp::And | BinOp::Or => unreachable!("`&&` and `||` are lowered as `if`"),
                 };
                 let scalar = if expr_has_tensor(left, env, tensors) {
                     if expr_has_tensor(right, env, tensors) {

@@ -59,6 +59,8 @@ parse_postfix():
     devolver left
 ```
 
+`&&` y `||` son dos niveles más, por debajo de `cmp`: `parse_or` (`||`) llama a `parse_and` (`&&`), que llama a `parse_cmp`. El lexer los emite como `AmpAmp` y `PipePipe` (dos caracteres, antes que `&` y `|`). `parse_lambda` llama a `parse_or`.
+
 `parse_unary` es recursivo por la derecha: menos, `!` y `to lugar` llaman otra vez a `parse_unary`. `parse_expr` reconoce `try` y vuelve a llamarse. `parse_lambda` parsea un `cmp`; si viene `=>` y la izquierda es un `IDENT`, el cuerpo es un `expr` completo (puede llevar otro `try` o otra lambda).
 
 Los `=>` de un `match` no pasan por `parse_lambda`. Se leen en `arm`, con el parser ya dentro del `match`.

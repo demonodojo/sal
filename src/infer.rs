@@ -577,6 +577,24 @@ Expr::Int { .. } => Type::Named {
                 return infer_tensor_binary(*op, &lt, &rt, *span);
             }
             match op {
+                // `&&` and `||` take truth values, as `if` and `while` conditions do (`Bool`, or
+                // `Int` where nonzero is true); the result is `Bool`. A scalar comparison is
+                // still an `Int` here, so `(a < b) + 1` keeps working.
+                BinOp::And | BinOp::Or => {
+                    let ok = |t: &Type| is_bool_type(t) || is_int_type(t) || is_unknown_type(t);
+                    if !ok(&lt) || !ok(&rt) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            "`&&` and `||` take Bool or Int operands",
+                            *span,
+                        )]);
+                    }
+                    Type::Named {
+                        name: "Bool".into(),
+                        args: vec![],
+                        span: *span,
+                    }
+                }
                 // String + String: concat. Nominal on both sides; `str_from_int`
                 // is the explicit bridge for a handle held in an Int.
                 BinOp::Add if is_string_type(&lt) => {
@@ -3077,6 +3095,10 @@ fn is_numeric(t: &Type) -> bool {
         t,
         Type::Named { name, .. } if name == "Int" || name == "Float"
     )
+}
+
+fn is_bool_type(t: &Type) -> bool {
+    matches!(t, Type::Named { name, .. } if name == "Bool")
 }
 
 fn is_int_type(t: &Type) -> bool {

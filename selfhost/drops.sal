@@ -322,18 +322,27 @@ fn dx_flat_ctor(c: DC, name: String, args: List[Expr]) -> Int ! alloc
     elsif vec_len(rec) != list_len(args)
         0
     else
-        dx_flat_args_fresh(rec, args, 0, list_len(args))
+        dx_flat_args_fresh(c, rec, args, 0, list_len(args))
 
-fn dx_flat_args_fresh(rec: Int, args: List[Expr], i: Int, n: Int) -> Int ! alloc
+# Each field's class (`field_class_text` in fuse.sal): a String must be fresh, an enum field a
+# variant constructor, a struct field a fresh struct constructor; scalars need nothing.
+fn dx_flat_args_fresh(c: DC, rec: Int, args: List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         1
-    elsif vec_get(rec, i) == 1
-        if dx_is_fresh_value(list_get(args, i)) == 1
-            dx_flat_args_fresh(rec, args, i + 1, n)
-        else
-            0
+    elsif dx_field_fresh(c, vec_get(rec, i), list_get(args, i)) == 1
+        dx_flat_args_fresh(c, rec, args, i + 1, n)
     else
-        dx_flat_args_fresh(rec, args, i + 1, n)
+        0
+
+fn dx_field_fresh(c: DC, code: Int, a: Expr) -> Int ! alloc
+    if code == 1
+        dx_is_fresh_value(a)
+    elsif code == 2
+        dx_is_fresh_variant(c, a)
+    elsif code == 3
+        dx_is_fresh_flat_ctor(c, a)
+    else
+        1
 
 # Whether variant `name` has fields.
 fn dr_variant_has_fields(c: DC, name: String) -> Int ! alloc
@@ -371,6 +380,9 @@ fn dr_fresh_call(c: DC, name: String, targs: String) -> Int ! alloc
         dr_fresh_list(c, targs)
     elsif str_eq(name, "dict_new") == 1
         dr_fresh_dict(targs)
+    elsif str_eq(name, "dict_keys") + str_eq(name, "dict_values") == 1
+        # A fresh list whose String elements are copies the list owns.
+        6
     else
         0
 
@@ -747,11 +759,19 @@ fn dr_own_call(c: DC, name: String, cand: Int, fname: String, args: List[Expr], 
         e
     elsif str_eq(fname, "list_new") == 0
         e
-    elsif dx_list_enum(c, targs) == 0
-        e
-    else
+    elsif dx_list_enum(c, targs) == 1
         _n = nm_put(c.owned_enums, name, 1)
         XCall(d"list_new_owned", args, targs, xp)
+    elsif dx_list_flat(c, targs) == 1
+        XCall(d"list_new_owned", args, targs, xp)
+    elsif dx_list_string(targs) == 1
+        XCall(d"list_new_owned", args, targs, xp)
+    else
+        e
+
+# `list_new[String]()`: the list owns its strings.
+fn dx_list_string(targs: String) -> Int ! alloc
+    str_eq(trim_spaces(targs), "String")
 
 
 # `list_push(xs, v)` as a statement (or bound to a `_name`) discards the
@@ -1313,6 +1333,8 @@ fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
 # Builtins whose String arguments are only read.
 fn dr_borrows(name: String) -> Int ! alloc
     if str_eq(name, "str_len") == 1
+        1
+    elsif str_eq(name, "dict_keys") + str_eq(name, "dict_values") + str_eq(name, "dict_len") + str_eq(name, "dict_remove") == 1
         1
     elsif str_eq(name, "str_eq") == 1
         1

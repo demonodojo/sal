@@ -517,8 +517,19 @@ fn strs_vec(xs: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
         _p = vec_push(out, str_as_int(list_get(xs, i)))
         strs_vec(xs, i + 1, n, out)
 
+# `a && b` is `if a then (b != 0) else false`; `a || b` is `if a then true else (b != 0)`. The
+# right operand runs only on the branch that needs it, as in the bootstrap (`ir.rs`).
+fn short_circuit(op: String, left: Expr, right: Expr) -> Expr ! alloc
+    truth = XBin(d"ne", right, XInt(0))
+    if str_eq(op, "and") == 1
+        XIf(left, TBlock(list_new[TStmt](), truth), TBlock(list_new[TStmt](), XBool(0)), 1, list_new[TElsif]())
+    else
+        XIf(left, TBlock(list_new[TStmt](), XBool(1)), TBlock(list_new[TStmt](), truth), 1, list_new[TElsif]())
+
 fn lower_binary(cx: Cx, op: String, left: Expr, right: Expr) -> Int ! alloc
-    if str_eq(op, "add") == 1
+    if str_eq(op, "and") + str_eq(op, "or") > 0
+        lower_expr(cx, short_circuit(op, left, right))
+    elsif str_eq(op, "add") == 1
         if texpr_is_string(cx.env, left) == 1
             lower_str_add(cx, left, right)
         else
@@ -775,89 +786,114 @@ fn shift_left_one(i: Int) -> Int ! alloc
     else
         2 * shift_left_one(i - 1)
 
-# Kind of a field type for flat-struct lists: 0 Int/Float/Bool, 1 String, -1 other; bit mask of
-# the String fields of a struct, or -1 when a field is not Int/Float/Bool/String.
-fn tflat_field_class(ty: String) -> Int ! alloc
-    if str_len(ty) == 0
-        0 - 1
+# Descriptor of a type as an element of `list_new[T]()` (read by `sal_list_new_desc`; `list_desc`
+# in src/ir.rs): `i` a Copy scalar or a borrowed value, `s` a String, `E` an enum box an owned
+# list releases, `S(d..)` a struct whose fields are all describable (`desc_struct_text`).
+fn desc_type_text(structs: List[TStruct], enums: List[TEnum], txt: String, owned: Int) -> String ! alloc
+    base = desc_base_text(structs, enums, txt, owned)
+    if owned == 1
+        d"+" + base
     else
-        t = trim_type_piece(ty)
-        if str_eq(t, "String") == 1
-            1
-        elsif str_eq(t, "Int") == 1
-            0
-        elsif str_eq(t, "Float") == 1
-            0
-        elsif str_eq(t, "Bool") == 1
-            0
-        else
-            0 - 1
+        base
 
-fn tflat_mask(fields: List[TField], i: Int, n: Int, acc: Int) -> Int ! alloc
-    if i >= n
-        acc
-    else
-        c = tflat_field_class(list_get(fields, i).ty)
-        if c < 0
-            0 - 1
-        elsif c == 1
-            tflat_mask(fields, i + 1, n, acc + shift_left_one(i))
-        else
-            tflat_mask(fields, i + 1, n, acc)
-
-fn tflat_struct_kind(sd: TStruct) -> Int ! alloc
-    n = list_len(sd.fields)
-    if list_len(sd.tparams) > 0
-        0 - 1
-    elsif n < 2
-        0 - 1
-    elsif n > 20
-        0 - 1
-    else
-        mask = tflat_mask(sd.fields, 0, n, 0)
-        if mask < 0
-            0 - 1
-        else
-            4 + n * 16 + mask * 4096
-
-# Element descriptor of `list_new[T]()` (read by `sal_list_new_desc`; `list_desc` in src/ir.rs):
-# `i` a Copy scalar or anything else, `s` a String, `S(d..)` a flat struct whose field k is
-# `s` for a String field and `i` otherwise.
-fn list_desc_text(cx: Cx, txt: String, owned: Int) -> String ! alloc
+# The descriptor without the ownership mark (see `desc_type_text`).
+fn desc_base_text(structs: List[TStruct], enums: List[TEnum], txt: String, owned: Int) -> String ! alloc
     t = trim_type_piece(txt)
-    si = tt_struct_find(cx_structs(cx), t)
     if str_eq(t, "String") == 1
         d"s"
-    elsif si < 0
-        list_enum_desc(cx, t, owned)
-    else
-        sd = list_get(cx_structs(cx), si)
-        if tflat_struct_kind(sd) < 0
-            d"i"
-        else
-            d"S(" + tflat_desc(sd.fields, 0, list_len(sd.fields), d"") + d")"
-
-# `E` for an owned list of an enum type, `i` otherwise.
-fn list_enum_desc(cx: Cx, t: String, owned: Int) -> String ! alloc
-    if owned == 0
-        d"i"
-    elsif map_get(cx_variants(cx), str_as_int("enum:" + t)) != 0
+    elsif owned == 0
+        desc_struct_or_i(structs, enums, t)
+    elsif enum_named_t(enums, t, 0, list_len(enums)) == 1
         d"E"
     else
-        d"i"
+        desc_struct_or_i(structs, enums, t)
 
-fn tflat_desc(fields: List[TField], i: Int, n: Int, acc: String) -> String ! alloc
+# The struct descriptor of `t`, or "i" for anything else (a borrowed value).
+fn desc_struct_or_i(structs: List[TStruct], enums: List[TEnum], t: String) -> String ! alloc
+    sd = desc_struct_text(structs, enums, t, 0)
+    if str_len(sd) == 0
+        d"i"
+    else
+        sd
+
+
+# The enum named `t` in `enums` (0 or 1).
+fn enum_named_t(enums: List[TEnum], t: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(enums, i).name, t) == 1
+        1
+    else
+        enum_named_t(enums, t, i + 1, n)
+
+# Descriptor `S(..)` of the struct `name`, or "" when it is not a struct a list can own.
+fn desc_struct_text(structs: List[TStruct], enums: List[TEnum], name: String, depth: Int) -> String ! alloc
+    si = tt_struct_find(structs, name)
+    if depth > 16
+        d""
+    elsif si < 0
+        d""
+    else
+        sd = list_get(structs, si)
+        if list_len(sd.tparams) > 0
+            d""
+        elsif list_len(sd.fields) < 2
+            d""
+        else
+            body = desc_fields_text(structs, enums, sd.fields, 0, list_len(sd.fields), depth + 1, d"")
+            if str_contains(body, d"?") == 1
+                d""
+            else
+                d"S(" + body + d")"
+
+fn desc_fields_text(structs: List[TStruct], enums: List[TEnum], fields: List[TField], i: Int, n: Int, depth: Int, acc: String) -> String ! alloc
     if i >= n
         acc
-    elsif tflat_field_class(list_get(fields, i).ty) == 1
-        tflat_desc(fields, i + 1, n, acc + d"s")
     else
-        tflat_desc(fields, i + 1, n, acc + d"i")
+        f = desc_field_text(structs, enums, list_get(fields, i).ty, depth)
+        desc_fields_text(structs, enums, fields, i + 1, n, depth, acc + f)
+
+# One field: `i` a Copy scalar, `s` a String, `E` an enum box, `S(..)` a struct; "?" otherwise.
+fn desc_field_text(structs: List[TStruct], enums: List[TEnum], ty: String, depth: Int) -> String ! alloc
+    t = trim_type_piece(ty)
+    if str_eq(t, "String") == 1
+        d"s"
+    elsif str_eq(t, "Int") == 1
+        d"i"
+    elsif str_eq(t, "Float") == 1
+        d"i"
+    elsif str_eq(t, "Bool") == 1
+        d"i"
+    elsif enum_named_t(enums, t, 0, list_len(enums)) == 1
+        d"E"
+    else
+        sd = desc_struct_text(structs, enums, t, depth)
+        if str_len(sd) == 0
+            d"?"
+        else
+            sd
+
+# Ownership class of a struct field, for `struct:Name` in the drops table (`OWNABLE` in
+# src/drops.rs): 0 a Copy scalar, 1 a String, 2 an enum box, 3 a struct box.
+fn field_class_text(enums: List[TEnum], ty: String) -> Int ! alloc
+    t = trim_type_piece(ty)
+    if str_eq(t, "String") == 1
+        1
+    elsif str_eq(t, "Int") == 1
+        0
+    elsif str_eq(t, "Float") == 1
+        0
+    elsif str_eq(t, "Bool") == 1
+        0
+    elsif enum_named_t(enums, t, 0, list_len(enums)) == 1
+        2
+    else
+        3
 
 # `list_new[T]()`: the element descriptor travels as a string constant.
 fn lower_list_new(cx: Cx, txt: String, d: Int, owned: Int) -> Int ! alloc
     dsc = fresh(cx)
-    _a = ir_push(cx, ir_cs(dsc, str_as_int(list_desc_text(cx, txt, owned))))
+    _a = ir_push(cx, ir_cs(dsc, str_as_int(desc_type_text(cx_structs(cx), cx.enums, txt, owned))))
     argv = vec_new()
     _b = vec_push(argv, dsc)
     _p = ir_push(cx, ir_call(d, str_as_int(d"sal_list_new_desc"), argv, 1))
@@ -1757,7 +1793,7 @@ fn mv_match_arms(arms: List[TArm], i: Int, n: Int, names: Int, md: Int) -> Int !
         mv_match_arms(arms, i + 1, n, names, md)
 
 fn mv_call(name: String, args: List[Expr], names: Int, md: Int) -> Int ! alloc
-    params = map_get(md, str_as_int(name))
+    params = map_get(md, str_as_int("caller:" + name))
     if params != 0
         _t = mv_take_args(params, args, 0, list_len(args), names)
     else
@@ -1830,40 +1866,414 @@ fn drop_candidates(cx: Cx, params: List[TParam], modes: Int, i: Int, n: Int, out
             _s = 0
         drop_candidates(cx, params, modes, i + 1, n, out)
 
-fn drop_fields(cx: Cx, base: Int, sd: TStruct, fields: List[TField], i: Int, n: Int) -> Int ! alloc
+# ---- struct glue (`free_struct_strings`, `field_drop` in src/ir.rs) ----
+# `g` says what the glue may release: bit 0 the structs held in fields, bit 1 the containers
+# (`List` of flat values, `Bytes`, `Dict` of flat values). A field the glue releases is freed
+# with the runtime function of its type; a one-field struct is transparent (the field is the value).
+
+# The runtime release of a field of type `ty` under `g`, or "" when the glue leaves it alone.
+fn drop_field_fn(structs: List[TStruct], ty: String, g: Int, depth: Int) -> String ! alloc
+    t = trim_type_piece(ty)
+    base = ty_base(t)
+    if str_eq(t, "String") == 1
+        d"sal_free"
+    elsif g < 2
+        drop_struct_fn(structs, t, g, depth)
+    elsif str_eq(base, "Bytes") == 1
+        d"sal_bytes_free"
+    elsif str_eq(base, "List") == 1
+        if flat_value_text(trim_spaces(tt_arg(t, 0))) == 1
+            d"sal_list_free"
+        else
+            d""
+    elsif str_eq(base, "Dict") == 1
+        if dict_flat_text(t) == 1
+            d"sal_dict_free"
+        else
+            d""
+    else
+        drop_struct_fn(structs, t, g, depth)
+
+# The base name of a type text (`List` of `List [Int ]`), spaces trimmed.
+fn ty_base(t: String) -> String ! alloc
+    open = ty_find_open(t, 0)
+    if open < 0
+        trim_spaces(t)
+    else
+        trim_spaces(str_slice(t, 0, open))
+
+# "struct" when the field is a struct the glue releases into (it holds a String or a container).
+fn drop_struct_fn(structs: List[TStruct], t: String, g: Int, depth: Int) -> String ! alloc
+    si = tt_struct_find(structs, t)
+    if g % 2 == 0
+        d""
+    elsif si < 0
+        d""
+    elsif depth >= 8
+        d""
+    elsif list_len(list_get(structs, si).tparams) > 0
+        d""
+    elsif struct_has_heap_t(structs, list_get(structs, si), depth + 1, g) == 0
+        d""
+    else
+        d"struct"
+
+# A Copy scalar type name (`Int`, `Float`, `Bool`).
+fn flat_value_text(t: String) -> Int ! alloc
+    if str_eq(t, "Int") == 1
+        1
+    elsif str_eq(t, "Float") == 1
+        1
+    elsif str_eq(t, "Bool") == 1
+        1
+    else
+        0
+
+# `Dict[K, V]` with K Int or String and V a Copy scalar.
+fn dict_flat_text(t: String) -> Int ! alloc
+    k = trim_spaces(tt_arg(t, 0))
+    v = trim_spaces(tt_arg(t, 1))
+    if str_eq(k, "Int") + str_eq(k, "String") == 0
+        0
+    else
+        flat_value_text(v)
+
+# Does the struct hold anything the glue releases, directly or in a nested struct?
+fn struct_has_heap_t(structs: List[TStruct], sd: TStruct, depth: Int, g: Int) -> Int ! alloc
+    struct_has_heap_fields(structs, sd.fields, 0, list_len(sd.fields), depth, g)
+
+fn struct_has_heap_fields(structs: List[TStruct], fields: List[TField], i: Int, n: Int, depth: Int, g: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_len(drop_field_fn(structs, list_get(fields, i).ty, g, depth)) > 0
+        1
+    else
+        struct_has_heap_fields(structs, fields, i + 1, n, depth, g)
+
+# Frees the released fields of the struct value `base` (of type `sd`), in field order.
+fn drop_fields(cx: Cx, base: Int, sd: TStruct, fields: List[TField], i: Int, n: Int, depth: Int, g: Int) -> Int ! alloc
     if i >= n
         0
     else
         fld = list_get(fields, i)
-        if tt_is_string(fld.ty) == 1
-            if list_len(sd.fields) == 1
-                _a = ir_push(cx, ir_call_free(base))
+        fnm = drop_field_fn(cx_structs(cx), fld.ty, g, depth)
+        if str_len(fnm) == 0
+            _z = 0
+        elsif str_eq(fnm, "struct") == 1
+            _n = drop_nested(cx, base, sd, i, fld.ty, depth, g)
+        else
+            ssa = if list_len(sd.fields) == 1
+                base
             else
                 d = fresh(cx)
-                _b = ir_push(cx, ir_extract(d, base, str_as_int(sd.name), i))
-                _c = ir_push(cx, ir_call_free(d))
-        else
-            _d = 0
-        drop_fields(cx, base, sd, fields, i + 1, n)
+                _e = ir_push(cx, ir_extract(d, base, str_as_int(sd.name), i))
+                d
+            _c = ir_push(cx, ir_call_named(ssa, str_as_int(fnm)))
+        drop_fields(cx, base, sd, fields, i + 1, n, depth, g)
 
-fn drop_locals(cx: Cx, names: Int, moved: Int, i: Int, n: Int) -> Int ! alloc
+# A nested struct field: its own released fields.
+fn drop_nested(cx: Cx, base: Int, sd: TStruct, i: Int, fty: String, depth: Int, g: Int) -> Int ! alloc
+    inner = list_get(cx_structs(cx), tt_struct_find(cx_structs(cx), trim_type_piece(fty)))
+    ssa = if list_len(sd.fields) == 1
+        base
+    else
+        d = fresh(cx)
+        _e = ir_push(cx, ir_extract(d, base, str_as_int(sd.name), i))
+        d
+    drop_fields(cx, ssa, inner, inner.fields, 0, list_len(inner.fields), depth + 1, g)
+
+# What the glue may release of the local `nm` (bit 0 nested structs, bit 1 containers).
+fn drop_glue_bits(fr: FRC, nm: Int) -> Int ! alloc
+    nested = if assigned_has(fr.sv, nm, 0, vec_len(fr.sv)) == 0
+        1
+    else
+        0
+    containers = if assigned_has(fr.hm, nm, 0, vec_len(fr.hm)) == 0
+        2
+    else
+        0
+    nested + containers
+
+fn drop_struct_fields(cx: Cx, base: Int, sd: TStruct, g: Int) -> Int ! alloc
+    drop_fields(cx, base, sd, sd.fields, 0, list_len(sd.fields), 0, g)
+
+# ---- field reads (`field_reads` in src/ir.rs) ----
+# `sv`: locals read whole through a field, a struct value (`q = w.p`); `hm`: locals whose
+# List/Dict/Bytes field is handed on. Maps from the local's name to 1.
+# The lists of the environment the walk needs, not the TEnv itself: a struct local's glue would
+# release the flat lists of a TEnv it only borrows.
+struct FRC
+    structs: List[TStruct]
+    enums: List[TEnum]
+    names: List[String]
+    tys: List[String]
+    md: Int
+    sv: Int
+    hm: Int
+    al: Int
+
+fn fr_new(env: TEnv borrow, enums: List[TEnum] borrow, md: Int) -> FRC ! alloc
+    FRC(env.structs, enums, env.names, env.tys, md, vec_new(), vec_new(), vec_new())
+
+# A struct local bound to `list_get(xs, i)` whose struct is not describable: the list hands out
+# its boxes, so the local is not released (`list_alias_locals` in src/ir.rs).
+fn fr_alias(c: FRC, name: String, e: Expr) -> Int ! alloc
+    match e
+        XCall(fname, args, targs, xp) => fr_alias_call(c, name, fname)
+        _ => 0
+
+fn fr_alias_call(c: FRC, name: String, fname: String) -> Int ! alloc
+    if str_eq(fname, "list_get") == 0
+        0
+    else
+        t = trim_type_piece(fr_type(c, name))
+        si = tt_struct_find(c.structs, t)
+        if si < 0
+            0
+        elsif str_len(desc_struct_text(c.structs, c.enums, t, 0)) == 0
+            fr_add(c.al, name)
+        else
+            0
+
+# The type text of the local `name` (`tenv_type`).
+fn fr_type(c: FRC, name: String) -> String ! alloc
+    fr_type_go(c, name, list_len(c.names) - 1)
+
+fn fr_type_go(c: FRC, name: String, i: Int) -> String ! alloc
+    if i < 0
+        d""
+    elsif str_eq(list_get(c.names, i), name) == 1
+        list_get(c.tys, i)
+    else
+        fr_type_go(c, name, i - 1)
+
+# Adds the local `name` (a string handle) to the set `set` (a vec of handles) unless it is there.
+fn fr_add(set: Int, name: String) -> Int ! alloc
+    if assigned_has(set, str_as_int(name), 0, vec_len(set)) == 0
+        vec_push(set, str_as_int(name))
+    else
+        0
+
+fn fr_is_container(t: String) -> Int ! alloc
+    base = ty_base(t)
+    if str_eq(base, "Bytes") == 1
+        1
+    elsif str_eq(base, "List") == 1
+        1
+    elsif str_eq(base, "Dict") == 1
+        1
+    else
+        0
+
+# The root local of a field chain `a.f1.f2`, pushing the field names onto `fl`; "" when the
+# expression is not such a chain.
+fn fr_chain(e: Expr, fl: List[String]) -> String ! alloc
+    match e
+        XIdent(name) => name
+        XField(base, field) => fr_chain_push(base, field, fl)
+        _ => d""
+
+fn fr_chain_push(base: Expr, field: String, fl: List[String]) -> String ! alloc
+    root = fr_chain(base, fl)
+    if str_len(root) == 0
+        d""
+    else
+        _p = list_push(fl, field)
+        root
+
+fn fr_note(c: FRC, e: Expr, moving: Int) -> Int ! alloc
+    fl = list_new[String]()
+    root = fr_chain(e, fl)
+    if str_len(root) == 0
+        0
+    else
+        si = tt_struct_find(c.structs, fr_type(c, root))
+        if si < 0
+            0
+        else
+            fr_walk_fields(c, list_get(c.structs, si), root, fl, 0, list_len(fl), moving)
+
+fn fr_walk_fields(c: FRC, cur: TStruct, root: String, fl: List[String], k: Int, n: Int, moving: Int) -> Int ! alloc
+    if k >= n
+        0
+    else
+        fname = list_get(fl, k)
+        ty = fr_field_type(cur.fields, fname, 0, list_len(cur.fields))
+        last = if k + 1 == n
+            1
+        else
+            0
+        if str_len(ty) == 0
+            0
+        else
+            t = trim_type_piece(ty)
+            _h = fr_mark_heap(c, root, t, last, moving)
+            si = tt_struct_find(c.structs, t)
+            if si < 0
+                0
+            elsif list_len(list_get(c.structs, si).tparams) > 0
+                0
+            else
+                _s = fr_mark_struct(c, root, last)
+                fr_walk_fields(c, list_get(c.structs, si), root, fl, k + 1, n, moving)
+
+# A List/Dict/Bytes field handed on (the last link of a moving chain): the local is not released.
+fn fr_mark_heap(c: FRC, root: String, t: String, last: Int, moving: Int) -> Int ! alloc
+    if last == 1
+        if moving == 1
+            if fr_is_container(t) == 1
+                fr_add(c.hm, root)
+            else
+                0
+        else
+            0
+    else
+        0
+
+# A struct field read whole (the last link): its nested structs are left alone.
+fn fr_mark_struct(c: FRC, root: String, last: Int) -> Int ! alloc
+    if last == 1
+        fr_add(c.sv, root)
+    else
+        0
+
+fn fr_field_type(fields: List[TField], name: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        d""
+    elsif str_eq(list_get(fields, i).name, name) == 1
+        list_get(fields, i).ty
+    else
+        fr_field_type(fields, name, i + 1, n)
+
+fn fr_ex(c: FRC, e: Expr, moving: Int) -> Int ! alloc
+    match e
+        XField(base, field) => fr_field(c, e, base, moving)
+        XCall(name, args, targs, xp) => fr_call(c, name, args, 0, list_len(args))
+        XBin(op, l, r) => fr_pair(c, l, r)
+        XUnary(op, inner) => fr_ex(c, inner, moving)
+        XTo(place, inner) => fr_ex(c, inner, moving)
+        XTry(inner) => fr_ex(c, inner, moving)
+        XOn(place, body, is_kern, has_index) => fr_blk(c, body)
+        XIf(cond, then_b, else_b, has_else, elsifs) => fr_if(c, cond, then_b, else_b, elsifs)
+        XWhile(cond, body) => fr_while(c, cond, body)
+        XMatch(scrut, arms) => fr_match(c, scrut, arms)
+        XLambda(param, body) => fr_ex(c, body, 1)
+        _ => 0
+
+fn fr_field(c: FRC, e: Expr, base: Expr, moving: Int) -> Int ! alloc
+    _n = fr_note(c, e, moving)
+    inner = fr_innermost(base)
+    match inner
+        XIdent(name) => 0
+        _ => fr_ex(c, inner, 0)
+
+fn fr_innermost(e: Expr) -> Expr ! alloc
+    match e
+        XField(base, field) => fr_innermost(base)
+        _ => e
+
+fn fr_pair(c: FRC, l: Expr, r: Expr) -> Int ! alloc
+    _a = fr_ex(c, l, 0)
+    fr_ex(c, r, 0)
+
+fn fr_call(c: FRC, name: String, args: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        keeps = fr_keeps(c, name, i)
+        _a = fr_ex(c, list_get(args, i), keeps)
+        fr_call(c, name, args, i + 1, n)
+
+# Whether argument i of the call to `name` may be kept (a `take` parameter, or a builtin that
+# does not only read it): the caller then cannot keep the struct's fields.
+fn fr_keeps(c: FRC, name: String, i: Int) -> Int ! alloc
+    params = map_get(c.md, str_as_int("caller:" + name))
+    if params != 0
+        if i < vec_len(params)
+            if vec_get(params, i) == 2
+                1
+            else
+                0
+        else
+            0
+    elsif dr_borrows(name) == 1
+        0
+    else
+        1
+
+fn fr_if(c: FRC, cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif]) -> Int ! alloc
+    _a = fr_ex(c, cond, 0)
+    _b = fr_blk(c, then_b)
+    _c = fr_elsifs(c, elsifs, 0, list_len(elsifs))
+    fr_blk(c, else_b)
+
+fn fr_elsifs(c: FRC, elsifs: List[TElsif], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(elsifs, i)
+        _a = fr_ex(c, arm.cond, 0)
+        _b = fr_blk(c, arm.body)
+        fr_elsifs(c, elsifs, i + 1, n)
+
+fn fr_while(c: FRC, cond: Expr, body: TBlock) -> Int ! alloc
+    _a = fr_ex(c, cond, 0)
+    fr_blk(c, body)
+
+fn fr_match(c: FRC, scrut: Expr, arms: List[TArm]) -> Int ! alloc
+    _a = fr_ex(c, scrut, 0)
+    fr_arms(c, arms, 0, list_len(arms))
+
+fn fr_arms(c: FRC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = fr_ex(c, list_get(arms, i).body, 1)
+        fr_arms(c, arms, i + 1, n)
+
+fn fr_blk(c: FRC, b: TBlock) -> Int ! alloc
+    _s = fr_stmts(c, b.stmts, 0, list_len(b.stmts))
+    fr_ex(c, b.tail, 1)
+
+fn fr_stmts(c: FRC, stmts: List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        k = st.kind
+        if k == 0
+            _a = fr_ex(c, st.expr, 0)
+        elsif k == 1
+            _al = fr_alias(c, st.name, st.expr)
+            _a = fr_ex(c, st.expr, 1)
+        elsif k == 2
+            _a = fr_ex(c, st.expr, 1)
+        else
+            _a = fr_ex(c, st.target, 0)
+            _b = fr_ex(c, st.expr, 1)
+        fr_stmts(c, stmts, i + 1, n)
+
+fn drop_locals(cx: Cx, fr: FRC, names: Int, moved: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         nm = vec_get(names, i)
-        if assigned_has(moved, nm, 0, vec_len(moved)) == 0
-            b = cx_find(cx, nm)
-            if b != 0
-                si = tt_struct_find(cx_structs(cx), tenv_type(cx.env, str_from_int(nm)))
-                _a = drop_struct_fields(cx, bind_ssa(b), list_get(cx_structs(cx), si))
-            else
-                _a = 0
-        else
-            _a = 0
-        drop_locals(cx, names, moved, i + 1, n)
+        _a = drop_local_one(cx, fr, moved, nm)
+        drop_locals(cx, fr, names, moved, i + 1, n)
 
-fn drop_struct_fields(cx: Cx, base: Int, sd: TStruct) -> Int ! alloc
-    drop_fields(cx, base, sd, sd.fields, 0, list_len(sd.fields))
+# Releases the fields of the struct local `nm` when it is not moved and not an alias of a list element.
+fn drop_local_one(cx: Cx, fr: FRC, moved: Int, nm: Int) -> Int ! alloc
+    if assigned_has(moved, nm, 0, vec_len(moved)) == 1
+        0
+    elsif assigned_has(fr.al, nm, 0, vec_len(fr.al)) == 1
+        0
+    else
+        b = cx_find(cx, nm)
+        if b != 0
+            si = tt_struct_find(cx_structs(cx), tenv_type(cx.env, str_from_int(nm)))
+            drop_struct_fields(cx, bind_ssa(b), list_get(cx_structs(cx), si), drop_glue_bits(fr, nm))
+        else
+            0
 
 fn fn_modes_of(md: Int, name: String) -> Int ! alloc
     ms = map_get(md, str_as_int(name))
@@ -1875,8 +2285,10 @@ fn fn_modes_of(md: Int, name: String) -> Int ! alloc
 fn emit_struct_drops(cx: Cx, f: TFn, body: TBlock, md: Int) -> Int ! alloc
     moved = vec_new()
     _m = mv_block(body, moved, md)
+    fr = fr_new(cx.env, cx.enums, md)
+    _r = fr_blk(fr, body)
     names = drop_candidates(cx, f.params, fn_modes_of(md, f.name), 0, tenv_len(cx.env), vec_new())
-    drop_locals(cx, names, moved, 0, vec_len(names))
+    drop_locals(cx, fr, names, moved, 0, vec_len(names))
 
 # Instructions without a trailing Return, which is returned separately (0 when none).
 fn pop_final_ret(cx: Cx) -> Int ! alloc
@@ -2065,7 +2477,146 @@ fn modes_fill_t(m: Int, table: HT, fns: List[TFn], i: Int, n: Int) -> Int ! allo
         ms = vec_new()
         _k = modes_vec(ms, ht_get(table, f.name), 0, list_len(f.params))
         _p = map_put(m, str_as_int(strdup(f.name)), ms)
+        # The callers' view (`param_modes` in src/ir.rs): a parameter whose fields the fn releases is taken.
+        caller = vec_new()
+        _c = modes_vec(caller, ht_get(table, f.name), 0, list_len(f.params))
+        _r = mark_released_params(caller, f, releases_param_names(f))
+        _q = map_put(m, str_as_int("caller:" + f.name), caller)
         modes_fill_t(m, table, fns, i + 1, n)
+
+# Sets to take (2) the modes of the parameters named in `names`.
+fn mark_released_params(modes: Int, f: TFn, names: Int) -> Int ! alloc
+    mark_released_go(modes, f.params, 0, list_len(f.params), names)
+
+fn mark_released_go(modes: Int, params: List[TParam], i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _s = if assigned_has(names, str_as_int(list_get(params, i).name), 0, vec_len(names)) == 1
+            vec_set(modes, i, 2)
+        else
+            0
+        mark_released_go(modes, params, i + 1, n, names)
+
+# The parameters of `f` whose fields it passes to a releasing builtin (`list_free(p.xs)`,
+# `free(p.name)`, ...): `releases_param_fields` in src/ir.rs.
+fn releases_param_names(f: TFn) -> Int ! alloc
+    out = vec_new()
+    _b = rel_block(f.body, out)
+    out
+
+fn rel_block(b: TBlock, out: Int) -> Int ! alloc
+    _s = rel_stmts(b.stmts, 0, list_len(b.stmts), out)
+    rel_expr(b.tail, out)
+
+fn rel_stmts(stmts: List[TStmt], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        _a = rel_expr(st.expr, out)
+        _b = rel_expr(st.target, out)
+        rel_stmts(stmts, i + 1, n, out)
+
+fn rel_releasing(name: String) -> Int ! alloc
+    if str_eq(name, "free") == 1
+        1
+    elsif str_eq(name, "list_free") == 1
+        1
+    elsif str_eq(name, "dict_free") == 1
+        1
+    elsif str_eq(name, "bytes_free") == 1
+        1
+    elsif str_eq(name, "enum_free") == 1
+        1
+    else
+        0
+
+# The root local of a field chain `p.f.g` (`p`), or "".
+fn rel_root(e: Expr) -> String ! alloc
+    match e
+        XField(base, field) => rel_root_of(base)
+        _ => d""
+
+fn rel_root_of(e: Expr) -> String ! alloc
+    match e
+        XIdent(name) => name
+        XField(base, field) => rel_root_of(base)
+        _ => d""
+
+fn rel_args(args: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        root = rel_root(list_get(args, i))
+        _a = if str_len(root) == 0
+            0
+        else
+            vec_push(out, str_as_int(root))
+        rel_args(args, i + 1, n, out)
+
+fn rel_expr(e: Expr, out: Int) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => rel_call(name, args, out)
+        XBin(op, l, r) => rel_pair(l, r, out)
+        XUnary(op, inner) => rel_expr(inner, out)
+        XTo(place, inner) => rel_expr(inner, out)
+        XTry(inner) => rel_expr(inner, out)
+        XField(base, field) => rel_expr(base, out)
+        XOn(place, body, is_kern, has_index) => rel_block(body, out)
+        XWhile(cond, body) => rel_while(cond, body, out)
+        XIf(cond, then_b, else_b, has_else, elsifs) => rel_if(cond, then_b, else_b, elsifs, out)
+        XMatch(scrut, arms) => rel_match(scrut, arms, out)
+        XLambda(param, body) => rel_expr(body, out)
+        _ => 0
+
+fn rel_call(name: String, args: List[Expr], out: Int) -> Int ! alloc
+    _a = if rel_releasing(name) == 1
+        rel_args(args, 0, list_len(args), out)
+    else
+        0
+    rel_all(args, 0, list_len(args), out)
+
+fn rel_all(args: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = rel_expr(list_get(args, i), out)
+        rel_all(args, i + 1, n, out)
+
+fn rel_pair(l: Expr, r: Expr, out: Int) -> Int ! alloc
+    _a = rel_expr(l, out)
+    rel_expr(r, out)
+
+fn rel_while(cond: Expr, body: TBlock, out: Int) -> Int ! alloc
+    _a = rel_expr(cond, out)
+    rel_block(body, out)
+
+fn rel_if(cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif], out: Int) -> Int ! alloc
+    _a = rel_expr(cond, out)
+    _b = rel_block(then_b, out)
+    _c = rel_elsifs(elsifs, 0, list_len(elsifs), out)
+    rel_block(else_b, out)
+
+fn rel_elsifs(elsifs: List[TElsif], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(elsifs, i)
+        _a = rel_expr(arm.cond, out)
+        _b = rel_block(arm.body, out)
+        rel_elsifs(elsifs, i + 1, n, out)
+
+fn rel_match(scrut: Expr, arms: List[TArm], out: Int) -> Int ! alloc
+    _a = rel_expr(scrut, out)
+    rel_arms(arms, 0, list_len(arms), out)
+
+fn rel_arms(arms: List[TArm], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = rel_expr(list_get(arms, i).body, out)
+        rel_arms(arms, i + 1, n, out)
 
 fn modes_vec(out: Int, text: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -2078,30 +2629,30 @@ fn modes_vec(out: Int, text: String, i: Int, n: Int) -> Int ! alloc
 fn variant_map_t(tp: TProgram) -> Int ! alloc
     m = map_new()
     _a = variant_map_enums_t(m, tp.enums, 0, list_len(tp.enums))
-    _b = flat_map_structs_t(m, tp.structs, 0, list_len(tp.structs))
+    _b = flat_map_structs_t(m, tp.structs, tp.enums, 0, list_len(tp.structs))
     m
 
-# Flat structs (see `tflat_struct_kind`) go in the same table under `struct:Name`, as the
-# per-field "is a String" flags.
-fn flat_map_structs_t(m: Int, sts: List[TStruct], i: Int, n: Int) -> Int ! alloc
+# Structs a list can own (see `desc_struct_text`) go in the same table under `struct:Name`, with
+# the class of each field (`field_class_text`).
+fn flat_map_structs_t(m: Int, sts: List[TStruct], enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         sd = list_get(sts, i)
-        if tflat_struct_kind(sd) >= 0
+        if str_len(desc_struct_text(sts, enums, sd.name, 0)) > 0
             flags = vec_new()
-            _f = flat_string_flags_t(flags, sd.fields, 0, list_len(sd.fields))
+            _f = field_classes_t(flags, enums, sd.fields, 0, list_len(sd.fields))
             _p = map_put(m, str_as_int("struct:" + sd.name), flags)
-            flat_map_structs_t(m, sts, i + 1, n)
+            flat_map_structs_t(m, sts, enums, i + 1, n)
         else
-            flat_map_structs_t(m, sts, i + 1, n)
+            flat_map_structs_t(m, sts, enums, i + 1, n)
 
-fn flat_string_flags_t(out: Int, fields: List[TField], i: Int, n: Int) -> Int ! alloc
+fn field_classes_t(out: Int, enums: List[TEnum], fields: List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = vec_push(out, tflat_field_class(list_get(fields, i).ty))
-        flat_string_flags_t(out, fields, i + 1, n)
+        _p = vec_push(out, field_class_text(enums, list_get(fields, i).ty))
+        field_classes_t(out, enums, fields, i + 1, n)
 
 fn variant_map_enums_t(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n

@@ -2102,6 +2102,7 @@ int64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb) {
 typedef struct {
     const char *desc;
     int desc_owned;
+    int owned;
     SalVec vec;
 } SalList;
 
@@ -2192,13 +2193,17 @@ void *sal_list_new(void) {
     return sal_list_new_typed(0);
 }
 
-/* `list_new[T]()`: `desc` is the element descriptor (a string constant). */
+/* `list_new[T]()`: `desc` is the element descriptor (a string constant). A leading `+`
+ * marks an owned list: `list_free` (and `list_set`) release its elements. Without it the
+ * list only copies them on `list_get` and never releases them (it borrows them). */
 void *sal_list_new_desc(const char *desc) {
     SalList *l = (SalList *)sal_xmalloc(sizeof(SalList), "list_new");
     if (!l) {
         return NULL;
     }
-    l->desc = desc ? desc : "i";
+    const char *d = desc ? desc : "i";
+    l->owned = d[0] == '+';
+    l->desc = l->owned ? d + 1 : d;
     l->desc_owned = 0;
     l->vec.data = NULL;
     l->vec.len = 0;
@@ -2212,6 +2217,7 @@ void *sal_list_new_typed(int64_t elem_kind) {
     SalList *l = (SalList *)vp;
     if (l) {
         l->desc = desc_from_kind(elem_kind, &l->desc_owned);
+        l->owned = 1;
     }
     return vp;
 }
@@ -2223,7 +2229,7 @@ void sal_list_free(void *vp) {
     if (!l) {
         return;
     }
-    if (*l->desc == 's' || *l->desc == 'S' || *l->desc == 'E') {
+    if (l->owned) {
         for (size_t i = 0; i < l->vec.len; i++) {
             desc_free(l->desc, l->vec.data[i]);
         }
@@ -2272,7 +2278,7 @@ void *sal_list_set(void *vp, int64_t i, int64_t x) {
     if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_set: out of bounds");
     }
-    if (*l->desc == 's' || *l->desc == 'S' || *l->desc == 'E') {
+    if (l->owned) {
         desc_free(l->desc, l->vec.data[i]);
     }
     l->vec.data[i] = x;

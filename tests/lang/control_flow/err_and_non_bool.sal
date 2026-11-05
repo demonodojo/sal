@@ -1,0 +1,5 @@
+# error: E_TYPE
+fn main() -> Int
+    # `&&` takes truth values (Bool or Int); a Float is not one.
+    x = 1.5 && true
+    0

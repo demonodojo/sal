@@ -416,6 +416,8 @@ fn format_binop(op: &BinOp) -> &'static str {
         BinOp::Le => "<=",
         BinOp::Gt => ">",
         BinOp::Ge => ">=",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
     }
 }
 
@@ -609,13 +611,15 @@ const ATOM_PREC: u8 = 10;
 
 fn binop_prec(op: &BinOp) -> u8 {
     match op {
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 2,
-        BinOp::Bor => 3,
-        BinOp::Bxor => 4,
-        BinOp::Band => 5,
-        BinOp::Shl | BinOp::Shr => 6,
-        BinOp::Add | BinOp::Sub => 7,
-        BinOp::Mul | BinOp::Div | BinOp::Mod => 8,
+        BinOp::Or => 1,
+        BinOp::And => 2,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 3,
+        BinOp::Bor => 4,
+        BinOp::Bxor => 5,
+        BinOp::Band => 6,
+        BinOp::Shl | BinOp::Shr => 7,
+        BinOp::Add | BinOp::Sub => 8,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 9,
     }
 }
 

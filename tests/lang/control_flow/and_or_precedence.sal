@@ -1,0 +1,12 @@
+# exit: 7
+fn main() -> Int
+    # `&&` binds tighter than `||`: `true || false && false` is `true || (false && false)`.
+    x = true || false && false
+    # `false && true || true` is `(false && true) || true`.
+    y = false && true || true
+    # Comparisons bind tighter than `&&` and `||`.
+    z = (1 < 2 && 2 > 3) || 4 == 4
+    if x && y && z
+        7
+    else
+        0

@@ -1,0 +1,19 @@
+# exit: 0
+# stdout: RRokok2
+fn loud(b: Bool) -> Bool ! io
+    # Each call prints "R": the right operand runs only when the left one does not decide.
+    print_str("R")
+    b
+
+fn main() -> Int ! io
+    # `false && loud` and `true || loud` never call loud: no "R".
+    a = false && loud(true)
+    b = true || loud(false)
+    # Here the right operand runs: two "R".
+    c = true && loud(true)
+    d = false || loud(false)
+    if a || b && c
+        print_str("ok")
+    if !a && (c || d)
+        print_str("ok2")
+    0

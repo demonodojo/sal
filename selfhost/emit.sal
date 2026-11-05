@@ -1154,13 +1154,44 @@ fn emit_c_str_add(left: Expr, right: Expr, user: Int, stmts: Int, tc: Tc) -> Str
         emit_c_builtin2(fname, args, stmts)
 
 fn emit_c_binary(op: String, l: Expr, r: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
-    if str_eq(op, "add") == 1
+    if str_eq(op, "and") + str_eq(op, "or") > 0
+        emit_c_logic(op, l, r, user, stmts, tc)
+    elsif str_eq(op, "add") == 1
         if texpr_is_string(tc.env, l) == 1
             emit_c_str_add(l, r, user, stmts, tc)
         else
             emit_c_binary_num(op, l, r, user, stmts, tc)
     else
         emit_c_binary_num(op, l, r, user, stmts, tc)
+
+# `&&` and `||` in C. If the right operand emits no statements, the C operator is enough. Otherwise
+# its statements go inside a branch that only the needed case runs, and the result is a temporary.
+fn emit_c_logic(op: String, left: Expr, right: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
+    l = emit_c_expr(left, user, stmts, tc)
+    sub = vec_new()
+    r = emit_c_expr(right, user, sub, tc)
+    cop = " || "
+    if str_eq(op, "and") == 1
+        cop = " && "
+    if vec_len(sub) == 0
+        "(" + l + cop + r + ")"
+    else
+        t = tmp_fresh(tc)
+        _a = vec_push(stmts, str_as_int("  int64_t " + t + " = " + l + ";\n"))
+        if str_eq(op, "and") == 1
+            _b = vec_push(stmts, str_as_int("  if (" + t + ") {{\n"))
+        else
+            _b = vec_push(stmts, str_as_int("  if (!" + t + ") {{\n"))
+        _c = emit_c_move_stmts(sub, 0, vec_len(sub), stmts)
+        _d = vec_push(stmts, str_as_int("    " + t + " = (" + r + ") != 0;\n  }}\n"))
+        t
+
+fn emit_c_move_stmts(sub: Int, i: Int, n: Int, stmts: Int) -> Int ! alloc
+    if i < n
+        _a = vec_push(stmts, vec_get(sub, i))
+        emit_c_move_stmts(sub, i + 1, n, stmts)
+    else
+        0
 
 fn emit_c_binary_num(op: String, left: Expr, right: Expr, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     l = emit_c_expr(left, user, stmts, tc)
@@ -1431,37 +1462,13 @@ fn emit_c_call(fname: String, args_e: List[Expr], targs: String, user: Int, stmt
         emit_c_builtin(fname, arg_parts, stmts)
 
 # `list_new[T]()` / `list_new_owned[T]()`: the element descriptor is a C string literal
-# (the same rule as `list_desc_text` in fuse.sal).
+# (the same rule as `desc_type_text` in fuse.sal).
 fn emit_c_list_new(targs: String, owned: Int, tc: Tc) -> String ! alloc
     q = char_to_str(34)
     "((int64_t)(uintptr_t)sal_list_new_desc(" + q + emit_c_list_desc(targs, owned, tc) + q + "))"
 
 fn emit_c_list_desc(targs: String, owned: Int, tc: Tc) -> String ! alloc
-    t = trim_type_piece(targs)
-    si = tt_struct_find(tc.env.structs, t)
-    if str_eq(t, "String") == 1
-        d"s"
-    elsif si < 0
-        if owned == 0
-            d"i"
-        elsif enum_named(tc.enums, t, 0, list_len(tc.enums)) == 1
-            d"E"
-        else
-            d"i"
-    else
-        sd = list_get(tc.env.structs, si)
-        if tflat_struct_kind(sd) < 0
-            d"i"
-        else
-            d"S(" + tflat_desc(sd.fields, 0, list_len(sd.fields), d"") + d")"
-
-fn enum_named(enums: List[TEnum], t: String, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    elsif str_eq(list_get(enums, i).name, t) == 1
-        1
-    else
-        enum_named(enums, t, i + 1, n)
+    desc_type_text(tc.env.structs, tc.enums, targs, owned)
 
 # `dict_new[K, V]()` passes both runtime kinds (Int 0, Float 1, Bool 2, String 3).
 fn emit_c_dict_new(targs: String) -> String ! alloc

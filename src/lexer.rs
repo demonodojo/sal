@@ -63,6 +63,8 @@ pub enum TokenKind {
     Caret,
     Shl,
     Shr,
+    AmpAmp,
+    PipePipe,
     FatArrow, // =>
     Newline,
     Indent,
@@ -200,6 +202,8 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 b"<=" => Some(TokenKind::Le),
                 b">=" => Some(TokenKind::Ge),
                 b"<<" => Some(TokenKind::Shl),
+                b"&&" => Some(TokenKind::AmpAmp),
+                b"||" => Some(TokenKind::PipePipe),
                 b">>" => Some(TokenKind::Shr),
                 _ => None,
             };

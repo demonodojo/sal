@@ -1483,6 +1483,8 @@ fn infer_binary(c: IC, op: String, l: Expr, r: Expr) -> String ! alloc
     if ty_is_tensor(lt) + ty_is_tensor(rt) > 0
         _s = infer_scalar_left(c, op, lt, rt)
         infer_tensor_binary(c, op, lt, rt)
+    elsif infer_is_logic(op) == 1
+        infer_logic(c, lt, rt)
     elsif str_eq(op, "add") == 1
         infer_add(c, lt, rt)
     elsif infer_is_bitop(op) == 1
@@ -1520,6 +1522,24 @@ fn infer_add(c: IC, lt: String, rt: String) -> String ! alloc
             lt
     else
         infer_numeric(c, lt, rt)
+
+# `&&` and `||` take truth values (Bool, or Int where nonzero is true) and give Bool.
+fn infer_is_logic(op: String) -> Int ! alloc
+    if str_eq(op, "and") + str_eq(op, "or") > 0
+        1
+    else
+        0
+
+fn infer_logic(c: IC, lt: String, rt: String) -> String ! alloc
+    _f = infer_truth_side(c, lt)
+    _g = infer_truth_side(c, rt)
+    d"Bool"
+
+fn infer_truth_side(c: IC, t: String) -> Int ! alloc
+    if ty_is(t, "Bool") + ty_is(t, "Int") + ty_is(t, "Unknown") == 0
+        ic_fail(c, "`&&` and `||` take Bool or Int operands")
+    else
+        0
 
 fn infer_bitop(c: IC, lt: String, rt: String) -> String ! alloc
     _f = infer_bit_side(c, lt)

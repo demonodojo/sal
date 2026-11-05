@@ -314,38 +314,42 @@ fn parse_type_text(pr: Parser) -> String ! alloc
         r
 
 fn binop_prec(k: Int) -> Int
-    if k == TK_EQEQ()
+    if k == TK_OROR()
         1
-    elsif k == TK_NE()
-        1
-    elsif k == TK_LT()
-        1
-    elsif k == TK_LE()
-        1
-    elsif k == TK_GT()
-        1
-    elsif k == TK_GE()
-        1
-    elsif k == TK_PIPE()
+    elsif k == TK_ANDAND()
         2
-    elsif k == TK_CARET()
+    elsif k == TK_EQEQ()
         3
-    elsif k == TK_AMP()
+    elsif k == TK_NE()
+        3
+    elsif k == TK_LT()
+        3
+    elsif k == TK_LE()
+        3
+    elsif k == TK_GT()
+        3
+    elsif k == TK_GE()
+        3
+    elsif k == TK_PIPE()
         4
+    elsif k == TK_CARET()
+        5
+    elsif k == TK_AMP()
+        6
     elsif k == TK_SHL()
-        5
+        7
     elsif k == TK_SHR()
-        5
+        7
     elsif k == TK_PLUS()
-        6
+        8
     elsif k == TK_MINUS()
-        6
+        8
     elsif k == TK_STAR()
-        7
+        9
     elsif k == TK_SLASH()
-        7
+        9
     elsif k == TK_PERCENT()
-        7
+        9
     else
         0
 
@@ -382,6 +386,10 @@ fn binop_name(k: Int) -> String ! alloc
         d"div"
     elsif k == TK_PERCENT()
         d"mod"
+    elsif k == TK_ANDAND()
+        d"and"
+    elsif k == TK_OROR()
+        d"or"
     else
         d"add"
 

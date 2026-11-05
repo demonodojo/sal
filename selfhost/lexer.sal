@@ -171,6 +171,12 @@ fn TK_FATARROW() -> Int
 fn TK_BREAK() -> Int
     56
 
+fn TK_ANDAND() -> Int
+    57
+
+fn TK_OROR() -> Int
+    58
+
 fn is_digit(c: Int) -> Int
     if c < 48
         0
@@ -787,9 +793,9 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
     elsif c == 37
         lex_simple(src, i, n, out, st, TK_PERCENT(), 1)
     elsif c == 38
-        lex_simple(src, i, n, out, st, TK_AMP(), 1)
+        lex_pair(src, i, n, out, st, 38, TK_AMP(), TK_ANDAND())
     elsif c == 124
-        lex_simple(src, i, n, out, st, TK_PIPE(), 1)
+        lex_pair(src, i, n, out, st, 124, TK_PIPE(), TK_OROR())
     elsif c == 94
         lex_simple(src, i, n, out, st, TK_CARET(), 1)
     elsif c == 64

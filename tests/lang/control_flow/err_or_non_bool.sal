@@ -1,0 +1,5 @@
+# error: E_TYPE
+fn main() -> Int
+    # Same for `||`, on the right; a String is not a truth value either.
+    x = true || "no"
+    0

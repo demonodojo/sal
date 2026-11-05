@@ -25,8 +25,8 @@ type Variants = HashMap<String, Vec<bool>>;
 type ReadOnly = HashMap<String, Vec<bool>>;
 
 thread_local! {
-    /// Flat structs (see `ir::flat_struct_kind`): name -> per-field "is a String".
-    static FLATS: std::cell::RefCell<HashMap<String, Vec<bool>>> = std::cell::RefCell::new(HashMap::new());
+    /// Structs a list can own (see `ir::struct_desc`): name -> the class of each field.
+    static OWNABLE: std::cell::RefCell<HashMap<String, Vec<FieldOwn>>> = std::cell::RefCell::new(HashMap::new());
     /// Names of the enum types of the program (a `List[E]` of them owns its boxes).
     static ENUM_TYPES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
@@ -52,6 +52,11 @@ fn list_enum_arg(type_args: &[TypeArg]) -> bool {
     matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && is_enum_type(name))
 }
 
+/// `list_new[String]()`: the list owns its strings.
+fn list_string_arg(type_args: &[TypeArg]) -> bool {
+    matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && name == "String")
+}
+
 /// A variant constructor call `V(..)` builds a new box, and a unit variant `V` is a
 /// tag: both are fresh values for a list to own (a box owns the fresh fields it was
 /// built with, see `enum_owned_mask`).
@@ -64,34 +69,64 @@ fn is_fresh_variant_ctor(e: &Expr, variants: &Variants) -> bool {
     }
 }
 
-fn collect_flats(prog: &Program) {
+/// The class of a struct field for ownership: a Copy scalar, a String, an enum box, or a
+/// struct box (see `ir::struct_desc`).
+#[derive(Clone, Copy)]
+enum FieldOwn {
+    Scalar,
+    Str,
+    Enum,
+    Struct,
+}
+
+fn collect_ownable(prog: &Program) {
+    let structs: HashMap<String, StructDef> =
+        prog.items.iter().filter_map(|i| if let Item::Struct(s) = i { Some((s.name.clone(), s.clone())) } else { None }).collect();
+    let enums: HashMap<String, EnumDef> =
+        prog.items.iter().filter_map(|i| if let Item::Enum(e) = i { Some((e.name.clone(), e.clone())) } else { None }).collect();
     let mut m = HashMap::new();
-    for item in &prog.items {
-        if let Item::Struct(sd) = item {
-            if crate::ir::flat_struct_kind(sd).is_some() {
-                m.insert(sd.name.clone(), sd.fields.iter().map(|f| crate::string_expr::is_string_type(&f.ty)).collect());
-            }
+    for sd in structs.values() {
+        if crate::ir::struct_desc(&sd.name, &structs, &enums).is_none() {
+            continue;
         }
+        let kinds = sd
+            .fields
+            .iter()
+            .map(|f| match &f.ty {
+                _ if crate::string_expr::is_string_type(&f.ty) => FieldOwn::Str,
+                Type::Named { name, .. } if enums.contains_key(name) => FieldOwn::Enum,
+                Type::Named { name, .. } if structs.contains_key(name) => FieldOwn::Struct,
+                _ => FieldOwn::Scalar,
+            })
+            .collect();
+        m.insert(sd.name.clone(), kinds);
     }
-    FLATS.with(|f| *f.borrow_mut() = m);
+    OWNABLE.with(|f| *f.borrow_mut() = m);
 }
 
-fn is_flat(name: &str) -> bool {
-    FLATS.with(|f| f.borrow().contains_key(name))
+fn is_ownable_struct(name: &str) -> bool {
+    OWNABLE.with(|f| f.borrow().contains_key(name))
 }
 
-/// `S(a, b, ..)` of a flat struct whose String fields are all fresh values: the list
-/// that stores it owns the block and its strings.
-fn is_fresh_flat_ctor(e: &Expr) -> bool {
+/// `S(a, b, ..)` of a struct a list can own, whose String fields are fresh values, whose
+/// enum fields are variant constructors and whose struct fields are fresh constructors:
+/// the list that stores it owns the blocks, boxes and strings.
+fn is_fresh_struct_ctor(e: &Expr, variants: &Variants) -> bool {
     let Expr::Call { func, args, .. } = e else {
         return false;
     };
     let Expr::Ident { name, .. } = func.as_ref() else {
         return false;
     };
-    FLATS.with(|f| {
-        f.borrow().get(name).is_some_and(|strs| {
-            strs.len() == args.len() && strs.iter().zip(args).all(|(is_str, a)| !is_str || is_fresh_value(a))
+    OWNABLE.with(|f| {
+        f.borrow().get(name).is_some_and(|kinds| {
+            kinds.len() == args.len()
+                && kinds.iter().zip(args).all(|(k, a)| match k {
+                    FieldOwn::Scalar => true,
+                    FieldOwn::Str => is_fresh_value(a),
+                    FieldOwn::Enum => is_fresh_variant_ctor(a, variants),
+                    FieldOwn::Struct => is_fresh_struct_ctor(a, variants),
+                })
         })
     })
 }
@@ -219,7 +254,7 @@ pub fn insert_drops(prog: &Program) -> Program {
             f.body = Hoist { n: 0 }.block(body);
         }
     }
-    collect_flats(prog);
+    collect_ownable(prog);
     collect_enum_types(prog);
     let mut variants = Variants::new();
     for item in &prog.items {
@@ -373,7 +408,7 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
 }
 
 fn list_flat_arg(type_args: &[TypeArg]) -> bool {
-    matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && is_flat(name))
+    matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && is_ownable_struct(name))
 }
 
 fn list_owns_elems(type_args: &[TypeArg]) -> bool {
@@ -684,7 +719,7 @@ fn push_stmt(e: &Expr, f: &mut Facts) -> bool {
     }
     // The stored value is the last argument (`list_push(xs, v)`, `list_set(xs, i, v)`, `dict_put(d, k, v)`).
     if let (Expr::Ident { name: container, .. }, Some(v)) = (&args[0], args.last()) {
-        if args.len() >= 2 && !is_fresh_value(v) && !is_fresh_flat_ctor(v) && !is_fresh_variant_ctor(v, &f.variants) {
+        if args.len() >= 2 && !is_fresh_value(v) && !is_fresh_struct_ctor(v, &f.variants) && !is_fresh_variant_ctor(v, &f.variants) {
             f.tainted.insert(container.clone());
         }
     }
@@ -777,9 +812,12 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashSe
     }
     if let Expr::Call { func, type_args, .. } = init {
         if let Expr::Ident { name: callee, .. } = func.as_mut() {
-            if callee == "list_new" && list_enum_arg(type_args) {
+            if callee == "list_new" && (list_enum_arg(type_args) || list_flat_arg(type_args) || list_string_arg(type_args)) {
                 *callee = "list_new_owned".into();
-                owned.insert(name.to_string());
+                // Only an owned enum list hands out `enum_free` copies (`candidate`).
+                if list_enum_arg(type_args) {
+                    owned.insert(name.to_string());
+                }
             }
         }
     }

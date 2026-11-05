@@ -356,6 +356,10 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
+    /// `&&`: solo sobre `Bool`; corta: el derecho no se evalúa si el izquierdo es `false`.
+    And,
+    /// `||`: solo sobre `Bool`; corta: el derecho no se evalúa si el izquierdo es `true`.
+    Or,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

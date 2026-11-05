@@ -886,7 +886,7 @@ impl Parser {
 
     /// `lambda → cmp "=>" expr | cmp`. El cuerpo es un `expr`, así que admite `try`.
     fn parse_lambda(&mut self) -> Result<Expr, Diagnostic> {
-        let left = self.parse_cmp()?;
+        let left = self.parse_or()?;
         self.skip_group_newlines();
         if self.at(TokenKind::FatArrow) {
             let arrow = self.bump().span;
@@ -908,6 +908,46 @@ impl Parser {
                 body: Box::new(body),
                 span,
             });
+        }
+        Ok(left)
+    }
+
+    /// `or → or "||" and | and`
+    fn parse_or(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_and()?;
+        loop {
+            self.skip_group_newlines();
+            if !self.at(TokenKind::PipePipe) {
+                break;
+            }
+            let sp = self.bump().span;
+            let right = self.parse_and()?;
+            left = Expr::Binary {
+                op: BinOp::Or,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: sp,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `and → and "&&" cmp | cmp`
+    fn parse_and(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.parse_cmp()?;
+        loop {
+            self.skip_group_newlines();
+            if !self.at(TokenKind::AmpAmp) {
+                break;
+            }
+            let sp = self.bump().span;
+            let right = self.parse_cmp()?;
+            left = Expr::Binary {
+                op: BinOp::And,
+                left: Box::new(left),
+                right: Box::new(right),
+                span: sp,
+            };
         }
         Ok(left)
     }
@@ -1715,6 +1755,8 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         | (Caret, Caret)
         | (Shl, Shl)
         | (Shr, Shr)
+        | (AmpAmp, AmpAmp)
+        | (PipePipe, PipePipe)
         | (EqEq, EqEq)
         | (Ne, Ne)
         | (Lt, Lt)

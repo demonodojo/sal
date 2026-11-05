@@ -253,7 +253,7 @@ fn tt_call_type(env: TEnv, name: String, args: List[Expr], targs: String) -> Str
         tt_matmul(env, args)
     elsif tt_struct_find(env.structs, name) >= 0
         name
-    elsif str_eq(name, "list_new") == 1
+    elsif str_eq(name, "list_new") + str_eq(name, "list_new_owned") == 1
         if str_len(targs) == 0
             d""
         else
@@ -293,6 +293,8 @@ fn tt_binary_type(env: TEnv, op: String, l: Expr, r: Expr) -> String ! alloc
             d"Float"
         else
             d""
+    elsif str_eq(op, "and") + str_eq(op, "or") > 0
+        d"Bool"
     elsif tt_arith_is_float(env, op, l, r) == 1
         d"Float"
     else

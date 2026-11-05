@@ -1,0 +1,18 @@
+# exit: 2
+struct Inner
+    s: String
+    n: Int
+
+struct Outer
+    name: String
+    inner: Inner
+    k: Int
+
+fn fill() -> Int ! alloc
+    xs = list_new[Outer]()
+    inr = Inner("q", 7)
+    _a = list_push(xs, Outer("a", inr, 1))
+    list_len(xs) + 1
+
+fn main() -> Int ! alloc
+    fill()
