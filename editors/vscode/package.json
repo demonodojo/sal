@@ -1,8 +1,8 @@
 {
   "name": "sal",
   "displayName": "sal",
-  "description": "Editar programas sal: resaltado, diagnósticos del compilador (E_*) y de standard (Style/*), formato e ir a la definición de funciones.",
-  "version": "0.1.2",
+  "description": "Editar programas sal: resaltado (method/static/init, @deprecated, break), diagnósticos E_* y W_DEPRECATED, avisos Style/*, formato e ir a definiciones.",
+  "version": "0.2.4",
   "private": true,
   "publisher": "sal",
   "icon": "icons/sal.png",
@@ -13,7 +13,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:sal"
+    "onLanguage:sal",
+    "workspaceContains:**/*.sal"
   ],
   "main": "./out/extension.js",
   "scripts": {
@@ -32,6 +33,7 @@
         "extensions": [
           ".sal"
         ],
+        "semanticHighlighting": true,
         "configuration": "./language-configuration.json",
         "icon": {
           "light": "./icons/sal.svg",
@@ -58,6 +60,11 @@
           "type": "string",
           "default": "",
           "description": "Ruta del binario standard. Vacio: target/debug/standard del workspace; luego PATH."
+        },
+        "sal.syntaxDecorations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Colorea tipos (verde), palabras clave (violeta) y efectos con decoraciones del editor (independiente del tema)."
         }
       }
     },
@@ -75,6 +82,41 @@
         "title": "SAL: Standard Fix"
       }
     ],
+    "configurationDefaults": {
+      "[sal]": {
+        "editor.semanticHighlighting.enabled": true
+      },
+      "editor.semanticTokenColorCustomizations": {
+        "[sal]": {
+          "enabled": true,
+          "rules": {
+            "type": {
+              "foreground": "#89D185",
+              "fontStyle": "bold"
+            },
+            "keyword": {
+              "foreground": "#C586C0"
+            },
+            "effect": {
+              "foreground": "#DCDCAA",
+              "fontStyle": "italic"
+            }
+          }
+        }
+      },
+      "editor.tokenColorCustomizations": {
+        "[sal]": {
+          "textMateRules": [
+            {
+              "scope": "string.quoted.double.sal",
+              "settings": {
+                "foreground": "#CE9178"
+              }
+            }
+          ]
+        }
+      }
+    },
     "menus": {
       "commandPalette": [
         {

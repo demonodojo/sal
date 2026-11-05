@@ -8,11 +8,13 @@
     { "include": "#number" },
     { "include": "#function-def" },
     { "include": "#attribute" },
+    { "include": "#type-builtin" },
+    { "include": "#type-name" },
     { "include": "#tensor" },
     { "include": "#method" },
     { "include": "#keyword" },
     { "include": "#constant" },
-    { "include": "#type" }
+    { "include": "#effect" }
   ],
   "repository": {
     "comment": {
@@ -56,7 +58,7 @@
     },
     "attribute": {
       "name": "storage.modifier.attribute.sal",
-      "match": "@(?:frozen|stack|no_heap|layout)\\b"
+      "match": "@(?:frozen|stack|no_heap|layout|deprecated)\\b"
     },
     "tensor": {
       "name": "keyword.control.sal",
@@ -68,15 +70,23 @@
     },
     "keyword": {
       "name": "keyword.control.sal",
-      "match": "\\b(?:fn|let|if|elsif|else|match|on|to|kernel|return|import|try|while|struct|enum|frame|in|parallel)\\b"
+      "match": "\\b(?:fn|let|if|elsif|else|match|on|to|kernel|return|import|try|while|break|struct|enum|frame|in|parallel)\\b"
     },
     "constant": {
       "name": "constant.language.sal",
       "match": "\\b(?:true|false|cpu|gpu|tpu)\\b"
     },
-    "type": {
-      "name": "support.type.sal",
+    "type-builtin": {
+      "name": "storage.type.sal",
       "match": "\\b(?:Tensor|List|Dict|Int|Float|Bool|String|Bytes|Unit|BF16|F16|F32|I8)\\b"
+    },
+    "type-name": {
+      "name": "entity.name.type.sal",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "effect": {
+      "name": "keyword.other.effect.sal",
+      "match": "\\b(?:alloc|io)\\b"
     }
   }
 }

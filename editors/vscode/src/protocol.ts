@@ -101,6 +101,44 @@ export function standardFixArgs(filePath: string): string[] {
   return ["fix", filePath];
 }
 
+/** `warning[CODE]: message (path:line:col)` from `sal check` (p. ej. `W_DEPRECATED`). */
+export function parseSalWarningStderr(stderr: string): {
+  code: string;
+  message: string;
+  line: number;
+  col: number;
+  path: string;
+}[] {
+  const out: {
+    code: string;
+    message: string;
+    line: number;
+    col: number;
+    path: string;
+  }[] = [];
+  for (const raw of stderr.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("warning[")) continue;
+    const head = /^warning\[([^\]]+)\]: (.+)$/.exec(line);
+    if (!head) continue;
+    const tail = head[2];
+    const loc = /\((.+):(\d+):(\d+)\)$/.exec(tail);
+    if (!loc) continue;
+    const message = tail.slice(0, tail.length - loc[0].length).trim();
+    const lineNo = Number(loc[2]);
+    const colNo = Number(loc[3]);
+    if (!Number.isFinite(lineNo) || !Number.isFinite(colNo)) continue;
+    out.push({
+      code: head[1],
+      message,
+      line: lineNo,
+      col: colNo,
+      path: loc[1],
+    });
+  }
+  return out;
+}
+
 export function parseDiagnosticStderr(stderr: string): SalDiagnostic[] {
   const out: SalDiagnostic[] = [];
   for (const line of stderr.split("\n")) {
@@ -165,6 +203,24 @@ export function byteOffsetToPosition(
   return { line, character };
 }
 
+function salWarningsForFile(input: {
+  stderr: string;
+  filePath: string;
+  text: string;
+}): MappedDiagnostic[] {
+  const target = path.resolve(input.filePath);
+  return parseSalWarningStderr(input.stderr)
+    .filter((warn) => path.resolve(warn.path) === target)
+    .map((warn) => ({
+      code: warn.code,
+      message: warn.message,
+      hint: null,
+      severity: "warning" as const,
+      fix: null,
+      range: lineColToRange(input.text, warn.line, warn.col),
+    }));
+}
+
 export async function checkFile(input: {
   command: string;
   filePath: string;
@@ -176,10 +232,15 @@ export async function checkFile(input: {
   if (result.notFound) {
     return { diagnostics: [], missingCompiler: true };
   }
+  const warnings = salWarningsForFile({
+    stderr: result.stderr,
+    filePath: input.filePath,
+    text: input.text,
+  });
   if (result.exitCode === 0) {
-    return { diagnostics: [], missingCompiler: false };
+    return { diagnostics: warnings, missingCompiler: false };
   }
-  const diagnostics = parseDiagnosticStderr(result.stderr).map((diag) => ({
+  const errors = parseDiagnosticStderr(result.stderr).map((diag) => ({
     code: diag.code,
     message: diag.message,
     hint: diag.hint,
@@ -187,7 +248,7 @@ export async function checkFile(input: {
     fix: null,
     range: spanToRange(input.text, diag.span),
   }));
-  return { diagnostics, missingCompiler: false };
+  return { diagnostics: [...errors, ...warnings], missingCompiler: false };
 }
 
 export async function formatFile(input: {

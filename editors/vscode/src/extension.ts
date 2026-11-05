@@ -18,6 +18,9 @@ import {
   styleFixEdits,
   type MappedDiagnostic,
 } from "./protocol";
+import { registerSalLanguageMode } from "./languageMode";
+import { registerSemanticTokens } from "./semanticTokens";
+import { registerSyntaxDecorations } from "./syntaxDecorations";
 
 const diagnostics = vscode.languages.createDiagnosticCollection("sal");
 const styleFixes = new Map<string, ReturnType<typeof styleFixEdits>>();
@@ -28,6 +31,9 @@ let warnedMissingStandard = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(diagnostics);
+  registerSalLanguageMode(context);
+  registerSemanticTokens(context);
+  registerSyntaxDecorations(context);
 
   context.subscriptions.push(
     vscode.languages.registerDocumentFormattingEditProvider("sal", {
@@ -194,7 +200,12 @@ function toVscodeDiagnostic(
       : vscode.DiagnosticSeverity.Error;
   const item = new vscode.Diagnostic(range, diag.message, severity);
   item.code = diag.code;
-  item.source = diag.severity === "warning" ? "standard" : "sal";
+  item.source =
+    diag.severity === "warning" && diag.code.startsWith("Style/")
+      ? "standard"
+      : diag.severity === "warning"
+        ? "sal"
+        : "sal";
   if (diag.hint) {
     item.relatedInformation = [
       new vscode.DiagnosticRelatedInformation(

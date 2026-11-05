@@ -3596,3 +3596,5 @@ pub fn type_name(t: &Type) -> String {
         Type::Fn { .. } => "fn".into(),
     }
 }
+
+}

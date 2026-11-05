@@ -1,0 +1,23 @@
+{
+  "[sal]": {
+    "editor.semanticHighlighting.enabled": true
+  },
+  "editor.semanticTokenColorCustomizations": {
+    "[sal]": {
+      "enabled": true,
+      "rules": {
+        "type": {
+          "foreground": "#89D185",
+          "fontStyle": "bold"
+        },
+        "keyword": {
+          "foreground": "#C586C0"
+        },
+        "effect": {
+          "foreground": "#DCDCAA",
+          "fontStyle": "italic"
+        }
+      }
+    }
+  }
+}

@@ -17,6 +17,7 @@ export const LEXER_WORDS = [
   "import",
   "try",
   "while",
+  "break",
   "struct",
   "enum",
   "frame",
@@ -59,17 +60,37 @@ export function functionDefinitionsIn(text: string): NamedSpan[] {
   const lines = splitLines(text);
   for (let line = 0; line < lines.length; line++) {
     const code = cutComment(lines[line]);
-    const match = /^fn[ \t]+([A-Za-z_][A-Za-z0-9_]*)/.exec(code);
-    if (!match) continue;
-    const name = match[1];
-    out.push({
-      name,
-      location: {
-        line,
-        character: match[0].length - name.length,
-        length: name.length,
-      },
-    });
+    const fn = /^fn[ \t]+([A-Za-z_][A-Za-z0-9_]*)/.exec(code);
+    if (fn) {
+      pushNameSpan(out, line, fn[1], fn[0].length - fn[1].length);
+      continue;
+    }
+    const method =
+      /^method[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\.[ \t]*([A-Za-z_][A-Za-z0-9_]*)/.exec(code);
+    if (method) {
+      const recv = method[1];
+      const member = method[2];
+      const at = method[0].length - member.length;
+      pushNameSpan(out, line, `${recv}__${member}`, at);
+      pushNameSpan(out, line, member, at);
+      continue;
+    }
+    const stat =
+      /^static[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\.[ \t]*([A-Za-z_][A-Za-z0-9_]*)/.exec(code);
+    if (stat) {
+      const recv = stat[1];
+      const member = stat[2];
+      const at = stat[0].length - member.length;
+      pushNameSpan(out, line, `${recv}__${member}`, at);
+      pushNameSpan(out, line, member, at);
+      continue;
+    }
+    const init = /^init[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(/.exec(code);
+    if (init) {
+      const recv = init[1];
+      pushNameSpan(out, line, `${recv}__new`, init[0].length - recv.length);
+      continue;
+    }
   }
   return out;
 }
@@ -205,6 +226,10 @@ export function definitionsOf(input: {
     }
   }
   return found;
+}
+
+function pushNameSpan(out: NamedSpan[], line: number, name: string, character: number): void {
+  out.push({ name, location: { line, character, length: name.length } });
 }
 
 function pushCandidates(out: string[], base: string, importPath: string): void {

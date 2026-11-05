@@ -16,11 +16,13 @@ import {
   type TextFiles,
 } from "../definitions";
 import { materializeSource } from "../materialize";
+import { scanSalLine } from "../syntaxScan";
 import {
   checkFile,
   checkStyle,
   fixStyle,
   formatFile,
+  parseSalWarningStderr,
   resolveBinaryPath,
   styleFixEdits,
   type ProcessResult,
@@ -44,6 +46,39 @@ function parseError(): ProcessResult {
     notFound: false,
   };
 }
+
+test("W_DEPRECATED con check exit 0 se muestra como aviso", async () => {
+  const filePath = "/tmp/main.sal";
+  const run: ProcessRunner = async () => ({
+    stdout: "",
+    stderr: `warning[W_DEPRECATED]: \`old\` is deprecated: use new (${filePath}:2:5)\n`,
+    exitCode: 0,
+    notFound: false,
+  });
+  const text = "fn old() -> Int\n    old()\n";
+  const outcome = await checkFile({
+    command: "sal",
+    filePath,
+    cwd: "/tmp",
+    text,
+    run,
+  });
+  assert.equal(outcome.diagnostics.length, 1);
+  assert.equal(outcome.diagnostics[0].code, "W_DEPRECATED");
+  assert.equal(outcome.diagnostics[0].severity, "warning");
+  assert.equal(outcome.diagnostics[0].range.startLine, 1);
+  assert.equal(outcome.diagnostics[0].range.startCharacter, 4);
+});
+
+test("parseSalWarningStderr extrae path y columna", () => {
+  const parsed = parseSalWarningStderr(
+    "warning[W_DEPRECATED]: msg (/proj/a.sal:3:7)\n",
+  );
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].path, "/proj/a.sal");
+  assert.equal(parsed[0].line, 3);
+  assert.equal(parsed[0].col, 7);
+});
 
 test("E_PARSE del doble cae en el span de bytes", async () => {
   const calls: string[][] = [];
@@ -376,8 +411,10 @@ test("la gramática colorea las palabras del lexer", async () => {
       constant: { match: string };
       comment: { match: string };
       dstring: { begin: string };
-      type: { match: string };
+      "type-builtin": { match: string };
+      "type-name": { match: string };
       tensor: { match: string };
+      attribute: { match: string };
       functionDef: { captures: { "2": { name: string } } };
       "function-def": { captures: { "2": { name: string } } };
       "string-content": { patterns: { name: string }[] };
@@ -398,8 +435,9 @@ test("la gramática colorea las palabras del lexer", async () => {
     "entity.name.function.sal",
   );
   for (const word of ["Tensor", "List", "Dict", "Int", "Float", "Bool", "String", "Unit", "F32", "F16", "BF16", "I8"]) {
-    assert.ok(grammar.repository.type.match.includes(word), word);
+    assert.ok(grammar.repository["type-builtin"].match.includes(word), word);
   }
+  assert.match(grammar.repository["type-name"].match, /\[A-Z\]/);
   assert.match(grammar.repository.tensor.match, /tensor/);
   const language = JSON.parse(
     await readFile(path.join(extensionRoot, "language-configuration.json"), "utf8"),
@@ -412,14 +450,29 @@ test("la gramática colorea las palabras del lexer", async () => {
   assert.equal(language.comments.lineComment, "#");
   assert.match(language.wordPattern, /A-Za-z_/);
   const headers = language.onEnterRules.map((rule) => rule.beforeText).join("\n");
-  for (const word of ["fn", "if", "elsif", "while", "match", "on", "struct", "enum"]) {
+  for (const word of ["fn", "method", "static", "init", "if", "elsif", "while", "match", "on", "struct", "enum"]) {
     assert.match(headers, new RegExp(word));
   }
+  assert.match(grammar.repository.attribute.match, /deprecated/);
   assert.match(headers, /else\\s/);
   assert.match(headers, /=>/);
   assert.match(language.indentationRules.increaseIndentPattern, /while/);
   assert.match(language.indentationRules.increaseIndentPattern, /elsif/);
   assert.match(language.indentationRules.increaseIndentPattern, /else\\s/);
+});
+
+test("scanSalLine marca String y struct en sitios distintos", () => {
+  const structLine = scanSalLine("struct Spec");
+  assert.ok(structLine.keywords.some((s) => s.start === 0 && s.length === 6));
+  assert.ok(structLine.types.some((s) => s.start === 7 && s.length === 4));
+  const typed = scanSalLine("    mode: Int");
+  assert.ok(typed.types.some((s) => s.start >= 10 && s.length === 3));
+});
+
+test("method y static indexan T__nombre", () => {
+  const text = "method List.push(v: Int) -> List\n    xs\n\nstatic List.new() -> List\n    xs\n";
+  const names = functionDefinitionsIn(text).map((def) => def.name).sort();
+  assert.deepEqual(names, ["List__new", "List__push", "new", "push"]);
 });
 
 test("Ctrl+clic sobre una llamada abre el nombre del fn", () => {
