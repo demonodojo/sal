@@ -21,8 +21,8 @@ Extensión para editar `.sal`. El compilador sigue siendo quien acepta o rechaza
 ## Empaquetar
 
 ```bash
-npm run compile
-npx @vscode/vsce package --no-dependencies
+./scripts/copy-toolchain.sh   # opcional: sal y standard release en bin/
+npm run package               # genera sal-0.4.0.vsix sin prompts
 ```
 
 Genera `sal-0.4.0.vsix` en este directorio (instalar con *Extensions: Install from VSIX…*). Ejecuta `./scripts/copy-toolchain.sh` antes si quieres incluir `sal` y `standard` release en el paquete.

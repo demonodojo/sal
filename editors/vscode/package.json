@@ -5,6 +5,12 @@
   "version": "0.4.0",
   "private": true,
   "publisher": "sal",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/demonodojo/sal.git",
+    "directory": "editors/vscode"
+  },
   "icon": "icons/sal.png",
   "engines": {
     "vscode": "^1.85.0"
@@ -20,7 +26,8 @@
   "scripts": {
     "compile": "tsc -p .",
     "test": "tsc -p . && node --test out/test/sal.test.js",
-    "watch": "tsc -p . --watch"
+    "watch": "tsc -p . --watch",
+    "package": "npm run compile && npx --yes @vscode/vsce package --no-dependencies"
   },
   "contributes": {
     "languages": [
