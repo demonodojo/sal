@@ -1634,7 +1634,8 @@ fn infer_call(
         }
         "where" => infer_where(args, env, ctx, types, entries, span),
         "map" => infer_map_like(args, env, ctx, types, entries, span),
-        "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_len"
+        "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_index_of"
+        | "str_index_from" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
         | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "enum_owns" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"

@@ -1,0 +1,229 @@
+import lexer
+import patch
+
+struct StdCall
+    rparen: Int
+    open: Int
+    first: Int
+
+fn std_off_skip() -> Off ! alloc
+    Off(d"", d"", -1, -1, 0, d"")
+
+fn std_call_bad() -> StdCall
+    StdCall(-1, 0, -1)
+
+fn std_call_ok(c: StdCall) -> Int
+    if c.rparen < 0
+        0
+    else
+        1
+
+fn std_is_ws(c: Int) -> Int
+    if c == 32
+        1
+    elsif c == 10
+        1
+    elsif c == 13
+        1
+    elsif c == 9
+        1
+    else
+        0
+
+fn std_skip_ws(src: String, i: Int, n: Int) -> Int ! alloc
+    j = i
+    go = 1
+    while go == 1
+        if j >= n
+            go = 0
+        elsif std_is_ws(src.char(j)) == 1
+            j = j + 1
+        else
+            go = 0
+    j
+
+fn std_scan_call(src: String, name_end: Int, n: Int) -> StdCall ! alloc
+    i = std_skip_ws(src, name_end, n)
+    if i >= n
+        return std_call_bad()
+    if src.char(i) != 40
+        return std_call_bad()
+    open = i
+    j = i + 1
+    depth = 1
+    first = -1
+    go = 1
+    rp = -1
+    while go == 1
+        if j >= n
+            go = 0
+        else
+            c = src.char(j)
+            if c == 40
+                depth = depth + 1
+                j = j + 1
+            elsif c == 41
+                depth = depth - 1
+                if depth == 0
+                    rp = j
+                    go = 0
+                else
+                    j = j + 1
+            elsif c == 44
+                if depth == 1
+                    if first < 0
+                        first = j
+                j = j + 1
+            else
+                j = j + 1
+    if rp < 0
+        std_call_bad()
+    else
+        StdCall(rp, open, first)
+
+fn std_find_comma(src: String, from: Int, rp: Int) -> Int ! alloc
+    j = from
+    depth = 0
+    go = 1
+    found = -1
+    while go == 1
+        if j >= rp
+            go = 0
+        else
+            c = src.char(j)
+            if c == 40
+                depth = depth + 1
+                j = j + 1
+            elsif c == 41
+                depth = depth - 1
+                j = j + 1
+            elsif c == 44
+                if depth == 0
+                    found = j
+                    go = 0
+                else
+                    j = j + 1
+            else
+                j = j + 1
+    found
+
+fn std_argc(call: StdCall, src: String) -> Int ! alloc
+    if call.first < 0
+        1
+    else
+        c2 = std_find_comma(src, call.first + 1, call.rparen)
+        if c2 < 0
+            2
+        else
+            3
+
+fn std_trim_left(src: String, lo: Int, hi: Int) -> Int ! alloc
+    j = lo
+    go = 1
+    while go == 1
+        if j >= hi
+            go = 0
+        elsif std_is_ws(src.char(j)) == 1
+            j = j + 1
+        else
+            go = 0
+    j
+
+fn std_trim_right(src: String, lo: Int, hi: Int) -> Int ! alloc
+    j = hi
+    go = 1
+    while go == 1
+        if j <= lo
+            go = 0
+        elsif std_is_ws(src.char(j - 1)) == 1
+            j = j - 1
+        else
+            go = 0
+    j
+
+fn std_trim_slice(src: String, lo: Int, hi: Int) -> String ! alloc
+    if lo >= hi
+        d""
+    else
+        a = std_trim_left(src, lo, hi)
+        b = std_trim_right(src, a, hi)
+        if a >= b
+            d""
+        else
+            src.slice(a, b)
+
+fn std_arg0(src: String, call: StdCall) -> String ! alloc
+    end = call.rparen
+    if call.first >= 0
+        end = call.first
+    std_trim_slice(src, call.open + 1, end)
+
+fn std_arg1(src: String, call: StdCall) -> String ! alloc
+    if call.first < 0
+        d""
+    else
+        c2 = std_find_comma(src, call.first + 1, call.rparen)
+        if c2 < 0
+            std_trim_slice(src, call.first + 1, call.rparen)
+        else
+            std_trim_slice(src, call.first + 1, c2)
+
+fn std_arg2(src: String, call: StdCall) -> String ! alloc
+    c2 = std_find_comma(src, call.first + 1, call.rparen)
+    if c2 < 0
+        d""
+    else
+        std_trim_slice(src, c2 + 1, call.rparen)
+
+fn stdapi_fix(name: String, src: String, call: StdCall) -> String ! alloc
+    argc = std_argc(call, src)
+    if name.eq("read_fd") == 1
+        if argc == 3
+            "Fd.new(" + std_arg0(src, call) + ").read(" + std_arg1(src, call) + ", " + std_arg2(src, call) + ")"
+        else
+            d""
+    elsif name.eq("close_fd") == 1
+        if argc == 1
+            "Fd.new(" + std_arg0(src, call) + ").close()"
+        else
+            d""
+    elsif name.eq("write_str_fd") == 1
+        if argc == 2
+            "Fd.new(" + std_arg0(src, call) + ").write_str(" + std_arg1(src, call) + ")"
+        else
+            d""
+    elsif name.eq("getcwd_str") == 1
+        if argc == 1
+            d"Path.cwd()"
+        else
+            d""
+    else
+        d""
+
+fn stdapi_consider(src: String, lex: Lex, i: Int) -> Off ! alloc
+    if lex.kind(i) != TK_IDENT()
+        return std_off_skip()
+    name = lex.text(src, i)
+    if name.eq("read_fd") + name.eq("close_fd") + name.eq("write_str_fd") + name.eq("getcwd_str") == 0
+        return std_off_skip()
+    call = std_scan_call(src, lex.end(i), src.len())
+    if std_call_ok(call) == 0
+        return std_off_skip()
+    fix = stdapi_fix(name, src, call)
+    if fix.len() == 0
+        return std_off_skip()
+    off_new(d"Style/StdApi", d"use the std method API instead of " + name, lex.start(i), call.rparen + 1, 1, fix)
+
+fn cop_stdapi(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+    cop_stdapi_go(src, lex, offs, 0, lex.len())
+
+fn cop_stdapi_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        off = stdapi_consider(src, lex, i)
+        if off.start < 0
+            cop_stdapi_go(src, lex, offs, i + 1, n)
+        else
+            offs.push(off)
+            cop_stdapi_go(src, lex, offs, i + 1, n)

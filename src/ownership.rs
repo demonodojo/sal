@@ -699,6 +699,8 @@ fn is_borrow_fn(name: &str) -> bool {
             | "mkdir_p"
             | "str_eq"
             | "str_contains"
+            | "str_index_of"
+            | "str_index_from"
             | "str_len"
             | "str_char"
             | "str_skip"

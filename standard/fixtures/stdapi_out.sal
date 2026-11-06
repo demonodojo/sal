@@ -1,0 +1,13 @@
+import "std/io/io.sal"
+import "std/http/client.sal"
+import "std/json/arena.sal"
+import "std/io/cwd.sal"
+
+fn main() -> Int ! io, alloc
+    _a = Fd.new(0).read(0, 0)
+    _b = Fd.new(1).close()
+    _c = Fd.new(2).write_str(d"x")
+    _d = Response.get(80, d"/").raw
+    _e = JsonNode.str(d"{}")
+    _f = Path.cwd()
+    0

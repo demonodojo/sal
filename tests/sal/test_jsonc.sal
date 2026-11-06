@@ -1,0 +1,11 @@
+import "std/json/jsonc.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    src = d"  // line comment\n{}\n"
+    j = jsonc_skip(src, 0)
+    a = assert_ne(j, 0, 1)
+    if a != 0
+        a
+    else
+        assert_zero(src.char(j) - 123, 2)

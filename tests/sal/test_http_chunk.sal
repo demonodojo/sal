@@ -3,7 +3,7 @@ import "support/assert.sal"
 
 fn main() -> Int ! io, alloc
     raw = d"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
-    body = http_split_response(raw)
+    body = Response(raw).body()
     a = assert_str_eq(body, d"hello", 1)
     if a != 0
         a

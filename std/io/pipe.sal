@@ -1,20 +1,57 @@
 import "abi.sal"
 import "io.sal"
 
-fn pipe_create() -> Int ! io
+struct Pipe
+    read: Int
+    write: Int
+
+static Pipe.create() -> Pipe ! io
+    packed = pipe_create_go()
+    Pipe.from_packed(packed)
+
+static Pipe.from_packed(packed: Int) -> Pipe
+    Pipe(pipe_read_fd_go(packed), pipe_write_fd_go(packed))
+
+method Pipe.read_fd(self borrow) -> Int
+    self.read
+
+method Pipe.write_fd(self borrow) -> Int
+    self.write
+
+method Pipe.close_read(self borrow) -> Int ! io
+    Fd.new(self.read).close()
+
+method Pipe.close_write(self borrow) -> Int ! io
+    Fd.new(self.write).close()
+
+fn pipe_create_go() -> Int ! io
     syscall(nr_pipe(), 0, 0, 0, 0, 0, 0)
 
-fn pipe_read_fd(packed: Int) -> Int
+fn pipe_read_fd_go(packed: Int) -> Int
     u32_mask(packed)
 
-fn pipe_write_fd(packed: Int) -> Int
+fn pipe_write_fd_go(packed: Int) -> Int
     u32_mask(packed >> 32)
 
 fn u32_mask(v: Int) -> Int
     v & 4294967295
 
-fn pipe_close_read(packed: Int) -> Int ! io
-    close_fd(pipe_read_fd(packed))
+@deprecated("use Pipe.create()")
+fn pipe_create() -> Int ! io
+    pipe_create_go()
 
+@deprecated("use Pipe.from_packed(p).read_fd()")
+fn pipe_read_fd(packed: Int) -> Int
+    pipe_read_fd_go(packed)
+
+@deprecated("use Pipe.from_packed(p).write_fd()")
+fn pipe_write_fd(packed: Int) -> Int
+    pipe_write_fd_go(packed)
+
+@deprecated("use Pipe.from_packed(p).close_read()")
+fn pipe_close_read(packed: Int) -> Int ! io
+    Pipe.from_packed(packed).close_read()
+
+@deprecated("use Pipe.from_packed(p).close_write()")
 fn pipe_close_write(packed: Int) -> Int ! io
-    close_fd(pipe_write_fd(packed))
+    Pipe.from_packed(packed).close_write()

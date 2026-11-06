@@ -99,3 +99,12 @@ fn use_from_another_module_warns_through_alias_and_plain_import() {
     assert!(ws.iter().any(|w| w.path.ends_with("main.sal")));
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn std_read_fd_deprecated_wrapper_warns() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deprec_read_fd");
+    let ws = module_warnings(&dir.join("main.sal"), &dir);
+    assert_eq!(ws.len(), 1, "{ws:?}");
+    assert_eq!(ws[0].code, W_DEPRECATED);
+    assert!(ws[0].message.contains("`read_fd` is deprecated"), "{}", ws[0].message);
+}

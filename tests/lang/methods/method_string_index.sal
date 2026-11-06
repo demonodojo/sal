@@ -1,0 +1,8 @@
+# exit: 4
+fn main() -> Int ! alloc
+    s = d"ababc"
+    a = s.index_of(d"bc")
+    b = s.index_from(d"a", 1)
+    c = s.index_of(d"")
+    d = s.index_of(d"z")
+    a + b + c + d

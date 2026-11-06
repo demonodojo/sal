@@ -477,6 +477,8 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_str_eq(ptr, ptr)\n");
     s.push_str("declare i64 @sal_regex_match(ptr, ptr)\n");
     s.push_str("declare i64 @sal_str_contains(ptr, ptr)\n");
+    s.push_str("declare i64 @sal_str_index_of(ptr, ptr)\n");
+    s.push_str("declare i64 @sal_str_index_from(ptr, ptr, i64)\n");
     s.push_str("declare i64 @sal_str_len(ptr)\n");
     s.push_str("declare i64 @sal_str_bytes(ptr)\n");
     s.push_str("declare ptr @sal_str_concat(ptr, ptr)\n");
@@ -2830,6 +2832,25 @@ fn emit_runtime_or_user_call(
             if let Some(d) = dest {
                 s.push_str(&format!(
                     "  %{d} = call i64 @sal_str_contains(ptr {a}, ptr {b})\n"
+                ));
+            }
+        }
+        "sal_str_index_of" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_str_index_of(ptr {a}, ptr {b})\n"
+                ));
+            }
+        }
+        "sal_str_index_from" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let start = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_str_index_from(ptr {a}, ptr {b}, i64 {start})\n"
                 ));
             }
         }

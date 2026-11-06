@@ -1,25 +1,51 @@
 import "abi.sal"
 
-fn read_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
-    syscall(nr_read(), fd, buf_ptr, len, 0, 0, 0)
+struct Fd
+    v: Int
 
-fn write_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
-    syscall(nr_write(), fd, buf_ptr, len, 0, 0, 0)
+static Fd.new(v: Int) -> Fd
+    Fd(v)
 
-fn write_str_fd(fd: Int, s: String) -> Int ! io, alloc
-    n = str_len(s)
+method Fd.read(self borrow, buf_ptr: Int, len: Int) -> Int ! io
+    syscall(nr_read(), self.v, buf_ptr, len, 0, 0, 0)
+
+method Fd.write(self borrow, buf_ptr: Int, len: Int) -> Int ! io
+    syscall(nr_write(), self.v, buf_ptr, len, 0, 0, 0)
+
+method Fd.write_str(self borrow, s: String) -> Int ! io, alloc
+    n = s.len()
     if n <= 0
         0
     else
-        buf = bytes_new(n)
-        str_bytes_copy(buf, 0, s)
-        write_fd(fd, bytes_ptr(buf), n)
+        buf = Bytes.new(n)
+        buf.write_str(0, s)
+        self.write(buf.ptr(), n)
 
+method Fd.close(self borrow) -> Int ! io
+    syscall(nr_close(), self.v, 0, 0, 0, 0, 0)
+
+method Fd.read_timeout(self borrow, buf_ptr: Int, len: Int, ms: Int) -> Int ! io
+    syscall(nr_read_timeout(), self.v, buf_ptr, len, ms, 0, 0)
+
+@deprecated("use Fd.new(fd).read(buf_ptr, len)")
+fn read_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
+    Fd.new(fd).read(buf_ptr, len)
+
+@deprecated("use Fd.new(fd).write(buf_ptr, len)")
+fn write_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
+    Fd.new(fd).write(buf_ptr, len)
+
+@deprecated("use Fd.new(fd).write_str(s)")
+fn write_str_fd(fd: Int, s: String) -> Int ! io, alloc
+    Fd.new(fd).write_str(s)
+
+@deprecated("use Fd.new(fd).close()")
 fn close_fd(fd: Int) -> Int ! io
-    syscall(nr_close(), fd, 0, 0, 0, 0, 0)
+    Fd.new(fd).close()
 
+@deprecated("use Fd.new(fd).read_timeout(buf_ptr, len, ms)")
 fn read_timeout_fd(fd: Int, buf_ptr: Int, len: Int, ms: Int) -> Int ! io
-    syscall(nr_read_timeout(), fd, buf_ptr, len, ms, 0, 0)
+    Fd.new(fd).read_timeout(buf_ptr, len, ms)
 
 fn open_flags(path_ptr: Int, path_len: Int, flags: Int) -> Int ! io
     syscall(nr_open(), path_ptr, path_len, flags, 0, 0, 0)

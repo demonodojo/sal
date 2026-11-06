@@ -1838,6 +1838,10 @@ fn dr_borrows(name: String) -> Int ! alloc
         1
     elsif str_eq(name, "str_contains") == 1
         1
+    elsif str_eq(name, "str_index_of") == 1
+        1
+    elsif str_eq(name, "str_index_from") == 1
+        1
     elsif str_eq(name, "str_skip") == 1
         1
     elsif str_eq(name, "str_hash") == 1
@@ -1957,6 +1961,10 @@ fn dr_reads_string_arg(name: String) -> Int ! alloc
     elsif str_eq(name, "str_char") == 1
         1
     elsif str_eq(name, "str_contains") == 1
+        1
+    elsif str_eq(name, "str_index_of") == 1
+        1
+    elsif str_eq(name, "str_index_from") == 1
         1
     elsif str_eq(name, "str_skip") == 1
         1

@@ -30,6 +30,9 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("String", "concat") => "str_concat",
         ("String", "append") => "str_append",
         ("String", "skip") => "str_skip",
+        ("String", "to_int") => "str_as_int",
+        ("String", "index_of") => "str_index_of",
+        ("String", "index_from") => "str_index_from",
         ("List", "len") => "list_len",
         ("List", "push") => "list_push",
         ("List", "get") => "list_get",
@@ -53,6 +56,9 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("Bytes", "set_i64") => "bytes_set_i64",
         ("Bytes", "fill") => "bytes_fill",
         ("Bytes", "copy") => "bytes_copy",
+        ("Bytes", "ptr") => "bytes_ptr",
+        ("Bytes", "to_str") => "bytes_to_str",
+        ("Bytes", "write_str") => "str_bytes_copy",
         ("Int", "to_str") => "int_to_str",
         ("Int", "to_float") => "int_to_float",
         ("Float", "to_int") => "float_to_int",
@@ -81,6 +87,7 @@ pub fn builtin_static(ty: &str, name: &str) -> Option<(&'static str, usize)> {
         ("Dict", "new") => ("dict_new", 2),
         ("Bytes", "new") => ("bytes_new", 0),
         ("String", "from_char") => ("char_to_str", 0),
+        ("Bytes", "view_mem") => ("bytes_view_mem", 0),
         _ => return None,
     })
 }

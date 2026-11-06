@@ -2172,6 +2172,8 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "argv"
             | "str_eq"
             | "str_contains"
+            | "str_index_of"
+            | "str_index_from"
             | "str_concat"
             | "str_append"
             | "str_len"

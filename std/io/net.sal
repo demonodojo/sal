@@ -8,17 +8,17 @@ fn tcp_accept(fd: Int, ms: Int) -> Int ! io
     syscall(nr_tcp_accept(), fd, ms, 0, 0, 0, 0)
 
 fn sockaddr_loopback(port: Int) -> Int ! alloc
-    sa = bytes_new(sockaddr_size())
-    sap = bytes_ptr(sa)
-    b = bytes_view_mem(sap, sockaddr_size())
-    bytes_set_u8(b, 0, 127)
-    bytes_set_u8(b, 1, 0)
-    bytes_set_u8(b, 2, 0)
-    bytes_set_u8(b, 3, 1)
-    bytes_set_u8(b, 4, u32_b0(port))
-    bytes_set_u8(b, 5, u32_b1(port))
-    bytes_set_u8(b, 6, 0)
-    bytes_set_u8(b, 7, 0)
+    sa = Bytes.new(sockaddr_size())
+    sap = sa.ptr()
+    b = Bytes.view_mem(sap, sockaddr_size())
+    b.set_u8(0, 127)
+    b.set_u8(1, 0)
+    b.set_u8(2, 0)
+    b.set_u8(3, 1)
+    b.set_u8(4, u32_b0(port))
+    b.set_u8(5, u32_b1(port))
+    b.set_u8(6, 0)
+    b.set_u8(7, 0)
     sap
 
 fn tcp_connect_loopback(port: Int, timeout_ms: Int) -> Int ! io, alloc
@@ -29,34 +29,34 @@ fn dns_resolve_ptr(host_ptr: Int, host_len: Int, out_ptr: Int) -> Int ! io
     syscall(nr_dns_resolve(), host_ptr, host_len, out_ptr, 0, 0, 0)
 
 fn dns_resolve_host(host: String) -> Int ! io, alloc
-    b = bytes_new(4)
-    hb = bytes_new(str_len(host) + 1)
-    str_bytes_copy(hb, 0, host)
-    rc = dns_resolve_ptr(bytes_ptr(hb), str_len(host), bytes_ptr(b))
+    b = Bytes.new(4)
+    hb = Bytes.new(host.len() + 1)
+    hb.write_str(0, host)
+    rc = dns_resolve_ptr(hb.ptr(), host.len(), b.ptr())
     if rc < 0
         rc
     else
         ip4_from_bytes(b)
 
 fn ip4_from_bytes(b: Bytes) -> Int ! alloc
-    a0 = bytes_get_u8(b, 0)
-    a1 = bytes_get_u8(b, 1)
-    a2 = bytes_get_u8(b, 2)
-    a3 = bytes_get_u8(b, 3)
+    a0 = b.get_u8(0)
+    a1 = b.get_u8(1)
+    a2 = b.get_u8(2)
+    a3 = b.get_u8(3)
     a0 + (a1 << 8) + (a2 << 16) + (a3 << 24)
 
 fn sockaddr_from_ip4(ip4: Int, port: Int) -> Int ! alloc
-    sa = bytes_new(sockaddr_size())
-    sap = bytes_ptr(sa)
-    v = bytes_view_mem(sap, sockaddr_size())
-    bytes_set_u8(v, 0, u32_b0(ip4))
-    bytes_set_u8(v, 1, u32_b1(ip4))
-    bytes_set_u8(v, 2, u32_b2(ip4))
-    bytes_set_u8(v, 3, u32_b3(ip4))
-    bytes_set_u8(v, 4, u32_b0(port))
-    bytes_set_u8(v, 5, u32_b1(port))
-    bytes_set_u8(v, 6, 0)
-    bytes_set_u8(v, 7, 0)
+    sa = Bytes.new(sockaddr_size())
+    sap = sa.ptr()
+    v = Bytes.view_mem(sap, sockaddr_size())
+    v.set_u8(0, u32_b0(ip4))
+    v.set_u8(1, u32_b1(ip4))
+    v.set_u8(2, u32_b2(ip4))
+    v.set_u8(3, u32_b3(ip4))
+    v.set_u8(4, u32_b0(port))
+    v.set_u8(5, u32_b1(port))
+    v.set_u8(6, 0)
+    v.set_u8(7, 0)
     sap
 
 fn tcp_connect_ip4(ip4: Int, port: Int, timeout_ms: Int) -> Int ! io, alloc

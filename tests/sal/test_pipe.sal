@@ -1,0 +1,17 @@
+import "std/io/pipe.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    pp = Pipe.create()
+    rd = pp.read_fd()
+    wr = pp.write_fd()
+    a = assert_ne(rd, -1, 1)
+    if a != 0
+        a
+    else
+        b = assert_ne(wr, -1, 2)
+        if b != 0
+            b
+        else
+            _cr = pp.close_read()
+            assert_ne(pp.close_write(), -1, 3)

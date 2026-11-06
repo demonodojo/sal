@@ -1,0 +1,13 @@
+import "std/io/io.sal"
+import "std/http/client.sal"
+import "std/json/arena.sal"
+import "std/io/cwd.sal"
+
+fn main() -> Int ! io, alloc
+    _a = read_fd(0, 0, 0)
+    _b = close_fd(1)
+    _c = write_str_fd(2, d"x")
+    _d = http_get(80, d"/")
+    _e = json_node_str(d"{}")
+    _f = getcwd_str()
+    0

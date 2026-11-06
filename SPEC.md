@@ -321,10 +321,10 @@ Los tipos básicos tienen métodos que son el builtin con el receptor como prime
 
 | Tipo | Métodos (builtin) |
 |------|-------------------|
-| `String` | `len` (`str_len`), `eq`, `contains`, `slice`, `char`, `hash`, `concat`, `append`, `skip` (`str_*`) |
+| `String` | `len` (`str_len`), `eq`, `contains`, `slice`, `char`, `hash`, `concat`, `append`, `skip`, `to_int` (`str_as_int`), `index_of` (`str_index_of`), `index_from` (`str_index_from`) (`str_*`) |
 | `List[T]` | `len`, `push`, `get`, `set`, `pop` (`list_*`) |
 | `Dict[K, V]` | `get`, `put`, `has`, `len`, `remove`, `keys`, `values` (`dict_*`) |
-| `Bytes` | `len`, `get_u8`, `get_u16`, `get_u32`, `get_i64`, `set_u8`, `set_u16`, `set_u32`, `set_i64`, `fill`, `copy` (`bytes_*`) |
+| `Bytes` | `len`, `get_u8`, `get_u16`, `get_u32`, `get_i64`, `set_u8`, `set_u16`, `set_u32`, `set_i64`, `fill`, `copy`, `ptr` (`bytes_ptr`), `to_str` (`bytes_to_str`), `write_str` (`str_bytes_copy`) (`bytes_*`) |
 | `Int` | `to_str` (`int_to_str`), `to_float` (`int_to_float`) |
 | `Float` | `to_int` (`float_to_int`), `to_str` (`f64_bits_to_str`), y las funciones matemáticas `sqrt`, `abs`, `floor`, `ceil`, `sin`, `cos`, `exp`, `log`, `pow` (`float_*`) |
 
@@ -335,6 +335,7 @@ Los constructores de los tipos básicos se llaman sobre el tipo y llevan los arg
 | `List.new[T]()` | `list_new[T]()` |
 | `Dict.new[K, V]()` | `dict_new[K, V]()` |
 | `Bytes.new(n)` | `bytes_new(n)` |
+| `Bytes.view_mem(ptr, len)` | `bytes_view_mem(ptr, len)` |
 | `String.from_char(c)` | `char_to_str(c)` |
 
 Faltar argumentos de tipo (`List.new()`), sobrar o faltar alguno (`Dict.new[Int]()`) o llamar un estático que no existe (`List.nope[Int]()`) es `E_TYPE`. A diferencia de `list_new()`, que sin argumento de tipo es `List[Int]`, aquí el tipo del elemento siempre es explícito.

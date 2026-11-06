@@ -1,0 +1,11 @@
+import "std/io/time.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    mono = uptime_ms()
+    a = assert_ne(mono, -1, 1)
+    if a != 0
+        a
+    else
+        sec = clock_realtime_sec()
+        assert_ne(sec, 0, 2)

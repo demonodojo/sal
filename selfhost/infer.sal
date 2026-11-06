@@ -625,6 +625,12 @@ fn mth_builtin(base: String, fld: String) -> String ! alloc
         d"str_append"
     elsif str_eq(base, "String") + str_eq(fld, "skip") == 2
         d"str_skip"
+    elsif str_eq(base, "String") + str_eq(fld, "to_int") == 2
+        d"str_as_int"
+    elsif str_eq(base, "String") + str_eq(fld, "index_of") == 2
+        d"str_index_of"
+    elsif str_eq(base, "String") + str_eq(fld, "index_from") == 2
+        d"str_index_from"
     elsif str_eq(base, "List") + str_eq(fld, "len") == 2
         d"list_len"
     elsif str_eq(base, "List") + str_eq(fld, "push") == 2
@@ -671,6 +677,12 @@ fn mth_builtin(base: String, fld: String) -> String ! alloc
         d"bytes_fill"
     elsif str_eq(base, "Bytes") + str_eq(fld, "copy") == 2
         d"bytes_copy"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "ptr") == 2
+        d"bytes_ptr"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "to_str") == 2
+        d"bytes_to_str"
+    elsif str_eq(base, "Bytes") + str_eq(fld, "write_str") == 2
+        d"str_bytes_copy"
     elsif str_eq(base, "Int") + str_eq(fld, "to_str") == 2
         d"int_to_str"
     elsif str_eq(base, "Int") + str_eq(fld, "to_float") == 2
@@ -711,6 +723,8 @@ fn mth_static(ty: String, name: String) -> String ! alloc
         d"bytes_new"
     elsif str_eq(ty, "String") + str_eq(name, "from_char") == 2
         d"char_to_str"
+    elsif str_eq(ty, "Bytes") + str_eq(name, "view_mem") == 2
+        d"bytes_view_mem"
     else
         d""
 
@@ -798,7 +812,7 @@ fn infer_t_is_dict(name: String) -> Int ! alloc
 
 # Builtins that give an `Int`.
 fn infer_t_is_int(name: String) -> Int ! alloc
-    if str_eq(name, "str_len") + str_eq(name, "str_eq") + str_eq(name, "str_contains") + str_eq(name, "str_char") + str_eq(name, "str_skip") + str_eq(name, "str_hash") > 0
+    if str_eq(name, "str_len") + str_eq(name, "str_eq") + str_eq(name, "str_contains") + str_eq(name, "str_index_of") + str_eq(name, "str_index_from") + str_eq(name, "str_char") + str_eq(name, "str_skip") + str_eq(name, "str_hash") > 0
         1
     elsif str_eq(name, "bytes_len") + str_eq(name, "bytes_get_u8") + str_eq(name, "bytes_get_u16") + str_eq(name, "bytes_get_u32") + str_eq(name, "bytes_get_i64") > 0
         1

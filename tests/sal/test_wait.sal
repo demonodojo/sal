@@ -1,0 +1,10 @@
+import "std/io/process.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    st = Wait.from_raw((7 << 8) | 3)
+    a = assert_zero(st.exit_code() - 3, 1)
+    if a != 0
+        a
+    else
+        assert_zero(st.pid() - 7, 2)

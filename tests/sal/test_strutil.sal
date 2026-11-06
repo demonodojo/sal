@@ -1,0 +1,10 @@
+import "std/text/strutil.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    v = extract_quoted_after(d"{\"x\":\"ab\"}", d"\"x\":")
+    a = assert_str_eq(v, d"ab", 1)
+    if a != 0
+        a
+    else
+        assert_zero(d"abc".index_of(d"bc") - 1, 2)

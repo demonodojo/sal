@@ -377,6 +377,36 @@ int64_t sal_str_contains(const char *hay, const char *needle) {
     return 0;
 }
 
+int64_t sal_str_index_from(const char *hay, const char *needle, int64_t start) {
+    if (!hay) {
+        hay = g_sal_empty;
+    }
+    if (!needle) {
+        needle = g_sal_empty;
+    }
+    int64_t hn = sal_str_len_raw(hay);
+    int64_t nn = sal_str_len_raw(needle);
+    if (nn <= 0) {
+        return start;
+    }
+    if (start < 0) {
+        start = 0;
+    }
+    if (start + nn > hn) {
+        return -1;
+    }
+    for (int64_t i = start; i <= hn - nn; i++) {
+        if (memcmp(hay + i, needle, (size_t)nn) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int64_t sal_str_index_of(const char *hay, const char *needle) {
+    return sal_str_index_from(hay, needle, 0);
+}
+
 int64_t sal_str_len(const char *s) {
     if (!s) {
         return 0;

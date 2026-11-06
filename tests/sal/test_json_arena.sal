@@ -1,0 +1,13 @@
+import "std/json/arena.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    a = assert_zero(json_kind_null(), 1)
+    if a != 0
+        a
+    else
+        b = assert_zero(json_kind_num() - 2, 2)
+        if b != 0
+            b
+        else
+            assert_zero(json_kind_str() - 3, 3)

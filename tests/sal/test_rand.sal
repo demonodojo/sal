@@ -1,0 +1,6 @@
+import "std/io/rand.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    r = getrandom_u64()
+    assert_ne(r, 0, 1)

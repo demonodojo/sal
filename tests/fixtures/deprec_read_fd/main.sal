@@ -1,0 +1,4 @@
+import "../../../std/io/io.sal"
+
+fn main() -> Int ! io
+    read_fd(0, 0, 0)

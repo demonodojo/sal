@@ -400,6 +400,14 @@ fn standard_matchif_skip_unchanged() {
 }
 
 #[test]
+fn standard_fix_stdapi() {
+    let input = read_fixture("stdapi_min_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("stdapi_min_out.sal"));
+}
+
+#[test]
 fn standard_lexer_rstring_ok() {
     let path = root()
         .join("standard/fixtures/rstring_lex_in.sal")

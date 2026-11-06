@@ -108,6 +108,12 @@ fn method_of(name: String) -> Spec ! alloc
         spec_inst(d"hash", 2)
     elsif name.eq("str_skip") == 1
         spec_inst(d"skip", 4)
+    elsif name.eq("str_as_int") == 1
+        spec_inst(d"to_int", 1)
+    elsif name.eq("str_index_of") == 1
+        spec_inst(d"index_of", 2)
+    elsif name.eq("str_index_from") == 1
+        spec_inst(d"index_from", 3)
     elsif name.eq("list_len") == 1
         spec_inst(d"len", 1)
     elsif name.eq("list_push") == 1
@@ -154,6 +160,14 @@ fn method_of(name: String) -> Spec ! alloc
         spec_inst(d"fill", 4)
     elsif name.eq("bytes_copy") == 1
         spec_inst(d"copy", 5)
+    elsif name.eq("bytes_ptr") == 1
+        spec_inst(d"ptr", 1)
+    elsif name.eq("bytes_to_str") == 1
+        spec_inst(d"to_str", 1)
+    elsif name.eq("str_bytes_copy") == 1
+        spec_inst(d"write_str", 3)
+    elsif name.eq("bytes_view_mem") == 1
+        spec_static(d"Bytes", d"view_mem", 0, 2)
     elsif name.eq("int_to_str") == 1
         spec_inst(d"to_str", 1)
     elsif name.eq("int_to_float") == 1

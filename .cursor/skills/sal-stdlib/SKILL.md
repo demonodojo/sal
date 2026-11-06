@@ -14,7 +14,7 @@ Está escrita en sal y solo usa primitivas del compilador (`syscall`, `Bytes`, `
 | Directorio | Contenido |
 |------------|-----------|
 | `std/prelude.sal` | `Option`, `Result`, firmas de primitivas. Hay que importarlo (`import "std/prelude.sal"`) |
-| `std/io/` | `abi` (números de syscall), `io` (read/write/open/close), `fs`, `cwd`, `env`, `net` (TCP/DNS), `pipe`, `process` (spawn/wait/kill), `time`, `rand`, `util`. Tiene su propio `Sal.toml` (paquete `io`) |
+| `std/io/` | `abi` (números de syscall), `io` (`Fd` + read/write/close), `fs` (`Path`), `cwd`, `env`, `net` (TCP/DNS), `pipe` (`Pipe`), `process` (`Wait`, spawn), `time`, `rand`, `util`. Wrappers `@deprecated` conservan borrow/take; `std/text/index_legacy.sal` conserva `str_index_*`. Tiene su propio `Sal.toml` (paquete `io`) |
 | `std/http/` | `client` (petición, cabeceras, cuerpo, chunked), `sse` |
 | `std/json/` | `jsonc`, `arena` (`JsonNode`), `build` |
 | `std/text/` | `strutil`, `glob`, `pattern` |

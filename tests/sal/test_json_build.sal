@@ -1,0 +1,11 @@
+import "std/json/build.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    obj = json_object2(d"a", d"1", d"b", d"2")
+    a = assert_contains(obj, d"\"a\"", 1)
+    if a != 0
+        a
+    else
+        body = chat_completion_body(d"m", d"", d"hi")
+        assert_contains(body, d"\"user\"", 2)

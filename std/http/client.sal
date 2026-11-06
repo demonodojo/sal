@@ -2,91 +2,116 @@ import "std/io/io.sal"
 import "std/io/net.sal"
 import "../text/strutil.sal"
 
-fn http_bytes_to_str(b: Bytes, i: Int, n: Int, acc: String) -> String ! alloc
-    if i >= n
-        acc
-    else
-        http_bytes_to_str(b, i + 1, n, acc + char_to_str(bytes_get_u8(b, i)))
+struct Response
+    raw: String
 
-fn http_read_chunk(fd: Int, cap: Int) -> String ! io, alloc
-    buf = bytes_new(cap)
-    n = read_timeout_fd(fd, bytes_ptr(buf), cap, 5000)
+static Response.read_body(fd: Int, max: Int) -> Response ! io, alloc
+    Response(http_read_body_go(fd, max))
+
+static Response.request(port: Int, method: String, path: String, body: String, timeout_ms: Int) -> Response ! io, alloc
+    Response(http_request_loopback_go(port, method, path, body, timeout_ms))
+
+static Response.post(port: Int, path: String, body: String) -> Response ! io, alloc
+    Response.request(port, d"POST", path, body, 5000)
+
+static Response.get(port: Int, path: String) -> Response ! io, alloc
+    Response.request(port, d"GET", path, d"", 5000)
+
+method Response.header(self borrow, name: String) -> String ! alloc
+    http_header_value_go(self.raw, name)
+
+method Response.body_offset(self borrow) -> Int ! alloc
+    http_body_offset_go(self.raw)
+
+method Response.content_length(self borrow) -> Int ! alloc
+    http_content_length_go(self.raw)
+
+method Response.body(self borrow) -> String ! alloc
+    http_split_response_go(self.raw)
+
+fn bytes_chunk_to_str(buf: Bytes, n: Int) -> String ! alloc
     if n <= 0
         d""
     else
-        slice = bytes_new(n)
-        bytes_copy(slice, 0, buf, 0, n)
-        http_bytes_to_str(slice, 0, n, d"")
+        Bytes.view_mem(buf.ptr(), n).to_str()
 
-fn http_read_all(fd: Int, max: Int) -> String ! io, alloc
-    http_read_all_go(fd, max, 4096, d"")
+fn http_read_chunk(fd: Int, cap: Int) -> String ! io, alloc
+    buf = Bytes.new(cap)
+    n = Fd.new(fd).read_timeout(buf.ptr(), cap, 5000)
+    if n <= 0
+        d""
+    else
+        bytes_chunk_to_str(buf, n)
 
 fn http_read_all_go(fd: Int, max: Int, cap: Int, acc: String) -> String ! io, alloc
-    if str_len(acc) >= max
+    if acc.len() >= max
         acc
     else
         part = http_read_chunk(fd, cap)
-        if str_len(part) <= 0
+        if part.len() <= 0
             acc
         else
             http_read_all_go(fd, max, cap, acc + part)
 
-fn http_header_value(headers: String, name: String) -> String ! alloc
+fn http_read_all(fd: Int, max: Int) -> String ! io, alloc
+    http_read_all_go(fd, max, 4096, d"")
+
+fn http_header_value_go(headers: String, name: String) -> String ! alloc
     needle = name + d":"
-    idx = str_index_of(headers, needle)
+    idx = headers.index_of(needle)
     if idx < 0
         d""
     else
-        start = idx + str_len(needle)
-        end = str_index_from(headers, d"\r\n", start)
+        start = idx + needle.len()
+        end = headers.index_from(d"\r\n", start)
         if end < 0
-            str_slice(headers, start, str_len(headers))
+            headers.slice(start, headers.len())
         else
-            str_slice(headers, start, end)
+            headers.slice(start, end)
 
-fn http_body_offset(headers: String) -> Int ! alloc
-    idx = str_index_of(headers, d"\r\n\r\n")
+fn http_body_offset_go(headers: String) -> Int ! alloc
+    idx = headers.index_of(d"\r\n\r\n")
     if idx < 0
         0
     else
         idx + 4
 
-fn http_split_response(raw: String) -> String ! alloc
-    off = http_body_offset(raw)
+fn http_split_response_go(raw: String) -> String ! alloc
+    off = http_body_offset_go(raw)
     if off <= 0
         raw
     else
-        str_slice(raw, off, str_len(raw))
+        raw.slice(off, raw.len())
 
-fn http_content_length(headers: String) -> Int ! alloc
-    v = http_header_value(headers, d"Content-Length")
-    if str_len(v) <= 0
+fn http_content_length_go(headers: String) -> Int ! alloc
+    v = http_header_value_go(headers, d"Content-Length")
+    if v.len() <= 0
         -1
     else
-        str_as_int(v)
+        v.to_int()
 
-fn http_read_body(fd: Int, max: Int) -> String ! io, alloc
+fn http_read_body_go(fd: Int, max: Int) -> String ! io, alloc
     raw = http_read_all(fd, max)
-    headers_end = http_body_offset(raw)
+    headers_end = http_body_offset_go(raw)
     if headers_end <= 0
         raw
     else
-        headers = str_slice(raw, 0, headers_end)
-        cl = http_content_length(headers)
-        body = http_split_response(raw)
+        headers = raw.slice(0, headers_end)
+        cl = http_content_length_go(headers)
+        body = http_split_response_go(raw)
         if cl >= 0
-            if str_len(body) > cl
-                str_slice(body, 0, cl)
+            if body.len() > cl
+                body.slice(0, cl)
             else
                 body
         else
-            if str_contains(headers, d"chunked") != 0
+            if headers.contains(d"chunked") != 0
                 http_decode_chunked(body)
             else
                 body
 
 fn http_decode_chunked(body: String) -> String ! alloc
-    http_decode_chunked_go(body, 0, str_len(body), d"")
+    http_decode_chunked_go(body, 0, body.len(), d"")
 
 fn hex_digit(c: Int) -> Int ! alloc
     if c >= 97
@@ -96,25 +121,24 @@ fn hex_digit(c: Int) -> Int ! alloc
     else
         c - 48
 
-# Chunk sizes are hex; a `;ext` suffix ends the number.
 fn parse_hex(s: String, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
-    elsif str_char(s, i) == 59
+    elsif s.char(i) == 59
         acc
     else
-        parse_hex(s, i + 1, n, acc * 16 + hex_digit(str_char(s, i)))
+        parse_hex(s, i + 1, n, acc * 16 + hex_digit(s.char(i)))
 
 fn http_decode_chunked_go(body: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        line_end = str_index_from(body, d"\r\n", i)
+        line_end = body.index_from(d"\r\n", i)
         if line_end < 0
             acc
         else
-            hex = str_slice(body, i, line_end)
-            sz = parse_hex(hex, 0, str_len(hex), 0)
+            hex = body.slice(i, line_end)
+            sz = parse_hex(hex, 0, hex.len(), 0)
             if sz <= 0
                 acc
             else
@@ -123,23 +147,49 @@ fn http_decode_chunked_go(body: String, i: Int, n: Int, acc: String) -> String !
                 if end > n
                     acc
                 else
-                    piece = str_slice(body, start, end)
+                    piece = body.slice(start, end)
                     next = end + 2
                     http_decode_chunked_go(body, next, n, acc + piece)
 
-fn http_request_loopback(port: Int, method: String, path: String, body: String, timeout_ms: Int) -> String ! io, alloc
+fn http_request_loopback_go(port: Int, method: String, path: String, body: String, timeout_ms: Int) -> String ! io, alloc
     fd = tcp_connect_loopback(port, timeout_ms)
     if fd < 0
         d""
     else
-        req = method + d" " + path + d" HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: " + int_to_str(str_len(body)) + d"\r\nConnection: close\r\n\r\n" + body
-        write_str_fd(fd, req)
-        out = http_read_body(fd, 1048576)
-        _c = close_fd(fd)
+        req = method + d" " + path + d" HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: " + body.len().to_str() + d"\r\nConnection: close\r\n\r\n" + body
+        Fd.new(fd).write_str(req)
+        out = http_read_body_go(fd, 1048576)
+        Fd.new(fd).close()
         out
 
-fn http_post(port: Int, path: String, body: String) -> String ! io, alloc
-    http_request_loopback(port, d"POST", path, body, 5000)
+@deprecated("use Response.request(port, method, path, body, timeout_ms).raw")
+fn http_request_loopback(port: Int, method: String, path: String, body: String, timeout_ms: Int) -> String ! io, alloc
+    http_request_loopback_go(port, method, path, body, timeout_ms)
 
+@deprecated("use Response.post(port, path, body).raw")
+fn http_post(port: Int, path: String, body: String) -> String ! io, alloc
+    http_request_loopback_go(port, d"POST", path, body, 5000)
+
+@deprecated("use Response.get(port, path).raw")
 fn http_get(port: Int, path: String) -> String ! io, alloc
-    http_request_loopback(port, d"GET", path, d"", 5000)
+    http_request_loopback_go(port, d"GET", path, d"", 5000)
+
+@deprecated("use Response.read_body(fd, max).raw")
+fn http_read_body(fd: Int, max: Int) -> String ! io, alloc
+    http_read_body_go(fd, max)
+
+@deprecated("use Response.header(raw, name) via Response(raw).header(name)")
+fn http_header_value(headers: String, name: String) -> String ! alloc
+    http_header_value_go(headers, name)
+
+@deprecated("use Response.body_offset(raw) via Response(raw).body_offset()")
+fn http_body_offset(headers: String) -> Int ! alloc
+    http_body_offset_go(headers)
+
+@deprecated("use Response.body(raw) via Response(raw).body()")
+fn http_split_response(raw: String) -> String ! alloc
+    http_split_response_go(raw)
+
+@deprecated("use Response.content_length(raw) via Response(raw).content_length()")
+fn http_content_length(headers: String) -> Int ! alloc
+    http_content_length_go(headers)
