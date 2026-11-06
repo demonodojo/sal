@@ -1,58 +1,104 @@
-# A fixed-capacity string-to-string hash table over `List[String]`: open addressing, no
-# resizing (size it for at most half full). A key is never empty; a missing key reads as "".
+# A string-to-string hash table over `List[String]`: open addressing, doubled when half full.
+# A key is never empty; a missing key reads as "". `fill` is a one-element list so every copy of
+# the table sees the same count (the struct itself is passed by value).
 struct HT
     keys: List[String]
     vals: List[String]
-    cap: Int
+    fill: List[Int]
 
 fn ht_fill(xs: List[String], n: Int) -> Int ! alloc
     if n == 0
         0
     else
-        _a = list_push(xs, strdup(""))
+        xs.push("".dup())
         ht_fill(xs, n - 1)
 
-fn ht_new(cap: Int) -> HT ! alloc
-    keys = list_new[String]()
-    vals = list_new[String]()
+static HT.new(cap: Int) -> HT ! alloc
+    keys = List.new[String]()
+    vals = List.new[String]()
     n = cap * 2 + 8
-    _a = ht_fill(keys, n)
-    _b = ht_fill(vals, n)
-    HT(keys, vals, n)
+    ht_fill(keys, n)
+    ht_fill(vals, n)
+    fill = List.new[Int]()
+    fill.push(0)
+    HT(keys, vals, fill)
 
-fn ht_home(h: HT, key: String) -> Int ! alloc
-    x = str_hash(key, 5381)
+method HT.home(key: String) -> Int ! alloc
+    x = key.hash(5381)
     y = if x < 0
         0 - x
     else
         x
-    y - (y / h.cap) * h.cap
+    cap = self.keys.len()
+    y - (y / cap) * cap
 
 # Slot holding `key`, or the empty slot where it would go.
-fn ht_probe(h: HT, key: String, i: Int) -> Int ! alloc
-    k = list_get(h.keys, i)
-    if str_len(k) == 0
+method HT.probe(key: String, i: Int) -> Int ! alloc
+    k = self.keys.get(i)
+    if k.len() == 0
         i
-    elsif str_eq(k, key) == 1
+    elsif k.eq(key) == 1
         i
     else
         j = i + 1
-        next = if j >= h.cap
+        next = if j >= self.keys.len()
             0
         else
             j
-        ht_probe(h, key, next)
+        self.probe(key, next)
 
-fn ht_put(h: HT, key: String, val: String) -> Int ! alloc
-    i = ht_probe(h, key, ht_home(h, key))
-    _a = list_set(h.keys, i, strdup(key))
-    _b = list_set(h.vals, i, strdup(val))
+method HT.put(key: String, val: String) -> Int ! alloc
+    self.grow()
+    i = self.probe(key, self.home(key))
+    fresh = if self.keys.get(i).len() == 0
+        1
+    else
+        0
+    self.fill.set(0, self.fill.get(0) + fresh)
+    self.keys.set(i, key.dup())
+    self.vals.set(i, val.dup())
     0
 
-fn ht_get(h: HT, key: String) -> String ! alloc
-    i = ht_probe(h, key, ht_home(h, key))
-    list_get(h.vals, i)
+# Doubles the slots and reinserts every entry once the table is half full.
+method HT.grow() -> Int ! alloc
+    n = self.keys.len()
+    if (self.fill.get(0) + 1) * 2 <= n
+        0
+    else
+        ks = List.new[String]()
+        vs = List.new[String]()
+        self.take_all(0, n, ks, vs)
+        ht_fill(self.keys, n)
+        ht_fill(self.vals, n)
+        self.fill.set(0, 0)
+        self.reput(ks, vs, 0, ks.len())
+        list_free(ks)
+        list_free(vs)
 
-fn ht_free(h: HT) -> Int ! alloc
-    _a = list_free(h.keys)
-    list_free(h.vals)
+method HT.take_all(i: Int, n: Int, ks: List[String], vs: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        k = self.keys.get(i)
+        if k.len() > 0
+            ks.push(k.dup())
+            vs.push(self.vals.get(i).dup())
+        self.keys.set(i, "".dup())
+        self.vals.set(i, "".dup())
+        self.take_all(i + 1, n, ks, vs)
+
+method HT.reput(ks: List[String], vs: List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        self.put(ks.get(i), vs.get(i))
+        self.reput(ks, vs, i + 1, n)
+
+method HT.get(key: String) -> String ! alloc
+    i = self.probe(key, self.home(key))
+    self.vals.get(i)
+
+method HT.free() -> Int ! alloc
+    list_free(self.keys)
+    list_free(self.fill)
+    list_free(self.vals)

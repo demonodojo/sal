@@ -167,7 +167,7 @@ fn mr_call(name: String, args: List[Expr], targs: String, res: HT, xp: Int) -> E
     if str_len(id) == 0
         XCall(name, args, targs, xp)
     else
-        val = ht_get(res, id)
+        val = res.get(id)
         if str_len(val) == 0
             XCall(name, args, mth_targs(targs), xp)
         else

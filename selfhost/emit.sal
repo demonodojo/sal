@@ -478,8 +478,8 @@ fn emit_ir_from_prog_with_extra(tp: TProgram, extra: Int) -> String ! alloc
     ir = lower_program_with_callables(tp, extra)
     ir_to_text(ir)
 
-fn emit_ir_from_prog_with_types(tp: TProgram, extra: Int, enums: List[TEnum], env: TEnv) -> String ! alloc
-    ir = lower_program_typed(tp, extra, env, enums)
+fn emit_ir_from_prog_with_types(tp: TProgram, extra: Int, enums: List[TEnum], env: TEnv, seen: List[TFn]) -> String ! alloc
+    ir = lower_program_typed(tp, extra, env, enums, seen)
     ir_to_text(ir)
 
 # The typed environment of a module graph: every module's structs and fn results, as
@@ -504,6 +504,24 @@ fn tenv_push_structs(out: List[TStruct], src: List[TStruct], i: Int, n: Int) -> 
     else
         _a = list_push(out, list_get(src, i))
         tenv_push_structs(out, src, i + 1, n)
+
+# Every function of the graph, so a callee defined in another module is visible to the glue.
+fn graph_fns(order: Graph) -> List[TFn] ! alloc
+    graph_fns_go(order.progs, 0, order.progs.len(), List.new[TFn]())
+
+fn graph_fns_go(progs: List[TProgram], i: Int, n: Int, out: List[TFn]) -> List[TFn] ! alloc
+    if i >= n
+        out
+    else
+        tp = progs.get(i)
+        graph_fns_go(progs, i + 1, n, graph_fns_add(out, tp.fns, 0, tp.fns.len()))
+
+fn graph_fns_add(out: List[TFn], fns: List[TFn], i: Int, n: Int) -> List[TFn] ! alloc
+    if i >= n
+        out
+    else
+        out.push(fns.get(i))
+        graph_fns_add(out, fns, i + 1, n)
 
 # The enums of every module of the graph, in module order (the list is the caller's to free;
 # the enums themselves belong to `order`).
@@ -544,7 +562,8 @@ fn emit_ir_from_graph(order: Graph, source_path: String) -> Int ! alloc
     root_prog = list_get(order.progs, list_len(order.mods) - 1)
     env = tenv_for_graph(order)
     genums = graph_enums_t(order)
-    text = emit_ir_from_prog_with_types(root_prog, extra, genums, env)
+    seen = graph_fns(order)
+    text = emit_ir_from_prog_with_types(root_prog, extra, genums, env, seen)
     _h = list_free(genums)
     _f = tenv_free(env)
     _g = list_free(env.structs)
@@ -2503,7 +2522,7 @@ fn emit_c_fns(tfns: List[TFn], i: Int, n: Int, user: Int, acc: String, allow_mai
         emit_c_fns(tfns, i + 1, n, user, acc + piece, allow_main, linkable, pool, irmod, env, enums)
 
 # `genums`: the enums of the whole module graph (empty for a single file).
-fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main: Int, linkable: Int, genums: List[TEnum], env: TEnv borrow) -> String ! alloc
+fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main: Int, linkable: Int, genums: List[TEnum], env: TEnv borrow, seen: List[TFn]) -> String ! alloc
     pool = lit_pool_new()
     enums = list_new[TEnum]()
     _e1 = enums_push(enums, genums, 0, list_len(genums))
@@ -2516,7 +2535,7 @@ fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main
     acc = emit_forward_decls(tp.fns, 0, list_len(tp.fns), acc, allow_main, linkable)
     acc = acc + "\n"
     acc = emit_any_vtables_module(tp, acc)
-    irmod = lower_program_typed(tp, callables, env, enums)
+    irmod = lower_program_typed(tp, callables, env, enums, seen)
     body = emit_c_fns(tp.fns, 0, list_len(tp.fns), callables, d"", allow_main, linkable, pool, irmod, env, enums)
     _fe = list_free(enums)
     lits = lit_pool_globals(pool)
@@ -2544,7 +2563,7 @@ fn fns_have_main(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
 fn emit_c_from_ast(tp: TProgram) -> String ! alloc
     user = collect_fn_names_t(tp.fns, 0, list_len(tp.fns), vec_new())
     env = tenv_new(tp)
-    text = emit_c_from_ast_module(tp, user, vec_new(), 1, 0, list_new[TEnum](), env)
+    text = emit_c_from_ast_module(tp, user, vec_new(), 1, 0, list_new[TEnum](), env, tp.fns)
     _a = tenv_free(env)
     text
 
@@ -2560,7 +2579,7 @@ fn obj_list_prefix(obj_list: String) -> String ! alloc
     else
         obj_list
 
-fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot: String, out_path: String, obj_list: String, genums: List[TEnum], env: TEnv) -> Int ! io, alloc
+fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot: String, out_path: String, obj_list: String, genums: List[TEnum], env: TEnv, seen: List[TFn]) -> Int ! io, alloc
     if i >= n
         lrc = call_link_objs(obj_list, out_path)
         if lrc == 0
@@ -2576,7 +2595,7 @@ fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot
         else
             callables = result_unwrap(cstep)
             externs = extern_fn_arity(graph, i, callables)
-            ccode = emit_c_from_ast_module(list_get(graph.progs, i), callables, externs, allow_main, 1, genums, env)
+            ccode = emit_c_from_ast_module(list_get(graph.progs, i), callables, externs, allow_main, 1, genums, env, seen)
             cpath = tmp_path("m" + int_to_str(i) + ".c")
             opath = tmp_path("m" + int_to_str(i) + ".o")
             _w = write_file(cpath, ccode)
@@ -2585,12 +2604,13 @@ fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot
             else
                 prefix = obj_list_prefix(obj_list)
                 objs2 = prefix + opath
-                emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2, genums, env)
+                emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2, genums, env, seen)
 
 fn emit_c_compile_graph(order: Graph, root_key: String, out_path: String, proot: String) -> Int ! io, alloc
     env = tenv_for_graph(order)
     genums = graph_enums_t(order)
-    r = emit_c_compile_graph_go(order, 0, list_len(order.mods), root_key, proot, out_path, d"", genums, env)
+    seen = graph_fns(order)
+    r = emit_c_compile_graph_go(order, 0, list_len(order.mods), root_key, proot, out_path, d"", genums, env, seen)
     _h = list_free(genums)
     _f = tenv_free(env)
     _g = list_free(env.structs)
@@ -3376,9 +3396,9 @@ fn cir_is_stub(f: String) -> Int ! alloc
         0
 
 # Struct scope-end field releases (espejo de `emit_struct_drops` en fuse.sal).
-fn emit_c_struct_scope_frees(tf: TFn, body: TBlock, denv: Int, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
+fn emit_c_struct_scope_frees(tf: TFn, body: TBlock, denv: Int, user: Int, stmts: Int, tc: Tc, fns: List[TFn]) -> Int ! alloc
     md = vec_get(denv, 1)
-    fr = fr_new(tc.env, tc.enums, md)
+    fr = fr_new(tc.env, tc.enums, md, tf, fns)
     _w = fr_blk(fr, body)
     moved = vec_new()
     _m = mv_block(body, moved, md)

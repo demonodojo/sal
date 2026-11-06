@@ -550,6 +550,29 @@ fn struct_glue_keeps_fields_stored_in_imported_variant() {
 }
 
 #[test]
+fn struct_glue_releases_transitively_consumed_struct_once() {
+    let ir = ir_of_file("tests/glue_escape/chain.sal");
+    let main = fn_ir(&ir, "main");
+    let shallow = fn_ir(&ir, "tp_free_shallow");
+    let block = fn_ir(&ir, "tp_free_block");
+    assert!(main.contains("func: \"emit_ir_single_file\""), "{ir}");
+    // The caller must not release a struct the callee consumes, even through a
+    // function that only forwards it.
+    assert!(!main.contains("sal_list_free"), "{main}");
+    assert_eq!(shallow.matches("sal_list_free").count(), 1, "{shallow}");
+    // The callee that hands a field on must not release it again in its tail glue.
+    assert!(!block.contains("sal_list_free"), "{block}");
+}
+
+#[test]
+fn struct_glue_does_not_release_a_result_that_aliases_a_borrowed_param() {
+    let ir = ir_of_file("tests/glue_escape/alias.sal");
+    let lower = fn_ir(&ir, "lower_if");
+    assert!(lower.contains("func: \"elsifs_else_block\""), "{ir}");
+    assert!(!lower.contains("sal_list_free"), "{lower}");
+}
+
+#[test]
 fn struct_glue_releases_branch_returned_struct_once() {
     let ir = ir_of_file("tests/glue_escape/branch.sal");
     let main = fn_ir(&ir, "main");

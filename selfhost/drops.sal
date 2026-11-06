@@ -75,15 +75,17 @@ struct DC
     cells: List[Int]
     variants: Int
     ro: Int
+    ps: List[TParam]
+    scalars: Int
 
-fn dr_new(variants: Int, ro: Int, lists: NM) -> DC ! alloc
+fn dr_new(variants: Int, ro: Int, lists: NM, ps: List[TParam], scalars: Int) -> DC ! alloc
     cells = list_new[Int]()
     _a = list_push(cells, 0)
     _b = list_push(cells, 0)
     _c = list_push(cells, 0)
     _d = list_push(cells, 0)
     _e = list_push(cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, ps, scalars)
 
 fn dr_free(c: DC) -> Int ! alloc
     _l = nm_free(c.lists)
@@ -482,7 +484,13 @@ fn owned_return_ok(v: Expr, locals: List[String], params: List[TParam]) -> Int !
 
 fn owned_param_string_field(v: Expr, params: List[TParam]) -> Int ! alloc
     match v
-        XField(XIdent(name), field) => param_named(params, name, 0, list_len(params))
+        XField(base, field) => owned_param_root(base, params)
+        _ => 0
+
+# The base of `p.field` is the parameter `p`. A nested pattern does not bind here.
+fn owned_param_root(base: Expr, params: List[TParam]) -> Int ! alloc
+    match base
+        XIdent(name) => param_named(params, name, 0, params.len())
         _ => 0
 
 fn param_named(params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
@@ -619,16 +627,47 @@ fn dr_arg(c: DC, a: Expr, mov: Int) -> Int ! alloc
         _ => dr_expr(c, a)
 
 # A field read in a moving position hands out a value that aliases its base: the base escapes.
+# `dr_copy_field` is 1 for a Copy leaf (`return p.n`): the base still escapes. The bootstrap's
+# consumed flag ignores that leaf; this walk keeps the escape.
 fn dr_arg_field(c: DC, a: Expr, mov: Int) -> Int ! alloc
     root = dr_field_root(a)
     _e = if mov != 1
-        if str_len(root) == 0
+        if root.len() == 0
             0
         else
             dr_escape(c, root)
     else
         0
     dr_expr(c, a)
+
+# 1 when `a` is `param.field` and that field is Int, Float, or Bool.
+fn dr_copy_field(c: DC, a: Expr) -> Int ! alloc
+    if c.scalars == 0
+        0
+    else
+        match a
+            XField(base, field) => dr_copy_field_base(c, base, field)
+            _ => 0
+
+fn dr_copy_field_base(c: DC, base: Expr, field: String) -> Int ! alloc
+    match base
+        XIdent(name) => dr_copy_param_field(c, name, field)
+        _ => 0
+
+fn dr_copy_param_field(c: DC, name: String, field: String) -> Int ! alloc
+    ty = dr_param_ty(c.ps, name, 0, c.ps.len())
+    if ty.len() == 0
+        0
+    else
+        map_get(c.scalars, str_as_int(ty + "." + field))
+
+fn dr_param_ty(ps: List[TParam], name: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        ""
+    elsif ps.get(i).name.eq(name) == 1
+        ps.get(i).ty
+    else
+        dr_param_ty(ps, name, i + 1, n)
 
 fn dr_field_root(e: Expr) -> String ! alloc
     match e
@@ -1510,19 +1549,20 @@ fn dr_copy_rest(stmts: List[TStmt], out: List[TStmt], i: Int, n: Int) -> Int ! a
         _p = list_push(out, tc_stmt(list_get(stmts, i)))
         dr_copy_rest(stmts, out, i + 1, n)
 
-fn dr_seed_params(c: DC, params: List[TParam], i: Int, n: Int) -> Int ! alloc
+fn dr_seed_params(c: DC, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        nm = list_get(params, i).name
+        nm = c.ps.get(i).name
         _a = dr_bind(c, nm)
         _b = nm_put(c.params, nm, 1)
-        dr_seed_params(c, params, i + 1, n)
+        dr_seed_params(c, i + 1, n)
 
 # Escape facts of a fn body under the read-only assumptions `ro`.
-fn dr_facts(params: List[TParam], body: TBlock, variants: Int, ro: Int, lists: NM) -> DC ! alloc
-    c = dr_new(variants, ro, lists)
-    _s = dr_seed_params(c, params, 0, list_len(params))
+fn dr_facts(params: List[TParam], body: TBlock, variants: Int, ro: Int, lists: NM, scalars: Int) -> DC ! alloc
+    c = dr_new(variants, ro, lists, params, scalars)
+    n = c.ps.len()
+    _s = dr_seed_params(c, 0, n)
     _w = dr_block(c, body)
     _p = dr_propagate(c)
     c
@@ -1530,9 +1570,44 @@ fn dr_facts(params: List[TParam], body: TBlock, variants: Int, ro: Int, lists: N
 # Per fn, per parameter: 1 when the fn only reads it. Optimistic fixpoint, as `drops.rs`.
 fn dr_read_only_t(tp: TProgram, variants: Int) -> Int ! alloc
     ro = map_new()
-    _i = dr_ro_init(ro, tp.fns, 0, list_len(tp.fns))
-    _l = dr_ro_loop(ro, tp.fns, variants)
+    _i = dr_ro_init(ro, tp.fns, 0, tp.fns.len())
+    scalars = dr_scalar_fields(tp.structs)
+    _l = dr_ro_loop(ro, tp.fns, variants, scalars)
     ro
+
+fn dr_scalar_fields(structs: List[TStruct]) -> Int ! alloc
+    m = map_new()
+    _s = dr_scalar_structs(m, structs, 0, structs.len())
+    m
+
+fn dr_scalar_structs(m: Int, structs: List[TStruct], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        s = structs.get(i)
+        _f = dr_scalar_sfields(m, s.name, s.fields, 0, s.fields.len())
+        dr_scalar_structs(m, structs, i + 1, n)
+
+fn dr_scalar_sfields(m: Int, sname: String, fields: List[TField], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = fields.get(i)
+        _p = if dr_ty_scalar(f.ty) == 1
+            map_put(m, str_as_int(sname + "." + f.name), 1)
+        else
+            0
+        dr_scalar_sfields(m, sname, fields, i + 1, n)
+
+fn dr_ty_scalar(ty: String) -> Int
+    if ty.eq("Int") == 1
+        1
+    elsif ty.eq("Float") == 1
+        1
+    elsif ty.eq("Bool") == 1
+        1
+    else
+        0
 
 fn dr_ro_init(ro: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1551,27 +1626,29 @@ fn dr_ro_ones(flags: Int, n: Int) -> Int ! alloc
         _a = vec_push(flags, 1)
         dr_ro_ones(flags, n - 1)
 
-fn dr_ro_loop(ro: Int, fns: List[TFn], variants: Int) -> Int ! alloc
-    if dr_ro_pass(ro, fns, variants, 0, list_len(fns), 0) == 1
-        dr_ro_loop(ro, fns, variants)
+fn dr_ro_loop(ro: Int, fns: List[TFn], variants: Int, scalars: Int) -> Int ! alloc
+    if dr_ro_pass(ro, fns, variants, scalars, 0, fns.len(), 0) == 1
+        dr_ro_loop(ro, fns, variants, scalars)
     else
         0
 
 # One sweep; returns 1 when some parameter lost its read-only flag.
-fn dr_ro_pass(ro: Int, fns: List[TFn], variants: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
+fn dr_ro_pass(ro: Int, fns: List[TFn], variants: Int, scalars: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
     if i >= n
         changed
     else
         f = list_get(fns, i)
-        c = dr_facts(f.params, f.body, variants, ro, nm_new())
-        flags = map_get(ro, str_as_int(f.name))
-        ch = dr_ro_params(c, flags, f.params, 0, list_len(f.params))
+        name = f.name.dup()
+        c = dr_facts(f.params, f.body, variants, ro, nm_new(), scalars)
+        flags = map_get(ro, str_as_int(name))
+        nps = c.ps.len()
+        ch = dr_ro_params(c, flags, c.ps, 0, nps)
         _f = dr_free(c)
         any = if ch == 1
             1
         else
             changed
-        dr_ro_pass(ro, fns, variants, i + 1, n, any)
+        dr_ro_pass(ro, fns, variants, scalars, i + 1, n, any)
 
 fn dr_ro_params(c: DC, flags: Int, params: List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1813,7 +1890,7 @@ fn drops_body_go(f: TFn, denv: Int, view: Int) -> TBlock ! alloc
     h = HC(list_new[Int](), dr_lists_of(f.params, body, vec_get(denv, 0)), vec_get(denv, 0))
     _h = list_push(h.k, 0)
     hoisted = dr_hoist_block(h, body)
-    c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2), h.lists)
+    c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2), h.lists, 0)
     res = dr_xform_block(c, hoisted)
     _a = dr_free(c)
     _g = list_free(h.k)

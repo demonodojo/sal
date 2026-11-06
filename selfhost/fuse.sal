@@ -2159,41 +2159,144 @@ struct FRC
     al: Int
     sm: Int
     ct: Int
+    cur: TFn
+    fns: List[TFn]
 
-fn fr_new(env: TEnv borrow, enums: List[TEnum] borrow, md: Int) -> FRC ! alloc
-    FRC(env.structs, enums, env.names, env.tys, md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new())
+fn fr_new(env: TEnv borrow, enums: List[TEnum] borrow, md: Int, cur: TFn, fns: List[TFn] borrow) -> FRC ! alloc
+    FRC(env.structs, enums, env.names, env.tys, md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), cur, fns)
 
-# A struct local bound to `list_get(xs, i)` whose struct is not describable: the list hands out
-# its boxes, so the local is not released (`list_alias_locals` in src/ir.rs).
-fn fr_alias(c: FRC, name: String, e: Expr) -> Int ! alloc
+# A struct local the glue must not release (`list_alias_locals` in src/ir.rs): the result of
+# `list_get(xs, i)` on a list whose struct is not describable (it hands out its boxes), or the
+# result of a call that returns one of the caller's borrowed parameters.
+method FRC.alias(name: String, e: Expr) -> Int ! alloc
     match e
-        XCall(fname, args, targs, xp) => fr_alias_call(c, name, fname)
+        XCall(fname, args, targs, xp) => self.alias_call(name, fname, args)
         _ => 0
 
-fn fr_alias_call(c: FRC, name: String, fname: String) -> Int ! alloc
-    if str_eq(fname, "list_get") == 0
+method FRC.alias_call(name: String, fname: String, args: List[Expr]) -> Int ! alloc
+    if self.returns_borrowed(args, fr_returned_params(self.fns, fname), 0) == 1
+        fr_add(self.al, name)
+    elsif fname.eq("list_get") == 0
         0
     else
-        t = trim_type_piece(fr_type(c, name))
-        si = tt_struct_find(c.structs, t)
+        t = trim_type_piece(self.type_of(name))
+        si = tt_struct_find(self.structs, t)
         if si < 0
             0
-        elsif str_len(desc_struct_text(c.structs, c.enums, t, 0)) == 0
-            fr_add(c.al, name)
+        elsif desc_struct_text(self.structs, self.enums, t, 0).len() == 0
+            fr_add(self.al, name)
         else
             0
 
-# The type text of the local `name` (`tenv_type`).
-fn fr_type(c: FRC, name: String) -> String ! alloc
-    fr_type_go(c, name, list_len(c.names) - 1)
+# The parameter indices `fname` returns as the value of some branch tail (`returns_param_map`).
+# `fns` is every function of the module graph: the callee may be imported.
+fn fr_returned_params(fns: List[TFn], fname: String) -> List[Int] ! alloc
+    fr_returned_go(fns, fname, 0, fns.len())
 
-fn fr_type_go(c: FRC, name: String, i: Int) -> String ! alloc
+fn fr_returned_go(fns: List[TFn], fname: String, i: Int, n: Int) -> List[Int] ! alloc
+    if i >= n
+        List.new[Int]()
+    else
+        f = fns.get(i)
+        if f.name.eq(fname) == 1
+            fr_returned_idx(f.params, f.body, 0, f.params.len(), List.new[Int]())
+        else
+            fr_returned_go(fns, fname, i + 1, n)
+
+fn fr_returned_idx(params: List[TParam], body: TBlock, i: Int, n: Int, out: List[Int]) -> List[Int] ! alloc
+    if i >= n
+        out
+    else
+        fr_returned_push(out, body, params.get(i).name, i)
+        fr_returned_idx(params, body, i + 1, n, out)
+
+fn fr_returned_push(out: List[Int], body: TBlock, name: String, i: Int) -> Int ! alloc
+    if fr_tail_is_param(body.tail, name) == 1
+        out.push(i)
+        0
+    else
+        0
+
+# 1 when `e` is `name`, or an `if`/`match` whose value is `name` in some branch.
+fn fr_tail_is_param(e: Expr, name: String) -> Int ! alloc
+    match e
+        XIdent(nm) => nm.eq(name)
+        XIf(cond, then_b, else_b, has_else, elsifs) => fr_if_returns(then_b, else_b, has_else, elsifs, name)
+        XMatch(scrut, arms) => fr_arms_return(arms, name, 0, arms.len())
+        _ => 0
+
+fn fr_if_returns(then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif], name: String) -> Int ! alloc
+    if fr_tail_is_param(then_b.tail, name) == 1
+        1
+    elsif fr_elsifs_return(elsifs, name, 0, elsifs.len()) == 1
+        1
+    elsif has_else == 1
+        fr_tail_is_param(else_b.tail, name)
+    else
+        0
+
+fn fr_elsifs_return(elsifs: List[TElsif], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif fr_tail_is_param(elsifs.get(i).body.tail, name) == 1
+        1
+    else
+        fr_elsifs_return(elsifs, name, i + 1, n)
+
+fn fr_arms_return(arms: List[TArm], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif fr_tail_is_param(tarm_value(arms.get(i)), name) == 1
+        1
+    else
+        fr_arms_return(arms, name, i + 1, n)
+
+# 1 when the argument at one of `idx` is a borrowed parameter of the function being lowered, or a
+# field read off a value (`call_aliases_borrowed_arg`).
+method FRC.returns_borrowed(args: List[Expr], idx: List[Int], i: Int) -> Int ! alloc
+    if i >= idx.len()
+        0
+    elsif self.arg_borrowed(args, idx.get(i)) == 1
+        1
+    else
+        self.returns_borrowed(args, idx, i + 1)
+
+method FRC.arg_borrowed(args: List[Expr], i: Int) -> Int ! alloc
+    if i >= args.len()
+        0
+    else
+        self.arg_is_borrowed(args.get(i))
+
+method FRC.arg_is_borrowed(a: Expr) -> Int ! alloc
+    match a
+        XIdent(name) => fr_param_borrowed(self.cur.params, name, 0, self.cur.params.len())
+        XField(base, field) => 1
+        _ => 0
+
+# 1 when `name` is a parameter whose inferred mode is not take (2).
+fn fr_param_borrowed(params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = params.get(i)
+        if p.name.eq(name) == 0
+            fr_param_borrowed(params, name, i + 1, n)
+        elsif p.mode == 2
+            0
+        else
+            1
+
+# The type text of the local `name` (`tenv_type`).
+method FRC.type_of(name: String) -> String ! alloc
+    self.type_at(name, self.names.len() - 1)
+
+method FRC.type_at(name: String, i: Int) -> String ! alloc
     if i < 0
         d""
-    elsif str_eq(list_get(c.names, i), name) == 1
-        list_get(c.tys, i)
+    elsif self.names.get(i).eq(name) == 1
+        self.tys.get(i)
     else
-        fr_type_go(c, name, i - 1)
+        self.type_at(name, i - 1)
 
 # Adds the local `name` (a string handle) to the set `set` (a vec of handles) unless it is there.
 fn fr_add(set: Int, name: String) -> Int ! alloc
@@ -2235,7 +2338,7 @@ fn fr_note(c: FRC, e: Expr, moving: Int) -> Int ! alloc
     if str_len(root) == 0
         0
     else
-        si = tt_struct_find(c.structs, fr_type(c, root))
+        si = tt_struct_find(c.structs, c.type_of(root))
         if si < 0
             0
         else
@@ -2454,7 +2557,7 @@ fn fr_stmts(c: FRC, stmts: List[TStmt], i: Int, n: Int) -> Int ! alloc
         if k == 0
             _a = fr_ex(c, st.expr, 0)
         elsif k == 1
-            _al = fr_alias(c, st.name, st.expr)
+            _al = c.alias(st.name, st.expr)
             _a = fr_ex(c, st.expr, 1)
         elsif k == 2
             _a = fr_ex(c, st.expr, 1)
@@ -2492,13 +2595,23 @@ fn fn_modes_of(md: Int, name: String) -> Int ! alloc
     else
         ms
 
-fn emit_struct_drops(cx: Cx, f: TFn, body: TBlock, md: Int) -> Int ! alloc
+fn emit_struct_drops(cx: Cx, f: TFn, body: TBlock, md: Int, seen: List[TFn]) -> Int ! alloc
     moved = vec_new()
     _m = mv_block(body, moved, md)
-    fr = fr_new(cx.env, cx.enums, md)
+    name = f.name.dup()
+    nparams = f.params.len()
+    ps = copy_params(f.params, 0, nparams, List.new[TParam]())
+    fr = fr_new(cx.env, cx.enums, md, f, seen)
     _r = fr_blk(fr, body)
-    names = drop_candidates(cx, f.params, fn_modes_of(md, f.name), 0, tenv_len(cx.env), vec_new())
+    names = drop_candidates(cx, ps, fn_modes_of(md, name), 0, tenv_len(cx.env), vec_new())
     drop_locals(cx, fr, names, moved, 0, vec_len(names))
+
+fn copy_params(ps: List[TParam], i: Int, n: Int, out: List[TParam]) -> List[TParam] ! alloc
+    if i >= n
+        out
+    else
+        out.push(ps.get(i))
+        copy_params(ps, i + 1, n, out)
 
 # Instructions without a trailing Return, which is returned separately (0 when none).
 fn pop_final_ret(cx: Cx) -> Int ! alloc
@@ -2524,7 +2637,7 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
 
 # The IR keeps identifier and literal texts by handle until `ir_to_text`; `drops_body_t` returns
 # a tree whose boxes do not own them, so releasing the body here leaves them intact.
-fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow) -> Int ! alloc
+fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow, seen: List[TFn]) -> Int ! alloc
     env = tenv_clone(env_tpl)
     _t = tenv_truncate(env, 0)
     cx = cx_new(fn_names, fm, env, enums, prog_fns, prog_protocols)
@@ -2536,13 +2649,14 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TE
     else
         _c = 0
     ret = pop_final_ret(cx)
-    _dr = emit_struct_drops(cx, f, body, vec_get(denv, 1))
+    name = f.name.dup()
+    _dr = emit_struct_drops(cx, f, body, vec_get(denv, 1), seen)
     if ret != 0
         _rr = ir_push(cx, ret)
     else
         _rr = 0
     out = vec_new()
-    _d = vec_push(out, str_as_int(f.name))
+    _d = vec_push(out, str_as_int(name))
     _e = vec_push(out, cx_dim_params(cx))
     _f = vec_push(out, cx_insts(cx))
     _g = vec_push(out, cx_regions(cx))
@@ -2653,18 +2767,20 @@ fn try_lower_tensor_bin_go(cx: Cx, op: String, tensor_ssa: Int, other_ssa: Int, 
 # Lowers a module whose own structs and fn results are the only ones in scope.
 fn lower_program_with_callables(tp: TProgram, extra: Int) -> Int ! alloc
     env = tenv_new(tp)
-    ir = lower_program_typed(tp, extra, env, tp.enums)
+    ir = lower_program_typed(tp, extra, env, tp.enums, tp.fns)
     _a = tenv_free(env)
     ir
 
-fn lower_program_typed(tp: TProgram, extra: Int, env_tpl: TEnv borrow, em: List[TEnum] borrow) -> Int ! alloc
+# `seen` is every function of the module graph. The struct glue reads it to tell when a call
+# returns one of its parameters (`returns_param_map`); a callee may live in another module.
+fn lower_program_typed(tp: TProgram, extra: Int, env_tpl: TEnv borrow, em: List[TEnum] borrow, seen: List[TFn]) -> Int ! alloc
     names = collect_fn_names_t(tp.fns, 0, list_len(tp.fns), vec_new())
     names = merge_callable_names(extra, names)
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
     denv = drop_env_t(tp, env_tpl.structs, em)
-    lower_fns(tp.fns, names, fm, env_tpl, em, denv, tp.fns, tp.protocols, 0, list_len(tp.fns), out)
+    lower_fns(tp.fns, names, fm, env_tpl, em, denv, tp.fns, tp.protocols, seen, 0, list_len(tp.fns), out)
     out
 
 # `[variants, modes, read-only params]`: the variant table, per fn name the effective mode of
@@ -2678,8 +2794,8 @@ fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] bo
     ro = dr_read_only_t(tp, vec_get(denv, 0))
     modes = map_new()
     table = own_mode_table(tp)
-    _m = modes_fill_t(modes, table, ro, tp.fns, 0, list_len(tp.fns))
-    _h = ht_free(table)
+    _m = modes_fill_t(modes, table, ro, tp.fns, 0, tp.fns.len())
+    _h = table.free()
     _b = vec_push(denv, modes)
     _c = vec_push(denv, ro)
     denv
@@ -2688,16 +2804,16 @@ fn modes_fill_t(m: Int, table: HT, ro: Int, fns: List[TFn], i: Int, n: Int) -> I
     if i >= n
         0
     else
-        f = list_get(fns, i)
+        f = fns.get(i)
         ms = vec_new()
-        _k = modes_vec(ms, ht_get(table, f.name), 0, list_len(f.params))
-        _p = map_put(m, str_as_int(strdup(f.name)), ms)
+        _k = modes_vec(ms, table.get(f.name), 0, f.params.len())
+        _p = map_put(m, str_as_int(f.name.dup()), ms)
         # The callers' view (`caller_param_modes` in src/ir.rs): a parameter whose fields the fn
         # releases, or an inferred borrow that escapes the fn, is taken.
         caller = vec_new()
-        _c = modes_vec(caller, ht_get(table, f.name), 0, list_len(f.params))
+        _c = modes_vec(caller, table.get(f.name), 0, f.params.len())
         _r = mark_released_params(caller, f, releases_param_names(f))
-        _e = mark_escaping_params(caller, f.params, map_get(ro, str_as_int(f.name)), 0, list_len(f.params))
+        _e = mark_escaping_params(caller, f.params, map_get(ro, str_as_int(f.name)), 0, f.params.len())
         _q = map_put(m, str_as_int("caller:" + f.name), caller)
         modes_fill_t(m, table, ro, fns, i + 1, n)
 
@@ -2716,13 +2832,14 @@ fn mark_released_go(modes: Int, params: List[TParam], i: Int, n: Int, names: Int
         mark_released_go(modes, params, i + 1, n, names)
 
 # Sets to take (2) each inferred borrow whose read-only flag is 0 (`flags` 0: no entry).
+# A Copy field (`return p.n`) stays read-only, so it is not a take.
 fn mark_escaping_params(modes: Int, params: List[TParam], flags: Int, i: Int, n: Int) -> Int ! alloc
     if flags == 0
         0
     elsif i >= n
         0
     else
-        _s = if escaping_borrow(vec_get(modes, i), list_get(params, i).mode, vec_get(flags, i)) == 1
+        _s = if escaping_borrow(vec_get(modes, i), params.get(i).mode, vec_get(flags, i)) == 1
             vec_set(modes, i, 2)
         else
             0
@@ -2945,10 +3062,10 @@ fn variant_field_flags_t(fields: List[String], i: Int, n: Int, out: Int) -> Int 
         _p = vec_push(out, dr_field_owned_t(list_get(fields, i)))
         variant_field_flags_t(fields, i + 1, n, out)
 
-fn lower_fns(fns: List[TFn], names: Int, fm: Int, env_tpl: TEnv borrow, em: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow, i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_fns(fns: List[TFn], names: Int, fm: Int, env_tpl: TEnv borrow, em: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow, seen: List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        irf = lower_fn(list_get(fns, i), names, fm, env_tpl, em, denv, prog_fns, prog_protocols)
+        irf = lower_fn(fns.get(i), names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen)
         _p = vec_push(out, irf)
-        lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, i + 1, n, out)
+        lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen, i + 1, n, out)

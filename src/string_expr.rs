@@ -33,6 +33,8 @@ pub struct StringEnv {
     pub protocols: HashMap<String, crate::ast::ProtocolDef>,
     /// Struct and enum variant constructors across the module graph (`P(…)`, `V(…)` with fields).
     pub ctor_names: HashSet<String>,
+    /// Parameter indices a function returns as a branch-tail value (see `ir::returns_param_map`).
+    pub returns_param: HashMap<String, Vec<usize>>,
 }
 
 impl StringEnv {
@@ -67,6 +69,10 @@ impl StringEnv {
             }
         }
         let fn_sigs = crate::scalarize::sigs_for_programs(progs, &structs);
+        let mut returns_param = HashMap::new();
+        for prog in progs {
+            returns_param.extend(crate::ir::returns_param_map(prog));
+        }
         let mut ctor_names = HashSet::new();
         for prog in progs {
             for item in &prog.items {
@@ -99,6 +105,7 @@ impl StringEnv {
             any_coercions: HashMap::new(),
             protocols,
             ctor_names,
+            returns_param,
         }
     }
 

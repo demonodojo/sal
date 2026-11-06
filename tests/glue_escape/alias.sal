@@ -1,0 +1,19 @@
+struct B
+    xs: List[Int]
+    n: Int
+
+fn elsifs_else_block(else_b: B, n: Int) -> B ! alloc
+    if n == 0
+        else_b
+    else
+        B(List.new[Int](), n)
+
+fn lower_if(else_b0: B, n: Int) -> Int ! alloc
+    r = elsifs_else_block(else_b0, n)
+    r.n
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(7)
+    b = B(xs, 3)
+    lower_if(b, 0)

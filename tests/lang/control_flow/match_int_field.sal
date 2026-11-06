@@ -1,0 +1,13 @@
+# exit: 1
+# An integer field matched by value. A scrutinee the selfhost cannot resolve (`Unknown`) stays
+# compatible with an integer pattern.
+struct S
+    layout_c: Int
+
+fn at_layout(s: S) -> Int
+    match s.layout_c
+        1 => 1
+        _ => 0
+
+fn main() -> Int
+    at_layout(S(1))

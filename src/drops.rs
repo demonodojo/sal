@@ -226,11 +226,18 @@ pub fn tmp_struct_types() -> HashMap<String, String> {
 thread_local! {
     /// The read-only flags of the last `insert_drops`.
     static READ_ONLY: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
+    /// Per user fn, per parameter: `true` when the fn consumes that parameter (last `insert_drops`).
+    static CONSUMED: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
 }
 
 /// Per user fn, per parameter: `false` when the fn lets that parameter escape (last `insert_drops`).
 pub fn last_read_only_params() -> HashMap<String, Vec<bool>> {
     READ_ONLY.with(|r| r.borrow().clone())
+}
+
+/// Per user fn, per parameter: `true` when the fn takes ownership of that parameter's data.
+pub fn last_consumed_params() -> HashMap<String, Vec<bool>> {
+    CONSUMED.with(|r| r.borrow().clone())
 }
 
 /// The struct `S` of each local list of `f` of type `List[S]` (by a parameter or by
@@ -598,32 +605,45 @@ fn binds_once(stmts: &[Stmt], name: &str) -> bool {
 /// it escape under the current assumptions about the other fns.
 fn read_only_params(prog: &Program, variants: &Variants) -> ReadOnly {
     let mut ro = ReadOnly::new();
+    let mut cons = ReadOnly::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
             ro.insert(f.name.clone(), vec![true; f.params.len()]);
+            cons.insert(f.name.clone(), vec![false; f.params.len()]);
         }
     }
     loop {
         let mut changed = false;
         for item in &prog.items {
             let Item::Fn(f) = item else { continue };
-            let facts = fn_facts(f, variants, &ro);
+            let facts = fn_facts(f, variants, &ro, &cons);
             let flags = ro.get_mut(&f.name).unwrap();
+            let took = cons.get_mut(&f.name).unwrap();
             for (i, p) in f.params.iter().enumerate() {
                 if flags[i] && facts.escapes(&p.name) {
                     flags[i] = false;
                     changed = true;
                 }
+                if !took[i] && facts.consumed.contains(&p.name) {
+                    took[i] = true;
+                    changed = true;
+                }
             }
         }
         if !changed {
+            CONSUMED.with(|c| *c.borrow_mut() = cons);
             return ro;
         }
     }
 }
 
-fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly) -> Facts {
-    let mut facts = Facts { variants: variants.clone(), ro: ro.clone(), ..Facts::default() };
+fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly, cons: &ReadOnly) -> Facts {
+    let mut facts = Facts {
+        variants: variants.clone(),
+        ro: ro.clone(),
+        cons: cons.clone(),
+        ..Facts::default()
+    };
     for p in &f.params {
         facts.bind(&p.name);
     }
@@ -842,6 +862,11 @@ fn is_string_operand(e: &Expr) -> bool {
 #[derive(Default)]
 struct Facts {
     escaped: HashSet<String>,
+    /// Handed out for real (returned, stored, or passed to a callee that consumes it).
+    /// A Copy field (`return p.n`) is in `escaped` but not here.
+    consumed: HashSet<String>,
+    /// The argument under `arg` is passed to a callee that consumes it.
+    consume_arg: bool,
     bindings: HashMap<String, u32>,
     variants: Variants,
     /// Containers that received a value not known to be fresh.
@@ -849,6 +874,7 @@ struct Facts {
     /// `match x` over a local: the names its variant patterns bind.
     matches: Vec<(String, Vec<String>)>,
     ro: ReadOnly,
+    cons: ReadOnly,
     /// Names that escape only at whole statements of their own loop depth: the local still
     /// drops, guarded by a flag cleared right after each such statement.
     soft: HashSet<String>,
@@ -892,14 +918,21 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
             root = base;
             is_field = true;
         }
+        // A Copy leaf (`return p.n`) aliases nothing on the heap: the base must not be
+        // released by this function, but the caller still owns the struct.
+        let copy_leaf = is_field && expr_is_copy_scalar(a);
         if let (true, Expr::Ident { name, .. }) = (is_field, root) {
             f.escaped.insert(name.clone());
+            if !copy_leaf {
+                f.consumed.insert(name.clone());
+            }
         }
     }
     if let Expr::Ident { name, .. } = a {
         if !safe {
             if f.hard_move > 0 {
                 f.escaped.insert(name.clone());
+                f.consumed.insert(name.clone());
                 f.soft.remove(name);
             } else {
                 match f.cur {
@@ -915,6 +948,9 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
                     }
                     _ => {
                         f.escaped.insert(name.clone());
+                        if f.consume_arg || f.hard_move > 0 {
+                            f.consumed.insert(name.clone());
+                        }
                         if mov == ArgMove::TakeFields {
                             f.box_shell.insert(name.clone());
                         }
@@ -932,6 +968,7 @@ fn expr(e: &Expr, f: &mut Facts) {
         Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {}
         Expr::Ident { name, .. } => {
             f.escaped.insert(name.clone());
+            f.consumed.insert(name.clone());
         }
         Expr::Call { func, args, .. } => {
             let borrow = matches!(func.as_ref(), Expr::Ident { name, .. } if borrows_args(name));
@@ -952,6 +989,12 @@ fn expr(e: &Expr, f: &mut Facts) {
             };
             for (i, a) in args.iter().enumerate() {
                 let reads = ro.as_ref().and_then(|r| r.get(i)).copied().unwrap_or(false);
+                let user_takes = f.cons.get(callee).and_then(|c| c.get(i)).copied().unwrap_or(false);
+                f.consume_arg = if f.cons.contains_key(callee) {
+                    user_takes
+                } else {
+                    !borrow
+                };
                 let mov = if borrow || reads {
                     ArgMove::Read
                 } else if hard || callee_transfers_struct_box(callee) {
@@ -960,6 +1003,7 @@ fn expr(e: &Expr, f: &mut Facts) {
                     ArgMove::TakeFields
                 };
                 arg(a, mov, f);
+                f.consume_arg = false;
             }
             if hard {
                 f.hard_move -= 1;
@@ -1086,6 +1130,10 @@ fn propagate_payload_escapes(f: &mut Facts) {
         for (scrut, bound) in &f.matches {
             if !f.escaped.contains(scrut) && bound.iter().any(|b| f.escapes(b)) {
                 f.escaped.insert(scrut.clone());
+                changed = true;
+            }
+            if !f.consumed.contains(scrut) && bound.iter().any(|b| f.consumed.contains(b)) {
+                f.consumed.insert(scrut.clone());
                 changed = true;
             }
         }
@@ -1323,6 +1371,16 @@ fn is_copy_scalar(t: &Type) -> bool {
     matches!(t, Type::Named { name, args, .. } if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool"))
 }
 
+/// The expression's inferred type is `Int`, `Float`, or `Bool`. Unknown types are not Copy.
+fn expr_is_copy_scalar(e: &Expr) -> bool {
+    let sp = e.span();
+    EXPR_TYPES.with(|t| {
+        t.borrow()
+            .get(&(sp.start, sp.end))
+            .is_some_and(is_copy_scalar)
+    })
+}
+
 /// Locals bound to a `list_get` copy of a describable struct (for box-shell release).
 fn mark_box_shell_calls_expr(e: &Expr, copies: &HashMap<String, &'static str>, facts: &mut Facts) {
     match e {
@@ -1456,7 +1514,7 @@ fn struct_copy_from_list(init: &Expr, elems: &HashMap<String, String>) -> Option
 }
 
 fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
-    let mut facts = fn_facts(f, variants, ro);
+    let mut facts = fn_facts(f, variants, ro, &ReadOnly::new());
     let elems = list_elem_structs(f);
     let mut copy_locals = HashMap::new();
     struct_copy_locals(&f.body, &elems, &mut copy_locals);

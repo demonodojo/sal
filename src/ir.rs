@@ -284,7 +284,7 @@ pub fn lower_program_with_callables_env(
     let dropped = crate::drops::insert_drops(&moded, &strings.types, &strings.structs, &strings.enums);
     // The field-read temporaries the drops pass made have struct types the lowering needs.
     strings.struct_types.extend(crate::drops::tmp_struct_types());
-    let read_only = crate::drops::last_read_only_params();
+    let consumed = crate::drops::last_consumed_params();
     let declared = declared_param_modes(prog);
     let prog = &dropped;
     let mut param_modes: HashMap<String, Vec<ParamMode>> = HashMap::new();
@@ -310,7 +310,7 @@ pub fn lower_program_with_callables_env(
             );
         }
     }
-    let caller_modes = caller_param_modes(prog, &param_modes, &declared, &read_only, &strings);
+    let caller_modes = caller_param_modes(prog, &param_modes, &declared, &consumed);
     let mut functions = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
@@ -361,126 +361,16 @@ fn expr_value_is_param_tail(e: &Expr, param: &str) -> bool {
     }
 }
 
-/// `P(…)` / `V(…)` defined in this compilation unit (`infer_param_modes` sees it).
-fn ctor_defined_in_program(prog: &Program, name: &str) -> bool {
-    for item in &prog.items {
-        match item {
-            Item::Struct(s) if s.name == name => return true,
-            Item::Enum(e) => {
-                for v in &e.variants {
-                    if v.name == name && !v.fields.is_empty() {
-                        return true;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Moves `param` into a constructor that exists in the graph but is declared in another module
-/// (`ownership::load_program` only registers ctors from `prog.items`).
-fn call_to_foreign_ctor_moves_param(
-    e: &Expr,
-    param: &str,
-    prog: &Program,
-    graph_ctors: &HashSet<String>,
-) -> bool {
-    let Expr::Call { func, args, .. } = e else {
-        return false;
-    };
-    let Expr::Ident { name: callee, .. } = func.as_ref() else {
-        return false;
-    };
-    if !graph_ctors.contains(callee) || ctor_defined_in_program(prog, callee) {
-        return false;
-    }
-    args.iter().any(|a| matches!(a, Expr::Ident { name, .. } if name == param))
-}
-
-/// Where ownership infers `borrow` but the struct glue must treat the param as taken: argument
-/// moved into a constructor not declared in this module, or returned as an `if`/`match` branch
-/// tail (see SPEC: branch tail does not move by itself; drops still marks escape).
-fn glue_mismatch_body(body: &Block, param: &str, prog: &Program, graph_ctors: &HashSet<String>) -> bool {
-    for st in &body.stmts {
-        if stmt_glue_mismatch(st, param, prog, graph_ctors) {
-            return true;
-        }
-    }
-    body.tail
-        .as_ref()
-        .is_some_and(|t| expr_glue_mismatch(t, param, prog, graph_ctors))
-}
-
-fn stmt_glue_mismatch(st: &Stmt, param: &str, prog: &Program, graph_ctors: &HashSet<String>) -> bool {
-    match st {
-        Stmt::Let { init, .. } => expr_glue_mismatch(init, param, prog, graph_ctors),
-        Stmt::Expr(e) => expr_glue_mismatch(e, param, prog, graph_ctors),
-        Stmt::Assign { target, value, .. } => {
-            expr_glue_mismatch(target, param, prog, graph_ctors)
-                || expr_glue_mismatch(value, param, prog, graph_ctors)
-        }
-        Stmt::Return { value: Some(v), .. } => expr_glue_mismatch(v, param, prog, graph_ctors),
-        Stmt::While { body, .. } => glue_mismatch_body(body, param, prog, graph_ctors),
-        Stmt::Break { .. } | Stmt::Return { value: None, .. } => false,
-    }
-}
-
-fn expr_glue_mismatch(e: &Expr, param: &str, prog: &Program, graph_ctors: &HashSet<String>) -> bool {
-    match e {
-        Expr::Call { func, args, .. } => {
-            if call_to_foreign_ctor_moves_param(e, param, prog, graph_ctors) {
-                return true;
-            }
-            expr_glue_mismatch(func, param, prog, graph_ctors)
-                || args.iter().any(|a| expr_glue_mismatch(a, param, prog, graph_ctors))
-        }
-        Expr::If { cond, then_block, elsifs, else_block, .. } => {
-            expr_glue_mismatch(cond, param, prog, graph_ctors)
-                || glue_mismatch_body(then_block, param, prog, graph_ctors)
-                || branch_tail_value_is_param(then_block, param)
-                || elsifs.iter().any(|a| {
-                    expr_glue_mismatch(&a.cond, param, prog, graph_ctors)
-                        || glue_mismatch_body(&a.body, param, prog, graph_ctors)
-                        || branch_tail_value_is_param(&a.body, param)
-                })
-                || else_block.as_ref().is_some_and(|b| {
-                    glue_mismatch_body(b, param, prog, graph_ctors) || branch_tail_value_is_param(b, param)
-                })
-        }
-        Expr::Match { scrutinee, arms, .. } => {
-            expr_glue_mismatch(scrutinee, param, prog, graph_ctors)
-                || arms.iter().any(|a| expr_value_is_param_tail(&a.body, param))
-        }
-        Expr::Block(b) => glue_mismatch_body(b, param, prog, graph_ctors),
-        Expr::Binary { left, right, .. } => {
-            expr_glue_mismatch(left, param, prog, graph_ctors)
-                || expr_glue_mismatch(right, param, prog, graph_ctors)
-        }
-        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => {
-            expr_glue_mismatch(expr, param, prog, graph_ctors)
-        }
-        Expr::Lambda { body, .. } => expr_glue_mismatch(body, param, prog, graph_ctors),
-        Expr::On { body, .. } => glue_mismatch_body(body, param, prog, graph_ctors),
-        Expr::TensorLit { rows, .. } => rows
-            .iter()
-            .flatten()
-            .any(|c| expr_glue_mismatch(c, param, prog, graph_ctors)),
-        _ => false,
-    }
-}
-
-/// The callers' view of `param_modes`: promote inferred `borrow` to `take` when drops sees an
-/// escape but the glue must match ownership+drops (foreign ctor or branch-tail value).
+/// The callers' view of `param_modes`: an inferred `borrow` that consumes the parameter
+/// (`drops::last_consumed_params`) is taken. A Copy field (`return p.n`) escapes the
+/// parameter for drops but does not consume it, so the caller still releases the struct.
+/// The selfhost does the same in `mark_escaping_params`.
 fn caller_param_modes(
     prog: &Program,
     param_modes: &HashMap<String, Vec<ParamMode>>,
     declared: &HashMap<String, Vec<ParamMode>>,
-    read_only: &HashMap<String, Vec<bool>>,
-    strings: &StringEnv,
+    consumed: &HashMap<String, Vec<bool>>,
 ) -> HashMap<String, Vec<ParamMode>> {
-    let graph_ctors = &strings.ctor_names;
     let mut out = param_modes.clone();
     for item in &prog.items {
         let Item::Fn(f) = item else {
@@ -492,7 +382,7 @@ fn caller_param_modes(
         let Some(decl_modes) = declared.get(&f.name) else {
             continue;
         };
-        let Some(flags) = read_only.get(&f.name) else {
+        let Some(flags) = consumed.get(&f.name) else {
             continue;
         };
         for (i, m) in modes.iter_mut().enumerate() {
@@ -502,15 +392,10 @@ fn caller_param_modes(
             if decl_modes.get(i) != Some(&ParamMode::Inferred) {
                 continue;
             }
-            if flags.get(i) != Some(&false) {
+            if flags.get(i) != Some(&true) {
                 continue;
             }
-            let Some(p) = f.params.get(i) else {
-                continue;
-            };
-            if glue_mismatch_body(&f.body, &p.name, prog, graph_ctors) {
-                *m = ParamMode::Take;
-            }
+            *m = ParamMode::Take;
         }
     }
     out
@@ -591,6 +476,9 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
                         for a in args {
                             if let Some(r) = root(a) {
                                 out.insert(r.to_string());
+                            }
+                            if let Expr::Ident { name, .. } = a {
+                                out.insert(name.to_string());
                             }
                         }
                     }
@@ -817,10 +705,57 @@ fn lower_fn(
     }
 }
 
-/// Struct locals bound to `list_get(xs, i)` whose element struct is not describable. Such a
-/// list hands out its boxes, not copies, so the glue must not release those locals' fields.
+/// Parameter indices a function returns as the value of some branch tail (`return p` in a
+/// branch, or a tail that is `p`). The caller must not release that result: it is the
+/// argument it already owns.
+pub(crate) fn returns_param_map(prog: &Program) -> HashMap<String, Vec<usize>> {
+    let mut m = HashMap::new();
+    for item in &prog.items {
+        let Item::Fn(f) = item else { continue };
+        let idx: Vec<usize> = f
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| f.body.tail.as_ref().is_some_and(|t| expr_value_is_param_tail(t, &p.name)))
+            .map(|(i, _)| i)
+            .collect();
+        if !idx.is_empty() {
+            m.insert(f.name.clone(), idx);
+        }
+    }
+    m
+}
+
+/// The result aliases an argument the caller does not own: a borrowed parameter, or a field
+/// read off one, at an index the callee returns by value.
+fn call_aliases_borrowed_arg(f: &FnDef, init: &Expr, strings: &StringEnv) -> bool {
+    let Expr::Call { func, args, .. } = init else {
+        return false;
+    };
+    let Expr::Ident { name: callee, .. } = func.as_ref() else {
+        return false;
+    };
+    let Some(idx) = strings.returns_param.get(callee).cloned() else {
+        return false;
+    };
+    idx.iter().any(|&i| match args.get(i) {
+        Some(Expr::Ident { name, .. }) => {
+            f.params.iter().any(|p| &p.name == name && p.mode != ParamMode::Take)
+        }
+        Some(Expr::Field { .. }) => true,
+        _ => false,
+    })
+}
+
+/// Struct locals the glue must not release: the result of `list_get(xs, i)` on a list whose
+/// element struct is not describable (it hands out its boxes, not copies), and the result of a
+/// call that returns one of the caller's borrowed parameters.
 fn list_alias_locals(f: &FnDef, strings: &StringEnv) -> HashSet<String> {
-    fn note(name: &str, init: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
+    fn note(f: &FnDef, name: &str, init: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
+        if strings.struct_types.contains_key(name) && call_aliases_borrowed_arg(f, init, strings) {
+            out.insert(name.to_string());
+            return;
+        }
         let Expr::Call { func, .. } = init else {
             return;
         };
@@ -834,42 +769,42 @@ fn list_alias_locals(f: &FnDef, strings: &StringEnv) -> HashSet<String> {
             out.insert(name.to_string());
         }
     }
-    fn expr(e: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
+    fn expr(f: &FnDef, e: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
         match e {
             Expr::If { then_block, elsifs, else_block, .. } => {
-                block(then_block, strings, out);
+                block(f, then_block, strings, out);
                 for a in elsifs {
-                    block(&a.body, strings, out);
+                    block(f, &a.body, strings, out);
                 }
                 if let Some(b) = else_block {
-                    block(b, strings, out);
+                    block(f, b, strings, out);
                 }
             }
             Expr::Match { arms, .. } => {
                 for a in arms {
-                    expr(&a.body, strings, out);
+                    expr(f, &a.body, strings, out);
                 }
             }
-            Expr::Block(b) => block(b, strings, out),
+            Expr::Block(b) => block(f, b, strings, out),
             _ => {}
         }
     }
-    fn block(b: &Block, strings: &StringEnv, out: &mut HashSet<String>) {
+    fn block(f: &FnDef, b: &Block, strings: &StringEnv, out: &mut HashSet<String>) {
         for st in &b.stmts {
             match st {
-                Stmt::Let { name, init, .. } => note(name, init, strings, out),
-                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => note(name, value, strings, out),
-                Stmt::While { body, .. } => block(body, strings, out),
-                Stmt::Expr(e) => expr(e, strings, out),
+                Stmt::Let { name, init, .. } => note(f, name, init, strings, out),
+                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => note(f, name, value, strings, out),
+                Stmt::While { body, .. } => block(f, body, strings, out),
+                Stmt::Expr(e) => expr(f, e, strings, out),
                 _ => {}
             }
         }
         if let Some(t) = &b.tail {
-            expr(t, strings, out);
+            expr(f, t, strings, out);
         }
     }
     let mut out = HashSet::new();
-    block(&f.body, strings, &mut out);
+    block(f, &f.body, strings, &mut out);
     out
 }
 
@@ -958,7 +893,7 @@ fn emit_struct_string_drops(
 ) {
     let moved = moved_bindings(f, caller_modes);
     let alias = list_alias_locals(f, strings);
-    let reads = field_reads(f, strings, param_modes);
+    let reads = field_reads(f, strings, caller_modes);
     let effective_modes = param_modes
         .get(&f.name)
         .cloned()

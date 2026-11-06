@@ -1,0 +1,15 @@
+# exit: 5
+# selfhost-xfail: el selfhost no enlaza cargas de patrones anidados
+enum Inner
+    XIdent(String)
+    XNone
+
+enum Outer
+    XField(Inner, String)
+    XNone
+
+fn main() -> Int ! alloc
+    e = XField(XIdent("p"), "name")
+    match e
+        XField(XIdent(name), field) => name.len() + field.len()
+        _ => 0

@@ -1,0 +1,17 @@
+# exit: 0
+# stdout: (b == 0LL);
+# A call used in the middle of a string chain returns a fresh string. The caller concatenates
+# it and prints the result; nothing in that chain is freed before the print.
+fn cmap(op: String) -> String
+    if op.eq("eq") == 1
+        "=="
+    else
+        "?"
+
+fn bin(l: String, r: String, op: String) -> String ! alloc
+    "(" + l + " " + cmap(op) + " " + r + ")"
+
+fn main() -> Int ! io, alloc
+    s = bin("b", "0LL", "eq")
+    print_str(s + ";\n")
+    0

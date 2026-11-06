@@ -240,10 +240,20 @@ fn nested_variant_match_binds_inner_ident() {
         .iter()
         .find(|f| f.name == "owned_param_string_field")
         .expect("owned_param_string_field");
-    let text = format!("{owned:?}");
+    let root_fn = ir
+        .functions
+        .iter()
+        .find(|f| f.name == "owned_param_root")
+        .expect("owned_param_root");
+    let outer = format!("{owned:?}");
+    let inner = format!("{root_fn:?}");
     assert!(
-        text.contains(r#"func: "param_named", args: ["params", "t2""#),
-        "XField(XIdent(name), _) must bind the inner ident before calling param_named:\n{text}"
+        outer.contains(r#"func: "owned_param_root""#),
+        "the field pattern must hand its base to owned_param_root:\n{outer}"
+    );
+    assert!(
+        inner.contains(r#"func: "param_named""#),
+        "the ident pattern must bind the name before calling param_named:\n{inner}"
     );
 }
 

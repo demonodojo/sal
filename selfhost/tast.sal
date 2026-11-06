@@ -166,11 +166,11 @@ fn tp_free_fn_bodies(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        seen = ht_new(512)
-        lseen = ht_new(256)
+        seen = HT.new(512)
+        lseen = HT.new(256)
         tp_free_fn_bodies_go(fns, 0, n, seen, lseen)
-        ht_free(seen)
-        ht_free(lseen)
+        seen.free()
+        lseen.free()
 
 fn tp_free_fn_bodies_go(fns: List[TFn], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
     if i >= n
@@ -255,10 +255,10 @@ fn tp_lseen_take(id: Int, lseen: HT) -> Int ! alloc
         0
     else
         key = id.to_str()
-        if ht_get(lseen, key).len() > 0
+        if lseen.get(key).len() > 0
             1
         else
-            ht_put(lseen, key, d"1")
+            lseen.put(key, d"1")
             0
 
 # Empty shells for `list_set` before `list_free` on owned list elements (expr/stmt/pat already released).
@@ -282,31 +282,31 @@ fn tp_free_stmts_go(stmts: List[TStmt], i: Int, n: Int, seen: HT, lseen: HT) -> 
         tp_free_stmts_go(stmts, i + 1, n, seen, lseen)
 
 fn tp_free_block(b: TBlock) -> Int ! alloc
-    seen = ht_new(512)
-    lseen = ht_new(256)
+    seen = HT.new(512)
+    lseen = HT.new(256)
     tp_free_block_go(b, seen, lseen)
-    ht_free(seen)
-    ht_free(lseen)
+    seen.free()
+    lseen.free()
 
 # One `seen`/`lseen` for trees that share nodes or lists (drops work buffers). Use only
 # after the caller holds an independent copy (`tv_block` / `tc_block`); not on parse trees.
 fn tp_free_drop_work(body: TBlock, hoisted: TBlock, res: TBlock) -> Int ! alloc
-    seen = ht_new(512)
-    lseen = ht_new(256)
+    seen = HT.new(512)
+    lseen = HT.new(256)
     tp_free_block_go(res, seen, lseen)
     tp_free_block_go(hoisted, seen, lseen)
     tp_free_block_go(body, seen, lseen)
-    ht_free(seen)
-    ht_free(lseen)
+    seen.free()
+    lseen.free()
 
 # `res` is copied with `tc_block` before calling this; only the hoist pipeline buffers.
 fn tp_free_drop_hoist(body: TBlock, hoisted: TBlock) -> Int ! alloc
-    seen = ht_new(512)
-    lseen = ht_new(256)
+    seen = HT.new(512)
+    lseen = HT.new(256)
     tp_free_block_go(hoisted, seen, lseen)
     tp_free_block_go(body, seen, lseen)
-    ht_free(seen)
-    ht_free(lseen)
+    seen.free()
+    lseen.free()
 
 fn tp_free_block_go(b: TBlock, seen: HT, lseen: HT) -> Int ! alloc
     if tp_lseen_take(list_box_id(b.stmts), lseen) == 1
@@ -363,30 +363,30 @@ fn tp_free_arms_go(xs: List[TArm], i: Int, n: Int, seen: HT, lseen: HT) -> Int !
         tp_free_arms_go(xs, i + 1, n, seen, lseen)
 
 fn tp_free_expr(e: Expr) -> Int ! alloc
-    seen = ht_new(512)
-    lseen = ht_new(256)
+    seen = HT.new(512)
+    lseen = HT.new(256)
     tp_free_expr_go(e, seen, lseen)
-    ht_free(seen)
-    ht_free(lseen)
+    seen.free()
+    lseen.free()
 
 fn tp_free_expr_list(xs: List[Expr]) -> Int ! alloc
-    seen = ht_new(512)
-    lseen = ht_new(256)
+    seen = HT.new(512)
+    lseen = HT.new(256)
     tp_free_exprs_go(xs, 0, xs.len(), seen, lseen)
-    ht_free(seen)
-    ht_free(lseen)
+    seen.free()
+    lseen.free()
 
 fn tp_free_expr_list_shared(xs: List[Expr], seen: HT, lseen: HT) -> Int ! alloc
     tp_free_exprs_go(xs, 0, xs.len(), seen, lseen)
 
 # Frees emitted fn `body` and `lam_bodies` with one `seen` (DAG overlap).
 fn tp_free_emit_scope(body: TBlock, lam_bodies: List[Expr]) -> Int ! alloc
-    seen = ht_new(512)
-    lseen = ht_new(256)
+    seen = HT.new(512)
+    lseen = HT.new(256)
     tp_free_block_go(body, seen, lseen)
     tp_free_expr_list_shared(lam_bodies, seen, lseen)
-    ht_free(seen)
-    ht_free(lseen)
+    seen.free()
+    lseen.free()
 
 # Skips boxes already visited (shared handles in drops/xform trees). A unit variant
 # (`enum_box_id` 0) has no box to release.
@@ -396,10 +396,10 @@ fn tp_free_expr_go(e: Expr, seen: HT, lseen: HT) -> Int ! alloc
         0
     else
         key = k.to_str()
-        if ht_get(seen, key).len() > 0
+        if seen.get(key).len() > 0
             0
         else
-            ht_put(seen, key, d"1")
+            seen.put(key, d"1")
             tp_free_children_go(e, seen, lseen)
             enum_free(e)
 

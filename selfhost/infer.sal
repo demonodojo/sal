@@ -46,29 +46,29 @@ fn ic_build(tp: TProgram, nres: Int, rec: Int) -> IC ! alloc
     _r = list_push(ret, strdup(""))
     allow = list_new[Int]()
     _a = list_push(allow, 1)
-    sigs = ht_new(n)
-    names = ht_new(n + nv)
-    tnames = ht_new(n)
-    arity = ht_new(nv)
-    vtab = ht_new(nv * 2)
+    sigs = HT.new(n)
+    names = HT.new(n + nv)
+    tnames = HT.new(n)
+    arity = HT.new(nv)
+    vtab = HT.new(nv * 2)
     _s = infer_sigs_go(sigs, tp.fns, 0, list_len(tp.fns))
     _g = infer_names_fns(names, tp.fns, 0, list_len(tp.fns))
     _e = infer_names_enums(names, arity, vtab, tnames, tp.enums, 0, list_len(tp.enums))
     _t = infer_type_names_structs(tnames, tp.structs, 0, list_len(tp.structs))
     imports = list_len(tp.imports)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, ht_new(nres + 4), rec, vtab, tp.enums, tp.aliases, tp.protocols, tp.structs, ic_fx_empty())
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums, tp.aliases, tp.protocols, tp.structs, ic_fx_empty())
 
 fn ic_free(c: IC borrow) -> Int ! alloc
     _a = tenv_free(c.env)
     _b = list_free(c.err)
     _c = list_free(c.ret)
     _d = list_free(c.allow)
-    _e = ht_free(c.sigs)
-    _f = ht_free(c.names)
-    _g = ht_free(c.tnames)
-    _h = ht_free(c.res)
-    _v = ht_free(c.vtab)
-    ht_free(c.arity)
+    _e = c.sigs.free()
+    _f = c.names.free()
+    _g = c.tnames.free()
+    _h = c.res.free()
+    _v = c.vtab.free()
+    c.arity.free()
 
 fn ic_count_variants(enums: List[TEnum], i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -179,7 +179,7 @@ fn ic_num(s: String, i: Int, n: Int, acc: Int) -> Int ! alloc
 
 # Table entry as a number, 0 when the key is missing.
 fn ic_get(h: HT, key: String) -> Int ! alloc
-    v = ht_get(h, key)
+    v = h.get(key)
     ic_num(v, 0, str_len(v), 0)
 
 # ---- type helpers ----
@@ -236,14 +236,14 @@ fn infer_sigs_go(h: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = ht_put(h, list_get(fns, i).name, int_to_str(i + 1))
+        _a = h.put(list_get(fns, i).name, int_to_str(i + 1))
         infer_sigs_go(h, fns, i + 1, n)
 
 fn infer_names_fns(m: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = ht_put(m, list_get(fns, i).name, "1")
+        _p = m.put(list_get(fns, i).name, "1")
         infer_names_fns(m, fns, i + 1, n)
 
 # Variants as bare names and with their arity, and the enums as type names. `vtab` maps the variant
@@ -254,7 +254,7 @@ fn infer_names_enums(names: HT, arity: HT, vtab: HT, tnames: HT, enums: List[TEn
     else
         e = list_get(enums, i)
         _a = infer_names_variants(names, arity, vtab, e.variants, 0, list_len(e.variants), i, list_len(e.tparams))
-        _b = ht_put(tnames, e.name, int_to_str(1 + list_len(e.tparams)))
+        _b = tnames.put(e.name, int_to_str(1 + list_len(e.tparams)))
         infer_names_enums(names, arity, vtab, tnames, enums, i + 1, n)
 
 fn infer_names_variants(names: HT, arity: HT, vtab: HT, vs: List[TVariant], i: Int, n: Int, ei: Int, generic: Int) -> Int ! alloc
@@ -262,8 +262,8 @@ fn infer_names_variants(names: HT, arity: HT, vtab: HT, vs: List[TVariant], i: I
         0
     else
         v = list_get(vs, i)
-        _p = ht_put(names, v.name, "1")
-        _q = ht_put(arity, v.name, int_to_str(1 + list_len(v.fields)))
+        _p = names.put(v.name, "1")
+        _q = arity.put(v.name, int_to_str(1 + list_len(v.fields)))
         _r = infer_vtab_put(vtab, v.name, ei, i, generic)
         infer_names_variants(names, arity, vtab, vs, i + 1, n, ei, generic)
 
@@ -271,8 +271,8 @@ fn infer_vtab_put(vtab: HT, name: String, ei: Int, vi: Int, generic: Int) -> Int
     if generic > 0
         0
     else
-        _a = ht_put(vtab, name, int_to_str(ei + 1))
-        ht_put(vtab, name + "#", int_to_str(vi + 1))
+        _a = vtab.put(name, int_to_str(ei + 1))
+        vtab.put(name + "#", int_to_str(vi + 1))
 
 # The enum a variant of a non-generic enum builds ("Unknown" for any other).
 fn infer_variant_ty(c: IC borrow, name: String) -> String ! alloc
@@ -302,7 +302,7 @@ fn infer_type_names_structs(m: HT, v: List[TStruct], i: Int, n: Int) -> Int ! al
         0
     else
         s = list_get(v, i)
-        _p = ht_put(m, s.name, int_to_str(1 + list_len(s.tparams)))
+        _p = m.put(s.name, int_to_str(1 + list_len(s.tparams)))
         infer_type_names_structs(m, v, i + 1, n)
 
 # Base identifier of a type text: `List[Int]` -> `List`.
@@ -500,7 +500,7 @@ fn infer_record(c: IC borrow, id: String, val: String) -> Int ! alloc
     elsif str_len(id) == 0
         0
     else
-        ht_put(c.res, id, val)
+        c.res.put(id, val)
 
 fn infer_call_t(c: IC borrow, name: String, args: List[Expr], targs: String) -> String ! alloc
     p = mth_dot(name, 0, str_len(name))
@@ -1996,6 +1996,8 @@ fn infer_match_scrut_class(sty: String, c: IC borrow) -> Int ! alloc
     elsif ty_is(sty, "String") == 1
         1
     elsif ty_is_scalar(sty) == 1
+        3
+    elsif ty_is(sty, "Unknown") == 1
         3
     else
         2

@@ -57,6 +57,17 @@ fn bootstrap_ir(path: &Path) -> String {
 }
 
 fn compile_selfhost(instrument: bool) -> PathBuf {
+    // The debug compile of the selfhost recurses deeper than the default thread stack.
+    std::thread::Builder::new()
+        .name("sal-selfhost".into())
+        .stack_size(256 << 20)
+        .spawn(move || compile_selfhost_here(instrument))
+        .expect("spawn selfhost compile")
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+fn compile_selfhost_here(instrument: bool) -> PathBuf {
     let _guard = LINK_LOCK.lock().expect("link lock");
     let opts = CompileOptions {
         toolchain: Default::default(),
@@ -287,6 +298,38 @@ fn grouped_newlines_match_bootstrap_ir() {
         "add((1 + 2), 4) split across lines must exit 7; stderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
+}
+
+/// stage1 compiles this through its C backend. The string must be the one the bootstrap prints:
+/// a call in the middle of a concatenation is a fresh string, not a freed literal reused.
+#[test]
+fn stage1_c_path_prints_call_inside_concat() {
+    let stage1 = compile_selfhost(false);
+    let src = root().join("tests/lang/drops/drop_call_in_string_concat.sal");
+    let bin = PathBuf::from(format!(
+        "/tmp/sal-concat-bin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let status = Command::new(&stage1)
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .current_dir(root())
+        .output()
+        .expect("stage1 -o concat");
+    assert_eq!(
+        status.status.code(),
+        Some(0),
+        "stage1 failed to compile the concat program: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let run = Command::new(&bin).output().expect("run concat bin");
+    assert_eq!(run.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim_end(), "(b == 0LL);");
 }
 
 #[test]
@@ -1000,7 +1043,9 @@ const PARITY_FILES: &[&str] = &[
     "std/text/strutil.sal",
     "tests/fixtures/frame_shop.sal",
     "tests/fixtures/frame_where.sal",
+    "tests/glue_escape/alias.sal",
     "tests/glue_escape/branch.sal",
+    "tests/glue_escape/chain.sal",
     "tests/glue_escape/ctor.sal",
     "tests/import_graph/a.sal",
     "tests/import_graph/b.sal",

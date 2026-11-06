@@ -102,8 +102,8 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 
 ## Cola de struct: vista de los llamadores
 
-- Un argumento struct pasado a un parámetro que el llamado deja escapar (bandera de solo lectura de drops a 0) cuenta como movido para la cola del llamador, aunque el modo inferido sea `borrow`. Cubre el constructor de otro módulo y el valor devuelto como cola de rama, que el comprobador ve como préstamo.
-- Arranque: `caller_param_modes` en `src/ir.rs`, a partir de `drops::last_read_only_params`. Selfhost: `mark_escaping_params` en `modes_fill_t` (`fuse.sal`). Tests: `struct_glue_*` en `tests/drops.rs` y `tests/glue_escape/` en `PARITY_FILES`.
+- Un argumento struct pasado a un parámetro de modo inferido que el llamado consume cuenta como movido para la cola del llamador, aunque el modo inferido sea `borrow`. Consumir es devolverlo, guardarlo o pasárselo a quien lo consume. Un campo Copy (`return p.n`) escapa para drops (el llamado no lo suelta) pero no consume: si contara, la cola dejaría de soltar el `String` que nadie más suelta. `field_reads` usa esa misma vista. Un parámetro que el cuerpo pasa suelto a un builtin que libera (`list_free(p)`) también es `take` para los llamadores.
+- Arranque: `caller_param_modes` en `src/ir.rs`, a partir de `drops::last_consumed_params`. Selfhost: `mark_escaping_params` en `modes_fill_t` (`fuse.sal`) sigue la bandera de solo lectura; el caso Copy está en el arranque. Tests: `struct_glue_*` en `tests/drops.rs` y `tests/glue_escape/` en `PARITY_FILES`.
 
 ## Siguen sin liberarse (SPEC)
 

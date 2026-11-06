@@ -36,7 +36,7 @@ fn oc_free(c: OC) -> Int ! alloc
     _d = list_free(c.params)
     _e = list_free(c.taken)
     _f = list_free(c.used)
-    _g = ht_free(c.table)
+    _g = c.table.free()
     list_free(c.ctors)
 
 # Clears what a fn leaves behind, so the context serves the next one.
@@ -435,7 +435,7 @@ fn track_else(c: OC, else_b: TBlock, has_else: Int, base: List[String], acc: Lis
 fn track_call(c: OC, name: String, args: List[Expr], e: Expr) -> String ! alloc
     tys = list_new[String]()
     _a = track_args(c, args, 0, list_len(args), tys)
-    modes = ht_get(c.table, name)
+    modes = c.table.get(name)
     if is_move_fn(name) == 1
         _b = consume_args(c, args, tys, 0, list_len(args))
     else
@@ -856,7 +856,7 @@ fn own_table_explicit(table: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
         0
     else
         f = list_get(fns, i)
-        _a = ht_put(table, f.name, own_explicit_text(f.params, 0, list_len(f.params), d"m"))
+        _a = table.put(f.name, own_explicit_text(f.params, 0, list_len(f.params), d"m"))
         own_table_explicit(table, fns, i + 1, n)
 
 # One round over every fn; returns 1 when some fn's modes differ from `table`.
@@ -866,8 +866,8 @@ fn own_table_round(c: OC, fns: List[TFn], next: HT, i: Int, n: Int, changed: Int
     else
         f = list_get(fns, i)
         v = infer_fn_modes(c, f)
-        _p = ht_put(next, f.name, v)
-        same = str_eq(v, ht_get(c.table, f.name))
+        _p = next.put(f.name, v)
+        same = str_eq(v, c.table.get(f.name))
         any = if same == 1
             changed
         else
@@ -879,7 +879,7 @@ fn own_table_fix(tp: TProgram, table: HT, round: Int) -> HT ! alloc
         table
     else
         c = oc_new(tp, table)
-        next = ht_new(list_len(tp.fns))
+        next = HT.new(list_len(tp.fns))
         ch = own_table_round(c, tp.fns, next, 0, list_len(tp.fns), 0)
         _f = oc_free(c)
         if ch == 0
@@ -890,6 +890,6 @@ fn own_table_fix(tp: TProgram, table: HT, round: Int) -> HT ! alloc
 # Fn name -> "m" + parameter modes (0 inferred/copy, 1 borrow, 2 take), as a fixpoint: a fn that
 # hands a parameter to a `take` position of another fn takes it too.
 fn own_mode_table(tp: TProgram) -> HT ! alloc
-    table = ht_new(list_len(tp.fns))
+    table = HT.new(list_len(tp.fns))
     _a = own_table_explicit(table, tp.fns, 0, list_len(tp.fns))
     own_table_fix(tp, table, 0)
