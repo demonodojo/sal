@@ -20,7 +20,7 @@ La superficie aceptada está en [SPEC.md](../../../SPEC.md). Un programa que el 
 - `fn nombre(params) -> Tipo` y, si hace falta, `!` con efectos `io`, `alloc`, `panic`, `gpu`, `tpu`.
 - `if` con `elsif` y `else` opcionales, al mismo nivel de sangría. Sin `else`, el `if` es `Unit` aunque haya `elsif` (efecto secundario, no valor). Con `else`, el valor es el de la rama then. `let` con tipo opcional.
 - Items del arranque: `import`, `struct`, `enum`, `frame`, `fn`, `method`, `static`, `init`.
-- `match expr` con brazos `patrón => expr` (`_`, enteros, `Variante(x)`, `modulo.Variante(x)`).
+- `match expr` con brazos `patrón => expr` o `patrón =>` bloque indentado (`_`, enteros, `"…"`, `r"…"`, `Variante(x)`, `modulo.Variante(x)`, `IDENT` ligado).
 - `return` anticipado vale en cuerpo, `if`, `while` y `match`; no dentro de `on` ni de una lambda.
 - Interpolación `f"a#{x}"` (`x` tiene que ser `String`; en `"…"` y `d"…"` `{` y `}` son texto).
 

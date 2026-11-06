@@ -104,7 +104,7 @@ Campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String
 | Se tocó | Comando |
 |---------|---------|
 | `src/drops.rs`, `src/ir.rs`, `src/fuse.rs`, `tests/drops.rs` | `cargo test --test drops` |
-| `tests/lang/drops/` (p. ej. `drop_list_struct_box_pass_fn.sal`, `drop_struct_list_field.sal`) | `cargo test --test lang` |
+| `tests/lang/drops/` (p. ej. `drop_list_struct_box_pass_fn.sal`, `drop_struct_list_field.sal`) | `cargo test --test lang` (`# exit:` = retorno de `main`, no “OK = 0”; ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
 | Selfhost drops/fuse/emit | `cargo run -- parity <fichero>`; `cargo test --test selfhost_ir -- --test-threads=1` (paridad IR puede diferir en programas con caja si solo el arranque aplica el pase IR) |
 | Runtime | `tests/instrument_sal.rs` (`struct_copy`, caja tras `list_get`) + `tests/drops.rs` |
 

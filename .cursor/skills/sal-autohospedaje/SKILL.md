@@ -83,4 +83,4 @@ Cada ampliación del lenguaje que este compilador implementa lleva tests de ese 
 
 `selfhost/` también pasa por `standard check` / `fix`. Esa limpieza no sustituye el test de IR. Si una práctica del compilador escrito en sal se repite y `standard` no la cubre, se amplía el linter en el mismo cambio; ver [sal-standard](../sal-standard/SKILL.md).
 
-Los enums del selfhost salen por el camino AST→C de `emit.sal` (`emit_c_match`, `emit_c_variant_make`), no por el IR de `fuse.sal`, que todavía no baja `match` ni constructores de variante; usan la misma caja `[tag, campos…]` del runtime.
+Los enums del selfhost salen por el camino AST→C de `emit.sal` (`emit_c_match`, `emit_c_variant_make`), no por el IR de `fuse.sal`, que todavía no baja constructores de variante ni `match` escalar a IR de texto. El `match` sobre variantes y el escalar (`"…"`, `r"…"`) van en `emit_c_match` con la misma caja `[tag, campos…]` del runtime donde aplica. El arranque baja el match escalar en `src/ir.rs` (`lower_match_chain`).

@@ -4,8 +4,8 @@ description: >-
   Linter de estilo standard (standard/, escrito en sal): check y fix in situ.
   Usar al editar .sal, al aplicar buenas prácticas, al ampliar una regla que
   todavía no existe, al editar cops o fixtures, o tras cambios en
-  str_concat/str_append, strdup, else+if anidado, if anidado con el
-  mismo else (`&&`), o la llamada a un
+  str_concat/str_append, strdup, else+if anidado, if/elsif homogéneo → `match`
+  (`Style/MatchIf`), if anidado con el mismo else (`&&`), o la llamada a un
   builtin que ya tiene método (`str_len` → `.len()`, `list_new[T]` → `List.new[T]`).
 ---
 
@@ -36,7 +36,7 @@ Salida de `check`: avisos en stderr (código tipo `Style/DupString`). Exit disti
 |-----|----------|
 | `Style/DupString` | `strdup("…")` → `d"…"` |
 | `Style/Elsif` | `else` + bloque con un solo `if` → `elsif` (casos ambiguos solo avisan) |
-| `Style/MatchIf` | `if` / `elsif`+ / `else` sobre el mismo escrutado (`==` entero, `str_eq` / `.eq` cadena) → `match` (bloques conservados; no si hay `break` o condiciones heterogéneas) |
+| `Style/MatchIf` | `if` / `elsif`+ / `else` sobre el mismo escrutado (`n == 1`, `s.eq("a") == 1`, `str_eq(s, "a") == 1`) → `match` con los mismos literales; cuerpos en bloque se conservan (`cop_matchif.sal`). No aplica con `break`, condiciones heterogéneas o mezcla int/cadena. `fix` puede necesitar varios pases si choca con `Style/Method` en `str_eq` |
 | `Style/And` | `if A` cuyo then es un solo `if B`, y los dos `else` son el mismo bloque → `if A && B`. Si `A` o `B` tienen `\|\|` en la raíz, se parentizan. Un comentario que el parche tiraría solo avisa |
 | `Style/StringPlus` | `str_concat` / `str_append` → `+`; cadenas de `var = str_append(var, …)` en varias líneas → una asignación con `+` |
 | `Style/PlusLiteral` | `d"…"` operando de `+` → `"…"` (el `+` ya copia; no hace falta dup en constantes) |
@@ -50,11 +50,11 @@ Salida de `check`: avisos en stderr (código tipo `Style/DupString`). Exit disti
 | Ruta | Rol |
 |------|-----|
 | `standard/main.sal` | CLI `check` / `fix`, orquesta cops |
-| `standard/lexer.sal` | Tokens con spans; comentarios fuera del flujo |
+| `standard/lexer.sal` | Tokens con spans; comentarios fuera del flujo; `TK_RSTRING` (`r"…"`) como en el compilador |
 | `standard/patch.sal` | Avisos, parches sin solape, punto fijo |
 | `standard/cop_*.sal` | Una regla por fichero |
 | `standard/fixtures/` | Entrada/salida esperada |
-| `tests/standard.rs` | Integración (compila `main.sal` una vez; `--test-threads=1`) |
+| `tests/standard.rs` | Integración (compila `main.sal` una vez por proceso, borrando `target/sal-out` antes; copia el binario a `/tmp`; `--test-threads=1`) |
 
 Al añadir o cambiar una regla: cop nuevo, enchufar en `run_all_cops` de `main.sal`, fixtures `_in.sal` / `_out.sal`, test en `tests/standard.rs`.
 

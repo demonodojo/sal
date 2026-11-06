@@ -16,10 +16,10 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 
 | Se tocó | Comando |
 |---------|---------|
-| Lexer o parser | `cargo test --test frontend --test parse_and_fmt` |
+| Lexer o parser (`RSTRING`, brazos `match`, …) | `cargo test --test frontend --test parse_and_fmt` |
 | Tipos, ownership, efectos, lugares (`frame`, ops columnares, …) | `cargo test --test semantics` |
 | Liberación de locales (`free`, cola de structs, caja `list_get`, `List[struct]` en cola, fugas) | `cargo test --test drops`; `cargo test --test instrument_sal instrument_strict_struct_list`; criterio en [sal-memoria](../sal-memoria/SKILL.md) |
-| IR o fusión (`ColumnBin`, `TensorBin`, …) | `cargo test --test forward_ir` |
+| IR o fusión (`ColumnBin`, `TensorBin`, `match` escalar, …) | `cargo test --test forward_ir` |
 | Runtime o kernels (matmul, **tensor bin**, …) | `cargo test --test kernels --test exec_matmul --test exec_column --test exec_salt` |
 | LLVM o enlace | `cargo test --test run_hello` |
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
@@ -33,7 +33,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | Binarios auxiliares `som2salt` / `standard` | `cargo test --test bins --test som_export_errors` |
 | Un `.sal` concreto | `cargo run -- check <fichero>` y, si debe ejecutar, `cargo run -- run <fichero>` |
 | Estilo en `.sal` (no sintaxis) | `cargo run --bin standard -- check <fichero>`; opcional `fix` in situ. Ver [sal-standard](../sal-standard/SKILL.md) |
-| `standard/` o cops de estilo | `cargo test --test standard -- --test-threads=1` |
+| `standard/` o cops de estilo (`Style/MatchIf`, `TK_RSTRING`, …) | `cargo test --test standard matchif -- --test-threads=1` (suite completa: `cargo test --test standard -- --test-threads=1`; el harness borra `target/sal-out` al compilar `standard/main.sal`) |
 | `selfhost/`, preludio o `corpus/` | `cargo test --test selfhost_ir` y la skill [sal-autohospedaje](../sal-autohospedaje/SKILL.md) |
 
 Atajo: `scripts/test-area.sh <área>` ejecuta la fila correspondiente de esta tabla (`frontend`, `semantics`, `drops`, `ir`, `kernels`, `llvm`, `instrument`, `toolchain`, `lang`, `builtins`, `target`, `std`, `standard`, `selfhost`); sin argumento lista las áreas. Las áreas `standard` y `selfhost` van en serie (`--test-threads=1`).

@@ -30,7 +30,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `alloca` | local de pila |
 | `&&` y `||` | no son un `binary`: se bajan como un `if` (`a && b` → `if a then (b != 0) else false`; `a || b` → `if a then true else (b != 0)`), así que el operando derecho solo se evalúa en la rama que lo necesita. `b != 0` normaliza un `Int` a `0`/`1`. Se intercepta en `lower_expr` antes del caso general de `Binary` |
 | binario y unario | operadores de la gramática. `+` con izquierdo `String` es `sal_str_concat` (primer paso, o izquierdo `IDENT`) o `sal_str_append` (paso siguiente de la misma cadena). El derecho se pasa como el segundo argumento de esa llamada, aunque no sea `String` |
-| `match` escalar | enteros: cadena de `if` con `eq`. `String`: `sal_str_eq` / `sal_regex_match` (POSIX ERE, devuelve `0`/`1`) en la misma cadena de `if`. Enums: `Switch` sobre tag |
+| `match` | Ver tabla siguiente (`lower_match_chain` / `lower_match_switch` en `src/ir.rs`) |
 | `call` | llamada, ya monomorfizada |
 | `place_copy` | `to` |
 | `on_device` | bloque `on`, con su lugar |
@@ -39,6 +39,15 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `where` | filtro de filas de un `frame` por máscara `I8` |
 | `load` | `load[…](path)` |
 | `return` | termina la función con el valor; no se baja ni se ejecuta lo posterior en la misma lista |
+
+### `match` (`lower_match_chain`, `match_should_use_switch`)
+
+- **Patrones literales** (`INT`, `STRING`, `RSTRING`): cadena de `If` en orden de fuente; condición `eq` (enteros), `sal_str_eq` (cadenas) o `sal_regex_match` (regex POSIX ERE → `0`/`1`; runtime `sal_regex_match` en `sal_runtime.c`). El escrutado no se mueve por el patrón.
+- **Patrones de enlace** (`IDENT` que no es variante, `_`): condición siempre verdadera (`ConstInt 1`) y el nombre liga al escrutado; **no** usar `Switch` con tag ficticio sobre `String` (los brazos restantes solo con `_`/`IDENT` sobre `String` o `Int` siguen en cadena de `if`, salvo la cola entera de un `match` de enteros solo con `_`, que puede ir a `Switch` con `default`).
+- **`Switch` sobre tag**: cuando `match_should_use_switch` lo permite: cola (o match entero) formada solo por `Variant` / variante unitaria (`IDENT`) / `_`, y escrutado enum conocido, **o** cualquier cola que incluya al menos un `Variant`, **o** cola solo `_`/`IDENT`/`Variant` sobre `Int`. Escrutado `String` nunca entra en `Switch`.
+- **Cuerpo de brazo bloque**: `Expr::Block` en el AST tipado; `lower_expr` ejecuta sentencias del bloque y usa la cola (o `0` si falta).
+
+Tests: `tests/forward_ir.rs` (`match_string_pattern_*`, `match_regex_pattern_*`), `tests/lang/control_flow/match_*.sal`, `tests/soso_target.rs` (`E_TARGET` para `r"…"` en soso).
 
 Un struct grande vuelve por puntero oculto. Las formas estáticas monomorfizan la llamada. Un eje `?` es un entero de ejecución, un parámetro `nombre_dN` por eje.
 

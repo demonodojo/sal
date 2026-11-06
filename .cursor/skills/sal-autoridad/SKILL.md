@@ -28,7 +28,7 @@ Recursiva por la izquierda en listas, operadores binarios y postfijos. Esa recur
 - Prefijos (`try`, `-`, `!`, `to`) y la lambda asocian a la derecha: `x => y => z` es `x => (y => z)`.
 - `load[F32, 4, 4]("w.salt")` es `postfix` con `type_arg` (tipo, `INT` o `?`). `4` no es un tipo de nombre `"4"`.
 - `if_expr` → `"if" expr suite elsif_list ("else" suite | ε)`, con `elsif_list` recursiva por la izquierda. Sin `else`, tipo `Unit` aunque haya `elsif`; con `else`, el tipo es el de la rama then. `elsif` y `else` se asocian al `if` interno que acaba de cerrar su suite. Dentro de `match`, `=>` es un brazo, no una lambda.
-- `match expr` con brazos `patrón => expr`. Patrones: `_`, `INT`, `IDENT`, `Variante(p, …)` y `modulo.Variante(p, …)`.
+- `match expr` con brazos `patrón => expr` o `patrón =>` bloque indentado (`suite`, mismas reglas que un `if`). Patrones: `_`, `INT`, `"…"`, `r"…"` (solo en `match`; fuera `E_PARSE`), `IDENT` (ligado o variante unitaria del enum del escrutado), `Variante(p, …)` y `modulo.Variante(p, …)`. Sobre `Int`: `_`, enteros, `IDENT`. Sobre `String`: `_`, literales, regex, `IDENT`. No mezclar familias ni con variantes de enum. Sin brazo: `0`. Regex inválida `E_TYPE`; `r"…"` en `--target soso` `E_TARGET`.
 - `return expr` / `return`: vale en el cuerpo y anidado en `if`, `elsif`, `else`, `while`, `match`; dentro de `on` o de una lambda, o con código alcanzable detrás, es `E_TYPE`.
 - Dentro de `(…)` y `[…]` el salto de línea no cierra la sentencia ni abre bloque; fuera sí.
 - Sangría con espacios. Un tabulador es `E_PARSE`. `#` no tiene producción.

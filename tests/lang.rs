@@ -1,7 +1,7 @@
 //! Language conformance: every `tests/lang/<area>/*.sal` states its expected result in
 //! leading `#` comments, written by hand (not taken from a compiler):
 //!
-//! - `# exit: N`      the program builds and exits with N (low byte)
+//! - `# exit: N`      the program builds and `main` returns N (process exit = N & 0xff; not “success means 0”)
 //! - `# stdout: TEXT` its stdout is exactly TEXT (optional)
 //! - `# error: CODE`  the compiler rejects it with diagnostic CODE
 //! - `# xfail: WHY`   known gap: the file must still fail to meet its

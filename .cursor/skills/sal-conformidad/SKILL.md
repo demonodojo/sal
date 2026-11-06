@@ -39,7 +39,9 @@ Los módulos auxiliares viven en `tests/lang/modules/mods/` (no llevan cabecera 
 
 ## Convenciones de nombre
 
-Prefijos existentes: `err_*` (el programa debe fallar), `attr_*` (atributos), `tensor_*`, `struct_*`, `bytes_*`, `float_*`, `bitops`, etc. En **`drops/`**, casos de cola y caja: p. ej. `drop_list_struct_box_pass_fn.sal` (`list_get` + fn escalarizada + uso posterior del struct), `drop_struct_list_field.sal` (`List[P]` en campo de struct). Un caso por comportamiento, con el nombre diciendo qué se afirma (`err_module_pattern_unknown_qualifier`).
+Prefijos existentes: `err_*` (el programa debe fallar), `attr_*` (atributos), `tensor_*`, `struct_*`, `bytes_*`, `float_*`, `bitops`, etc. En **`control_flow/`**, `match` escalar: `match_int`, `match_string`, `match_regex`, `match_arm_block`; errores `err_match_*` y `syntax/err_regex_outside_match.sal` (`E_PARSE`). En **`drops/`**, casos de cola y caja: p. ej. `drop_list_struct_box_pass_fn.sal` (`list_get` + fn escalarizada + uso posterior del struct), `drop_struct_list_field.sal` (`List[P]` en campo de struct). Un caso por comportamiento, con el nombre diciendo qué se afirma (`err_module_pattern_unknown_qualifier`).
+
+`# exit: N` es el **valor de retorno de `main`** (código de salida del proceso en Linux, byte bajo), no “éxito = 0”. Muchos tests de `drops/` devuelven el campo leído (`b.n`, `w.n`) o `str_len(s)` para demostrar que el valor sigue intacto tras la cola; otros acaban en `0` explícito cuando solo importa no crashear (`drop_struct_fields_freed_by_callee.sal`).
 
 ## Cómo añadir una construcción
 
