@@ -1958,6 +1958,12 @@ int64_t sal_enum_box_id(int64_t v) {
     return v >= 4096 ? v : 0;
 }
 
+/* Opaque identity of a compiler `Expr` value (the enum box address). For DAG dedup when
+ * `sal_enum_box_id` is 0 (unit variants / small tags). Compiler/runtime internal. */
+int64_t sal_expr_addr(int64_t v) {
+    return v;
+}
+
 int64_t sal_enum_tag(int64_t v) {
     if (v >= 0 && v < 4096) return v;
     return ((int64_t *)(intptr_t)v)[0] & 255;

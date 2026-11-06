@@ -15,16 +15,16 @@ struct DepSet
     msgs: List[String]
 
 fn dep_message(dep: String) -> String ! alloc
-    str_slice(dep, 2, str_len(dep))
+    dep.slice(2, dep.len())
 
 fn dep_collect_fns(fns: List[TFn], i: Int, n: Int, ds: DepSet) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fns, i)
-        if str_len(f.deprecated) > 0
-            _a = list_push(ds.names, f.name)
-            _b = list_push(ds.msgs, dep_message(f.deprecated))
+        f = fns.get(i)
+        if f.deprecated.len() > 0
+            ds.names.push(f.name)
+            _b = ds.msgs.push(dep_message(f.deprecated))
         dep_collect_fns(fns, i + 1, n, ds)
 
 fn dep_collect_structs(sts: List[TStruct], i: Int, n: Int, ds: DepSet) -> Int ! alloc

@@ -153,6 +153,7 @@ void sal_enum_free(int64_t v);
 int64_t sal_enum_tag(int64_t v);
 int64_t sal_enum_owns(int64_t v, int64_t i);
 int64_t sal_enum_field(int64_t v, int64_t i);
+int64_t sal_expr_addr(int64_t v);
 void sal_list_free(void *v);
 int64_t sal_any_box(int64_t vtable, int64_t drop_slot, int64_t payload);
 void sal_any_free(int64_t box);

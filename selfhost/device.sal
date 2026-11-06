@@ -16,7 +16,7 @@ struct DC
 fn dc_new() -> DC ! alloc
     st = list_new[Int]()
     _a = list_push(st, 0)
-    msg = list_new[String]()
+    msg = List.new[String]()
     _b = list_push(msg, d"")
     place = list_new[String]()
     _c = list_push(place, d"")

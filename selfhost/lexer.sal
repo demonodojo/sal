@@ -206,9 +206,7 @@ fn is_alpha(c: Int) -> Int
         0
 
 fn is_ident_start(c: Int) -> Int
-    if is_alpha(c) == 1
-        1
-    elsif c == 95
+    if is_alpha(c) == 1 || c == 95
         1
     else
         0

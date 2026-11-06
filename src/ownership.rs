@@ -726,6 +726,7 @@ fn is_borrow_fn(name: &str) -> bool {
             | "enum_free"
             | "enum_owns"
             | "enum_box_id"
+            | "expr_addr"
             | "bytes_free"
             | "list_push"
             | "list_get"

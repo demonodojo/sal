@@ -553,6 +553,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
     s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_box_id(i64)\n");
+    s.push_str("declare i64 @sal_expr_addr(i64)\n");
     s.push_str("declare i64 @sal_enum_field(i64, i64)\n");
     s.push_str("declare i64 @sal_vec_len(ptr)\n");
     s.push_str("declare void @sal_vec_free(ptr)\n");
@@ -3224,6 +3225,12 @@ fn emit_runtime_or_user_call(
             let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_enum_box_id(i64 {a})\n"));
+            }
+        }
+        "sal_expr_addr" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_expr_addr(i64 {a})\n"));
             }
         }
         "sal_struct_free" => {

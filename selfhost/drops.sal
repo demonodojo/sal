@@ -1821,8 +1821,7 @@ fn drops_body_go(f: TFn, denv: Int, view: Int) -> TBlock ! alloc
         tv_block(res)
     else
         owned = tc_block(res)
-        # `body` may share structure with `hoisted`/`res` inside the drops pipeline; do not
-        # `tp_free_block(body)` here (stage1 segfault on real programs).
+        _w = tp_free_drop_work(body, hoisted, res)
         owned
 
 # View copy for `fuse.sal` / IR (`tv_block`); `body`/`hoisted`/`res` from the pass are left allocated.
@@ -1891,6 +1890,8 @@ fn dr_borrows(name: String) -> Int ! alloc
     elsif str_eq(name, "enum_owns") == 1
         1
     elsif str_eq(name, "enum_box_id") == 1
+        1
+    elsif str_eq(name, "expr_addr") == 1
         1
     elsif str_eq(name, "bytes_len") == 1
         1

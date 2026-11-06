@@ -77,7 +77,7 @@ fn tarm_block(arm: TArm) -> TBlock ! alloc
     if arm.has_suite == 1
         arm.suite
     else
-        TBlock(list_new[TStmt](), arm.body)
+        TBlock(List.new[TStmt](), arm.body)
 
 struct TElsif
     cond: Expr
@@ -148,15 +148,16 @@ struct TProgram
 # `tp_free` returns the boxes and lists of a typed tree. Strings stay, except in lists, which own
 # copies (`list_free` releases them).
 fn tp_free(tp: TProgram) -> Int ! alloc
-    _a = tp_free_fns(tp.fns, 0, list_len(tp.fns))
-    _b = list_free(tp.fns)
-    _c = tp_free_structs(tp.structs, 0, list_len(tp.structs))
-    _d = list_free(tp.structs)
-    _e = tp_free_enums(tp.enums, 0, list_len(tp.enums))
-    _f = list_free(tp.enums)
-    _g = tp_free_protocols(tp.protocols, 0, list_len(tp.protocols))
-    _h = list_free(tp.protocols)
-    _i = list_free(tp.imports)
+    tp_free_fn_bodies(tp.fns, 0, tp.fns.len())
+    tp_free_fns_shallow(tp.fns, 0, tp.fns.len())
+    list_free(tp.fns)
+    tp_free_structs(tp.structs, 0, tp.structs.len())
+    list_free(tp.structs)
+    tp_free_enums(tp.enums, 0, tp.enums.len())
+    list_free(tp.enums)
+    tp_free_protocols(tp.protocols, 0, tp.protocols.len())
+    list_free(tp.protocols)
+    list_free(tp.imports)
     list_free(tp.aliases)
 
 # Parsed fn bodies may share nodes; one table for the whole `fns` list. Do not run on `TProgram`
@@ -167,124 +168,112 @@ fn tp_free_fn_bodies(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     else
         seen = ht_new(512)
         lseen = ht_new(256)
-        _a = tp_free_fn_bodies_go(fns, 0, n, seen, lseen)
-        _x = ht_free(seen)
+        tp_free_fn_bodies_go(fns, 0, n, seen, lseen)
+        ht_free(seen)
         ht_free(lseen)
 
 fn tp_free_fn_bodies_go(fns: List[TFn], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fns, i)
-        _a = tp_free_block_go(f.body, seen, lseen)
+        f = fns.get(i)
+        tp_free_block_go(f.body, seen, lseen)
         tp_free_fn_bodies_go(fns, i + 1, n, seen, lseen)
 
 # Metadata and fn shells without bodies (after `tp_free_fn_bodies` on the same `fns` list).
 fn tp_free_shallow(tp: TProgram) -> Int ! alloc
-    _a = tp_free_fns_shallow(tp.fns, 0, list_len(tp.fns))
-    _b = list_free(tp.fns)
-    _c = tp_free_structs(tp.structs, 0, list_len(tp.structs))
-    _d = list_free(tp.structs)
-    _e = tp_free_enums(tp.enums, 0, list_len(tp.enums))
-    _f = list_free(tp.enums)
-    _g = tp_free_protocols(tp.protocols, 0, list_len(tp.protocols))
-    _h = list_free(tp.protocols)
-    _i = list_free(tp.imports)
+    tp_free_fns_shallow(tp.fns, 0, tp.fns.len())
+    list_free(tp.fns)
+    tp_free_structs(tp.structs, 0, tp.structs.len())
+    list_free(tp.structs)
+    tp_free_enums(tp.enums, 0, tp.enums.len())
+    list_free(tp.enums)
+    tp_free_protocols(tp.protocols, 0, tp.protocols.len())
+    list_free(tp.protocols)
+    list_free(tp.imports)
     list_free(tp.aliases)
 
 fn tp_free_fns_shallow(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fns, i)
-        _c = list_free(f.fx)
-        _d = list_free(f.params)
-        _e = list_free(f.tparams)
+        f = fns.get(i)
+        list_free(f.fx)
+        list_free(f.params)
+        list_free(f.tparams)
         tp_free_fns_shallow(fns, i + 1, n)
 
 fn tp_free_protocols(ps: List[TProtocol], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        p = list_get(ps, i)
-        _m = tp_free_proto_methods(p.methods, 0, list_len(p.methods))
-        _l = list_free(p.methods)
+        p = ps.get(i)
+        tp_free_proto_methods(p.methods, 0, p.methods.len())
+        list_free(p.methods)
         tp_free_protocols(ps, i + 1, n)
 
 fn tp_free_proto_methods(ms: List[TProtocolMethod], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        m = list_get(ms, i)
-        _p = list_free(m.params)
-        _f = list_free(m.fx)
+        m = ms.get(i)
+        list_free(m.params)
+        list_free(m.fx)
         tp_free_proto_methods(ms, i + 1, n)
-
-fn tp_free_fns(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = list_get(fns, i)
-        _a = tp_free_block(f.body)
-        _c = list_free(f.fx)
-        _d = list_free(f.params)
-        _e = list_free(f.tparams)
-        tp_free_fns(fns, i + 1, n)
 
 fn tp_free_structs(sts: List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        st = list_get(sts, i)
-        _a = list_free(st.fields)
-        _b = list_free(st.tparams)
-        _c = list_free(st.protocols)
+        st = sts.get(i)
+        list_free(st.fields)
+        list_free(st.tparams)
+        list_free(st.protocols)
         tp_free_structs(sts, i + 1, n)
 
 fn tp_free_enums(es: List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        e = list_get(es, i)
-        _v = tp_free_variants(e.variants, 0, list_len(e.variants))
-        _t = list_free(e.tparams)
-        _p = list_free(e.protocols)
-        _a = list_free(e.variants)
+        e = es.get(i)
+        tp_free_variants(e.variants, 0, e.variants.len())
+        list_free(e.tparams)
+        list_free(e.protocols)
+        list_free(e.variants)
         tp_free_enums(es, i + 1, n)
 
 fn tp_free_variants(vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_free(list_get(vs, i).fields)
+        list_free(vs.get(i).fields)
         tp_free_variants(vs, i + 1, n)
-
-fn tp_lseen_take(id: Int, lseen: HT) -> Int ! alloc
-    if id == 0
-        0
-    else
-        key = int_to_str(id)
-        if str_len(ht_get(lseen, key)) > 0
-            1
-        else
-            _p = ht_put(lseen, key, d"1")
-            0
 
 # Empty shells for `list_set` before `list_free` on owned list elements (expr/stmt/pat already released).
 fn tp_empty_block() -> TBlock ! alloc
-    TBlock(list_new[TStmt](), XNone)
+    TBlock(List.new[TStmt](), XNone)
 
 fn tp_pat_cleared() -> TPat ! alloc
-    TPat(0, 0, strdup(d""), strdup(d""), list_new[TPat]())
+    TPat(0, 0, d"".dup(), d"".dup(), List.new[TPat]())
 
-fn tp_stmt_cleared(st: TStmt) -> TStmt ! alloc
-    TStmt(st.kind, st.name, XNone, st.ty, st.is_let, XNone, st.frozen, st.stack, st.id)
+# Dup `name`/`ty` before freeing `expr` when they can alias `XIdent`/`XStr` substrings (e.g. `let x = x + 1`).
+fn tp_free_stmts_go(stmts: List[TStmt], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = stmts.get(i)
+        nm = st.name.dup()
+        ty = st.ty.dup()
+        tp_free_expr_go(st.expr, seen, lseen)
+        tp_free_expr_go(st.target, seen, lseen)
+        stmts.set(i, TStmt(st.kind, nm, XNone, ty, st.is_let, XNone, st.frozen, st.stack, st.id))
+        tp_free_stmts_go(stmts, i + 1, n, seen, lseen)
 
 fn tp_free_block(b: TBlock) -> Int ! alloc
     seen = ht_new(512)
     lseen = ht_new(256)
-    _a = tp_free_block_go(b, seen, lseen)
-    _x = ht_free(seen)
+    tp_free_block_go(b, seen, lseen)
+    ht_free(seen)
     ht_free(lseen)
 
 # One `seen`/`lseen` for trees that share nodes or lists (drops work buffers). Use only
@@ -292,60 +281,46 @@ fn tp_free_block(b: TBlock) -> Int ! alloc
 fn tp_free_drop_work(body: TBlock, hoisted: TBlock, res: TBlock) -> Int ! alloc
     seen = ht_new(512)
     lseen = ht_new(256)
-    _r = tp_free_block_go(res, seen, lseen)
-    _h = tp_free_block_go(hoisted, seen, lseen)
-    _b = tp_free_block_go(body, seen, lseen)
-    _x = ht_free(seen)
+    tp_free_block_go(res, seen, lseen)
+    tp_free_block_go(hoisted, seen, lseen)
+    tp_free_block_go(body, seen, lseen)
+    ht_free(seen)
     ht_free(lseen)
 
 # `res` is copied with `tc_block` before calling this; only the hoist pipeline buffers.
 fn tp_free_drop_hoist(body: TBlock, hoisted: TBlock) -> Int ! alloc
     seen = ht_new(512)
     lseen = ht_new(256)
-    _h = tp_free_block_go(hoisted, seen, lseen)
-    _b = tp_free_block_go(body, seen, lseen)
-    _x = ht_free(seen)
+    tp_free_block_go(hoisted, seen, lseen)
+    tp_free_block_go(body, seen, lseen)
+    ht_free(seen)
     ht_free(lseen)
 
 fn tp_free_block_go(b: TBlock, seen: HT, lseen: HT) -> Int ! alloc
-    lid = list_box_id(b.stmts)
-    if tp_lseen_take(lid, lseen) == 1
-        tp_free_expr_go(b.tail, seen, lseen)
-    else
-        _a = tp_free_stmts_go(b.stmts, 0, list_len(b.stmts), seen, lseen)
-        _b = list_free(b.stmts)
-        tp_free_expr_go(b.tail, seen, lseen)
-
-fn tp_free_stmts_go(stmts: List[TStmt], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
-    if i >= n
-        0
-    else
-        st = list_get(stmts, i)
-        _a = tp_free_expr_go(st.expr, seen, lseen)
-        _b = tp_free_expr_go(st.target, seen, lseen)
-        _c = list_set(stmts, i, tp_stmt_cleared(st))
-        tp_free_stmts_go(stmts, i + 1, n, seen, lseen)
+    tp_free_stmts_go(b.stmts, 0, b.stmts.len(), seen, lseen)
+    _b = list_free(b.stmts)
+    tp_free_expr_go(b.tail, seen, lseen)
 
 fn tp_free_exprs_go(xs: List[Expr], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
     if i >= n
         0
     else
-        _a = tp_free_expr_go(list_get(xs, i), seen, lseen)
-        _b = list_set(xs, i, XNone)
+        tp_free_expr_go(xs.get(i), seen, lseen)
+        xs.set(i, XNone)
         tp_free_exprs_go(xs, i + 1, n, seen, lseen)
 
 fn tp_free_elsifs_go(xs: List[TElsif], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
+        a = xs.get(i)
         _a = tp_free_expr_go(a.cond, seen, lseen)
-        _b = tp_free_block_go(a.body, seen, lseen)
-        _c = list_set(xs, i, TElsif(XNone, tp_empty_block()))
+        tp_free_block_go(a.body, seen, lseen)
+        xs.set(i, TElsif(XNone, tp_empty_block()))
         tp_free_elsifs_go(xs, i + 1, n, seen, lseen)
 
 fn tp_free_pat_fields(p: TPat) -> Int ! alloc
-    _a = tp_free_pats(p.args, 0, list_len(p.args))
+    tp_free_pats(p.args, 0, p.args.len())
     list_free(p.args)
 
 fn tp_free_pat(p: TPat) -> Int ! alloc
@@ -355,50 +330,65 @@ fn tp_free_pats(ps: List[TPat], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = tp_free_pat_fields(list_get(ps, i))
-        _b = list_set(ps, i, tp_pat_cleared())
+        tp_free_pat_fields(ps.get(i))
+        ps.set(i, tp_pat_cleared())
         tp_free_pats(ps, i + 1, n)
 
 fn tp_free_arms_go(xs: List[TArm], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
+        a = xs.get(i)
         _a = tp_free_pat_fields(a.pat)
         if a.has_suite == 1
             _b = tp_free_block_go(a.suite, seen, lseen)
         else
             _b = tp_free_expr_go(a.body, seen, lseen)
-        _c = list_set(xs, i, TArm(tp_pat_cleared(), XNone, tp_empty_block(), 0))
+        xs.set(i, TArm(tp_pat_cleared(), XNone, tp_empty_block(), 0))
         tp_free_arms_go(xs, i + 1, n, seen, lseen)
 
 fn tp_free_expr(e: Expr) -> Int ! alloc
     seen = ht_new(512)
     lseen = ht_new(256)
-    _a = tp_free_expr_go(e, seen, lseen)
-    _x = ht_free(seen)
+    tp_free_expr_go(e, seen, lseen)
+    ht_free(seen)
     ht_free(lseen)
 
 fn tp_free_expr_list(xs: List[Expr]) -> Int ! alloc
     seen = ht_new(512)
     lseen = ht_new(256)
-    _a = tp_free_exprs_go(xs, 0, list_len(xs), seen, lseen)
-    _x = ht_free(seen)
+    tp_free_exprs_go(xs, 0, xs.len(), seen, lseen)
+    ht_free(seen)
     ht_free(lseen)
+
+fn tp_free_expr_list_shared(xs: List[Expr], seen: HT, lseen: HT) -> Int ! alloc
+    tp_free_exprs_go(xs, 0, xs.len(), seen, lseen)
+
+# Frees emitted fn `body` and `lam_bodies` with one `seen` (DAG overlap).
+fn tp_free_emit_scope(body: TBlock, lam_bodies: List[Expr]) -> Int ! alloc
+    seen = ht_new(512)
+    lseen = ht_new(256)
+    tp_free_block_go(body, seen, lseen)
+    tp_free_expr_list_shared(lam_bodies, seen, lseen)
+    ht_free(seen)
+    ht_free(lseen)
+
+# `enum_box_id` is 0 for unit variants and other small tags; use `expr_addr` so shared subgraphs dedup.
+fn tp_expr_seen_key(e: Expr) -> String ! alloc
+    k = enum_box_id(e)
+    if k != 0
+        k.to_str()
+    else
+        expr_addr(e).to_str()
 
 # Skips boxes already visited (shared handles in drops/xform trees).
 fn tp_free_expr_go(e: Expr, seen: HT, lseen: HT) -> Int ! alloc
-    k = enum_box_id(e)
-    if k != 0
-        key = int_to_str(k)
-        if str_len(ht_get(seen, key)) > 0
-            0
-        else
-            _m = ht_put(seen, key, d"1")
-            _a = tp_free_children_go(e, seen, lseen)
-            enum_free(e)
+    key = tp_expr_seen_key(e)
+    if ht_get(seen, key).len() > 0
+        0
     else
-        _a = tp_free_children_go(e, seen, lseen)
+        ht_put(seen, key, d"1")
+        tp_free_children_go(e, seen, lseen)
         enum_free(e)
 
 # Children the box owns are released by `enum_free`; the others (built by calls or from locals)
@@ -426,16 +416,12 @@ fn tp_free_one_go(e: Expr, i: Int, child: Expr, seen: HT, lseen: HT) -> Int ! al
         tp_free_expr_go(child, seen, lseen)
 
 fn tp_free_pair_go(e: Expr, l: Expr, r: Expr, seen: HT, lseen: HT) -> Int ! alloc
-    _x = tp_free_one_go(e, 1, l, seen, lseen)
+    tp_free_one_go(e, 1, l, seen, lseen)
     tp_free_one_go(e, 2, r, seen, lseen)
 
 fn tp_free_call_go(args: List[Expr], seen: HT, lseen: HT) -> Int ! alloc
-    lid = list_box_id(args)
-    if tp_lseen_take(lid, lseen) == 1
-        0
-    else
-        _x = tp_free_exprs_go(args, 0, list_len(args), seen, lseen)
-        list_free(args)
+    tp_free_exprs_go(args, 0, args.len(), seen, lseen)
+    list_free(args)
 
 # When the call box owns its arg list, `enum_free` releases the list; otherwise we do.
 fn tp_free_call_e_go(e: Expr, args: List[Expr], seen: HT, lseen: HT) -> Int ! alloc
@@ -454,34 +440,26 @@ fn tp_free_on_go(e: Expr, body: TBlock, seen: HT, lseen: HT) -> Int ! alloc
     tp_free_block_field_go(e, 1, body, seen, lseen)
 
 fn tp_free_if_go(e: Expr, cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif], seen: HT, lseen: HT) -> Int ! alloc
-    _x = tp_free_one_go(e, 0, cond, seen, lseen)
-    _y = tp_free_block_field_go(e, 1, then_b, seen, lseen)
-    _z = tp_free_block_field_go(e, 2, else_b, seen, lseen)
+    tp_free_one_go(e, 0, cond, seen, lseen)
+    tp_free_block_field_go(e, 1, then_b, seen, lseen)
+    tp_free_block_field_go(e, 2, else_b, seen, lseen)
     if enum_owns(e, 4) == 1
         0
     else
-        lid = list_box_id(elsifs)
-        if tp_lseen_take(lid, lseen) == 1
-            0
-        else
-            _w = tp_free_elsifs_go(elsifs, 0, list_len(elsifs), seen, lseen)
-            list_free(elsifs)
+        tp_free_elsifs_go(elsifs, 0, elsifs.len(), seen, lseen)
+        list_free(elsifs)
 
 fn tp_free_while_go(e: Expr, cond: Expr, body: TBlock, seen: HT, lseen: HT) -> Int ! alloc
-    _x = tp_free_one_go(e, 0, cond, seen, lseen)
+    tp_free_one_go(e, 0, cond, seen, lseen)
     tp_free_block_field_go(e, 1, body, seen, lseen)
 
 fn tp_free_match_go(e: Expr, scrut: Expr, arms: List[TArm], seen: HT, lseen: HT) -> Int ! alloc
-    _x = tp_free_one_go(e, 0, scrut, seen, lseen)
+    tp_free_one_go(e, 0, scrut, seen, lseen)
     if enum_owns(e, 1) == 1
         0
     else
-        lid = list_box_id(arms)
-        if tp_lseen_take(lid, lseen) == 1
-            0
-        else
-            _y = tp_free_arms_go(arms, 0, list_len(arms), seen, lseen)
-            list_free(arms)
+        tp_free_arms_go(arms, 0, arms.len(), seen, lseen)
+        list_free(arms)
 
 # ---- deep copies ----
 # A copy shares nothing with the original, so either can be released alone.
@@ -489,119 +467,119 @@ fn tc_exprs(xs: List[Expr], i: Int, n: Int, out: List[Expr]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, tc_expr(list_get(xs, i)))
+        out.push(tc_expr(xs.get(i)))
         tc_exprs(xs, i + 1, n, out)
 
 fn tc_list(xs: List[Expr]) -> List[Expr] ! alloc
-    out = list_new[Expr]()
-    _a = tc_exprs(xs, 0, list_len(xs), out)
+    out = List.new[Expr]()
+    tc_exprs(xs, 0, xs.len(), out)
     out
 
 fn tc_strs(xs: List[String]) -> List[String] ! alloc
-    out = list_new[String]()
-    _a = tc_strs_go(xs, 0, list_len(xs), out)
+    out = List.new[String]()
+    tc_strs_go(xs, 0, xs.len(), out)
     out
 
 fn tc_strs_go(xs: List[String], i: Int, n: Int, out: List[String]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, strdup(list_get(xs, i)))
+        out.push(xs.get(i).dup())
         tc_strs_go(xs, i + 1, n, out)
 
 fn tc_expr(e: Expr) -> Expr ! alloc
     match e
         XNone => XNone
         XInt(v) => XInt(v)
-        XFloat(bits, txt) => XFloat(bits, strdup(txt))
-        XStr(s) => XStr(strdup(s))
-        XIdent(s) => XIdent(strdup(s))
-        XBin(op, l, r) => XBin(strdup(op), tc_expr(l), tc_expr(r))
-        XCall(name, args, targs, xp) => XCall(strdup(name), tc_list(args), strdup(targs), xp)
-        XTo(place, inner) => XTo(strdup(place), tc_expr(inner))
-        XOn(place, body, kern, idx) => XOn(strdup(place), tc_block(body), kern, idx)
+        XFloat(bits, txt) => XFloat(bits, txt.dup())
+        XStr(s) => XStr(s.dup())
+        XIdent(s) => XIdent(s.dup())
+        XBin(op, l, r) => XBin(op.dup(), tc_expr(l), tc_expr(r))
+        XCall(name, args, targs, xp) => XCall(name.dup(), tc_list(args), targs.dup(), xp)
+        XTo(place, inner) => XTo(place.dup(), tc_expr(inner))
+        XOn(place, body, kern, idx) => XOn(place.dup(), tc_block(body), kern, idx)
         XTensor(nr, nc, data) => XTensor(nr, nc, tc_strs(data))
         XIf(cond, then_b, else_b, has_else, elsifs) => XIf(tc_expr(cond), tc_block(then_b), tc_block(else_b), has_else, tc_elsifs(elsifs))
         XWhile(cond, body) => XWhile(tc_expr(cond), tc_block(body))
-        XField(base, field) => XField(tc_expr(base), strdup(field))
+        XField(base, field) => XField(tc_expr(base), field.dup())
         XBool(v) => XBool(v)
-        XLambda(param, body) => XLambda(strdup(param), tc_expr(body))
-        XUnary(op, inner) => XUnary(strdup(op), tc_expr(inner))
+        XLambda(param, body) => XLambda(param.dup(), tc_expr(body))
+        XUnary(op, inner) => XUnary(op.dup(), tc_expr(inner))
         XMatch(scrut, arms) => XMatch(tc_expr(scrut), tc_arms(arms))
         XTry(inner) => XTry(tc_expr(inner))
 
 fn tc_elsifs(xs: List[TElsif]) -> List[TElsif] ! alloc
-    out = list_new[TElsif]()
-    _a = tc_elsifs_go(xs, 0, list_len(xs), out)
+    out = List.new[TElsif]()
+    tc_elsifs_go(xs, 0, xs.len(), out)
     out
 
 fn tc_elsifs_go(xs: List[TElsif], i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
-        _a = list_push(out, TElsif(tc_expr(a.cond), tc_block(a.body)))
+        a = xs.get(i)
+        _a = out.push(TElsif(tc_expr(a.cond), tc_block(a.body)))
         tc_elsifs_go(xs, i + 1, n, out)
 
 fn tc_arms(xs: List[TArm]) -> List[TArm] ! alloc
-    out = list_new[TArm]()
-    _a = tc_arms_go(xs, 0, list_len(xs), out)
+    out = List.new[TArm]()
+    tc_arms_go(xs, 0, xs.len(), out)
     out
 
 fn tc_arms_go(xs: List[TArm], i: Int, n: Int, out: List[TArm]) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
-        _a = list_push(out, TArm(tc_pat(a.pat), tc_expr(a.body), tc_block(a.suite), a.has_suite))
+        a = xs.get(i)
+        _a = out.push(TArm(tc_pat(a.pat), tc_expr(a.body), tc_block(a.suite), a.has_suite))
         tc_arms_go(xs, i + 1, n, out)
 
 fn tc_pats(xs: List[TPat]) -> List[TPat] ! alloc
-    out = list_new[TPat]()
-    _a = tc_pats_go(xs, 0, list_len(xs), out)
+    out = List.new[TPat]()
+    tc_pats_go(xs, 0, xs.len(), out)
     out
 
 fn tc_pats_go(xs: List[TPat], i: Int, n: Int, out: List[TPat]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, tc_pat(list_get(xs, i)))
+        out.push(tc_pat(xs.get(i)))
         tc_pats_go(xs, i + 1, n, out)
 
 fn tc_pat(p: TPat) -> TPat ! alloc
-    TPat(p.kind, p.ival, strdup(p.name), strdup(p.qual), tc_pats(p.args))
+    TPat(p.kind, p.ival, p.name.dup(), p.qual.dup(), tc_pats(p.args))
 
 fn tc_stmt(s: TStmt) -> TStmt ! alloc
-    TStmt(s.kind, strdup(s.name), tc_expr(s.expr), strdup(s.ty), s.is_let, tc_expr(s.target), s.frozen, s.stack, s.id)
+    TStmt(s.kind, s.name.dup(), tc_expr(s.expr), s.ty.dup(), s.is_let, tc_expr(s.target), s.frozen, s.stack, s.id)
 
 fn tc_stmts(xs: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, tc_stmt(list_get(xs, i)))
+        out.push(tc_stmt(xs.get(i)))
         tc_stmts(xs, i + 1, n, out)
 
 fn tc_block(b: TBlock) -> TBlock ! alloc
-    out = list_new[TStmt]()
-    _a = tc_stmts(b.stmts, 0, list_len(b.stmts), out)
+    out = List.new[TStmt]()
+    tc_stmts(b.stmts, 0, b.stmts.len(), out)
     TBlock(out, tc_expr(b.tail))
 
 # ---- view copies ----
 # Like `tc_*`, but each string is a fresh handle via `strdup` then `str_from_int(str_as_int(…))`
 # (not marked owned by the enum box), so `tp_free_block` on the view does not break IR text.
 fn tv_s(s: String) -> String ! alloc
-    str_from_int(str_as_int(strdup(s)))
+    str_from_int(s.dup().to_int())
 
 fn tv_exprs(xs: List[Expr], i: Int, n: Int, out: List[Expr]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, tv_expr(list_get(xs, i)))
+        out.push(tv_expr(xs.get(i)))
         tv_exprs(xs, i + 1, n, out)
 
 fn tv_list(xs: List[Expr]) -> List[Expr] ! alloc
-    out = list_new[Expr]()
-    _a = tv_exprs(xs, 0, list_len(xs), out)
+    out = List.new[Expr]()
+    tv_exprs(xs, 0, xs.len(), out)
     out
 
 fn tv_expr(e: Expr) -> Expr ! alloc
@@ -626,41 +604,41 @@ fn tv_expr(e: Expr) -> Expr ! alloc
         XTry(inner) => XTry(tv_expr(inner))
 
 fn tv_elsifs(xs: List[TElsif]) -> List[TElsif] ! alloc
-    out = list_new[TElsif]()
-    _a = tv_elsifs_go(xs, 0, list_len(xs), out)
+    out = List.new[TElsif]()
+    tv_elsifs_go(xs, 0, xs.len(), out)
     out
 
 fn tv_elsifs_go(xs: List[TElsif], i: Int, n: Int, out: List[TElsif]) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
-        _a = list_push(out, TElsif(tv_expr(a.cond), tv_block(a.body)))
+        a = xs.get(i)
+        _a = out.push(TElsif(tv_expr(a.cond), tv_block(a.body)))
         tv_elsifs_go(xs, i + 1, n, out)
 
 fn tv_arms(xs: List[TArm]) -> List[TArm] ! alloc
-    out = list_new[TArm]()
-    _a = tv_arms_go(xs, 0, list_len(xs), out)
+    out = List.new[TArm]()
+    tv_arms_go(xs, 0, xs.len(), out)
     out
 
 fn tv_arms_go(xs: List[TArm], i: Int, n: Int, out: List[TArm]) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
-        _a = list_push(out, TArm(tv_pat(a.pat), tv_expr(a.body), tv_block(a.suite), a.has_suite))
+        a = xs.get(i)
+        _a = out.push(TArm(tv_pat(a.pat), tv_expr(a.body), tv_block(a.suite), a.has_suite))
         tv_arms_go(xs, i + 1, n, out)
 
 fn tv_pats(xs: List[TPat]) -> List[TPat] ! alloc
-    out = list_new[TPat]()
-    _a = tv_pats_go(xs, 0, list_len(xs), out)
+    out = List.new[TPat]()
+    tv_pats_go(xs, 0, xs.len(), out)
     out
 
 fn tv_pats_go(xs: List[TPat], i: Int, n: Int, out: List[TPat]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, tv_pat(list_get(xs, i)))
+        out.push(tv_pat(xs.get(i)))
         tv_pats_go(xs, i + 1, n, out)
 
 fn tv_pat(p: TPat) -> TPat ! alloc
@@ -673,10 +651,10 @@ fn tv_stmts(xs: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, tv_stmt(list_get(xs, i)))
+        out.push(tv_stmt(xs.get(i)))
         tv_stmts(xs, i + 1, n, out)
 
 fn tv_block(b: TBlock) -> TBlock ! alloc
-    out = list_new[TStmt]()
-    _a = tv_stmts(b.stmts, 0, list_len(b.stmts), out)
+    out = List.new[TStmt]()
+    tv_stmts(b.stmts, 0, b.stmts.len(), out)
     TBlock(out, tv_expr(b.tail))

@@ -11,7 +11,7 @@ import ttypes
 fn at_word_end(text: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
-    elsif str_char(text, i) == 32
+    elsif text.char(i) == 32
         i
     else
         at_word_end(text, i + 1, n)
@@ -19,15 +19,15 @@ fn at_word_end(text: String, i: Int, n: Int) -> Int ! alloc
 # A type text trimmed to its first word, leaving the rest (`[…]`, `on …`) out
 # unless a bracket makes the head generic.
 fn at_head(text: String) -> String ! alloc
-    n = str_len(text)
+    n = text.len()
     e = at_word_end(text, 0, n)
-    str_slice(text, 0, e)
+    text.slice(0, e)
 
 # Index of the struct named `name`, or -1.
 fn at_find_struct(structs: List[TStruct], name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0 - 1
-    elsif str_eq(list_get(structs, i).name, name) == 1
+    elsif structs.get(i).name.eq(name) == 1
         i
     else
         at_find_struct(structs, name, i + 1, n)
@@ -35,7 +35,7 @@ fn at_find_struct(structs: List[TStruct], name: String, i: Int, n: Int) -> Int !
 fn at_fields_stack(structs: List[TStruct], fields: List[TField], i: Int, n: Int, depth: Int) -> Int ! alloc
     if i >= n
         1
-    elsif at_is_stack(structs, list_get(fields, i).ty, depth + 1) == 1
+    elsif at_is_stack(structs, fields.get(i).ty, depth + 1) == 1
         at_fields_stack(structs, fields, i + 1, n, depth)
     else
         0
@@ -43,28 +43,28 @@ fn at_fields_stack(structs: List[TStruct], fields: List[TField], i: Int, n: Int,
 # Whether a type (by its text) lives on the stack: scalars and structs of them.
 fn at_is_stack(structs: List[TStruct], raw: String, depth: Int) -> Int ! alloc
     text = at_head(raw)
-    if str_contains(raw, d"[") == 1
+    if raw.contains(d"[") == 1
         0
-    elsif str_eq(text, "Int") == 1
+    elsif text.eq("Int") == 1
         1
-    elsif str_eq(text, "Float") == 1
+    elsif text.eq("Float") == 1
         1
-    elsif str_eq(text, "Bool") == 1
+    elsif text.eq("Bool") == 1
         1
-    elsif str_eq(text, "Unit") == 1
+    elsif text.eq("Unit") == 1
         1
     elsif depth > 8
         0
     else
-        si = at_find_struct(structs, text, 0, list_len(structs))
+        si = at_find_struct(structs, text, 0, structs.len())
         if si < 0
             0
         else
-            fields = list_get(structs, si).fields
-            at_fields_stack(structs, fields, 0, list_len(fields), depth)
+            fields = structs.get(si).fields
+            at_fields_stack(structs, fields, 0, fields.len(), depth)
 
 fn at_ty_heap(structs: List[TStruct], ty: String) -> Int ! alloc
-    if str_len(ty) == 0
+    if ty.len() == 0
         0
     elsif at_is_stack(structs, ty, 0) == 1
         0
@@ -123,16 +123,8 @@ fn at_expr_lets(structs: List[TStruct], e: Expr, mode: Int) -> Int ! alloc
 
 # 1 when the binding `st` declares a heap type that `mode` forbids.
 fn at_stmt_bad(structs: List[TStruct], st: TStmt, mode: Int) -> Int ! alloc
-    if st.kind == 1
-        if st.is_let == 1
-            if mode == 0
-                at_ty_heap(structs, st.ty)
-            elsif st.stack == 1
-                at_ty_heap(structs, st.ty)
-            else
-                0
-        else
-            0
+    if st.kind == 1 && st.is_let == 1 && (mode == 0 || st.stack == 1)
+        at_ty_heap(structs, st.ty)
     else
         0
 
@@ -140,7 +132,7 @@ fn at_stmt_lets(structs: List[TStruct], stmts: List[TStmt], i: Int, n: Int, mode
     if i >= n
         result_ok(0)
     else
-        st = list_get(stmts, i)
+        st = stmts.get(i)
         if at_stmt_bad(structs, st, mode) == 1
             if mode == 0
                 result_err_str("@no_heap function cannot bind a heap type")
@@ -155,9 +147,9 @@ fn at_stmt_lets(structs: List[TStruct], stmts: List[TStmt], i: Int, n: Int, mode
 
 fn at_no_heap_body(structs: List[TStruct], f: TFn, env: TEnv) -> Int ! alloc
     used = fx_new(callees_new())
-    _s = fx_seed_params(f.params, 0, list_len(f.params), env)
-    _b = fx_scan_block(f.body, used, env)
-    _z = tenv_truncate(env, 0)
+    fx_seed_params(f.params, 0, f.params.len(), env)
+    fx_scan_block(f.body, used, env)
+    tenv_truncate(env, 0)
     allocates = fx_used(used, 1)
     _f = list_free(used.flags)
     if allocates == 1
@@ -187,7 +179,7 @@ fn at_frozen_elsifs(arms: List[TElsif], i: Int, n: Int, names: List[String]) -> 
     if i >= n
         result_ok(0)
     else
-        r = at_frozen_block(list_get(arms, i).body, names)
+        r = at_frozen_block(arms.get(i).body, names)
         if result_is_err(r) == 1
             r
         else
@@ -198,7 +190,7 @@ fn at_frozen_if(then_b: TBlock, else_b: TBlock, elsifs: List[TElsif], names: Lis
     if result_is_err(r) == 1
         r
     else
-        r2 = at_frozen_elsifs(elsifs, 0, list_len(elsifs), names)
+        r2 = at_frozen_elsifs(elsifs, 0, elsifs.len(), names)
         if result_is_err(r2) == 1
             r2
         else
@@ -266,7 +258,7 @@ fn at_check_fns(tp: TProgram, i: Int, n: Int, env: TEnv) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        r = at_check_fn(tp.structs, list_get(tp.fns, i), env)
+        r = at_check_fn(tp.structs, tp.fns.get(i), env)
         if result_is_err(r) == 1
             r
         else
@@ -274,11 +266,11 @@ fn at_check_fns(tp: TProgram, i: Int, n: Int, env: TEnv) -> Int ! alloc
 
 # Ok(0), or Err(message) for the first attribute violation in `tp`.
 fn check_attrs(tp: TProgram) -> Int ! alloc
-    r = at_layout(tp.structs, 0, list_len(tp.structs))
+    r = at_layout(tp.structs, 0, tp.structs.len())
     if result_is_err(r) == 1
         r
     else
         env = tenv_new(tp)
-        out = at_check_fns(tp, 0, list_len(tp.fns), env)
-        _f = tenv_free(env)
+        out = at_check_fns(tp, 0, tp.fns.len(), env)
+        tenv_free(env)
         out

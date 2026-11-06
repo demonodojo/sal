@@ -3,6 +3,7 @@ fn f(n: Int) -> Int
         1 =>
             x = 2
             x + 1
+        2 => 20
         _ => 0
 
 fn main() -> Int

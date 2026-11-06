@@ -656,6 +656,7 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "dict_values"
             | "enum_owns"
             | "enum_box_id"
+            | "expr_addr"
             | "bytes_len"
             | "bytes_get_u8"
             | "bytes_get_u16"

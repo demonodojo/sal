@@ -1,0 +1,18 @@
+# exit: 1
+enum E
+    Unit
+    Box(Int)
+
+fn main() -> Int ! alloc
+    u = Unit
+    b = Box(7)
+    # `enum_box_id` is 0 for unit and small tags; `expr_addr` still distinguishes values.
+    if expr_addr(u) != expr_addr(b)
+        p = expr_addr(b)
+        q = expr_addr(b)
+        if p == q
+            1
+        else
+            0
+    else
+        0

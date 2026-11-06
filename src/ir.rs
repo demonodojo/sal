@@ -2297,6 +2297,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "struct_free_box"
             | "enum_owns"
             | "enum_box_id"
+            | "expr_addr"
             | "bytes_free"
             | "bytes_new"
             | "bytes_len"
