@@ -49,8 +49,8 @@ fn dc_fail(c: DC, msg: String) -> Int ! alloc
         0
 
 fn dc_bind(c: DC, name: String, ty: String) -> Int ! alloc
-    _a = list_push(c.names, strdup(name))
-    _b = list_push(c.tys, strdup(ty))
+    _a = c.names.push(strdup(name))
+    _b = c.tys.push(strdup(ty))
     0
 
 fn dc_len(c: DC) -> Int ! alloc

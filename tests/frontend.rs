@@ -907,3 +907,30 @@ fn break_outside_a_loop_is_rejected() {
     let err = sal_compiler::loops::desugar_break(&mut prog).unwrap_err();
     assert_eq!(err[0].code, sal_compiler::diag::ErrorCode::EType, "{err:?}");
 }
+
+#[test]
+fn protocol_and_impl_header_parse_and_fmt() {
+    let src = "\
+protocol Show
+    method show(self) -> String ! alloc
+
+struct Point impl Show
+    x: Int
+
+method Point.show(self) -> String ! alloc
+    self.x.to_str()
+
+fn main() -> Int ! alloc
+    p = Point(1)
+    let b: any[Show] = p
+    b.show().len()
+";
+    let p = assert_parse(src);
+    assert!(p.items.iter().any(|i| matches!(i, Item::Protocol(_))));
+    let Item::Struct(s) = p.items.iter().find(|i| matches!(i, Item::Struct(_))).unwrap() else {
+        panic!("struct")
+    };
+    assert_eq!(s.protocols.len(), 1);
+    assert_eq!(s.protocols[0].name, "Show");
+    assert_fmt_idempotent(src);
+}

@@ -4,6 +4,7 @@ import lexer
 import tast
 import loops
 import methods
+import protocols
 
 # Parser state: the token lists plus `st = [index, has_err, group depth, last statement id]` and `msg = [error text]`.
 # The lists are shared by every copy of the struct, so `list_set` on them is the mutation.
@@ -1356,14 +1357,18 @@ fn parse_enum(pr: Parser) -> TEnum ! alloc
     if tok_kind(pr, nt) == TK_IDENT()
         _b = p_advance(pr)
         params = parse_type_params(pr)
+        impls = parse_impl_clause(pr)
+        if list_len(params) > 0
+            if list_len(impls) > 0
+                _e = p_set_err(pr, d"parse error: generic enum cannot declare protocol impl")
         _c = p_skip_nls(pr)
         _d = p_accept(pr, TK_INDENT())
         vs = parse_enum_variants(pr, list_new[TVariant]())
         _e = p_accept(pr, TK_DEDENT())
-        TEnum(tok_own(pr, nt), vs, params, d"", tyat_since(pr, start))
+        TEnum(tok_own(pr, nt), vs, params, impls, d"", tyat_since(pr, start))
     else
         _e = p_set_err(pr, d"parse error: expected enum name")
-        TEnum(d"_bad", list_new[TVariant](), list_new[String](), d"", d"")
+        TEnum(d"_bad", list_new[TVariant](), list_new[String](), list_new[String](), d"", d"")
 
 fn parse_struct(pr: Parser, layout_c: Int) -> TStruct ! alloc
     start = list_len(pr.tyat)
@@ -1379,7 +1384,13 @@ fn parse_struct(pr: Parser, layout_c: Int) -> TStruct ! alloc
     if tok_kind(pr, nt) == TK_IDENT()
         nt = p_advance(pr)
         name = or_fn_name(tok_own(pr, nt))
+        if str_eq(name, d"any") == 1
+            _e = p_set_err(pr, d"parse error: struct name `any` is reserved")
         sparams = parse_type_params(pr)
+        impls = parse_impl_clause(pr)
+        if list_len(sparams) > 0
+            if list_len(impls) > 0
+                _e = p_set_err(pr, d"parse error: generic struct cannot declare protocol impl")
         _b = p_skip_nls(pr)
         _c = p_accept(pr, TK_INDENT())
         fields = parse_struct_fields(pr, list_new[TField]())
@@ -1387,10 +1398,94 @@ fn parse_struct(pr: Parser, layout_c: Int) -> TStruct ! alloc
             _d = p_accept(pr, TK_DEDENT())
         else
             _d = 0
-        TStruct(name, fields, layout_c, sparams, is_frame, d"", tyat_since(pr, start))
+        TStruct(name, fields, layout_c, sparams, is_frame, impls, d"", tyat_since(pr, start))
     else
         _e = p_set_err(pr, d"parse error: expected struct name")
-        TStruct(d"_bad", list_new[TField](), 0, list_new[String](), 0, d"", d"")
+        TStruct(d"_bad", list_new[TField](), 0, list_new[String](), 0, list_new[String](), d"", d"")
+
+fn parse_impl_clause(pr: Parser) -> List[String] ! alloc
+    if tok_kind(pr, p_peek(pr)) != TK_IDENT()
+        list_new[String]()
+    elsif str_eq(tok_text(pr, p_peek(pr)), d"impl") == 0
+        list_new[String]()
+    else
+        _a = p_advance(pr)
+        parse_impl_list(pr, list_new[String]())
+
+fn parse_impl_list(pr: Parser, out: List[String]) -> List[String] ! alloc
+    if tok_kind(pr, p_peek(pr)) != TK_IDENT()
+        out
+    else
+        nt = p_advance(pr)
+        _p = list_push(out, tok_own(pr, nt))
+        if p_accept(pr, TK_COMMA()) == 1
+            parse_impl_list(pr, out)
+        else
+            out
+
+fn parse_protocol(pr: Parser) -> TProtocol ! alloc
+    _a = p_advance(pr)
+    nt = p_peek(pr)
+    if tok_kind(pr, nt) != TK_IDENT()
+        _e = p_set_err(pr, d"parse error: expected protocol name")
+        TProtocol(d"_bad", list_new[TProtocolMethod]())
+    else
+        _b = p_advance(pr)
+        name = tok_own(pr, nt)
+        _c = p_skip_nls(pr)
+        _d = p_accept(pr, TK_INDENT())
+        methods = parse_protocol_methods(pr, list_new[TProtocolMethod]())
+        _e = p_accept(pr, TK_DEDENT())
+        TProtocol(name, methods)
+
+fn parse_protocol_methods(pr: Parser, out: List[TProtocolMethod]) -> List[TProtocolMethod] ! alloc
+    if tok_kind(pr, p_peek(pr)) == TK_DEDENT()
+        out
+    elsif tok_kind(pr, p_peek(pr)) != TK_IDENT()
+        out
+    elsif str_eq(tok_text(pr, p_peek(pr)), d"method") == 0
+        out
+    else
+        _m = list_push(out, parse_protocol_method_sig(pr))
+        _n = p_skip_nls(pr)
+        parse_protocol_methods(pr, out)
+
+fn parse_protocol_method_sig(pr: Parser) -> TProtocolMethod ! alloc
+    _k = p_advance(pr)
+    nt = p_peek(pr)
+    if tok_kind(pr, nt) != TK_IDENT()
+        _e = p_set_err(pr, d"parse error: expected method name in protocol")
+        TProtocolMethod(d"_bad", list_new[TParam](), d"", fx_list_new(), 0)
+    else
+        _n = p_advance(pr)
+        mname = tok_own(pr, nt)
+        _b = p_accept(pr, TK_LPAREN())
+        self_mode = parse_protocol_self(pr)
+        params = parse_params(pr, list_new[TParam]())
+        _r = p_accept(pr, TK_RPAREN())
+        ret = parse_fn_ret(pr)
+        fx = fx_list_new()
+        _e = parse_effects(pr, fx)
+        _f = p_skip_nls(pr)
+        _g = p_accept(pr, TK_NL())
+        TProtocolMethod(mname, params, ret, fx, self_mode)
+
+# Consumes optional `self` / `self take` / `self borrow`; protocol `params` exclude `self` (mirror bootstrap).
+fn parse_protocol_self(pr: Parser) -> Int ! alloc
+    _s = p_skip_nls(pr)
+    t = p_peek(pr)
+    if tok_kind(pr, t) != TK_IDENT()
+        0
+    elsif str_eq(tok_text(pr, t), d"self") == 0
+        0
+    elsif parse_self_follows(pr, t + 1) == 0
+        _e = p_set_err(pr, d"parse error: `self` in a protocol method: write `self`, `self take` or `self borrow`")
+        0
+    else
+        _a = p_advance(pr)
+        mode = parse_param_mode(pr)
+        _c = p_accept(pr, TK_COMMA())
+        mode
 
 # The return type text after `->`; empty (and an error) when there is none.
 fn parse_fn_ret(pr: Parser) -> String ! alloc
@@ -1580,6 +1675,7 @@ struct Items
     fns: List[TFn]
     structs: List[TStruct]
     enums: List[TEnum]
+    protocols: List[TProtocol]
     imports: List[String]
     aliases: List[String]
 
@@ -1608,12 +1704,21 @@ fn parse_attributed_item(pr: Parser, it: Items, bits: Int) -> Int ! alloc
         else
             _s = list_push(it.enums, enum_with_dep(parse_enum(pr), dep))
             parse_program_go(pr, it)
-    elsif parse_method_kw(pr) > 0
-        if lay == 1
-            attr_not_here(pr)
+    elsif k == TK_IDENT()
+        if str_eq(tok_text(pr, p_peek(pr)), d"protocol") == 1
+            if nh + lay > 0
+                attr_not_here(pr)
+            else
+                _p = list_push(it.protocols, parse_protocol(pr))
+                parse_program_go(pr, it)
+        elsif parse_method_kw(pr) > 0
+            if lay == 1
+                attr_not_here(pr)
+            else
+                _m = list_push(it.fns, fn_with_attrs(parse_method_item(pr, parse_method_kw(pr)), nh, dep))
+                parse_program_go(pr, it)
         else
-            _m = list_push(it.fns, fn_with_attrs(parse_method_item(pr, parse_method_kw(pr)), nh, dep))
-            parse_program_go(pr, it)
+            attr_not_here(pr)
     else
         attr_not_here(pr)
 
@@ -1622,10 +1727,10 @@ fn fn_with_attrs(f: TFn, nh: Int, dep: String) -> TFn ! alloc
     TFn(f.name, f.params, f.body, f.ret, nh, f.fx, f.tparams, f.recv, f.mkind, dep, f.tyat)
 
 fn struct_with_dep(s: TStruct, dep: String) -> TStruct ! alloc
-    TStruct(s.name, s.fields, s.layout_c, s.tparams, s.is_frame, dep, s.tyat)
+    TStruct(s.name, s.fields, s.layout_c, s.tparams, s.is_frame, s.protocols, dep, s.tyat)
 
 fn enum_with_dep(e: TEnum, dep: String) -> TEnum ! alloc
-    TEnum(e.name, e.variants, e.tparams, dep, e.tyat)
+    TEnum(e.name, e.variants, e.tparams, e.protocols, dep, e.tyat)
 
 fn attr_not_here(pr: Parser) -> Int ! alloc
     _e = p_set_err(pr, d"parse error: attribute not allowed on this item")
@@ -1665,7 +1770,10 @@ fn parse_program_go(pr: Parser, it: Items) -> Int ! alloc
         _s = list_push(it.enums, parse_enum(pr))
         parse_program_go(pr, it)
     elsif k == TK_IDENT()
-        if str_eq(tok_text(pr, p_peek(pr)), d"struct") == 1
+        if str_eq(tok_text(pr, p_peek(pr)), d"protocol") == 1
+            _p = list_push(it.protocols, parse_protocol(pr))
+            parse_program_go(pr, it)
+        elsif str_eq(tok_text(pr, p_peek(pr)), d"struct") == 1
             _s = list_push(it.structs, parse_struct(pr, 0))
             parse_program_go(pr, it)
         elsif parse_method_kw(pr) > 0
@@ -1736,11 +1844,23 @@ fn parse_program_deferred_post(tp: TProgram, src: String, errs: List[String], fl
 fn parse_program_check(tp: TProgram, errs: List[String], ndots: Int) -> TProgram ! alloc
     if list_len(errs) > 0
         tp
-    elsif ndots > 0
-        _c = methods_check_defs(tp, errs)
-        tp
     else
+        _c = methods_check_defs(tp, errs)
+        if list_len(errs) == 0
+            if list_len(tp.protocols) + protocol_impl_count(tp) > 0
+                _p = protocols.check_program_protocols(tp, errs)
         tp
+
+fn protocol_impl_count(tp: TProgram) -> Int ! alloc
+    protocol_impl_structs(tp.structs, 0, list_len(tp.structs), 0)
+
+fn protocol_impl_structs(sts: List[TStruct], i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        st = list_get(sts, i)
+        acc2 = acc + list_len(st.protocols)
+        protocol_impl_structs(sts, i + 1, n, acc2)
 
 fn parse_program_post(tp: TProgram, src: String, errs: List[String], flags: List[Int]) -> TProgram ! alloc
     ndots = list_get(flags, 0)
@@ -1755,14 +1875,19 @@ fn parse_program_post(tp: TProgram, src: String, errs: List[String], flags: List
 fn parse_program_methods(tp: TProgram, errs: List[String], ndots: Int) -> TProgram ! alloc
     if list_len(errs) > 0
         tp
-    elsif ndots > 0
-        prepare_methods(tp, ndots, errs)
     else
-        tp
+        if list_len(tp.protocols) + protocol_impl_count(tp) > 0
+            _p = protocols.check_program_protocols(tp, errs)
+        if list_len(errs) > 0
+            tp
+        elsif ndots > 0
+            prepare_methods(tp, ndots, errs)
+        else
+            tp
 
 fn parse_program_raw(src: String, errs: List[String], flags: List[Int]) -> TProgram ! alloc
     pr = parser_new(lex(src))
-    it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[String](), list_new[String]())
+    it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[TProtocol](), list_new[String](), list_new[String]())
     _a = p_skip_nls(pr)
     _b = parse_program_go(pr, it)
     msg = parse_program_error(pr, list_len(it.fns), list_len(it.structs), list_len(it.enums), src)
@@ -1770,9 +1895,9 @@ fn parse_program_raw(src: String, errs: List[String], flags: List[Int]) -> TProg
     _f = parser_free(pr)
     if str_len(msg) > 0
         _e = list_push(errs, msg)
-        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums)
+        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums, it.protocols)
     else
-        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums)
+        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums, it.protocols)
 
 # The error text of the parse, empty when it went well.
 fn parse_program_error(pr: Parser, nfns: Int, nstructs: Int, nenums: Int, src: String) -> String ! alloc

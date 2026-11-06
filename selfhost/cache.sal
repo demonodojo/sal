@@ -1,18 +1,18 @@
 import handles
 
 fn source_hash(src: String) -> String ! io, alloc
-    h = str_hash(src, 5381)
+    h = src.hash(5381)
     self = argv(0)
-    h = str_hash(self, h)
+    h = self.hash(h)
     if h < 0
         h = 0 - h
     else
         h = h
-    int_to_str(h)
+    h.to_str()
 
 fn cache_dir() -> StrPath ! io, alloc
     e = getenv(d"SAL_SELFHOST_CACHE")
-    if str_len(e) == 0
+    if e.len() == 0
         StrPath(d"target/selfhost-cache")
     else
         StrPath(e)
@@ -29,6 +29,6 @@ fn cache_mkdir(dir: StrPath) -> Int ! io, alloc
 fn cache_key_for_graph_path(src: String, source_path: String) -> String ! io, alloc
     base = source_hash(src)
     p = realpath(source_path)
-    h = str_hash(src, str_hash(p, 5381))
-    piece = int_to_str(h)
+    h = src.hash(p.hash(5381))
+    piece = h.to_str()
     base + ":" + piece

@@ -76,6 +76,40 @@ fn tenv_new(tp: TProgram) -> TEnv ! alloc
     _a = tenv_fill(env, tp.fns, 0, list_len(tp.fns))
     env
 
+# Empty environment for detaching a shared `TEnv` before a owning struct (e.g. `Cx`) goes out of scope.
+fn tenv_empty() -> TEnv ! alloc
+    TEnv(list_new[String](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[String](), list_new[String](), list_new[Int]())
+
+fn list_clone_str(xs: List[String], i: Int, n: Int, out: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = list_push(out, strdup(list_get(xs, i)))
+        list_clone_str(xs, i + 1, n, out)
+
+fn list_clone_int(xs: List[Int], i: Int, n: Int, out: List[Int]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = list_push(out, list_get(xs, i))
+        list_clone_int(xs, i + 1, n, out)
+
+# Per-function copy of a module or graph environment (fn result types and struct list are shared).
+fn tenv_clone(src: TEnv borrow) -> TEnv ! alloc
+    names = list_new[String]()
+    _a = list_clone_str(src.names, 0, list_len(src.names), names)
+    tys = list_new[String]()
+    _b = list_clone_str(src.tys, 0, list_len(src.tys), tys)
+    fn_names = list_new[String]()
+    _c = list_clone_str(src.fn_names, 0, list_len(src.fn_names), fn_names)
+    fn_rets = list_new[String]()
+    _d = list_clone_str(src.fn_rets, 0, list_len(src.fn_rets), fn_rets)
+    g_names = list_new[String]()
+    _e = list_clone_str(src.g_names, 0, list_len(src.g_names), g_names)
+    g_idx = list_new[Int]()
+    _f = list_clone_int(src.g_idx, 0, list_len(src.g_idx), g_idx)
+    TEnv(names, tys, src.structs, fn_names, fn_rets, g_names, g_idx)
+
 # Index of the first param whose type is the bare type parameter `f` returns, or -1.
 fn tt_generic_ret(f: TFn) -> Int ! alloc
     if str_len(f.ret) == 0
@@ -330,7 +364,7 @@ fn tbinary_is_string_concat(env: TEnv, e: Expr) -> Int ! alloc
         _ => 0
 
 fn tt_add_is_string(env: TEnv, op: String, l: Expr) -> Int ! alloc
-    if str_eq(op, "add") == 1
-        texpr_is_string(env, l)
-    else
-        0
+    match op
+        "add" => texpr_is_string(env, l)
+        _ => 0
+

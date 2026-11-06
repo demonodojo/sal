@@ -28,6 +28,7 @@ item         → import_def
              | attr_list struct_def
              | enum_def
              | frame_def
+             | protocol_def
              | attr_list fn_def
              | attr_list method_def
              | attr_list static_def
@@ -43,7 +44,7 @@ path         → path "." IDENT
              | IDENT
              | STRING
 
-struct_def   → "struct" IDENT type_params suite_fields
+struct_def   → "struct" IDENT type_params impl_clause suite_fields
 suite_fields → NEWLINE INDENT field_list DEDENT
 field_list   → field_list field
              | field
@@ -56,7 +57,15 @@ column_list  → column_list column
 column       → IDENT ":" column_type
 column_type  → "F32" | "F16" | "BF16" | "I8" | "String"
 
-enum_def     → "enum" IDENT type_params NEWLINE INDENT variant_list DEDENT
+enum_def     → "enum" IDENT type_params impl_clause NEWLINE INDENT variant_list DEDENT
+impl_clause  → "impl" protocol_list
+             | ε
+protocol_list → protocol_list "," IDENT
+              | IDENT
+protocol_def → "protocol" IDENT NEWLINE INDENT protocol_method_list DEDENT
+protocol_method_list → protocol_method_list protocol_method_sig
+                     | protocol_method_sig
+protocol_method_sig → "method" IDENT "(" method_params ")" "->" type effect_clause NEWLINE
 variant_list → variant_list variant
              | variant
 variant      → IDENT variant_payload
@@ -288,7 +297,7 @@ No forman parte del arranque. El parser que las ve emite `E_PARSE` hasta su fase
 parallel_expr → "parallel" suite
 ```
 
-`@resource`, `@shared`, `@arena`, `@copy`, `@unique` y `@no_gc` usan `attr` pero no están admitidos. `any Protocol` no tiene producción propia: cuando exista, será un `named_type`.
+`@resource`, `@shared`, `@arena`, `@copy`, `@unique` y `@no_gc` usan `attr` pero no están admitidos.
 
 ## Tipos
 
@@ -301,7 +310,18 @@ parallel_expr → "parallel" suite
 | `Dict[K, V]` | heap; `K` ∈ Int, String; `V` cualquier tipo salvo `Tensor` y funciones (`String`, struct, enum…). `dict_get` devuelve `Option[V]` (el `Option` del preludio: `None` y `Some`, en ese orden) y copia los `String`; `dict_put` mueve el valor y suelta el anterior si era `String`; `dict_has(d, k)` es `Bool`; `dict_len(d)` es `Int`; `dict_remove(d, k)` borra la entrada (suelta el valor si es `String`) y devuelve `Bool` (`true` si estaba); `dict_keys(d)` y `dict_values(d)` devuelven una `List[K]` / `List[V]` nueva, con las mismas posiciones, en orden no especificado, y copian los `String`. Las claves `Int` (también 0 y negativas) funcionan igual que las `String`. Para recorrer un `Dict` se itera `keys` con `while` y se consulta con `dict_get` |
 | `Tensor[Elem, dims…] on lugar` | `Elem` ∈ F32, F16, BF16, I8; `?` eje dinámico |
 | structs, enums | |
+| `any[P]` | heap; `P` es un protocolo; despacho dinámico solo a través de este tipo |
 | genéricos | monomorfización |
+
+### Protocolos
+
+`protocol` e `impl` son contextuales, como `method`: `protocol` solo al inicio de un item; `impl` solo en la cabecera de un `struct` o un `enum`, tras los parámetros de tipo (`struct Point impl Show, Other`). La lista de protocolos crece por la izquierda; el texto canónico deja un espacio tras cada coma. Un `struct` que se llame `any` es `E_PARSE`.
+
+Un `protocol P` declara métodos sin cuerpo: cada línea es `method nombre(self …) -> R ! efectos`, con las mismas reglas de `self` que un `method` de instancia. Un protocolo no tiene parámetros de tipo.
+
+La cláusula `impl P, …` en un `struct` o `enum` sin parámetros de tipo reclama esos protocolos. El compilador comprueba, al cerrar el módulo, que el tipo ya tiene un `method T.nombre` por cada método de cada protocolo, con la misma aridad, tipos (con `self: T`), efectos y modo de `self`. Falta un método: `E_TYPE` en el nombre de ese protocolo en la cabecera. La firma no coincide: `E_TYPE` en el `method`. Un tipo con parámetros de tipo que escribe `impl` es `E_PARSE`. Un nombre que no es protocolo, o repetido en la misma cabecera, es `E_TYPE`.
+
+Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Pasarlo donde se espera `any[P]` mueve el valor a una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. `x.m()` con `x: any[P]` llama por la vtable; efectos y `borrow`/`take` salen de la firma del protocolo. Un método que el protocolo no declara es `E_TYPE`. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. Los tipos básicos, `Tensor` y `frame` no admiten `impl` en este corte.
 
 Los tipos nominales no se mezclan: `Int`, `String` y un `struct`/`enum` distinto son incompatibles salvo conversión explícita (p. ej. `.campo` en un newtype de un solo campo). `+` con `String` a la izquierda no es una excepción: exige `String` también a la derecha, y un asa `Int` se convierte explícitamente con `str_from_int` (o se formatea con `int_to_str`).
 

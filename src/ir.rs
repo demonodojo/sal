@@ -11,6 +11,16 @@ use crate::string_expr::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IrModule {
     pub functions: Vec<IrFunction>,
+    #[serde(default)]
+    pub any_vtables: Vec<AnyVtableDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AnyVtableDef {
+    pub type_name: String,
+    pub protocol: String,
+    pub global: String,
+    pub entries: Vec<String>,
 }
 
 /// Host `tensor[[…]]` literal materialised in LLVM with this SSA name (`tN`).
@@ -72,6 +82,18 @@ pub enum IrInst {
     Call {
         dest: Option<String>,
         func: String,
+        args: Vec<String>,
+    },
+    AnyBox {
+        dest: String,
+        vtable: String,
+        payload: String,
+        drop_slot: u32,
+    },
+    AnyCall {
+        dest: Option<String>,
+        receiver: String,
+        slot: u32,
         args: Vec<String>,
     },
     PlaceCopy {
@@ -292,7 +314,39 @@ pub fn lower_program_with_callables_env(
             functions.push(lower_fn(f, &fn_names, &strings, &param_modes));
         }
     }
-    IrModule { functions }
+    IrModule {
+        functions,
+        any_vtables: collect_any_vtables(prog),
+    }
+}
+
+fn collect_any_vtables(prog: &Program) -> Vec<AnyVtableDef> {
+    let mut protocols = HashMap::new();
+    for item in &prog.items {
+        if let Item::Protocol(p) = item {
+            protocols.insert(p.name.clone(), p.clone());
+        }
+    }
+    let mut out = Vec::new();
+    for item in &prog.items {
+        let (type_name, claims) = match item {
+            Item::Struct(s) if s.type_params.is_empty() => (s.name.as_str(), &s.protocols),
+            Item::Enum(e) if e.type_params.is_empty() => (e.name.as_str(), &e.protocols),
+            _ => continue,
+        };
+        for claim in claims {
+            let Some(pdef) = protocols.get(&claim.name) else {
+                continue;
+            };
+            out.push(AnyVtableDef {
+                type_name: type_name.to_string(),
+                protocol: claim.name.clone(),
+                global: crate::protocols::vtable_global(type_name, &claim.name),
+                entries: crate::protocols::vtable_entries(type_name, pdef),
+            });
+        }
+    }
+    out
 }
 
 /// The parameters of `f` whose fields it passes to a releasing builtin
@@ -336,7 +390,7 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
                 if let Expr::Ident { name, .. } = func.as_ref() {
                     if matches!(
                         name.as_str(),
-                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free"
+                        "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free" | "any_free"
                     ) {
                         for a in args {
                             if let Some(r) = root(a) {
@@ -1909,6 +1963,33 @@ fn else_block_for_elsifs(else_block: Option<Block>, elsifs: &[Elsif]) -> Option<
     else_b
 }
 
+fn maybe_box_for_any(
+    e: &Expr,
+    payload: String,
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+    strings: &StringEnv,
+) -> String {
+    let Some((tname, protocol)) = strings.any_coercion(e.span()) else {
+        return payload;
+    };
+    let vtable = crate::protocols::vtable_global(&tname, &protocol);
+    let drop_slot = strings
+        .protocols
+        .get(&protocol)
+        .map(|p| crate::protocols::drop_slot(p) as u32)
+        .unwrap_or(0);
+    *counter += 1;
+    let dest = format!("t{counter}");
+    instructions.push(IrInst::AnyBox {
+        dest: dest.clone(),
+        vtable,
+        payload,
+        drop_slot,
+    });
+    dest
+}
+
 fn lower_expr_simple(
     e: &Expr,
     instructions: &mut Vec<IrInst>,
@@ -2123,7 +2204,7 @@ fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     if matches!(
         fname,
         "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
-            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free"
+            | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free" | "any_free"
     ) {
         return format!("sal_{fname}");
     }
@@ -2211,6 +2292,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "list_free"
             | "dict_free"
             | "enum_free"
+            | "any_free"
             | "struct_free"
             | "struct_free_box"
             | "enum_owns"
@@ -2549,15 +2631,54 @@ fn lower_expr(
             func,
             type_args,
             args,
+            span,
             ..
         } => {
+            if let Some((_protocol, _method, slot)) = strings.protocol_call(*span) {
+                if let Expr::Field { base, .. } = func.as_ref() {
+                    *counter += 1;
+                    let dest = format!("t{counter}");
+                    let receiver = lower_expr_simple(
+                        base,
+                        instructions,
+                        env,
+                        counter,
+                        tensors,
+                        fn_names,
+                        host_literals,
+                        strings,
+                    );
+                    let mut arg_names = Vec::new();
+                    for a in args {
+                        let mut n = lower_expr_simple(
+                            a,
+                            instructions,
+                            env,
+                            counter,
+                            tensors,
+                            fn_names,
+                            host_literals,
+                            strings,
+                        );
+                        n = maybe_box_for_any(a, n, instructions, counter, strings);
+                        arg_names.push(n);
+                    }
+                    instructions.push(IrInst::AnyCall {
+                        dest: Some(dest.clone()),
+                        receiver,
+                        slot,
+                        args: arg_names,
+                    });
+                    return dest;
+                }
+            }
             let fname = match func.as_ref() {
                 Expr::Ident { name, .. } => name.clone(),
                 _ => "unknown".into(),
             };
             let mut arg_names = Vec::new();
             for a in args {
-                arg_names.push(lower_expr_simple(
+                let mut n = lower_expr_simple(
                     a,
                     instructions,
                     env,
@@ -2566,7 +2687,9 @@ fn lower_expr(
                     fn_names,
                     host_literals,
                     strings,
-                ));
+                );
+                n = maybe_box_for_any(a, n, instructions, counter, strings);
+                arg_names.push(n);
             }
             if let Some((param, lbody)) = strings.lambdas.get(&fname).cloned() {
                 if let Some(a) = arg_names.first() {

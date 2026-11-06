@@ -21,6 +21,7 @@ pub enum Item {
     Struct(StructDef),
     Enum(EnumDef),
     Frame(FrameDef),
+    Protocol(ProtocolDef),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -412,6 +413,9 @@ pub struct StructDef {
     pub name: String,
     #[serde(default)]
     pub type_params: Vec<String>,
+    /// Protocol names claimed in the header (`struct T impl P, Q`).
+    #[serde(default)]
+    pub protocols: Vec<ProtocolClaim>,
     pub fields: Vec<StructField>,
     #[serde(default)]
     pub layout_c: bool,
@@ -433,6 +437,8 @@ pub struct EnumDef {
     pub name: String,
     #[serde(default)]
     pub type_params: Vec<String>,
+    #[serde(default)]
+    pub protocols: Vec<ProtocolClaim>,
     pub variants: Vec<EnumVariant>,
     /// `@deprecated("…")`: the message of the `W_DEPRECATED` warning at each use.
     #[serde(default)]
@@ -444,6 +450,30 @@ pub struct EnumDef {
 pub struct EnumVariant {
     pub name: String,
     pub fields: Vec<Type>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProtocolClaim {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProtocolDef {
+    pub name: String,
+    pub methods: Vec<ProtocolMethod>,
+    pub span: Span,
+}
+
+/// Method signature inside a `protocol` (no body).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProtocolMethod {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: Type,
+    pub effects: Vec<Effect>,
+    pub self_mode: ParamMode,
     pub span: Span,
 }
 

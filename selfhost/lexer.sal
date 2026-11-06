@@ -243,48 +243,28 @@ fn tok_push(out: Toks, kind: Int, text: String, ival: Int) -> Int ! alloc
     0
 
 fn kw_kind(text: String) -> Int ! alloc
-    if str_eq(text, "fn") == 1
-        TK_FN()
-    elsif str_eq(text, "on") == 1
-        TK_ON()
-    elsif str_eq(text, "to") == 1
-        TK_TO()
-    elsif str_eq(text, "if") == 1
-        TK_IF()
-    elsif str_eq(text, "elsif") == 1
-        TK_ELSIF()
-    elsif str_eq(text, "else") == 1
-        TK_ELSE()
-    elsif str_eq(text, "while") == 1
-        TK_WHILE()
-    elsif str_eq(text, "import") == 1
-        TK_IMPORT()
-    elsif str_eq(text, "struct") == 1
-        TK_STRUCT()
-    elsif str_eq(text, "return") == 1
-        TK_RETURN()
-    elsif str_eq(text, "let") == 1
-        TK_LET()
-    elsif str_eq(text, "match") == 1
-        TK_MATCH()
-    elsif str_eq(text, "try") == 1
-        TK_TRY()
-    elsif str_eq(text, "true") == 1
-        TK_TRUE()
-    elsif str_eq(text, "false") == 1
-        TK_FALSE()
-    elsif str_eq(text, "enum") == 1
-        TK_ENUM()
-    elsif str_eq(text, "frame") == 1
-        TK_FRAME()
-    elsif str_eq(text, "kernel") == 1
-        TK_KERNEL()
-    elsif str_eq(text, "in") == 1
-        TK_IN()
-    elsif str_eq(text, "break") == 1
-        TK_BREAK()
-    else
-        TK_IDENT()
+    match text
+        "fn" => TK_FN()
+        "on" => TK_ON()
+        "to" => TK_TO()
+        "if" => TK_IF()
+        "elsif" => TK_ELSIF()
+        "else" => TK_ELSE()
+        "while" => TK_WHILE()
+        "import" => TK_IMPORT()
+        "struct" => TK_STRUCT()
+        "return" => TK_RETURN()
+        "let" => TK_LET()
+        "match" => TK_MATCH()
+        "try" => TK_TRY()
+        "true" => TK_TRUE()
+        "false" => TK_FALSE()
+        "enum" => TK_ENUM()
+        "frame" => TK_FRAME()
+        "kernel" => TK_KERNEL()
+        "in" => TK_IN()
+        "break" => TK_BREAK()
+        _ => TK_IDENT()
 
 fn indent_stack_new() -> List[Int] ! alloc
     v = list_new[Int]()
@@ -375,11 +355,8 @@ fn read_digits(src: String, i: Int, n: Int) -> Int ! alloc
 
 fn read_number(src: String, i: Int, n: Int) -> Int ! alloc
     end = read_digits(src, i, n)
-    if end < n
-        if str_char(src, end) == 46
-            read_digits(src, end + 1, n)
-        else
-            end
+    if end < n && src.char(end) == 46
+        read_digits(src, end + 1, n)
     else
         end
 

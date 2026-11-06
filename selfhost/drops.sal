@@ -1347,7 +1347,7 @@ fn dr_xform_if(c: DC, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int,
         dr_xform_block(c, else_b)
     else
         dr_empty_block()
-    XIf(tc_expr(cond), tb, eb, has_else, arms)
+    XIf(tc_expr(cond), tc_block(tb), tc_block(eb), has_else, tc_elsifs(arms))
 
 # Returns 1 when a `return` ended the statement list.
 fn dr_xform_stmts(c: DC, stmts: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
@@ -1790,7 +1790,7 @@ fn dr_hoist_if(h: HC, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int,
         dr_empty_block()
     arms = list_new[TElsif]()
     _a = dr_hoist_arms(h, elsifs, 0, list_len(elsifs), arms)
-    XIf(tc_expr(cond), tb, eb, has_else, arms)
+    XIf(tc_expr(cond), tc_block(tb), tc_block(eb), has_else, tc_elsifs(arms))
 
 fn dr_hoist_stmts(h: HC, stmts: List[TStmt], i: Int, n: Int, out: List[TStmt]) -> Int ! alloc
     if i >= n
@@ -1807,23 +1807,32 @@ fn dr_hoist_block(h: HC, b: TBlock) -> TBlock ! alloc
     tail = dr_hoist_expr(h, b.tail, out)
     TBlock(out, tail)
 
-# The body of the typed fn `f` with scope-end releases inserted. `denv` is
-# `[variants, modes, read-only params]` as `drop_env_t` builds it. The result is a view copy
-# (`tv_block`): its texts are copies no box owns, so the intermediate trees release everything. The fn itself is only read.
-fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
+# `view` 1 → `tv_block` for IR/lowering (strings outlive the fn); 0 → owned `tc_block` for emit C.
+fn drops_body_go(f: TFn, denv: Int, view: Int) -> TBlock ! alloc
     body = tc_block(f.body)
     h = HC(list_new[Int](), dr_lists_of(f.params, body, vec_get(denv, 0)), vec_get(denv, 0))
     _h = list_push(h.k, 0)
     hoisted = dr_hoist_block(h, body)
     c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2), h.lists)
     res = dr_xform_block(c, hoisted)
-    out = tv_block(res)
     _a = dr_free(c)
-    _b = tp_free_block(res)
-    _d = tp_free_block(hoisted)
-    _e = tp_free_block(body)
     _g = list_free(h.k)
-    out
+    if view == 1
+        tv_block(res)
+    else
+        owned = tc_block(res)
+        _r = tp_free_block(res)
+        _h = tp_free_block(hoisted)
+        _b = tp_free_block(body)
+        owned
+
+# View copy for `fuse.sal` / IR (`tv_block`); `body`/`hoisted`/`res` from the pass are left allocated.
+fn drops_body_t(f: TFn, denv: Int) -> TBlock ! alloc
+    drops_body_go(f, denv, 1)
+
+# Owned copy for `emit.sal` AST→C; work buffers are released before return.
+fn drops_body_tc(f: TFn, denv: Int) -> TBlock ! alloc
+    drops_body_go(f, denv, 0)
 
 # ---- legacy handle helpers (callers in fuse.sal and emit.sal) ----
 # Builtins whose String arguments are only read.

@@ -1,0 +1,16 @@
+# exit: 2
+protocol Show
+    method show(self) -> String ! alloc
+
+struct Point impl Show
+    x: Int
+
+method Point.show(self) -> String ! alloc
+    self.x.to_str()
+
+fn log(x: any[Show]) -> String ! alloc
+    x.show()
+
+fn main() -> Int ! alloc
+    p = Point(42)
+    log(p).len()

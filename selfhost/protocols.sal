@@ -1,0 +1,204 @@
+# Protocol contracts and header claims; dynamic dispatch only through `any[P]`.
+import tast
+import tytext
+import ttypes
+
+fn proto_find(ps: List[TProtocol], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(list_get(ps, i).name, name) == 1
+        i
+    else
+        proto_find(ps, name, i + 1, n)
+
+fn proto_method_slot(pm: List[TProtocolMethod], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(list_get(pm, i).name, name) == 1
+        i
+    else
+        proto_method_slot(pm, name, i + 1, n)
+
+fn proto_drop_slot(p: TProtocol) -> Int ! alloc
+    list_len(p.methods)
+
+fn proto_vtable_global(type_name: String, protocol: String) -> String ! alloc
+    d"sal_vtable_" + type_name + d"_" + protocol
+
+fn struct_claims(st: TStruct, protocol: String) -> Int ! alloc
+    struct_claims_go(st.protocols, protocol, 0, list_len(st.protocols))
+
+fn struct_claims_go(ps: List[String], protocol: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(ps, i), protocol) == 1
+        1
+    else
+        struct_claims_go(ps, protocol, i + 1, n)
+
+fn enum_find(es: List[TEnum], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(list_get(es, i).name, name) == 1
+        i
+    else
+        enum_find(es, name, i + 1, n)
+
+fn enum_claims(e: TEnum, protocol: String) -> Int ! alloc
+    struct_claims_go(e.protocols, protocol, 0, list_len(e.protocols))
+
+fn type_claims_ctx(structs: List[TStruct], enums: List[TEnum], type_name: String, protocol: String) -> Int ! alloc
+    si = tt_struct_find(structs, type_name)
+    if si >= 0
+        struct_claims(list_get(structs, si), protocol)
+    else
+        ei = enum_find(enums, type_name, 0, list_len(enums))
+        if ei < 0
+            0
+        else
+            enum_claims(list_get(enums, ei), protocol)
+
+fn type_claims_protocol(tp: TProgram, type_name: String, protocol: String) -> Int ! alloc
+    type_claims_ctx(tp.structs, tp.enums, type_name, protocol)
+
+fn fn_sig_index(fns: List[TFn], mangled: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(list_get(fns, i).name, mangled) == 1
+        i
+    else
+        fn_sig_index(fns, mangled, i + 1, n)
+
+fn types_equal_text(a: String, b: String) -> Int ! alloc
+    str_eq(trim_spaces(a), trim_spaces(b))
+
+fn method_matches_proto(tp: TProgram, type_name: String, pm: TProtocolMethod, errs: List[String]) -> Int ! alloc
+    mangled = type_name + d"__" + pm.name
+    fi = fn_sig_index(tp.fns, mangled, 0, list_len(tp.fns))
+    if fi < 0
+        _e = list_push(errs, d"E_TYPE: type `" + type_name + d"` missing method `" + pm.name + d"`")
+        0
+    else
+        f = list_get(tp.fns, fi)
+        want_self = type_name + d" "
+        p0 = list_get(f.params, 0)
+        if list_len(f.params) == 0
+            _e = list_push(errs, d"E_TYPE: method `" + mangled + d"` missing `self`")
+            0
+        elsif types_equal_text(p0.ty, want_self) == 0
+            _e = list_push(errs, d"E_TYPE: method `" + mangled + d"` self type mismatch")
+            0
+        elsif list_len(f.params) != list_len(pm.params) + 1
+            _e = list_push(errs, d"E_TYPE: method `" + mangled + d"` arity mismatch")
+            0
+        elsif types_equal_text(f.ret, pm.ret) == 0
+            _e = list_push(errs, d"E_TYPE: method `" + mangled + d"` return mismatch")
+            0
+        elsif fx_equal(f.fx, pm.fx) == 0
+            _e = list_push(errs, d"E_TYPE: method `" + mangled + d"` effects mismatch")
+            0
+        elsif p0.mode != pm.self_mode
+            _e = list_push(errs, d"E_TYPE: method `" + mangled + d"` self mode mismatch")
+            0
+        else
+            proto_params_match(f.params, pm.params, 1, list_len(f.params), mangled, errs)
+
+fn proto_params_match(fparams: List[TParam], pparams: List[TParam], i: Int, n: Int, mangled: String, errs: List[String]) -> Int ! alloc
+    if i >= n
+        1
+    else
+        got = list_get(fparams, i).ty
+        want = list_get(pparams, i - 1).ty
+        if types_equal_text(got, want) == 0
+            _e = list_push(errs, d"E_TYPE: method `" + mangled + d"` parameter mismatch")
+            0
+        else
+            proto_params_match(fparams, pparams, i + 1, n, mangled, errs)
+
+fn fx_equal(a: List[Int], b: List[Int]) -> Int ! alloc
+    if list_len(a) != list_len(b)
+        0
+    else
+        fx_equal_go(a, b, 0, list_len(a))
+
+fn fx_equal_go(a: List[Int], b: List[Int], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    elsif list_get(a, i) != list_get(b, i)
+        0
+    else
+        fx_equal_go(a, b, i + 1, n)
+
+fn check_type_protocols(tp: TProgram, st: TStruct, errs: List[String]) -> Int ! alloc
+    if list_len(st.protocols) == 0
+        0
+    elsif list_len(st.tparams) > 0
+        _e = list_push(errs, d"E_PARSE: generic type cannot declare protocol impl")
+        0
+    else
+        check_claims(tp, st.name, st.protocols, 0, list_len(st.protocols), errs)
+
+fn check_enum_protocols(tp: TProgram, e: TEnum, errs: List[String]) -> Int ! alloc
+    if list_len(e.protocols) == 0
+        0
+    elsif list_len(e.tparams) > 0
+        _e = list_push(errs, d"E_PARSE: generic type cannot declare protocol impl")
+        0
+    else
+        check_claims(tp, e.name, e.protocols, 0, list_len(e.protocols), errs)
+
+fn check_claims(tp: TProgram, type_name: String, claims: List[String], i: Int, n: Int, errs: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        claim = list_get(claims, i)
+        pi = proto_find(tp.protocols, claim, 0, list_len(tp.protocols))
+        if pi < 0
+            _e = list_push(errs, d"E_TYPE: `" + claim + d"` is not a protocol")
+            0
+        else
+            p = list_get(tp.protocols, pi)
+            _m = check_proto_methods(tp, type_name, p, 0, list_len(p.methods), errs)
+            check_claims(tp, type_name, claims, i + 1, n, errs)
+
+fn check_proto_methods(tp: TProgram, type_name: String, p: TProtocol, i: Int, n: Int, errs: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _m = method_matches_proto(tp, type_name, list_get(p.methods, i), errs)
+        check_proto_methods(tp, type_name, p, i + 1, n, errs)
+
+fn check_program_protocols(tp: TProgram, errs: List[String]) -> Int ! alloc
+    _s = check_structs(tp, 0, list_len(tp.structs), errs)
+    check_enums(tp, 0, list_len(tp.enums), errs)
+
+fn check_structs(tp: TProgram, i: Int, n: Int, errs: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _c = check_type_protocols(tp, list_get(tp.structs, i), errs)
+        check_structs(tp, i + 1, n, errs)
+
+fn check_enums(tp: TProgram, i: Int, n: Int, errs: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _c = check_enum_protocols(tp, list_get(tp.enums, i), errs)
+        check_enums(tp, i + 1, n, errs)
+
+fn any_drop_thunk(type_name: String) -> String ! alloc
+    d"sal_any_drop_" + type_name
+
+fn vtable_entry_symbols(type_name: String, p: TProtocol) -> List[String] ! alloc
+    out = list_new[String]()
+    _a = vtable_methods_go(type_name, p.methods, 0, list_len(p.methods), out)
+    _b = list_push(out, any_drop_thunk(type_name))
+    out
+
+fn vtable_methods_go(type_name: String, methods: List[TProtocolMethod], i: Int, n: Int, out: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        m = list_get(methods, i)
+        _p = list_push(out, type_name + d"__" + m.name)
+        vtable_methods_go(type_name, methods, i + 1, n, out)

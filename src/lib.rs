@@ -20,6 +20,7 @@ pub mod lexer;
 pub mod llvm;
 pub mod ownership;
 pub mod packages;
+pub mod protocols;
 pub mod parser;
 pub mod qualify;
 pub mod scalarize;

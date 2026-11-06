@@ -15,6 +15,7 @@ pub enum TypedItem {
     Import(Import),
     Struct(StructDef),
     Enum(EnumDef),
+    Protocol(ProtocolDef),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -42,6 +43,7 @@ impl TypedProgram {
                     items.push(TypedItem::Struct(crate::infer::frame_as_struct(&f)))
                 }
                 Item::Enum(e) => items.push(TypedItem::Enum(e)),
+                Item::Protocol(p) => items.push(TypedItem::Protocol(p)),
                 Item::Fn(f) => {
                     let types = entries
                         .iter()

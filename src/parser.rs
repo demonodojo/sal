@@ -186,6 +186,10 @@ impl Parser {
             Ok(Item::Enum(self.parse_enum()?))
         } else if self.at(TokenKind::Frame) {
             Ok(Item::Frame(self.parse_frame()?))
+        } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "protocol")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        {
+            Ok(Item::Protocol(self.parse_protocol()?))
         } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "method")
             && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
         {
@@ -248,6 +252,116 @@ impl Parser {
                 f.span,
             ))
         }
+    }
+
+    fn parse_impl_clause(&mut self) -> Result<Vec<ProtocolClaim>, Diagnostic> {
+        if !matches!(&self.peek().kind, TokenKind::Ident(n) if n == "impl") {
+            return Ok(Vec::new());
+        }
+        self.bump();
+        let mut list = Vec::new();
+        loop {
+            let sp = self.peek().span;
+            let name = self.parse_ident()?;
+            list.push(ProtocolClaim { name, span: sp });
+            if self.at(TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        Ok(list)
+    }
+
+    fn parse_protocol(&mut self) -> Result<ProtocolDef, Diagnostic> {
+        let sp = self.peek().span;
+        let _ = self.bump();
+        let name = self.parse_ident()?;
+        self.expect(TokenKind::Newline, "expected newline after protocol header")?;
+        self.expect(TokenKind::Indent, "expected indented protocol methods")?;
+        let mut methods = Vec::new();
+        while !self.at(TokenKind::Dedent) && !self.at(TokenKind::Eof) {
+            methods.push(self.parse_protocol_method_sig()?);
+            self.skip_newlines();
+        }
+        if self.at(TokenKind::Dedent) {
+            self.bump();
+        }
+        Ok(ProtocolDef {
+            name,
+            methods,
+            span: sp,
+        })
+    }
+
+    fn parse_protocol_method_sig(&mut self) -> Result<ProtocolMethod, Diagnostic> {
+        let sp = self.peek().span;
+        if !matches!(&self.peek().kind, TokenKind::Ident(n) if n == "method") {
+            return Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "expected method signature in protocol",
+                sp,
+            ));
+        }
+        self.bump();
+        let name = self.parse_ident()?;
+        self.expect(TokenKind::LParen, "expected ( after protocol method name")?;
+        self.skip_soft_layout();
+        let mut params = Vec::new();
+        let mut self_mode = ParamMode::Inferred;
+        if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
+            let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
+            let bare = match &next {
+                Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
+                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow",
+                _ => false,
+            };
+            if !bare {
+                return Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    "`self` in a protocol method: write `self`, `self take` or `self borrow`",
+                    self.peek().span,
+                ));
+            }
+            self.bump();
+            if let TokenKind::Ident(m) = self.peek().kind.clone() {
+                if m == "take" || m == "borrow" {
+                    self.bump();
+                    self_mode = if m == "take" { ParamMode::Take } else { ParamMode::Borrow };
+                }
+            }
+            self.skip_soft_layout();
+            if self.at(TokenKind::Comma) {
+                self.bump();
+                self.skip_soft_layout();
+            }
+        }
+        if !self.at(TokenKind::RParen) {
+            loop {
+                params.push(self.parse_param()?);
+                self.skip_soft_layout();
+                if self.at(TokenKind::Comma) {
+                    self.bump();
+                    self.skip_soft_layout();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.skip_soft_layout();
+        self.expect(TokenKind::RParen, "expected ) after protocol method params")?;
+        self.expect(TokenKind::Arrow, "expected -> after protocol method params")?;
+        let ret = self.parse_type()?;
+        let effects = self.parse_effects()?;
+        self.expect(TokenKind::Newline, "expected newline after protocol method signature")?;
+        Ok(ProtocolMethod {
+            name,
+            params,
+            ret,
+            effects,
+            self_mode,
+            span: sp,
+        })
     }
 
     fn parse_type_params(&mut self) -> Result<Vec<String>, Diagnostic> {
@@ -324,7 +438,22 @@ impl Parser {
     fn parse_struct(&mut self) -> Result<StructDef, Diagnostic> {
         let sp = self.expect(TokenKind::Struct, "expected struct")?.span;
         let name = self.parse_ident()?;
+        if name == "any" {
+            return Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "struct name `any` is reserved",
+                sp,
+            ));
+        }
         let type_params = self.parse_type_params()?;
+        let protocols = self.parse_impl_clause()?;
+        if !type_params.is_empty() && !protocols.is_empty() {
+            return Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "generic struct cannot declare protocol impl",
+                protocols[0].span,
+            ));
+        }
         self.expect(TokenKind::Newline, "expected newline after struct header")?;
         self.expect(TokenKind::Indent, "expected indented struct fields")?;
         let mut fields = Vec::new();
@@ -347,6 +476,7 @@ impl Parser {
             deprecated: None,
             name,
             type_params,
+            protocols,
             fields,
             layout_c: false,
             span: sp,
@@ -357,6 +487,14 @@ impl Parser {
         let sp = self.expect(TokenKind::Enum, "expected enum")?.span;
         let name = self.parse_ident()?;
         let type_params = self.parse_type_params()?;
+        let protocols = self.parse_impl_clause()?;
+        if !type_params.is_empty() && !protocols.is_empty() {
+            return Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "generic enum cannot declare protocol impl",
+                protocols[0].span,
+            ));
+        }
         self.expect(TokenKind::Newline, "expected newline after enum header")?;
         self.expect(TokenKind::Indent, "expected indented enum variants")?;
         let mut variants = Vec::new();
@@ -398,6 +536,7 @@ impl Parser {
             deprecated: None,
             name,
             type_params,
+            protocols,
             variants,
             span: sp,
         })

@@ -14,6 +14,7 @@ pub struct ModuleExports {
     pub enums: HashMap<String, EnumDef>,
     pub frames: HashMap<String, FrameDef>,
     pub fns: HashMap<String, FnDef>,
+    pub protocols: HashMap<String, crate::ast::ProtocolDef>,
 }
 
 #[derive(Clone)]
@@ -167,6 +168,10 @@ fn load_module_recursive(
     crate::loops::desugar_break(&mut program)?;
     let has_methods = crate::methods::has_methods(&program);
     crate::methods::desugar_method_defs(&mut program)?;
+    if crate::protocols::has_protocols(&program) {
+        let types = crate::infer::type_env_of_program(&program);
+        crate::protocols::check_program_protocols(&program, &types)?;
+    }
 
     for item in &program.items {
         let Item::Import(imp) = item else {
@@ -218,6 +223,9 @@ pub fn exports_for_module(module: &LoadedModule) -> ModuleExports {
                 out.frames.insert(f.name.clone(), f.clone());
                 out.structs
                     .insert(f.name.clone(), crate::infer::frame_as_struct(f));
+            }
+            Item::Protocol(p) => {
+                out.protocols.insert(p.name.clone(), p.clone());
             }
             _ => {}
         }
@@ -283,6 +291,20 @@ fn merge_exports(
             )]);
         }
         into.fns.insert(name.clone(), f.clone());
+    }
+    for (name, p) in &from.protocols {
+        if into.protocols.contains_key(name)
+            || into.structs.contains_key(name)
+            || into.enums.contains_key(name)
+            || into.fns.contains_key(name)
+        {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!("name `{name}` defined in more than one imported module"),
+                at,
+            )]);
+        }
+        into.protocols.insert(name.clone(), p.clone());
     }
     Ok(())
 }
@@ -423,6 +445,7 @@ pub fn type_env_for_module(
     env.structs = imports.structs.clone();
     env.enums = imports.enums.clone();
     env.frames = imports.frames.clone();
+    env.protocols = imports.protocols.clone();
     for f in imports.fns.values() {
         crate::infer::register_fn(&mut env, f);
     }
@@ -500,6 +523,20 @@ pub fn type_env_for_module(
                     )]);
                 }
                 crate::infer::register_fn(&mut env, f);
+            }
+            Item::Protocol(p) => {
+                if env.protocols.contains_key(&p.name)
+                    || env.structs.contains_key(&p.name)
+                    || env.enums.contains_key(&p.name)
+                    || env.fns.contains_key(&p.name)
+                {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("name `{}` already defined in an imported module", p.name),
+                        p.span,
+                    )]);
+                }
+                env.protocols.insert(p.name.clone(), p.clone());
             }
             Item::Import(_) => {}
         }

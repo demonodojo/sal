@@ -302,7 +302,7 @@ fn lp_arms(xs: List[TArm], i: Int, n: Int, out: List[TArm], cx: List[Int], errs:
 fn desugar_break(tp: TProgram, errs: List[String]) -> TProgram ! alloc
     fns = list_new[TFn]()
     _a = lp_fns(tp.fns, 0, list_len(tp.fns), fns, errs)
-    TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums)
+    TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums, tp.protocols)
 
 fn lp_fns(xs: List[TFn], i: Int, n: Int, out: List[TFn], errs: List[String]) -> Int ! alloc
     if i >= n

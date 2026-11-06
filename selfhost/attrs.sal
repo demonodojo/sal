@@ -75,27 +75,23 @@ fn at_layout_fields(fields: List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        ty = at_head(list_get(fields, i).ty)
-        if str_eq(ty, "Int") == 1
-            at_layout_fields(fields, i + 1, n)
-        elsif str_eq(ty, "Float") == 1
-            at_layout_fields(fields, i + 1, n)
-        elsif str_eq(ty, "Bool") == 1
-            at_layout_fields(fields, i + 1, n)
-        else
-            result_err_str("@layout(c) struct fields must be Int, Float or Bool")
+        ty = at_head(fields.get(i).ty)
+        match ty
+            "Int" => at_layout_fields(fields, i + 1, n)
+            "Float" => at_layout_fields(fields, i + 1, n)
+            "Bool" => at_layout_fields(fields, i + 1, n)
+            _ => result_err_str("@layout(c) struct fields must be Int, Float or Bool")
 
 fn at_layout_struct(s: TStruct) -> Int ! alloc
-    if s.layout_c == 1
-        at_layout_fields(s.fields, 0, list_len(s.fields))
-    else
-        result_ok(0)
+    match s.layout_c
+        1 => at_layout_fields(s.fields, 0, s.fields.len())
+        _ => result_ok(0)
 
 fn at_layout(structs: List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        r = at_layout_struct(list_get(structs, i))
+        r = at_layout_struct(structs.get(i))
         if result_is_err(r) == 1
             r
         else
@@ -105,7 +101,7 @@ fn at_no_heap_params(structs: List[TStruct], params: List[TParam], i: Int, n: In
     if i >= n
         result_ok(0)
     else
-        pm = list_get(params, i)
+        pm = params.get(i)
         if at_ty_heap(structs, pm.ty) == 1
             result_err_str("@no_heap function cannot take heap parameter `" + pm.name + "`")
         else
@@ -114,7 +110,7 @@ fn at_no_heap_params(structs: List[TStruct], params: List[TParam], i: Int, n: In
 # Walk the lets of a block (and nested `while` bodies): declared heap types are
 # rejected for `@no_heap` fns (mode 0) and `@stack` lets (mode 1).
 fn at_block_lets(structs: List[TStruct], b: TBlock, mode: Int) -> Int ! alloc
-    r = at_stmt_lets(structs, b.stmts, 0, list_len(b.stmts), mode)
+    r = at_stmt_lets(structs, b.stmts, 0, b.stmts.len(), mode)
     if result_is_err(r) == 1
         r
     else

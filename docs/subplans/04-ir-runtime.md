@@ -88,6 +88,8 @@ El asignador de `String`, `vec` y `map` es `malloc`/`free` (en soso, el `malloc`
 
 `load` lee un `.salt`: magic `SALT`, versión u16, elem u8, rank u8, dims u64 little-endian, payload little-endian. El tensor resultante está en `cpu`. El `to` posterior es el único traslado. Si la reserva del dispositivo falla, el proceso termina con `E_OOM`: lugar, bytes pedidos y span de la región, en el JSON de diagnósticos.
 
+`any[P]`: caja heap `sal_any_box` / `sal_any_free`; vtable por par `(T, P)` generada en el módulo; `sal_any_call` para métodos del protocolo. IR: `AnyBox`, `AnyCall`.
+
 `runtime/kernels.c`: `matmul` en mosaico, filas empaquetadas. `F32` y `F16` tienen núcleo; `F16`, `BF16` e `I8` acumulan en `F32`. En cpu, `BF16` e `I8` se ensanchan hacia ese núcleo. La IR conserva el tipo estrecho y el nombre de la primitiva para que otro controlador sustituya el cuerpo. `softmax` suma en orden de índice. Operadores columnares F32 (`sal_tensor_bin_f32`, `sal_tensor_cmp_f32`) usan bucle host también en heap gpu hasta un `.cu` dedicado. `where` en el bootstrap expande `sal_where` a `sal_mask_select_count`, `sal_tensor_select_*` y `sal_list_select`.
 
 ## LLVM

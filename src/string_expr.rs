@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{BinOp, EnumDef, Expr, Item, Param, Program, StructDef, Type};
+use crate::span::Span;
 use crate::infer::InferOutput;
 use crate::layout::{collect_enum_defs, collect_layout_structs};
 
@@ -27,6 +28,9 @@ pub struct StringEnv {
     /// Name of the binding an `x = x + ...` chain accumulates into, while its
     /// left spine is being lowered.
     pub accumulate: Option<String>,
+    pub protocol_calls: HashMap<(u32, u32), (String, String, u32)>,
+    pub any_coercions: HashMap<(u32, u32), (String, String)>,
+    pub protocols: HashMap<String, crate::ast::ProtocolDef>,
 }
 
 impl StringEnv {
@@ -36,6 +40,7 @@ impl StringEnv {
         let mut fn_struct_rets = HashMap::new();
         let mut fn_tensor_rets = HashMap::new();
         let mut enums = HashMap::new();
+        let mut protocols = HashMap::new();
         for prog in progs {
             for (k, v) in collect_layout_structs(prog) {
                 structs.entry(k).or_insert(v);
@@ -44,6 +49,9 @@ impl StringEnv {
                 enums.entry(k).or_insert(v);
             }
             for item in &prog.items {
+                if let Item::Protocol(p) = item {
+                    protocols.insert(p.name.clone(), p.clone());
+                }
                 if let Item::Fn(f) = item {
                     if let Type::Named { name, args, .. } = &f.ret {
                         if args.is_empty() && structs.contains_key(name) {
@@ -67,6 +75,9 @@ impl StringEnv {
             fn_struct_rets,
             fn_tensor_rets,
             accumulate: None,
+            protocol_calls: HashMap::new(),
+            any_coercions: HashMap::new(),
+            protocols,
         }
     }
 
@@ -83,7 +94,17 @@ impl StringEnv {
             }
         }
         self.types = Rc::new(map);
+        self.protocol_calls = out.protocol_calls.clone();
+        self.any_coercions = out.any_coercions.clone();
         self
+    }
+
+    pub fn protocol_call(&self, span: Span) -> Option<(String, String, u32)> {
+        self.protocol_calls.get(&(span.start, span.end)).cloned()
+    }
+
+    pub fn any_coercion(&self, span: Span) -> Option<(String, String)> {
+        self.any_coercions.get(&(span.start, span.end)).cloned()
     }
 
     /// Types from `infer_program`, or none when the program does not type.

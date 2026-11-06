@@ -1,8 +1,8 @@
 # error: E_MOVED
 # a String pushed into a list by a callee is moved there: the caller cannot use it afterwards
 fn f(s: String) -> Int ! alloc
-    names = list_new[String]()
-    _a = list_push(names, s)
+    names = List.new[String]()
+    names.push(s)
     list_len(names)
 
 fn main() -> Int ! alloc

@@ -21,7 +21,7 @@ fn is_stack_type_rec(
             }
             match name.as_str() {
                 "Int" | "Float" | "Bool" | "Unit" => true,
-                "String" | "List" | "Dict" | "Tensor" => false,
+                "String" | "List" | "Dict" | "Tensor" | "any" => false,
                 _ => {
                     if !visiting.insert(name.clone()) {
                         return false;

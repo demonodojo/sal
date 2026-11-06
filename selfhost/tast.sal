@@ -14,12 +14,24 @@ struct TField
     name: String
     ty: String
 
+struct TProtocolMethod
+    name: String
+    params: List[TParam]
+    ret: String
+    fx: List[Int]
+    self_mode: Int
+
+struct TProtocol
+    name: String
+    methods: List[TProtocolMethod]
+
 struct TStruct
     name: String
     fields: List[TField]
     layout_c: Int
     tparams: List[String]
     is_frame: Int
+    protocols: List[String]
     # `@deprecated("…")` message; "" when the item has none.
     deprecated: String
     # Byte offsets of the identifiers of its field types, in order (see `TFn.tyat`).
@@ -33,6 +45,7 @@ struct TEnum
     name: String
     variants: List[TVariant]
     tparams: List[String]
+    protocols: List[String]
     deprecated: String
     # Byte offsets of the identifiers of its variant field types, in order (see `TFn.tyat`).
     tyat: String
@@ -127,6 +140,7 @@ struct TProgram
     structs: List[TStruct]
     aliases: List[String]
     enums: List[TEnum]
+    protocols: List[TProtocol]
 
 # ---- release ----
 # `tp_free` returns the boxes and lists of a typed tree. Strings stay, except in lists, which own
@@ -138,8 +152,60 @@ fn tp_free(tp: TProgram) -> Int ! alloc
     _d = list_free(tp.structs)
     _e = tp_free_enums(tp.enums, 0, list_len(tp.enums))
     _f = list_free(tp.enums)
-    _g = list_free(tp.imports)
+    _g = tp_free_protocols(tp.protocols, 0, list_len(tp.protocols))
+    _h = list_free(tp.protocols)
+    _i = list_free(tp.imports)
     list_free(tp.aliases)
+
+# Frees enums/structs/protocols but not fn bodies (params/fx/tparams lists only).
+fn tp_free_fn_bodies(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        _a = tp_free_block(f.body)
+        tp_free_fn_bodies(fns, i + 1, n)
+
+# Metadata and fn shells without bodies (after `tp_free_fn_bodies` on the same `fns` list).
+fn tp_free_shallow(tp: TProgram) -> Int ! alloc
+    _a = tp_free_fns_shallow(tp.fns, 0, list_len(tp.fns))
+    _b = list_free(tp.fns)
+    _c = tp_free_structs(tp.structs, 0, list_len(tp.structs))
+    _d = list_free(tp.structs)
+    _e = tp_free_enums(tp.enums, 0, list_len(tp.enums))
+    _f = list_free(tp.enums)
+    _g = tp_free_protocols(tp.protocols, 0, list_len(tp.protocols))
+    _h = list_free(tp.protocols)
+    _i = list_free(tp.imports)
+    list_free(tp.aliases)
+
+fn tp_free_fns_shallow(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        _c = list_free(f.fx)
+        _d = list_free(f.params)
+        _e = list_free(f.tparams)
+        tp_free_fns_shallow(fns, i + 1, n)
+
+fn tp_free_protocols(ps: List[TProtocol], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = list_get(ps, i)
+        _m = tp_free_proto_methods(p.methods, 0, list_len(p.methods))
+        _l = list_free(p.methods)
+        tp_free_protocols(ps, i + 1, n)
+
+fn tp_free_proto_methods(ms: List[TProtocolMethod], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        m = list_get(ms, i)
+        _p = list_free(m.params)
+        _f = list_free(m.fx)
+        tp_free_proto_methods(ms, i + 1, n)
 
 fn tp_free_fns(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -159,6 +225,7 @@ fn tp_free_structs(sts: List[TStruct], i: Int, n: Int) -> Int ! alloc
         st = list_get(sts, i)
         _a = list_free(st.fields)
         _b = list_free(st.tparams)
+        _c = list_free(st.protocols)
         tp_free_structs(sts, i + 1, n)
 
 fn tp_free_enums(es: List[TEnum], i: Int, n: Int) -> Int ! alloc
@@ -168,6 +235,7 @@ fn tp_free_enums(es: List[TEnum], i: Int, n: Int) -> Int ! alloc
         e = list_get(es, i)
         _v = tp_free_variants(e.variants, 0, list_len(e.variants))
         _t = list_free(e.tparams)
+        _p = list_free(e.protocols)
         _a = list_free(e.variants)
         tp_free_enums(es, i + 1, n)
 
@@ -240,9 +308,9 @@ fn tp_free_expr(e: Expr) -> Int ! alloc
 fn tp_free_children(e: Expr) -> Int ! alloc
     match e
         XBin(op, l, r) => tp_free_pair(e, l, r)
-        XCall(name, args, targs, xp) => tp_free_call(args)
+        XCall(name, args, targs, xp) => tp_free_call_e(e, args)
         XTo(place, inner) => tp_free_one(e, 1, inner)
-        XOn(place, body, is_kern, has_index) => tp_free_block(body)
+        XOn(place, body, is_kern, has_index) => tp_free_on(e, body)
         XIf(cond, then_b, else_b, has_else, elsifs) => tp_free_if(e, cond, then_b, else_b, elsifs)
         XWhile(cond, body) => tp_free_while(e, cond, body)
         XField(base, field) => tp_free_one(e, 0, base)
@@ -267,21 +335,43 @@ fn tp_free_call(args: List[Expr]) -> Int ! alloc
     _x = tp_free_exprs(args, 0, list_len(args))
     list_free(args)
 
+# When the call box owns its arg list, `enum_free` releases the list; otherwise we do.
+fn tp_free_call_e(e: Expr, args: List[Expr]) -> Int ! alloc
+    if enum_owns(e, 1) == 1
+        0
+    else
+        tp_free_call(args)
+
+fn tp_free_block_field(e: Expr, i: Int, b: TBlock) -> Int ! alloc
+    if enum_owns(e, i) == 1
+        0
+    else
+        tp_free_block(b)
+
+fn tp_free_on(e: Expr, body: TBlock) -> Int ! alloc
+    tp_free_block_field(e, 1, body)
+
 fn tp_free_if(e: Expr, cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif]) -> Int ! alloc
     _x = tp_free_one(e, 0, cond)
-    _y = tp_free_block(then_b)
-    _z = tp_free_block(else_b)
-    _w = tp_free_elsifs(elsifs, 0, list_len(elsifs))
-    list_free(elsifs)
+    _y = tp_free_block_field(e, 1, then_b)
+    _z = tp_free_block_field(e, 2, else_b)
+    if enum_owns(e, 4) == 1
+        0
+    else
+        _w = tp_free_elsifs(elsifs, 0, list_len(elsifs))
+        list_free(elsifs)
 
 fn tp_free_while(e: Expr, cond: Expr, body: TBlock) -> Int ! alloc
     _x = tp_free_one(e, 0, cond)
-    tp_free_block(body)
+    tp_free_block_field(e, 1, body)
 
 fn tp_free_match(e: Expr, scrut: Expr, arms: List[TArm]) -> Int ! alloc
     _x = tp_free_one(e, 0, scrut)
-    _y = tp_free_arms(arms, 0, list_len(arms))
-    list_free(arms)
+    if enum_owns(e, 1) == 1
+        0
+    else
+        _y = tp_free_arms(arms, 0, list_len(arms))
+        list_free(arms)
 
 # ---- deep copies ----
 # A copy shares nothing with the original, so either can be released alone.
@@ -387,8 +477,8 @@ fn tc_block(b: TBlock) -> TBlock ! alloc
     TBlock(out, tc_expr(b.tail))
 
 # ---- view copies ----
-# Like `tc_*`, but each text is a leaked copy the boxes do not own (`str_from_int` of a handle is
-# not fresh), so `tp_free*` releases the tree and whoever kept the texts (the IR) still reads them.
+# Like `tc_*`, but each string is a fresh handle via `strdup` then `str_from_int(str_as_int(…))`
+# (not marked owned by the enum box), so `tp_free_block` on the view does not break IR text.
 fn tv_s(s: String) -> String ! alloc
     str_from_int(str_as_int(strdup(s)))
 

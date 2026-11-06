@@ -27,7 +27,22 @@ fn format_program_raw(p: &Program) -> String {
             Item::Struct(s) => out.push_str(&format_struct(s)),
             Item::Frame(f) => out.push_str(&format_frame(f)),
             Item::Enum(e) => out.push_str(&format_enum(e)),
+            Item::Protocol(p) => out.push_str(&format_protocol(p)),
         }
+    }
+    out
+}
+
+fn format_impl_clause(protocols: &[ProtocolClaim]) -> String {
+    if protocols.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(" impl ");
+    for (i, p) in protocols.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&p.name);
     }
     out
 }
@@ -51,6 +66,7 @@ fn format_struct(s: &StructDef) -> String {
         out.push_str(&s.type_params.join(", "));
         out.push(']');
     }
+    out.push_str(&format_impl_clause(&s.protocols));
     out.push('\n');
     for f in &s.fields {
         out.push_str(&format!("    {}: {}\n", f.name, format_type(&f.ty)));
@@ -66,6 +82,7 @@ fn format_enum(e: &EnumDef) -> String {
         out.push_str(&e.type_params.join(", "));
         out.push(']');
     }
+    out.push_str(&format_impl_clause(&e.protocols));
     out.push('\n');
     for v in &e.variants {
         out.push_str("    ");
@@ -80,6 +97,47 @@ fn format_enum(e: &EnumDef) -> String {
                     .join(", "),
             );
             out.push(')');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn format_protocol(p: &ProtocolDef) -> String {
+    let mut out = format!("protocol {}\n", p.name);
+    for m in &p.methods {
+        out.push_str("    method ");
+        out.push_str(&m.name);
+        out.push('(');
+        out.push_str("self");
+        match m.self_mode {
+            ParamMode::Take => out.push_str(" take"),
+            ParamMode::Borrow => out.push_str(" borrow"),
+            ParamMode::Inferred => {}
+        }
+        for param in &m.params {
+            out.push_str(", ");
+            out.push_str(&param.name);
+            out.push_str(": ");
+            out.push_str(&format_type(&param.ty));
+            match param.mode {
+                ParamMode::Borrow => out.push_str(" borrow"),
+                ParamMode::Take => out.push_str(" take"),
+                ParamMode::Inferred => {}
+            }
+        }
+        out.push_str(") -> ");
+        out.push_str(&format_type(&m.ret));
+        if !m.effects.is_empty() {
+            out.push_str(" ! ");
+            out.push_str(
+                &m
+                    .effects
+                    .iter()
+                    .map(format_effect)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
         }
         out.push('\n');
     }

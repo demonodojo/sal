@@ -8,6 +8,8 @@ use crate::typed::ExprTypeEntry;
 
 pub struct InferOutput {
     pub expr_types_by_fn: Vec<(FnDef, Vec<ExprTypeEntry>)>,
+    pub protocol_calls: HashMap<(u32, u32), (String, String, u32)>,
+    pub any_coercions: HashMap<(u32, u32), (String, String)>,
 }
 
 #[derive(Clone)]
@@ -30,6 +32,13 @@ pub struct TypeEnv {
     pub method_calls: std::cell::RefCell<crate::methods::Resolved>,
     /// Mangled names of `static` and `init` fns (`T__name`): they have no `self`.
     pub statics: std::collections::HashSet<String>,
+    pub protocols: HashMap<String, ProtocolDef>,
+    /// Full `FnDef` for signature checks (protocols, effects on methods).
+    pub fn_defs: HashMap<String, FnDef>,
+    /// Dynamic `x.m()` on `any[P]`: call span → (protocol, method, slot).
+    pub protocol_calls: std::cell::RefCell<HashMap<(u32, u32), (String, String, u32)>>,
+    /// Argument expr span → box coercion `(type_name, protocol)`.
+    pub any_coercions: std::cell::RefCell<HashMap<(u32, u32), (String, String)>>,
 }
 
 impl TypeEnv {
@@ -53,6 +62,10 @@ impl Default for TypeEnv {
             target: crate::target::Target::host(),
             method_calls: Default::default(),
             statics: Default::default(),
+            protocols: HashMap::new(),
+            fn_defs: HashMap::new(),
+            protocol_calls: Default::default(),
+            any_coercions: Default::default(),
         }
     }
 }
@@ -80,6 +93,9 @@ pub fn type_env_of_program(prog: &Program) -> TypeEnv {
                 types.enums.insert(e.name.clone(), e.clone());
             }
             Item::Fn(f) => register_fn(&mut types, f),
+            Item::Protocol(p) => {
+                types.protocols.insert(p.name.clone(), p.clone());
+            }
             _ => {}
         }
     }
@@ -89,6 +105,7 @@ pub fn type_env_of_program(prog: &Program) -> TypeEnv {
 /// Add `f` to the callable signatures, noting whether it is a `static`/`init`.
 pub fn register_fn(types: &mut TypeEnv, f: &FnDef) {
     types.fns.insert(f.name.clone(), fn_signature(f));
+    types.fn_defs.insert(f.name.clone(), f.clone());
     if let Some(i) = generic_ret_index(f) {
         types.generic_ret.insert(f.name.clone(), i);
     }
@@ -98,6 +115,8 @@ pub fn register_fn(types: &mut TypeEnv, f: &FnDef) {
 }
 
 pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<InferOutput> {
+    types.protocol_calls.borrow_mut().clear();
+    types.any_coercions.borrow_mut().clear();
     let mut out = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
@@ -107,6 +126,8 @@ pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<Inf
     }
     Ok(InferOutput {
         expr_types_by_fn: out,
+        protocol_calls: types.protocol_calls.borrow().clone(),
+        any_coercions: types.any_coercions.borrow().clone(),
     })
 }
 
@@ -168,7 +189,12 @@ fn infer_fn(f: &FnDef, types: &TypeEnv) -> DiagResult<Vec<ExprTypeEntry>> {
     }
     check_type_well_formed(&ret, types)?;
     let mut entries = Vec::new();
-    check_block(&f.body, &mut env, &ret, types, &mut entries)?;
+    let ctx = ReturnCtx {
+        fn_ret: &ret,
+        allow_return: true,
+        fn_effects: &f.effects,
+    };
+    check_block(&f.body, &mut env, &ctx, types, &mut entries)?;
     Ok(entries)
 }
 
@@ -186,6 +212,42 @@ fn check_type_well_formed(ty: &Type, types: &TypeEnv) -> DiagResult<()> {
             )
         }
         Type::Named { name, args, span } => {
+            if name == "any" {
+                if args.len() != 1 {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "`any` expects one protocol argument: `any[Protocol]`",
+                        *span,
+                    )]);
+                }
+                let Type::Named {
+                    name: pname,
+                    args: pa,
+                    span: ps,
+                } = &args[0]
+                else {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        "`any[…]` expects a protocol name",
+                        *span,
+                    )]);
+                };
+                if !pa.is_empty() {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("protocol `{pname}` takes no type arguments"),
+                        *ps,
+                    )]);
+                }
+                if !types.protocols.contains_key(pname) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("`{pname}` is not a protocol"),
+                        *ps,
+                    )]);
+                }
+                return Ok(());
+            }
             if name == "Tensor" {
                 // Named Tensor without going through Type::Tensor — treat elem arg.
                 if let Some(Type::Named { name: elem, span: es, .. }) = args.first() {
@@ -284,6 +346,7 @@ fn validate_builtin_type_args(name: &str, args: &[Type], span: Span) -> DiagResu
 struct ReturnCtx<'a> {
     fn_ret: &'a Type,
     allow_return: bool,
+    fn_effects: &'a [Effect],
 }
 
 fn is_unit_type(ty: &Type) -> bool {
@@ -370,14 +433,11 @@ fn check_branch_block(
 fn check_block(
     b: &Block,
     env: &mut HashMap<String, Type>,
-    expected: &Type,
+    ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
 ) -> DiagResult<()> {
-    let ctx = ReturnCtx {
-        fn_ret: expected,
-        allow_return: true,
-    };
+    let expected = ctx.fn_ret;
     let diverged = check_block_flow(b, env, &ctx, types, entries)?;
     if let Some(t) = &b.tail {
         if diverged {
@@ -388,12 +448,8 @@ fn check_block(
             )]);
         }
         let ty = check_expr(t, env, &ctx, types, entries)?;
-        if !types_compatible(&ty, expected) {
-            return Err(vec![Diagnostic::new(
-                ErrorCode::EType,
-                format!("expected {}, found {}", type_name(expected), type_name(&ty)),
-                t.span(),
-            )]);
+        if let Err(d) = types_compatible_or_any_coerce(&ty, expected, t.span(), ctx, types) {
+            return Err(vec![d]);
         }
     } else if !diverged && !is_unit_type(expected) {
         return Err(vec![Diagnostic::new(
@@ -421,12 +477,8 @@ fn check_stmt(
             let ity = check_expr(init, env, ctx, types, entries)?;
             if let Some(decl) = ty {
                 check_type_well_formed(decl, types)?;
-                if !types_compatible(&ity, decl) {
-                    return Err(vec![Diagnostic::new(
-                        ErrorCode::EType,
-                        "let binding type mismatch",
-                        init.span(),
-                    )]);
+                if let Err(d) = types_compatible_or_any_coerce(&ity, decl, init.span(), ctx, types) {
+                    return Err(vec![d]);
                 }
             }
             env.insert(name.clone(), ty.clone().unwrap_or(ity));
@@ -710,6 +762,7 @@ Expr::Int { .. } => Type::Named {
             let on_ctx = ReturnCtx {
                 fn_ret: ctx.fn_ret,
                 allow_return: false,
+                fn_effects: ctx.fn_effects,
             };
             let mut local = env.clone();
             if let Some(ki) = kernel_index {
@@ -1343,6 +1396,155 @@ fn infer_enum_variant_constructor(
     })
 }
 
+fn types_compatible_or_any_coerce(
+    aty: &Type,
+    pt: &Type,
+    at: Span,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+) -> Result<(), Diagnostic> {
+    if types_compatible(aty, pt) {
+        return Ok(());
+    }
+    if try_register_any_coercion(aty, pt, at, ctx, types).map_err(|v| v.into_iter().next().unwrap())? {
+        return Ok(());
+    }
+    Err(Diagnostic::new(
+        ErrorCode::EType,
+        format!(
+            "expected {}, found {}",
+            type_name(pt),
+            type_name(aty)
+        ),
+        at,
+    ))
+}
+
+fn try_register_any_coercion(
+    aty: &Type,
+    pt: &Type,
+    at: Span,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+) -> DiagResult<bool> {
+    let Type::Named { name, args, .. } = pt else {
+        return Ok(false);
+    };
+    if name != "any" {
+        return Ok(false);
+    }
+    if args.len() != 1 {
+        return Ok(false);
+    }
+    let Type::Named {
+        name: protocol,
+        args: pa,
+        ..
+    } = &args[0]
+    else {
+        return Ok(false);
+    };
+    if !pa.is_empty() {
+        return Ok(false);
+    }
+    let Type::Named {
+        name: tname,
+        args: ta,
+        ..
+    } = aty
+    else {
+        return Ok(false);
+    };
+    if !ta.is_empty() {
+        return Ok(false);
+    }
+    if !crate::protocols::type_claims_protocol(types, tname, protocol) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("type `{tname}` does not implement protocol `{protocol}`"),
+            at,
+        )]);
+    }
+    if !ctx.fn_effects.iter().any(|e| matches!(e, Effect::Alloc)) {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EEffect,
+            format!("coercing `{tname}` to `any[{protocol}]` requires effect `alloc`"),
+            at,
+        )]);
+    }
+    types
+        .any_coercions
+        .borrow_mut()
+        .insert((at.start, at.end), (tname.clone(), protocol.clone()));
+    Ok(true)
+}
+
+fn infer_any_method_call(
+    field: &str,
+    any_args: &[Type],
+    type_args: &[TypeArg],
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let err = |msg: String, at: Span| Err(vec![Diagnostic::new(ErrorCode::EType, msg, at)]);
+    if !type_args.is_empty() {
+        return err(format!("method `{field}` on `any` takes no type arguments"), span);
+    }
+    let Type::Named {
+        name: protocol,
+        args: pa,
+        span: ps,
+    } = &any_args[0]
+    else {
+        return err("`any[…]` expects a protocol name".into(), span);
+    };
+    if !pa.is_empty() {
+        return err(format!("protocol `{protocol}` takes no type arguments"), *ps);
+    }
+    let Some(pdef) = types.protocols.get(protocol) else {
+        return err(format!("`{protocol}` is not a protocol"), *ps);
+    };
+    let Some(pm) = pdef.methods.iter().find(|m| m.name == field) else {
+        return err(
+            format!("protocol `{protocol}` has no method `{field}`"),
+            span,
+        );
+    };
+    let slot = crate::protocols::method_slot(pdef, field).unwrap_or(0) as u32;
+    if args.len() != pm.params.len() {
+        return err(
+            format!(
+                "method `{field}` expects {} argument(s), found {}",
+                pm.params.len(),
+                args.len()
+            ),
+            span,
+        );
+    }
+    for (a, pt) in args.iter().zip(pm.params.iter()) {
+        let aty = check_expr(a, env, ctx, types, entries)?;
+        if !types_compatible(&aty, &pt.ty) {
+            return err(
+                format!(
+                    "argument type mismatch calling `{field}`: expected {}, found {}",
+                    type_name(&pt.ty),
+                    type_name(&aty)
+                ),
+                a.span(),
+            );
+        }
+    }
+    types
+        .protocol_calls
+        .borrow_mut()
+        .insert((span.start, span.end), (protocol.clone(), field.to_string(), slot));
+    Ok(pm.ret.clone())
+}
+
 /// `base.field(args)`: the method `T__field` of the receiver's nominal type `T`.
 fn infer_method_call(
     base: &Expr,
@@ -1400,6 +1602,13 @@ fn infer_method_call(
         return err(format!("method `{field}` takes no type arguments"), span);
     }
     let bty = check_expr(base, env, ctx, types, entries)?;
+    if let Type::Named { name, args: any_args, .. } = &bty {
+        if name == "any" && any_args.len() == 1 {
+            return infer_any_method_call(
+                field, any_args, type_args, args, env, ctx, types, entries, span,
+            );
+        }
+    }
     // A method of a built-in type is the builtin applied to the receiver. The
     // receiver is bound once to a synthetic name, so a chain of calls is
     // inferred in linear time.
@@ -2173,15 +2382,13 @@ fn infer_call(
                 for (a, pt) in args.iter().zip(params.iter()) {
                     let aty = check_expr(a, env, ctx, types, entries)?;
                     arg_tys.push(aty.clone());
-                    if !types_compatible(&aty, pt) {
+                    if let Err(d) =
+                        types_compatible_or_any_coerce(&aty, pt, a.span(), ctx, types)
+                    {
                         return Err(vec![Diagnostic::new(
-                            ErrorCode::EType,
-                            format!(
-                                "argument type mismatch calling `{name}`: expected {}, found {}",
-                                type_name(pt),
-                                type_name(&aty)
-                            ),
-                            a.span(),
+                            d.code,
+                            d.message,
+                            d.span,
                         )]);
                     }
                 }
@@ -2288,6 +2495,7 @@ fn infer_lambda(
     let body_ctx = ReturnCtx {
         fn_ret: ctx.fn_ret,
         allow_return: false,
+        fn_effects: ctx.fn_effects,
     };
     let body_ty = check_expr(body, &local, &body_ctx, types, entries)?;
     Ok(Type::Fn {
@@ -2481,6 +2689,7 @@ pub fn frame_as_struct(f: &FrameDef) -> StructDef {
         deprecated: None,
         name: f.name.clone(),
         type_params: f.type_params.clone(),
+        protocols: Vec::new(),
         fields,
         layout_c: false,
         span: f.span,

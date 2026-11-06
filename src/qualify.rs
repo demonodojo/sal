@@ -421,7 +421,7 @@ fn qualify_program(
                     }
                 }
             }
-            Item::Frame(_) | Item::Import(_) => {}
+            Item::Frame(_) | Item::Import(_) | Item::Protocol(_) => {}
         }
     }
     Ok(())
@@ -488,7 +488,7 @@ fn rename_clashing_defs(
                     }
                 }
             }
-            Item::Frame(_) | Item::Import(_) => {}
+            Item::Frame(_) | Item::Import(_) | Item::Protocol(_) => {}
         }
     }
 }

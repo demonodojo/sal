@@ -117,7 +117,7 @@ impl Walk<'_> {
                     }
                 }
             }
-            Item::Import(_) | Item::Frame(_) => {}
+            Item::Import(_) | Item::Frame(_) | Item::Protocol(_) => {}
         }
     }
 

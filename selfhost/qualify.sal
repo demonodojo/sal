@@ -635,7 +635,7 @@ fn qualify_structs(sts: List[TStruct], i: Int, n: Int, r: Int, out: List[TStruct
         s = list_get(sts, i)
         fields = list_new[TField]()
         _f = fields_copy(s.fields, 0, list_len(s.fields), fields)
-        _a = list_push(out, TStruct(link_or_same(r, s.name), fields, s.layout_c, tc_strs(s.tparams), s.is_frame, strdup(s.deprecated), s.tyat))
+        _a = list_push(out, TStruct(link_or_same(r, s.name), fields, s.layout_c, tc_strs(s.tparams), s.is_frame, tc_strs(s.protocols), strdup(s.deprecated), s.tyat))
         qualify_structs(sts, i + 1, n, r, out)
 
 # Replaces module `mi` of the graph with its qualified copy; enums are moved across.
@@ -645,7 +645,7 @@ fn qualify_typed(order: Graph, mi: Int, ctx: Int, links: Int, r: Int) -> Int ! a
     _a = qualify_fns(old.fns, 0, list_len(old.fns), ctx, links, r, fns)
     sts = list_new[TStruct]()
     _b = qualify_structs(old.structs, 0, list_len(old.structs), r, sts)
-    neu = TProgram(fns, tc_strs(old.imports), sts, tc_strs(old.aliases), old.enums)
+    neu = TProgram(fns, tc_strs(old.imports), sts, tc_strs(old.aliases), old.enums, old.protocols)
     _c = tp_free_fns(old.fns, 0, list_len(old.fns))
     _d = list_free(old.fns)
     _e = tp_free_structs(old.structs, 0, list_len(old.structs))

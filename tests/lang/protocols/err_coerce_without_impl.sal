@@ -1,0 +1,15 @@
+# error: E_TYPE
+protocol Show
+    method show(self) -> String ! alloc
+
+struct Point
+    x: Int
+
+method Point.show(self) -> String ! alloc
+    self.x.to_str()
+
+fn log(x: any[Show]) -> String ! alloc
+    x.show()
+
+fn main() -> Int ! alloc
+    log(Point(1)).len()

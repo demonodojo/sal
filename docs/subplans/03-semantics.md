@@ -48,6 +48,8 @@ Métodos (`method T.m(params)`, SPEC «Métodos»): son azúcar sobre `fn`, resu
 
 La lambda de una sentencia se tipa al usarla. `x => e` no es un valor de primera clase que se guarde: si se liga a un `let` o se devuelve, `E_TYPE` en este arranque. El parámetro no lleva tipo escrito; sale del callback (`map`).
 
+Protocolos (`src/protocols.rs`, SPEC «Protocolos»): el contrato vive en `protocol P`; la reclamación en `impl P, …` en la cabecera de un `struct`/`enum` sin genéricos. Al cerrar el módulo se cotejan los `method T.m` ya definidos (misma firma que el protocolo). Solo un tipo que reclamó `P` coacciona a `any[P]` (mueve a caja `{vtable, payload}`, exige `alloc`). `x.m()` sobre `any[P]` no pasa por `resolve_methods`: la vtable apunta a los `T__m` existentes. Cotas `T: P` quedan fuera de este corte.
+
 `&&` y `||` toman operandos de verdad (`Bool`, o `Int` donde distinto de cero es verdadero, como en una condición) y dan `Bool`. Un `Float`, `String` u otro tipo es `E_TYPE`. Una comparación escalar sigue siendo `Int`.
 
 Un `if` sin `else` tiene tipo `Unit`, aunque tenga `elsif`; la rama then y cada `elsif` se comprueban igual. Un `if` con `else` tiene el tipo de la rama then. Las ramas `elsif` se comprueban como el `else`.

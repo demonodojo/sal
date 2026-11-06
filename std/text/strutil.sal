@@ -55,14 +55,12 @@ fn json_esc_content(s: String) -> String ! alloc
 fn quote_end(body: String, end: Int, n: Int) -> Int ! alloc
     if end >= n
         end
+    elsif body.char(end) == 34
+        end
+    elsif body.char(end) == 92
+        quote_end(body, end + 2, n)
     else
-        if body.char(end) == 34
-            end
-        else
-            if body.char(end) == 92
-                quote_end(body, end + 2, n)
-            else
-                quote_end(body, end + 1, n)
+        quote_end(body, end + 1, n)
 
 fn extract_quoted_after(body: String, marker: String) -> String ! alloc
     idx = body.index_of(marker)
@@ -72,9 +70,8 @@ fn extract_quoted_after(body: String, marker: String) -> String ! alloc
         start = idx + marker.len()
         if start >= body.len()
             d""
+        elsif body.char(start) != 34
+            d""
         else
-            if body.char(start) != 34
-                d""
-            else
-                end = quote_end(body, start + 1, body.len())
-                body.slice(start + 1, end)
+            end = quote_end(body, start + 1, body.len())
+            body.slice(start + 1, end)

@@ -687,7 +687,7 @@ fn methods_resolve_graph(order: Graph) -> Int ! io, alloc
     if graph_any_dots(order.mods, 0, list_len(order.mods)) == 0
         0
     else
-        u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum]())
+        u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum](), list_new[TProtocol]())
         _u = union_progs(order.progs, 0, list_len(order.progs), u)
         methods_resolve_modules(order, u, 0, list_len(order.progs))
 
@@ -713,12 +713,12 @@ fn methods_resolve_one(order: Graph, u: TProgram, i: Int) -> Int ! io, alloc
     else
         tp = list_get(order.progs, i)
         start = fns_before(order.progs, i, 0, 0)
-        c = ic_build(TProgram(u.fns, u.imports, u.structs, tp.aliases, u.enums), nd, 1)
+        c = ic_build(TProgram(u.fns, u.imports, u.structs, tp.aliases, u.enums, tp.protocols), nd, 1)
         _r = infer_program_go(c, start, start + list_len(tp.fns))
         fns = list_new[TFn]()
         _m = mr_fns(tp.fns, 0, list_len(tp.fns), c.res, fns)
         _f = ic_free(c)
-        _s = list_set(order.progs, i, TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums))
+        _s = list_set(order.progs, i, TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums, tp.protocols))
         0
 
 # Number of functions of the modules before `i` (their order in the union).

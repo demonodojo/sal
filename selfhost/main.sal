@@ -116,5 +116,4 @@ fn main() -> Int ! io, alloc
             else
                 ir = result_unwrap(r)
                 _pr = print_str(str_from_int(ir))
-                _fr = free(ir)
                 0

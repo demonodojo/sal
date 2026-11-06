@@ -15,6 +15,7 @@ import tast
 import tytext
 import ttypes
 import deprecation
+import protocols
 
 fn resolve_module_graph_qualified(source_path: String, proot: String, order: Graph) -> Int ! io, alloc
     g = resolve_module_graph(source_path, proot, order)
@@ -116,6 +117,10 @@ fn emit_inst(inst: Inst) -> String ! alloc
         emit_efield(inst)
     elsif k == II_SWITCH()
         emit_switch(inst)
+    elsif k == II_ANYBOX()
+        emit_anybox(inst)
+    elsif k == II_ANYCALL()
+        emit_anycall(inst)
     else
         d""
 
@@ -176,6 +181,21 @@ fn emit_ret(inst: Inst) -> String ! alloc
 
 fn emit_drop(inst: Inst) -> String ! alloc
     "  Drop { name: " + ir_q() + inst.s1 + ir_q() + " }\n"
+
+fn emit_anybox(inst: Inst) -> String ! alloc
+    "  AnyBox { dest: " + ir_q() + inst.dest + ir_q() + ", vtable: " + ir_q() + inst.s1 + ir_q() + ", payload: " + ir_q() + inst.s2 + ir_q() + ", drop_slot: " + int_to_str(inst.n1) + " }\n"
+
+fn emit_anycall_dest(inst: Inst) -> String ! alloc
+    if str_len(inst.dest) == 0
+        d"None"
+    else
+        "Some(" + ir_q() + inst.dest + ir_q() + ")"
+
+fn emit_anycall(inst: Inst) -> String ! alloc
+    destbit = emit_anycall_dest(inst)
+    pref = "  AnyCall { dest: " + destbit + ", receiver: " + ir_q() + inst.s1 + ir_q() + ", slot: " + int_to_str(inst.n1) + ", args: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), pref)
+    acc + "] }\n"
 
 fn emit_if_comma(i: Int) -> String ! alloc
     if i > 0
@@ -559,11 +579,15 @@ fn emit_ir_cached(tp: TProgram, pre: String) -> Int ! io, alloc
         _w = write_file(metapath, d"hit=1\n")
         result_ok_str(cached)
     else
-        ir0 = emit_ir_from_prog(tp)
-        _w0 = write_file(irpath, ir0)
-        _w1 = write_file(metapath, d"hit=0\n")
-        _f = tp_free(tp)
-        result_ok_str(ir0)
+        checked = check_program(tp)
+        if result_is_err(checked) == 1
+            checked
+        else
+            ir0 = emit_ir_from_prog(tp)
+            kept = emit_keep_text(tp, ir0)
+            _w0 = write_file(irpath, kept)
+            _w1 = write_file(metapath, d"hit=0\n")
+            result_ok_str(kept)
 
 fn emit_ir_imported_file(source_path: String, src: String) -> Int ! io, alloc
     dir = cache_dir()
@@ -602,6 +626,12 @@ fn emit_ir_for_file(source_path: String, src: String) -> Int ! io, alloc
 fn emit_ir(src: String) -> Int ! io, alloc
     emit_ir_for_file(d"", src)
 
+# Copy emitted text; release program metadata (parsed fn bodies may still alias — not freed here).
+fn emit_keep_text(tp: TProgram, text: String) -> String ! alloc
+    kept = strdup(text)
+    _p = tp_free_shallow(tp)
+    kept
+
 # The C text of `tp`, or the error of the first semantic check it fails (an effect its
 # signature does not declare, a moved value...).
 fn emit_c_checked(tp: TProgram) -> Int ! alloc
@@ -610,8 +640,8 @@ fn emit_c_checked(tp: TProgram) -> Int ! alloc
         checked
     else
         text = emit_c_from_ast(tp)
-        _f = tp_free(tp)
-        result_ok_str(text)
+        kept = emit_keep_text(tp, text)
+        result_ok_str(kept)
 
 fn emit_c_from_prog_result(src: String) -> Int ! alloc
     pre = preprocess(src)
@@ -657,13 +687,13 @@ fn emit_c_parsed_file(tp: TProgram, source_path: String, out_path: String) -> In
         checked
     elsif str_len(source_path) == 0
         text = emit_c_from_ast(tp)
-        _f = tp_free(tp)
-        result_ok_str(text)
+        kept = emit_keep_text(tp, text)
+        result_ok_str(kept)
     elsif list_len(tp.imports) == 0
         ccode = emit_c_from_ast(tp)
-        _f = tp_free(tp)
+        kept = emit_keep_text(tp, ccode)
         cpath = tmp_path("out.c")
-        _w = write_file(cpath, ccode)
+        _w = write_file(cpath, kept)
         if clang(cpath, out_path) == 0
             result_ok_str(d"")
         else
@@ -714,6 +744,66 @@ fn ir_debug_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
 # ---- emit_c (AST → C) ----
 fn mangled(name: String) -> String ! alloc
     "fn_" + name
+
+fn vtable_c_symbol(sym: String) -> String ! alloc
+    pre = d"sal_any_drop_"
+    pl = str_len(pre)
+    if str_len(sym) >= pl
+        if str_eq(str_slice(sym, 0, pl), pre) == 1
+            sym
+        else
+            mangled(sym)
+    else
+        mangled(sym)
+
+fn emit_vtable_cells(syms: List[String], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc + "};\n"
+    else
+        sym = vtable_c_symbol(list_get(syms, i))
+        acc2 = acc + "  (int64_t)(uintptr_t)" + sym + ",\n"
+        emit_vtable_cells(syms, i + 1, n, acc2)
+
+fn emit_one_vtable(type_name: String, protocol_name: String, p: TProtocol) -> String ! alloc
+    global = proto_vtable_global(type_name, protocol_name)
+    drop = any_drop_thunk(type_name)
+    syms = vtable_entry_symbols(type_name, p)
+    acc = "static void " + drop + "(int64_t p) { (void)p; }\n"
+    acc = acc + "static int64_t " + global + "[] = {\n"
+    emit_vtable_cells(syms, 0, list_len(syms), acc)
+
+fn emit_vtables_claims(tp: TProgram, type_name: String, claims: List[String], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        claim = list_get(claims, i)
+        pi = proto_find(tp.protocols, claim, 0, list_len(tp.protocols))
+        if pi < 0
+            emit_vtables_claims(tp, type_name, claims, i + 1, n, acc)
+        else
+            p = list_get(tp.protocols, pi)
+            piece = emit_one_vtable(type_name, claim, p)
+            emit_vtables_claims(tp, type_name, claims, i + 1, n, acc + piece)
+
+fn emit_vtables_structs(tp: TProgram, sts: List[TStruct], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        st = list_get(sts, i)
+        acc2 = emit_vtables_claims(tp, st.name, st.protocols, 0, list_len(st.protocols), acc)
+        emit_vtables_structs(tp, sts, i + 1, n, acc2)
+
+fn emit_vtables_enums(tp: TProgram, es: List[TEnum], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        e = list_get(es, i)
+        acc2 = emit_vtables_claims(tp, e.name, e.protocols, 0, list_len(e.protocols), acc)
+        emit_vtables_enums(tp, es, i + 1, n, acc2)
+
+fn emit_any_vtables_module(tp: TProgram, acc: String) -> String ! alloc
+    acc2 = emit_vtables_structs(tp, tp.structs, 0, list_len(tp.structs), acc)
+    emit_vtables_enums(tp, tp.enums, 0, list_len(tp.enums), acc2)
 
 fn c_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -877,8 +967,7 @@ fn ensure_sal_lit(s: Int, pool: Int) -> String ! alloc
         cast + ".b)"
 
 fn runtime_decls() -> String ! alloc
-    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);
-int64_t sal_regex_match(const char *s, const char *pat);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_index_of(const char *a, const char *b);\nint64_t sal_str_index_from(const char *a, const char *b, int64_t start);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_enum_new(int64_t tag, int64_t n);\nint64_t sal_enum_set(int64_t v, int64_t i, int64_t x);\nint64_t sal_enum_tag(int64_t v);\nint64_t sal_enum_owns(int64_t v, int64_t i);\nint64_t sal_enum_field(int64_t v, int64_t i);\nvoid sal_list_free(void *v);\nvoid *sal_list_new_desc(const char *desc);\nvoid sal_dict_free(void *v);\nvoid *sal_dict_new(int64_t key_kind, int64_t val_kind);\nvoid sal_enum_free(int64_t v);\nvoid sal_bytes_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) { return ((int64_t *)(uintptr_t)p)[-2]; }\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) { int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }\nstatic float *sal_tn_alloc(int64_t n) { return sal_tn_alloc_bytes(n, 4); }\nstatic float *sal_tn_from(int64_t raw, int64_t n) { float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }\nstatic float *sal_tn_copy(int64_t p) { if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) { double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) { case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; } int64_t o; __builtin_memcpy(&o, &r, 8); return o; }\n\n"
+    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\n" + d"int64_t sal_regex_match(const char *s, const char *pat);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_index_of(const char *a, const char *b);\nint64_t sal_str_index_from(const char *a, const char *b, int64_t start);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_enum_new(int64_t tag, int64_t n);\nint64_t sal_enum_set(int64_t v, int64_t i, int64_t x);\nint64_t sal_enum_tag(int64_t v);\nint64_t sal_enum_owns(int64_t v, int64_t i);\nint64_t sal_enum_field(int64_t v, int64_t i);\nvoid sal_list_free(void *v);\nvoid *sal_list_new_desc(const char *desc);\nvoid sal_dict_free(void *v);\nvoid *sal_dict_new(int64_t key_kind, int64_t val_kind);\nvoid sal_enum_free(int64_t v);\nvoid sal_bytes_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) { return ((int64_t *)(uintptr_t)p)[-2]; }\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) { int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }\nstatic float *sal_tn_alloc(int64_t n) { return sal_tn_alloc_bytes(n, 4); }\nstatic float *sal_tn_from(int64_t raw, int64_t n) { float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }\nstatic float *sal_tn_copy(int64_t p) { if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) { double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) { case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; } int64_t o; __builtin_memcpy(&o, &r, 8); return o; }\nint64_t sal_any_box(int64_t vtable, int64_t drop_slot, int64_t payload);\nvoid sal_any_free(int64_t box);\nint64_t sal_any_call(int64_t box, int64_t slot, int64_t argc, int64_t a0, int64_t a1, int64_t a2, int64_t a3);\n\n"
 
 fn names_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -2325,7 +2414,6 @@ fn emit_c_fn_body(tf: TFn, user: Int, is_main: Int, acc: String, pool: Int, env:
     val = emit_c_matmul_exit(tc, is_main, val)
     foot = emit_c_fn_footer(is_main, val)
     acc = acc + foot
-    _fb = tp_free_block(body)
     _fc = tc_free(tc)
     acc
 
@@ -2377,7 +2465,7 @@ fn emit_c_one_fn(tf: TFn, irf: Int, user: Int, linkable: Int, allow_main: Int, p
 
 fn emit_c_one_ir_fn(tf: TFn, irf: IrFn, user: Int, linkable: Int, allow_main: Int, pool: Int, env: TEnv, enums: List[TEnum]) -> String ! alloc
     text = d""
-    if cir_is_tensor_fn(irf.insts) == 1
+    if cir_use_ir_path(irf.insts) == 1
         text = cir_fn(tf, irf, user, linkable, allow_main, pool)
     else
         text = emit_c_fn(tf, user, linkable, allow_main, pool, env, enums)
@@ -2404,6 +2492,7 @@ fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main
     acc = emit_extern_decls(externs, 0, vec_len(externs), acc)
     acc = emit_forward_decls(tp.fns, 0, list_len(tp.fns), acc, allow_main, linkable)
     acc = acc + "\n"
+    acc = emit_any_vtables_module(tp, acc)
     irmod = lower_program_typed(tp, callables, env, enums)
     body = emit_c_fns(tp.fns, 0, list_len(tp.fns), callables, d"", allow_main, linkable, pool, irmod, env, enums)
     _fe = list_free(enums)
@@ -2967,8 +3056,33 @@ fn cir_inst(cc: Int, inst: Inst) -> Int ! alloc
         cir_agg(cc, inst)
     elsif k == II_EXTRACT()
         cir_set(cc, dest, "((int64_t *)(uintptr_t)(" + cir_op(cc, ih(inst.s1)) + "))[" + int_to_str(inst.n1) + "]")
+    elsif k == II_ANYBOX()
+        cir_anybox(cc, dest, inst)
+    elsif k == II_ANYCALL()
+        cir_anycall(cc, dest, inst)
     else
         0
+
+fn cir_anybox(cc: Int, dest: Int, inst: Inst) -> Int ! alloc
+    vt = "(int64_t)(uintptr_t)" + inst.s1
+    pl = cir_op(cc, ih(inst.s2))
+    expr = "sal_any_box(" + vt + ", " + int_to_str(inst.n1) + ", " + pl + ")"
+    cir_set(cc, dest, expr)
+
+fn cir_anycall(cc: Int, dest: Int, inst: Inst) -> Int ! alloc
+    recv = cir_op(cc, ih(inst.s1))
+    argc = list_len(inst.strs)
+    args = ih_vec(inst.strs, 0, argc, vec_new())
+    ops = cir_ops(cc, args, 0, vec_len(args), vec_new())
+    a0 = cir_arg(ops, 0)
+    a1 = cir_arg(ops, 1)
+    a2 = cir_arg(ops, 2)
+    a3 = cir_arg(ops, 3)
+    expr = "sal_any_call(" + recv + ", " + int_to_str(inst.n1) + ", " + int_to_str(argc) + ", " + a0 + ", " + a1 + ", " + a2 + ", " + a3 + ")"
+    if dest == 0
+        cc_line(cc, "  " + expr + ";\n")
+    else
+        cir_set(cc, dest, expr)
 
 fn cir_agg(cc: Int, inst: Inst) -> Int ! alloc
     fields = ih_vec(inst.strs, 0, list_len(inst.strs), vec_new())
@@ -3115,6 +3229,36 @@ fn cir_seed_params(cc: Int, pnames: Int, i: Int, n: Int) -> Int ! alloc
         _x = cir_add_local(cc, vec_get(pnames, idx))
         idx = idx + 1
     0
+
+# Scalar IR with `any` boxing or dispatch uses the same C backend as tensors.
+fn cir_use_ir_path(insts: List[Inst]) -> Int ! alloc
+    if cir_is_tensor_fn(insts) == 1
+        1
+    else
+        cir_has_any_insts(insts, 0, list_len(insts))
+
+fn cir_has_any_insts(insts: List[Inst], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        inst = list_get(insts, i)
+        k = inst.kind
+        if k == II_ANYBOX()
+            1
+        elsif k == II_ANYCALL()
+            1
+        elsif k == II_IF()
+            if cir_has_any_insts(inst.b1, 0, list_len(inst.b1)) == 1
+                1
+            else
+                cir_has_any_insts(inst.b2, 0, list_len(inst.b2))
+        elsif k == II_WHILE()
+            if cir_has_any_insts(inst.b1, 0, list_len(inst.b1)) == 1
+                1
+            else
+                cir_has_any_insts(inst.b2, 0, list_len(inst.b2))
+        else
+            cir_has_any_insts(insts, i + 1, n)
 
 # A function goes through the IR path when it uses tensors.
 fn cir_is_tensor_fn(insts: List[Inst]) -> Int ! alloc

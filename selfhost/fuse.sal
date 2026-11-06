@@ -7,6 +7,7 @@ import ir
 import tensorops
 import drops
 import ownership
+import protocols
 
 fn FO_MATMUL() -> Int
     0
@@ -760,8 +761,101 @@ fn is_struct_ctor_call(cx: Cx, fname: String, args: List[Expr]) -> Int ! alloc
     else
         0
 
+fn fuse_dot(t: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_char(t, i) == 46
+        i
+    else
+        fuse_dot(t, i + 1, n)
+
+fn cx_fn_index(cx: Cx, name: String) -> Int ! alloc
+    cx_fn_index_go(cx.fns, name, 0, list_len(cx.fns))
+
+fn cx_fn_index_go(fns: List[TFn], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(list_get(fns, i).name, name) == 1
+        i
+    else
+        cx_fn_index_go(fns, name, i + 1, n)
+
+fn maybe_box_any(cx: Cx, pt: String, arg: Expr, payload: Int) -> Int ! alloc
+    proto = ty_any_protocol(pt)
+    if str_len(proto) == 0
+        payload
+    else
+        at = texpr_type(cx.env, arg)
+        tname = ty_nominal(at)
+        if str_len(tname) == 0
+            payload
+        elsif type_claims_ctx(cx.env.structs, cx.enums, tname, proto) == 0
+            payload
+        else
+            pi = proto_find(cx.protocols, proto, 0, list_len(cx.protocols))
+            if pi < 0
+                payload
+            else
+                p = list_get(cx.protocols, pi)
+                vtab = str_as_int(proto_vtable_global(tname, proto))
+                slot = proto_drop_slot(p)
+                boxd = fresh(cx)
+                _p = ir_push(cx, ir_anybox(boxd, vtab, payload, slot))
+                boxd
+
+fn maybe_box_user_args(cx: Cx, name: String, args: List[Expr], arg_names: Int) -> Int ! alloc
+    fi = cx_fn_index(cx, name)
+    if fi < 0
+        0
+    else
+        maybe_box_user_go(cx, list_get(cx.fns, fi).params, args, arg_names, 0, list_len(args))
+
+fn maybe_box_user_go(cx: Cx, params: List[TParam], args: List[Expr], arg_names: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif i >= list_len(params)
+        0
+    else
+        pt = list_get(params, i).ty
+        old = vec_get(arg_names, i)
+        neu = maybe_box_any(cx, pt, list_get(args, i), old)
+        if neu != old
+            _s = vec_set(arg_names, i, neu)
+        maybe_box_user_go(cx, params, args, arg_names, i + 1, n)
+
+fn lower_protocol_call(cx: Cx, recv: String, fld: String, args: List[Expr], proto: String) -> Int ! alloc
+    d = fresh(cx)
+    pi = proto_find(cx.protocols, proto, 0, list_len(cx.protocols))
+    if pi < 0
+        d
+    else
+        p = list_get(cx.protocols, pi)
+        slot = proto_method_slot(p.methods, fld, 0, list_len(p.methods))
+        if slot < 0
+            d
+        else
+            argv = vec_new()
+            _a = lower_args(cx, args, 1, list_len(args), argv)
+            recv_nm = str_as_int(recv)
+            _p = ir_push(cx, ir_anycall(d, recv_nm, slot, argv))
+            d
+
 fn lower_call(cx: Cx, name: String, args: List[Expr], targs: String) -> Int ! alloc
-    if is_struct_ctor_call(cx, name, args) == 1
+    dot = fuse_dot(name, 0, str_len(name))
+    if dot >= 0
+        recv = str_slice(name, 0, dot)
+        fld = str_slice(name, dot + 1, str_len(name))
+        rty = trim_spaces(tenv_type(cx.env, recv))
+        proto = ty_any_protocol(rty)
+        if str_len(proto) > 0
+            lower_protocol_call(cx, recv, fld, args, proto)
+        elsif is_struct_ctor_call(cx, name, args) == 1
+            lower_struct_ctor(cx, name, args)
+        elsif variant_rec(cx, str_as_int(name)) != 0
+            lower_variant_ctor(cx, str_as_int(name), args)
+        else
+            lower_call_runtime(cx, name, args, targs)
+    elsif is_struct_ctor_call(cx, name, args) == 1
         lower_struct_ctor(cx, name, args)
     elsif variant_rec(cx, str_as_int(name)) != 0
         lower_variant_ctor(cx, str_as_int(name), args)
@@ -1011,6 +1105,8 @@ fn lower_call_runtime_go(cx: Cx, name: String, targs: String, args: List[Expr], 
     elsif str_eq(name, "dict_new") == 1
         lower_container_new(cx, name, targs, d, 2)
     else
+        if is_user_fn(cx, fname) == 1
+            _b = maybe_box_user_args(cx, name, args, arg_names)
         rname = runtime_name(cx, fname)
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
         _r = register_ret_tensor(cx, d, name)
@@ -2428,9 +2524,10 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
 
 # The IR keeps identifier and literal texts by handle until `ir_to_text`; `drops_body_t` returns
 # a tree whose boxes do not own them, so releasing the body here leaves them intact.
-fn lower_fn(f: TFn, fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum], denv: Int) -> Int ! alloc
+fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow) -> Int ! alloc
+    env = tenv_clone(env_tpl)
     _t = tenv_truncate(env, 0)
-    cx = cx_new(fn_names, fm, env, enums)
+    cx = cx_new(fn_names, fm, env, enums, prog_fns, prog_protocols)
     _a = lower_params(cx, f.params, 0, list_len(f.params))
     body = drops_body_t(f, denv)
     stopped = lower_stmts(cx, body.stmts, 0, list_len(body.stmts))
@@ -2451,7 +2548,6 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum], denv:
     _g = vec_push(out, cx_regions(cx))
     _h = vec_push(out, cx_literals(cx))
     _z = cx_free(cx)
-    _y = tp_free_block(body)
     out
 
 fn lower_fn_tail(cx: Cx, tail: Expr) -> Int ! alloc
@@ -2561,14 +2657,14 @@ fn lower_program_with_callables(tp: TProgram, extra: Int) -> Int ! alloc
     _a = tenv_free(env)
     ir
 
-fn lower_program_typed(tp: TProgram, extra: Int, env: TEnv, em: List[TEnum]) -> Int ! alloc
+fn lower_program_typed(tp: TProgram, extra: Int, env_tpl: TEnv borrow, em: List[TEnum] borrow) -> Int ! alloc
     names = collect_fn_names_t(tp.fns, 0, list_len(tp.fns), vec_new())
     names = merge_callable_names(extra, names)
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
-    denv = drop_env_t(tp, env.structs, em)
-    lower_fns(tp.fns, names, fm, env, em, denv, 0, list_len(tp.fns), out)
+    denv = drop_env_t(tp, env_tpl.structs, em)
+    lower_fns(tp.fns, names, fm, env_tpl, em, denv, tp.fns, tp.protocols, 0, list_len(tp.fns), out)
     out
 
 # `[variants, modes, read-only params]`: the variant table, per fn name the effective mode of
@@ -2818,10 +2914,10 @@ fn variant_field_flags_t(fields: List[String], i: Int, n: Int, out: Int) -> Int 
         _p = vec_push(out, dr_field_owned_t(list_get(fields, i)))
         variant_field_flags_t(fields, i + 1, n, out)
 
-fn lower_fns(fns: List[TFn], names: Int, fm: Int, env: TEnv, em: List[TEnum], denv: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_fns(fns: List[TFn], names: Int, fm: Int, env_tpl: TEnv borrow, em: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        irf = lower_fn(list_get(fns, i), names, fm, env, em, denv)
+        irf = lower_fn(list_get(fns, i), names, fm, env_tpl, em, denv, prog_fns, prog_protocols)
         _p = vec_push(out, irf)
-        lower_fns(fns, names, fm, env, em, denv, i + 1, n, out)
+        lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, i + 1, n, out)

@@ -13,8 +13,8 @@ import infer
 import thash
 
 fn mr_fail(errs: List[String], msg: String) -> Int ! alloc
-    if list_len(errs) == 0
-        _a = list_push(errs, msg)
+    if errs.len() == 0
+        _a = errs.push(msg)
         0
     else
         0
@@ -23,8 +23,8 @@ fn mr_fail(errs: List[String], msg: String) -> Int ! alloc
 fn methods_enum_ok(enums: List[TEnum], name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif str_eq(list_get(enums, i).name, name) == 1
-        if list_len(list_get(enums, i).tparams) == 0
+    elsif enums.get(i).name.eq(name) == 1
+        if enums.get(i).tparams.len() == 0
             1
         else
             0
@@ -93,7 +93,7 @@ fn methods_resolve(tp: TProgram, c: IC) -> TProgram ! alloc
     fns = list_new[TFn]()
     _a = mr_fns(tp.fns, 0, list_len(tp.fns), c.res, fns)
     _f = ic_free(c)
-    TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums)
+    TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums, tp.protocols)
 
 fn mr_fns(xs: List[TFn], i: Int, n: Int, res: HT, out: List[TFn]) -> Int ! alloc
     if i >= n
@@ -112,8 +112,8 @@ fn mr_stmts(xs: List[TStmt], i: Int, n: Int, res: HT, out: List[TStmt]) -> Int !
     if i >= n
         0
     else
-        st = list_get(xs, i)
-        _p = list_push(out, TStmt(st.kind, st.name, mr_expr(st.expr, res), st.ty, st.is_let, mr_expr(st.target, res), st.frozen, st.stack, st.id))
+        st = xs.get(i)
+        out.push(TStmt(st.kind, st.name, mr_expr(st.expr, res), st.ty, st.is_let, mr_expr(st.target, res), st.frozen, st.stack, st.id))
         mr_stmts(xs, i + 1, n, res, out)
 
 fn mr_exprs(xs: List[Expr], i: Int, n: Int, res: HT, out: List[Expr]) -> List[Expr] ! alloc
@@ -174,7 +174,9 @@ fn mr_call(name: String, args: List[Expr], targs: String, res: HT, xp: Int) -> E
             mr_resolved(name, args, mth_targs(targs), str_char(val, 0), str_slice(val, 1, str_len(val)), xp)
 
 fn mr_resolved(name: String, args: List[Expr], ta: String, kind: Int, target: String, xp: Int) -> Expr ! alloc
-    if kind == 108
+    if kind == 112
+        XCall(name, args, ta, xp)
+    elsif kind == 108
         XCall(target, mr_with_local(name, args), ta, xp)
     else
         XCall(target, args, ta, xp)

@@ -10,6 +10,39 @@ thread_local! {
     static EMIT_AGG: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
 
+fn emit_any_vtables(m: &IrModule, user_fns: &HashMap<String, &IrFunction>, s: &mut String) {
+    if m.any_vtables.is_empty() {
+        return;
+    }
+    let mut drop_thunks: HashSet<String> = HashSet::new();
+    for vt in &m.any_vtables {
+        let n = vt.entries.len();
+        s.push_str(&format!("@{} = global [{} x i64] [", vt.global, n));
+        for (i, entry) in vt.entries.iter().enumerate() {
+            let sep = if i + 1 == n { "" } else { ", " };
+            if entry.starts_with("sal_any_drop_") {
+                drop_thunks.insert(entry.clone());
+                s.push_str(&format!("i64 ptrtoint (void (i64)* @{entry} to i64){sep}"));
+            } else {
+                let sym = if user_fns.contains_key(entry) {
+                    format!("sal_u_{entry}")
+                } else {
+                    entry.clone()
+                };
+                s.push_str(&format!("i64 ptrtoint (i64 (i64)* @{sym} to i64){sep}"));
+            }
+        }
+        s.push_str("]\n");
+    }
+    s.push('\n');
+    for name in drop_thunks {
+        if user_fns.contains_key(&name) {
+            continue;
+        }
+        s.push_str(&format!("define internal void @{name}(i64 %p) {{\n  ret void\n}}\n\n"));
+    }
+}
+
 fn emit_layout_scope<R>(struct_defs: &HashMap<String, StructDef>, f: impl FnOnce() -> R) -> R {
     EMIT_STRUCT_DEFS.with(|d| *d.borrow_mut() = struct_defs.clone());
     EMIT_AGG.with(|a| a.borrow_mut().clear());
@@ -566,7 +599,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_dict_keys(ptr)\n");
     s.push_str("declare ptr @sal_dict_values(ptr)\n");
     s.push_str("declare ptr @sal_list_set(ptr, i64, i64)\n");
-    s.push_str("declare i64 @sal_list_pop(ptr)\n\n");
+    s.push_str("declare i64 @sal_list_pop(ptr)\n");
+    s.push_str("declare i64 @sal_any_box(i64, i64, i64)\n");
+    s.push_str("declare void @sal_any_free(i64)\n");
+    s.push_str("declare i64 @sal_any_call(i64, i64, i64, i64, i64, i64, i64)\n\n");
 
     for (name, nparams) in extern_user_fns {
         let sret = opts.fn_sigs.get(name).map_or(false, |g| g.ret.is_some());
@@ -693,6 +729,8 @@ pub fn emit_llvm_with_externs(
             );
         }
     }
+
+    emit_any_vtables(m, &user_fns, &mut s);
 
     if opts.emit_entry_main && !m.functions.iter().any(|f| f.name == "main") {
         s.push_str("define i64 @main(i64 %argc, ptr %argv) {\n");
@@ -2214,6 +2252,46 @@ fn emit_host_tensor_fn(
                 emit_call_sret(dests, func, args, &consts, s);
             }
             IrInst::SretStore { values } => emit_sret_store(values, &consts, s),
+            IrInst::AnyBox {
+                dest,
+                vtable,
+                payload,
+                drop_slot,
+            } => {
+                let vt = format!("@{vtable}");
+                let pl = i64_operand(payload, &consts);
+                s.push_str(&format!(
+                    "  %{dest} = call i64 @sal_any_box(i64 ptrtoint (ptr {vt} to i64), i64 {drop_slot}, i64 {pl})\n"
+                ));
+            }
+            IrInst::AnyCall {
+                dest,
+                receiver,
+                slot,
+                args,
+            } => {
+                let recv = i64_operand(receiver, &consts);
+                let n = args.len();
+                let mut call_args = vec![recv, slot.to_string(), n.to_string()];
+                for i in 0..4 {
+                    let a = args
+                        .get(i)
+                        .map(|x| i64_operand(x, &consts))
+                        .unwrap_or_else(|| "0".into());
+                    call_args.push(a);
+                }
+                if let Some(d) = dest {
+                    s.push_str(&format!(
+                        "  %{d} = call i64 @sal_any_call(i64 {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {})\n",
+                        call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5], call_args[6]
+                    ));
+                } else {
+                    s.push_str(&format!(
+                        "  call i64 @sal_any_call(i64 {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {})\n",
+                        call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5], call_args[6]
+                    ));
+                }
+            }
             IrInst::Aggregate { .. }
             | IrInst::Extract { .. }
             | IrInst::EnumMake { .. }
@@ -3191,6 +3269,13 @@ fn emit_runtime_or_user_call(
         "sal_list_free" => {
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             s.push_str(&format!("  call void @sal_list_free(ptr {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_any_free" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            s.push_str(&format!("  call void @sal_any_free(i64 {a})\n"));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
@@ -4302,6 +4387,40 @@ fn emit_inst_list(
                         len,
                         *elem,
                     );
+                }
+            }
+            IrInst::AnyBox {
+                dest,
+                vtable,
+                payload,
+                drop_slot,
+            } => {
+                let vt = format!("@{vtable}");
+                let pl = i64_operand(payload, &consts);
+                s.push_str(&format!(
+                    "  %{dest} = call i64 @sal_any_box(i64 ptrtoint (ptr {vt} to i64), i64 {drop_slot}, i64 {pl})\n"
+                ));
+            }
+            IrInst::AnyCall {
+                dest,
+                receiver,
+                slot,
+                args,
+            } => {
+                let recv = i64_operand(receiver, &consts);
+                let n = args.len();
+                let a0 = args.first().map(|x| i64_operand(x, &consts)).unwrap_or_else(|| "0".into());
+                let a1 = args.get(1).map(|x| i64_operand(x, &consts)).unwrap_or_else(|| "0".into());
+                let a2 = args.get(2).map(|x| i64_operand(x, &consts)).unwrap_or_else(|| "0".into());
+                let a3 = args.get(3).map(|x| i64_operand(x, &consts)).unwrap_or_else(|| "0".into());
+                if let Some(d) = dest {
+                    s.push_str(&format!(
+                        "  %{d} = call i64 @sal_any_call(i64 {recv}, i64 {slot}, i64 {n}, i64 {a0}, i64 {a1}, i64 {a2}, i64 {a3})\n"
+                    ));
+                } else {
+                    s.push_str(&format!(
+                        "  call i64 @sal_any_call(i64 {recv}, i64 {slot}, i64 {n}, i64 {a0}, i64 {a1}, i64 {a2}, i64 {a3})\n"
+                    ));
                 }
             }
             IrInst::Call { dest, func, args } => {

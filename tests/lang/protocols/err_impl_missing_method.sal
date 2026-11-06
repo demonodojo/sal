@@ -1,0 +1,9 @@
+# error: E_TYPE
+protocol Show
+    method show(self) -> String ! alloc
+
+struct Point impl Show
+    x: Int
+
+fn main() -> Int
+    0

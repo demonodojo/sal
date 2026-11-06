@@ -2218,6 +2218,67 @@ void sal_struct_free_box(int64_t raw) {
     sal_xfree((void *)(uintptr_t)raw);
 }
 
+typedef struct {
+    int64_t vtable;
+    int64_t payload;
+    int64_t drop_fn;
+} SalAnyBox;
+
+int64_t sal_any_box(int64_t vtable, int64_t drop_slot, int64_t payload) {
+    SalAnyBox *b = (SalAnyBox *)sal_xmalloc(sizeof(SalAnyBox), "any_box");
+    b->vtable = vtable;
+    b->payload = payload;
+    b->drop_fn = 0;
+    if (vtable >= 4096 && drop_slot >= 0) {
+        int64_t *vt = (int64_t *)(uintptr_t)vtable;
+        b->drop_fn = vt[drop_slot];
+    }
+    return (int64_t)(intptr_t)b;
+}
+
+void sal_any_free(int64_t raw) {
+    if (raw < 4096) {
+        return;
+    }
+    SalAnyBox *b = (SalAnyBox *)(uintptr_t)raw;
+    if (b->drop_fn) {
+        void (*drop)(int64_t) = (void (*)(int64_t))(uintptr_t)b->drop_fn;
+        drop(b->payload);
+    }
+    sal_xfree(b);
+}
+
+typedef int64_t (*SalAnyMethod0)(int64_t);
+typedef int64_t (*SalAnyMethod1)(int64_t, int64_t);
+typedef int64_t (*SalAnyMethod2)(int64_t, int64_t, int64_t);
+
+int64_t sal_any_call(int64_t raw, int64_t slot, int64_t argc, int64_t a0, int64_t a1, int64_t a2,
+                     int64_t a3) {
+    if (raw < 4096) {
+        return 0;
+    }
+    SalAnyBox *b = (SalAnyBox *)(uintptr_t)raw;
+    if (b->vtable < 4096) {
+        return 0;
+    }
+    int64_t *vt = (int64_t *)(uintptr_t)b->vtable;
+    int64_t fn_i = vt[slot];
+    if (!fn_i) {
+        return 0;
+    }
+    int64_t p = b->payload;
+    switch (argc) {
+    case 0:
+        return ((SalAnyMethod0)(uintptr_t)fn_i)(p);
+    case 1:
+        return ((SalAnyMethod1)(uintptr_t)fn_i)(p, a0);
+    case 2:
+        return ((SalAnyMethod2)(uintptr_t)fn_i)(p, a0, a1);
+    default:
+        return ((SalAnyMethod2)(uintptr_t)fn_i)(p, a0, a1);
+    }
+}
+
 static int64_t desc_copy(const char *d, int64_t raw) {
     if (*d == 'E') {
         return sal_enum_copy(raw);

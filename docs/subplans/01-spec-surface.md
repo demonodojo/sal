@@ -49,6 +49,7 @@ Además de `fn` e `import`:
 - `tensor[[…], […]]`.
 - `try`, `if` con `elsif` y `else` opcionales, y `let` con tipo opcional.
 - Tipos `Tensor[Elem, dims…] on lugar`, con `?` en un eje.
+- `protocol P` con firmas de método sin cuerpo; `struct T impl P, …` / `enum T impl P, …` en la cabecera; tipo `any[P]`.
 
 ## Códigos
 

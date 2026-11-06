@@ -58,6 +58,12 @@ fn II_SWITCH() -> Int
 fn II_TUN() -> Int
     17
 
+fn II_ANYBOX() -> Int
+    18
+
+fn II_ANYCALL() -> Int
+    19
+
 # ---- Lower / IR ----
 # Lowering state of one function. The counter, the instruction list and the accumulator name live in
 # one-slot lists so a callee can update them; the rest are handle vecs/maps (the IR stays in handles).
@@ -76,8 +82,10 @@ struct Cx
     variants: Int
     env: TEnv
     enums: List[TEnum]
+    fns: List[TFn]
+    protocols: List[TProtocol]
 
-fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum]) -> Cx ! alloc
+fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum] borrow, fns: List[TFn] borrow, protocols: List[TProtocol] borrow) -> Cx ! alloc
     ctr = list_new[Int]()
     _a = list_push(ctr, 0)
     insts = list_new[Int]()
@@ -86,9 +94,9 @@ fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum]) -> Cx ! alloc
     _c = list_push(acc, 0)
     vm = map_new()
     _m = variants_fill(vm, enums, 0, list_len(enums))
-    Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums)
+    Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums, fns, protocols)
 
-# Releases the one-slot lists; the env is the caller's.
+# Releases the one-slot lists; `cx.env` is released when `cx` goes out of scope here.
 fn cx_free(cx: Cx) -> Int ! alloc
     _a = list_free(cx.ctr)
     _b = list_free(cx.insts)
@@ -297,6 +305,24 @@ fn ir_switch(dest: Int, scrut: Int, arms: Int, default_body: Int, default_val: I
     _d = vec_push(inst, arms)
     _e = vec_push(inst, default_body)
     _f = vec_push(inst, default_val)
+    inst
+
+fn ir_anybox(dest: Int, vtable: Int, payload: Int, drop_slot: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_ANYBOX())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, vtable)
+    _d = vec_push(inst, payload)
+    _e = vec_push(inst, drop_slot)
+    inst
+
+fn ir_anycall(dest: Int, receiver: Int, slot: Int, args: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_ANYCALL())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, receiver)
+    _d = vec_push(inst, slot)
+    _e = vec_push(inst, args)
     inst
 
 fn ir_call_free(arg: Int) -> Int ! alloc

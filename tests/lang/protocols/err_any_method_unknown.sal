@@ -1,0 +1,14 @@
+# error: E_TYPE
+protocol Show
+    method show(self) -> String ! alloc
+
+struct Point impl Show
+    x: Int
+
+method Point.show(self) -> String ! alloc
+    self.x.to_str()
+
+fn main() -> Int ! alloc
+    p = Point(1)
+    let b: any[Show] = p
+    b.tag()

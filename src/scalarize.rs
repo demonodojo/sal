@@ -144,6 +144,7 @@ pub fn scalarize_module(
             .iter()
             .map(|f| scalarize_fn(f, structs, sigs))
             .collect(),
+        any_vtables: m.any_vtables.clone(),
     }
 }
 
@@ -464,6 +465,7 @@ impl<'a> Pass<'a> {
                 });
             }
             IrInst::Call { dest, func, args } => self.call(dest, func, args, scope, out),
+            IrInst::AnyBox { .. } | IrInst::AnyCall { .. } => out.push(inst.clone()),
             IrInst::CallSret { .. } | IrInst::SretStore { .. } => out.push(inst.clone()),
             IrInst::Return { value } => {
                 if let Some(rs) = self.ret.clone() {

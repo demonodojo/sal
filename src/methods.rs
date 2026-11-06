@@ -216,11 +216,17 @@ pub fn resolve_methods(prog: &mut Program, env: &TypeEnv) {
 
 /// Single-file entry: desugar the definitions, then resolve the calls.
 pub fn prepare_program(prog: &mut Program) -> DiagResult<()> {
-    if !has_methods(prog) && !has_field_calls(prog) {
+    if !has_methods(prog) && !has_field_calls(prog) && !crate::protocols::has_protocols(prog) {
         return Ok(());
     }
     desugar_method_defs(prog)?;
-    resolve_methods(prog, &type_env_of_program(prog));
+    if crate::protocols::has_protocols(prog) {
+        let types = type_env_of_program(prog);
+        crate::protocols::check_program_protocols(prog, &types)?;
+    }
+    if has_methods(prog) || has_field_calls(prog) {
+        resolve_methods(prog, &type_env_of_program(prog));
+    }
     Ok(())
 }
 

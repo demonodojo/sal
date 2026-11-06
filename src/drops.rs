@@ -1263,6 +1263,15 @@ impl Ctx {
 impl Ctx {
     /// The release function for a droppable local, if `name = init` declares one.
     fn candidate(&self, name: &str, ty: &Option<Type>, init: &Expr) -> Option<(&'static str, bool)> {
+        if let Some(Type::Named { name: n, args, .. }) = ty {
+            if n == "any" && !args.is_empty() {
+                let flagged = self.facts.bindings.get(name) == Some(&1)
+                    && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
+                if !self.params.contains(name) && flagged {
+                    return Some(("any_free", true));
+                }
+            }
+        }
         // `list_get(xs, i)` is a deep copy of the element, and `list_pop(xs)` moves it out of
         // the list: either way a fresh value of the owned list's element kind.
         let elem_release = match init {
