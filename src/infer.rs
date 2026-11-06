@@ -1847,7 +1847,7 @@ fn infer_call(
         | "str_index_from" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
-        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "enum_owns" | "enum_box_id" | "expr_addr"
+        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "enum_owns" | "enum_box_id"
         | "list_box_id" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {

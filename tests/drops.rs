@@ -517,3 +517,43 @@ fn struct_glue_frees_string_list_when_only_fresh_values() {
     );
     assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 2, "{ir}");
 }
+
+fn ir_of_file(rel: &str) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["emit", "ir"])
+        .arg(root().join(rel))
+        .current_dir(root())
+        .output()
+        .expect("sal emit ir");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// The IR lines of `fn name:`, up to the next fn.
+fn fn_ir(ir: &str, name: &str) -> String {
+    let head = format!("fn {name}:");
+    ir.lines()
+        .skip_while(|l| *l != head)
+        .skip(1)
+        .take_while(|l| !l.starts_with("fn "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn struct_glue_keeps_fields_stored_in_imported_variant() {
+    let ir = ir_of_file("tests/glue_escape/ctor.sal");
+    let wrap = fn_ir(&ir, "wrap");
+    assert!(wrap.contains("func: \"done\""), "{ir}");
+    assert!(!wrap.contains("sal_list_free"), "{wrap}");
+    assert!(!wrap.contains("sal_enum_free"), "{wrap}");
+}
+
+#[test]
+fn struct_glue_releases_branch_returned_struct_once() {
+    let ir = ir_of_file("tests/glue_escape/branch.sal");
+    let main = fn_ir(&ir, "main");
+    assert!(main.contains("func: \"pick\""), "{ir}");
+    assert_eq!(main.matches("sal_list_free").count(), 1, "{main}");
+    assert_eq!(main.matches("sal_enum_free").count(), 1, "{main}");
+}

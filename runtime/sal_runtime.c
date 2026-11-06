@@ -1958,12 +1958,6 @@ int64_t sal_enum_box_id(int64_t v) {
     return v >= 4096 ? v : 0;
 }
 
-/* Opaque identity of a compiler `Expr` value (the enum box address). For DAG dedup when
- * `sal_enum_box_id` is 0 (unit variants / small tags). Compiler/runtime internal. */
-int64_t sal_expr_addr(int64_t v) {
-    return v;
-}
-
 int64_t sal_enum_tag(int64_t v) {
     if (v >= 0 && v < 4096) return v;
     return ((int64_t *)(intptr_t)v)[0] & 255;
@@ -2307,7 +2301,7 @@ static int64_t desc_copy(const char *d, int64_t raw) {
         for (const char *f = d + 2; *f && *f != ')'; f = desc_end(f)) {
             n++;
         }
-        int64_t *dst = (int64_t *)sal_xmalloc((size_t)(n > 0 ? n : 1) * 8, "struct_copy");
+        int64_t *dst = (int64_t *)sal_xmalloc((size_t)(n > 0 ? n : 1) * sizeof(int64_t), "struct_copy");
         const char *f = d + 2;
         for (int i = 0; i < n; i++, f = desc_end(f)) {
             dst[i] = desc_copy(f, src[i]);

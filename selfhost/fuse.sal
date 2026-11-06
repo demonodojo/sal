@@ -2675,15 +2675,16 @@ fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] bo
     denv = vec_new()
     _a = vec_push(denv, variant_map_t(tp, structs, enums))
     _o = owned_fns_put(vec_get(denv, 0), tp.fns, 0, list_len(tp.fns))
+    ro = dr_read_only_t(tp, vec_get(denv, 0))
     modes = map_new()
     table = own_mode_table(tp)
-    _m = modes_fill_t(modes, table, tp.fns, 0, list_len(tp.fns))
+    _m = modes_fill_t(modes, table, ro, tp.fns, 0, list_len(tp.fns))
     _h = ht_free(table)
     _b = vec_push(denv, modes)
-    _c = vec_push(denv, dr_read_only_t(tp, vec_get(denv, 0)))
+    _c = vec_push(denv, ro)
     denv
 
-fn modes_fill_t(m: Int, table: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+fn modes_fill_t(m: Int, table: HT, ro: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -2691,12 +2692,14 @@ fn modes_fill_t(m: Int, table: HT, fns: List[TFn], i: Int, n: Int) -> Int ! allo
         ms = vec_new()
         _k = modes_vec(ms, ht_get(table, f.name), 0, list_len(f.params))
         _p = map_put(m, str_as_int(strdup(f.name)), ms)
-        # The callers' view (`param_modes` in src/ir.rs): a parameter whose fields the fn releases is taken.
+        # The callers' view (`caller_param_modes` in src/ir.rs): a parameter whose fields the fn
+        # releases, or an inferred borrow that escapes the fn, is taken.
         caller = vec_new()
         _c = modes_vec(caller, ht_get(table, f.name), 0, list_len(f.params))
         _r = mark_released_params(caller, f, releases_param_names(f))
+        _e = mark_escaping_params(caller, f.params, map_get(ro, str_as_int(f.name)), 0, list_len(f.params))
         _q = map_put(m, str_as_int("caller:" + f.name), caller)
-        modes_fill_t(m, table, fns, i + 1, n)
+        modes_fill_t(m, table, ro, fns, i + 1, n)
 
 # Sets to take (2) the modes of the parameters named in `names`.
 fn mark_released_params(modes: Int, f: TFn, names: Int) -> Int ! alloc
@@ -2711,6 +2714,30 @@ fn mark_released_go(modes: Int, params: List[TParam], i: Int, n: Int, names: Int
         else
             0
         mark_released_go(modes, params, i + 1, n, names)
+
+# Sets to take (2) each inferred borrow whose read-only flag is 0 (`flags` 0: no entry).
+fn mark_escaping_params(modes: Int, params: List[TParam], flags: Int, i: Int, n: Int) -> Int ! alloc
+    if flags == 0
+        0
+    elsif i >= n
+        0
+    else
+        _s = if escaping_borrow(vec_get(modes, i), list_get(params, i).mode, vec_get(flags, i)) == 1
+            vec_set(modes, i, 2)
+        else
+            0
+        mark_escaping_params(modes, params, flags, i + 1, n)
+
+# 1 when an inferred (`declared` 0) borrow (`mode` 1) is not read-only.
+fn escaping_borrow(mode: Int, declared: Int, read_only: Int) -> Int
+    if mode != 1
+        0
+    elsif declared != 0
+        0
+    elsif read_only != 0
+        0
+    else
+        1
 
 # The parameters of `f` whose fields it passes to a releasing builtin (`list_free(p.xs)`,
 # `free(p.name)`, ...): `releases_param_fields` in src/ir.rs.
@@ -2744,8 +2771,6 @@ fn rel_releasing(name: String) -> Int ! alloc
     elsif str_eq(name, "enum_free") == 1
         1
     elsif str_eq(name, "enum_box_id") == 1
-        1
-    elsif str_eq(name, "expr_addr") == 1
         1
     elsif str_eq(name, "list_box_id") == 1
         1

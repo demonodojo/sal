@@ -1,0 +1,23 @@
+import glue_types
+
+fn done(b: B, flag: Int) -> E ! alloc
+    if flag == 1
+        EIf(b, 1)
+    else
+        EIf(b, 0)
+
+fn mk() -> B ! alloc
+    xs = List.new[Int]()
+    xs.push(7)
+    B(xs, ENone)
+
+fn wrap(flag: Int) -> E ! alloc
+    t2 = mk()
+    k = flag + 1
+    done(t2, k)
+
+fn main() -> Int ! alloc
+    e = wrap(0)
+    match e
+        EIf(b, k) => b.xs.len() + k
+        _ => 99

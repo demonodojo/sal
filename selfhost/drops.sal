@@ -1891,8 +1891,6 @@ fn dr_borrows(name: String) -> Int ! alloc
         1
     elsif str_eq(name, "enum_box_id") == 1
         1
-    elsif str_eq(name, "expr_addr") == 1
-        1
     elsif str_eq(name, "bytes_len") == 1
         1
     elsif str_eq(name, "bytes_get_u8") == 1

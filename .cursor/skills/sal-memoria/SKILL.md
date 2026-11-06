@@ -92,8 +92,18 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 ## Runtime (dueño explícito)
 
 - **`sal_dict_get`**: construye `Some`; si `V` es `String`, cabecera del `Some` marca dueño del campo copiado; enum/struct se copian en profundidad.
+
+## Autohospedaje (`selfhost/tast.sal`)
+
+- **`tp_free_*`**: `seen` deduplica cajas por `enum_box_id` (una variante unitaria da 0 y no hay nada que soltar). `lseen` deduplica listas por `list_box_id` (`stmts` de un bloque, argumentos de llamada, `elsifs`, `arms`), porque el desazucarado comparte listas entre bloques (`lp_unit` devuelve `TBlock(b.stmts, XNone)`).
+- Descriptores: `List[TStmt]` es `S(isEsiEiii)` (`+` si es dueña). `list_get` devuelve una copia y sus cajas `E` se copian con `sal_enum_copy`, que solo copia los campos poseídos. `List[TFn]`, `List[TProgram]`, `List[TStruct]`, `List[TEnum]`, `List[TArm]` y `List[TElsif]` son `i`: `list_get` devuelve el mismo valor, y `list_set`/`list_free` no sueltan el elemento.
 - **`sal_bytes_view`**: flag `view`; `sal_bytes_free` no libera el `data` ajeno.
 - **`sal_dict_free` / `dict_put`**: `dict_val_release` para `String`, enum (kind 5) y struct empaquetado (kind `4|…`).
+
+## Cola de struct: vista de los llamadores
+
+- Un argumento struct pasado a un parámetro que el llamado deja escapar (bandera de solo lectura de drops a 0) cuenta como movido para la cola del llamador, aunque el modo inferido sea `borrow`. Cubre el constructor de otro módulo y el valor devuelto como cola de rama, que el comprobador ve como préstamo.
+- Arranque: `caller_param_modes` en `src/ir.rs`, a partir de `drops::last_read_only_params`. Selfhost: `mark_escaping_params` en `modes_fill_t` (`fuse.sal`). Tests: `struct_glue_*` en `tests/drops.rs` y `tests/glue_escape/` en `PARITY_FILES`.
 
 ## Siguen sin liberarse (SPEC)
 

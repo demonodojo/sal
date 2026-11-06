@@ -1000,6 +1000,8 @@ const PARITY_FILES: &[&str] = &[
     "std/text/strutil.sal",
     "tests/fixtures/frame_shop.sal",
     "tests/fixtures/frame_where.sal",
+    "tests/glue_escape/branch.sal",
+    "tests/glue_escape/ctor.sal",
     "tests/import_graph/a.sal",
     "tests/import_graph/b.sal",
     "tests/sal/support/assert.sal",

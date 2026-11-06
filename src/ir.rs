@@ -284,6 +284,8 @@ pub fn lower_program_with_callables_env(
     let dropped = crate::drops::insert_drops(&moded, &strings.types, &strings.structs, &strings.enums);
     // The field-read temporaries the drops pass made have struct types the lowering needs.
     strings.struct_types.extend(crate::drops::tmp_struct_types());
+    let read_only = crate::drops::last_read_only_params();
+    let declared = declared_param_modes(prog);
     let prog = &dropped;
     let mut param_modes: HashMap<String, Vec<ParamMode>> = HashMap::new();
     for item in &prog.items {
@@ -308,16 +310,210 @@ pub fn lower_program_with_callables_env(
             );
         }
     }
+    let caller_modes = caller_param_modes(prog, &param_modes, &declared, &read_only, &strings);
     let mut functions = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            functions.push(lower_fn(f, &fn_names, &strings, &param_modes));
+            functions.push(lower_fn(f, &fn_names, &strings, &param_modes, &caller_modes));
         }
     }
     IrModule {
         functions,
         any_vtables: collect_any_vtables(prog),
     }
+}
+
+/// The modes written in the source, before `infer_param_modes`.
+fn declared_param_modes(prog: &Program) -> HashMap<String, Vec<ParamMode>> {
+    prog.items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Fn(f) => Some((f.name.clone(), f.params.iter().map(|p| p.mode).collect())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The body ends in an `if`/`match` whose value is the parameter (ownership does not consume
+/// the branch tail; drops marks escape).
+fn branch_tail_value_is_param(body: &Block, param: &str) -> bool {
+    body.tail.as_ref().is_some_and(|t| expr_value_is_param_tail(t, param))
+}
+
+fn expr_value_is_param_tail(e: &Expr, param: &str) -> bool {
+    match e {
+        Expr::Ident { name, .. } => name == param,
+        Expr::Block(b) => branch_tail_value_is_param(b, param),
+        Expr::If {
+            then_block,
+            elsifs,
+            else_block,
+            ..
+        } => {
+            branch_tail_value_is_param(then_block, param)
+                || elsifs.iter().any(|a| branch_tail_value_is_param(&a.body, param))
+                || else_block
+                    .as_ref()
+                    .is_some_and(|b| branch_tail_value_is_param(b, param))
+        }
+        Expr::Match { arms, .. } => arms.iter().any(|a| expr_value_is_param_tail(&a.body, param)),
+        _ => false,
+    }
+}
+
+/// `P(…)` / `V(…)` defined in this compilation unit (`infer_param_modes` sees it).
+fn ctor_defined_in_program(prog: &Program, name: &str) -> bool {
+    for item in &prog.items {
+        match item {
+            Item::Struct(s) if s.name == name => return true,
+            Item::Enum(e) => {
+                for v in &e.variants {
+                    if v.name == name && !v.fields.is_empty() {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Moves `param` into a constructor that exists in the graph but is declared in another module
+/// (`ownership::load_program` only registers ctors from `prog.items`).
+fn call_to_foreign_ctor_moves_param(
+    e: &Expr,
+    param: &str,
+    prog: &Program,
+    graph_ctors: &HashSet<String>,
+) -> bool {
+    let Expr::Call { func, args, .. } = e else {
+        return false;
+    };
+    let Expr::Ident { name: callee, .. } = func.as_ref() else {
+        return false;
+    };
+    if !graph_ctors.contains(callee) || ctor_defined_in_program(prog, callee) {
+        return false;
+    }
+    args.iter().any(|a| matches!(a, Expr::Ident { name, .. } if name == param))
+}
+
+/// Where ownership infers `borrow` but the struct glue must treat the param as taken: argument
+/// moved into a constructor not declared in this module, or returned as an `if`/`match` branch
+/// tail (see SPEC: branch tail does not move by itself; drops still marks escape).
+fn glue_mismatch_body(body: &Block, param: &str, prog: &Program, graph_ctors: &HashSet<String>) -> bool {
+    for st in &body.stmts {
+        if stmt_glue_mismatch(st, param, prog, graph_ctors) {
+            return true;
+        }
+    }
+    body.tail
+        .as_ref()
+        .is_some_and(|t| expr_glue_mismatch(t, param, prog, graph_ctors))
+}
+
+fn stmt_glue_mismatch(st: &Stmt, param: &str, prog: &Program, graph_ctors: &HashSet<String>) -> bool {
+    match st {
+        Stmt::Let { init, .. } => expr_glue_mismatch(init, param, prog, graph_ctors),
+        Stmt::Expr(e) => expr_glue_mismatch(e, param, prog, graph_ctors),
+        Stmt::Assign { target, value, .. } => {
+            expr_glue_mismatch(target, param, prog, graph_ctors)
+                || expr_glue_mismatch(value, param, prog, graph_ctors)
+        }
+        Stmt::Return { value: Some(v), .. } => expr_glue_mismatch(v, param, prog, graph_ctors),
+        Stmt::While { body, .. } => glue_mismatch_body(body, param, prog, graph_ctors),
+        Stmt::Break { .. } | Stmt::Return { value: None, .. } => false,
+    }
+}
+
+fn expr_glue_mismatch(e: &Expr, param: &str, prog: &Program, graph_ctors: &HashSet<String>) -> bool {
+    match e {
+        Expr::Call { func, args, .. } => {
+            if call_to_foreign_ctor_moves_param(e, param, prog, graph_ctors) {
+                return true;
+            }
+            expr_glue_mismatch(func, param, prog, graph_ctors)
+                || args.iter().any(|a| expr_glue_mismatch(a, param, prog, graph_ctors))
+        }
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            expr_glue_mismatch(cond, param, prog, graph_ctors)
+                || glue_mismatch_body(then_block, param, prog, graph_ctors)
+                || branch_tail_value_is_param(then_block, param)
+                || elsifs.iter().any(|a| {
+                    expr_glue_mismatch(&a.cond, param, prog, graph_ctors)
+                        || glue_mismatch_body(&a.body, param, prog, graph_ctors)
+                        || branch_tail_value_is_param(&a.body, param)
+                })
+                || else_block.as_ref().is_some_and(|b| {
+                    glue_mismatch_body(b, param, prog, graph_ctors) || branch_tail_value_is_param(b, param)
+                })
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            expr_glue_mismatch(scrutinee, param, prog, graph_ctors)
+                || arms.iter().any(|a| expr_value_is_param_tail(&a.body, param))
+        }
+        Expr::Block(b) => glue_mismatch_body(b, param, prog, graph_ctors),
+        Expr::Binary { left, right, .. } => {
+            expr_glue_mismatch(left, param, prog, graph_ctors)
+                || expr_glue_mismatch(right, param, prog, graph_ctors)
+        }
+        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => {
+            expr_glue_mismatch(expr, param, prog, graph_ctors)
+        }
+        Expr::Lambda { body, .. } => expr_glue_mismatch(body, param, prog, graph_ctors),
+        Expr::On { body, .. } => glue_mismatch_body(body, param, prog, graph_ctors),
+        Expr::TensorLit { rows, .. } => rows
+            .iter()
+            .flatten()
+            .any(|c| expr_glue_mismatch(c, param, prog, graph_ctors)),
+        _ => false,
+    }
+}
+
+/// The callers' view of `param_modes`: promote inferred `borrow` to `take` when drops sees an
+/// escape but the glue must match ownership+drops (foreign ctor or branch-tail value).
+fn caller_param_modes(
+    prog: &Program,
+    param_modes: &HashMap<String, Vec<ParamMode>>,
+    declared: &HashMap<String, Vec<ParamMode>>,
+    read_only: &HashMap<String, Vec<bool>>,
+    strings: &StringEnv,
+) -> HashMap<String, Vec<ParamMode>> {
+    let graph_ctors = &strings.ctor_names;
+    let mut out = param_modes.clone();
+    for item in &prog.items {
+        let Item::Fn(f) = item else {
+            continue;
+        };
+        let Some(modes) = out.get_mut(&f.name) else {
+            continue;
+        };
+        let Some(decl_modes) = declared.get(&f.name) else {
+            continue;
+        };
+        let Some(flags) = read_only.get(&f.name) else {
+            continue;
+        };
+        for (i, m) in modes.iter_mut().enumerate() {
+            if *m != ParamMode::Borrow {
+                continue;
+            }
+            if decl_modes.get(i) != Some(&ParamMode::Inferred) {
+                continue;
+            }
+            if flags.get(i) != Some(&false) {
+                continue;
+            }
+            let Some(p) = f.params.get(i) else {
+                continue;
+            };
+            if glue_mismatch_body(&f.body, &p.name, prog, graph_ctors) {
+                *m = ParamMode::Take;
+            }
+        }
+    }
+    out
 }
 
 fn collect_any_vtables(prog: &Program) -> Vec<AnyVtableDef> {
@@ -516,6 +712,7 @@ fn lower_fn(
     fn_names: &HashMap<String, ()>,
     base: &StringEnv,
     param_modes: &HashMap<String, Vec<ParamMode>>,
+    caller_modes: &HashMap<String, Vec<ParamMode>>,
 ) -> IrFunction {
     let mut instructions = Vec::new();
     let mut regions = Vec::new();
@@ -604,6 +801,7 @@ fn lower_fn(
         &mut counter,
         &strings,
         param_modes,
+        caller_modes,
     );
     if let Some(r) = ret {
         instructions.push(r);
@@ -756,8 +954,9 @@ fn emit_struct_string_drops(
     counter: &mut u32,
     strings: &StringEnv,
     param_modes: &HashMap<String, Vec<ParamMode>>,
+    caller_modes: &HashMap<String, Vec<ParamMode>>,
 ) {
-    let moved = moved_bindings(f, param_modes);
+    let moved = moved_bindings(f, caller_modes);
     let alias = list_alias_locals(f, strings);
     let reads = field_reads(f, strings, param_modes);
     let effective_modes = param_modes
@@ -2297,7 +2496,6 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "struct_free_box"
             | "enum_owns"
             | "enum_box_id"
-            | "expr_addr"
             | "bytes_free"
             | "bytes_new"
             | "bytes_len"

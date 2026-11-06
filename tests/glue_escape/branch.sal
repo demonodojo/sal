@@ -1,0 +1,23 @@
+enum E
+    ENone
+    ESome(Int)
+
+struct B
+    xs: List[Int]
+    tail: E
+
+fn pick(b: B, f: Int) -> B ! alloc
+    if f == 1
+        b
+    else
+        B(b.xs, ENone)
+
+fn mk() -> B ! alloc
+    xs = List.new[Int]()
+    xs.push(7)
+    B(xs, ENone)
+
+fn main() -> Int ! alloc
+    t = mk()
+    u = pick(t, 1)
+    u.xs.len()

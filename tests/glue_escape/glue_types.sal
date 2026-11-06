@@ -1,0 +1,7 @@
+enum E
+    ENone
+    EIf(B, Int)
+
+struct B
+    xs: List[Int]
+    tail: E

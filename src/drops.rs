@@ -223,6 +223,16 @@ pub fn tmp_struct_types() -> HashMap<String, String> {
     TMP_STRUCTS.with(|t| t.borrow().clone())
 }
 
+thread_local! {
+    /// The read-only flags of the last `insert_drops`.
+    static READ_ONLY: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Per user fn, per parameter: `false` when the fn lets that parameter escape (last `insert_drops`).
+pub fn last_read_only_params() -> HashMap<String, Vec<bool>> {
+    READ_ONLY.with(|r| r.borrow().clone())
+}
+
 /// The struct `S` of each local list of `f` of type `List[S]` (by a parameter or by
 /// `xs = list_new[S]()`), for the field-read temporaries.
 fn list_elem_structs(f: &FnDef) -> HashMap<String, String> {
@@ -428,6 +438,7 @@ pub fn insert_drops(
         }
     }
     let ro = read_only_params(prog, &variants);
+    READ_ONLY.with(|r| *r.borrow_mut() = ro.clone());
     let mut out = hoisted;
     for item in &mut out.items {
         if let Item::Fn(f) = item {
@@ -656,7 +667,6 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "dict_values"
             | "enum_owns"
             | "enum_box_id"
-            | "expr_addr"
             | "bytes_len"
             | "bytes_get_u8"
             | "bytes_get_u16"

@@ -249,6 +249,18 @@ fn tp_free_variants(vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
         list_free(vs.get(i).fields)
         tp_free_variants(vs, i + 1, n)
 
+# 1 when the list `id` was already released in this walk (`id` 0: no list).
+fn tp_lseen_take(id: Int, lseen: HT) -> Int ! alloc
+    if id == 0
+        0
+    else
+        key = id.to_str()
+        if ht_get(lseen, key).len() > 0
+            1
+        else
+            ht_put(lseen, key, d"1")
+            0
+
 # Empty shells for `list_set` before `list_free` on owned list elements (expr/stmt/pat already released).
 fn tp_empty_block() -> TBlock ! alloc
     TBlock(List.new[TStmt](), XNone)
@@ -297,9 +309,12 @@ fn tp_free_drop_hoist(body: TBlock, hoisted: TBlock) -> Int ! alloc
     ht_free(lseen)
 
 fn tp_free_block_go(b: TBlock, seen: HT, lseen: HT) -> Int ! alloc
-    tp_free_stmts_go(b.stmts, 0, b.stmts.len(), seen, lseen)
-    _b = list_free(b.stmts)
-    tp_free_expr_go(b.tail, seen, lseen)
+    if tp_lseen_take(list_box_id(b.stmts), lseen) == 1
+        tp_free_expr_go(b.tail, seen, lseen)
+    else
+        tp_free_stmts_go(b.stmts, 0, b.stmts.len(), seen, lseen)
+        list_free(b.stmts)
+        tp_free_expr_go(b.tail, seen, lseen)
 
 fn tp_free_exprs_go(xs: List[Expr], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
     if i >= n
@@ -373,23 +388,20 @@ fn tp_free_emit_scope(body: TBlock, lam_bodies: List[Expr]) -> Int ! alloc
     ht_free(seen)
     ht_free(lseen)
 
-# `enum_box_id` is 0 for unit variants and other small tags; use `expr_addr` so shared subgraphs dedup.
-fn tp_expr_seen_key(e: Expr) -> String ! alloc
-    k = enum_box_id(e)
-    if k != 0
-        k.to_str()
-    else
-        expr_addr(e).to_str()
-
-# Skips boxes already visited (shared handles in drops/xform trees).
+# Skips boxes already visited (shared handles in drops/xform trees). A unit variant
+# (`enum_box_id` 0) has no box to release.
 fn tp_free_expr_go(e: Expr, seen: HT, lseen: HT) -> Int ! alloc
-    key = tp_expr_seen_key(e)
-    if ht_get(seen, key).len() > 0
+    k = enum_box_id(e)
+    if k == 0
         0
     else
-        ht_put(seen, key, d"1")
-        tp_free_children_go(e, seen, lseen)
-        enum_free(e)
+        key = k.to_str()
+        if ht_get(seen, key).len() > 0
+            0
+        else
+            ht_put(seen, key, d"1")
+            tp_free_children_go(e, seen, lseen)
+            enum_free(e)
 
 # Children the box owns are released by `enum_free`; the others (built by calls or from locals)
 # are released here, so nothing is freed twice whichever way the tree was built.
@@ -420,8 +432,11 @@ fn tp_free_pair_go(e: Expr, l: Expr, r: Expr, seen: HT, lseen: HT) -> Int ! allo
     tp_free_one_go(e, 2, r, seen, lseen)
 
 fn tp_free_call_go(args: List[Expr], seen: HT, lseen: HT) -> Int ! alloc
-    tp_free_exprs_go(args, 0, args.len(), seen, lseen)
-    list_free(args)
+    if tp_lseen_take(list_box_id(args), lseen) == 1
+        0
+    else
+        tp_free_exprs_go(args, 0, args.len(), seen, lseen)
+        list_free(args)
 
 # When the call box owns its arg list, `enum_free` releases the list; otherwise we do.
 fn tp_free_call_e_go(e: Expr, args: List[Expr], seen: HT, lseen: HT) -> Int ! alloc
@@ -445,6 +460,8 @@ fn tp_free_if_go(e: Expr, cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: Li
     tp_free_block_field_go(e, 2, else_b, seen, lseen)
     if enum_owns(e, 4) == 1
         0
+    elsif tp_lseen_take(list_box_id(elsifs), lseen) == 1
+        0
     else
         tp_free_elsifs_go(elsifs, 0, elsifs.len(), seen, lseen)
         list_free(elsifs)
@@ -456,6 +473,8 @@ fn tp_free_while_go(e: Expr, cond: Expr, body: TBlock, seen: HT, lseen: HT) -> I
 fn tp_free_match_go(e: Expr, scrut: Expr, arms: List[TArm], seen: HT, lseen: HT) -> Int ! alloc
     tp_free_one_go(e, 0, scrut, seen, lseen)
     if enum_owns(e, 1) == 1
+        0
+    elsif tp_lseen_take(list_box_id(arms), lseen) == 1
         0
     else
         tp_free_arms_go(arms, 0, arms.len(), seen, lseen)

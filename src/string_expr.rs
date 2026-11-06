@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{BinOp, EnumDef, Expr, Item, Param, Program, StructDef, Type};
@@ -31,6 +31,8 @@ pub struct StringEnv {
     pub protocol_calls: HashMap<(u32, u32), (String, String, u32)>,
     pub any_coercions: HashMap<(u32, u32), (String, String)>,
     pub protocols: HashMap<String, crate::ast::ProtocolDef>,
+    /// Struct and enum variant constructors across the module graph (`P(…)`, `V(…)` with fields).
+    pub ctor_names: HashSet<String>,
 }
 
 impl StringEnv {
@@ -65,6 +67,24 @@ impl StringEnv {
             }
         }
         let fn_sigs = crate::scalarize::sigs_for_programs(progs, &structs);
+        let mut ctor_names = HashSet::new();
+        for prog in progs {
+            for item in &prog.items {
+                match item {
+                    Item::Struct(s) => {
+                        ctor_names.insert(s.name.clone());
+                    }
+                    Item::Enum(e) => {
+                        for v in &e.variants {
+                            if !v.fields.is_empty() {
+                                ctor_names.insert(v.name.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         Self {
             types: Rc::new(HashMap::new()),
             fn_sigs,
@@ -78,6 +98,7 @@ impl StringEnv {
             protocol_calls: HashMap::new(),
             any_coercions: HashMap::new(),
             protocols,
+            ctor_names,
         }
     }
 

@@ -946,7 +946,7 @@ fn infer_t_is_int(name: String) -> Int ! alloc
         1
     elsif str_eq(name, "bytes_len") + str_eq(name, "bytes_get_u8") + str_eq(name, "bytes_get_u16") + str_eq(name, "bytes_get_u32") + str_eq(name, "bytes_get_i64") > 0
         1
-    elsif str_eq(name, "enum_box_id") + str_eq(name, "expr_addr") + str_eq(name, "list_box_id") > 0
+    elsif str_eq(name, "enum_box_id") + str_eq(name, "list_box_id") > 0
         1
     elsif str_eq(name, "bytes_set_u8") + str_eq(name, "bytes_set_u16") + str_eq(name, "bytes_set_u32") + str_eq(name, "bytes_set_i64") + str_eq(name, "bytes_fill") + str_eq(name, "bytes_copy") + str_eq(name, "float_to_int") > 0
         1
