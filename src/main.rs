@@ -462,6 +462,20 @@ fn opts(
     }
 }
 
+fn graph_callee_fns(
+    graph: &sal_compiler::modules::ModuleGraph,
+) -> Vec<&sal_compiler::ast::FnDef> {
+    let mut out = Vec::new();
+    for m in &graph.order {
+        for item in &m.program.items {
+            if let sal_compiler::ast::Item::Fn(f) = item {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
 /// IR of `file` as the bootstrap compiler lowers it (the `sal emit ir` text).
 fn bootstrap_ir_text(
     file: &PathBuf,
@@ -475,7 +489,8 @@ fn bootstrap_ir_text(
     let graph_progs: Vec<&sal_compiler::ast::Program> =
         graph.order.iter().map(|m| &m.program).collect();
     let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
-    let mut ir = lower_program_with_callables_env(&root_mod.program, &callables, strings);
+    let callees = graph_callee_fns(&graph);
+    let mut ir = lower_program_with_callables_env(&root_mod.program, &callables, strings, &callees);
     fuse_module(&mut ir);
     Ok(ir_to_text(&ir))
 }

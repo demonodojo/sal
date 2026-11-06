@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ast::{Item, Program};
+use crate::ast::{FnDef, Item, Program};
 use crate::device::check_devices;
 use crate::diag::{Diagnostic, ErrorCode};
 use crate::effects::check_effects_with_infer;
@@ -125,6 +125,7 @@ fn compile_program_at(
         opts,
         true,
         Path::new("<input>"),
+        &[],
     )?;
     if !opts.skip_link {
         require_device_toolchain(&opts.device)?;
@@ -173,6 +174,7 @@ fn compile_file_with_imports(
     let mut all_objs = Vec::new();
     let mut all_cache_hit = true;
     let mut root_artifacts: Option<CompileArtifacts> = None;
+    let callees = graph_fns(&graph);
 
     for m in &graph.order {
         let infer_m = infer_module(m, &graph, opts.toolchain.target)?;
@@ -199,6 +201,7 @@ fn compile_file_with_imports(
             opts,
             is_root,
             &m.path,
+            &callees,
         )?;
         all_cache_hit &= artifacts.cache_hit;
         if is_root {
@@ -270,6 +273,18 @@ fn extern_fn_arity(
     out
 }
 
+fn graph_fns(graph: &ModuleGraph) -> Vec<&FnDef> {
+    let mut out = Vec::new();
+    for m in &graph.order {
+        for item in &m.program.items {
+            if let Item::Fn(f) = item {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
 fn compile_single_module(
     program: &Program,
     typed: &TypedProgram,
@@ -280,6 +295,7 @@ fn compile_single_module(
     opts: &CompileOptions,
     emit_entry_main: bool,
     module_path: &Path,
+    callees: &[&FnDef],
 ) -> Result<CompileArtifacts, Vec<Diagnostic>> {
     if opts.toolchain.target == crate::target::Target::Soso {
         // Walk typed AST fields, never source text (a string "gpu" is ordinary data).
@@ -301,7 +317,7 @@ fn compile_single_module(
     let cache_hit = is_cache_hit(&meta_file, key);
     let prev_meta = load_cached_meta(&meta_file);
 
-    let mut ir = lower_program_with_callables_env(program, callables, strings_env.clone());
+    let mut ir = lower_program_with_callables_env(program, callables, strings_env.clone(), callees);
     let box_shell = !module_path.components().any(|c| c.as_os_str() == "selfhost");
     fuse_module_opts(&mut ir, box_shell);
     let ir_text = ir_to_text(&ir);

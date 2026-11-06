@@ -265,7 +265,7 @@ pub fn lower_program_with_callables(
     prog: &Program,
     callable_fns: &HashMap<String, ()>,
 ) -> IrModule {
-    lower_program_with_callables_env(prog, callable_fns, StringEnv::from_program_inferred(prog))
+    lower_program_with_callables_env(prog, callable_fns, StringEnv::from_program_inferred(prog), &[])
 }
 
 /// `x = x + ...` where the chain is a string concatenation starting at `x`.
@@ -278,10 +278,17 @@ pub fn lower_program_with_callables_env(
     prog: &Program,
     callable_fns: &HashMap<String, ()>,
     mut strings: StringEnv,
+    callees: &[&FnDef],
 ) -> IrModule {
     let fn_names = callable_fns;
     let moded = crate::ownership::infer_param_modes(prog);
-    let dropped = crate::drops::insert_drops(&moded, &strings.types, &strings.structs, &strings.enums);
+    let dropped = crate::drops::insert_drops(
+        &moded,
+        &strings.types,
+        &strings.structs,
+        &strings.enums,
+        callees,
+    );
     // The field-read temporaries the drops pass made have struct types the lowering needs.
     strings.struct_types.extend(crate::drops::tmp_struct_types());
     let consumed = crate::drops::last_consumed_params();

@@ -9,6 +9,20 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn fns_in_graph(
+    graph: &sal_compiler::modules::ModuleGraph,
+) -> Vec<&sal_compiler::ast::FnDef> {
+    let mut out = Vec::new();
+    for m in &graph.order {
+        for item in &m.program.items {
+            if let sal_compiler::ast::Item::Fn(f) = item {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
 fn ir_of(name: &str, src: &str) -> String {
     let dir = std::env::temp_dir().join(format!("sal-drops-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -475,10 +489,12 @@ fn bootstrap_module_ir_frees_list_get_struct_box() {
         graph.order.iter().map(|m| &m.program).collect();
     let strings = sal_compiler::string_expr::StringEnv::from_module_graph(&graph_progs)
         .with_infer(&infer_out);
+    let callees = fns_in_graph(&graph);
     let mut ir = sal_compiler::ir::lower_program_with_callables_env(
         &root_mod.program,
         &callables,
         strings,
+        &callees,
     );
     sal_compiler::fuse::fuse_module(&mut ir);
     let ir = sal_compiler::ir::ir_to_text(&ir);

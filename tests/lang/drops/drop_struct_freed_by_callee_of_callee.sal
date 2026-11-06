@@ -1,0 +1,21 @@
+# exit: 0
+# stdout: hi
+# `finish` does not free the struct. It passes the whole value to `release`, which does.
+# Callers of `finish` must not free those lists again.
+struct Box
+    xs: List[String]
+    ys: List[String]
+
+fn release(b: Box) -> Int ! alloc
+    list_free(b.xs)
+    list_free(b.ys)
+
+fn finish(b: Box, s: String) -> String ! alloc
+    release(b)
+    s.dup()
+
+fn main() -> Int ! io, alloc
+    b = Box(List.new[String](), List.new[String]())
+    t = finish(b, "hi")
+    print_str(t + "\n")
+    0

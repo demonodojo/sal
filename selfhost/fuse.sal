@@ -2147,7 +2147,9 @@ fn drop_struct_fields(cx: Cx, base: Int, sd: TStruct, g: Int, fr: FRC, root: Str
 # `sv`: locals read whole through a field, a struct value (`q = w.p`); `hm`: locals whose
 # List/Dict/Bytes field is handed on. Maps from the local's name to 1.
 # The lists of the environment the walk needs, not the TEnv itself: a struct local's glue would
-# release the flat lists of a TEnv it only borrows.
+# release the flat lists of a TEnv it only borrows. `bparams` is a fresh list of dup'd names: the
+# glue must not see the `TFn` being lowered, whose body is the same pointer the later `tc_block`
+# still copies.
 struct FRC
     structs: List[TStruct]
     enums: List[TEnum]
@@ -2159,11 +2161,27 @@ struct FRC
     al: Int
     sm: Int
     ct: Int
-    cur: TFn
+    bparams: List[String]
     fns: List[TFn]
 
-fn fr_new(env: TEnv borrow, enums: List[TEnum] borrow, md: Int, cur: TFn, fns: List[TFn] borrow) -> FRC ! alloc
-    FRC(env.structs, enums, env.names, env.tys, md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), cur, fns)
+fn fr_new(env: TEnv borrow, enums: List[TEnum] borrow, md: Int, params: List[TParam] borrow, fns: List[TFn] borrow) -> FRC ! alloc
+    FRC(env.structs, enums, env.names, env.tys, md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fns)
+
+# Names of parameters whose mode is not take. Each name is dup'd, so freeing this list does not
+# free the function the caller still owns.
+static FRC.borrowed_params(params: List[TParam] borrow) -> List[String] ! alloc
+    FRC.borrowed_params_go(params, 0, params.len(), List.new[String]())
+
+static FRC.borrowed_params_go(params: List[TParam] borrow, i: Int, n: Int, out: List[String]) -> List[String] ! alloc
+    if i >= n
+        out
+    else
+        p = params.get(i)
+        if p.mode == 2
+            FRC.borrowed_params_go(params, i + 1, n, out)
+        else
+            out.push(p.name.dup())
+            FRC.borrowed_params_go(params, i + 1, n, out)
 
 # A struct local the glue must not release (`list_alias_locals` in src/ir.rs): the result of
 # `list_get(xs, i)` on a list whose struct is not describable (it hands out its boxes), or the
@@ -2269,22 +2287,21 @@ method FRC.arg_borrowed(args: List[Expr], i: Int) -> Int ! alloc
 
 method FRC.arg_is_borrowed(a: Expr) -> Int ! alloc
     match a
-        XIdent(name) => fr_param_borrowed(self.cur.params, name, 0, self.cur.params.len())
+        XIdent(name) => self.param_borrowed(name)
         XField(base, field) => 1
         _ => 0
 
-# 1 when `name` is a parameter whose inferred mode is not take (2).
-fn fr_param_borrowed(params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
+# 1 when `name` is one of the borrowed parameters recorded in `bparams`.
+method FRC.param_borrowed(name: String) -> Int ! alloc
+    self.param_borrowed_at(name, 0, self.bparams.len())
+
+method FRC.param_borrowed_at(name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
+    elsif self.bparams.get(i).eq(name) == 1
+        1
     else
-        p = params.get(i)
-        if p.name.eq(name) == 0
-            fr_param_borrowed(params, name, i + 1, n)
-        elsif p.mode == 2
-            0
-        else
-            1
+        self.param_borrowed_at(name, i + 1, n)
 
 # The type text of the local `name` (`tenv_type`).
 method FRC.type_of(name: String) -> String ! alloc
@@ -2599,19 +2616,10 @@ fn emit_struct_drops(cx: Cx, f: TFn, body: TBlock, md: Int, seen: List[TFn]) -> 
     moved = vec_new()
     _m = mv_block(body, moved, md)
     name = f.name.dup()
-    nparams = f.params.len()
-    ps = copy_params(f.params, 0, nparams, List.new[TParam]())
-    fr = fr_new(cx.env, cx.enums, md, f, seen)
+    fr = fr_new(cx.env, cx.enums, md, f.params, seen)
     _r = fr_blk(fr, body)
-    names = drop_candidates(cx, ps, fn_modes_of(md, name), 0, tenv_len(cx.env), vec_new())
+    names = drop_candidates(cx, f.params, fn_modes_of(md, name), 0, tenv_len(cx.env), vec_new())
     drop_locals(cx, fr, names, moved, 0, vec_len(names))
-
-fn copy_params(ps: List[TParam], i: Int, n: Int, out: List[TParam]) -> List[TParam] ! alloc
-    if i >= n
-        out
-    else
-        out.push(ps.get(i))
-        copy_params(ps, i + 1, n, out)
 
 # Instructions without a trailing Return, which is returned separately (0 when none).
 fn pop_final_ret(cx: Cx) -> Int ! alloc

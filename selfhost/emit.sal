@@ -3398,7 +3398,7 @@ fn cir_is_stub(f: String) -> Int ! alloc
 # Struct scope-end field releases (espejo de `emit_struct_drops` en fuse.sal).
 fn emit_c_struct_scope_frees(tf: TFn, body: TBlock, denv: Int, user: Int, stmts: Int, tc: Tc, fns: List[TFn]) -> Int ! alloc
     md = vec_get(denv, 1)
-    fr = fr_new(tc.env, tc.enums, md, tf, fns)
+    fr = fr_new(tc.env, tc.enums, md, tf.params, fns)
     _w = fr_blk(fr, body)
     moved = vec_new()
     _m = mv_block(body, moved, md)

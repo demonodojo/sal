@@ -228,6 +228,10 @@ thread_local! {
     static READ_ONLY: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
     /// Per user fn, per parameter: `true` when the fn consumes that parameter (last `insert_drops`).
     static CONSUMED: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
+    /// Last whole-graph fixpoint. Compiling a module graph lowers one module at a time and each
+    /// lowering would otherwise walk every function again.
+    static FIXPOINT_CACHE: std::cell::RefCell<Option<(u64, ReadOnly, ReadOnly)>> =
+        std::cell::RefCell::new(None);
 }
 
 /// Per user fn, per parameter: `false` when the fn lets that parameter escape (last `insert_drops`).
@@ -421,6 +425,7 @@ pub fn insert_drops(
     types: &HashMap<(u32, u32), Type>,
     structs: &HashMap<String, StructDef>,
     enums: &HashMap<String, EnumDef>,
+    callees: &[&FnDef],
 ) -> Program {
     EXPR_TYPES.with(|t| *t.borrow_mut() = types.clone());
     collect_ownable(structs, enums);
@@ -444,7 +449,7 @@ pub fn insert_drops(
             }
         }
     }
-    let ro = read_only_params(prog, &variants);
+    let ro = read_only_params(prog, &variants, callees);
     READ_ONLY.with(|r| *r.borrow_mut() = ro.clone());
     let mut out = hoisted;
     for item in &mut out.items {
@@ -601,21 +606,70 @@ fn binds_once(stmts: &[Stmt], name: &str) -> bool {
         == 1
 }
 
+fn fixpoint_key(fns: &[&FnDef]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    (fns.as_ptr() as usize).hash(&mut h);
+    for f in fns {
+        f.name.hash(&mut h);
+        f.params.len().hash(&mut h);
+        f.body.stmts.len().hash(&mut h);
+        f.body.span.start.hash(&mut h);
+        f.body.span.end.hash(&mut h);
+    }
+    h.finish()
+}
+
 /// Optimistic fixpoint: every parameter starts read-only and loses that when its fn lets
 /// it escape under the current assumptions about the other fns.
-fn read_only_params(prog: &Program, variants: &Variants) -> ReadOnly {
+fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> ReadOnly {
     let mut ro = ReadOnly::new();
     let mut cons = ReadOnly::new();
+    // The module's own functions, then callees defined in other modules of the graph.
+    // A call such as `tp_free_shallow` lives in another file; without its body the
+    // caller never learns that the struct was consumed and frees it again.
+    let mut fns: Vec<&FnDef> = Vec::new();
+    let mut seen = HashSet::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
-            ro.insert(f.name.clone(), vec![true; f.params.len()]);
-            cons.insert(f.name.clone(), vec![false; f.params.len()]);
+            if seen.insert(f.name.clone()) {
+                fns.push(f);
+            }
         }
+    }
+    for f in callees {
+        if seen.insert(f.name.clone()) {
+            fns.push(f);
+        }
+    }
+    let cache_key = if callees.is_empty() {
+        0
+    } else {
+        fixpoint_key(callees)
+    };
+    if cache_key != 0 {
+        let hit = FIXPOINT_CACHE.with(|c| {
+            c.borrow().as_ref().and_then(|(k, ro, cons)| {
+                if *k == cache_key {
+                    Some((ro.clone(), cons.clone()))
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some((ro, cons)) = hit {
+            CONSUMED.with(|c| *c.borrow_mut() = cons);
+            return ro;
+        }
+    }
+    for f in &fns {
+        ro.insert(f.name.clone(), vec![true; f.params.len()]);
+        cons.insert(f.name.clone(), vec![false; f.params.len()]);
     }
     loop {
         let mut changed = false;
-        for item in &prog.items {
-            let Item::Fn(f) = item else { continue };
+        for f in fns.iter().copied() {
             let facts = fn_facts(f, variants, &ro, &cons);
             let flags = ro.get_mut(&f.name).unwrap();
             let took = cons.get_mut(&f.name).unwrap();
@@ -631,6 +685,11 @@ fn read_only_params(prog: &Program, variants: &Variants) -> ReadOnly {
             }
         }
         if !changed {
+            if cache_key != 0 {
+                FIXPOINT_CACHE.with(|c| {
+                    *c.borrow_mut() = Some((cache_key, ro.clone(), cons.clone()));
+                });
+            }
             CONSUMED.with(|c| *c.borrow_mut() = cons);
             return ro;
         }
@@ -867,6 +926,10 @@ struct Facts {
     consumed: HashSet<String>,
     /// The argument under `arg` is passed to a callee that consumes it.
     consume_arg: bool,
+    /// `consume_arg` is a user function, not a builtin that merely fails `borrows_args`.
+    /// A parameter passed whole sits on the soft path, which records an escape but not
+    /// consumption; only this flag promotes that parameter so callers take it.
+    user_take: bool,
     bindings: HashMap<String, u32>,
     variants: Variants,
     /// Containers that received a value not known to be fresh.
@@ -938,6 +1001,9 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
                 match f.cur {
                     Some(key) if f.bind_depth.get(name).is_some_and(|d| *d == f.loop_depth) => {
                         f.soft.insert(name.clone());
+                        if f.user_take {
+                            f.consumed.insert(name.clone());
+                        }
                         if mov == ArgMove::TakeFields {
                             f.box_shell.insert(name.clone());
                         }
@@ -989,12 +1055,10 @@ fn expr(e: &Expr, f: &mut Facts) {
             };
             for (i, a) in args.iter().enumerate() {
                 let reads = ro.as_ref().and_then(|r| r.get(i)).copied().unwrap_or(false);
+                let user_fn = f.cons.contains_key(callee);
                 let user_takes = f.cons.get(callee).and_then(|c| c.get(i)).copied().unwrap_or(false);
-                f.consume_arg = if f.cons.contains_key(callee) {
-                    user_takes
-                } else {
-                    !borrow
-                };
+                f.consume_arg = if user_fn { user_takes } else { !borrow };
+                f.user_take = user_fn && user_takes;
                 let mov = if borrow || reads {
                     ArgMove::Read
                 } else if hard || callee_transfers_struct_box(callee) {
@@ -1004,6 +1068,7 @@ fn expr(e: &Expr, f: &mut Facts) {
                 };
                 arg(a, mov, f);
                 f.consume_arg = false;
+                f.user_take = false;
             }
             if hard {
                 f.hard_move -= 1;

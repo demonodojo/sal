@@ -103,7 +103,7 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 ## Cola de struct: vista de los llamadores
 
 - Un argumento struct pasado a un parámetro de modo inferido que el llamado consume cuenta como movido para la cola del llamador, aunque el modo inferido sea `borrow`. Consumir es devolverlo, guardarlo o pasárselo a quien lo consume. Un campo Copy (`return p.n`) escapa para drops (el llamado no lo suelta) pero no consume: si contara, la cola dejaría de soltar el `String` que nadie más suelta. `field_reads` usa esa misma vista. Un parámetro que el cuerpo pasa suelto a un builtin que libera (`list_free(p)`) también es `take` para los llamadores.
-- Arranque: `caller_param_modes` en `src/ir.rs`, a partir de `drops::last_consumed_params`. Selfhost: `mark_escaping_params` en `modes_fill_t` (`fuse.sal`) sigue la bandera de solo lectura; el caso Copy está en el arranque. Tests: `struct_glue_*` en `tests/drops.rs` y `tests/glue_escape/` en `PARITY_FILES`.
+- Arranque: `caller_param_modes` en `src/ir.rs`, a partir de `drops::last_consumed_params`. El cálculo incluye las funciones de los otros módulos del grafo, así un consumidor importado (`tp_free_shallow`) también cuenta. Selfhost: `mark_escaping_params` en `modes_fill_t` (`fuse.sal`) sigue la bandera de solo lectura; el caso Copy está en el arranque. Tests: `struct_glue_*` en `tests/drops.rs`, `tests/glue_escape/` en `PARITY_FILES` y `tests/lang/drops/drop_struct_freed_by_callee_of_callee.sal`.
 
 ## Siguen sin liberarse (SPEC)
 
