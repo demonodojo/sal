@@ -811,7 +811,10 @@ fn dr_match_arms(c: DC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
     else
         arm = list_get(arms, i)
         _a = dr_pattern(c, arm.pat)
-        _b = dr_expr(c, arm.body)
+        if arm.has_suite == 1
+            _b = dr_block(c, arm.suite)
+        else
+            _b = dr_expr(c, arm.body)
         dr_match_arms(c, arms, i + 1, n)
 
 fn dr_if_arms(c: DC, arms: List[TElsif], i: Int, n: Int) -> Int ! alloc

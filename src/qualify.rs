@@ -814,7 +814,7 @@ fn qualify_pattern(pat: &mut Pattern, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Di
                 qualify_pattern(a, ctx)?;
             }
         }
-        Pattern::Ident(_, _) | Pattern::Wild(_) | Pattern::Int(_, _) => {}
+        Pattern::Ident(_, _) | Pattern::Wild(_) | Pattern::Int(_, _) | Pattern::Str(_, _) | Pattern::Regex(_, _) => {}
     }
     Ok(())
 }

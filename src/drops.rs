@@ -1080,7 +1080,7 @@ fn propagate_payload_escapes(f: &mut Facts) {
 
 fn pattern(p: &Pattern, f: &mut Facts) {
     match p {
-        Pattern::Wild(_) | Pattern::Int(_, _) => {}
+        Pattern::Wild(_) | Pattern::Int(_, _) | Pattern::Str(_, _) | Pattern::Regex(_, _) => {}
         Pattern::Ident(n, _) => f.bind(n),
         Pattern::Variant { args, .. } => {
             for a in args {

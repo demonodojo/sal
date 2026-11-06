@@ -1,0 +1,10 @@
+fn f(s: String) -> Int ! alloc
+    if s.eq("a") == 1
+        1
+    elsif s.eq("b") == 1
+        2
+    else
+        0
+
+fn main() -> Int ! alloc
+    f(d"a")

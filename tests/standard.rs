@@ -12,28 +12,18 @@ fn root() -> PathBuf {
 
 static COMPILE_LOCK: Mutex<()> = Mutex::new(());
 
-fn isolated_project_root() -> PathBuf {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let p = tmp.path().to_path_buf();
-        std::mem::forget(tmp);
-        p
-    })
-    .clone()
-}
-
 fn standard_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
         let _guard = COMPILE_LOCK.lock().expect("standard compile lock");
+        let _ = fs::remove_dir_all(root().join("target/sal-out"));
         let opts = CompileOptions {
         toolchain: Default::default(),
         output: None,
             release: false,
             instrument: false,
             device: "cpu".into(),
-            project_root: isolated_project_root(),
+            project_root: root(),
             skip_link: false,
         };
         let art =
@@ -371,6 +361,48 @@ fn standard_and_comment_blocks_fix() {
 fn standard_unusedbinding_skip_is_clean() {
     let path = root()
         .join("standard/fixtures/unusedbinding_skip_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn standard_fix_matchif_int() {
+    let input = read_fixture("matchif_int_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("matchif_int_out.sal"));
+}
+
+#[test]
+fn standard_fix_matchif_str() {
+    let input = read_fixture("matchif_str_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("matchif_str_out.sal"));
+}
+
+#[test]
+fn standard_fix_matchif_block() {
+    let input = read_fixture("matchif_block_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("matchif_block_out.sal"));
+}
+
+#[test]
+fn standard_matchif_skip_unchanged() {
+    let input = read_fixture("matchif_skip_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("matchif_skip_out.sal"));
+}
+
+#[test]
+fn standard_lexer_rstring_ok() {
+    let path = root()
+        .join("standard/fixtures/rstring_lex_in.sal")
         .to_string_lossy()
         .into_owned();
     let out = run_standard(&["check", &path]);

@@ -973,6 +973,7 @@ const PARITY_FILES: &[&str] = &[
     "selfhost/ttypes.sal",
     "standard/cop_dupstring.sal",
     "standard/cop_elsif.sal",
+    "standard/cop_matchif.sal",
     "standard/cop_plusliteral.sal",
     "standard/cop_stringplus.sal",
     "standard/lexer.sal",

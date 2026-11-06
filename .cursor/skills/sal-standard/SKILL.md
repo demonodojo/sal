@@ -36,6 +36,7 @@ Salida de `check`: avisos en stderr (código tipo `Style/DupString`). Exit disti
 |-----|----------|
 | `Style/DupString` | `strdup("…")` → `d"…"` |
 | `Style/Elsif` | `else` + bloque con un solo `if` → `elsif` (casos ambiguos solo avisan) |
+| `Style/MatchIf` | `if` / `elsif`+ / `else` sobre el mismo escrutado (`==` entero, `str_eq` / `.eq` cadena) → `match` (bloques conservados; no si hay `break` o condiciones heterogéneas) |
 | `Style/And` | `if A` cuyo then es un solo `if B`, y los dos `else` son el mismo bloque → `if A && B`. Si `A` o `B` tienen `\|\|` en la raíz, se parentizan. Un comentario que el parche tiraría solo avisa |
 | `Style/StringPlus` | `str_concat` / `str_append` → `+`; cadenas de `var = str_append(var, …)` en varias líneas → una asignación con `+` |
 | `Style/PlusLiteral` | `d"…"` operando de `+` → `"…"` (el `+` ya copia; no hace falta dup en constantes) |

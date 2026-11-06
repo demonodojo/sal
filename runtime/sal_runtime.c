@@ -13,6 +13,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <limits.h>
+#include <regex.h>
 
 #endif
 #if defined(__linux__) || defined(__APPLE__)
@@ -316,6 +317,30 @@ int64_t sal_mkdir_p(const char *path) {
     sal_free(tmp);
     return rc;
 }
+
+#ifndef SAL_SOSO
+int64_t sal_regex_match(const char *s, const char *pat) {
+    if (!s) {
+        s = g_sal_empty;
+    }
+    if (!pat) {
+        pat = g_sal_empty;
+    }
+    regex_t re;
+    if (regcomp(&re, pat, REG_EXTENDED | REG_NOSUB) != 0) {
+        return 0;
+    }
+    int64_t ok = regexec(&re, s, 0, NULL, 0) == 0 ? 1 : 0;
+    regfree(&re);
+    return ok;
+}
+#else
+int64_t sal_regex_match(const char *s, const char *pat) {
+    (void)s;
+    (void)pat;
+    return 0;
+}
+#endif
 
 int64_t sal_str_eq(const char *a, const char *b) {
     if (!a) {

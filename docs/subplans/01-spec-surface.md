@@ -42,7 +42,7 @@ Lo mismo para el resto de capas:
 Además de `fn` e `import`:
 
 - `struct` y `enum` con parámetros de tipo y cuerpo indentado.
-- `match` con `_`, enteros e `IDENT(patrones)`.
+- `match` con `_`, enteros, literales `"…"`, regex `r"…"`, variantes e `IDENT` (ligado o variante unitaria); brazo `=> expr` o `=>` bloque indentado.
 - Lambda de un identificador: `x => expr`.
 - `on lugar` y `on lugar kernel`.
 - `to lugar expr`.

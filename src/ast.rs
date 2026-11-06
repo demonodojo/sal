@@ -388,6 +388,10 @@ pub enum Pattern {
     Wild(Span),
     Ident(String, Span),
     Int(i64, Span),
+    /// Literal string pattern (exact match on `String` scrutinee).
+    Str(String, Span),
+    /// POSIX ERE in `r"…"` (predicate on `String` scrutinee).
+    Regex(String, Span),
     Variant {
         #[serde(default)]
         qual: Option<String>,

@@ -1,0 +1,4 @@
+# error: E_TYPE
+fn main() -> Int
+    match 1
+        "a" => 0

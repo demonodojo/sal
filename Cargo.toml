@@ -29,6 +29,7 @@ semver = "1"
 sha2 = "0.10"
 sosomodel = { path = "../soso/crates/sosomodel", features = ["std"] }
 toml = "0.8"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

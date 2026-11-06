@@ -285,7 +285,15 @@ fn lp_arms(xs: List[TArm], i: Int, n: Int, out: List[TArm], cx: List[Int], errs:
         out
     else
         a = list_get(xs, i)
-        _p = list_push(out, TArm(a.pat, lp_expr(a.body, cx, errs)))
+        body2 = if a.has_suite == 1
+            XNone
+        else
+            lp_expr(a.body, cx, errs)
+        su2 = if a.has_suite == 1
+            lp_block(a.suite, d"", cx, errs)
+        else
+            a.suite
+        _p = list_push(out, TArm(a.pat, body2, su2, a.has_suite))
         lp_arms(xs, i + 1, n, out, cx, errs)
 
 # ---- program ----

@@ -1,0 +1,10 @@
+# exit: 7
+fn f(n: Int) -> Int
+    match n
+        1 =>
+            y = 3
+            y + 4
+        _ => 0
+
+fn main() -> Int
+    f(1)

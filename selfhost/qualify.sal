@@ -453,7 +453,7 @@ fn qx_arms(xs: List[TArm], i: Int, n: Int, ctx: Int, links: Int, out: List[TArm]
         out
     else
         a = list_get(xs, i)
-        _a = list_push(out, TArm(qx_pat(a.pat, ctx, links), qx(a.body, ctx, links)))
+        _a = list_push(out, TArm(qx_pat(a.pat, ctx, links), qx(a.body, ctx, links), qx_block(a.suite, ctx, links), a.has_suite))
         qx_arms(xs, i + 1, n, ctx, links, out)
 
 # Variant patterns of an arm. `alias.V` needs an alias whose module has `V`; a bare `V` must be a

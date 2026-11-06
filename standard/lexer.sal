@@ -30,6 +30,9 @@ fn TK_DSTRING() -> Int
 fn TK_FSTRING() -> Int
     15
 
+fn TK_RSTRING() -> Int
+    16
+
 fn TK_LPAREN() -> Int
     7
 
@@ -188,6 +191,13 @@ fn lex_emit_string(src: String, i: Int, n: Int, out: Lex, st: List[Int], kind: I
         else
             out.push(kind, i, end)
             lex_go(src, end, n, out, st, 0, err)
+    elsif kind == TK_RSTRING()
+        end = string_close_end(src, i + 1, n)
+        if end < 0
+            lex_fail(err)
+        else
+            out.push(kind, i, end)
+            lex_go(src, end, n, out, st, 0, err)
     else
         end = string_close_end(src, i, n)
         if end < 0
@@ -273,6 +283,18 @@ fn lex_go(src: String, i: Int, n: Int, out: Lex, st: List[Int], at_start: Int, e
                 if end < n
                     if src.char(end) == 34
                         lex_emit_string(src, end - 1, n, out, st, TK_FSTRING(), err)
+                    else
+                        kind = kw_kind(text)
+                        out.push(kind, i, end)
+                        lex_go(src, end, n, out, st, 0, err)
+                else
+                    kind = kw_kind(text)
+                    out.push(kind, i, end)
+                    lex_go(src, end, n, out, st, 0, err)
+            elsif text.eq("r") == 1
+                if end < n
+                    if src.char(end) == 34
+                        lex_emit_string(src, end - 1, n, out, st, TK_RSTRING(), err)
                     else
                         kind = kw_kind(text)
                         out.push(kind, i, end)

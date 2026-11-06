@@ -1839,9 +1839,73 @@ fn infer_lambda(c: IC, param: String, body: Expr) -> String ! alloc
     d"fn 1"
 
 fn infer_match(c: IC, scrut: Expr, arms: List[TArm]) -> String ! alloc
-    _t = infer_expr(c, scrut)
-    _a = infer_match_arms(c, arms, 0, list_len(arms))
+    sty = infer_expr(c, scrut)
+    _a = infer_match_arms(c, arms, 0, list_len(arms), sty)
     d"Unknown"
+
+# 0 Int, 1 String, 2 enum (name in tnames), 3 other.
+fn infer_match_scrut_class(sty: String, c: IC) -> Int ! alloc
+    if ty_is(sty, "Int") == 1
+        0
+    elsif ty_is(sty, "String") == 1
+        1
+    elsif ty_is_scalar(sty) == 1
+        3
+    else
+        2
+
+fn pat_kind_scalar_int(k: Int) -> Int ! alloc
+    if k == 2
+        1
+    elsif k == 0
+        1
+    elsif k == 1
+        1
+    else
+        0
+
+fn pat_kind_scalar_string(k: Int) -> Int ! alloc
+    if k == 4
+        1
+    elsif k == 5
+        1
+    elsif k == 0
+        1
+    elsif k == 1
+        1
+    else
+        0
+
+fn pat_kind_bad_on_enum(k: Int) -> Int ! alloc
+    if k == 4
+        1
+    elsif k == 5
+        1
+    elsif k == 2
+        1
+    else
+        0
+
+fn infer_match_pat_ok(c: IC, p: TPat, sty: String) -> Int ! alloc
+    cls = infer_match_scrut_class(sty, c)
+    k = p.kind
+    if cls == 0
+        if pat_kind_scalar_int(k) == 1
+            0
+        else
+            ic_fail(c, "pattern does not match Int scrutinee")
+    elsif cls == 1
+        if pat_kind_scalar_string(k) == 1
+            0
+        else
+            ic_fail(c, "pattern does not match String scrutinee")
+    elsif cls == 2
+        if pat_kind_bad_on_enum(k) == 1
+            ic_fail(c, "scalar pattern on enum scrutinee")
+        else
+            0
+    else
+        0
 
 fn infer_tail_expr(c: IC, b: TBlock) -> Int ! alloc
     match b.tail
@@ -1882,16 +1946,20 @@ fn infer_pattern_list(c: IC, p: TPat, i: Int, n: Int) -> Int ! alloc
         _a = infer_pattern_binds_ty(c, list_get(p.args, i), infer_variant_field_ty(c, p.name, i))
         infer_pattern_list(c, p, i + 1, n)
 
-fn infer_match_arms(c: IC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
+fn infer_match_arms(c: IC, arms: List[TArm], i: Int, n: Int, sty: String) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
         mark = tenv_len(c.env)
-        _a = infer_pattern_binds(c, arm.pat)
-        _b = infer_expr(c, arm.body)
+        _a = infer_pattern_binds_ty(c, arm.pat, sty)
+        _chk = infer_match_pat_ok(c, arm.pat, sty)
+        if arm.has_suite == 1
+            _b = infer_branch(c, arm.suite)
+        else
+            _b = infer_expr(c, arm.body)
         _s = tenv_truncate(c.env, mark)
-        infer_match_arms(c, arms, i + 1, n)
+        infer_match_arms(c, arms, i + 1, n, sty)
 
 # ---- statements ----
 # Returns 1 when the statement diverges.

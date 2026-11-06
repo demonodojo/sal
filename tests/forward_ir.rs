@@ -246,3 +246,35 @@ fn nested_variant_match_binds_inner_ident() {
         "XField(XIdent(name), _) must bind the inner ident before calling param_named:\n{text}"
     );
 }
+
+#[test]
+fn match_string_pattern_lowers_to_str_eq() {
+    let text = lower_text(
+        r#"
+fn f(s: String) -> Int
+    match s
+        "a" => 1
+        _ => 0
+"#,
+    );
+    assert!(
+        text.contains("sal_str_eq"),
+        "string literal arms use sal_str_eq:\n{text}"
+    );
+}
+
+#[test]
+fn match_regex_pattern_lowers_to_regex_match() {
+    let text = lower_text(
+        r#"
+fn f(s: String) -> Int
+    match s
+        r"x" => 1
+        _ => 0
+"#,
+    );
+    assert!(
+        text.contains("sal_regex_match"),
+        "regex arms use sal_regex_match:\n{text}"
+    );
+}

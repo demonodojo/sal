@@ -604,7 +604,10 @@ fn track_match_arms(c: OC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
         arm = list_get(arms, i)
         mark = tenv_len(c.env)
         _b = own_bind_pattern(c, arm.pat)
-        _t = track_expr(c, arm.body)
+        if arm.has_suite == 1
+            _t = track_block_scoped(c, arm.suite)
+        else
+            _t = track_expr(c, arm.body)
         _r = tenv_truncate(c.env, mark)
         track_match_arms(c, arms, i + 1, n)
 

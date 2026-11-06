@@ -1154,6 +1154,10 @@ fn match_switchable(arms: List[TArm], i: Int, n: Int) -> Int ! alloc
         1
     elsif list_get(arms, i).pat.kind == 2
         0
+    elsif list_get(arms, i).pat.kind == 4
+        0
+    elsif list_get(arms, i).pat.kind == 5
+        0
     else
         match_switchable(arms, i + 1, n)
 
@@ -1183,7 +1187,10 @@ fn lower_switch_arms(cx: Cx, scrut: Int, arms: List[TArm], i: Int, n: Int, n0: I
         _i = cx_set_insts(cx, vec_new())
         tag = switch_pattern_tag(cx, pat)
         _p = bind_variant_payloads(cx, scrut, pat.args, 0, list_len(pat.args), k)
-        val = lower_expr(cx, arm.body)
+        val = if arm.has_suite == 1
+            lower_block_value(cx, arm.suite)
+        else
+            lower_expr(cx, arm.body)
         body = cx_insts(cx)
         _k = kill_new_binds(cx, n0)
         _r = restore_binds(cx_binds(cx), snap, 0, n0)
@@ -1789,7 +1796,11 @@ fn mv_match_arms(arms: List[TArm], i: Int, n: Int, names: Int, md: Int) -> Int !
     if i >= n
         0
     else
-        _a = mv_expr(list_get(arms, i).body, names, md)
+        arm = list_get(arms, i)
+        if arm.has_suite == 1
+            _a = mv_block(arm.suite, names, md)
+        else
+            _a = mv_expr(arm.body, names, md)
         mv_match_arms(arms, i + 1, n, names, md)
 
 fn mv_call(name: String, args: List[Expr], names: Int, md: Int) -> Int ! alloc
@@ -2327,7 +2338,11 @@ fn fr_arms(c: FRC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = fr_ex(c, list_get(arms, i).body, 1)
+        arm = list_get(arms, i)
+        if arm.has_suite == 1
+            _a = fr_blk(c, arm.suite)
+        else
+            _a = fr_ex(c, arm.body, 1)
         fr_arms(c, arms, i + 1, n)
 
 fn fr_blk(c: FRC, b: TBlock) -> Int ! alloc
@@ -2718,7 +2733,11 @@ fn rel_arms(arms: List[TArm], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = rel_expr(list_get(arms, i).body, out)
+        arm = list_get(arms, i)
+        if arm.has_suite == 1
+            _a = rel_block(arm.suite, out)
+        else
+            _a = rel_expr(arm.body, out)
         rel_arms(arms, i + 1, n, out)
 
 fn modes_vec(out: Int, text: String, i: Int, n: Int) -> Int ! alloc

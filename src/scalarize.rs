@@ -194,6 +194,7 @@ fn scalarize_fn(
         instructions,
         regions: f.regions.clone(),
         dim_params: f.dim_params.clone(),
+        host_literals: f.host_literals.clone(),
     }
 }
 

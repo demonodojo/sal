@@ -739,7 +739,7 @@ fn is_borrow_fn(name: &str) -> bool {
 
 fn bind_pattern_names(pat: &Pattern, env: &mut HashMap<String, Type>) {
     match pat {
-        Pattern::Wild(_) | Pattern::Int(_, _) => {}
+        Pattern::Wild(_) | Pattern::Int(_, _) | Pattern::Str(_, _) | Pattern::Regex(_, _) => {}
         Pattern::Ident(name, span) => {
             env.insert(name.clone(), named("Unknown", *span));
         }

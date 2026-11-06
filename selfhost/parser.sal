@@ -671,6 +671,9 @@ fn parse_primary(pr: Parser) -> Expr ! alloc
         args = list_new[Expr]()
         _b = list_push(args, XStr(tok_own(pr, t)))
         XCall(d"strdup", args, d"", 0)
+    elsif k == TK_RSTRING()
+        _e = p_set_err(pr, d"parse error: regex literal is only allowed in a match pattern")
+        XNone
     elsif k == TK_IF()
         parse_if(pr)
     elsif k == TK_WHILE()
@@ -806,6 +809,16 @@ fn parse_pattern(pr: Parser) -> TPat ! alloc
     k = tok_kind(pr, t)
     if k == TK_INT()
         TPat(2, tok_ival(pr, t), d"", d"", list_new[TPat]())
+    elsif k == TK_STRING()
+        TPat(4, 0, tok_own(pr, t), d"", list_new[TPat]())
+    elsif k == TK_RSTRING()
+        TPat(5, 0, tok_own(pr, t), d"", list_new[TPat]())
+    elsif k == TK_DSTRING()
+        _e = p_set_err(pr, d"parse error: expected pattern")
+        TPat(0, 0, d"", d"", list_new[TPat]())
+    elsif k == TK_FSTRING()
+        _e = p_set_err(pr, d"parse error: expected pattern")
+        TPat(0, 0, d"", d"", list_new[TPat]())
     elsif k == TK_IDENT()
         nm = tok_own(pr, t)
         if str_eq(nm, d"_") == 1
@@ -856,8 +869,19 @@ fn parse_match_arms(pr: Parser, arms: List[TArm]) -> List[TArm] ! alloc
     else
         pat = parse_pattern(pr)
         _b = p_accept(pr, TK_FATARROW())
-        body = parse_expr(pr)
-        _e = list_push(arms, TArm(pat, body))
+        if tok_kind(pr, p_peek(pr)) == TK_NL()
+            _nl = p_advance(pr)
+            _sk = p_skip_nls(pr)
+            if tok_kind(pr, p_peek(pr)) == TK_INDENT()
+                _in = p_advance(pr)
+                suite = parse_block_after_indent(pr)
+                _e = list_push(arms, TArm(pat, XNone, suite, 1))
+            else
+                _err = p_set_err(pr, d"parse error: expected indented match arm body")
+                _e = list_push(arms, TArm(pat, XNone, empty_block(), 0))
+        else
+            body = parse_expr(pr)
+            _e = list_push(arms, TArm(pat, body, empty_block(), 0))
         if p_has_err(pr) == 1
             arms
         else

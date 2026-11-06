@@ -321,7 +321,10 @@ fn dv_match_arms(c: DC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
         arm = list_get(arms, i)
         mark = dc_len(c)
         _a = dv_pattern_binds(c, arm.pat)
-        _b = dv_expr(c, arm.body)
+        if arm.has_suite == 1
+            _b = dv_scoped_block(c, arm.suite)
+        else
+            _b = dv_expr(c, arm.body)
         _s = dc_truncate(c, mark)
         dv_match_arms(c, arms, i + 1, n)
 

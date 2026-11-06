@@ -30,6 +30,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 | `alloca` | local de pila |
 | `&&` y `||` | no son un `binary`: se bajan como un `if` (`a && b` → `if a then (b != 0) else false`; `a || b` → `if a then true else (b != 0)`), así que el operando derecho solo se evalúa en la rama que lo necesita. `b != 0` normaliza un `Int` a `0`/`1`. Se intercepta en `lower_expr` antes del caso general de `Binary` |
 | binario y unario | operadores de la gramática. `+` con izquierdo `String` es `sal_str_concat` (primer paso, o izquierdo `IDENT`) o `sal_str_append` (paso siguiente de la misma cadena). El derecho se pasa como el segundo argumento de esa llamada, aunque no sea `String` |
+| `match` escalar | enteros: cadena de `if` con `eq`. `String`: `sal_str_eq` / `sal_regex_match` (POSIX ERE, devuelve `0`/`1`) en la misma cadena de `if`. Enums: `Switch` sobre tag |
 | `call` | llamada, ya monomorfizada |
 | `place_copy` | `to` |
 | `on_device` | bloque `on`, con su lugar |

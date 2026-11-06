@@ -1,4 +1,4 @@
-# exit: 3
+# exit: 2
 struct P
     name: String
     n: Int

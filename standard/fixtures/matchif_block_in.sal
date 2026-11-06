@@ -1,0 +1,9 @@
+fn f(n: Int) -> Int
+    if n == 1
+        x = 2
+        x + 1
+    else
+        0
+
+fn main() -> Int
+    f(1)

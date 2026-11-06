@@ -64,7 +64,7 @@ parse_postfix():
 
 `parse_unary` es recursivo por la derecha: menos, `!` y `to lugar` llaman otra vez a `parse_unary`. `parse_expr` reconoce `try` y vuelve a llamarse. `parse_lambda` parsea un `cmp`; si viene `=>` y la izquierda es un `IDENT`, el cuerpo es un `expr` completo (puede llevar otro `try` o otra lambda).
 
-Los `=>` de un `match` no pasan por `parse_lambda`. Se leen en `arm`, con el parser ya dentro del `match`.
+Los `=>` de un `match` no pasan por `parse_lambda`. Se leen en `arm`, con el parser ya dentro del `match`. Tras `=>`, si hay newline e indent, el cuerpo es `suite`; si no, `expr`. Token `RSTRING` (`r` pegado a `"…"`) solo en `parse_pattern`; fuera, `E_PARSE`.
 
 `if_expr` lee la condición, la suite, y luego la lista `elsif` en un bucle (cada `"elsif" expr suite` se añade al final). Después, si el token es `else`, una suite más. `elsif` y `else` quedan al nivel del `if` que acaba de cerrar su suite. En el AST, `Expr::If.elsifs` es esa lista y `else_block` sigue siendo `Option<Block>` (`None` sin `else`).
 
@@ -94,7 +94,7 @@ En `tests/frontend.rs` y `tests/parse_and_fmt.rs`:
 3. `x => y => z` es lambda cuyo cuerpo es otra lambda. `x => try x` parsea.
 4. `map(m, x => x * 2.0)` parsea, incluido `examples/gpu_roundtrip.sal`.
 5. `load[F32, 4, 4]("w.salt")` tiene dos `TypeArg::Dim`, no dos tipos llamados `"4"`.
-6. `enum Option[T]` / `Result[T, E]`, `match Some(x) =>`, `struct` con campos.
+6. `enum Option[T]` / `Result[T, E]`, `match Some(x) =>`, `match s` con `"lit"` / `r"…"`, brazo con bloque, `struct` con campos.
 7. `format(parse(s))` dos veces es idéntico en `hello`, `forward` y `gpu_roundtrip`.
 8. Sangría rota y tabulador → `E_PARSE`.
 9. Ida y vuelta JSON del AST con `schema_version` 2.

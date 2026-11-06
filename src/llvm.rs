@@ -71,6 +71,30 @@ pub struct HostTensor {
     pub data: Vec<f32>,
 }
 
+/// Host tensor literals from lowered IR plus param shape stubs from the program AST.
+pub fn host_tensors_for_module(m: &crate::ir::IrModule, prog: &Program) -> HashMap<String, HostTensor> {
+    let mut out = HashMap::new();
+    for f in &m.functions {
+        for lit in &f.host_literals {
+            out.insert(
+                lit.ir_name.clone(),
+                HostTensor {
+                    owner_fn: f.name.clone(),
+                    ir_name: lit.ir_name.clone(),
+                    rows: lit.rows,
+                    cols: lit.cols,
+                    data: lit.data.clone(),
+                },
+            );
+        }
+    }
+    for item in &prog.items {
+        let Item::Fn(f) = item else { continue };
+        collect_param_shapes(f, &mut out);
+    }
+    out
+}
+
 /// Collect tensor literals in source order and assign IR names the same way `lower` does
 /// for `let` (`tN`) and bare `name = tensor` (keeps `name`).
 pub fn collect_host_tensors(prog: &Program) -> HashMap<String, HostTensor> {
@@ -451,6 +475,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_getenv(ptr)\n");
     s.push_str("declare i64 @sal_mkdir_p(ptr)\n");
     s.push_str("declare i64 @sal_str_eq(ptr, ptr)\n");
+    s.push_str("declare i64 @sal_regex_match(ptr, ptr)\n");
     s.push_str("declare i64 @sal_str_contains(ptr, ptr)\n");
     s.push_str("declare i64 @sal_str_len(ptr)\n");
     s.push_str("declare i64 @sal_str_bytes(ptr)\n");
@@ -618,6 +643,7 @@ pub fn emit_llvm_with_externs(
             instructions: Vec::new(),
             regions: Vec::new(),
             dim_params: Vec::new(),
+            host_literals: Vec::new(),
         });
     }
     let mut user_fns: HashMap<String, &IrFunction> =
@@ -917,6 +943,7 @@ fn emit_materialize_host_tensor(
     ptrs: &mut HashMap<String, String>,
     owned: &mut Vec<String>,
     uid: &mut u32,
+    tensor_drops: &HashSet<String>,
 ) {
     if ptrs.contains_key(name) {
         return;
@@ -937,7 +964,9 @@ fn emit_materialize_host_tensor(
     }
     ptrs.insert(name.to_string(), ptr.clone());
     s.push_str(&format!("  %{name} = ptrtoint ptr %{ptr} to i64\n"));
-    owned.push(ptr);
+    if !tensor_drops.contains(name) {
+        owned.push(ptr);
+    }
 }
 
 fn fn_needs_tensor_emit(f: &IrFunction, tensors: &HashMap<String, HostTensor>) -> bool {
@@ -974,7 +1003,16 @@ fn seed_tensor_ptrs_for_fn(
                 continue;
             }
             if !t.data.is_empty() {
-                emit_materialize_host_tensor(opts, name, t, s, ptrs, owned, uid);
+                emit_materialize_host_tensor(
+                    opts,
+                    name,
+                    t,
+                    s,
+                    ptrs,
+                    owned,
+                    uid,
+                    &HashSet::new(),
+                );
             }
         }
     }
@@ -1248,6 +1286,28 @@ fn emit_host_tensor_fn(
             }
         }
     }
+    for lit in &f.host_literals {
+        if lit.data.is_empty() {
+            continue;
+        }
+        let ht = HostTensor {
+            owner_fn: f.name.clone(),
+            ir_name: lit.ir_name.clone(),
+            rows: lit.rows,
+            cols: lit.cols,
+            data: lit.data.clone(),
+        };
+        emit_materialize_host_tensor(
+            opts,
+            &lit.ir_name,
+            &ht,
+            s,
+            &mut ptrs,
+            &mut owned,
+            &mut uid,
+            &tensor_drops,
+        );
+    }
     let mut needed: Vec<String> = Vec::new();
     for inst in &f.instructions {
         match inst {
@@ -1324,6 +1384,9 @@ fn emit_host_tensor_fn(
             continue;
         }
         if let Some(t) = tensors.get(name) {
+            if t.owner_fn != owner {
+                continue;
+            }
             uid += 1;
             let nbytes = t.rows.saturating_mul(t.cols).saturating_mul(4);
             let ptr = format!("buf_{uid}");
@@ -1341,6 +1404,9 @@ fn emit_host_tensor_fn(
             }
             ptrs.insert(name.clone(), ptr.clone());
             buf_bytes.insert(name.clone(), nbytes);
+            if !t.data.is_empty() {
+                s.push_str(&format!("  %{name} = ptrtoint ptr %{ptr} to i64\n"));
+            }
             if !tensor_drops.contains(name) {
                 owned.push(ptr);
             }
@@ -1353,6 +1419,11 @@ fn emit_host_tensor_fn(
     let mut matmul_ordinal = 0usize;
     let mut region_open: HashMap<i32, bool> = HashMap::new();
     let mut last_out: Option<(String, DimOperand)> = None; // ptr name, elem count
+    let host_i64: HashSet<String> = f
+        .host_literals
+        .iter()
+        .map(|l| l.ir_name.clone())
+        .collect();
     let consts = const_int_map(f);
     let floats = const_float_map(f);
     // Dim params are names (`x_d0`), not ConstInt temps. The fused stub aliases
@@ -1366,6 +1437,9 @@ fn emit_host_tensor_fn(
     for inst in &f.instructions {
         match inst {
             IrInst::ConstInt { dest, value } => {
+                if host_i64.contains(dest) {
+                    continue;
+                }
                 s.push_str(&format!("  %{dest} = add i64 0, {value}\n"));
             }
             IrInst::ConstFloat { dest, value } => {
@@ -2739,6 +2813,15 @@ fn emit_runtime_or_user_call(
             let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_str_eq(ptr {a}, ptr {b})\n"));
+            }
+        }
+        "sal_regex_match" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_regex_match(ptr {a}, ptr {b})\n"
+                ));
             }
         }
         "sal_str_contains" => {

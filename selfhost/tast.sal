@@ -37,7 +37,7 @@ struct TEnum
     # Byte offsets of the identifiers of its variant field types, in order (see `TFn.tyat`).
     tyat: String
 
-# A pattern: kind 0 `_`, 1 binding `name`, 2 integer `ival`, 3 variant (`qual.`)`name(args)`.
+# A pattern: kind 0 `_`, 1 binding `name`, 2 integer `ival`, 3 variant, 4 string `"…"`, 5 regex `r"…"` (text in `name`).
 struct TPat
     kind: Int
     ival: Int
@@ -48,6 +48,21 @@ struct TPat
 struct TArm
     pat: TPat
     body: Expr
+    suite: TBlock
+    has_suite: Int
+
+# Match arm value: indented block tail or single expression.
+fn tarm_value(arm: TArm) -> Expr ! alloc
+    if arm.has_suite == 1
+        arm.suite.tail
+    else
+        arm.body
+
+fn tarm_block(arm: TArm) -> TBlock ! alloc
+    if arm.has_suite == 1
+        arm.suite
+    else
+        TBlock(list_new[TStmt](), arm.body)
 
 struct TElsif
     cond: Expr
@@ -210,7 +225,10 @@ fn tp_free_arms(xs: List[TArm], i: Int, n: Int) -> Int ! alloc
     else
         a = list_get(xs, i)
         _a = tp_free_pat(a.pat)
-        _b = tp_free_expr(a.body)
+        if a.has_suite == 1
+            _b = tp_free_block(a.suite)
+        else
+            _b = tp_free_expr(a.body)
         tp_free_arms(xs, i + 1, n)
 
 fn tp_free_expr(e: Expr) -> Int ! alloc
@@ -335,7 +353,7 @@ fn tc_arms_go(xs: List[TArm], i: Int, n: Int, out: List[TArm]) -> Int ! alloc
         0
     else
         a = list_get(xs, i)
-        _a = list_push(out, TArm(tc_pat(a.pat), tc_expr(a.body)))
+        _a = list_push(out, TArm(tc_pat(a.pat), tc_expr(a.body), tc_block(a.suite), a.has_suite))
         tc_arms_go(xs, i + 1, n, out)
 
 fn tc_pats(xs: List[TPat]) -> List[TPat] ! alloc
@@ -430,7 +448,7 @@ fn tv_arms_go(xs: List[TArm], i: Int, n: Int, out: List[TArm]) -> Int ! alloc
         0
     else
         a = list_get(xs, i)
-        _a = list_push(out, TArm(tv_pat(a.pat), tv_expr(a.body)))
+        _a = list_push(out, TArm(tv_pat(a.pat), tv_expr(a.body), tv_block(a.suite), a.has_suite))
         tv_arms_go(xs, i + 1, n, out)
 
 fn tv_pats(xs: List[TPat]) -> List[TPat] ! alloc

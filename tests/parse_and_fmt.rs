@@ -28,6 +28,17 @@ fn ast_json_roundtrip() {
 }
 
 #[test]
+fn fmt_match_string_and_block_arm() {
+    let src = "fn f(s: String) -> Int\n    match s\n        \"a\" => 1\n        r\"b\" => 2\n        _ =>\n            x = 3\n            x\n";
+    let p = parse(src).expect("parse match");
+    let f1 = format_program(&p);
+    let p2 = parse(&f1).expect("re-parse match");
+    let f2 = format_program(&p2);
+    assert_eq!(f1, f2);
+    assert!(f1.contains("r\"b\""));
+}
+
+#[test]
 fn fmt_grouped_newlines_match_one_line() {
     let multi = "fn f() -> Int\n    (\n        1\n        + 2\n        + 3\n    )\n";
     let one = "fn f() -> Int\n    1 + 2 + 3\n";

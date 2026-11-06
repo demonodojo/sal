@@ -91,6 +91,8 @@ char *sal_getenv(const char *name);
 int64_t sal_mkdir_p(const char *path);
 
 int64_t sal_str_eq(const char *a, const char *b);
+/* POSIX ERE: 1 if pat matches anywhere in s, else 0. Invalid pat returns 0. */
+int64_t sal_regex_match(const char *s, const char *pat);
 int64_t sal_str_contains(const char *hay, const char *needle);
 int64_t sal_str_len(const char *s);
 /* Heap copy of string bytes on cpu; returns data pointer as i64 (length = str_len(s)). */

@@ -354,8 +354,14 @@ fn format_expr(e: &Expr, indent: usize) -> String {
                 }
                 s.push_str(&pad);
                 s.push_str(&format_pattern(&arm.pattern));
-                s.push_str(" => ");
-                s.push_str(&format_expr(&arm.body, indent + 1));
+                s.push_str(" =>");
+                if matches!(arm.body, Expr::Block(_)) {
+                    s.push('\n');
+                    s.push_str(&format_expr(&arm.body, indent + 1));
+                } else {
+                    s.push(' ');
+                    s.push_str(&format_expr(&arm.body, indent + 1));
+                }
             }
             s
         }
@@ -529,6 +535,18 @@ fn format_pattern(p: &Pattern) -> String {
         Pattern::Wild(_) => "_".to_string(),
         Pattern::Ident(n, _) => n.clone(),
         Pattern::Int(n, _) => n.to_string(),
+        Pattern::Str(s, _) => {
+            let mut out = String::from("\"");
+            escape_string_text(s, &mut out);
+            out.push('"');
+            out
+        }
+        Pattern::Regex(s, _) => {
+            let mut out = String::from("r\"");
+            escape_string_text(s, &mut out);
+            out.push('"');
+            out
+        }
         Pattern::Variant {
             qual,
             name,

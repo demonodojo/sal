@@ -13,6 +13,8 @@ pub enum TokenKind {
     DupString(String),
     /// `f"…"` — cadena con interpolación `#{IDENT}`.
     FString(String),
+    /// `r"…"` — patrón regex en `match` (solo válido en `parse_pattern`).
+    RegexString(String),
     Fn,
     Let,
     If,
@@ -315,6 +317,27 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     col += 1;
                 }
                 let txt = &source[start..i];
+                if txt == "r" && i < bytes.len() && bytes[i] == b'"' {
+                    let s = read_quoted_string(
+                        bytes,
+                        source,
+                        &mut i,
+                        &mut col,
+                        start,
+                        start_line,
+                        start_col,
+                    )?;
+                    tokens.push(Token {
+                        kind: TokenKind::RegexString(s),
+                        span: Span {
+                            start: start as u32,
+                            end: i as u32,
+                            line: start_line,
+                            col: start_col,
+                        },
+                    });
+                    continue;
+                }
                 if (txt == "d" || txt == "f") && i < bytes.len() && bytes[i] == b'"' {
                     let s = read_quoted_string(
                         bytes,
@@ -362,6 +385,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             TokenKind::String(_)
                 | TokenKind::DupString(_)
                 | TokenKind::FString(_)
+                | TokenKind::RegexString(_)
                 | TokenKind::Int(_)
                 | TokenKind::Float(_)
                 | TokenKind::Attr(_)

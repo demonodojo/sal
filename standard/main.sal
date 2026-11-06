@@ -2,6 +2,7 @@ import lexer
 import patch
 import cop_dupstring
 import cop_elsif
+import cop_matchif
 import cop_and
 import cop_stringplus
 import cop_plusliteral
@@ -27,6 +28,7 @@ fn run_all_cops(src: String) -> CopsResult ! alloc
     else
         cop_dupstring(src, lx, offs)
         cop_elsif(src, lx, offs)
+        cop_matchif(src, lx, offs)
         cop_and(src, lx, offs)
         cop_stringplus(src, lx, offs)
         cop_plusliteral(src, lx, offs)

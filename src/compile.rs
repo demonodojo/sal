@@ -15,8 +15,7 @@ use crate::incremental::{
 use crate::infer::infer_program;
 use crate::ir::{ir_to_text, lower_program_with_callables_env};
 use crate::string_expr::StringEnv;
-use crate::layout::collect_layout_structs;
-use crate::llvm::{collect_host_tensors, emit_llvm_with_externs, take_unknown_callees, LlvmOptions};
+use crate::llvm::{host_tensors_for_module, emit_llvm_with_externs, take_unknown_callees, LlvmOptions};
 use crate::modules::{
     callable_fn_names, check_module_semantics, infer_module, resolve_module_graph, LoadedModule,
     ModuleGraph,
@@ -312,7 +311,7 @@ fn compile_single_module(
         let writes = prev_meta.as_ref().map(|m| m.llvm_writes).unwrap_or(1);
         (llvm, writes)
     } else {
-        let tensors = collect_host_tensors(program);
+        let tensors = host_tensors_for_module(&ir, program);
         let llvm = emit_llvm_with_externs(
             &ir,
             &LlvmOptions {
@@ -320,7 +319,7 @@ fn compile_single_module(
                 instrument: opts.instrument,
                 extern_user_fns: externs.clone(),
                 emit_entry_main,
-                struct_defs: collect_layout_structs(program),
+                struct_defs: crate::layout::collect_struct_defs(program),
                 agg_structs: strings_env.structs.clone(),
                 fn_sigs: strings_env.fn_sigs.clone(),
             },

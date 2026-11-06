@@ -1,0 +1,9 @@
+fn f(n: Int) -> Int
+    match n
+        1 =>
+            x = 2
+            x + 1
+        _ => 0
+
+fn main() -> Int
+    f(1)

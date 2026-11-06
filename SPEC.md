@@ -189,9 +189,13 @@ kernel_spec  → IDENT ("," IDENT)* "in" type
 match_expr   → "match" expr NEWLINE INDENT arm_list DEDENT
 arm_list     → arm_list arm
              | arm
-arm          → pattern "=>" expr
+arm          → pattern "=>" arm_body
+arm_body     → expr
+             | suite
 pattern      → "_"
              | INT
+             | STRING
+             | RSTRING
              | IDENT "." IDENT "(" pattern_list ")"
              | IDENT "(" pattern_list ")"
              | IDENT
@@ -206,7 +210,9 @@ elsif_list   → elsif_list "elsif" expr suite
 `&&` y `||` son los operadores lógicos. Toman valores de verdad: `Bool`, o `Int` donde distinto de cero es verdadero (como la condición de `if` y `while`), y devuelven `Bool`. Cualquier otro tipo es `E_TYPE`. Cortocircuitan: `a && b` no evalúa `b` si `a` es falso, y `a || b` no evalúa `b` si `a` es verdadero. El valor es siempre `true` o `false`, aunque el operando sea `Int`. Una comparación escalar sigue valiendo `Int` (`0` o `1`).
 
 
-El parámetro a la izquierda de `=>` en `lambda` es un `IDENT`. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda.
+El parámetro a la izquierda de `=>` en `lambda` es un `IDENT`. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda. Tras `=>`, un `arm_body` puede ser una expresión o un bloque indentado (`suite`); el bloque sigue las mismas reglas de valor, `return` y `break` que el cuerpo de un `if`.
+
+Un `match` sobre un escalar distinto de enum elige el **primer** brazo cuyo patrón coincide. `_` coincide siempre. Un `INT` exige escrutado `Int` y `==`. Un `STRING` en el patrón exige escrutado `String` e igualdad exacta (`str_eq`). Un `RSTRING` exige escrutado `String` y encaja si la expresión regular POSIX ERE (como `regexec`, sin anclar salvo `^`/`$` en el patrón) coincide en algún punto; no liga grupos. Mezclar patrones de enteros, cadenas o regex con patrones de variantes de enum en el mismo `match` es `E_TYPE`. Mezclar enteros con cadenas o regex es `E_TYPE`. Un `IDENT` que no nombra variante del enum del escrutado liga el escrutado y coincide siempre. Si ningún brazo coincide, el valor es `0` (`Int`). Los literales y regex en el patrón no mueven el `String` del escrutado. Regex inválida: `E_TYPE`. En destino `soso`, un patrón `RSTRING` es `E_TARGET` (no hay `regcomp` en ese runtime).
 
 `load[F32, 4, 4]("w.salt")` es un `postfix`: argumentos de tipo (`F32`, `4`, `4`) y luego la llamada. `4` y `?` son `type_arg`, no un tipo con el número por nombre.
 
@@ -238,6 +244,8 @@ place        → "cpu" | "gpu" | "tpu" | IDENT
 `DSTRING` es el identificador `d` inmediatamente seguido de `STRING`, sin espacio entre ambos. Es azúcar de `strdup` aplicado a esa cadena: el árbol es una llamada a `Ident("strdup")` con un argumento `STRING`, no un literal. No interpola. Un `d` suelto o seguido de espacio sigue siendo `IDENT`.
 
 `FSTRING` es el identificador `f` inmediatamente seguido de `STRING`, sin espacio entre ambos. Dentro admite `#{IDENT}`; `##{` es la secuencia literal `#{`. Cualquier otro `#{…}` mal formado es `E_PARSE`. Un `f` suelto o seguido de espacio sigue siendo `IDENT`. Antes de la comprobación de tipos, cada `FSTRING` con interpolación se reescribe a una cadena de `+` que concatena literales y variables (`String`).
+
+`RSTRING` es el identificador `r` inmediatamente seguido de `STRING`, sin espacio entre ambos. Solo es válido como `pattern` en un `match`; en cualquier otra posición es `E_PARSE`. Un `r` suelto o seguido de espacio sigue siendo `IDENT`. El texto del `STRING` es el patrón regex ya descodificado (mismos escapes que `STRING`).
 
 En `add`, si el operando izquierdo es `String`, `+` concatena con efecto `alloc` y el resultado es `String`. El operando derecho también tiene que ser `String`; si no lo es, es `E_TYPE` (con la pista de usar `str_from_int(...)` o `int_to_str(...)`). Si el derecho es `String` y el izquierdo no, es `E_TYPE`. Un asa `Int` que en realidad es un puntero a cadena se tiende con `str_from_int` (identidad sin coste, como `str_as_int` en sentido contrario). La decisión «es concatenación» la toma el tipo inferido del operando izquierdo —literal, variable, parámetro, campo de `struct`, resultado de una función con `-> String` o de un `if`—, no la forma sintáctica del árbol. La cadena asocia a la izquierda.
 

@@ -1,0 +1,8 @@
+fn f(s: String) -> Int ! alloc
+    match s
+        "a" => 1
+        "b" => 2
+        _ => 0
+
+fn main() -> Int ! alloc
+    f(d"a")

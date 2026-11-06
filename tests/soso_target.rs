@@ -103,6 +103,26 @@ fn soso_syscall_and_bytes_get_lower_to_runtime() {
 }
 
 #[test]
+fn soso_rejects_regex_match_pattern() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = root.join("main.sal");
+    std::fs::write(
+        &file,
+        "fn main() -> Int\n    match \"x\"\n        r\"a\" => 1\n",
+    )
+    .unwrap();
+    std::fs::create_dir(root.join("sdk")).unwrap();
+    std::fs::write(root.join("sdk/manifest.txt"), "sdk=1").unwrap();
+    let err = compile_file(&file, &options(root, Target::Soso)).expect_err("regex match on soso");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("ETarget") || msg.contains("E_TARGET"),
+        "regex patterns on match need regcomp:\n{msg}"
+    );
+}
+
+#[test]
 fn bytes_set_inside_if_emits_valid_llvm() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

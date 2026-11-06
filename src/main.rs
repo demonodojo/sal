@@ -14,7 +14,7 @@ use sal_compiler::infer::infer_program;
 use sal_compiler::ir::{ir_to_text, lower_program, lower_program_with_callables_env};
 use sal_compiler::modules::{callable_fn_names, infer_module, resolve_module_graph};
 use sal_compiler::string_expr::StringEnv;
-use sal_compiler::llvm::{collect_host_tensors, emit_llvm_with_tensors, LlvmOptions};
+use sal_compiler::llvm::{host_tensors_for_module, emit_llvm_with_tensors, LlvmOptions};
 use sal_compiler::parser::parse;
 use sal_compiler::typed::TypedProgram;
 
@@ -239,7 +239,7 @@ fn main() {
                 "llvm" => {
                     let mut ir = lower_program(&prog);
                     fuse_module(&mut ir);
-                    let tensors = collect_host_tensors(&prog);
+                    let tensors = host_tensors_for_module(&ir, &prog);
                     print!(
                         "{}",
                         emit_llvm_with_tensors(

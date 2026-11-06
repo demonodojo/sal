@@ -1,0 +1,5 @@
+# selfhost-xfail: el infer del selfhost no valida regex con regcomp
+# error: E_TYPE
+fn main() -> Int
+    match "x"
+        r"(" => 1

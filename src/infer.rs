@@ -784,6 +784,7 @@ Expr::Int { .. } => Type::Named {
             span,
         } => {
             let scrut_ty = check_expr(scrutinee, env, ctx, types, entries)?;
+            check_match_patterns(arms, &scrut_ty, types)?;
             let mut arm_tys = Vec::new();
             for arm in arms {
                 let mut local = env.clone();
@@ -937,6 +938,121 @@ fn resolve_field(
     Ok(subst_type_params(&f.ty, &def.type_params, args, span))
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum MatchScrutKind {
+    Int,
+    String,
+    Enum,
+    Other,
+}
+
+fn match_scrut_kind(ty: &Type, types: &TypeEnv) -> MatchScrutKind {
+    let Type::Named { name, .. } = ty else {
+        return MatchScrutKind::Other;
+    };
+    if name == "Int" {
+        MatchScrutKind::Int
+    } else if name == "String" {
+        MatchScrutKind::String
+    } else if types.enums.contains_key(name) {
+        MatchScrutKind::Enum
+    } else {
+        MatchScrutKind::Other
+    }
+}
+
+fn posix_regex_valid(pat: &str) -> bool {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    let Ok(cpat) = CString::new(pat) else {
+        return false;
+    };
+    let mut re = MaybeUninit::<libc::regex_t>::uninit();
+    let rc = unsafe {
+        libc::regcomp(
+            re.as_mut_ptr(),
+            cpat.as_ptr(),
+            libc::REG_EXTENDED | libc::REG_NOSUB,
+        )
+    };
+    if rc != 0 {
+        return false;
+    }
+    unsafe { libc::regfree(re.as_mut_ptr()) };
+    true
+}
+
+fn check_match_patterns(arms: &[MatchArm], scrut_ty: &Type, types: &TypeEnv) -> DiagResult<()> {
+    let kind = match_scrut_kind(scrut_ty, types);
+    for arm in arms {
+        check_pattern_for_scrut(&arm.pattern, kind, types)?;
+    }
+    Ok(())
+}
+
+fn check_pattern_for_scrut(
+    pat: &Pattern,
+    kind: MatchScrutKind,
+    types: &TypeEnv,
+) -> DiagResult<()> {
+    match (kind, pat) {
+        (MatchScrutKind::Int, Pattern::Int(_, _) | Pattern::Wild(_) | Pattern::Ident(_, _)) => {
+            Ok(())
+        }
+        (MatchScrutKind::Int, Pattern::Str(_, span) | Pattern::Regex(_, span)) => Err(vec![
+            Diagnostic::new(
+                ErrorCode::EType,
+                "string pattern on Int scrutinee",
+                *span,
+            ),
+        ]),
+        (MatchScrutKind::Int, Pattern::Variant { span, .. }) => Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "variant pattern on non-enum scrutinee",
+            *span,
+        )]),
+        (MatchScrutKind::String, Pattern::Str(_, _) | Pattern::Wild(_) | Pattern::Ident(_, _)) => {
+            Ok(())
+        }
+        (MatchScrutKind::String, Pattern::Regex(re, span)) => {
+            if types.target == crate::target::Target::Soso {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::ETarget,
+                    "regex match patterns need regcomp, which the soso target does not have",
+                    *span,
+                )]);
+            }
+            if !posix_regex_valid(re) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "invalid regex pattern",
+                    *span,
+                )]);
+            }
+            Ok(())
+        }
+        (MatchScrutKind::String, Pattern::Int(_, span)) => Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "integer pattern on String scrutinee",
+            *span,
+        )]),
+        (MatchScrutKind::String, Pattern::Variant { span, .. }) => Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            "variant pattern on non-enum scrutinee",
+            *span,
+        )]),
+        (MatchScrutKind::Enum, Pattern::Int(_, span) | Pattern::Str(_, span) | Pattern::Regex(_, span)) => {
+            Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "scalar pattern on enum scrutinee",
+                *span,
+            )])
+        }
+        (MatchScrutKind::Enum, _) => Ok(()),
+        (MatchScrutKind::Other, _) => Ok(()),
+    }
+}
+
 fn bind_pattern(
     pat: &Pattern,
     scrut_ty: &Type,
@@ -944,7 +1060,10 @@ fn bind_pattern(
     env: &mut HashMap<String, Type>,
 ) -> DiagResult<()> {
     match pat {
-        Pattern::Wild(_) | Pattern::Int(_, _) => Ok(()),
+        Pattern::Wild(_)
+        | Pattern::Int(_, _)
+        | Pattern::Str(_, _)
+        | Pattern::Regex(_, _) => Ok(()),
         Pattern::Ident(name, span) => {
             // Bare idents that name a unit variant of the scrutinee enum are
             // variant patterns (parser has no separate unit-variant form).

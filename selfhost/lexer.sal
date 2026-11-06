@@ -114,6 +114,9 @@ fn TK_DSTRING() -> Int
 fn TK_FSTRING() -> Int
     59
 
+fn TK_RSTRING() -> Int
+    60
+
 fn TK_STRUCT() -> Int
     37
 
@@ -818,6 +821,19 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
                 if str_char(src, end) == 34
                     free(text)
                     lex_quoted(src, end, n, out, st, TK_FSTRING())
+                else
+                    kind = kw_kind(text)
+                    _p = tok_push(out, kind, text, 0)
+                    lex_go(src, end, n, out, st, 0)
+            else
+                kind = kw_kind(text)
+                _p = tok_push(out, kind, text, 0)
+                lex_go(src, end, n, out, st, 0)
+        elsif str_eq(text, "r") == 1
+            if end < n
+                if str_char(src, end) == 34
+                    free(text)
+                    lex_quoted(src, end, n, out, st, TK_RSTRING())
                 else
                     kind = kw_kind(text)
                     _p = tok_push(out, kind, text, 0)

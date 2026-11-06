@@ -13,6 +13,15 @@ pub struct IrModule {
     pub functions: Vec<IrFunction>,
 }
 
+/// Host `tensor[[…]]` literal materialised in LLVM with this SSA name (`tN`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IrHostLiteral {
+    pub ir_name: String,
+    pub rows: u64,
+    pub cols: u64,
+    pub data: Vec<f32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IrFunction {
     pub name: String,
@@ -22,6 +31,9 @@ pub struct IrFunction {
     /// Runtime i64 lengths for each `?` axis on tensor params (`{param}_d{axis}`).
     #[serde(default)]
     pub dim_params: Vec<String>,
+    /// Tensor literals lowered in this function (`tN` matches `lower_expr` / `env`).
+    #[serde(default)]
+    pub host_literals: Vec<IrHostLiteral>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -457,6 +469,7 @@ fn lower_fn(
     let mut env: HashMap<String, String> = HashMap::new();
     let mut tensors: HashMap<String, TensorInfo> = HashMap::new();
     let mut dim_params: Vec<String> = Vec::new();
+    let mut host_literals: Vec<IrHostLiteral> = Vec::new();
     let mut strings = base.clone();
     strings.seed_params(&f.params);
 
@@ -502,6 +515,7 @@ fn lower_fn(
             &mut tensors,
             &mut dim_params,
             fn_names,
+            &mut host_literals,
             &mut strings,
         ) {
             fn_diverged = true;
@@ -519,6 +533,7 @@ fn lower_fn(
                 &mut tensors,
                 &mut dim_params,
                 fn_names,
+                &mut host_literals,
                 &mut strings,
             );
             instructions.push(IrInst::Return { value: v });
@@ -546,6 +561,7 @@ fn lower_fn(
         instructions,
         regions,
         dim_params,
+        host_literals,
     }
 }
 
@@ -1372,6 +1388,7 @@ fn lower_stmt(
     tensors: &mut HashMap<String, TensorInfo>,
     dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
     strings: &mut StringEnv,
 ) -> bool {
     // `f = x => body` / `let f = x => body`: calls of `f` inline the body.
@@ -1398,6 +1415,7 @@ fn lower_stmt(
                 tensors,
                 dim_params,
                 fn_names,
+                host_literals,
                 strings,
             );
             register_let_tensor(name, ty.as_ref(), init, &v, strings, tensors);
@@ -1410,12 +1428,34 @@ fn lower_stmt(
                             dim_params.push(dname.clone());
                         }
                         if !env.contains_key(&dname) {
-                            *counter += 1;
-                            let dssa = format!("t{counter}");
-                            instructions.push(IrInst::ConstInt {
-                                dest: dssa.clone(),
-                                value: 0,
-                            });
+                            let n = tensors
+                                .get(name)
+                                .and_then(|t| t.concrete.get(i).copied().flatten())
+                                .or_else(|| {
+                                    let (rows, cols) = tensor_lit_shape(init)?;
+                                    if dims.len() >= 2 {
+                                        let r_i = dims.len() - 2;
+                                        let c_i = dims.len() - 1;
+                                        match i {
+                                            x if x == r_i => Some(rows),
+                                            x if x == c_i => Some(cols),
+                                            _ => None,
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                });
+                            let dssa = if let Some(n) = n {
+                                push_const_dim(n, instructions, counter)
+                            } else {
+                                *counter += 1;
+                                let dssa = format!("t{counter}");
+                                instructions.push(IrInst::ConstInt {
+                                    dest: dssa.clone(),
+                                    value: 0,
+                                });
+                                dssa
+                            };
                             env.insert(dname, dssa);
                         }
                     }
@@ -1438,6 +1478,7 @@ fn lower_stmt(
                                     tensors,
                                     dim_params,
                                     fn_names,
+                                    host_literals,
                                     strings,
                                 );
                                 env.insert(name.clone(), v);
@@ -1453,6 +1494,7 @@ fn lower_stmt(
                                     tensors,
                                     dim_params,
                                     fn_names,
+                                    host_literals,
                                     strings,
                                 );
                                 let base_ssa = env.get(name).cloned().unwrap_or_else(|| "0".into());
@@ -1501,6 +1543,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 );
                 strings.accumulate = None;
@@ -1517,6 +1560,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 );
             }
@@ -1531,6 +1575,7 @@ fn lower_stmt(
                 tensors,
                 dim_params,
                 fn_names,
+                host_literals,
                 strings,
             );
         }
@@ -1545,6 +1590,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 );
                 instructions.push(IrInst::Return { value: val });
@@ -1589,6 +1635,7 @@ fn lower_stmt(
                 tensors,
                 dim_params,
                 fn_names,
+                host_literals,
                 strings,
             );
             let mut body_insts = Vec::new();
@@ -1604,6 +1651,7 @@ fn lower_stmt(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 ) {
                     body_diverged = true;
@@ -1621,6 +1669,7 @@ fn lower_stmt(
                         tensors,
                         dim_params,
                         fn_names,
+                        host_literals,
                         strings,
                     );
                 }
@@ -1809,6 +1858,34 @@ fn tensor_lit_shape(e: &Expr) -> Option<(u64, u64)> {
     Some((nrows, ncols))
 }
 
+fn tensor_lit_data(e: &Expr) -> Option<(u64, u64, Vec<f32>)> {
+    let Expr::TensorLit { rows, .. } = e else {
+        return None;
+    };
+    let nrows = rows.len() as u64;
+    let ncols = rows.first().map(|r| r.len() as u64).unwrap_or(0);
+    let mut data = Vec::with_capacity((nrows * ncols) as usize);
+    for row in rows {
+        for cell in row {
+            data.push(expr_as_f32(cell)?);
+        }
+    }
+    Some((nrows, ncols, data))
+}
+
+fn expr_as_f32(e: &Expr) -> Option<f32> {
+    match e {
+        Expr::Float { value, .. } => Some(*value as f32),
+        Expr::Int { value, .. } => Some(*value as f32),
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+            ..
+        } => expr_as_f32(expr).map(|v| -v),
+        _ => None,
+    }
+}
+
 /// Cada `elsif` baja como un `if` anidado en la rama else, en el mismo orden.
 fn else_block_for_elsifs(else_block: Option<Block>, elsifs: &[Elsif]) -> Option<Block> {
     if elsifs.is_empty() {
@@ -1839,6 +1916,7 @@ fn lower_expr_simple(
     counter: &mut u32,
     tensors: &mut HashMap<String, TensorInfo>,
     fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
     strings: &mut StringEnv,
 ) -> String {
     let mut empty_dims = Vec::new();
@@ -1851,6 +1929,7 @@ fn lower_expr_simple(
         tensors,
         &mut empty_dims,
         fn_names,
+        host_literals,
         strings,
     )
 }
@@ -2190,6 +2269,7 @@ fn lower_expr(
     tensors: &mut HashMap<String, TensorInfo>,
     dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
     strings: &mut StringEnv,
 ) -> String {
     match e {
@@ -2227,6 +2307,28 @@ fn lower_expr(
                 dest: dest.clone(),
                 value: *value,
             });
+            dest
+        }
+        Expr::TensorLit { .. } => {
+            *counter += 1;
+            let dest = format!("t{counter}");
+            if let Some((rows, cols, data)) = tensor_lit_data(e) {
+                host_literals.push(IrHostLiteral {
+                    ir_name: dest.clone(),
+                    rows,
+                    cols,
+                    data,
+                });
+                tensors.insert(
+                    dest.clone(),
+                    TensorInfo {
+                        elem: TensorElem::F32,
+                        dims: vec![Dim::Static(rows), Dim::Static(cols)],
+                        place: Place::Cpu,
+                        concrete: vec![Some(rows), Some(cols)],
+                    },
+                );
+            }
             dest
         }
         Expr::Ident { name, .. } => {
@@ -2294,6 +2396,7 @@ fn lower_expr(
                 tensors,
                 dim_params,
                 fn_names,
+                host_literals,
                 strings,
             )
         }
@@ -2309,9 +2412,9 @@ fn lower_expr(
             if is_concat && matches!(left.as_ref(), Expr::Binary { op: BinOp::Add, .. }) {
                 strings.accumulate = acc.clone();
             }
-            let l = lower_expr_simple(left, instructions, env, counter, tensors, fn_names, strings);
+            let l = lower_expr_simple(left, instructions, env, counter, tensors, fn_names, host_literals, strings);
             strings.accumulate = None;
-            let r = lower_expr_simple(right, instructions, env, counter, tensors, fn_names, strings);
+            let r = lower_expr_simple(right, instructions, env, counter, tensors, fn_names, host_literals, strings);
             *counter += 1;
             let dest = format!("t{counter}");
             if is_concat {
@@ -2392,7 +2495,7 @@ fn lower_expr(
             dest
         }
         Expr::Unary { op, expr, .. } => {
-            let inner = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, strings);
+            let inner = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, host_literals, strings);
             *counter += 1;
             let dest = format!("t{counter}");
             if let Some(info) = tensor_info_for_ssa(&inner, env, tensors) {
@@ -2459,6 +2562,7 @@ fn lower_expr(
                     counter,
                     tensors,
                     fn_names,
+                    host_literals,
                     strings,
                 ));
             }
@@ -2467,7 +2571,14 @@ fn lower_expr(
                     let mut lenv = env.clone();
                     lenv.insert(param, a.clone());
                     return lower_expr_simple(
-                        &lbody, instructions, &mut lenv, counter, tensors, fn_names, strings,
+                        &lbody,
+                        instructions,
+                        &mut lenv,
+                        counter,
+                        tensors,
+                        fn_names,
+                        host_literals,
+                        strings,
                     );
                 }
             }
@@ -2482,10 +2593,70 @@ fn lower_expr(
                         let mut lenv = env.clone();
                         lenv.insert(p.clone(), arg_names[0].clone());
                         return lower_expr_simple(
-                            body, instructions, &mut lenv, counter, tensors, fn_names, strings,
+                            body,
+                            instructions,
+                            &mut lenv,
+                            counter,
+                            tensors,
+                            fn_names,
+                            host_literals,
+                            strings,
                         );
                     }
                 }
+            }
+            if fname == "matmul" && arg_names.len() >= 2 {
+                let lhs = arg_names[0].clone();
+                let rhs = arg_names[1].clone();
+                let (m, k, n) = emit_matmul_dim_args(
+                    &lhs,
+                    &rhs,
+                    env,
+                    tensors,
+                    dim_params,
+                    instructions,
+                    counter,
+                );
+                *counter += 1;
+                let dest = format!("t{counter}");
+                let mm_func = matmul_runtime_name(tensors, &lhs);
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: mm_func,
+                    args: vec![lhs.clone(), rhs.clone(), m, k, n],
+                });
+                if let (Some(li), Some(ri)) = (
+                    tensor_info_for_ssa(&lhs, env, tensors),
+                    tensor_info_for_ssa(&rhs, env, tensors),
+                ) {
+                    if let Some(out) = matmul_out_info(&li, &ri) {
+                        tensors.insert(dest.clone(), out);
+                    }
+                }
+                return dest;
+            }
+            if fname == "qmatmul" && arg_names.len() == 4 {
+                let a = arg_names[0].clone();
+                let w = arg_names[1].clone();
+                let scale = arg_names[2].clone();
+                let group = arg_names[3].clone();
+                let (m, k, n) = emit_matmul_dim_args(
+                    &a,
+                    &w,
+                    env,
+                    tensors,
+                    dim_params,
+                    instructions,
+                    counter,
+                );
+                *counter += 1;
+                let dest = format!("t{counter}");
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_qmatmul_f32".into(),
+                    args: vec![a, w, scale, group, m, k, n],
+                });
+                return dest;
             }
             *counter += 1;
             let dest = format!("t{counter}");
@@ -2790,50 +2961,15 @@ fn lower_expr(
                 }
                 return dest;
             }
-            if fname == "qmatmul" && arg_names.len() == 4 {
-                let a = arg_names[0].clone();
-                let w = arg_names[1].clone();
-                let scale = arg_names[2].clone();
-                let group = arg_names[3].clone();
-                let (m, k, n) =
-                    emit_matmul_dim_args(&a, &w, env, tensors, dim_params, instructions, counter);
-                instructions.push(IrInst::Call {
-                    dest: Some(dest.clone()),
-                    func: "sal_qmatmul_f32".into(),
-                    args: vec![a, w, scale, group, m, k, n],
-                });
-                return dest;
-            }
             let func_name = runtime_call_name(&fname, fn_names);
-            if fname == "matmul" && arg_names.len() >= 2 {
-                let lhs = arg_names[0].clone();
-                let rhs = arg_names[1].clone();
-                let (m, k, n) =
-                    emit_matmul_dim_args(&lhs, &rhs, env, tensors, dim_params, instructions, counter);
-                let mm_func = matmul_runtime_name(tensors, &lhs);
-                instructions.push(IrInst::Call {
-                    dest: Some(dest.clone()),
-                    func: mm_func,
-                    args: vec![lhs.clone(), rhs.clone(), m, k, n],
-                });
-                if let (Some(li), Some(ri)) = (
-                    tensor_info_for_ssa(&lhs, env, tensors),
-                    tensor_info_for_ssa(&rhs, env, tensors),
-                ) {
-                    if let Some(out) = matmul_out_info(&li, &ri) {
-                        tensors.insert(dest.clone(), out);
-                    }
-                }
-            } else {
-                instructions.push(IrInst::Call {
-                    dest: Some(dest.clone()),
-                    func: func_name,
-                    args: arg_names,
-                });
-                if fn_names.contains_key(&fname) {
-                    if let Some(ret_ty) = strings.fn_tensor_rets.get(&fname) {
-                        register_ssa_tensor(ret_ty, &dest, tensors);
-                    }
+            instructions.push(IrInst::Call {
+                dest: Some(dest.clone()),
+                func: func_name,
+                args: arg_names,
+            });
+            if fn_names.contains_key(&fname) {
+                if let Some(ret_ty) = strings.fn_tensor_rets.get(&fname) {
+                    register_ssa_tensor(ret_ty, &dest, tensors);
                 }
             }
             dest
@@ -2870,6 +3006,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        host_literals,
                         &mut kstrings,
                     );
                 }
@@ -2883,6 +3020,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        host_literals,
                         &mut kstrings,
                     )
                 } else {
@@ -2932,8 +3070,6 @@ fn lower_expr(
                 .iter()
                 .find(|o| matches!(o, FusedOp::Matmul { .. }))
             {
-                *counter += 1;
-                let dest = format!("t{counter}");
                 let (m, k, n) = emit_matmul_dim_args(
                     lhs,
                     rhs,
@@ -2943,6 +3079,8 @@ fn lower_expr(
                     instructions,
                     counter,
                 );
+                *counter += 1;
+                let dest = format!("t{counter}");
                 let mm_func = matmul_runtime_name(tensors, &lhs);
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),
@@ -2973,6 +3111,7 @@ fn lower_expr(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     &mut on_strings,
                 );
             }
@@ -2986,6 +3125,7 @@ fn lower_expr(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     &mut on_strings,
                 )
             } else {
@@ -2999,7 +3139,7 @@ fn lower_expr(
             }
         }
         Expr::To { place, expr, .. } => {
-            let src = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, strings);
+            let src = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, host_literals, strings);
             *counter += 1;
             let dest = format!("t{counter}");
             instructions.push(IrInst::PlaceCopy {
@@ -3024,7 +3164,7 @@ fn lower_expr(
             ..
         } => {
             let else_block = else_block_for_elsifs(else_block.clone(), elsifs);
-            let c = lower_expr_simple(cond, instructions, env, counter, tensors, fn_names, strings);
+            let c = lower_expr_simple(cond, instructions, env, counter, tensors, fn_names, host_literals, strings);
             let mut then_body = Vec::new();
             let mut else_body = Vec::new();
             let mut then_env = env.clone();
@@ -3042,6 +3182,7 @@ fn lower_expr(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     &mut then_strings,
                 ) {
                     then_diverged = true;
@@ -3061,6 +3202,7 @@ fn lower_expr(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     &mut then_strings,
                 )
             } else {
@@ -3084,6 +3226,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        host_literals,
                         &mut else_strings,
                     ) {
                         else_diverged = true;
@@ -3103,6 +3246,7 @@ fn lower_expr(
                         tensors,
                         dim_params,
                         fn_names,
+                        host_literals,
                         &mut else_strings,
                     )
                 } else {
@@ -3139,7 +3283,7 @@ fn lower_expr(
             dest
         }
         Expr::Try { expr: inner, .. } => {
-            let v = lower_expr_simple(inner, instructions, env, counter, tensors, fn_names, strings);
+            let v = lower_expr_simple(inner, instructions, env, counter, tensors, fn_names, host_literals, strings);
             // Failing variant (`Err` / `None`) of the operand's enum.
             let fail_tag = match strings.expr_type(inner) {
                 Some(crate::ast::Type::Named { name, .. }) => strings.enums.get(name).and_then(|ed| {
@@ -3184,6 +3328,7 @@ fn lower_expr(
                 counter,
                 tensors,
                 fn_names,
+                host_literals,
                 strings,
             );
             if let Some(name) = struct_name_of_base(base, strings) {
@@ -3214,6 +3359,7 @@ fn lower_expr(
                 counter,
                 tensors,
                 fn_names,
+                host_literals,
                 strings,
             );
             let scrut_ty = strings.expr_type(scrutinee).cloned();
@@ -3228,12 +3374,54 @@ fn lower_expr(
                 tensors,
                 dim_params,
                 fn_names,
+                host_literals,
                 strings,
             )
         }
-        _ => {
-            *counter += 1;
-            format!("t{counter}")
+        Expr::Block(b) => {
+            let mut diverged = false;
+            for st in &b.stmts {
+                if lower_stmt(
+                    st,
+                    instructions,
+                    env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    host_literals,
+                    strings,
+                ) {
+                    diverged = true;
+                    break;
+                }
+            }
+            if diverged {
+                *counter += 1;
+                format!("t{counter}")
+            } else if let Some(t) = &b.tail {
+                lower_expr(
+                    t,
+                    instructions,
+                    env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    host_literals,
+                    strings,
+                )
+            } else {
+                *counter += 1;
+                let d = format!("t{counter}");
+                instructions.push(IrInst::ConstInt {
+                    dest: d.clone(),
+                    value: 0,
+                });
+                d
+            }
         }
     }
 }
@@ -3342,6 +3530,45 @@ fn frame_name_for_where(expr: &Expr, strings: &StringEnv) -> Option<String> {
     }
 }
 
+fn type_named_is(name: &str, ty: Option<&Type>) -> bool {
+    matches!(ty, Some(Type::Named { name: n, .. }) if n == name)
+}
+
+fn match_scrut_uses_enum_switch(scrut_ty: Option<&Type>, strings: &StringEnv) -> bool {
+    matches!(
+        scrut_ty,
+        Some(Type::Named { name, .. }) if strings.enums.contains_key(name)
+    )
+}
+
+fn match_should_use_switch(
+    arms: &[MatchArm],
+    scrut_ty: Option<&Type>,
+    strings: &StringEnv,
+) -> bool {
+    if !arms.iter().all(|a| {
+        matches!(
+            a.pattern,
+            Pattern::Variant { .. } | Pattern::Ident(_, _) | Pattern::Wild(_)
+        )
+    }) {
+        return false;
+    }
+    if type_named_is("String", scrut_ty) {
+        return false;
+    }
+    if arms
+        .iter()
+        .any(|a| matches!(a.pattern, Pattern::Variant { .. }))
+    {
+        return true;
+    }
+    if type_named_is("Int", scrut_ty) {
+        return true;
+    }
+    match_scrut_uses_enum_switch(scrut_ty, strings)
+}
+
 fn lower_match_chain(
     scrut: String,
     scrut_ty: Option<Type>,
@@ -3353,18 +3580,14 @@ fn lower_match_chain(
     tensors: &mut HashMap<String, TensorInfo>,
     dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
     strings: &mut StringEnv,
 ) -> String {
     if arms.is_empty() {
         *counter += 1;
         return format!("t{counter}");
     }
-    if arms.iter().all(|a| {
-        matches!(
-            a.pattern,
-            Pattern::Variant { .. } | Pattern::Ident(_, _) | Pattern::Wild(_)
-        )
-    }) {
+    if match_should_use_switch(arms, scrut_ty.as_ref(), strings) {
         return lower_match_switch(
             scrut,
             scrut_ty,
@@ -3376,12 +3599,20 @@ fn lower_match_chain(
             tensors,
             dim_params,
             fn_names,
+            host_literals,
             strings,
         );
     }
     let arm = &arms[0];
     let rest = &arms[1..];
-    let (cond_ssa, mut arm_env) = match_arm_cond(&scrut, &arm.pattern, counter, instructions);
+    let (cond_ssa, mut arm_env) = match_arm_cond(
+        &scrut,
+        &arm.pattern,
+        scrut_ty.as_ref(),
+        counter,
+        instructions,
+        strings,
+    );
     note_variant_binding(&arm.pattern, scrut_ty.as_ref(), strings);
     for (k, v) in env.iter() {
         arm_env.entry(k.clone()).or_insert_with(|| v.clone());
@@ -3396,6 +3627,7 @@ fn lower_match_chain(
         tensors,
         dim_params,
         fn_names,
+        host_literals,
         strings,
     );
     if rest.is_empty() {
@@ -3423,6 +3655,7 @@ fn lower_match_chain(
         tensors,
         dim_params,
         fn_names,
+        host_literals,
         strings,
     );
     *counter += 1;
@@ -3450,6 +3683,7 @@ fn lower_match_switch(
     tensors: &mut HashMap<String, TensorInfo>,
     dim_params: &mut Vec<String>,
     fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
     strings: &mut StringEnv,
 ) -> String {
     let mut switch_arms = Vec::new();
@@ -3468,6 +3702,7 @@ fn lower_match_switch(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 );
             }
@@ -3485,6 +3720,7 @@ fn lower_match_switch(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 );
                 switch_arms.push(SwitchArm { tag, body, value });
@@ -3501,6 +3737,7 @@ fn lower_match_switch(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 );
                 switch_arms.push(SwitchArm {
@@ -3527,6 +3764,7 @@ fn lower_match_switch(
                     tensors,
                     dim_params,
                     fn_names,
+                    host_literals,
                     strings,
                 );
                 switch_arms.push(SwitchArm { tag, body, value });
@@ -3620,15 +3858,20 @@ fn bind_one_match_payload(
         Pattern::Variant { args, .. } => {
             bind_variant_pattern_args(&payload, args, instructions, env, counter);
         }
-        Pattern::Wild(_) | Pattern::Int(_, _) => {}
+        Pattern::Wild(_)
+        | Pattern::Int(_, _)
+        | Pattern::Str(_, _)
+        | Pattern::Regex(_, _) => {}
     }
 }
 
 fn match_arm_cond(
     scrut: &str,
     pat: &Pattern,
+    scrut_ty: Option<&Type>,
     counter: &mut u32,
     instructions: &mut Vec<IrInst>,
+    strings: &StringEnv,
 ) -> (String, HashMap<String, String>) {
     let mut env = HashMap::new();
     match pat {
@@ -3652,17 +3895,66 @@ fn match_arm_cond(
             });
             (dest, env)
         }
-        Pattern::Ident(name, _) => {
-            // Unit variant (e.g. None): tag == 0
+        Pattern::Str(lit, _) => {
+            *counter += 1;
+            let rhs = format!("t{counter}");
+            instructions.push(IrInst::ConstString {
+                dest: rhs.clone(),
+                value: lit.clone(),
+            });
             *counter += 1;
             let dest = format!("t{counter}");
-            instructions.push(IrInst::Binary {
-                dest: dest.clone(),
-                op: "eq".into(),
-                left: scrut.to_string(),
-                right: "0".into(),
+            instructions.push(IrInst::Call {
+                dest: Some(dest.clone()),
+                func: "sal_str_eq".into(),
+                args: vec![scrut.to_string(), rhs],
             });
-            let _ = name;
+            (dest, env)
+        }
+        Pattern::Regex(re, _) => {
+            *counter += 1;
+            let rhs = format!("t{counter}");
+            instructions.push(IrInst::ConstString {
+                dest: rhs.clone(),
+                value: re.clone(),
+            });
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::Call {
+                dest: Some(dest.clone()),
+                func: "sal_regex_match".into(),
+                args: vec![scrut.to_string(), rhs],
+            });
+            (dest, env)
+        }
+        Pattern::Ident(name, _) => {
+            let enum_unit = match scrut_ty {
+                Some(Type::Named { name: en, .. }) => strings.enums.get(en).and_then(|edef| {
+                    edef.variants
+                        .iter()
+                        .find(|v| v.name == *name && v.fields.is_empty())
+                        .map(|_| ())
+                }),
+                _ => None,
+            };
+            if enum_unit.is_some() {
+                *counter += 1;
+                let dest = format!("t{counter}");
+                instructions.push(IrInst::Binary {
+                    dest: dest.clone(),
+                    op: "eq".into(),
+                    left: scrut.to_string(),
+                    right: "0".into(),
+                });
+                return (dest, env);
+            }
+            env.insert(name.clone(), scrut.to_string());
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::ConstInt {
+                dest: dest.clone(),
+                value: 1,
+            });
             (dest, env)
         }
         Pattern::Variant { name, args, .. } => {

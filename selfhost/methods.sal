@@ -136,7 +136,7 @@ fn mr_arms(xs: List[TArm], i: Int, n: Int, res: HT, out: List[TArm]) -> List[TAr
         out
     else
         a = list_get(xs, i)
-        _p = list_push(out, TArm(a.pat, mr_expr(a.body, res)))
+        _p = list_push(out, TArm(a.pat, mr_expr(a.body, res), mr_block(a.suite, res), a.has_suite))
         mr_arms(xs, i + 1, n, res, out)
 
 fn mr_expr(e: Expr, res: HT) -> Expr ! alloc

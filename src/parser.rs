@@ -1265,6 +1265,11 @@ impl Parser {
                     span: sp,
                 })
             }
+            TokenKind::RegexString(_) => Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "regex literal is only allowed in a match pattern",
+                self.peek().span,
+            )),
             TokenKind::Ident(name) => {
                 let sp = self.bump().span;
                 if name == "tensor" && self.at(TokenKind::LBracket) {
@@ -1413,7 +1418,27 @@ impl Parser {
             let arm_sp = self.peek().span;
             let pattern = self.parse_pattern()?;
             self.expect(TokenKind::FatArrow, "expected =>")?;
-            let body = self.parse_expr()?;
+            let body = if self.at(TokenKind::Newline) {
+                self.bump();
+                self.skip_newlines();
+                if self.at(TokenKind::Indent) {
+                    self.bump();
+                    let block = self.parse_block_inner()?;
+                    if self.at(TokenKind::Dedent) {
+                        self.bump();
+                    }
+                    self.skip_newlines();
+                    Expr::Block(block)
+                } else {
+                    return Err(Diagnostic::new(
+                        ErrorCode::EParse,
+                        "expected indented match arm body",
+                        self.peek().span,
+                    ));
+                }
+            } else {
+                self.parse_expr()?
+            };
             arms.push(MatchArm {
                 pattern,
                 body,
@@ -1547,6 +1572,19 @@ impl Parser {
                 let sp = self.bump().span;
                 Ok(Pattern::Int(n, sp))
             }
+            TokenKind::String(s) => {
+                let sp = self.bump().span;
+                Ok(Pattern::Str(s, sp))
+            }
+            TokenKind::RegexString(s) => {
+                let sp = self.bump().span;
+                Ok(Pattern::Regex(s, sp))
+            }
+            TokenKind::DupString(_) | TokenKind::FString(_) => Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "expected pattern",
+                self.peek().span,
+            )),
             _ => Err(Diagnostic::new(
                 ErrorCode::EParse,
                 "expected pattern",
