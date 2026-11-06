@@ -67,19 +67,40 @@ export const MISSING_COMPILER_MESSAGE =
 export const MISSING_STANDARD_MESSAGE =
   "No se encuentra el binario standard. Configura sal.standardPath.";
 
-/** Prefer an explicit setting, then `target/debug/<name>` in the workspace, then PATH. */
+/** `linux-x64`, `darwin-arm64`, … under `editors/vscode/bin/`. */
+export function bundledToolchainDir(extensionRoot: string): string {
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  if (process.platform === "darwin") {
+    return path.join(extensionRoot, "bin", `darwin-${arch}`);
+  }
+  if (process.platform === "win32") {
+    return path.join(extensionRoot, "bin", `win32-${arch}`);
+  }
+  return path.join(extensionRoot, "bin", `linux-${arch}`);
+}
+
+/** Setting → workspace `target/release|debug` → bundled in the VSIX → PATH. */
 export function resolveBinaryPath(
   configured: string | undefined,
   defaultName: "sal" | "standard",
   workspaceFolder: string | undefined,
+  bundledDir?: string,
 ): string {
   if (configured && configured.trim() !== "") {
     return configured.trim();
   }
   if (workspaceFolder) {
-    const local = path.join(workspaceFolder, "target", "debug", defaultName);
-    if (existsSync(local)) {
-      return local;
+    for (const profile of ["release", "debug"] as const) {
+      const local = path.join(workspaceFolder, "target", profile, defaultName);
+      if (existsSync(local)) {
+        return local;
+      }
+    }
+  }
+  if (bundledDir) {
+    const bundled = path.join(bundledDir, defaultName);
+    if (existsSync(bundled)) {
+      return bundled;
     }
   }
   return defaultName;

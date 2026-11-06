@@ -8,6 +8,7 @@ import { definitionsOf, dependencySearchBases, identifierAt } from "./definition
 import { materializeSource } from "./materialize";
 import { spawnProcess } from "./process";
 import {
+  bundledToolchainDir,
   checkFile,
   checkStyle,
   fixStyle,
@@ -28,8 +29,10 @@ const pending = new Map<string, ReturnType<typeof setTimeout>>();
 const generation = new Map<string, number>();
 let warnedMissingCompiler = false;
 let warnedMissingStandard = false;
+let extensionRoot = "";
 
 export function activate(context: vscode.ExtensionContext): void {
+  extensionRoot = context.extensionPath;
   context.subscriptions.push(diagnostics);
   registerSalLanguageMode(context);
   registerSemanticTokens(context);
@@ -370,7 +373,9 @@ function toolchainPath(
   workspaceFolder: string | undefined,
 ): string {
   const configured = vscode.workspace.getConfiguration("sal").get<string>(setting);
-  return resolveBinaryPath(configured, defaultName, workspaceFolder);
+  const bundled =
+    extensionRoot !== "" ? bundledToolchainDir(extensionRoot) : undefined;
+  return resolveBinaryPath(configured, defaultName, workspaceFolder, bundled);
 }
 
 function warnMissingCompiler(): void {

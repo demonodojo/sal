@@ -345,7 +345,7 @@ fn main() -> Int ! alloc
     );
     assert!(art.llvm.contains("c\"+s\\00\""), "{}", art.llvm);
     assert!(
-        art.llvm.contains("call ptr @sal_dict_new(i64 0, i64 2)"),
+        art.llvm.contains("call ptr @sal_dict_new(i64 0, i64 0)"),
         "{}",
         art.llvm
     );

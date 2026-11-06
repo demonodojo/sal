@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +24,7 @@ import {
   fixStyle,
   formatFile,
   parseSalWarningStderr,
+  bundledToolchainDir,
   resolveBinaryPath,
   styleFixEdits,
   type ProcessResult,
@@ -291,14 +293,36 @@ test("un standard que no arranca deja el error en el primer renglón", async () 
   assert.equal(outcome.diagnostics[0].fix, null);
 });
 
-test("resolveBinaryPath prefiere target/debug del workspace", () => {
+test("resolveBinaryPath prefiere release del workspace", () => {
   const repo = path.join(extensionRoot, "..", "..");
+  const releaseSal = path.join(repo, "target", "release", "sal");
+  const debugSal = path.join(repo, "target", "debug", "sal");
   const sal = resolveBinaryPath(undefined, "sal", repo);
-  const standard = resolveBinaryPath(undefined, "standard", repo);
-  assert.equal(sal, path.join(repo, "target", "debug", "sal"));
-  assert.equal(standard, path.join(repo, "target", "debug", "standard"));
+  if (existsSync(releaseSal)) {
+    assert.equal(sal, releaseSal);
+  } else if (existsSync(debugSal)) {
+    assert.equal(sal, debugSal);
+  } else {
+    assert.equal(sal, "sal");
+  }
   assert.equal(resolveBinaryPath("/opt/sal", "sal", repo), "/opt/sal");
   assert.equal(resolveBinaryPath(undefined, "sal", "/tmp/nowhere"), "sal");
+});
+
+test("resolveBinaryPath usa binarios empaquetados sin workspace", () => {
+  const bundled = bundledToolchainDir(extensionRoot);
+  const salPath = path.join(bundled, "sal");
+  const hadBundled = existsSync(salPath);
+  if (!hadBundled) {
+    writeFileSync(salPath, "", { mode: 0o755 });
+  }
+  try {
+    assert.equal(resolveBinaryPath(undefined, "sal", undefined, bundled), salPath);
+  } finally {
+    if (!hadBundled) {
+      unlinkSync(salPath);
+    }
+  }
 });
 
 test("standard ausente no inventa un aviso", async () => {

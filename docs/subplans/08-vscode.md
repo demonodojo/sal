@@ -14,7 +14,7 @@ Extensión en [editors/vscode/](../../editors/vscode/) que asocia `.sal`, colore
 - Cada línea `path:line:col: Style/…: mensaje` de `standard check` es un aviso. Con `--error-format json`, cada línea es un objeto con `code`, `message`, `span` (`start`/`end` en bytes) y `fix` (el reemplazo, o `null`). La extensión ofrece ese `fix` como quick fix. Un binario `standard` ausente no borra los `E_*`.
 - `sal fmt` imprime la fuente canónica por stdout. El buffer solo cambia si el proceso sale 0.
 - `SAL: Standard Fix` ejecuta `standard fix` sobre una copia temporal y sustituye el buffer con ese texto si el proceso sale 0 o 1. No escribe el fichero guardado.
-- Binario del compilador en `sal.compilerPath` (por defecto `sal` en el `PATH`). Binario del linter en `sal.standardPath` (por defecto `standard`).
+- Binario del compilador en `sal.compilerPath`. Binario del linter en `sal.standardPath`. Sin ruta explícita: `target/release` o `target/debug` del workspace, luego `bin/<plataforma>/` empaquetado en la extensión (misma versión que el release de sal), luego `PATH`.
 - Buffer sin guardar: copia temporal en el mismo directorio, borrada al terminar, para no romper `import`.
 - Ir a la definición (Ctrl+clic, Cmd+clic o F12) busca `fn`, `method`, `static` e `init` en el fichero (métodos también como `Tipo__nombre`) y, si no está, sigue los `import` como el compilador: directorio del fuente, raíz del proyecto y `path` de `[dependencies]` en `Sal.toml`, en transitivo. No reimplementa el parser: reconoce esas cabeceras e `import`.
 

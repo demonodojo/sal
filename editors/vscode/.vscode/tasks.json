@@ -11,7 +11,7 @@
     {
       "label": "cargo: toolchain",
       "type": "shell",
-      "command": "cargo build --bin sal --bin standard",
+      "command": "cargo build --release --bin sal --bin standard",
       "options": {
         "cwd": "${workspaceFolder}/../.."
       },

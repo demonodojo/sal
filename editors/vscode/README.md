@@ -4,8 +4,9 @@ Extensión para editar `.sal`. El compilador sigue siendo quien acepta o rechaza
 
 ## Requisitos
 
-- Binarios del repo: `cargo build --bin sal --bin standard` en la raíz del proyecto.
-- La extensión usa por defecto `target/debug/sal` y `target/debug/standard` del workspace abierto (así no pisa un `standard` viejo del PATH). Opcional: `sal.compilerPath` y `sal.standardPath`.
+- Binarios del repo: `cargo build --release --bin sal --bin standard` en la raíz del proyecto.
+- La extensión busca, en este orden: `sal.compilerPath` / `sal.standardPath`; `target/release` o `target/debug` del workspace; `bin/<plataforma>/` dentro de la extensión (sal **0.4.0** empaquetado); `sal` / `standard` en el `PATH`.
+- Para refrescar los binarios del VSIX: `./scripts/copy-toolchain.sh` (desde `editors/vscode/`).
 
 ## Qué hace
 
@@ -24,7 +25,7 @@ npm run compile
 npx @vscode/vsce package --no-dependencies
 ```
 
-Genera `sal-0.2.2.vsix` en este directorio (instalar con *Extensions: Install from VSIX…*).
+Genera `sal-0.4.0.vsix` en este directorio (instalar con *Extensions: Install from VSIX…*). Ejecuta `./scripts/copy-toolchain.sh` antes si quieres incluir `sal` y `standard` release en el paquete.
 
 Los tipos (`String`, `Int`, `Lex`, …) se pintan en verde solo en ficheros `.sal`; `fn` / `method` en violeta. Puedes cambiarlo en ajustes con `editor.tokenColorCustomizations` → `[sal]`.
 

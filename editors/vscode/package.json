@@ -2,7 +2,7 @@
   "name": "sal",
   "displayName": "sal",
   "description": "Editar programas sal: resaltado (method/static/init, @deprecated, break), diagnósticos E_* y W_DEPRECATED, avisos Style/*, formato e ir a definiciones.",
-  "version": "0.2.4",
+  "version": "0.4.0",
   "private": true,
   "publisher": "sal",
   "icon": "icons/sal.png",
@@ -54,12 +54,12 @@
         "sal.compilerPath": {
           "type": "string",
           "default": "",
-          "description": "Ruta del binario sal. Vacio: target/debug/sal del workspace; luego PATH."
+          "description": "Ruta del binario sal. Vacio: target/release o debug del workspace; binarios empaquetados en la extension; luego PATH."
         },
         "sal.standardPath": {
           "type": "string",
           "default": "",
-          "description": "Ruta del binario standard. Vacio: target/debug/standard del workspace; luego PATH."
+          "description": "Ruta del binario standard. Vacio: target/release o debug del workspace; binarios empaquetados en la extension; luego PATH."
         },
         "sal.syntaxDecorations": {
           "type": "boolean",
