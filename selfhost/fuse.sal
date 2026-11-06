@@ -2743,6 +2743,10 @@ fn rel_releasing(name: String) -> Int ! alloc
         1
     elsif str_eq(name, "enum_free") == 1
         1
+    elsif str_eq(name, "enum_box_id") == 1
+        1
+    elsif str_eq(name, "list_box_id") == 1
+        1
     else
         0
 

@@ -1953,6 +1953,11 @@ int64_t sal_enum_owns(int64_t v, int64_t i) {
     return (((int64_t)((uint64_t)b[0] >> 8) >> (2 * i)) & 3) != 0;
 }
 
+/* Box address for a variant-with-fields value, or 0 for a unit tag (for dedup on release). */
+int64_t sal_enum_box_id(int64_t v) {
+    return v >= 4096 ? v : 0;
+}
+
 int64_t sal_enum_tag(int64_t v) {
     if (v >= 0 && v < 4096) return v;
     return ((int64_t *)(intptr_t)v)[0] & 255;
@@ -2366,6 +2371,10 @@ void *sal_list_new_typed(int64_t elem_kind) {
 
 /* Frees a list. A list owns its elements as its descriptor says: Strings are
  * released, flat structs release their blocks and String fields. */
+int64_t sal_list_box_id(void *vp) {
+    return vp ? (int64_t)(intptr_t)vp : 0;
+}
+
 void sal_list_free(void *vp) {
     SalList *l = (SalList *)vp;
     if (!l) {

@@ -57,6 +57,9 @@ fn main() -> Int ! alloc
     Dict.new[Dict[String, Int], Bool]()
     Bytes.new(8)
     String.from_char(65)
+    s.dup()
+    f(1).dup()
+    (a + b).dup()
     "a" + "b"
     s + "c"
     0

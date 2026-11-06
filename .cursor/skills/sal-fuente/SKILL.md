@@ -70,6 +70,7 @@ Prefiere el método a la función builtin siempre que exista. Tabla completa en 
 | En vez de | Escribe |
 |-----------|---------|
 | `str_len(s)` | `s.len()` |
+| `strdup(s)` | `s.dup()` |
 | `str_eq(a, b)` | `a.eq(b)` |
 | `list_push(xs, v)` | `xs.push(v)` |
 | `list_pop(xs)` | `xs.pop()` |

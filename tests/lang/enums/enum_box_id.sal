@@ -1,0 +1,18 @@
+# exit: 1
+enum E
+    Unit
+    Box(Int)
+
+fn main() -> Int ! alloc
+    u = Unit
+    b = Box(7)
+    z = enum_box_id(u)
+    p = enum_box_id(b)
+    q = enum_box_id(b)
+    if p == q
+        if z == 0
+            1
+        else
+            0
+    else
+        0

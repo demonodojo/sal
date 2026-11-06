@@ -3,42 +3,32 @@ fn jsonc_skip_ws(s: String, i: Int, n: Int) -> Int ! alloc
         i
     else
         c = s.char(i)
-        if c == 32
-            jsonc_skip_ws(s, i + 1, n)
-        else
-            if c == 9
-                jsonc_skip_ws(s, i + 1, n)
-            else
-                if c == 10
-                    jsonc_skip_ws(s, i + 1, n)
-                else
-                    if c == 13
-                        jsonc_skip_ws(s, i + 1, n)
-                    else
-                        i
+        match c
+            32 => jsonc_skip_ws(s, i + 1, n)
+            9 => jsonc_skip_ws(s, i + 1, n)
+            10 => jsonc_skip_ws(s, i + 1, n)
+            13 => jsonc_skip_ws(s, i + 1, n)
+            _ => i
 
 fn jsonc_skip_comment(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
+    elsif s.char(i) == 10
+        i
     else
-        if s.char(i) == 10
-            i
-        else
-            jsonc_skip_comment(s, i + 1, n)
+        jsonc_skip_comment(s, i + 1, n)
 
 fn jsonc_skip(s: String, i: Int) -> Int ! alloc
     n = s.len()
     j = jsonc_skip_ws(s, i, n)
     if j + 1 >= n
         j
-    else
-        if s.char(j) == 35
-            jsonc_skip(s, jsonc_skip_comment(s, j + 1, n))
+    elsif s.char(j) == 35
+        jsonc_skip(s, jsonc_skip_comment(s, j + 1, n))
+    elsif s.char(j) == 47
+        if s.char(j + 1) == 47
+            jsonc_skip(s, jsonc_skip_comment(s, j + 2, n))
         else
-            if s.char(j) == 47
-                if s.char(j + 1) == 47
-                    jsonc_skip(s, jsonc_skip_comment(s, j + 2, n))
-                else
-                    j
-            else
-                j
+            j
+    else
+        j

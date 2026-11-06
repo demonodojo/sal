@@ -33,6 +33,7 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("String", "to_int") => "str_as_int",
         ("String", "index_of") => "str_index_of",
         ("String", "index_from") => "str_index_from",
+        ("String", "dup") => "strdup",
         ("List", "len") => "list_len",
         ("List", "push") => "list_push",
         ("List", "get") => "list_get",

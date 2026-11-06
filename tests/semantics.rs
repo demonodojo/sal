@@ -1205,6 +1205,7 @@ fn builtin_method_errors_are_e_type() {
 fn builtin_method_table_has_the_documented_entries() {
     use sal_compiler::methods::builtin_method;
     assert_eq!(builtin_method("String", "len"), Some("str_len"));
+    assert_eq!(builtin_method("String", "dup"), Some("strdup"));
     assert_eq!(builtin_method("List", "push"), Some("list_push"));
     assert_eq!(builtin_method("Dict", "has"), Some("dict_has"));
     assert_eq!(builtin_method("Bytes", "len"), Some("bytes_len"));

@@ -1,0 +1,5 @@
+# error: E_EFFECT
+fn main() -> Int
+    s = "ab"
+    t = s.dup()
+    t.len()

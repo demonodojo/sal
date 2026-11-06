@@ -1847,7 +1847,7 @@ fn infer_call(
         | "str_index_from" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
-        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "enum_owns" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
+        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "enum_owns" | "enum_box_id" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
             for a in args {
@@ -2032,7 +2032,7 @@ fn infer_call(
         "dict_len" | "dict_remove" | "dict_keys" | "dict_values" => {
             infer_dict_extra(name, args, env, ctx, types, entries, span)
         }
-        "list_len" => {
+        "list_len" | "list_box_id" => {
             if let Some(a) = args.first() {
                 check_expr(a, env, ctx, types, entries)?;
             }

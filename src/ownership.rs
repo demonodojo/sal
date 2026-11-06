@@ -725,6 +725,7 @@ fn is_borrow_fn(name: &str) -> bool {
             | "dict_free"
             | "enum_free"
             | "enum_owns"
+            | "enum_box_id"
             | "bytes_free"
             | "list_push"
             | "list_get"
@@ -736,6 +737,7 @@ fn is_borrow_fn(name: &str) -> bool {
             | "dict_keys"
             | "dict_values"
             | "list_len"
+            | "list_box_id"
     )
 }
 

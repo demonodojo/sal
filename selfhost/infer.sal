@@ -759,6 +759,8 @@ fn mth_builtin(base: String, fld: String) -> String ! alloc
         d"str_index_of"
     elsif str_eq(base, "String") + str_eq(fld, "index_from") == 2
         d"str_index_from"
+    elsif str_eq(base, "String") + str_eq(fld, "dup") == 2
+        d"strdup"
     elsif str_eq(base, "List") + str_eq(fld, "len") == 2
         d"list_len"
     elsif str_eq(base, "List") + str_eq(fld, "push") == 2

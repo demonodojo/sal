@@ -22,11 +22,11 @@
 import tast
 
 fn lp_fail(errs: List[String], cx: List[Int], msg: String) -> Int ! alloc
-    if list_get(cx, 2) == 1
+    if cx.get(2) == 1
         0
     else
-        _a = list_set(cx, 2, 1)
-        _b = list_push(errs, msg)
+        _a = cx.set(2, 1)
+        _b = errs.push(msg)
         0
 
 fn lp_empty() -> TBlock ! alloc
@@ -47,7 +47,7 @@ fn lp_expr_stmt(e: Expr) -> TStmt ! alloc
     TStmt(0, d"", e, d"", 0, XNone, 0, 0, 0)
 
 fn lp_if_stmt(cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int) -> TStmt ! alloc
-    lp_expr_stmt(XIf(cond, then_b, else_b, has_else, list_new[TElsif]()))
+    lp_expr_stmt(XIf(cond, then_b, else_b, has_else, List.new[TElsif]()))
 
 # A statement `if` has no value: the tail of a branch becomes a statement.
 fn lp_unit(b: TBlock) -> TBlock ! alloc
@@ -62,9 +62,9 @@ fn lp_unit(b: TBlock) -> TBlock ! alloc
 # Rewrites `b`, whose enclosing loop (if any) uses `flag` ("" when none). Leaves in `cx[1]` whether a
 # `break` of that loop can run inside it.
 fn lp_block(b: TBlock, flag: String, cx: List[Int], errs: List[String]) -> TBlock ! alloc
-    out = list_new[TStmt]()
-    tl = list_new[Expr]()
-    _t = list_push(tl, b.tail)
+    out = List.new[TStmt]()
+    tl = List.new[Expr]()
+    _t = tl.push(b.tail)
     br = lp_stmts(b.stmts, 0, list_len(b.stmts), flag, cx, errs, out, tl)
     if br == 1
         _s = list_set(cx, 1, 1)

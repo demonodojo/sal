@@ -57,6 +57,9 @@ fn main() -> Int ! alloc
     dict_new[Dict[String, Int], Bool]()
     bytes_new(8)
     char_to_str(65)
+    strdup(s)
+    strdup(f(1))
+    strdup(a + b)
     str_concat("a", "b")
     str_append(s, "c")
     0

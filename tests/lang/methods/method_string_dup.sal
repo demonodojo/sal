@@ -1,0 +1,6 @@
+# exit: 5
+fn main() -> Int ! alloc
+    s = d"ab"
+    t = s.dup()
+    t = t + "c"
+    s.len() + t.len()
