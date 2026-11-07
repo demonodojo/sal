@@ -390,7 +390,9 @@ fn tp_free_emit_scope(body: TBlock, lam_bodies: List[Expr]) -> Int ! alloc
 
 # Skips boxes already visited (shared handles in drops/xform trees). A unit variant
 # (`enum_box_id` 0) has no box to release.
-fn tp_free_expr_go(e: Expr, seen: HT, lseen: HT) -> Int ! alloc
+# `e` is `take`: this frees the box, so a caller that passes a struct field
+# (`b.tail`) must not also emit `sal_enum_free` for that field.
+fn tp_free_expr_go(e: Expr take, seen: HT, lseen: HT) -> Int ! alloc
     k = enum_box_id(e)
     if k == 0
         0

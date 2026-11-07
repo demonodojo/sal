@@ -1,10 +1,10 @@
 # Parser. Lists and operators grow to the left; 1 - 2 - 3 is (1 - 2) - 3.
-import result
+import "../pkg/result.sal"
 import lexer
-import tast
+import "../ast/tast.sal"
 import loops
-import methods
-import protocols
+import "../sem/methods.sal"
+import "../sem/protocols.sal"
 
 # Parser state: the token lists plus `st = [index, has_err, group depth, last statement id]` and `msg = [error text]`.
 # The lists are shared by every copy of the struct, so `list_set` on them is the mutation.

@@ -1,7 +1,7 @@
 # Protocol contracts and header claims; dynamic dispatch only through `any[P]`.
-import tast
-import tytext
-import ttypes
+import "../ast/tast.sal"
+import "../ast/tytext.sal"
+import "../ast/ttypes.sal"
 
 fn proto_find(ps: List[TProtocol], name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n

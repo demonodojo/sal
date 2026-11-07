@@ -19,7 +19,7 @@
 # more code in its block, is an error.
 #
 # `cx = [next flag number, broke (result of the last lp_block), failed]`; `errs` takes the first message.
-import tast
+import "../ast/tast.sal"
 
 fn lp_fail(errs: List[String], cx: List[Int], msg: String) -> Int ! alloc
     if cx.get(2) == 1
@@ -211,12 +211,15 @@ fn lp_if(cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List
     else
         lp_if_done(c2, t2, else_b, 0, arms, b1 | b2, cx)
 
+# `lp_if` drops `then_b` on the way out (it is a local the callee only borrows). The
+# value returned here has to own a different copy of that block.
 fn lp_if_done(cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, arms: List[TElsif], broke: Int, cx: List[Int]) -> Expr ! alloc
     _s = list_set(cx, 1, broke)
+    tb = tc_block(then_b)
     if broke == 1
-        XIf(cond, lp_unit(then_b), lp_unit(else_b), has_else, lp_unit_arms(arms, 0, list_len(arms), list_new[TElsif]()))
+        XIf(cond, lp_unit(tb), lp_unit(else_b), has_else, lp_unit_arms(arms, 0, list_len(arms), list_new[TElsif]()))
     else
-        XIf(cond, then_b, else_b, has_else, arms)
+        XIf(cond, tb, else_b, has_else, arms)
 
 fn lp_unit_arms(arms: List[TElsif], i: Int, n: Int, out: List[TElsif]) -> List[TElsif] ! alloc
     if i >= n

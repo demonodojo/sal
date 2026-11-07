@@ -75,11 +75,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("sal.standardFix", () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== "sal") return;
-      return applyStandardFix(editor.document);
-    }),
+    vscode.commands.registerCommand("sal.standardFix", (resource?: vscode.Uri) =>
+      applyStandardFixTo(resource),
+    ),
   );
 
   context.subscriptions.push(
@@ -246,6 +244,24 @@ function standardQuickFixes(
     actions.push(action);
   }
   return actions;
+}
+
+async function applyStandardFixTo(resource?: vscode.Uri): Promise<void> {
+  const document = await salDocument(resource);
+  if (!document) return;
+  return applyStandardFix(document);
+}
+
+async function salDocument(resource?: vscode.Uri): Promise<vscode.TextDocument | undefined> {
+  if (resource instanceof vscode.Uri) {
+    const document = await vscode.workspace.openTextDocument(resource);
+    if (document.languageId !== "sal") return undefined;
+    await vscode.window.showTextDocument(document, { preview: false });
+    return document;
+  }
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.languageId !== "sal") return undefined;
+  return editor.document;
 }
 
 async function applyStandardFix(document: vscode.TextDocument): Promise<void> {

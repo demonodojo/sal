@@ -1,14 +1,14 @@
 # Lowering to IR. Fusion and peak are fused.sal; descriptors are desc.sal;
 # field reads and `FRC` are frc.sal. lower_program stays here so ir.sal is not
 # imported back (ir does not import this module).
-import tast
-import tytext
-import ttypes
+import "../ast/tast.sal"
+import "../ast/tytext.sal"
+import "../ast/ttypes.sal"
 import ir
 import tensorops
 import drops
-import ownership
-import protocols
+import "../sem/ownership.sal"
+import "../sem/protocols.sal"
 import fused
 import desc
 import frc
@@ -860,6 +860,7 @@ fn lower_if(cx: Cx, cond: Expr, then_b: TBlock, else_b0: TBlock, elsifs: List[TE
     _b = cx_set_insts(cx, vec_new())
     else_b = elsifs_else_block(else_b0, elsifs)
     else_val = lower_block_value(cx, else_b)
+    keep_block(else_b)
     else_body = cx_insts(cx)
     else_snap = snap_binds(binds, 0, n0, vec_new())
     _k2 = kill_new_binds(cx, n0)
@@ -1517,8 +1518,9 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(dst, vec_get(src, i))
         copy_insts(src, dst, i + 1, n)
 
-# The IR keeps identifier and literal texts by handle until `ir_to_text`; `drops_body_t` returns
-# a tree whose boxes do not own them, so releasing the body here leaves them intact.
+# The IR keeps identifier and literal texts by handle until `ti_fn`. `drops_body_t` copies
+# them into boxes that own the copies, so this function must not release `body`: freeing
+# the block reuses those texts while the instruction vec still points at them.
 fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow, seen: List[TFn]) -> Int ! alloc
     env = tenv_clone(env_tpl)
     _t = tenv_truncate(env, 0)
@@ -1544,7 +1546,20 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TE
     _g = vec_push(out, cx_regions(cx))
     _h = vec_push(out, cx_literals(cx))
     _z = cx_free(cx)
+    keep_block(body)
     out
+
+# Hands a block to no one. The IR aliases its strings, and releasing the block would free them.
+fn keep_block(b: TBlock take) -> Int ! alloc
+    keep_expr(b.tail)
+    keep_stmts(b.stmts)
+    0
+
+fn keep_expr(e: Expr take) -> Int ! alloc
+    0
+
+fn keep_stmts(xs: List[TStmt] take) -> Int ! alloc
+    0
 
 fn lower_fn_tail(cx: Cx, tail: Expr) -> Int ! alloc
     match tail

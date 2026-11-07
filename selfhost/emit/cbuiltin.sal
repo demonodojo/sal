@@ -1,7 +1,7 @@
 # Builtin calls lowered to C. The tensor path is cir.sal.
 import cenv
 import cir
-import tensorops
+import "../ir/tensorops.sal"
 
 fn emit_c_builtin(fname: String, args: Int, stmts: Int) -> String ! alloc
     if str_eq(fname, d"str_as_int") == 1

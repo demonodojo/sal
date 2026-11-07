@@ -401,6 +401,28 @@ test("el temporal del buffer sucio se borra", async () => {
   await assert.rejects(() => stat(held.path));
 });
 
+test("Standard Fix está en el menú contextual de un .sal", async () => {
+  const manifest = JSON.parse(
+    await readFile(path.join(extensionRoot, "package.json"), "utf8"),
+  ) as {
+    contributes: {
+      menus: Record<string, { command: string; when: string }[]>;
+    };
+  };
+  const menus: Record<string, string> = {
+    "editor/context": "editorLangId == sal",
+    "editor/title/context": "resourceLangId == sal",
+    "explorer/context": "resourceLangId == sal",
+  };
+  for (const [menu, when] of Object.entries(menus)) {
+    const hit = manifest.contributes.menus[menu]?.find(
+      (entry) => entry.command === "sal.standardFix",
+    );
+    assert.ok(hit, menu);
+    assert.equal(hit.when, when);
+  }
+});
+
 test("los .sal usan el icono de sal", async () => {
   const manifest = JSON.parse(
     await readFile(path.join(extensionRoot, "package.json"), "utf8"),

@@ -4,8 +4,8 @@ description: >-
   Guía la liberación de locales en sal: el pase insert_drops, la cola de
   campos de un struct, el espejo en el selfhost y la invariante de no liberar
   dos veces ni usar tras liberar. Usar al editar src/drops.rs, la cola de
-  structs en src/ir.rs, runtime/sal_runtime.c, selfhost/drops.sal, la cola en
-  selfhost/fuse.sal, emit.sal (cola C), tests/drops.rs, tests/lang/drops, o al
+  structs en src/ir.rs, runtime/sal_runtime.c, selfhost/ir/drops.sal, la cola en
+  selfhost/ir/fuse.sal, emit.sal (cola C), tests/drops.rs, tests/lang/drops, o al
   hablar de free, list_free, dict_free, enum_free, bytes_free, tensor_free,
   fugas, LEAK, uso tras liberar o doble liberación, struct_copy, list_get de
   struct, struct_free_box o caja de struct.
@@ -21,11 +21,11 @@ Invariante: una fuga es aceptable; una doble liberación o un uso tras liberar n
 
 | Qué | Arranque | Selfhost |
 |-----|----------|----------|
-| Locales (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free`, `tensor_free`, `struct_free`, `struct_free_box`), antes de bajar | `src/drops.rs` (`insert_drops`) | `selfhost/drops.sal` (`drops_body_t`) |
-| Cola de campos de un struct (IR) | `src/ir.rs` (`free_struct_strings`, `field_reads`, `emit_struct_string_drops`, `field_drop`) | `selfhost/frc.sal` (`FRC` y sus métodos, `drop_fields`, `fr_*`), `selfhost/desc.sal` (`drop_field_fn`), `selfhost/fuse.sal` (`emit_struct_drops`) |
+| Locales (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free`, `tensor_free`, `struct_free`, `struct_free_box`), antes de bajar | `src/drops.rs` (`insert_drops`) | `selfhost/ir/drops.sal` (`drops_body_t`) |
+| Cola de campos de un struct (IR) | `src/ir.rs` (`free_struct_strings`, `field_reads`, `emit_struct_string_drops`, `field_drop`) | `selfhost/ir/frc.sal` (`FRC` y sus métodos, `drop_fields`, `fr_*`), `selfhost/ir/desc.sal` (`drop_field_fn`), `selfhost/ir/fuse.sal` (`emit_struct_drops`) |
 | Caja de copia `list_get`/`list_pop` tras llamada escalarizada (IR, tras fusión) | `src/ir.rs` (`finish_module_box_shell_drops`), invocado desde `src/fuse.rs` (`fuse_module` / `fuse_module_opts`) | el arranque en `emit ir` / tests; ver nota selfhost abajo |
-| Cola en C (stage2) | — | `selfhost/emit.sal` (`emit_c_struct_scope_frees`, importa `frc` y `desc`) |
-| Movimiento parcial y `borrow`/`take` | `src/ownership.rs` | `selfhost/ownership.sal` |
+| Cola en C (stage2) | — | `selfhost/emit/emit.sal` (`emit_c_struct_scope_frees`, importa `frc` y `desc`) |
+| Movimiento parcial y `borrow`/`take` | `src/ownership.rs` | `selfhost/sem/ownership.sal` |
 | Runtime (`sal_dict_*`, `sal_enum_*`, vistas `bytes`, `sal_tensor_free`) | `runtime/sal_runtime.c` | el mismo |
 
 `insert_drops` va entre `TypedProgram` y `lower_program`. No compruebes en un pase posterior lo que este ya decide. El selfhost arma `drop_env_t` en `fuse.sal` (`enum:`, `struct:`, `desc:`, `ownfn:`) para `dr_*`.
@@ -93,7 +93,7 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 
 - **`sal_dict_get`**: construye `Some`; si `V` es `String`, cabecera del `Some` marca dueño del campo copiado; enum/struct se copian en profundidad.
 
-## Autohospedaje (`selfhost/tast.sal`)
+## Autohospedaje (`selfhost/ast/tast.sal`)
 
 - **`tp_free_*`**: `seen` deduplica cajas por `enum_box_id` (una variante unitaria da 0 y no hay nada que soltar). `lseen` deduplica listas por `list_box_id` (`stmts` de un bloque, argumentos de llamada, `elsifs`, `arms`), porque el desazucarado comparte listas entre bloques (`lp_unit` devuelve `TBlock(b.stmts, XNone)`).
 - Descriptores: `List[TStmt]` es `S(isEsiEiii)` (`+` si es dueña). `list_get` devuelve una copia y sus cajas `E` se copian con `sal_enum_copy`, que solo copia los campos poseídos. `List[TFn]`, `List[TProgram]`, `List[TStruct]`, `List[TEnum]`, `List[TArm]` y `List[TElsif]` son `i`: `list_get` devuelve el mismo valor, y `list_set`/`list_free` no sueltan el elemento.

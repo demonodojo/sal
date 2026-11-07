@@ -1,8 +1,8 @@
 # IR values: instructions, binds, regions, and tensor shapes.
 # lower_program lives in fuse.sal so fusion can read this module without an import cycle.
-import lexer
-import tast
-import ttypes
+import "../front/lexer.sal"
+import "../ast/tast.sal"
+import "../ast/ttypes.sal"
 
 fn II_CI() -> Int
     0
@@ -924,16 +924,18 @@ fn drop_name_for(inner: Expr) -> Int ! alloc
         _ => str_as_int(d"tmp")
 
 # The `else` of an `if` with `elsif` arms: each arm nests as an `if` in the else of the one before.
+# The caller frees the returned block, so it must own its lists and exprs. Returning
+# `else_b` or an arm body would free the AST the rest of lowering still walks.
 fn elsifs_else_block(else_b: TBlock, arms: List[TElsif]) -> TBlock ! alloc
     n = list_len(arms)
     if n == 0
-        else_b
+        tc_block(else_b)
     else
         elsifs_else_go(else_b, arms, n - 1)
 
 fn elsifs_else_go(else_b: TBlock, arms: List[TElsif], i: Int) -> TBlock ! alloc
     arm = list_get(arms, i)
-    nested = XIf(arm.cond, arm.body, else_b, 1, list_new[TElsif]())
+    nested = XIf(tc_expr(arm.cond), tc_block(arm.body), tc_block(else_b), 1, list_new[TElsif]())
     blk = TBlock(list_new[TStmt](), nested)
     if i == 0
         blk

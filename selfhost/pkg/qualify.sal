@@ -1,9 +1,9 @@
 # Import qualifiers and export link names (mirror of src/qualify.rs).
 import result
 import modules
-import lexer
-import tshape
-import tast
+import "../front/lexer.sal"
+import "../ast/tshape.sal"
+import "../ast/tast.sal"
 
 fn str_replace_chr(s: String, ch: Int, rep: String) -> String ! alloc
     str_replace_chr_go(s, 0, str_len(s), ch, rep, d"")
@@ -96,26 +96,6 @@ fn name_is_clashing(order: Graph, n: Int, name: Int) -> Int ! alloc
     else
         0
 
-fn graph_has_import_alias(order: Graph, n: Int) -> Int ! alloc
-    graph_has_import_alias_go(order, 0, n)
-
-fn graph_has_import_alias_go(order: Graph, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        if import_alias_any(list_get(order.progs, i).aliases, 0, list_len(list_get(order.progs, i).aliases)) == 1
-            1
-        else
-            graph_has_import_alias_go(order, i + 1, n)
-
-fn import_alias_any(aliases: List[String], i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    elsif str_len(list_get(aliases, i)) != 0
-        1
-    else
-        import_alias_any(aliases, i + 1, n)
-
 fn graph_has_any_clash(order: Graph, n: Int) -> Int ! alloc
     graph_has_any_clash_go(order, 0, n)
 
@@ -147,13 +127,24 @@ fn struct_list_has_clash(order: Graph, n: Int, sts: List[TStruct], i: Int, sn: I
     else
         struct_list_has_clash(order, n, sts, i + 1, sn)
 
-fn needs_qualify(order: Graph, n: Int) -> Int ! alloc
-    if graph_has_import_alias(order, n) == 1
-        1
-    elsif graph_has_any_clash(order, n) == 1
+# Any import: bare and qualified calls are checked against what each module can see
+# (`needs_qualify` in src/qualify.rs). An alias is one kind of import.
+fn graph_has_import(order: Graph, n: Int) -> Int ! alloc
+    graph_has_import_go(order, 0, n)
+
+fn graph_has_import_go(order: Graph, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif order.progs.get(i).imports.len() > 0
         1
     else
-        0
+        graph_has_import_go(order, i + 1, n)
+
+fn needs_qualify(order: Graph, n: Int) -> Int ! alloc
+    if graph_has_import(order, n) == 1
+        1
+    else
+        graph_has_any_clash(order, n)
 
 fn links_push(links: Int, dep_key: Int, export_name: Int, link: Int) -> Int ! alloc
     row = vec_new()

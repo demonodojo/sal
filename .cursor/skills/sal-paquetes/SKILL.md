@@ -4,13 +4,13 @@ description: >-
   Dependencias y resolución de imports de sal: Sal.toml, Sal.lock, sal fetch,
   sal install, sal add, dependencias path/git/github/std, caché global,
   sal_modules/ y símbolos modid__nombre. Usar al editar src/packages.rs,
-  src/modules.rs, src/qualify.rs, selfhost/modules.sal, al tocar un manifiesto
+  src/modules.rs, src/qualify.rs, selfhost/pkg/modules.sal, al tocar un manifiesto
   o lock, o ante errores «import not found».
 ---
 
 # Paquetes y módulos
 
-Autoridad: [SPEC.md](../../../SPEC.md) (sección Módulos) y [docs/subplans/06-toolchain.md](../../../docs/subplans/06-toolchain.md). Código: `src/packages.rs` (descarga, lock, install), `src/modules.rs` (grafo, resolución), `src/qualify.rs` (calificadores y alias). Espejo de solo lectura en `selfhost/modules.sal` y `selfhost/qualify.sal`.
+Autoridad: [SPEC.md](../../../SPEC.md) (sección Módulos) y [docs/subplans/06-toolchain.md](../../../docs/subplans/06-toolchain.md). Código: `src/packages.rs` (descarga, lock, install), `src/modules.rs` (grafo, resolución), `src/qualify.rs` (calificadores y alias). Espejo de solo lectura en `selfhost/pkg/modules.sal` y `selfhost/pkg/qualify.sal`.
 
 ## Manifiesto
 
@@ -61,4 +61,4 @@ Directorio del fichero que importa → raíz del proyecto → `sal_modules/` →
 
 `tests/toolchain.rs`: `fetch_*`, `import_not_found_when_lock_package_missing_from_cache`, `sal_modules_import_resolves_inside_the_project`, `install_git_dep_*`, `install_path_dep_*`, `install_std_dep_*`, `install_rejects_*`, `install_github_release_dep_picks_highest_matching_release`. Fijan `SAL_PACKAGES` en un tempdir y usan repos `file://`: no tocan red ni `~/.sal`. Módulos: `tests/lang/modules/mods/` y `tests/import_graph/`. Selfhost: `cargo test --test selfhost_ir selfhost_resolves_git`.
 
-Un cambio de resolución se hace en `src/modules.rs` **y** `selfhost/modules.sal`; la descarga solo en Rust. Ver [sal-autohospedaje](../sal-autohospedaje/SKILL.md).
+Un cambio de resolución se hace en `src/modules.rs` **y** `selfhost/pkg/modules.sal`; la descarga solo en Rust. Ver [sal-autohospedaje](../sal-autohospedaje/SKILL.md).

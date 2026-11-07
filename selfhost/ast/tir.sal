@@ -1,7 +1,7 @@
 # Typed form of the IR that `fuse` builds: instructions, functions, regions and fused ops.
 # Everything is a flat struct (Strings, Ints and Lists) so `list_get` copies an element whole.
 # Bridge: `ti_module` reads the handle IR; `ti_free_module` releases the typed copy.
-import ir
+import "../ir/ir.sal"
 import tast
 
 # `kind` is an `II_*` code. Slots by kind (handle slot in brackets):

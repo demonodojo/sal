@@ -8,9 +8,9 @@
 # - `methods_check_defs` rejects a receiver that is not a user type, `__` in a name and duplicates.
 # - `prepare_methods` infers the program once, recording what each dotted call resolved to (`infer_record`),
 #   and rewrites those calls. What did not resolve keeps its dotted name and fails in the regular inference.
-import tast
+import "../ast/tast.sal"
 import infer
-import thash
+import "../ast/thash.sal"
 
 fn mr_fail(errs: List[String], msg: String) -> Int ! alloc
     if errs.len() == 0

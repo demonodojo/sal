@@ -1,8 +1,8 @@
 # IR → C for functions that touch tensors.
-import tast
-import tir
+import "../ast/tast.sal"
+import "../ast/tir.sal"
 import cenv
-import tensorops
+import "../ir/tensorops.sal"
 
 # ---- IR -> C (functions that touch tensors) ----
 # Context: [pool, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main]

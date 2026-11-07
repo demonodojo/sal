@@ -1,8 +1,8 @@
 # `W_DEPRECATED`: a warning at each use of an item marked `@deprecated("…")`. Mirror of `src/deprecation.rs`.
 # The selfhost has no spans, so a warning names the file but not the line and column.
-import tast
-import modules
-import lexer
+import "../ast/tast.sal"
+import "../pkg/modules.sal"
+import "../front/lexer.sal"
 
 # A file being checked: its path and the preprocessed text its offsets refer to.
 struct Where

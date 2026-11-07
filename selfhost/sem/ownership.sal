@@ -2,11 +2,11 @@
 # value (String, tensor, struct) moves when it is bound, returned, passed to a
 # move fn or sent with `to`; using it afterwards is E_MOVED. It reads the typed AST
 # (`tast.sal`) and types names with the typed environment (`ttypes.sal`).
-import result
-import tast
-import tytext
-import ttypes
-import thash
+import "../pkg/result.sal"
+import "../ast/tast.sal"
+import "../ast/tytext.sal"
+import "../ast/ttypes.sal"
+import "../ast/thash.sal"
 
 # `moved` is the set of moved names and `name.field` keys; `err` is empty or holds the first
 # message; `params` are the names of the function's parameters, `taken` those moved out of and

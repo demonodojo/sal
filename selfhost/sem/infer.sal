@@ -2,12 +2,12 @@
 # of src/infer.rs. Tensors, containers and builtins whose signature is not modelled
 # here have type `Unknown`, which is compatible with everything. It reads the typed AST
 # (`tast.sal`); a type is its text and "" stands for an absent one.
-import tshape
-import result
-import tast
-import ttypes
-import thash
-import tytext
+import "../ast/tshape.sal"
+import "../pkg/result.sal"
+import "../ast/tast.sal"
+import "../ast/ttypes.sal"
+import "../ast/thash.sal"
+import "../ast/tytext.sal"
 import protocols
 
 # `env` binds names to type texts; `err` is empty or holds the first message; `ret` and `allow`

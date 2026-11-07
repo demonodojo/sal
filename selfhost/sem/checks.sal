@@ -1,11 +1,11 @@
 # Semantic passes in the bootstrap's order: types, effects, ownership, devices.
-import result
+import "../pkg/result.sal"
 import infer
 import effects
 import attrs
 import ownership
 import device
-import tast
+import "../ast/tast.sal"
 
 # Ok(0), or Err(message) for the first violation in `prog`.
 fn check_program(tp: TProgram) -> Int ! alloc

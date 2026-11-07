@@ -1,8 +1,8 @@
 # Device pass, the mirror of src/device.rs: tensors keep to their place, an `on`
 # block only touches tensors on that place, `String` lives on cpu. It reads the typed AST
 # (`tast.sal`); type texts are `String`s and "" means unknown.
-import result
-import tast
+import "../pkg/result.sal"
+import "../ast/tast.sal"
 
 # Context: the bindings in scope (`names[i]` has type text `tys[i]`), `st = [has_err]`,
 # `msg = [error text]` and `place = [expected place, "" when none]`.

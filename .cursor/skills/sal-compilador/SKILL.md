@@ -38,7 +38,7 @@ No saltar un pase ni comprobar en un pase posterior lo que ya tiene dueño.
 | Builtins mal usados (aridad, tipo del argumento) | `src/infer.rs` | `tests/builtin_errors.rs` (siempre `E_TYPE`) |
 | Destino linux/soso, `syscall` | `src/target.rs`, `runtime/soso/linux_host_syscall.c`, `src/llvm.rs` | `tests/soso_target.rs`, `tests/cli_target.rs`, `tests/std_io_linux.rs` |
 | Comportamiento del lenguaje de extremo a extremo | cualquier pase + `runtime/` | `tests/lang/<área>/*.sal` (ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
-| Liberación de locales y cola de struct (`insert_drops`; `struct_free_box`; cola `List[struct]` en `field_drop`; `sal_struct_free_box` en runtime) | `src/drops.rs`, `src/ir.rs`, `src/fuse.rs`, `runtime/sal_runtime.c` | `tests/drops.rs`, `tests/lang/drops/`, `tests/instrument_sal.rs`; espejo `selfhost/drops.sal`, `selfhost/fuse.sal`, `selfhost/frc.sal` — [sal-memoria](../sal-memoria/SKILL.md) |
+| Liberación de locales y cola de struct (`insert_drops`; `struct_free_box`; cola `List[struct]` en `field_drop`; `sal_struct_free_box` en runtime) | `src/drops.rs`, `src/ir.rs`, `src/fuse.rs`, `runtime/sal_runtime.c` | `tests/drops.rs`, `tests/lang/drops/`, `tests/instrument_sal.rs`; espejo `selfhost/ir/drops.sal`, `selfhost/ir/fuse.sal`, `selfhost/ir/frc.sal` — [sal-memoria](../sal-memoria/SKILL.md) |
 | SSA, `TensorBin`/`TensorUnary`, `ColumnBin`, fusión, `peak_bytes`, caja de `list_get` tras fusión | `src/ir.rs`, `src/fuse.rs` (`fuse_module`, `fuse_module_opts`) | `tests/forward_ir.rs`, `tests/drops.rs` |
 | Heaps, kernels, `load`, `.salt`; `sal_tensor_bin_f32`, `sal_tensor_cmp_f32`, … | `runtime/sal_runtime.c`, `runtime/sal_runtime.h`, `runtime/kernels.c`, `src/llvm.rs` | `tests/kernels.rs`, `tests/exec_matmul.rs`, `tests/exec_column.rs`, `tests/exec_salt.rs` |
 | Bajada y enlace | `src/llvm.rs`, `src/compile.rs` | `tests/run_hello.rs` |
@@ -62,7 +62,7 @@ Cada producción recursiva por la izquierda es un bucle que crece el hijo izquie
 
 Operadores columnares: la bajada emite `IrInst::TensorBin` / `TensorUnary` (no `Binary` escalar). Dentro de `on`, la cola del bloque se baja entera; `collect_fused_ops` acumula `FusedOp::ColumnBin`. LLVM reserva buffer y llama a `sal_tensor_*` en `emit_main` (F32 en el corte actual).
 
-`if`: la SPEC permite `elsif` y omitir `else`. En el AST, `Expr::If.elsifs` es la lista de ramas y `else_block` es `Option<Block>` (`None` sin `else`). `parse_if` acumula `elsif` en un bucle y solo consume `else` si el siguiente token lo es; ambos se asocian al `if` interno que acaba de cerrar su suite. Sin `else`, inferencia da `Unit`; la bajada a IR anida cada `elsif` como un `if` en la rama else, y la rama vacía sigue siendo el valor `0`. El espejo en sal está en `selfhost/parser.sal` (`parse_if`, `parse_elsif_arms`, `else_b = 0`).
+`if`: la SPEC permite `elsif` y omitir `else`. En el AST, `Expr::If.elsifs` es la lista de ramas y `else_block` es `Option<Block>` (`None` sin `else`). `parse_if` acumula `elsif` en un bucle y solo consume `else` si el siguiente token lo es; ambos se asocian al `if` interno que acaba de cerrar su suite. Sin `else`, inferencia da `Unit`; la bajada a IR anida cada `elsif` como un `if` en la rama else, y la rama vacía sigue siendo el valor `0`. El espejo en sal está en `selfhost/front/parser.sal` (`parse_if`, `parse_elsif_arms`, `else_b = 0`).
 
 ## Semántica que no se relaja
 
@@ -86,7 +86,7 @@ En el bucle multi-módulo de `compile_file`, cada `.sal` baja y fusiona por sepa
 
 Resolución de `import` (Rust y sal): directorio del fuente → raíz del proyecto → `sal_modules/` del proyecto → `path` en `[dependencies]` de `Sal.toml` → entradas de `Sal.lock` en la caché global (`$SAL_PACKAGES` o `~/.sal/packages/<nombre>-<versión>/`). Un path `clave/resto` enlaza `sal_modules/clave/resto`, o la clave del manifiesto, o el `name` del lock. El texto del import no depende de dónde esté instalado sal.
 
-`sal fetch [--update]` resuelve tags `vX.Y.Z` (semver caret en el manifiesto), clona en la caché y escribe `Sal.lock`. `sal install [--update]` hace `fetch` y enlaza cada dependencia en `sal_modules/<nombre>`. `sal add <nombre> --git URL [--version REQ]` edita el manifiesto y ejecuta `fetch`. `check` y `build` no usan red; paquete ausente en caché → `E_TYPE` (`import not found`). La descarga solo la hace la CLI de Rust; `selfhost/modules.sal` lee lock y caché ya materializados. Detalle en [sal-paquetes](../sal-paquetes/SKILL.md).
+`sal fetch [--update]` resuelve tags `vX.Y.Z` (semver caret en el manifiesto), clona en la caché y escribe `Sal.lock`. `sal install [--update]` hace `fetch` y enlaza cada dependencia en `sal_modules/<nombre>`. `sal add <nombre> --git URL [--version REQ]` edita el manifiesto y ejecuta `fetch`. `check` y `build` no usan red; paquete ausente en caché → `E_TYPE` (`import not found`). La descarga solo la hace la CLI de Rust; `selfhost/pkg/modules.sal` lee lock y caché ya materializados. Detalle en [sal-paquetes](../sal-paquetes/SKILL.md).
 
 ## Otras órdenes de la CLI
 

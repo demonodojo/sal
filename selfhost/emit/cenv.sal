@@ -1,5 +1,5 @@
 # C emission shared by the AST path and the IR path: mangling, literals, headers.
-import tast
+import "../ast/tast.sal"
 
 fn arg_at(args: Int, i: Int) -> String ! alloc
     if i < vec_len(args)

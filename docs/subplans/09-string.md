@@ -59,7 +59,7 @@ Ver [SPEC.md](../../SPEC.md) sección Memoria (`String`).
 | Fase | Archivos |
 |------|----------|
 | 0 | `SPEC.md`, este documento |
-| 1 | `src/llvm.rs`, `selfhost/emit.sal` |
+| 1 | `src/llvm.rs`, `selfhost/emit/emit.sal` |
 | 2 | `runtime/sal_runtime.c`, `runtime/sal_runtime.h` |
 | 3 | `runtime/sal_runtime.c`, `tests/runtime_str_threads.rs`, `tests/support/` |
 | 4a | `src/device.rs`, `tests/semantics.rs` |

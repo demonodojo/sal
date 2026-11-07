@@ -1,6 +1,6 @@
 # IR as text (`ir_to_text`).
-import tir
-import fused
+import "../ast/tir.sal"
+import "../ir/fused.sal"
 
 # ---- ir_to_text ----
 fn qquote() -> String ! alloc

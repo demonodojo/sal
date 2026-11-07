@@ -1,8 +1,8 @@
 # Field reads and the struct-field glue. `FRC` lives with its methods.
 # The vec membership helpers are also what the while-assign walk in fuse.sal uses.
-import tast
-import tytext
-import ttypes
+import "../ast/tast.sal"
+import "../ast/tytext.sal"
+import "../ast/ttypes.sal"
 import drops
 import desc
 import ir

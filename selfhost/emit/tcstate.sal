@@ -1,6 +1,6 @@
 # Emission state of one function on the AST → C path, with the operations on it.
-import tast
-import ttypes
+import "../ast/tast.sal"
+import "../ast/ttypes.sal"
 import cenv
 
 # Emission state of one function. The counter, the accumulator name and the small-matmul quirk live

@@ -7,9 +7,9 @@
 # name to `[1 (has fields) or 2 (unit), per-field "may own heap memory" flags]` and
 # `struct:Name` to a flat struct's per-field "is a String" flags; `ro`: fn name to its parameters'
 # read-only flags) are still handle maps built by `fuse.sal`, so they are `Int` fields here.
-import tast
-import tytext
-import tshape
+import "../ast/tast.sal"
+import "../ast/tytext.sal"
+import "../ast/tshape.sal"
 
 # Name to number; a missing name reads 0.
 struct NM

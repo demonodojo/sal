@@ -1,7 +1,7 @@
 # Type descriptors (`list_desc` / `field_drop` in the bootstrap) shared by lowering and C.
-import tast
-import tytext
-import ttypes
+import "../ast/tast.sal"
+import "../ast/tytext.sal"
+import "../ast/ttypes.sal"
 import drops
 
 # Runtime container kind: Int 0, Float 1, Bool 2, String 3.

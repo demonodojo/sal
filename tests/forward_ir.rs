@@ -232,7 +232,7 @@ fn show(s: String, h: Int) -> String ! alloc
 #[test]
 fn nested_variant_match_binds_inner_ident() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(root.join("selfhost/drops.sal")).expect("drops.sal");
+    let src = std::fs::read_to_string(root.join("selfhost/ir/drops.sal")).expect("drops.sal");
     let p = parse(&src).expect("parse drops");
     let ir = lower_program(&p);
     let owned = ir

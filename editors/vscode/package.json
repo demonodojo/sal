@@ -138,6 +138,27 @@
           "command": "sal.standardFix",
           "when": "editorLangId == sal"
         }
+      ],
+      "editor/context": [
+        {
+          "command": "sal.standardFix",
+          "when": "editorLangId == sal",
+          "group": "1_modification"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "sal.standardFix",
+          "when": "resourceLangId == sal",
+          "group": "1_modification"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "sal.standardFix",
+          "when": "resourceLangId == sal",
+          "group": "2_workspace"
+        }
       ]
     }
   },

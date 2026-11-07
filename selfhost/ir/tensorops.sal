@@ -1,7 +1,7 @@
 # Shape-aware lowering of the tensor builtins, the mirror of the matching arms
 # of lower_expr in src/ir.rs. Each op reads the shapes of its operands from the
 # bindings, emits the same instructions, and registers the shape of its result.
-import tast
+import "../ast/tast.sal"
 import ir
 
 fn vec_copy(src: Int) -> Int ! alloc

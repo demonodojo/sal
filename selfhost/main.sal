@@ -1,7 +1,7 @@
 # NATIVE_SELFHOST_COMPILER
 # Driver. Lexer, parser, IR, fusion, modules, cache, and emit are separate modules.
-import result
-import emit
+import "pkg/result.sal"
+import "emit/emit.sal"
 
 fn model_check(ir: Int, needle: String) -> Int ! alloc
     str_contains(ir, needle)

@@ -1,11 +1,11 @@
 # Import graph: resolve, load, and check module names.
 import result
-import lexer
-import parser
-import methods
-import infer
-import checks
-import tast
+import "../front/lexer.sal"
+import "../front/parser.sal"
+import "../sem/methods.sal"
+import "../sem/infer.sal"
+import "../sem/checks.sal"
+import "../ast/tast.sal"
 
 # ---- Modules ----
 fn project_root() -> String ! io, alloc

@@ -1,6 +1,6 @@
 # Fused ops and peak_bytes. Lowering that consumes them stays in fuse.sal
 # so this module can be imported without a cycle.
-import tast
+import "../ast/tast.sal"
 import ir
 
 fn FO_MATMUL() -> Int

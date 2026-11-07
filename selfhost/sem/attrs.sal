@@ -2,10 +2,10 @@
 # src/ownership.rs: `@layout(c)` fields, `@no_heap` fns, `@stack` types and
 # assignments to `@frozen` bindings. (`@stack` initializers that allocate are
 # caught by the effects pass.) It reads the typed AST (`tast.sal`).
-import result
+import "../pkg/result.sal"
 import effects
-import tast
-import ttypes
+import "../ast/tast.sal"
+import "../ast/ttypes.sal"
 
 # End of the first word of a type text (`Int ` -> 3).
 fn at_word_end(text: String, i: Int, n: Int) -> Int ! alloc

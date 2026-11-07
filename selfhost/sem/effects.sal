@@ -1,8 +1,8 @@
 # Effects pass, the mirror of src/effects.rs: a fn body may only use the
 # effects its signature declares. It reads the typed AST (`tast.sal`).
-import result
-import tast
-import ttypes
+import "../pkg/result.sal"
+import "../ast/tast.sal"
+import "../ast/ttypes.sal"
 
 # Used effects: `flags` holds io, alloc, panic, gpu, tpu and, in slot 5, the `@stack let` violation.
 # `callees` lists the fns a body may call: `names[i]` declares the effects in bit mask `masks[i]`.
