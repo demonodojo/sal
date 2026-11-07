@@ -259,7 +259,7 @@ fn tp_lseen_take(id: Int, lseen: HT) -> Int ! alloc
         if lseen.get(key).len() > 0
             1
         else
-            lseen.put(key, d"1")
+            lseen.put(key, "1")
             0
 
 # Empty shells for `list_set` before `list_free` on owned list elements (expr/stmt/pat already released).
@@ -267,7 +267,7 @@ fn tp_empty_block() -> TBlock ! alloc
     TBlock(List.new[TStmt](), XNone)
 
 fn tp_pat_cleared() -> TPat ! alloc
-    TPat(0, 0, d"".dup(), d"".dup(), List.new[TPat]())
+    TPat(0, 0, "", "", List.new[TPat]())
 
 # Dup `name`/`ty` before freeing `expr` when they can alias `XIdent`/`XStr` substrings (e.g. `let x = x + 1`).
 fn tp_free_stmts_go(stmts: List[TStmt], i: Int, n: Int, seen: HT, lseen: HT) -> Int ! alloc
@@ -402,7 +402,7 @@ fn tp_free_expr_go(e: Expr take, seen: HT, lseen: HT) -> Int ! alloc
         if seen.get(key).len() > 0
             0
         else
-            seen.put(key, d"1")
+            seen.put(key, "1")
             tp_free_children_go(e, seen, lseen)
             enum_free(e)
 

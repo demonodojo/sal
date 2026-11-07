@@ -7,14 +7,11 @@ import drops
 # Runtime container kind: Int 0, Float 1, Bool 2, String 3.
 fn scalar_kind_text(txt: String, i: Int, j: Int) -> Int ! alloc
     t = trim_type_piece(str_slice(txt, i, j))
-    if str_eq(t, "Float") == 1
-        1
-    elsif str_eq(t, "Bool") == 1
-        2
-    elsif str_eq(t, "String") == 1
-        3
-    else
-        0
+    match t
+        "Float" => 1
+        "Bool" => 2
+        "String" => 3
+        _ => 0
 
 fn shift_left_one(i: Int) -> Int ! alloc
     if i == 0
@@ -35,20 +32,20 @@ fn desc_type_text(structs: List[TStruct], enums: List[TEnum], txt: String, owned
 # The descriptor without the ownership mark (see `desc_type_text`).
 fn desc_base_text(structs: List[TStruct], enums: List[TEnum], txt: String, owned: Int) -> String ! alloc
     t = trim_type_piece(txt)
-    if str_eq(t, "String") == 1
-        d"s"
+    if t.eq("String") == 1
+        "s"
     elsif owned == 0
         desc_struct_or_i(structs, enums, t)
-    elsif enum_named_t(enums, t, 0, list_len(enums)) == 1
-        d"E"
+    elsif enum_named_t(enums, t, 0, enums.len()) == 1
+        "E"
     else
         desc_struct_or_i(structs, enums, t)
 
 # The struct descriptor of `t`, or "i" for anything else (a borrowed value).
 fn desc_struct_or_i(structs: List[TStruct], enums: List[TEnum], t: String) -> String ! alloc
     sd = desc_struct_text(structs, enums, t, 0)
-    if str_len(sd) == 0
-        d"i"
+    if sd.len() == 0
+        "i"
     else
         sd
 
@@ -57,7 +54,7 @@ fn desc_struct_or_i(structs: List[TStruct], enums: List[TEnum], t: String) -> St
 fn enum_named_t(enums: List[TEnum], t: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif str_eq(list_get(enums, i).name, t) == 1
+    elsif enums.get(i).name.eq(t) == 1
         1
     else
         enum_named_t(enums, t, i + 1, n)
@@ -66,19 +63,19 @@ fn enum_named_t(enums: List[TEnum], t: String, i: Int, n: Int) -> Int ! alloc
 fn desc_struct_text(structs: List[TStruct], enums: List[TEnum], name: String, depth: Int) -> String ! alloc
     si = tt_struct_find(structs, name)
     if depth > 16
-        d""
+        ""
     elsif si < 0
-        d""
+        ""
     else
         sd = list_get(structs, si)
         if list_len(sd.tparams) > 0
-            d""
+            ""
         elsif list_len(sd.fields) < 2
-            d""
+            ""
         else
-            body = desc_fields_text(structs, enums, sd.fields, 0, list_len(sd.fields), depth + 1, d"")
-            if str_contains(body, d"?") == 1
-                d""
+            body = desc_fields_text(structs, enums, sd.fields, 0, list_len(sd.fields), depth + 1, "")
+            if str_contains(body, "?") == 1
+                ""
             else
                 "S(" + body + ")"
 
@@ -92,20 +89,20 @@ fn desc_fields_text(structs: List[TStruct], enums: List[TEnum], fields: List[TFi
 # One field: `i` a Copy scalar, `s` a String, `E` an enum box, `S(..)` a struct; "?" otherwise.
 fn desc_field_text(structs: List[TStruct], enums: List[TEnum], ty: String, depth: Int) -> String ! alloc
     t = trim_type_piece(ty)
-    if str_eq(t, "String") == 1
-        d"s"
-    elsif str_eq(t, "Int") == 1
-        d"i"
-    elsif str_eq(t, "Float") == 1
-        d"i"
-    elsif str_eq(t, "Bool") == 1
-        d"i"
-    elsif enum_named_t(enums, t, 0, list_len(enums)) == 1
-        d"E"
+    if t.eq("String") == 1
+        "s"
+    elsif t.eq("Int") == 1
+        "i"
+    elsif t.eq("Float") == 1
+        "i"
+    elsif t.eq("Bool") == 1
+        "i"
+    elsif enum_named_t(enums, t, 0, enums.len()) == 1
+        "E"
     else
         sd = desc_struct_text(structs, enums, t, depth)
         if str_len(sd) == 0
-            d"?"
+            "?"
         else
             sd
 
@@ -137,39 +134,39 @@ fn drop_field_fn(structs: List[TStruct], enums: List[TEnum], ty: String, g: Int,
     t = trim_type_piece(ty)
     base = ty_base(t)
     if str_eq(t, "String") == 1
-        d"sal_free"
+        "sal_free"
     elsif enum_named_t(enums, t, 0, list_len(enums)) == 1
-        d"sal_enum_free"
+        "sal_enum_free"
     elsif g < 2
         drop_struct_fn(structs, enums, t, g, depth)
     elsif str_eq(base, "Bytes") == 1
-        d"sal_bytes_free"
+        "sal_bytes_free"
     elsif str_eq(base, "List") == 1
         elem = trim_spaces(tt_arg(t, 0))
         if flat_value_text(elem) == 1
-            d"sal_list_free"
+            "sal_list_free"
         elsif str_eq(elem, "String") == 1
             if tainted == 1
-                d""
+                ""
             else
-                d"sal_list_free"
+                "sal_list_free"
         elsif str_len(desc_struct_text(structs, enums, elem, 0)) > 0
             if tainted == 1
-                d""
+                ""
             else
-                d"sal_list_free"
+                "sal_list_free"
         else
-            d""
+            ""
     elsif str_eq(base, "Dict") == 1
         if dict_flat_text(t) == 1
-            d"sal_dict_free"
+            "sal_dict_free"
         elsif dict_string_value_text(t) == 1
             if tainted == 1
-                d""
+                ""
             else
-                d"sal_dict_free"
+                "sal_dict_free"
         else
-            d""
+            ""
     else
         drop_struct_fn(structs, enums, t, g, depth)
 
@@ -177,17 +174,17 @@ fn drop_field_fn(structs: List[TStruct], enums: List[TEnum], ty: String, g: Int,
 fn drop_struct_fn(structs: List[TStruct], enums: List[TEnum], t: String, g: Int, depth: Int) -> String ! alloc
     si = tt_struct_find(structs, t)
     if g % 2 == 0
-        d""
+        ""
     elsif si < 0
-        d""
+        ""
     elsif depth >= 8
-        d""
+        ""
     elsif list_len(list_get(structs, si).tparams) > 0
-        d""
+        ""
     elsif struct_has_heap_t(structs, enums, list_get(structs, si), depth + 1, g) == 0
-        d""
+        ""
     else
-        d"struct"
+        "struct"
 
 # A Copy scalar type name (`Int`, `Float`, `Bool`).
 fn flat_value_text(t: String) -> Int ! alloc

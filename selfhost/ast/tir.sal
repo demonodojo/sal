@@ -100,7 +100,7 @@ fn ti_carries(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
         0
     else
         c = vec_get(hs, i)
-        out.push(ti_mk(0, ti_slot_s(c, 0), ti_slot_s(c, 1), ti_slot_s(c, 2), d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts()))
+        out.push(ti_mk(0, ti_slot_s(c, 0), ti_slot_s(c, 1), ti_slot_s(c, 2), "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts()))
         ti_carries(hs, i + 1, n, out)
 
 fn ti_carries_of(hs: Int) -> List[Inst] ! alloc
@@ -114,7 +114,7 @@ fn ti_arms(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
         0
     else
         a = vec_get(hs, i)
-        _a = out.push(ti_mk(0, d"", ti_slot_s(a, 2), d"", d"", d"", d"", vec_get(a, 0), 0, 0, List.new[String](), ti_insts_of(vec_get(a, 1)), ti_no_insts(), ti_no_insts()))
+        _a = out.push(ti_mk(0, "", ti_slot_s(a, 2), "", "", "", "", vec_get(a, 0), 0, 0, List.new[String](), ti_insts_of(vec_get(a, 1)), ti_no_insts(), ti_no_insts()))
         ti_arms(hs, i + 1, n, out)
 
 fn ti_arms_of(hs: Int) -> List[Inst] ! alloc
@@ -125,47 +125,47 @@ fn ti_arms_of(hs: Int) -> List[Inst] ! alloc
 fn ti_inst(h: Int) -> Inst ! alloc
     k = vec_get(h, 0)
     if k == II_CI()
-        ti_mk(k, ti_slot_s(h, 1), d"", d"", d"", d"", d"", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), "", "", "", "", "", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CS()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_BIN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), ti_slot_s(h, 4), d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), ti_slot_s(h, 4), "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CF()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 3), d"", d"", d"", d"", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 3), "", "", "", "", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_TBIN()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), ti_slot_s(h, 6), ti_slot_s(h, 7), vec_get(h, 3), vec_get(h, 8), 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_TUN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), d"", ti_slot_s(h, 6), vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), "", ti_slot_s(h, 6), vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CALL()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 4), ti_call_shape(h), 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 4), ti_call_shape(h), 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_PLACE()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_RET()
-        ti_mk(k, d"", ti_slot_s(h, 1), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, "", ti_slot_s(h, 1), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_DROP()
-        ti_mk(k, d"", ti_slot_s(h, 1), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, "", ti_slot_s(h, 1), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_IF()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), ti_slot_s(h, 6), d"", d"", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 3)), ti_insts_of(vec_get(h, 4)), ti_carries_of(vec_get(h, 7)))
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), ti_slot_s(h, 6), "", "", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 3)), ti_insts_of(vec_get(h, 4)), ti_carries_of(vec_get(h, 7)))
     elsif k == II_WHILE()
-        ti_mk(k, d"", ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 1)), ti_insts_of(vec_get(h, 3)), ti_carries_of(vec_get(h, 4)))
+        ti_mk(k, "", ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 1)), ti_insts_of(vec_get(h, 3)), ti_carries_of(vec_get(h, 4)))
     elsif k == II_AGG()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_EXTRACT()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), "", "", "", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_REBIND()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_EMAKE()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 3), vec_get(h, 5), 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), vec_get(h, 5), 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_EFIELD()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_SWITCH()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), d"", d"", d"", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 4)), ti_no_insts(), ti_arms_of(vec_get(h, 3)))
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), "", "", "", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 4)), ti_no_insts(), ti_arms_of(vec_get(h, 3)))
     elsif k == II_ANYBOX()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), "", "", "", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_ANYCALL()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 3), 0, 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), 0, 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     else
-        ti_mk(k, d"", d"", d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, "", "", "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
 
 # ---- regions ----
 fn ti_ops(hs: Int, i: Int, n: Int, out: List[FOp]) -> Int ! alloc
@@ -283,7 +283,7 @@ fn tt_slot(h: Int, i: Int) -> Int ! alloc
 
 fn tt_str(h: Int) -> String ! alloc
     if h == 0
-        d""
+        ""
     else
         str_from_int(h)
 

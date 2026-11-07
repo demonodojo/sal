@@ -101,14 +101,18 @@ static SalPage *sal_page_map(size_t cap) {
     pg->off = 0;
     pg->map_size = map_size;
     pg->data = raw + hdr;
+#ifdef SAL_INSTRUMENT
     sal_instrument_alloc(pg->data, (int64_t)cap, 0, "arena");
+#endif
     return pg;
 }
 
 static void sal_page_unmap(SalPage *pg) {
     unsigned char *raw = (unsigned char *)pg;
     size_t n = pg->map_size;
+#ifdef SAL_INSTRUMENT
     sal_instrument_free(pg->data);
+#endif
 #ifdef SAL_SOSO
     free(raw);
 #else

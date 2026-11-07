@@ -187,7 +187,7 @@ method FRC.type_of(name: String) -> String ! alloc
 
 method FRC.type_at(name: String, i: Int) -> String ! alloc
     if i < 0
-        d""
+        ""
     elsif self.names.get(i).eq(name) == 1
         self.tys.get(i)
     else
@@ -217,12 +217,12 @@ fn fr_chain(e: Expr, fl: List[String]) -> String ! alloc
     match e
         XIdent(name) => name
         XField(base, field) => fr_chain_push(base, field, fl)
-        _ => d""
+        _ => ""
 
 fn fr_chain_push(base: Expr, field: String, fl: List[String]) -> String ! alloc
     root = fr_chain(base, fl)
     if str_len(root) == 0
-        d""
+        ""
     else
         _p = list_push(fl, field)
         root
@@ -292,8 +292,8 @@ fn fr_mark_heap(c: FRC, root: String, t: String, last: Int, moving: Int) -> Int 
 
 # Records a `String` field path handed out by value (`return n.name`).
 fn fr_mark_string_moved(c: FRC, root: String, fl: List[String]) -> Int ! alloc
-    path = fr_join_fields(fl, 0, list_len(fl), d"")
-    fr_add(c.sm, root + d"\x1e" + path)
+    path = fr_join_fields(fl, 0, list_len(fl), "")
+    fr_add(c.sm, root + "\x1e" + path)
 
 fn fr_join_fields(fl: List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -301,13 +301,13 @@ fn fr_join_fields(fl: List[String], i: Int, n: Int, acc: String) -> String ! all
     elsif str_len(acc) == 0
         fr_join_fields(fl, i + 1, n, list_get(fl, i))
     else
-        fr_join_fields(fl, i + 1, n, acc + d"." + list_get(fl, i))
+        fr_join_fields(fl, i + 1, n, acc + "." + list_get(fl, i))
 
 fn fr_sm_has(c: FRC, root: String, path: String) -> Int ! alloc
-    assigned_has(c.sm, str_as_int(root + d"\x1e" + path), 0, vec_len(c.sm))
+    assigned_has(c.sm, str_as_int(root + "\x1e" + path), 0, vec_len(c.sm))
 
 fn fr_ct_has(c: FRC, root: String, path: String) -> Int ! alloc
-    assigned_has(c.ct, str_as_int(root + d"\x1e" + path), 0, vec_len(c.ct))
+    assigned_has(c.ct, str_as_int(root + "\x1e" + path), 0, vec_len(c.ct))
 
 # A struct field read whole (the last link): its nested structs are left alone.
 fn fr_mark_struct(c: FRC, root: String, last: Int) -> Int ! alloc
@@ -318,7 +318,7 @@ fn fr_mark_struct(c: FRC, root: String, last: Int) -> Int ! alloc
 
 fn fr_field_type(fields: List[TField], name: String, i: Int, n: Int) -> String ! alloc
     if i >= n
-        d""
+        ""
     elsif str_eq(list_get(fields, i).name, name) == 1
         list_get(fields, i).ty
     else
@@ -378,7 +378,7 @@ fn fr_call_container_taint(c: FRC, name: String, args: List[Expr]) -> Int ! allo
     else
         fl = list_new[String]()
         root = fr_chain(list_get(args, 0), fl)
-        path = fr_join_fields(fl, 0, list_len(fl), d"")
+        path = fr_join_fields(fl, 0, list_len(fl), "")
         if str_len(root) == 0
             0
         elsif str_len(path) == 0
@@ -386,7 +386,7 @@ fn fr_call_container_taint(c: FRC, name: String, args: List[Expr]) -> Int ! allo
         elsif owned_fresh_builtin(list_get(args, list_len(args) - 1)) == 1
             0
         else
-            fr_add(c.ct, root + d"\x1e" + path)
+            fr_add(c.ct, root + "\x1e" + path)
 
 # Whether argument i of the call to `name` may be kept (a `take` parameter, or a builtin that
 # does not only read it): the caller then cannot keep the struct's fields.
@@ -483,7 +483,7 @@ fn drop_fields(cx: Cx, base: Int, sd: TStruct, fields: List[TField], i: Int, n: 
         path = if str_len(path_p) == 0
             fld.name
         else
-            path_p + d"." + fld.name
+            path_p + "." + fld.name
         taint = fr_ct_has(fr, root, path)
         fnm = drop_field_fn(cx_structs(cx), cx.enums, fld.ty, g, depth, taint)
         if str_len(fnm) == 0
@@ -522,4 +522,4 @@ fn drop_nested(cx: Cx, base: Int, sd: TStruct, i: Int, fty: String, depth: Int, 
     drop_fields(cx, ssa, inner, inner.fields, 0, list_len(inner.fields), depth + 1, g, fr, root, path)
 
 fn drop_struct_fields(cx: Cx, base: Int, sd: TStruct, g: Int, fr: FRC, root: String) -> Int ! alloc
-    drop_fields(cx, base, sd, sd.fields, 0, list_len(sd.fields), 0, g, fr, root, d"")
+    drop_fields(cx, base, sd, sd.fields, 0, list_len(sd.fields), 0, g, fr, root, "")

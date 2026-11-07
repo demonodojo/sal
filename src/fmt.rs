@@ -2,8 +2,38 @@ use crate::ast::*;
 use crate::ownership::infer_param_modes;
 
 pub fn format_program(p: &Program) -> String {
-    let annotated = infer_param_modes(p);
+    let mut annotated = infer_param_modes(p);
+    // `caller_param_modes` promotes an inferred borrow to take for callers when the
+    // body consumes the parameter. Writing `borrow` would freeze the declared mode
+    // and the caller would free the value again. Leave that mode unwritten.
+    hide_consumed_inferred_borrows(p, &mut annotated);
     format_program_raw(&annotated)
+}
+
+fn hide_consumed_inferred_borrows(source: &Program, annotated: &mut Program) {
+    let Ok(inferred) = crate::infer::infer_program(annotated) else {
+        return;
+    };
+    let env = crate::string_expr::StringEnv::from_program(annotated).with_infer(&inferred);
+    let _ = crate::drops::insert_drops(annotated, &env.types, &env.structs, &env.enums, &[]);
+    let consumed = crate::drops::last_consumed_params();
+    for (src_item, ann_item) in source.items.iter().zip(annotated.items.iter_mut()) {
+        let (Item::Fn(src), Item::Fn(ann)) = (src_item, ann_item) else {
+            continue;
+        };
+        let Some(flags) = consumed.get(&ann.name) else {
+            continue;
+        };
+        for (i, param) in ann.params.iter_mut().enumerate() {
+            let declared = src.params.get(i).map(|p| p.mode).unwrap_or(ParamMode::Inferred);
+            if declared == ParamMode::Inferred
+                && param.mode == ParamMode::Borrow
+                && flags.get(i) == Some(&true)
+            {
+                param.mode = ParamMode::Inferred;
+            }
+        }
+    }
 }
 
 fn format_program_raw(p: &Program) -> String {

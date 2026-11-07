@@ -45,6 +45,6 @@ fn module_order_vec(x: Int) -> Int ! alloc
 
 fn result_format_err(r: Int) -> String ! alloc
     msg = result_unwrap(r)
-    acc = d"Err("
+    acc = "Err("
     acc = acc + str_from_int(msg) + ")\n"
     acc

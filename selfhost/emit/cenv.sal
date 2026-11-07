@@ -5,14 +5,14 @@ fn arg_at(args: Int, i: Int) -> String ! alloc
     if i < vec_len(args)
         str_from_int(vec_get(args, i))
     else
-        d"0"
+        "0"
 
 # One-field structs are transparent; wider ones are a heap array of int64
 # slots, so a struct value is the pointer to it.
 fn emit_c_struct_ctor(arg_parts: Int) -> String ! alloc
     n = vec_len(arg_parts)
     if n == 0
-        d"0"
+        "0"
     elsif n == 1
         str_from_int(vec_get(arg_parts, 0))
     else
@@ -76,7 +76,7 @@ fn c_octal(c: Int) -> String ! alloc
     "\\" + int_to_str(c / 64) + int_to_str((c / 8) % 8) + int_to_str(c % 8)
 
 fn c_escape_str(s: String) -> String ! alloc
-    acc = d"\""
+    acc = "\""
     if str_len(s) == 0
         acc + "\""
     else
@@ -85,15 +85,15 @@ fn c_escape_str(s: String) -> String ! alloc
 
 fn c_string_init(s: String) -> String ! alloc
     if str_len(s) == 0
-        d"\"\""
+        "\"\""
     else
-        acc = d"\""
+        acc = "\""
         acc2 = c_escape_go(s, 0, str_len(s), acc)
         acc2 + "\""
 
 fn lit_pool_new() -> Int ! alloc
     v = vec_new()
-    _a = vec_push(v, str_as_int(d""))
+    _a = vec_push(v, str_as_int(""))
     _b = vec_push(v, vec_new())
     _c = vec_push(v, vec_new())
     _d = vec_push(v, 0)
@@ -161,9 +161,9 @@ fn lit_pool_find(s: Int, texts: Int, i: Int, n: Int) -> Int ! alloc
         lit_pool_find(s, texts, i + 1, n)
 
 fn sal_lit_decl_n(s: String, name: String, n: Int) -> String ! alloc
-    init = select_str(str_len(s) == 0, d"\"\"", c_string_init(s))
+    init = select_str(str_len(s) == 0, "\"\"", c_string_init(s))
     arr = n + 1
-    acc = d"static const struct { int64_t cap; int64_t len; char b["
+    acc = "static const struct { int64_t cap; int64_t len; char b["
     acc = acc + int_to_str(arr)
     acc = acc + "]; } __attribute__((aligned(16))) "
     acc = acc + name
@@ -197,7 +197,7 @@ fn ensure_sal_lit(s: Int, pool: Int) -> String ! alloc
         cast + ".b)"
 
 fn runtime_decls() -> String ! alloc
-    d"#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\n" + d"int64_t sal_regex_match(const char *s, const char *pat);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_index_of(const char *a, const char *b);\nint64_t sal_str_index_from(const char *a, const char *b, int64_t start);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nvoid sal_arena_enter(void);\nvoid sal_arena_leave(void);\nint64_t sal_arena_export(void *owner, int64_t raw, int64_t tag, const char *desc);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_enum_new(int64_t tag, int64_t n);\nint64_t sal_enum_set(int64_t v, int64_t i, int64_t x);\nint64_t sal_enum_tag(int64_t v);\nint64_t sal_enum_owns(int64_t v, int64_t i);\nint64_t sal_enum_box_id(int64_t v);\nint64_t sal_enum_field(int64_t v, int64_t i);\nvoid sal_list_free(void *v);\nint64_t sal_list_box_id(void *v);\nvoid *sal_list_new_desc(const char *desc);\nvoid sal_dict_free(void *v);\nvoid *sal_dict_new(int64_t key_kind, int64_t val_kind);\nvoid sal_enum_free(int64_t v);\nvoid sal_bytes_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) { return ((int64_t *)(uintptr_t)p)[-2]; }\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) { int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }\nstatic float *sal_tn_alloc(int64_t n) { return sal_tn_alloc_bytes(n, 4); }\nstatic float *sal_tn_from(int64_t raw, int64_t n) { float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }\nstatic float *sal_tn_copy(int64_t p) { if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) { double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) { case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; } int64_t o; __builtin_memcpy(&o, &r, 8); return o; }\nint64_t sal_any_box(int64_t vtable, int64_t drop_slot, int64_t payload);\nvoid sal_any_free(int64_t box);\nint64_t sal_any_call(int64_t box, int64_t slot, int64_t argc, int64_t a0, int64_t a1, int64_t a2, int64_t a3);\n\n"
+    "#include <stdint.h>\n#include <stdlib.h>\nvoid sal_runtime_init(int64_t argc, const char **argv);\nchar *sal_argv(int64_t i);\nchar *sal_read_file(const char *path);\nint64_t sal_write_file(const char *path, const char *data);\nint64_t sal_print_str(const char *data);\nint64_t sal_eprint_str(const char *data);\nchar *sal_getenv(const char *name);\nint64_t sal_mkdir_p(const char *path);\nint64_t sal_str_eq(const char *a, const char *b);\n" + "int64_t sal_regex_match(const char *s, const char *pat);\nint64_t sal_str_contains(const char *a, const char *b);\nint64_t sal_str_index_of(const char *a, const char *b);\nint64_t sal_str_index_from(const char *a, const char *b, int64_t start);\nint64_t sal_str_len(const char *s);\nchar *sal_str_concat(const char *a, const char *b);\nchar *sal_str_append(char *a, const char *b);\nchar *sal_strdup(const char *s);\nchar *sal_select_str(int64_t cond, char *a, char *b);\nvoid sal_free(void *p);\nvoid sal_arena_enter(void);\nvoid sal_arena_leave(void);\nint64_t sal_arena_export(void *owner, int64_t raw, int64_t tag, const char *desc);\nint64_t sal_not(int64_t x);\nint64_t sal_gated_print_str(int64_t cond, const char *data);\nchar *sal_tmp_path(const char *suffix);\nint64_t sal_clang(const char *c_path, const char *out_path);\nint64_t sal_path_readable(const char *path);\nchar *sal_realpath(const char *p);\nint64_t sal_clang_obj(const char *c_path, const char *obj_path);\nint64_t sal_link_objs(const char *objs, const char *out_path);\nchar *sal_char_to_str(int64_t c);\nchar *sal_int_to_str(int64_t v);\nchar *sal_str_slice(const char *s, int64_t start, int64_t end);\nint64_t sal_str_char(const char *s, int64_t i);\nint64_t sal_str_skip(const char *s, int64_t i, int64_t kind, int64_t limit);\nint64_t sal_str_hash(const char *s, int64_t seed);\nint64_t sal_str_to_f64_bits(const char *s);\nvoid *sal_map_new(void);\nint64_t sal_map_get(void *m, const char *key);\nint64_t sal_map_put(void *m, const char *key, int64_t val);\nchar *sal_ir_text(void *mod);\nvoid *sal_lex_src(const char *src);\nvoid *sal_vec_new(void);\nint64_t sal_vec_push(void *v, int64_t x);\nint64_t sal_vec_get(void *v, int64_t i);\nint64_t sal_vec_set(void *v, int64_t i, int64_t x);\nint64_t sal_vec_len(void *v);\nvoid sal_vec_free(void *v);\nint64_t sal_enum_new(int64_t tag, int64_t n);\nint64_t sal_enum_set(int64_t v, int64_t i, int64_t x);\nint64_t sal_enum_tag(int64_t v);\nint64_t sal_enum_owns(int64_t v, int64_t i);\nint64_t sal_enum_box_id(int64_t v);\nint64_t sal_enum_field(int64_t v, int64_t i);\nvoid sal_list_free(void *v);\nint64_t sal_list_box_id(void *v);\nvoid *sal_list_new_desc(const char *desc);\nvoid sal_dict_free(void *v);\nvoid *sal_dict_new(int64_t key_kind, int64_t val_kind);\nvoid sal_enum_free(int64_t v);\nvoid sal_bytes_free(void *v);\nint64_t sal_print_i64(int64_t v);\nint64_t sal_place_matmul_ai_sum(int64_t place);\nint64_t sal_place_launches(int64_t place);\nvoid sal_on_enter(int64_t place);\nvoid *sal_image_new(int64_t w, int64_t h);\nint64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);\nvoid *sal_place_malloc(int64_t nbytes, int32_t place);\nint64_t sal_mask_select_count(const int8_t *mask, int64_t len);\nvoid sal_tensor_select_f32(float *out, const float *in, const int8_t *mask, int64_t len);\nvoid sal_tensor_select_i8(int8_t *out, const int8_t *in, const int8_t *mask, int64_t len);\nvoid *sal_list_select(void *in_list, const int8_t *mask, int64_t len);\nstatic int64_t sal_tn_len(int64_t p) { return ((int64_t *)(uintptr_t)p)[-2]; }\nstatic float *sal_tn_alloc_bytes(int64_t n, int64_t esz) { int64_t *b = (int64_t *)sal_place_malloc(n * esz + 16, 0); b[0] = n; return (float *)(b + 2); }\nstatic float *sal_tn_alloc(int64_t n) { return sal_tn_alloc_bytes(n, 4); }\nstatic float *sal_tn_from(int64_t raw, int64_t n) { float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)raw, (size_t)n * 4); return t; }\nstatic float *sal_tn_copy(int64_t p) { if (!p) return 0; int64_t n = sal_tn_len(p); float *t = sal_tn_alloc(n); __builtin_memcpy(t, (void *)(uintptr_t)p, (size_t)n * 4); return t; }\nstatic int64_t sal_fop(int64_t op, int64_t a, int64_t b) { double x, y, r; __builtin_memcpy(&x, &a, 8); __builtin_memcpy(&y, &b, 8); switch (op) { case 0: r = x + y; break; case 1: r = x - y; break; case 2: r = x * y; break; case 3: r = x / y; break; case 4: return x == y; case 5: return x != y; case 6: return x < y; case 7: return x <= y; case 8: return x > y; case 9: return x >= y; case 10: r = -x; break; case 11: return (int64_t)x; default: r = (double)a; } int64_t o; __builtin_memcpy(&o, &r, 8); return o; }\nint64_t sal_any_box(int64_t vtable, int64_t drop_slot, int64_t payload);\nvoid sal_any_free(int64_t box);\nint64_t sal_any_call(int64_t box, int64_t slot, int64_t argc, int64_t a0, int64_t a1, int64_t a2, int64_t a3);\n\n"
 
 fn names_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -229,71 +229,71 @@ fn lit_pool_free_texts(pool: Int) -> Int ! alloc
     0
 
 fn cmap_op(op: String) -> String ! alloc
-    if str_eq(op, d"add") == 1
+    if str_eq(op, "add") == 1
         "+"
-    elsif str_eq(op, d"sub") == 1
-        d"-"
-    elsif str_eq(op, d"mul") == 1
-        d"*"
-    elsif str_eq(op, d"div") == 1
-        d"/"
-    elsif str_eq(op, d"eq") == 1
-        d"=="
-    elsif str_eq(op, d"ne") == 1
-        d"!="
-    elsif str_eq(op, d"lt") == 1
-        d"<"
-    elsif str_eq(op, d"le") == 1
-        d"<="
-    elsif str_eq(op, d"gt") == 1
-        d">"
-    elsif str_eq(op, d"ge") == 1
-        d">="
-    elsif str_eq(op, d"mod") == 1
-        d"%"
-    elsif str_eq(op, d"band") == 1
-        d"&"
-    elsif str_eq(op, d"bxor") == 1
-        d"^"
-    elsif str_eq(op, d"bor") == 1
-        d"|"
-    elsif str_eq(op, d"shl") == 1
-        d"<<"
-    elsif str_eq(op, d"shr") == 1
-        d">>"
+    elsif str_eq(op, "sub") == 1
+        "-"
+    elsif str_eq(op, "mul") == 1
+        "*"
+    elsif str_eq(op, "div") == 1
+        "/"
+    elsif str_eq(op, "eq") == 1
+        "=="
+    elsif str_eq(op, "ne") == 1
+        "!="
+    elsif str_eq(op, "lt") == 1
+        "<"
+    elsif str_eq(op, "le") == 1
+        "<="
+    elsif str_eq(op, "gt") == 1
+        ">"
+    elsif str_eq(op, "ge") == 1
+        ">="
+    elsif str_eq(op, "mod") == 1
+        "%"
+    elsif str_eq(op, "band") == 1
+        "&"
+    elsif str_eq(op, "bxor") == 1
+        "^"
+    elsif str_eq(op, "bor") == 1
+        "|"
+    elsif str_eq(op, "shl") == 1
+        "<<"
+    elsif str_eq(op, "shr") == 1
+        ">>"
     else
-        d"+"
+        "+"
 
 # Code understood by `sal_fop` in the C prelude (`op` without the `f` prefix).
 fn float_op_code(op: String) -> Int ! alloc
-    if str_eq(op, d"add") == 1
+    if str_eq(op, "add") == 1
         0
-    elsif str_eq(op, d"sub") == 1
+    elsif str_eq(op, "sub") == 1
         1
-    elsif str_eq(op, d"mul") == 1
+    elsif str_eq(op, "mul") == 1
         2
-    elsif str_eq(op, d"div") == 1
+    elsif str_eq(op, "div") == 1
         3
-    elsif str_eq(op, d"eq") == 1
+    elsif str_eq(op, "eq") == 1
         4
-    elsif str_eq(op, d"ne") == 1
+    elsif str_eq(op, "ne") == 1
         5
-    elsif str_eq(op, d"lt") == 1
+    elsif str_eq(op, "lt") == 1
         6
-    elsif str_eq(op, d"le") == 1
+    elsif str_eq(op, "le") == 1
         7
-    elsif str_eq(op, d"gt") == 1
+    elsif str_eq(op, "gt") == 1
         8
-    elsif str_eq(op, d"ge") == 1
+    elsif str_eq(op, "ge") == 1
         9
     else
         10
 
 fn join_comma_piece(i: Int) -> String ! alloc
     if i > 0
-        d", "
+        ", "
     else
-        d""
+        ""
 
 fn join_commas(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -308,14 +308,14 @@ fn pad_args(v: Int, n: Int) -> Int ! alloc
     if vec_len(v) >= n
         0
     else
-        _p = vec_push(v, str_as_int(d"0"))
+        _p = vec_push(v, str_as_int("0"))
         pad_args(v, n)
 
 fn emit_params_comma(i: Int) -> String ! alloc
     if i > 0
-        d", "
+        ", "
     else
-        d""
+        ""
 
 fn emit_params_c(params: List[TParam], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
@@ -363,18 +363,18 @@ fn emit_extern_decls(externs: Int, i: Int, n: Int, acc: String) -> String ! allo
 
 fn emit_c_fn_header(f: TFn, linkable: Int, allow_main: Int) -> String ! alloc
     if allow_main == 0
-        if str_eq(f.name, d"main") == 1
-            d""
+        if str_eq(f.name, "main") == 1
+            ""
         else
             emit_c_fn_header_body(f.name, f.params, linkable)
-    elsif str_eq(f.name, d"main") == 1
-        d"int main(int argc, char **argv) {\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n"
+    elsif str_eq(f.name, "main") == 1
+        "int main(int argc, char **argv) {\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n"
     else
         emit_c_fn_header_body(f.name, f.params, linkable)
 
 fn emit_c_fn_header_body(name: String, params: List[TParam], linkable: Int) -> String ! alloc
     m = mangled(name)
-    pref = select_str(linkable, d"int64_t ", d"static int64_t ")
+    pref = select_str(linkable, "int64_t ", "static int64_t ")
     acc = pref + m
     acc = acc + "("
     acc = emit_params_c(params, 0, list_len(params), acc)

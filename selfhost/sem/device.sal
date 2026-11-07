@@ -17,9 +17,9 @@ fn dc_new() -> DC ! alloc
     st = list_new[Int]()
     _a = list_push(st, 0)
     msg = List.new[String]()
-    _b = list_push(msg, d"")
+    _b = list_push(msg, "")
     place = list_new[String]()
-    _c = list_push(place, d"")
+    _c = list_push(place, "")
     DC(list_new[String](), list_new[String](), st, msg, place)
 
 fn dc_free(c: DC) -> Int ! alloc
@@ -68,7 +68,7 @@ fn dc_truncate(c: DC, mark: Int) -> Int ! alloc
 # Type text of the latest binding called `name`, "" when there is none.
 fn dc_lookup(c: DC, name: String, i: Int) -> String ! alloc
     if i < 0
-        d""
+        ""
     elsif str_eq(list_get(c.names, i), name) == 1
         list_get(c.tys, i)
     else
@@ -79,12 +79,12 @@ fn dv_is_tensor(ty: String) -> Int ! alloc
     if str_len(ty) == 0
         0
     else
-        str_contains(ty, d"Tensor")
+        str_contains(ty, "Tensor")
 
 # Place word at the end of a tensor type text ("... on gpu "), 0 when none.
 fn dv_place(ty: String) -> String ! alloc
     if dv_is_tensor(ty) == 0
-        d""
+        ""
     else
         s = ty_trim_end(ty)
         n = str_len(s)
@@ -132,11 +132,11 @@ fn places_compatible(a: String, b: String) -> Int ! alloc
 
 fn place_debug(p: String) -> String ! alloc
     if str_eq(p, "cpu") == 1
-        d"Cpu"
+        "Cpu"
     elsif str_eq(p, "gpu") == 1
-        d"Gpu"
+        "Gpu"
     elsif str_eq(p, "tpu") == 1
-        d"Tpu"
+        "Tpu"
     else
         "Param(\"" + p + "\")"
 
@@ -159,7 +159,7 @@ fn reject_string_off_cpu(c: DC, ty: String) -> Int ! alloc
     if dv_is_string(ty) == 1
         exp = dc_expected(c)
         if str_len(exp) != 0
-            if places_compatible(d"cpu", exp) == 0
+            if places_compatible("cpu", exp) == 0
                 dc_fail(c, "String lives on cpu")
             else
                 0
@@ -223,12 +223,12 @@ fn dv_call(c: DC, name: String, args: List[Expr]) -> String ! alloc
     if list_len(tys) > 0
         list_get(tys, 0)
     else
-        d"Unknown"
+        "Unknown"
 
 fn dv_ident(c: DC, name: String) -> String ! alloc
     found = dc_lookup(c, name, dc_len(c) - 1)
     ty = if str_len(found) == 0
-        d"Unknown"
+        "Unknown"
     else
         found
     exp = dc_expected(c)
@@ -268,11 +268,11 @@ fn dv_on(c: DC, place: String, body: TBlock, is_kern: Int, has_index: Int) -> St
     _b = dv_block(c, body)
     _d = dc_set_expected(c, saved)
     _s = dc_truncate(c, mark)
-    d"Unit"
+    "Unit"
 
 fn dv_to(c: DC, place: String, inner: Expr) -> String ! alloc
     saved = dc_expected(c)
-    _a = dc_set_expected(c, d"")
+    _a = dc_set_expected(c, "")
     ty = dv_expr(c, inner)
     _b = dc_set_expected(c, saved)
     if dv_is_string(ty) == 1
@@ -301,7 +301,7 @@ fn dv_elsifs(c: DC, arms: List[TElsif], i: Int, n: Int) -> Int ! alloc
 
 fn dv_pattern_binds(c: DC, p: TPat) -> Int ! alloc
     if p.kind == 1
-        dc_bind(c, p.name, d"Unknown")
+        dc_bind(c, p.name, "Unknown")
     elsif p.kind == 3
         dv_pattern_list(c, p.args, 0, list_len(p.args))
     else
@@ -331,50 +331,50 @@ fn dv_match_arms(c: DC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
 fn dv_tensor(c: DC) -> String ! alloc
     exp = dc_expected(c)
     if str_len(exp) != 0
-        if places_compatible(d"cpu", exp) == 0
+        if places_compatible("cpu", exp) == 0
             _f = dc_fail(c, "tensor literal lives on cpu")
         else
             _f = 0
     else
         _f = 0
-    d"Tensor on cpu"
+    "Tensor on cpu"
 
 fn dv_if(c: DC, cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif]) -> String ! alloc
     _a = dv_expr(c, cond)
     _b = dv_scoped_block(c, then_b)
     _c = dv_elsifs(c, elsifs, 0, list_len(elsifs))
     _d = dv_scoped_block(c, else_b)
-    d"Int"
+    "Int"
 
 fn dv_lambda(c: DC, param: String, body: Expr) -> String ! alloc
     mark = dc_len(c)
-    _b = dc_bind(c, param, d"Float")
+    _b = dc_bind(c, param, "Float")
     _t = dv_expr(c, body)
     _s = dc_truncate(c, mark)
-    d"Unknown"
+    "Unknown"
 
 fn dv_match(c: DC, scrut: Expr, arms: List[TArm]) -> String ! alloc
     _a = dv_expr(c, scrut)
     _b = dv_match_arms(c, arms, 0, list_len(arms))
-    d"Unknown"
+    "Unknown"
 
 fn dv_expr(c: DC, e: Expr) -> String ! alloc
     match e
-        XNone => d"Unit"
+        XNone => "Unit"
         _ => dv_live(c, e)
 
 fn dv_live(c: DC, e: Expr) -> String ! alloc
     if dc_failed(c) == 1
-        d"Unknown"
+        "Unknown"
     else
         dv_expr_go(c, e)
 
 fn dv_expr_go(c: DC, e: Expr) -> String ! alloc
     match e
-        XNone => d"Unit"
-        XInt(v) => d"Int"
-        XFloat(bits, txt) => d"Float"
-        XBool(v) => d"Bool"
+        XNone => "Unit"
+        XInt(v) => "Int"
+        XFloat(bits, txt) => "Float"
+        XBool(v) => "Bool"
         XStr(s) => dv_string(c)
         XIdent(name) => dv_ident(c, name)
         XCall(name, args, targs, xp) => dv_call(c, name, args)
@@ -391,22 +391,22 @@ fn dv_expr_go(c: DC, e: Expr) -> String ! alloc
         XMatch(scrut, arms) => dv_match(c, scrut, arms)
 
 fn dv_string(c: DC) -> String ! alloc
-    _r = reject_string_off_cpu(c, d"String")
-    d"String"
+    _r = reject_string_off_cpu(c, "String")
+    "String"
 
 fn dv_binary(c: DC, l: Expr, r: Expr) -> String ! alloc
     _a = dv_expr(c, l)
     _b = dv_expr(c, r)
-    d"Int"
+    "Int"
 
 fn dv_field(c: DC, base: Expr) -> String ! alloc
     _a = dv_expr(c, base)
-    d"Unknown"
+    "Unknown"
 
 fn dv_while(c: DC, cond: Expr, body: TBlock) -> String ! alloc
     _a = dv_expr(c, cond)
     _b = dv_block(c, body)
-    d"Unit"
+    "Unit"
 
 fn dv_stmt(c: DC, st: TStmt) -> Int ! alloc
     if st.kind == 1

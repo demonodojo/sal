@@ -43,7 +43,7 @@ fn at_fields_stack(structs: List[TStruct], fields: List[TField], i: Int, n: Int,
 # Whether a type (by its text) lives on the stack: scalars and structs of them.
 fn at_is_stack(structs: List[TStruct], raw: String, depth: Int) -> Int ! alloc
     text = at_head(raw)
-    if raw.contains(d"[") == 1
+    if raw.contains("[") == 1
         0
     elsif text.eq("Int") == 1
         1
@@ -258,10 +258,10 @@ fn at_starts(ty: String, head: String) -> Int ! alloc
             0
 
 fn at_is_list_or_dict(ty: String) -> Int ! alloc
-    if at_starts(ty, d"List") == 1
+    if at_starts(ty, "List") == 1
         1
     else
-        at_starts(ty, d"Dict")
+        at_starts(ty, "Dict")
 
 fn at_keep_params(f: TFn, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -270,7 +270,7 @@ fn at_keep_params(f: TFn, i: Int, n: Int) -> Int ! alloc
         pm = list_get(f.params, i)
         if pm.mode == 3
             if f.arena == 0
-                result_err_str(d"keep parameter requires @arena")
+                result_err_str("keep parameter requires @arena")
             elsif at_is_list_or_dict(pm.ty) == 0
                 result_err_str("keep parameter `" + pm.name + "` must be a List or Dict")
             else
@@ -281,9 +281,9 @@ fn at_keep_params(f: TFn, i: Int, n: Int) -> Int ! alloc
 fn at_arena_head(structs: List[TStruct], f: TFn) -> Int ! alloc
     if f.arena == 1
         if f.no_heap == 1
-            result_err_str(d"@arena function cannot be @no_heap")
+            result_err_str("@arena function cannot be @no_heap")
         elsif at_ty_heap(structs, f.ret) == 1
-            result_err_str(d"@arena function cannot return a heap type")
+            result_err_str("@arena function cannot return a heap type")
         else
             at_keep_params(f, 0, list_len(f.params))
     else

@@ -59,13 +59,13 @@ fn fused_rhs_is_scalar(right: Expr) -> Int ! alloc
 fn fused_arg_name(cx: Cx, a: Expr) -> Int ! alloc
     match a
         XIdent(name) => cx_lookup(cx, str_as_int(name))
-        _ => str_as_int(d"tmp")
+        _ => str_as_int("tmp")
 
 fn fused_arg0_name(cx: Cx, args: List[Expr]) -> Int ! alloc
     if list_len(args) > 0
         fused_arg_name(cx, list_get(args, 0))
     else
-        str_as_int(d"tmp")
+        str_as_int("tmp")
 
 fn fused_op_is_matmul(op: Int) -> Int ! alloc
     if op == 0
@@ -92,10 +92,10 @@ fn collect_fused_binary(cx: Cx, ops: Int, op: String, left: Expr, right: Expr) -
     lhs = fused_arg_name(cx, left)
     rhs = fused_arg_name(cx, right)
     idx = fused_ops_valid_count(ops, 0, vec_len(ops))
-    dest = str_as_int(d"col_" + int_to_str(idx))
+    dest = str_as_int("col_" + int_to_str(idx))
     scal = 0
     if fused_rhs_is_scalar(right) == 1
-        scal = str_as_int(d"tmp")
+        scal = str_as_int("tmp")
     else
         scal = 0
     oprec = fo_column(str_as_int(op), lhs, rhs, dest, scal)
@@ -112,14 +112,14 @@ fn collect_fused_call(cx: Cx, ops: Int, fname: String, args: List[Expr]) -> Int 
         if list_len(args) == 2
             lhs = fused_arg_name(cx, list_get(args, 0))
             rhs = fused_arg_name(cx, list_get(args, 1))
-            mm = str_as_int(d"mm")
+            mm = str_as_int("mm")
             _p = vec_push(ops, fo_new(FO_MATMUL(), lhs, rhs, mm))
             0
         else
             0
     elsif str_eq(fname, "softmax") == 1
         inp = fused_arg0_name(cx, args)
-        sm = str_as_int(d"sm")
+        sm = str_as_int("sm")
         _p = vec_push(ops, fo_new(FO_SOFTMAX(), inp, 0, sm))
         0
     else
@@ -131,7 +131,7 @@ fn collect_fused_epilogue(ops: Int, fname: String, nops: Int) -> Int ! alloc
         last = vec_get(ops, nops - 1)
         if fused_op_is_matmul(last) == 1
             mmc = vec_get(last, 3)
-            ep = d"_epilogue"
+            ep = "_epilogue"
             dest = str_from_int(mmc) + ep
             _p = vec_push(ops, fo_new(FO_EPILOGUE(), str_as_int(fname), mmc, str_as_int(dest)))
             0
@@ -143,13 +143,13 @@ fn collect_fused_epilogue(ops: Int, fname: String, nops: Int) -> Int ! alloc
 fn estimate_peak(r: Int, cx: Cx) -> Int ! alloc
     # Simplified peak matching salc_py for static tensors
     ops = vec_get(r, 1)
-    estimate_peak_go(r, cx, ops, 0, vec_len(ops), 0, d"", 0)
+    estimate_peak_go(r, cx, ops, 0, vec_len(ops), 0, "", 0)
 
 fn estimate_peak_finish_sym(r: Int, static_total: Int, sym: String) -> Int ! alloc
     _a = vec_set(r, 4, 1)
     if static_total > 0
         pref = int_to_str(static_total)
-        plus = d"+"
+        plus = "+"
         s1 = pref + plus
         s2 = s1 + sym
         _b = vec_set(r, 6, str_as_int(s2))
@@ -207,22 +207,22 @@ fn estimate_peak_softmax(r: Int, cx: Cx, ops: Int, i: Int, n: Int, static_total:
         s2 = append_sym_plus(sym, piece)
         estimate_peak_go(r, cx, ops, i + 1, n, static_total, str_from_int(s2), saw)
     else
-        pa = peak_tensor_piece(inp, d"softmax")
+        pa = peak_tensor_piece(inp, "softmax")
         a1 = add_peak_piece(static_total, sym, pa)
         estimate_peak_go(r, cx, ops, i + 1, n, vec_get(a1, 0), str_from_int(vec_get(a1, 1)), 1)
 
 fn estimate_peak_col(r: Int, cx: Cx, ops: Int, i: Int, n: Int, static_total: Int, sym: String, saw: Int, op: Int) -> Int ! alloc
     lhs = cx_find_any(cx, vec_get(op, 2))
     if lhs == 0
-        piece = str_as_int(d"column_bin(tmp):symbolic")
+        piece = str_as_int("column_bin(tmp):symbolic")
         s2 = append_sym_plus(sym, str_from_int(piece))
         estimate_peak_go(r, cx, ops, i + 1, n, static_total, str_from_int(s2), saw)
     elsif bind_is_tensor(lhs) == 0
-        piece = str_as_int(d"column_bin(tmp):symbolic")
+        piece = str_as_int("column_bin(tmp):symbolic")
         s2 = append_sym_plus(sym, str_from_int(piece))
         estimate_peak_go(r, cx, ops, i + 1, n, static_total, str_from_int(s2), saw)
     else
-        pa = peak_tensor_piece(lhs, d"col")
+        pa = peak_tensor_piece(lhs, "col")
         pa2 = peak_column_piece(pa)
         a1 = add_peak_piece(static_total, sym, pa2)
         estimate_peak_go(r, cx, ops, i + 1, n, vec_get(a1, 0), str_from_int(vec_get(a1, 1)), 1)
@@ -239,7 +239,7 @@ fn peak_column_piece(pa: Int) -> Int ! alloc
 
 fn append_sym_plus(sym: String, piece: String) -> Int ! alloc
     if str_len(sym) > 0
-        plus = d"+"
+        plus = "+"
         s1 = sym + plus
         str_as_int(s1 + piece)
     else
@@ -269,9 +269,9 @@ fn estimate_peak_mm(r: Int, cx: Cx, ops: Int, i: Int, n: Int, static_total: Int,
     elsif bind_is_tensor(w) == 0
         estimate_peak_go(r, cx, ops, i + 1, n, static_total, sym, saw)
     else
-        pa = peak_tensor_piece(l, d"act")
+        pa = peak_tensor_piece(l, "act")
         a1 = add_peak_piece(static_total, sym, pa)
-        pw = peak_tensor_piece(w, d"w")
+        pw = peak_tensor_piece(w, "w")
         a2 = add_peak_piece(vec_get(a1, 0), str_from_int(vec_get(a1, 1)), pw)
         po = peak_out_piece(l, w)
         a3 = add_peak_piece(vec_get(a2, 0), str_from_int(vec_get(a2, 1)), po)
@@ -284,17 +284,17 @@ fn peak_tensor_piece(tens: Int, label: String) -> Int ! alloc
     conc = bind_concrete(tens)
     nd = bind_ndims(tens)
     eb = bind_elem(tens)
-    pr = peak_prod(dims, conc, 0, nd, 1, 0, d"")
+    pr = peak_prod(dims, conc, 0, nd, 1, 0, "")
     is_dyn = vec_get(pr, 0)
     prod = vec_get(pr, 1)
     parts = vec_get(pr, 2)
     if is_dyn == 1
         _a = vec_push(res, 0)
         _b = vec_push(res, 0)
-        col = d":"
+        col = ":"
         s1 = label + col
         s2 = s1 + str_from_int(parts)
-        star = d"*"
+        star = "*"
         s3 = s2 + star
         ebs = int_to_str(eb)
         s4 = s3 + ebs
@@ -303,20 +303,20 @@ fn peak_tensor_piece(tens: Int, label: String) -> Int ! alloc
     else
         _a = vec_push(res, 1)
         _b = vec_push(res, prod * eb)
-        _c = vec_push(res, str_as_int(d""))
+        _c = vec_push(res, str_as_int(""))
         res
 
 fn peak_dyn_parts(parts: String) -> String ! alloc
     if str_len(parts) > 0
         parts + "*?"
     else
-        d"?"
+        "?"
 
 fn peak_static_prefix(parts: String) -> String ! alloc
     if str_len(parts) > 0
         parts + "*"
     else
-        d""
+        ""
 
 fn peak_prod(dims: Int, conc: Int, d: Int, nd: Int, prod: Int, dyn: Int, parts: String) -> Int ! alloc
     if d >= nd
@@ -360,14 +360,14 @@ fn peak_out_piece(l: Int, w: Int) -> Int ! alloc
     wcv = dim_at(wc, widx)
     _b = vec_push(od, wdv)
     _c = vec_push(oc, wcv)
-    pr = peak_prod(od, oc, 0, vec_len(od), 1, 0, d"")
+    pr = peak_prod(od, oc, 0, vec_len(od), 1, 0, "")
     is_dyn = vec_get(pr, 0)
     prod = vec_get(pr, 1)
     parts = vec_get(pr, 2)
     if is_dyn == 1
-        lab = d"out:"
+        lab = "out:"
         s2 = lab + str_from_int(parts)
-        star = d"*"
+        star = "*"
         s3 = s2 + star
         ebs = int_to_str(eb)
         s4 = s3 + ebs
@@ -378,7 +378,7 @@ fn peak_out_piece(l: Int, w: Int) -> Int ! alloc
     else
         _d = vec_push(res, 1)
         _e = vec_push(res, prod * eb)
-        _f = vec_push(res, str_as_int(d""))
+        _f = vec_push(res, str_as_int(""))
         res
 
 fn peak_out_fill(od: Int, oc: Int, ld: Int, lc: Int, d: Int, n: Int) -> Int ! alloc

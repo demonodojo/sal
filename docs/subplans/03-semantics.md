@@ -56,7 +56,7 @@ Un `if` sin `else` tiene tipo `Unit`, aunque tenga `elsif`; la rama then y cada 
 
 `return expr` termina la función con el tipo declarado; `return` sin expresión solo con retorno `Unit`. Prohibido dentro de `on` y de lambda (`E_TYPE`). Código inalcanzable tras un retorno seguro en el mismo bloque: `E_TYPE`. Bloque de función sin cola y sin retorno en todos los caminos: si el retorno no es `Unit`, `E_TYPE`. Rama de `if`/`match` con `return` diverge y no cuenta en el tipo de la expresión.
 
-Cada expresión del AST tipado guarda su tipo, su lugar y el span. `sal emit typed` imprime eso. `sal fmt` escribe en las firmas públicas el `borrow` o `take` que haya inferido el pase de ownership, para que no cambie en silencio.
+Cada expresión del AST tipado guarda su tipo, su lugar y el span. `sal emit typed` imprime eso. `sal fmt` escribe en las firmas públicas el `borrow` o `take` que haya inferido el pase de ownership, para que no cambie en silencio. Si ese `borrow` era inferido y `last_consumed_params` marca el parámetro como consumido, no lo escribe: `caller_param_modes` solo lo promueve a `take` para los llamadores mientras el modo sigue ausente, y escribirlo cambiaría la IR.
 
 ## Ownership
 

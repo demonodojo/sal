@@ -9,25 +9,25 @@ import "../ast/tast.sal"
 
 # ---- Modules ----
 fn project_root() -> String ! io, alloc
-    r = getenv(d"SAL_PROJECT_ROOT")
+    r = getenv("SAL_PROJECT_ROOT")
     if str_len(r) == 0
-        d"."
+        "."
     else
         r
 
 fn parent_dir(path: String) -> String ! alloc
     n = str_len(path)
     if n == 0
-        d"."
+        "."
     else
         parent_dir_go(path, n - 1)
 
 fn parent_dir_go(path: String, i: Int) -> String ! alloc
     if i < 0
-        d"."
+        "."
     elsif str_char(path, i) == 47
         if i == 0
-            d"/"
+            "/"
         else
             str_slice(path, 0, i)
     else
@@ -47,7 +47,7 @@ fn ends_with_sal(s: String) -> Int ! alloc
         0
     else
         tail = str_slice(s, n - 4, n)
-        if str_eq(tail, d".sal") == 1
+        if str_eq(tail, ".sal") == 1
             1
         else
             0
@@ -58,7 +58,7 @@ fn try_candidate(base: String, imp: String) -> String ! io, alloc
         p1
     elsif ends_with_sal(imp) == 1
         free(p1)
-        d""
+        ""
     else
         imp2 = imp + ".sal"
         p2 = path_join(base, imp2)
@@ -68,12 +68,12 @@ fn try_candidate(base: String, imp: String) -> String ! io, alloc
         else
             free(p1)
             free(p2)
-            d""
+            ""
 
 fn dep_line_in_deps(line: String, in_deps: Int) -> Int ! alloc
-    if str_contains(line, d"[dependencies]") == 1
+    if str_contains(line, "[dependencies]") == 1
         1
-    elsif str_contains(line, d"[") == 1
+    elsif str_contains(line, "[") == 1
         0
     else
         in_deps
@@ -81,7 +81,7 @@ fn dep_line_in_deps(line: String, in_deps: Int) -> Int ! alloc
 fn dep_line_key(line: String) -> String ! alloc
     eq = find_char(line, 61, 0, str_len(line))
     if eq <= 0
-        d""
+        ""
     else
         str_slice(line, 0, eq)
 
@@ -97,7 +97,7 @@ fn dep_line_push_path(line: String, in_deps: Int, proot: String, out: Int) -> In
     if in_deps == 0
         out
     else
-        needle = d"path = \""
+        needle = "path = \""
         if str_contains(line, needle) == 0
             out
         else
@@ -115,13 +115,13 @@ fn read_until_quote(line: String, i: Int, n: Int, acc: String) -> String ! alloc
             read_until_quote(line, i + 1, n, acc2)
 
 fn dep_extract_path(line: String, proot: String, name: String, out: Int) -> Int ! alloc
-    needle = d"path = \""
+    needle = "path = \""
     pos = find_substr(line, needle, 0)
     if pos < 0
         out
     else
         start = pos + str_len(needle)
-        rel = read_until_quote(line, start, str_len(line), d"")
+        rel = read_until_quote(line, start, str_len(line), "")
         if str_len(rel) == 0
             out
         else
@@ -167,21 +167,21 @@ fn find_nl(s: String, i: Int, n: Int) -> Int ! alloc
         find_nl(s, i + 1, n)
 
 fn packages_cache_root() -> String ! io, alloc
-    p = getenv(d"SAL_PACKAGES")
+    p = getenv("SAL_PACKAGES")
     if str_len(p) > 0
         p
     else
-        h = getenv(d"HOME")
-        path_join(path_join(h, d".sal"), d"packages")
+        h = getenv("HOME")
+        path_join(path_join(h, ".sal"), "packages")
 
 fn line_value_quoted(line: String, key: String) -> String ! alloc
-    needle = key + d" = \""
+    needle = key + " = \""
     pos = find_substr(line, needle, 0)
     if pos < 0
-        d""
+        ""
     else
         start = pos + str_len(needle)
-        read_until_quote(line, start, str_len(line), d"")
+        read_until_quote(line, start, str_len(line), "")
 
 fn lock_bases_scan(raw: String, i: Int, n: Int, in_pkg: Int, cur_name: String, cur_ver: String, out: Int) -> Int ! io, alloc
     if i >= n
@@ -192,32 +192,32 @@ fn lock_bases_scan(raw: String, i: Int, n: Int, in_pkg: Int, cur_name: String, c
         in2 = in_pkg
         name2 = cur_name
         ver2 = cur_ver
-        if str_contains(line, d"[[package]]") == 1
+        if str_contains(line, "[[package]]") == 1
             in2 = 1
-            name2 = d""
-            ver2 = d""
+            name2 = ""
+            ver2 = ""
         elsif in2 == 1
-            nv = line_value_quoted(line, d"name")
+            nv = line_value_quoted(line, "name")
             if str_len(nv) > 0
                 name2 = nv
-            vv = line_value_quoted(line, d"version")
+            vv = line_value_quoted(line, "version")
             if str_len(vv) > 0
                 ver2 = vv
         out3 = out
         if in2 == 1
             if str_len(name2) > 0
                 if str_len(ver2) > 0
-                    if str_len(line_value_quoted(line, d"version")) > 0
-                        dir = path_join(packages_cache_root(), name2 + d"-" + ver2)
+                    if str_len(line_value_quoted(line, "version")) > 0
+                        dir = path_join(packages_cache_root(), name2 + "-" + ver2)
                         if path_readable(dir) == 1
                             out3 = dep_bases_push(out, name2, dir)
         lock_bases_scan(raw, j + 1, n, in2, name2, ver2, out3)
 
 fn lock_dependency_bases(proot: String) -> Int ! io, alloc
-    lockp = path_join(proot, d"Sal.lock")
+    lockp = path_join(proot, "Sal.lock")
     raw = read_file(lockp)
     out = vec_new()
-    lock_bases_scan(raw, 0, str_len(raw), 0, d"", d"", out)
+    lock_bases_scan(raw, 0, str_len(raw), 0, "", "", out)
 
 fn merge_dep_bases(into: Int, from: Int) -> Int ! alloc
     n = vec_len(from)
@@ -231,7 +231,7 @@ fn merge_dep_bases_go(into: Int, from: Int, i: Int, n: Int) -> Int ! alloc
         merge_dep_bases_go(into, from, i + 1, n)
 
 fn dependency_search_bases(proot: String) -> Int ! io, alloc
-    manifest = path_join(proot, d"Sal.toml")
+    manifest = path_join(proot, "Sal.toml")
     raw = read_file(manifest)
     out = vec_new()
     dep_bases_scan(raw, 0, str_len(raw), 0, proot, out)
@@ -250,7 +250,7 @@ fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: St
             hit2
         else
             free(hit2)
-            mods = path_join(proot, d"sal_modules")
+            mods = path_join(proot, "sal_modules")
             hit3 = try_candidate(mods, imp)
             if str_len(hit3) > 0
                 hit3
@@ -261,7 +261,7 @@ fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: St
 
 fn resolve_import_path_deps(imp: String, proot: String, bases: Int, i: Int, n: Int) -> String ! io, alloc
     if i >= n
-        d""
+        ""
     else
         dname = str_from_int(vec_get(bases, i * 2))
         base = str_from_int(vec_get(bases, i * 2 + 1))
@@ -279,7 +279,7 @@ fn resolve_import_path_deps(imp: String, proot: String, bases: Int, i: Int, n: I
 fn basename_path(p: String) -> String ! alloc
     n = str_len(p)
     if n == 0
-        d""
+        ""
     else
         basename_go(p, n - 1)
 
@@ -294,7 +294,7 @@ fn basename_go(p: String, i: Int) -> String ! alloc
 fn resolve_import_path_dep_split(imp: String, base: String, dep_name: String) -> String ! io, alloc
     slash = find_char(imp, 47, 0, str_len(imp))
     if slash < 0
-        d""
+        ""
     else
         dep = str_slice(imp, 0, slash)
         rest = str_slice(imp, slash + 1, str_len(imp))
@@ -304,7 +304,7 @@ fn resolve_import_path_dep_split(imp: String, base: String, dep_name: String) ->
         elsif str_eq(dep_name, dep) == 1
             try_candidate(base, rest)
         else
-            d""
+            ""
 
 fn path_key(p: String) -> String ! io, alloc
     realpath(p)
@@ -380,7 +380,7 @@ fn load_imports_of_go(imps: List[String], i: Int, n: Int, source_file: String, p
 fn load_module_recursive(path: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     key = path_key(path)
     if stack_has_key(stack, sp, str_as_int(key), 0) == 1
-        result_err_str(d"import cycle")
+        result_err_str("import cycle")
     elsif vec_has_str(visited, str_as_int(key), 0, vec_len(visited)) == 1
         result_ok(0)
     elsif path_readable(path) == 0
@@ -417,7 +417,7 @@ fn resolve_module_graph(root_path: String, proot: String, order: Graph) -> Int !
     if result_is_err(step) == 1
         step
     elsif list_len(order.mods) == 0
-        result_err_str(d"empty module graph")
+        result_err_str("empty module graph")
     else
         result_ok(0)
 
@@ -666,7 +666,7 @@ fn check_all_effects(order: Graph, i: Int, n: Int) -> Int ! alloc
             check_all_effects(order, i + 1, n)
 
 fn graph_source_digest(order: Graph) -> String ! io, alloc
-    graph_source_digest_go(order, 0, list_len(order.mods), d"")
+    graph_source_digest_go(order, 0, list_len(order.mods), "")
 
 fn graph_source_digest_go(order: Graph, i: Int, n: Int, acc: String) -> String ! io, alloc
     if i >= n

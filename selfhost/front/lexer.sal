@@ -228,16 +228,16 @@ struct Toks
     cur: List[Int]
 
 fn toks_new() -> Toks ! alloc
-    cur = list_new[Int]()
-    _c = list_push(cur, 0)
-    Toks(list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), cur)
+    cur = List.new[Int]()
+    cur.push(0)
+    Toks(List.new[Int](), List.new[String](), List.new[Int](), List.new[Int](), cur)
 
 # Appends a token; the text is copied, so the caller keeps its own.
 fn tok_push(out: Toks, kind: Int, text: String, ival: Int) -> Int ! alloc
-    _a = list_push(out.kinds, kind)
-    _b = list_push(out.texts, strdup(text))
-    _c = list_push(out.ivals, ival)
-    _d = list_push(out.offs, list_get(out.cur, 0))
+    out.kinds.push(kind)
+    out.texts.push(text.dup())
+    out.ivals.push(ival)
+    _d = out.offs.push(out.cur.get(0))
     0
 
 fn kw_kind(text: String) -> Int ! alloc
@@ -265,17 +265,17 @@ fn kw_kind(text: String) -> Int ! alloc
         _ => TK_IDENT()
 
 fn indent_stack_new() -> List[Int] ! alloc
-    v = list_new[Int]()
-    _d = list_push(v, 0 - 2)
-    _p = list_push(v, 0)
+    v = List.new[Int]()
+    v.push(0 - 2)
+    v.push(0)
     v
 
 fn group_depth(st: List[Int]) -> Int ! alloc
-    v = list_get(st, 0)
+    v = st.get(0)
     0 - v - 2
 
 fn group_set(st: List[Int], d: Int) -> Int ! alloc
-    _p = list_set(st, 0, 0 - d - 2)
+    _p = st.set(0, 0 - d - 2)
     0
 
 fn group_enter(st: List[Int]) -> Int ! alloc
@@ -292,42 +292,42 @@ fn indent_top_at(st: List[Int], i: Int) -> Int ! alloc
     if i < 0
         0
     else
-        v = list_get(st, i)
+        v = st.get(i)
         if v < 0
             indent_top_at(st, i - 1)
         else
             v
 
 fn indent_top(st: List[Int]) -> Int ! alloc
-    n = list_len(st)
+    n = st.len()
     indent_top_at(st, n - 1)
 
 fn indent_push(st: List[Int], col: Int) -> Int ! alloc
-    _p = list_push(st, col)
+    _p = st.push(col)
     0
 
 fn indent_tombstone_at(st: List[Int], i: Int) -> Int ! alloc
     if i < 0
         0
     else
-        v = list_get(st, i)
+        v = st.get(i)
         if v < 0
             indent_tombstone_at(st, i - 1)
         else
-            _p = list_set(st, i, 0 - 1)
+            _p = st.set(i, 0 - 1)
             0
 
 fn indent_pop(st: List[Int]) -> Int ! alloc
-    n = list_len(st)
+    n = st.len()
     _t = indent_tombstone_at(st, n - 1)
     0
 
 fn count_live_indent(st: List[Int], i: Int, acc: Int) -> Int ! alloc
-    n = list_len(st)
+    n = st.len()
     if i >= n
         acc
     else
-        v = list_get(st, i)
+        v = st.get(i)
         if v < 0
             count_live_indent(st, i + 1, acc)
         else
@@ -335,21 +335,21 @@ fn count_live_indent(st: List[Int], i: Int, acc: Int) -> Int ! alloc
 
 fn skip_line_comment(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
-    str_skip(src, i, 4, 0)
+    src.skip(i, 4, 0)
 
 fn count_spaces(src: String, i: Int, n: Int, acc: Int) -> Int ! alloc
     _n = n
     _a = acc
-    end = str_skip(src, i, 1, 0)
+    end = src.skip(i, 1, 0)
     end - i
 
 fn read_ident(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
-    str_skip(src, i, 2, 0)
+    src.skip(i, 2, 0)
 
 fn read_digits(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
-    str_skip(src, i, 3, 0)
+    src.skip(i, 3, 0)
 
 fn read_number(src: String, i: Int, n: Int) -> Int ! alloc
     end = read_digits(src, i, n)
@@ -361,14 +361,14 @@ fn read_number(src: String, i: Int, n: Int) -> Int ! alloc
 fn slice_has_dot(src: String, i: Int, end: Int) -> Int ! alloc
     if i >= end
         0
-    elsif str_char(src, i) == 46
+    elsif src.char(i) == 46
         1
     else
         slice_has_dot(src, i + 1, end)
 
 fn push_number_tok(out: Toks, src: String, i: Int, end: Int, neg: Int) -> Int ! alloc
     if slice_has_dot(src, i, end) == 1
-        txt = str_slice(src, i, end)
+        txt = src.slice(i, end)
         if neg == 1
             ntxt = "-" + txt
             free(txt)
@@ -383,86 +383,65 @@ fn push_number_tok(out: Toks, src: String, i: Int, end: Int, neg: Int) -> Int ! 
         ival = parse_int_digits(src, i, end, 0)
         if neg == 1
             ival = 0 - ival
-            _p = tok_push(out, TK_INT(), d"", ival)
+            _p = tok_push(out, TK_INT(), "", ival)
         else
-            _p = tok_push(out, TK_INT(), d"", ival)
+            _p = tok_push(out, TK_INT(), "", ival)
     0
 
 fn parse_int_digits(src: String, i: Int, end: Int, acc: Int) -> Int ! alloc
     if i >= end
         acc
     else
-        c = str_char(src, i)
+        c = src.char(i)
         parse_int_digits(src, i + 1, end, acc * 10 + (c - 48))
 
 fn unescape_char(e: Int) -> Int ! alloc
-    if e == 110
-        10
-    elsif e == 116
-        9
-    elsif e == 114
-        13
-    else
-        e
+    match e
+        110 => 10
+        116 => 9
+        114 => 13
+        _ => e
 
 fn read_string_chars(src: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        c = str_char(src, i)
+        c = src.char(i)
         if c == 34
             acc
         elsif c == 92
             if i + 1 >= n
                 acc
             else
-                e = str_char(src, i + 1)
+                e = src.char(i + 1)
                 ch = unescape_char(e)
-                piece = char_to_str(ch)
+                piece = String.from_char(ch)
                 read_string_chars(src, i + 2, n, acc + piece)
         else
-            piece = char_to_str(c)
+            piece = String.from_char(c)
             read_string_chars(src, i + 1, n, acc + piece)
 
 fn string_end(src: String, i: Int, n: Int) -> Int ! alloc
     _n = n
-    str_skip(src, i, 7, 0)
+    src.skip(i, 7, 0)
 
 # `##{` in an f-string becomes the literal `#{`.
 fn f_unescape_hash_lit(s: String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        c = str_char(s, i)
-        if c == 35
-            if i + 1 < n
-                if str_char(s, i + 1) == 35
-                    if i + 2 < n
-                        if str_char(s, i + 2) == 123
-                            acc2 = acc + d"#" + char_to_str(123)
-                            f_unescape_hash_lit(s, i + 3, n, acc2)
-                        else
-                            piece = char_to_str(35)
-                            acc2 = acc + piece
-                            free(piece)
-                            f_unescape_hash_lit(s, i + 1, n, acc2)
-                    else
-                        piece = char_to_str(35)
-                        acc2 = acc + piece
-                        free(piece)
-                        f_unescape_hash_lit(s, i + 1, n, acc2)
-                else
-                    piece = char_to_str(c)
-                    acc2 = acc + piece
-                    free(piece)
-                    f_unescape_hash_lit(s, i + 1, n, acc2)
+        c = s.char(i)
+        if c == 35 && i + 1 < n && s.char(i + 1) == 35
+            if i + 2 < n && s.char(i + 2) == 123
+                acc2 = acc + "#" + String.from_char(123)
+                f_unescape_hash_lit(s, i + 3, n, acc2)
             else
-                piece = char_to_str(c)
+                piece = String.from_char(35)
                 acc2 = acc + piece
                 free(piece)
                 f_unescape_hash_lit(s, i + 1, n, acc2)
         else
-            piece = char_to_str(c)
+            piece = String.from_char(c)
             acc2 = acc + piece
             free(piece)
             f_unescape_hash_lit(s, i + 1, n, acc2)
@@ -470,24 +449,24 @@ fn f_unescape_hash_lit(s: String, i: Int, n: Int, acc: String) -> String ! alloc
 fn dedent_to_col(out: Toks, st: List[Int], col: Int) -> Int ! alloc
     top = indent_top(st)
     if col < top
-        _t = indent_pop(st)
-        _p = tok_push(out, TK_DEDENT(), d"", 0)
+        indent_pop(st)
+        tok_push(out, TK_DEDENT(), "", 0)
         dedent_to_col(out, st, col)
     else
         0
 
 # Every step records its offset first, so a token pushed by a step starts at that offset.
 fn lex_go(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int) -> Int ! alloc
-    _s = list_set(out.cur, 0, i)
+    out.cur.set(0, i)
     lex_step(src, i, n, out, st, at_start)
 
 fn lex_step(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int) -> Int ! alloc
     if i >= n
         dedent_to_col(out, st, 0)
-        _p = tok_push(out, TK_EOF(), d"", 0)
+        _p = tok_push(out, TK_EOF(), "", 0)
         0
     else
-        c = str_char(src, i)
+        c = src.char(i)
         if c == 35
             j = skip_line_comment(src, i + 1, n)
             lex_go(src, j, n, out, st, at_start)
@@ -495,7 +474,7 @@ fn lex_step(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int
             sp = count_spaces(src, i, n, 0)
             j = i + sp
             if j < n
-                cj = str_char(src, j)
+                cj = src.char(j)
                 if cj == 9
                     sp = sp + 4
                     j = j + 1
@@ -506,13 +485,13 @@ fn lex_step(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int
             if j >= n
                 lex_go(src, j, n, out, st, 1)
             else
-                cj = str_char(src, j)
+                cj = src.char(j)
                 if cj == 10
                     lex_go(src, j + 1, n, out, st, 1)
                 elsif cj == 35
                     j2 = skip_line_comment(src, j + 1, n)
                     if j2 < n
-                        c3 = str_char(src, j2)
+                        c3 = src.char(j2)
                         if c3 == 10
                             lex_go(src, j2 + 1, n, out, st, 1)
                         else
@@ -523,69 +502,66 @@ fn lex_step(src: String, i: Int, n: Int, out: Toks, st: List[Int], at_start: Int
                     top = indent_top(st)
                     if sp > top
                         _p = indent_push(st, sp)
-                        _p = tok_push(out, TK_INDENT(), d"", 0)
+                        _p = tok_push(out, TK_INDENT(), "", 0)
                         lex_go(src, j, n, out, st, 0)
                     else
-                        _d = dedent_to_col(out, st, sp)
+                        dedent_to_col(out, st, sp)
                         lex_go(src, j, n, out, st, 0)
         elsif c == 10
-            _p = tok_push(out, TK_NL(), d"", 0)
+            _p = tok_push(out, TK_NL(), "", 0)
             if group_depth(st) > 0
                 lex_go(src, i + 1, n, out, st, 0)
             else
                 lex_go(src, i + 1, n, out, st, 1)
         else
-            j = str_skip(src, i, 8, 0)
+            j = src.skip(i, 8, 0)
             if j == i
                 lex_tok(src, i, n, out, st)
             else
                 lex_go(src, j, n, out, st, 0)
 
 fn lex_tok(src: String, i: Int, n: Int, out: Toks, st: List[Int]) -> Int ! alloc
-    c = str_char(src, i)
-    if c == 45
-        if i + 1 < n
-            c2 = str_char(src, i + 1)
-            if c2 == 62
-                _p = tok_push(out, TK_ARROW(), d"", 0)
-                lex_go(src, i + 2, n, out, st, 0)
-            else
-                lex_tok_rest(src, i, n, out, st, c)
+    c = src.char(i)
+    if c == 45 && i + 1 < n
+        c2 = src.char(i + 1)
+        if c2 == 62
+            tok_push(out, TK_ARROW(), "", 0)
+            lex_go(src, i + 2, n, out, st, 0)
         else
             lex_tok_rest(src, i, n, out, st, c)
     else
         lex_tok_rest(src, i, n, out, st, c)
 
 fn lex_tok_rest(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
-    if c == 40
-        _p = tok_push(out, TK_LPAREN(), d"", 0)
-        _g = group_enter(st)
-        lex_go(src, i + 1, n, out, st, 0)
-    elsif c == 41
-        _p = tok_push(out, TK_RPAREN(), d"", 0)
-        _g = group_leave(st)
-        lex_go(src, i + 1, n, out, st, 0)
-    elsif c == 91
-        _p = tok_push(out, TK_LBRACK(), d"", 0)
-        _g = group_enter(st)
-        lex_go(src, i + 1, n, out, st, 0)
-    elsif c == 93
-        _p = tok_push(out, TK_RBRACK(), d"", 0)
-        _g = group_leave(st)
-        lex_go(src, i + 1, n, out, st, 0)
-    else
-        lex_tok_rest2(src, i, n, out, st, c)
+    match c
+        40 =>
+            _p = tok_push(out, TK_LPAREN(), "", 0)
+            _g = group_enter(st)
+            lex_go(src, i + 1, n, out, st, 0)
+        41 =>
+            _p = tok_push(out, TK_RPAREN(), "", 0)
+            _g = group_leave(st)
+            lex_go(src, i + 1, n, out, st, 0)
+        91 =>
+            _p = tok_push(out, TK_LBRACK(), "", 0)
+            _g = group_enter(st)
+            lex_go(src, i + 1, n, out, st, 0)
+        93 =>
+            _p = tok_push(out, TK_RBRACK(), "", 0)
+            _g = group_leave(st)
+            lex_go(src, i + 1, n, out, st, 0)
+        _ => lex_tok_rest2(src, i, n, out, st, c)
 
 fn lex_tok_rest2(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 44
-        _p = tok_push(out, TK_COMMA(), d"", 0)
+        _p = tok_push(out, TK_COMMA(), "", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 58
-        _p = tok_push(out, TK_COLON(), d"", 0)
+        _p = tok_push(out, TK_COLON(), "", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 61
         if i + 1 < n
-            if str_char(src, i + 1) == 62
+            if src.char(i + 1) == 62
                 lex_simple(src, i, n, out, st, TK_FATARROW(), 2)
             else
                 lex_pair(src, i, n, out, st, 61, TK_EQ(), TK_EQEQ())
@@ -597,19 +573,19 @@ fn lex_tok_rest2(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
 fn lex_tok_rest3(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 33
         if i + 1 < n
-            c2 = str_char(src, i + 1)
+            c2 = src.char(i + 1)
             if c2 == 61
-                _p = tok_push(out, TK_NE(), d"", 0)
+                _p = tok_push(out, TK_NE(), "", 0)
                 lex_go(src, i + 2, n, out, st, 0)
             else
-                _p = tok_push(out, TK_BANG(), d"", 0)
+                _p = tok_push(out, TK_BANG(), "", 0)
                 lex_go(src, i + 1, n, out, st, 0)
         else
-            _p = tok_push(out, TK_BANG(), d"", 0)
+            _p = tok_push(out, TK_BANG(), "", 0)
             lex_go(src, i + 1, n, out, st, 0)
     elsif c == 60
         if i + 1 < n
-            if str_char(src, i + 1) == 60
+            if src.char(i + 1) == 60
                 lex_simple(src, i, n, out, st, TK_SHL(), 2)
             else
                 lex_pair(src, i, n, out, st, 61, TK_LT(), TK_LE())
@@ -621,32 +597,32 @@ fn lex_tok_rest3(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
 fn lex_tok_rest4(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) -> Int ! alloc
     if c == 62
         if i + 1 < n
-            if str_char(src, i + 1) == 62
+            if src.char(i + 1) == 62
                 lex_simple(src, i, n, out, st, TK_SHR(), 2)
             else
                 lex_pair(src, i, n, out, st, 61, TK_GT(), TK_GE())
         else
             lex_simple(src, i, n, out, st, TK_GT(), 1)
     elsif c == 43
-        _p = tok_push(out, TK_PLUS(), d"", 0)
+        _p = tok_push(out, TK_PLUS(), "", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 42
-        _p = tok_push(out, TK_STAR(), d"", 0)
+        _p = tok_push(out, TK_STAR(), "", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 47
-        _p = tok_push(out, TK_SLASH(), d"", 0)
+        _p = tok_push(out, TK_SLASH(), "", 0)
         lex_go(src, i + 1, n, out, st, 0)
     else
         lex_tok_rest5(src, i, n, out, st, c)
 
 fn lex_simple(src: String, i: Int, n: Int, out: Toks, st: List[Int], kind: Int, width: Int) -> Int ! alloc
-    _p = tok_push(out, kind, d"", 0)
+    tok_push(out, kind, "", 0)
     lex_go(src, i + width, n, out, st, 0)
 
 # Operator that is `kind1` alone or `kind2` when followed by `next`.
 fn lex_pair(src: String, i: Int, n: Int, out: Toks, st: List[Int], next: Int, kind1: Int, kind2: Int) -> Int ! alloc
     if i + 1 < n
-        if str_char(src, i + 1) == next
+        if src.char(i + 1) == next
             lex_simple(src, i, n, out, st, kind2, 2)
         else
             lex_simple(src, i, n, out, st, kind1, 1)
@@ -658,18 +634,15 @@ fn f_interp_ok(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         1
     else
-        c = str_char(s, i)
+        c = s.char(i)
         if c == 35
             if i + 1 < n
-                if str_char(s, i + 1) == 35
-                    if i + 2 < n
-                        if str_char(s, i + 2) == 123
-                            f_interp_ok(s, i + 3, n)
-                        else
-                            f_interp_ok(s, i + 2, n)
+                if s.char(i + 1) == 35
+                    if i + 2 < n && s.char(i + 2) == 123
+                        f_interp_ok(s, i + 3, n)
                     else
                         f_interp_ok(s, i + 2, n)
-                elsif str_char(s, i + 1) == 123
+                elsif s.char(i + 1) == 123
                     f_interp_name(s, i + 2, n)
                 else
                     f_interp_ok(s, i + 1, n)
@@ -683,21 +656,15 @@ fn f_has_interp(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        c = str_char(s, i)
-        if c == 35
-            if i + 1 < n
-                if str_char(s, i + 1) == 35
-                    if i + 2 < n
-                        if str_char(s, i + 2) == 123
-                            f_has_interp(s, i + 3, n)
-                        else
-                            f_has_interp(s, i + 2, n)
-                    else
-                        f_has_interp(s, i + 2, n)
-                elsif str_char(s, i + 1) == 123
-                    1
+        c = s.char(i)
+        if c == 35 && i + 1 < n
+            if s.char(i + 1) == 35
+                if i + 2 < n && s.char(i + 2) == 123
+                    f_has_interp(s, i + 3, n)
                 else
-                    f_has_interp(s, i + 1, n)
+                    f_has_interp(s, i + 2, n)
+            elsif s.char(i + 1) == 123
+                1
             else
                 f_has_interp(s, i + 1, n)
         else
@@ -706,7 +673,7 @@ fn f_has_interp(s: String, i: Int, n: Int) -> Int ! alloc
 fn f_interp_name(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif is_ident_start(str_char(s, i)) == 0
+    elsif is_ident_start(s.char(i)) == 0
         0
     else
         f_interp_name_rest(s, i + 1, n)
@@ -715,7 +682,7 @@ fn f_interp_name_rest(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        c = str_char(s, i)
+        c = s.char(i)
         if c == 125
             f_interp_ok(s, i + 1, n)
         elsif is_ident_char(c) == 1
@@ -724,11 +691,11 @@ fn f_interp_name_rest(s: String, i: Int, n: Int) -> Int ! alloc
             0
 
 fn lex_quoted(src: String, i: Int, n: Int, out: Toks, st: List[Int], kind: Int) -> Int ! alloc
-    raw = d""
+    raw = ""
     raw2 = read_string_chars(src, i + 1, n, raw)
     end = string_end(src, i + 1, n)
-    nraw = str_len(raw2)
-    empty = d""
+    nraw = raw2.len()
+    empty = ""
     if kind == TK_FSTRING()
         bad = 1 - f_interp_ok(raw2, 0, nraw)
         # ival: 1 invalid, 2 interpolated (text stays raw), 0 plain f-string.
@@ -757,12 +724,12 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
         lex_quoted(src, i, n, out, st, TK_STRING())
     elsif is_digit(c) == 1
         end = read_number(src, i, n)
-        _t = push_number_tok(out, src, i, end, 0)
+        push_number_tok(out, src, i, end, 0)
         lex_go(src, end, n, out, st, 0)
     elsif c == 45
         lex_simple(src, i, n, out, st, TK_MINUS(), 1)
     elsif c == 46
-        _p = tok_push(out, TK_DOT(), d"", 0)
+        _p = tok_push(out, TK_DOT(), "", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif c == 37
         lex_simple(src, i, n, out, st, TK_PERCENT(), 1)
@@ -773,46 +740,31 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
     elsif c == 94
         lex_simple(src, i, n, out, st, TK_CARET(), 1)
     elsif c == 64
-        _p = tok_push(out, TK_AT(), d"", 0)
+        _p = tok_push(out, TK_AT(), "", 0)
         lex_go(src, i + 1, n, out, st, 0)
     elsif is_ident_start(c) == 1
         end = read_ident(src, i, n)
-        text = str_slice(src, i, end)
-        if str_eq(text, "d") == 1
-            if end < n
-                if str_char(src, end) == 34
-                    free(text)
-                    lex_quoted(src, end, n, out, st, TK_DSTRING())
-                else
-                    kind = kw_kind(text)
-                    _p = tok_push(out, kind, text, 0)
-                    lex_go(src, end, n, out, st, 0)
+        text = src.slice(i, end)
+        if text.eq("d") == 1
+            if end < n && src.char(end) == 34
+                free(text)
+                lex_quoted(src, end, n, out, st, TK_DSTRING())
             else
                 kind = kw_kind(text)
                 _p = tok_push(out, kind, text, 0)
                 lex_go(src, end, n, out, st, 0)
-        elsif str_eq(text, "f") == 1
-            if end < n
-                if str_char(src, end) == 34
-                    free(text)
-                    lex_quoted(src, end, n, out, st, TK_FSTRING())
-                else
-                    kind = kw_kind(text)
-                    _p = tok_push(out, kind, text, 0)
-                    lex_go(src, end, n, out, st, 0)
+        elsif text.eq("f") == 1
+            if end < n && src.char(end) == 34
+                free(text)
+                lex_quoted(src, end, n, out, st, TK_FSTRING())
             else
                 kind = kw_kind(text)
                 _p = tok_push(out, kind, text, 0)
                 lex_go(src, end, n, out, st, 0)
-        elsif str_eq(text, "r") == 1
-            if end < n
-                if str_char(src, end) == 34
-                    free(text)
-                    lex_quoted(src, end, n, out, st, TK_RSTRING())
-                else
-                    kind = kw_kind(text)
-                    _p = tok_push(out, kind, text, 0)
-                    lex_go(src, end, n, out, st, 0)
+        elsif text.eq("r") == 1
+            if end < n && src.char(end) == 34
+                free(text)
+                lex_quoted(src, end, n, out, st, TK_RSTRING())
             else
                 kind = kw_kind(text)
                 _p = tok_push(out, kind, text, 0)
@@ -827,22 +779,22 @@ fn lex_tok_rest5(src: String, i: Int, n: Int, out: Toks, st: List[Int], c: Int) 
 fn lex(src: String) -> Toks ! alloc
     out = toks_new()
     st = indent_stack_new()
-    _a = lex_go(src, 0, str_len(src), out, st, 1)
-    _f = list_free(st)
-    _g = list_free(out.cur)
+    lex_go(src, 0, src.len(), out, st, 1)
+    list_free(st)
+    list_free(out.cur)
     out
 
 fn preprocess_scan(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc
     if i >= n
         n
     else
-        str_skip(src, i, 5, limit)
+        src.skip(i, 5, limit)
 
 fn preprocess_scan_str(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc
     if i >= n
         n
     else
-        str_skip(src, i, 6, limit)
+        src.skip(i, 6, limit)
 
 fn preprocess_go(src: String, i: Int, n: Int, acc: String, in_str: Int) -> String ! alloc
     if i >= n
@@ -850,80 +802,68 @@ fn preprocess_go(src: String, i: Int, n: Int, acc: String, in_str: Int) -> Strin
     elsif in_str == 1
         j = preprocess_scan_str(src, i, n, 256)
         if j >= n
-            piece = str_slice(src, i, n)
-            str_append(acc, piece)
-        elsif str_char(src, j) == 34
-            piece = str_slice(src, i, j + 1)
-            acc2 = str_append(acc, piece)
+            piece = src.slice(i, n)
+            acc + piece
+        elsif src.char(j) == 34
+            piece = src.slice(i, j + 1)
+            acc2 = acc + piece
             preprocess_go(src, j + 1, n, acc2, 0)
         else
-            piece = str_slice(src, i, j)
-            acc2 = str_append(acc, piece)
+            piece = src.slice(i, j)
+            acc2 = acc + piece
             preprocess_go(src, j, n, acc2, 1)
     else
         j = preprocess_scan(src, i, n, 256)
         if j > i
-            piece = str_slice(src, i, j)
-            acc2 = str_append(acc, piece)
+            piece = src.slice(i, j)
+            acc2 = acc + piece
             preprocess_go(src, j, n, acc2, 0)
         else
-            c = str_char(src, i)
+            c = src.char(i)
             if c == 34
-                piece = char_to_str(c)
-                acc2 = str_append(acc, piece)
+                piece = String.from_char(c)
+                acc2 = acc + piece
                 preprocess_go(src, i + 1, n, acc2, 1)
-            elsif c == 63
-                prev_ok = preprocess_qdyn_ok(src, i)
-                if prev_ok == 1
-                    acc2 = str_append(acc, "QDYN")
-                    preprocess_go(src, i + 1, n, acc2, 0)
-                else
-                    piece = char_to_str(c)
-                    acc2 = str_append(acc, piece)
-                    preprocess_go(src, i + 1, n, acc2, 0)
+            elsif c == 63 && preprocess_qdyn_ok(src, i) == 1
+                acc2 = acc + "QDYN"
+                preprocess_go(src, i + 1, n, acc2, 0)
             else
-                piece = char_to_str(c)
-                acc2 = str_append(acc, piece)
+                piece = String.from_char(c)
+                acc2 = acc + piece
                 preprocess_go(src, i + 1, n, acc2, 0)
 
 fn preprocess_qdyn_ok(src: String, i: Int) -> Int ! alloc
     if i == 0
         1
     else
-        prev = str_char(src, i - 1)
+        prev = src.char(i - 1)
         1 - is_ident_char(prev)
 
 fn preprocess(src: String) -> String ! alloc
-    n = str_len(src)
-    acc = d""
+    n = src.len()
+    acc = ""
     with_prelude_enums(preprocess_go(src, 0, n, acc, 0))
 
 # `Option` / `Result` are part of the language: append the standard enums when
 # a program uses them without declaring them.
 fn with_prelude_enums(src: String) -> String ! alloc
-    r = if str_contains(src, d"Result[") == 1
-        if str_contains(src, d"enum Result") == 0
-            d"\nenum Result[T, E]\n    Ok(T)\n    Err(E)\n"
-        else
-            d""
+    r = if src.contains("Result[") == 1 && src.contains("enum Result") == 0
+        "\nenum Result[T, E]\n    Ok(T)\n    Err(E)\n"
     else
-        d""
-    o = if str_contains(src, d"Option[") == 1
-        if str_contains(src, d"enum Option") == 0
-            d"\nenum Option[T]\n    None\n    Some(T)\n"
-        else
-            d""
+        ""
+    o = if src.contains("Option[") == 1 && src.contains("enum Option") == 0
+        "\nenum Option[T]\n    None\n    Some(T)\n"
     else
-        d""
-    if str_len(r) + str_len(o) == 0
+        ""
+    if r.len() + o.len() == 0
         src
     else
-        src + d"\n" + r + o
+        src + "\n" + r + o
 
 fn find_char(s: String, ch: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0 - 1
-    elsif str_char(s, i) == ch
+    elsif s.char(i) == ch
         i
     else
         find_char(s, ch, i + 1, n)

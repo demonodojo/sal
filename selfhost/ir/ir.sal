@@ -326,7 +326,7 @@ fn ir_anycall(dest: Int, receiver: Int, slot: Int, args: Int) -> Int ! alloc
     inst
 
 fn ir_call_free(arg: Int) -> Int ! alloc
-    ir_call_named(arg, str_as_int(d"sal_free"))
+    ir_call_named(arg, str_as_int("sal_free"))
 
 # A call of the runtime function `func` (a handle) on `arg`, for a release.
 fn ir_call_named(arg: Int, func: Int) -> Int ! alloc
@@ -383,7 +383,7 @@ fn bind_new(name: Int, ssa: Int) -> Int ! alloc
     _e = vec_push(b, vec_new())
     _f = vec_push(b, vec_new())
     _g = vec_push(b, 4)
-    _h = vec_push(b, str_as_int(d"cpu"))
+    _h = vec_push(b, str_as_int("cpu"))
     b
 
 fn bind_place(b: Int) -> Int ! alloc
@@ -495,13 +495,13 @@ fn is_container_op(fname: Int) -> Int ! alloc
 
 fn runtime_name(cx: Cx, fname: Int) -> Int ! alloc
     if is_container_op(fname) == 1
-        str_as_int(d"sal_" + str_from_int(fname))
+        str_as_int("sal_" + str_from_int(fname))
     elsif is_user_fn(cx, fname) == 1
         fname
-    elsif str_eq(str_from_int(fname), d"matmul") == 1
-        str_as_int(d"sal_matmul_f32")
+    elsif str_eq(str_from_int(fname), "matmul") == 1
+        str_as_int("sal_matmul_f32")
     else
-        pref = d"sal_"
+        pref = "sal_"
         str_as_int(pref + str_from_int(fname))
 
 fn ir_call_unary(cx: Cx, rname: Int, src: Int) -> Int ! alloc
@@ -515,7 +515,7 @@ fn push_const_int(cx: Cx, dest: Int, v: Int) -> Int ! alloc
     ir_push(cx, ir_ci(dest, v))
 
 fn str_contains_tensor(ty: String) -> Int ! alloc
-    r = str_contains(ty, d"Tensor")
+    r = str_contains(ty, "Tensor")
     r
 
 fn parse_tensor_type(ty: String, b: Int) -> Int ! alloc
@@ -530,23 +530,23 @@ fn parse_tensor_type(ty: String, b: Int) -> Int ! alloc
         parse_tensor_dims(ty, b, 0, 0)
 
 fn parse_tensor_place(ty: String, b: Int) -> Int ! alloc
-    if tensor_ty_on_place(ty, d"p") == 1
-        bind_set_place(b, str_as_int(d"p"))
-    elsif tensor_ty_on_place(ty, d"gpu") == 1
-        bind_set_place(b, str_as_int(d"gpu"))
-    elsif tensor_ty_on_place(ty, d"tpu") == 1
-        bind_set_place(b, str_as_int(d"tpu"))
+    if tensor_ty_on_place(ty, "p") == 1
+        bind_set_place(b, str_as_int("p"))
+    elsif tensor_ty_on_place(ty, "gpu") == 1
+        bind_set_place(b, str_as_int("gpu"))
+    elsif tensor_ty_on_place(ty, "tpu") == 1
+        bind_set_place(b, str_as_int("tpu"))
     else
-        bind_set_place(b, str_as_int(d"cpu"))
+        bind_set_place(b, str_as_int("cpu"))
 
 fn tensor_ty_on_place(ty: String, place: String) -> Int ! alloc
-    mid = d"on "
+    mid = "on "
     needle = mid + place
     free(mid)
     if str_contains(ty, needle) == 1
         1
     else
-        sp = d" on "
+        sp = " on "
         needle2 = sp + place
         free(sp)
         r = str_contains(ty, needle2)
@@ -690,7 +690,7 @@ fn axis_len_fallback(tname: Int, take_row: Int) -> Int ! alloc
     axis_len_dim(tname, idx)
 
 fn axis_len_dim(tname: Int, idx: Int) -> Int ! alloc
-    mid = d"_d"
+    mid = "_d"
     is_ = int_to_str(idx)
     a = str_from_int(tname) + mid
     r = a + is_
@@ -736,7 +736,7 @@ fn region_new(place: Int, ops: Int, fused: Int) -> Int ! alloc
     _d = vec_push(r, 0)
     _e = vec_push(r, 0)
     _f = vec_push(r, 0)
-    _g = vec_push(r, str_as_int(d""))
+    _g = vec_push(r, str_as_int(""))
     r
 
 fn dim_at(dims: Int, d: Int) -> Int ! alloc
@@ -854,7 +854,7 @@ fn register_tensor_ssa_go(b: Int, dims: Int, conc: Int, i: Int, n: Int) -> Int !
         register_tensor_ssa_go(b, dims, conc, i + 1, n)
 
 fn tensor_len_ssa_name(tensor_ssa: Int) -> Int ! alloc
-    mid = d"_d0"
+    mid = "_d0"
     a = str_from_int(tensor_ssa) + mid
     str_as_int(a)
 
@@ -921,7 +921,7 @@ fn row_len_unbound(cx: Cx, e: Expr, ssa: Int) -> Int ! alloc
 fn drop_name_for(inner: Expr) -> Int ! alloc
     match inner
         XIdent(name) => str_as_int(name)
-        _ => str_as_int(d"tmp")
+        _ => str_as_int("tmp")
 
 # The `else` of an `if` with `elsif` arms: each arm nests as an `if` in the else of the one before.
 # The caller frees the returned block, so it must own its lists and exprs. Returning
@@ -966,7 +966,7 @@ fn add_dim_params(cx: Cx, b: Int, d: Int, nd: Int) -> Int ! alloc
         dims = bind_dims(b)
         dv = dim_at(dims, d)
         if dv < 0
-            mid = d"_d"
+            mid = "_d"
             ds = int_to_str(d)
             bn = str_from_int(bind_name(b))
             a = bn + mid

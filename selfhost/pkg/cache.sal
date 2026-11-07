@@ -11,9 +11,9 @@ fn source_hash(src: String) -> String ! io, alloc
     h.to_str()
 
 fn cache_dir() -> StrPath ! io, alloc
-    e = getenv(d"SAL_SELFHOST_CACHE")
+    e = getenv("SAL_SELFHOST_CACHE")
     if e.len() == 0
-        StrPath(d"target/selfhost-cache")
+        StrPath("target/selfhost-cache")
     else
         StrPath(e)
 

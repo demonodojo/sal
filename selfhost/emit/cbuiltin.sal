@@ -4,279 +4,273 @@ import cir
 import "../ir/tensorops.sal"
 
 fn emit_c_builtin(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if str_eq(fname, d"str_as_int") == 1
-        arg_at(args, 0)
-    elsif str_eq(fname, d"str_to_f64_bits") == 1
-        a0 = arg_at(args, 0)
-        "sal_str_to_f64_bits((const char *)(uintptr_t)" + a0 + ")"
-    elsif str_eq(fname, d"str_from_int") == 1
-        arg_at(args, 0)
-    elsif str_eq(fname, d"map_new") == 1
-        d"((int64_t)(uintptr_t)sal_map_new())"
-    elsif str_eq(fname, d"map_get") == 1
-        a0 = arg_at(args, 0)
-        a1 = arg_at(args, 1)
-        "sal_map_get((void *)(uintptr_t)" + a0 + ", (const char *)(uintptr_t)" + a1 + ")"
-    elsif str_eq(fname, d"map_put") == 1
-        a0 = arg_at(args, 0)
-        a1 = arg_at(args, 1)
-        a2 = arg_at(args, 2)
-        "sal_map_put((void *)(uintptr_t)" + a0 + ", (const char *)(uintptr_t)" + a1 + ", " + a2 + ")"
-    elsif str_eq(fname, d"ir_text") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_ir_text((void *)(uintptr_t)" + a0 + "))"
-    elsif str_eq(fname, d"lex_src") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_lex_src((const char *)(uintptr_t)" + a0 + "))"
-    else
-        emit_c_builtin_skip(fname, args, stmts)
+    match fname
+        "str_as_int" => arg_at(args, 0)
+        "str_to_f64_bits" =>
+            a0 = arg_at(args, 0)
+            "sal_str_to_f64_bits((const char *)(uintptr_t)" + a0 + ")"
+        "str_from_int" => arg_at(args, 0)
+        "map_new" => "((int64_t)(uintptr_t)sal_map_new())"
+        "map_get" =>
+            a0 = arg_at(args, 0)
+            a1 = arg_at(args, 1)
+            "sal_map_get((void *)(uintptr_t)" + a0 + ", (const char *)(uintptr_t)" + a1 + ")"
+        "map_put" =>
+            a0 = arg_at(args, 0)
+            a1 = arg_at(args, 1)
+            a2 = arg_at(args, 2)
+            "sal_map_put((void *)(uintptr_t)" + a0 + ", (const char *)(uintptr_t)" + a1 + ", " + a2 + ")"
+        "ir_text" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_ir_text((void *)(uintptr_t)" + a0 + "))"
+        "lex_src" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_lex_src((const char *)(uintptr_t)" + a0 + "))"
+        _ => emit_c_builtin_skip(fname, args, stmts)
 
 fn emit_c_builtin_skip(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if str_eq(fname, d"str_skip") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        c = arg_at(args, 2)
-        d = arg_at(args, 3)
-        "sal_str_skip((const char*)(uintptr_t)" + a + "," + b + "," + c + "," + d + ")"
-    elsif str_eq(fname, d"str_hash") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_str_hash((const char*)(uintptr_t)" + a + "," + b + ")"
-    else
-        emit_c_builtin_rest(fname, args, stmts)
+    match fname
+        "str_skip" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            c = arg_at(args, 2)
+            d = arg_at(args, 3)
+            "sal_str_skip((const char*)(uintptr_t)" + a + "," + b + "," + c + "," + d + ")"
+        "str_hash" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_str_hash((const char*)(uintptr_t)" + a + "," + b + ")"
+        _ => emit_c_builtin_rest(fname, args, stmts)
 
 fn emit_c_builtin_rest(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if str_eq(fname, d"vec_new") == 1
-        d"((int64_t)(uintptr_t)sal_vec_new())"
-    elsif str_eq(fname, d"argv") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_argv(" + a0 + "))"
-    elsif str_eq(fname, d"read_file") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_read_file((const char *)(uintptr_t)" + a0 + "))"
-    elsif str_eq(fname, d"strdup") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)" + a0 + "))"
-    elsif str_eq(fname, d"tmp_path") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_tmp_path((const char *)(uintptr_t)" + a0 + "))"
-    elsif str_eq(fname, d"int_to_str") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_int_to_str(" + a0 + "))"
-    elsif str_eq(fname, d"char_to_str") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_char_to_str(" + a0 + "))"
-    else
-        emit_c_builtin2(fname, args, stmts)
+    match fname
+        "vec_new" => "((int64_t)(uintptr_t)sal_vec_new())"
+        "argv" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_argv(" + a0 + "))"
+        "read_file" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_read_file((const char *)(uintptr_t)" + a0 + "))"
+        "strdup" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)" + a0 + "))"
+        "tmp_path" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_tmp_path((const char *)(uintptr_t)" + a0 + "))"
+        "int_to_str" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_int_to_str(" + a0 + "))"
+        "char_to_str" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_char_to_str(" + a0 + "))"
+        _ => emit_c_builtin2(fname, args, stmts)
 
 fn emit_c_builtin2(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if str_eq(fname, d"str_append") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "((int64_t)(uintptr_t)sal_str_append((char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + "))"
-    elsif str_eq(fname, d"str_concat") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "((int64_t)(uintptr_t)sal_str_concat((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + "))"
-    elsif str_eq(fname, d"str_slice") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        c = arg_at(args, 2)
-        "((int64_t)(uintptr_t)sal_str_slice((const char*)(uintptr_t)" + a + "," + b + "," + c + "))"
-    elsif str_eq(fname, d"free") == 1
-        a0 = arg_at(args, 0)
-        line = "  sal_free((void*)(uintptr_t)" + a0 + ");\n"
-        _p = vec_push(stmts, str_as_int(line))
-        d"0"
-    elsif str_eq(fname, d"clang") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_clang((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"clang_obj") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_clang_obj((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"link_objs") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_link_objs((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"realpath") == 1
-        a = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_realpath((const char*)(uintptr_t)" + a + "))"
-    elsif str_eq(fname, d"path_readable") == 1
-        a = arg_at(args, 0)
-        "sal_path_readable((const char*)(uintptr_t)" + a + ")"
-    else
-        emit_c_builtin3(fname, args, stmts)
+    match fname
+        "str_append" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "((int64_t)(uintptr_t)sal_str_append((char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + "))"
+        "str_concat" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "((int64_t)(uintptr_t)sal_str_concat((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + "))"
+        "str_slice" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            c = arg_at(args, 2)
+            "((int64_t)(uintptr_t)sal_str_slice((const char*)(uintptr_t)" + a + "," + b + "," + c + "))"
+        "free" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_free((void*)(uintptr_t)" + a0 + ");\n"
+            vec_push(stmts, line.to_int())
+            "0"
+        "clang" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_clang((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "clang_obj" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_clang_obj((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "link_objs" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_link_objs((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "realpath" =>
+            a = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_realpath((const char*)(uintptr_t)" + a + "))"
+        "path_readable" =>
+            a = arg_at(args, 0)
+            "sal_path_readable((const char*)(uintptr_t)" + a + ")"
+        _ => emit_c_builtin3(fname, args, stmts)
 
 fn emit_c_builtin3(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if str_eq(fname, d"gated_print_str") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_gated_print_str(" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"write_file") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_write_file((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"str_eq") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_str_eq((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"str_contains") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_str_contains((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"str_index_of") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_str_index_of((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
-    elsif str_eq(fname, d"str_index_from") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        c = arg_at(args, 2)
-        "sal_str_index_from((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + "," + c + ")"
-    elsif str_eq(fname, d"str_len") == 1
-        a = arg_at(args, 0)
-        "sal_str_len((const char*)(uintptr_t)" + a + ")"
-    else
-        emit_c_builtin4(fname, args, stmts)
+    match fname
+        "gated_print_str" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_gated_print_str(" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "write_file" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_write_file((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "str_eq" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_str_eq((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "str_contains" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_str_contains((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "str_index_of" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_str_index_of((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + ")"
+        "str_index_from" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            c = arg_at(args, 2)
+            "sal_str_index_from((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + "," + c + ")"
+        "str_len" =>
+            a = arg_at(args, 0)
+            "sal_str_len((const char*)(uintptr_t)" + a + ")"
+        _ => emit_c_builtin4(fname, args, stmts)
 
 fn emit_c_builtin4(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if str_eq(fname, d"str_char") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_str_char((const char*)(uintptr_t)" + a + "," + b + ")"
-    elsif str_eq(fname, d"vec_push") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_vec_push((void*)(uintptr_t)" + a + "," + b + ")"
-    elsif str_eq(fname, d"vec_get") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "sal_vec_get((void*)(uintptr_t)" + a + "," + b + ")"
-    elsif str_eq(fname, d"vec_set") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        c = arg_at(args, 2)
-        "sal_vec_set((void*)(uintptr_t)" + a + "," + b + "," + c + ")"
-    elsif str_eq(fname, d"vec_len") == 1
-        a = arg_at(args, 0)
-        "sal_vec_len((void*)(uintptr_t)" + a + ")"
-    else
-        emit_c_builtin5(fname, args, stmts)
+    match fname
+        "str_char" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_str_char((const char*)(uintptr_t)" + a + "," + b + ")"
+        "vec_push" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_vec_push((void*)(uintptr_t)" + a + "," + b + ")"
+        "vec_get" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_vec_get((void*)(uintptr_t)" + a + "," + b + ")"
+        "vec_set" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            c = arg_at(args, 2)
+            "sal_vec_set((void*)(uintptr_t)" + a + "," + b + "," + c + ")"
+        "vec_len" =>
+            a = arg_at(args, 0)
+            "sal_vec_len((void*)(uintptr_t)" + a + ")"
+        _ => emit_c_builtin5(fname, args, stmts)
 
 fn emit_c_builtin5(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if str_eq(fname, d"vec_free") == 1
-        a0 = arg_at(args, 0)
-        line = "  sal_vec_free((void*)(uintptr_t)" + a0 + ");\n"
-        _p = vec_push(stmts, line)
-        d"0"
-    elsif str_eq(fname, d"list_free") == 1
-        a0 = arg_at(args, 0)
-        line = "  sal_list_free((void*)(uintptr_t)" + a0 + ");\n"
-        _p = vec_push(stmts, line)
-        d"0"
-    elsif str_eq(fname, d"enum_free") == 1
-        a0 = arg_at(args, 0)
-        line = "  sal_enum_free(" + a0 + ");\n"
-        _p = vec_push(stmts, line)
-        d"0"
-    elsif str_eq(fname, d"enum_owns") == 1
-        "sal_enum_owns(" + arg_at(args, 0) + ", " + arg_at(args, 1) + ")"
-    elsif str_eq(fname, d"enum_box_id") == 1
-        "sal_enum_box_id(" + arg_at(args, 0) + ")"
-    elsif str_eq(fname, d"list_box_id") == 1
-        "sal_list_box_id((void *)(uintptr_t)" + arg_at(args, 0) + ")"
-    elsif str_eq(fname, d"dict_free") == 1
-        a0 = arg_at(args, 0)
-        line = "  sal_dict_free((void*)(uintptr_t)" + a0 + ");\n"
-        _p = vec_push(stmts, line)
-        d"0"
-    elsif str_eq(fname, d"bytes_free") == 1
-        a0 = arg_at(args, 0)
-        line = "  sal_bytes_free((void*)(uintptr_t)" + a0 + ");\n"
-        _p = vec_push(stmts, line)
-        d"0"
-    elsif str_eq(fname, d"not") == 1
-        a0 = arg_at(args, 0)
-        "sal_not(" + a0 + ")"
-    elsif str_eq(fname, d"print_str") == 1
-        a0 = arg_at(args, 0)
-        "sal_print_str((const char*)(uintptr_t)" + a0 + ")"
-    elsif str_eq(fname, d"eprint_str") == 1
-        a0 = arg_at(args, 0)
-        "sal_eprint_str((const char*)(uintptr_t)" + a0 + ")"
-    elsif str_eq(fname, d"print") == 1
-        a0 = arg_at(args, 0)
-        "sal_print_i64(" + a0 + ")"
-    elsif str_eq(fname, d"getenv") == 1
-        a0 = arg_at(args, 0)
-        "((int64_t)(uintptr_t)sal_getenv((const char*)(uintptr_t)" + a0 + "))"
-    elsif str_eq(fname, d"mkdir_p") == 1
-        a0 = arg_at(args, 0)
-        "sal_mkdir_p((const char*)(uintptr_t)" + a0 + ")"
-    elsif str_eq(fname, d"select_str") == 1
-        c = arg_at(args, 0)
-        a = arg_at(args, 1)
-        b = arg_at(args, 2)
-        "((int64_t)(uintptr_t)sal_select_str(" + c + ",(char*)(uintptr_t)" + a + ",(char*)(uintptr_t)" + b + "))"
-    elsif str_eq(fname, d"place_matmul_ai_sum") == 1
-        a0 = arg_at(args, 0)
-        "sal_place_matmul_ai_sum(" + a0 + ")"
-    elsif str_eq(fname, d"place_launches") == 1
-        a0 = arg_at(args, 0)
-        "sal_place_launches(" + a0 + ")"
-    elsif str_eq(fname, d"image_new") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        "((int64_t)(uintptr_t)sal_image_new(" + a + "," + b + "))"
-    elsif str_eq(fname, d"write_png") == 1
-        a = arg_at(args, 0)
-        b = arg_at(args, 1)
-        c = arg_at(args, 2)
-        d = arg_at(args, 3)
-        "sal_write_png((const char*)(uintptr_t)" + a + "," + b + "," + c + ",(void*)(uintptr_t)" + d + ")"
-    else
-        emit_c_runtime_call(fname, args, stmts)
+    match fname
+        "vec_free" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_vec_free((void*)(uintptr_t)" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
+        "list_free" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_list_free((void*)(uintptr_t)" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
+        "enum_free" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_enum_free(" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
+        "enum_owns" => "sal_enum_owns(" + arg_at(args, 0) + ", " + arg_at(args, 1) + ")"
+        "enum_box_id" => "sal_enum_box_id(" + arg_at(args, 0) + ")"
+        "list_box_id" => "sal_list_box_id((void *)(uintptr_t)" + arg_at(args, 0) + ")"
+        "dict_free" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_dict_free((void*)(uintptr_t)" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
+        "bytes_free" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_bytes_free((void*)(uintptr_t)" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
+        "not" =>
+            a0 = arg_at(args, 0)
+            "sal_not(" + a0 + ")"
+        "print_str" =>
+            a0 = arg_at(args, 0)
+            "sal_print_str((const char*)(uintptr_t)" + a0 + ")"
+        "eprint_str" =>
+            a0 = arg_at(args, 0)
+            "sal_eprint_str((const char*)(uintptr_t)" + a0 + ")"
+        "print" =>
+            a0 = arg_at(args, 0)
+            "sal_print_i64(" + a0 + ")"
+        "getenv" =>
+            a0 = arg_at(args, 0)
+            "((int64_t)(uintptr_t)sal_getenv((const char*)(uintptr_t)" + a0 + "))"
+        "mkdir_p" =>
+            a0 = arg_at(args, 0)
+            "sal_mkdir_p((const char*)(uintptr_t)" + a0 + ")"
+        "select_str" =>
+            c = arg_at(args, 0)
+            a = arg_at(args, 1)
+            b = arg_at(args, 2)
+            "((int64_t)(uintptr_t)sal_select_str(" + c + ",(char*)(uintptr_t)" + a + ",(char*)(uintptr_t)" + b + "))"
+        "place_matmul_ai_sum" =>
+            a0 = arg_at(args, 0)
+            "sal_place_matmul_ai_sum(" + a0 + ")"
+        "place_launches" =>
+            a0 = arg_at(args, 0)
+            "sal_place_launches(" + a0 + ")"
+        "image_new" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "((int64_t)(uintptr_t)sal_image_new(" + a + "," + b + "))"
+        "write_png" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            c = arg_at(args, 2)
+            d = arg_at(args, 3)
+            "sal_write_png((const char*)(uintptr_t)" + a + "," + b + "," + c + ",(void*)(uintptr_t)" + d + ")"
+        _ =>
+            emit_c_runtime_call(fname, args, stmts)
 
-# Any other builtin is the runtime function `sal_<name>`. Values are all
-# int64 (pointers included), which matches the x86-64 calling convention, so a
-# block-scope unprototyped declaration is enough.
+            # Any other builtin is the runtime function `sal_<name>`. Values are all
+            # int64 (pointers included), which matches the x86-64 calling convention, so a
+            # block-scope unprototyped declaration is enough.
 fn emit_c_runtime_call(fname: String, args: Int, stmts: Int) -> String ! alloc
-    if cir_is_stub(str_slice("sal_" + fname, 0, 4 + str_len(fname))) == 1
-        d"0"
-    elsif str_eq(fname, d"syscall") == 1
+    if cir_is_stub(("sal_" + fname).slice(0, 4 + fname.len())) == 1
+        "0"
+    elsif fname.eq("syscall") == 1
         emit_c_syscall(args, stmts)
-    elsif str_eq(fname, d"bytes_get_u8") == 1
+    elsif fname.eq("bytes_get_u8") == 1
         emit_c_bytes_get(args, 1)
-    elsif str_eq(fname, d"bytes_get_u16") == 1
+    elsif fname.eq("bytes_get_u16") == 1
         emit_c_bytes_get(args, 2)
-    elsif str_eq(fname, d"bytes_get_u32") == 1
+    elsif fname.eq("bytes_get_u32") == 1
         emit_c_bytes_get(args, 4)
-    elsif str_eq(fname, d"bytes_get_i64") == 1
+    elsif fname.eq("bytes_get_i64") == 1
         emit_c_bytes_get(args, 8)
-    elsif str_eq(fname, d"bytes_set_u8") == 1
+    elsif fname.eq("bytes_set_u8") == 1
         emit_c_bytes_set(args, 1)
-    elsif str_eq(fname, d"bytes_set_u16") == 1
+    elsif fname.eq("bytes_set_u16") == 1
         emit_c_bytes_set(args, 2)
-    elsif str_eq(fname, d"bytes_set_u32") == 1
+    elsif fname.eq("bytes_set_u32") == 1
         emit_c_bytes_set(args, 4)
-    elsif str_eq(fname, d"bytes_set_i64") == 1
+    elsif fname.eq("bytes_set_i64") == 1
         emit_c_bytes_set(args, 8)
     else
         emit_c_plain_runtime_call(fname, args, stmts)
 
 fn emit_c_syscall(args: Int, stmts: Int) -> String ! alloc
-    _p = vec_push(stmts, str_as_int(d"  extern int64_t sal_os_syscall();\n"))
+    vec_push(stmts, "  extern int64_t sal_os_syscall();\n".to_int())
     padded = vec_copy(args)
-    _z = pad_args(padded, 7)
-    acc = d"sal_os_syscall("
+    pad_args(padded, 7)
+    acc = "sal_os_syscall("
     acc = join_commas(padded, 0, vec_len(padded), acc)
     acc + ")"
 
 fn emit_c_plain_runtime_call(fname: String, args: Int, stmts: Int) -> String ! alloc
     rname = "sal_" + fname
-    _p = vec_push(stmts, str_as_int("  extern int64_t " + rname + "();\n"))
+    vec_push(stmts, ("  extern int64_t " + rname + "();\n").to_int())
     acc = "((int64_t)" + rname + "("
     acc = join_commas(args, 0, vec_len(args), acc)
     acc + "))"

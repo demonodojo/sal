@@ -10,7 +10,7 @@ fn ht_fill(xs: List[String], n: Int) -> Int ! alloc
     if n == 0
         0
     else
-        xs.push("".dup())
+        xs.push("")
         ht_fill(xs, n - 1)
 
 static HT.new(cap: Int) -> HT ! alloc
@@ -83,8 +83,8 @@ method HT.take_all(i: Int, n: Int, ks: List[String], vs: List[String]) -> Int ! 
         if k.len() > 0
             ks.push(k.dup())
             vs.push(self.vals.get(i).dup())
-        self.keys.set(i, "".dup())
-        self.vals.set(i, "".dup())
+        self.keys.set(i, "")
+        self.vals.set(i, "")
         self.take_all(i + 1, n, ks, vs)
 
 method HT.reput(ks: List[String], vs: List[String], i: Int, n: Int) -> Int ! alloc

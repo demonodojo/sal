@@ -24,11 +24,11 @@ fn lower_args(cx: Cx, args: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
 # `left` is the left operand of a string `+`; its own left chain makes the append form.
 fn str_add_name(env: TEnv, left: Expr, into_acc: Int) -> Int ! alloc
     if into_acc == 1
-        str_as_int(d"sal_str_append")
+        str_as_int("sal_str_append")
     elsif tbinary_is_string_concat(env, left) == 1
-        str_as_int(d"sal_str_append")
+        str_as_int("sal_str_append")
     else
-        str_as_int(d"sal_str_concat")
+        str_as_int("sal_str_concat")
 
 # `left` is the accumulator of an `x = x + ...` chain being lowered.
 fn tadd_left_is_acc(left: Expr, acc: Int) -> Int ! alloc
@@ -74,14 +74,14 @@ fn lower_str_add(cx: Cx, left: Expr, right: Expr) -> Int ! alloc
     if tadd_right_is_fresh_temp(cx.env, right) == 1
         fargs = vec_new()
         _f = vec_push(fargs, r)
-        _q = ir_push(cx, ir_call(0, str_as_int(d"sal_free"), fargs, 0))
+        _q = ir_push(cx, ir_call(0, str_as_int("sal_free"), fargs, 0))
     else
         _q = 0
     if str_eq(fnm, "sal_str_concat") == 1
         if tadd_left_is_fresh_call(left) == 1
             largs = vec_new()
             _g = vec_push(largs, l)
-            _h = ir_push(cx, ir_call(0, str_as_int(d"sal_free"), largs, 0))
+            _h = ir_push(cx, ir_call(0, str_as_int("sal_free"), largs, 0))
     d
 
 fn lower_expr(cx: Cx, e: Expr) -> Int ! alloc
@@ -137,7 +137,7 @@ fn strs_vec(xs: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
 # `a && b` is `if a then (b != 0) else false`; `a || b` is `if a then true else (b != 0)`. The
 # right operand runs only on the branch that needs it, as in the bootstrap (`ir.rs`).
 fn short_circuit(op: String, left: Expr, right: Expr) -> Expr ! alloc
-    truth = XBin(d"ne", right, XInt(0))
+    truth = XBin("ne", right, XInt(0))
     if str_eq(op, "and") == 1
         XIf(left, TBlock(list_new[TStmt](), truth), TBlock(list_new[TStmt](), XBool(0)), 1, list_new[TElsif]())
     else
@@ -178,21 +178,21 @@ fn lower_unary(cx: Cx, op: String, operand: Expr) -> Int ! alloc
         lower_tensor_neg(cx, operand, inner, d)
     else
         uop = unary_ir_op(cx.env, op, operand)
-        _p = ir_push(cx, ir_bin(d, uop, inner, str_as_int(d"0")))
+        _p = ir_push(cx, ir_bin(d, uop, inner, str_as_int("0")))
         d
 
 # `-t` on a tensor is a `TensorUnary` over the operand's own length and place.
 fn lower_tensor_neg(cx: Cx, operand: Expr, inner: Int, d: Int) -> Int ! alloc
     b = tensor_operand_bind(cx, operand, inner)
     len = tensor_len_operand(cx, b, inner)
-    _p = ir_push(cx, ir_tun(d, str_as_int(d"neg"), bind_elem(b), bind_place(b), inner, len))
+    _p = ir_push(cx, ir_tun(d, str_as_int("neg"), bind_elem(b), bind_place(b), inner, len))
     register_tensor_ssa(cx, d, b)
     d
 
 fn unary_ir_op(env: TEnv, op: String, operand: Expr) -> Int ! alloc
     if str_eq(op, "neg") == 1
         if tt_is_float(texpr_type(env, operand)) == 1
-            str_as_int(d"fneg")
+            str_as_int("fneg")
         else
             str_as_int(op)
     else
@@ -362,7 +362,7 @@ fn lower_on_matmul(cx: Cx, ops: Int, d: Int, i: Int, n: Int) -> Int ! alloc
             _c = vec_push(args, m)
             _d = vec_push(args, k)
             _e = vec_push(args, nn)
-            fnm = str_as_int(d"sal_matmul_f32")
+            fnm = str_as_int("sal_matmul_f32")
             _p = ir_push(cx, ir_call(d, fnm, args, 1))
             0
         else
@@ -484,7 +484,7 @@ fn lower_list_new(cx: Cx, txt: String, d: Int, owned: Int) -> Int ! alloc
     _a = ir_push(cx, ir_cs(dsc, str_as_int(desc_type_text(cx_structs(cx), cx.enums, txt, owned))))
     argv = vec_new()
     _b = vec_push(argv, dsc)
-    _p = ir_push(cx, ir_call(d, str_as_int(d"sal_list_new_desc"), argv, 1))
+    _p = ir_push(cx, ir_call(d, str_as_int("sal_list_new_desc"), argv, 1))
     d
 
 # `dict_new[K, V]()` passes both runtime kinds (Int 0, Float 1, Bool 2, String 3).
@@ -504,7 +504,7 @@ fn lower_container_new(cx: Cx, name: String, txt: String, d: Int, nkinds: Int) -
     k2d = fresh(cx)
     _c = push_const_int(cx, k2d, k2)
     _e = vec_push(argv, k2d)
-    _p = ir_push(cx, ir_call(d, str_as_int(d"sal_" + name), argv, 1))
+    _p = ir_push(cx, ir_call(d, str_as_int("sal_" + name), argv, 1))
     d
 
 fn lower_call_runtime(cx: Cx, name: String, args: List[Expr], targs: String) -> Int ! alloc
@@ -567,14 +567,14 @@ fn load_literal_of(cx: Cx, d: Int, a0: Expr) -> Int ! alloc
         _ => 0
 
 fn load_literal_emit(cx: Cx, d: Int, s: String) -> Int ! alloc
-    q1 = d"\""
+    q1 = "\""
     q2 = q1 + s
-    qe = d"\""
+    qe = "\""
     q3 = q2 + qe
     argv = vec_new()
     _a = vec_push(argv, str_as_int(q3))
-    _pl = vec_push(argv, str_as_int(d"cpu"))
-    fnm = str_as_int(d"sal_load")
+    _pl = vec_push(argv, str_as_int("cpu"))
+    fnm = str_as_int("sal_load")
     _p = ir_push(cx, ir_call(d, fnm, argv, 1))
     1
 
@@ -646,10 +646,10 @@ fn where_call_frame(cx: Cx, e: Expr, callee: String) -> Int ! alloc
         where_struct_type(cx, texpr_type(cx.env, e))
 
 fn where_frame_lit(frame_ty: Int) -> Int ! alloc
-    q1 = d"\""
+    q1 = "\""
     mid = str_from_int(frame_ty)
     q2 = q1 + mid
-    qe = d"\""
+    qe = "\""
     str_as_int(q2 + qe)
 
 fn lower_where_call(cx: Cx, args: List[Expr], arg_names: Int, d: Int) -> Int ! alloc
@@ -670,7 +670,7 @@ fn lower_where_call(cx: Cx, args: List[Expr], arg_names: Int, d: Int) -> Int ! a
             _b = vec_push(argv, mask_ssa)
             _c = vec_push(argv, len_ssa)
             _d = vec_push(argv, where_frame_lit(frame_ty))
-            fnm = str_as_int(d"sal_where")
+            fnm = str_as_int("sal_where")
             _p = ir_push(cx, ir_call(d, fnm, argv, 1))
             d
 
@@ -760,7 +760,7 @@ fn lower_match_switch(cx: Cx, scrut: Int, arms: List[TArm]) -> Int ! alloc
     sw = vec_new()
     dflt = vec_new()
     _a = vec_push(dflt, vec_new())
-    _b = vec_push(dflt, str_as_int(d"0"))
+    _b = vec_push(dflt, str_as_int("0"))
     _c = lower_switch_arms(cx, scrut, arms, 0, list_len(arms), n0, base_snap, slen, sw, dflt)
     _d = cx_set_insts(cx, saved)
     d = fresh(cx)
@@ -1543,7 +1543,7 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TE
     name = f.name.dup()
     _dr = emit_struct_drops(cx, f, body, vec_get(denv, 1), seen)
     if f.arena == 1
-        _lv = ir_push(cx, ir_call(0, str_as_int(d"sal_arena_leave"), vec_new(), 0))
+        _lv = ir_push(cx, ir_call(0, str_as_int("sal_arena_leave"), vec_new(), 0))
     else
         _lv = 0
     if ret != 0
@@ -1551,7 +1551,7 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TE
     else
         _rr = 0
     if f.arena == 1
-        _en = ir_prepend(cx, ir_call(0, str_as_int(d"sal_arena_enter"), vec_new(), 0))
+        _en = ir_prepend(cx, ir_call(0, str_as_int("sal_arena_enter"), vec_new(), 0))
     else
         _en = 0
     out = vec_new()
@@ -1599,9 +1599,9 @@ fn scalar_left_tensor_bin(cx: Cx, op: String, tensor_ssa: Int, scalar_ssa: Int, 
         elem = bind_elem(b)
         place = bind_place(b)
         neg = fresh(cx)
-        _p = ir_push(cx, ir_tun(neg, str_as_int(d"neg"), elem, place, tensor_ssa, len))
+        _p = ir_push(cx, ir_tun(neg, str_as_int("neg"), elem, place, tensor_ssa, len))
         register_tensor_ssa(cx, neg, b)
-        _q = ir_push(cx, ir_tbin(d, str_as_int(d"add"), elem, place, neg, scalar_ssa, len, 1))
+        _q = ir_push(cx, ir_tbin(d, str_as_int("add"), elem, place, neg, scalar_ssa, len, 1))
         register_tensor_ssa(cx, d, b)
         1
     elsif str_eq(op, "lt") == 1
@@ -1831,13 +1831,13 @@ fn rel_releasing(name: String) -> Int ! alloc
 fn rel_root(e: Expr) -> String ! alloc
     match e
         XField(base, field) => rel_root_of(base)
-        _ => d""
+        _ => ""
 
 fn rel_root_of(e: Expr) -> String ! alloc
     match e
         XIdent(name) => name
         XField(base, field) => rel_root_of(base)
-        _ => d""
+        _ => ""
 
 fn rel_args(args: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n

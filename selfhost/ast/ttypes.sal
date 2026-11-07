@@ -53,22 +53,22 @@ fn tt_chars_eq(a: String, b: String, i: Int, n: Int) -> Int ! alloc
 fn tt_arg(t: String, i: Int) -> String ! alloc
     h = nth_type_arg(t, i)
     if h == 0
-        d""
+        ""
     else
         str_from_int(h)
 
 # `T` of a `List[T]` type text, "" otherwise.
 fn tt_list_elem(t: String) -> String ! alloc
     if t.len() == 0
-        d""
+        ""
     else
         open = ty_find_open(t, 0)
         if open < 0
-            d""
+            ""
         elsif trim_spaces(t.slice(0, open)).eq("List") == 1
             tt_arg(t, 0)
         else
-            d""
+            ""
 
 # ---- environment ----
 fn tenv_new(tp: TProgram) -> TEnv ! alloc
@@ -145,7 +145,7 @@ fn tenv_fill(env: TEnv, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
         gi = tt_generic_ret(f)
         if gi >= 0
             tenv_put_generic(env, f.name, gi + 1)
-            _p = tenv_put_ret(env, f.name, d"Unknown")
+            _p = tenv_put_ret(env, f.name, "Unknown")
         elsif f.ret.len() != 0
             _p = tenv_put_ret(env, f.name, f.ret)
         else
@@ -199,7 +199,7 @@ fn tenv_truncate(env: TEnv, mark: Int) -> Int ! alloc
 
 fn tenv_type_go(env: TEnv, name: String, i: Int) -> String ! alloc
     if i < 0
-        d""
+        ""
     elsif env.names.get(i).eq(name) == 1
         env.tys.get(i)
     else
@@ -223,7 +223,7 @@ fn tt_struct_find(structs: List[TStruct], name: String) -> Int ! alloc
 
 fn tt_field_type_go(fields: List[TField], field: String, i: Int, n: Int) -> String ! alloc
     if i >= n
-        d""
+        ""
     elsif fields.get(i).name.eq(field) == 1
         fields.get(i).ty
     else
@@ -232,7 +232,7 @@ fn tt_field_type_go(fields: List[TField], field: String, i: Int, n: Int) -> Stri
 fn tt_field_type(structs: List[TStruct], sname: String, field: String) -> String ! alloc
     si = tt_struct_find(structs, sname)
     if si < 0
-        d""
+        ""
     else
         fields = structs.get(si).fields
         tt_field_type_go(fields, field, 0, fields.len())
@@ -247,17 +247,17 @@ fn tt_matmul(env: TEnv, args: List[Expr]) -> String ! alloc
         b = texpr_type(env, args.get(1)).to_int()
         r = tt_matmul_text(a, b)
         if r == 0
-            d""
+            ""
         else
             str_from_int(r)
     else
-        d""
+        ""
 
 fn tt_dict_get(env: TEnv, args: List[Expr]) -> String ! alloc
     dt = texpr_type(env, args.get(0))
     v = tt_arg(dt, 1)
     if v.len() == 0
-        d""
+        ""
     else
         "Option" + "[" + v + "]"
 
@@ -268,19 +268,19 @@ fn tt_user_call(env: TEnv, name: String, args: List[Expr]) -> String ! alloc
         if gi < args.len()
             texpr_type(env, args.get(gi))
         else
-            d""
+            ""
     else
         r = tt_index_of(env.fn_names, name, 0, env.fn_names.len())
         if r >= 0
             env.fn_rets.get(r)
         else
-            d""
+            ""
 
 fn tt_call_type(env: TEnv, name: String, args: List[Expr], targs: String) -> String ! alloc
     if tt_call_returns_string(name) == 1
-        d"String"
+        "String"
     elsif name.eq("int_to_float") == 1
-        d"Float"
+        "Float"
     elsif name.eq("load") == 1
         targs
     elsif name.eq("matmul") == 1
@@ -289,7 +289,7 @@ fn tt_call_type(env: TEnv, name: String, args: List[Expr], targs: String) -> Str
         name
     elsif name.eq("list_new") + name.eq("list_new_owned") == 1
         if targs.len() == 0
-            d""
+            ""
         else
             "List[" + targs + "]"
     elsif name.eq("list_get") == 1
@@ -298,7 +298,7 @@ fn tt_call_type(env: TEnv, name: String, args: List[Expr], targs: String) -> Str
         tt_list_elem(texpr_type(env, args.get(0)))
     elsif name.eq("dict_new") == 1
         if targs.len() == 0
-            d""
+            ""
         else
             "Dict[" + targs + "]"
     elsif name.eq("dict_get") == 1
@@ -322,29 +322,29 @@ fn tt_binary_type(env: TEnv, op: String, l: Expr, r: Expr) -> String ! alloc
     if op.eq("add") == 1
         lt = texpr_type(env, l)
         if tt_is_string(lt) == 1
-            d"String"
+            "String"
         elsif tt_is_float(lt) == 1
-            d"Float"
+            "Float"
         else
-            d""
+            ""
     elsif op.eq("and") + op.eq("or") > 0
-        d"Bool"
+        "Bool"
     elsif tt_arith_is_float(env, op, l, r) == 1
-        d"Float"
+        "Float"
     else
-        d""
+        ""
 
 fn tt_unary_type(env: TEnv, op: String, inner: Expr) -> String ! alloc
     if op.eq("neg") == 1
         texpr_type(env, inner)
     else
-        d""
+        ""
 
 # Type text of `e` under `env`, "" when unknown.
 fn texpr_type(env: TEnv, e: Expr) -> String ! alloc
     match e
-        XStr(s) => d"String"
-        XFloat(bits, txt) => d"Float"
+        XStr(s) => "String"
+        XFloat(bits, txt) => "Float"
         XCall(name, args, targs, xp) => tt_call_type(env, name, args, targs)
         XTensor(nr, nc, data) => "Tensor[F32, " + nr.to_str() + ", " + nc.to_str() + "] on cpu"
         XIdent(name) => tenv_type(env, name)
@@ -352,7 +352,7 @@ fn texpr_type(env: TEnv, e: Expr) -> String ! alloc
         XBin(op, l, r) => tt_binary_type(env, op, l, r)
         XField(base, field) => tt_field_type(env.structs, texpr_type(env, base), field)
         XIf(cond, then_b, else_b, has_else, elsifs) => tt_block_tail_type(env, then_b)
-        _ => d""
+        _ => ""
 
 fn texpr_is_string(env: TEnv, e: Expr) -> Int ! alloc
     tt_is_string(texpr_type(env, e))

@@ -198,7 +198,7 @@ fn dr_tm(t: String, name: String) -> Int ! alloc
 fn dx_ident(e: Expr) -> String ! alloc
     match e
         XIdent(s) => s
-        _ => d""
+        _ => ""
 
 fn dx_is_ident(e: Expr) -> Int ! alloc
     match e
@@ -625,13 +625,13 @@ fn dx_leftmost(e: Expr) -> String ! alloc
     match e
         XBin(op, l, r) => dx_leftmost_bin(op, l, e)
         XIdent(s) => s
-        _ => d""
+        _ => ""
 
 fn dx_leftmost_bin(op: String, l: Expr, e: Expr) -> String ! alloc
     if str_eq(op, "add") == 1
         dx_leftmost(l)
     else
-        d""
+        ""
 
 # ---- escape facts ----
 # `mov`: 1 read, 2 transfer box, 3 take fields only.
@@ -702,7 +702,7 @@ fn dr_field_root(e: Expr) -> String ! alloc
     match e
         XField(base, field) => dr_field_root(base)
         XIdent(name) => name
-        _ => d""
+        _ => ""
 
 fn dr_arg_ident(c: DC, n: String, mov: Int) -> Int ! alloc
     if mov != 1
@@ -969,7 +969,7 @@ fn dr_match(c: DC, scrut: Expr, arms: List[TArm]) -> Int ! alloc
     # Variant patterns only read the box; a bare binding aliases the whole value.
     if dx_is_ident(scrut) == 1
         _a = list_push(c.m_scrut, strdup(dx_ident(scrut)))
-        _b = list_push(c.m_bound, dr_arms_bound(c, arms, 0, list_len(arms), d""))
+        _b = list_push(c.m_bound, dr_arms_bound(c, arms, 0, list_len(arms), ""))
         0
     else
         0
@@ -1067,13 +1067,13 @@ fn dr_own_call(c: DC, name: String, cand: Int, fname: String, args: List[Expr], 
         e
     elsif dx_list_enum(c, targs) == 1
         _n = nm_put(c.owned_enums, name, 5)
-        XCall(d"list_new_owned", args, targs, xp)
+        XCall("list_new_owned", args, targs, xp)
     elsif dx_list_flat(c, targs) == 1
         nm_put(c.owned_enums, name, 8)
-        XCall(d"list_new_owned", args, targs, xp)
+        XCall("list_new_owned", args, targs, xp)
     elsif dx_list_string(targs) == 1
         _s = nm_put(c.owned_enums, name, 1)
-        XCall(d"list_new_owned", args, targs, xp)
+        XCall("list_new_owned", args, targs, xp)
     else
         e
 
@@ -1294,27 +1294,27 @@ fn dr_empty_block() -> TBlock ! alloc
     TBlock(list_new[TStmt](), XNone)
 
 fn dr_plain(e: Expr) -> TStmt ! alloc
-    TStmt(0, d"", e, d"", 0, XNone, 0, 0, 0)
+    TStmt(0, "", e, "", 0, XNone, 0, 0, 0)
 
 fn dr_free_fn(kind: Int) -> String ! alloc
     if kind == 9
-        d"struct_free_box"
+        "struct_free_box"
     elsif kind == 8
-        d"struct_free"
+        "struct_free"
     elsif kind == 2
-        d"list_free"
+        "list_free"
     elsif kind == 6
-        d"list_free"
+        "list_free"
     elsif kind == 7
-        d"dict_free"
+        "dict_free"
     elsif kind == 3
-        d"bytes_free"
+        "bytes_free"
     elsif kind == 4
-        d"dict_free"
+        "dict_free"
     elsif kind == 5
-        d"enum_free"
+        "enum_free"
     else
-        d"free"
+        "free"
 
 fn dr_free_stmt(c: DC, name: String) -> TStmt ! alloc
     args = list_new[Expr]()
@@ -1324,7 +1324,7 @@ fn dr_free_stmt(c: DC, name: String) -> TStmt ! alloc
         _d = list_push(args, XStr(strdup(str_from_int(nm_get(c.copy_desc, name)))))
     else
         _e = 0
-    dr_plain(XCall(strdup(dr_free_fn(k)), args, d"", 0))
+    dr_plain(XCall(strdup(dr_free_fn(k)), args, "", 0))
 
 # The release of a live local, guarded by its flag when a statement may have moved it.
 fn dr_release_stmt(c: DC, name: String) -> TStmt ! alloc
@@ -1336,7 +1336,7 @@ fn dr_release_stmt(c: DC, name: String) -> TStmt ! alloc
         _a = list_push(stmts, free)
         flag = XIdent("__live_" + name)
         one = XInt(1)
-        cond = XBin(d"eq", flag, one)
+        cond = XBin("eq", flag, one)
         else_b = if nm_get(c.kinds, name) == 8
             if nm_get(c.box_shell, name) != 0
                 dr_box_shell_else(name)
@@ -1357,14 +1357,14 @@ fn dr_box_shell_else(name: String) -> TBlock ! alloc
     stmts = list_new[TStmt]()
     args = list_new[Expr]()
     _a = list_push(args, XIdent(strdup(name)))
-    _b = list_push(stmts, dr_plain(XCall(d"struct_free_box", args, d"", 0)))
+    _b = list_push(stmts, dr_plain(XCall("struct_free_box", args, "", 0)))
     TBlock(stmts, XNone)
 
 fn dr_flag_init(name: String) -> TStmt ! alloc
-    TStmt(1, "__live_" + name, XInt(1), d"", 1, XNone, 0, 0, 0)
+    TStmt(1, "__live_" + name, XInt(1), "", 1, XNone, 0, 0, 0)
 
 fn dr_flag_clear(name: String) -> TStmt ! alloc
-    TStmt(1, "__live_" + name, XInt(0), d"", 0, XNone, 0, 0, 0)
+    TStmt(1, "__live_" + name, XInt(0), "", 0, XNone, 0, 0, 0)
 
 fn dr_in_live(live: List[String], name: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1467,7 +1467,7 @@ fn dr_discard(c: DC, e: Expr, out: List[TStmt]) -> Int ! alloc
             0
         tmp = dr_next_tmp_p(c, "__dis")
         init = dr_xform_expr(c, e)
-        _l = list_push(out, TStmt(1, strdup(tmp), init, d"", 1, XNone, 0, 0, 0))
+        _l = list_push(out, TStmt(1, strdup(tmp), init, "", 1, XNone, 0, 0, 0))
         _f = list_push(out, dr_discard_free(tmp, k, sd))
         1
 
@@ -1487,7 +1487,7 @@ fn dr_discard_free(name: String, k: Int, sd: Int) -> TStmt ! alloc
         _d = list_push(args, XStr(strdup(str_from_int(sd))))
     else
         _e = 0
-    dr_plain(XCall(strdup(dr_free_fn(k)), args, d"", 0))
+    dr_plain(XCall(strdup(dr_free_fn(k)), args, "", 0))
 
 fn dr_xform_bind(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
     cand = dr_bind_candidate(c, st)
@@ -1510,7 +1510,7 @@ fn dr_bind_candidate(c: DC, st: TStmt) -> Int ! alloc
     if st.is_let == 1
         dr_candidate(c, st.name, st.ty, st.expr)
     elsif dr_is_accumulate(st.name, st.expr) == 0
-        dr_candidate(c, st.name, d"", st.expr)
+        dr_candidate(c, st.name, "", st.expr)
     else
         0
 
@@ -1522,7 +1522,7 @@ fn dr_xform_return(c: DC, st: TStmt, out: List[TStmt]) -> Int ! alloc
         rv = dr_return_value(c, st.expr, out)
         _m = dr_clear_moved(c, st.id, out)
         _f = dr_push_frees(c, out, 0, list_len(c.live) - 1)
-        _r = list_push(out, TStmt(2, d"", rv, d"", 0, XNone, 0, 0, 0))
+        _r = list_push(out, TStmt(2, "", rv, "", 0, XNone, 0, 0, 0))
         0
 
 # Binds a returned value ahead of the releases; the expression to return.
@@ -1533,7 +1533,7 @@ fn dr_return_value(c: DC, v: Expr, out: List[TStmt]) -> Expr ! alloc
 
 fn dr_return_tmp(c: DC, v: Expr, out: List[TStmt]) -> Expr ! alloc
     tmp = dr_next_tmp(c)
-    _l = list_push(out, TStmt(1, strdup(tmp), tc_expr(v), d"", 1, XNone, 0, 0, 0))
+    _l = list_push(out, TStmt(1, strdup(tmp), tc_expr(v), "", 1, XNone, 0, 0, 0))
     XIdent(tmp)
 
 fn dr_xform_block(c: DC, b: TBlock) -> TBlock ! alloc
@@ -1567,7 +1567,7 @@ fn dr_finish_block(c: DC, out: List[TStmt], tail: Expr, mark: Int) -> Expr ! all
         XNone
     else
         tmp = dr_next_tmp(c)
-        _l = list_push(out, TStmt(1, strdup(tmp), tail, d"", 1, XNone, 0, 0, 0))
+        _l = list_push(out, TStmt(1, strdup(tmp), tail, "", 1, XNone, 0, 0, 0))
         _f = dr_push_frees(c, out, mark, last)
         XIdent(tmp)
 
@@ -1866,7 +1866,7 @@ fn dr_hoist_args(h: HC, args: List[Expr], i: Int, n: Int, reads: Int, out: List[
                 k = list_get(h.k, 0) + 1
                 _s = list_set(h.k, 0, k)
                 name = "__tmp" + int_to_str(k)
-                _l = list_push(out, TStmt(1, strdup(name), a, d"", 1, XNone, 0, 0, 0 - k))
+                _l = list_push(out, TStmt(1, strdup(name), a, "", 1, XNone, 0, 0, 0 - k))
                 _p = list_push(res, XIdent(strdup(name)))
                 dr_hoist_args(h, args, i + 1, n, reads, out, res)
             else
@@ -1901,7 +1901,7 @@ fn dr_hoist_match(h: HC, scrut: Expr, arms: List[TArm], out: List[TStmt]) -> Exp
         k = list_get(h.k, 0) + 1
         _s = list_set(h.k, 0, k)
         name = "__tmp" + int_to_str(k)
-        _l = list_push(out, TStmt(1, strdup(name), ns, d"", 1, XNone, 0, 0, 0 - k))
+        _l = list_push(out, TStmt(1, strdup(name), ns, "", 1, XNone, 0, 0, 0 - k))
         XIdent(strdup(name))
     else
         tc_expr(ns)
@@ -1917,7 +1917,7 @@ fn dr_hoist_field(h: HC, base: Expr, field: String, out: List[TStmt]) -> Expr ! 
         k = list_get(h.k, 0) + 1
         _s = list_set(h.k, 0, k)
         name = "__tmp" + int_to_str(k)
-        _l = list_push(out, TStmt(1, strdup(name), nb, d"", 1, XNone, 0, 0, 0 - k))
+        _l = list_push(out, TStmt(1, strdup(name), nb, "", 1, XNone, 0, 0, 0 - k))
         XField(XIdent(strdup(name)), strdup(field))
 
 fn dr_elem_list_known(h: HC, e: Expr) -> Int ! alloc
@@ -1926,7 +1926,7 @@ fn dr_elem_list_known(h: HC, e: Expr) -> Int ! alloc
         _ => 0
 
 fn dr_elem_list_call(h: HC, name: String, args: List[Expr]) -> Int ! alloc
-    if dr_is_elem_read(XCall(name, args, d"", 0)) == 0
+    if dr_is_elem_read(XCall(name, args, "", 0)) == 0
         0
     elsif list_len(args) == 0
         0
@@ -1963,7 +1963,7 @@ fn dr_lists_params(m: NM, params: List[TParam], i: Int, n: Int, variants: Int) -
 fn dr_list_elem(ty: String, variants: Int) -> String ! alloc
     t = trim_type_piece(ty)
     if str_eq(ty_base(t), "List") == 0
-        d""
+        ""
     else
         dr_struct_of(dr_ty_arg0(t), variants)
 
@@ -1971,7 +1971,7 @@ fn dr_list_elem(ty: String, variants: Int) -> String ! alloc
 fn dr_ty_arg0(t: String) -> String ! alloc
     h = nth_type_arg(t, 0)
     if h == 0
-        d""
+        ""
     else
         str_from_int(h)
 
@@ -1979,7 +1979,7 @@ fn dr_ty_arg0(t: String) -> String ! alloc
 fn dr_struct_of(txt: String, variants: Int) -> String ! alloc
     t = trim_type_piece(txt)
     if map_get(variants, str_as_int("desc:" + t)) == 0
-        d""
+        ""
     else
         t
 

@@ -118,14 +118,14 @@ fn trim_spaces(s: String) -> String ! alloc
 fn ty_type_arg(t: String, i: Int) -> String ! alloc
     h = nth_type_arg(t, i)
     if h == 0
-        d""
+        ""
     else
         trim_spaces(str_from_int(h))
 
 # Protocol name inside `any[P]`, or "" when `t` is not `any[…]`.
 fn ty_any_protocol(t: String) -> String ! alloc
     if ty_base(t).eq("any") == 0
-        d""
+        ""
     else
         ty_type_arg(t, 0)
 

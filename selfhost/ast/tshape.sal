@@ -1,7 +1,7 @@
 # Textual tensor types: `Tensor[F32, 2, 3] on cpu`.
 fn ty_trim(t: Int) -> String ! alloc
     if t == 0
-        d"Unknown"
+        "Unknown"
     else
         ty_trim_go(str_from_int(t))
 
@@ -64,11 +64,11 @@ fn tt_place(t: Int) -> String ! alloc
 
 fn tt_place_go(s: String, i: Int, n: Int) -> String ! alloc
     if i < 0
-        d"cpu"
+        "cpu"
     elsif s.char(i) == 32
         s.slice(i + 1, n)
     elsif s.char(i) == 93
-        d"cpu"
+        "cpu"
     else
         tt_place_go(s, i - 1, n)
 
@@ -116,7 +116,7 @@ fn tt_matmul_text(ta: Int, tb: Int) -> Int ! alloc
 # "" stands for an absent type and trims to "Unknown".
 fn ts_trim(s: String) -> String ! alloc
     if s.len() == 0
-        d"Unknown"
+        "Unknown"
     else
         ty_trim_go(s)
 

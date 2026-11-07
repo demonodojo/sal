@@ -273,15 +273,15 @@ fn fx_scan_block(b: TBlock, used: Fx, env: TEnv) -> Int ! alloc
 
 fn fx_effect_name(i: Int) -> String ! alloc
     if i == 0
-        d"io"
+        "io"
     elsif i == 1
-        d"alloc"
+        "alloc"
     elsif i == 2
-        d"panic"
+        "panic"
     elsif i == 3
-        d"gpu"
+        "gpu"
     else
-        d"tpu"
+        "tpu"
 
 fn fx_first_missing(used: Fx, declared: List[Int], i: Int) -> Int ! alloc
     if i >= 5

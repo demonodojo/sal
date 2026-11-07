@@ -6,7 +6,7 @@ import "../ast/tshape.sal"
 import "../ast/tast.sal"
 
 fn str_replace_chr(s: String, ch: Int, rep: String) -> String ! alloc
-    str_replace_chr_go(s, 0, str_len(s), ch, rep, d"")
+    str_replace_chr_go(s, 0, str_len(s), ch, rep, "")
 
 fn str_replace_chr_go(s: String, i: Int, n: Int, ch: Int, rep: String, acc: String) -> String ! alloc
     if i >= n
@@ -21,7 +21,7 @@ fn str_replace_chr_go(s: String, i: Int, n: Int, ch: Int, rep: String, acc: Stri
 fn implicit_qualifier(import_path: String) -> String ! alloc
     base = import_path
     if str_len(base) >= 4
-        if str_eq(str_slice(base, str_len(base) - 4, str_len(base)), d".sal") == 1
+        if str_eq(str_slice(base, str_len(base) - 4, str_len(base)), ".sal") == 1
             base = str_slice(base, 0, str_len(base) - 4)
         else
             base = base
@@ -29,7 +29,7 @@ fn implicit_qualifier(import_path: String) -> String ! alloc
         base = base
     seg = basename_path(base)
     if str_len(seg) == 0
-        d""
+        ""
     else
         seg
 
@@ -37,17 +37,17 @@ fn modid_from_path(path: String, proot: String) -> String ! alloc
     pl = str_len(proot)
     n = str_len(path)
     rel = modid_rel_path(path, proot, n, pl)
-    s = str_replace_chr(rel, 47, d"__")
+    s = str_replace_chr(rel, 47, "__")
     if str_len(s) >= 4
-        if str_eq(str_slice(s, str_len(s) - 4, str_len(s)), d".sal") == 1
+        if str_eq(str_slice(s, str_len(s) - 4, str_len(s)), ".sal") == 1
             s = str_slice(s, 0, str_len(s) - 4)
         else
             s = s
     else
         s = s
-    s2 = str_replace_chr(s, 46, d"_")
+    s2 = str_replace_chr(s, 46, "_")
     if str_len(s2) == 0
-        d"root"
+        "root"
     else
         s2
 
@@ -65,7 +65,7 @@ fn modid_rel_path(path: String, proot: String, n: Int, pl: Int) -> String ! allo
 
 fn link_name(modid: String, name: String, clashing: Int) -> String ! alloc
     if clashing == 1
-        modid + d"__" + name
+        modid + "__" + name
     else
         name
 
@@ -286,11 +286,11 @@ fn module_qualifiers_go(tp: TProgram, i: Int, n: Int, mpath: String, proot: Stri
             dep_key = str_as_int(path_key(dep_path))
             if str_len(alias) != 0
                 if local_fn_name(tp, alias) == 1
-                    result_err_str(d"import alias conflicts with a local item")
+                    result_err_str("import alias conflicts with a local item")
                 elsif local_struct_name(tp, alias) == 1
-                    result_err_str(d"import alias conflicts with a local item")
+                    result_err_str("import alias conflicts with a local item")
                 elsif qualifier_dep_in(explicit, str_as_int(alias)) != 0
-                    result_err_str(d"duplicate import alias")
+                    result_err_str("duplicate import alias")
                 else
                     ex2 = quals_push(explicit, str_as_int(strdup(alias)), dep_key)
                     module_qualifiers_go(tp, i + 1, n, mpath, proot, ex2, implicit)
@@ -305,7 +305,7 @@ fn module_qualifiers_go(tp: TProgram, i: Int, n: Int, mpath: String, proot: Stri
                     elsif local_struct_name(tp, iq) == 1
                         module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, implicit)
                     elsif qualifier_dep_in(implicit, iqh) != 0
-                        result_err_str(d"ambiguous implicit qualifier")
+                        result_err_str("ambiguous implicit qualifier")
                     else
                         im2 = quals_push(implicit, iqh, dep_key)
                         module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, im2)
@@ -573,7 +573,7 @@ fn qx_block(b: TBlock, ctx: Int, links: Int) -> TBlock ! alloc
 # The qualified copy of a module: parameter and result types, bodies and names rewritten.
 fn qualify_type_text(ty: String, ctx: Int, links: Int) -> String ! alloc
     if str_len(ty) == 0
-        d""
+        ""
     else
         strdup(str_from_int(qualify_type_handle(str_as_int(ty), ctx, links)))
 
@@ -681,7 +681,7 @@ fn check_flat_go(tp: TProgram, i: Int, n: Int, mpath: String, proot: String, ord
 fn check_flat_dep_exports(tp: TProgram, seen: Int) -> Int ! alloc
     seen2 = merge_struct_names_seen(tp.structs, 0, list_len(tp.structs), merge_fn_names_seen(tp.fns, 0, list_len(tp.fns), seen))
     if seen2 == 0
-        result_err_str(d"name defined in more than one imported module")
+        result_err_str("name defined in more than one imported module")
     else
         result_ok(seen2)
 

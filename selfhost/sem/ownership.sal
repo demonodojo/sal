@@ -222,12 +222,12 @@ fn own_union(dst: List[String], src: List[String], i: Int, n: Int) -> Int ! allo
 fn own_field_key(e: Expr) -> String ! alloc
     match e
         XField(base, field) => own_field_key_of(base, field)
-        _ => d""
+        _ => ""
 
 fn own_field_key_of(base: Expr, field: String) -> String ! alloc
     match base
         XIdent(name) => own_join(name, field)
-        _ => d""
+        _ => ""
 
 fn own_join(a: String, b: String) -> String ! alloc
     a + "." + b
@@ -236,12 +236,12 @@ fn own_join(a: String, b: String) -> String ! alloc
 fn own_field_base(e: Expr) -> String ! alloc
     match e
         XField(base, field) => own_ident_name(base)
-        _ => d""
+        _ => ""
 
 fn own_ident_name(e: Expr) -> String ! alloc
     match e
         XIdent(name) => name
-        _ => d""
+        _ => ""
 
 # ---- types: only what moves care about ----
 fn own_is_copy(ty: String) -> Int ! alloc
@@ -297,33 +297,33 @@ fn ty_name_end(s: String, i: Int, n: Int) -> Int ! alloc
 
 fn own_expr_ty(c: OC, e: Expr) -> String ! alloc
     match e
-        XInt(v) => d"Int"
-        XFloat(bits, txt) => d"Float"
-        XBool(v) => d"Bool"
-        XStr(s) => d"String"
+        XInt(v) => "Int"
+        XFloat(bits, txt) => "Float"
+        XBool(v) => "Bool"
+        XStr(s) => "String"
         XIdent(name) => own_ident_ty(c, name)
         XBin(op, l, r) => own_binary_ty(c, op, l)
         XUnary(op, inner) => own_expr_ty(c, inner)
         XTo(place, inner) => own_expr_ty(c, inner)
-        XTensor(nr, nc, data) => d"Tensor"
-        XIf(cond, then_b, else_b, has_else, elsifs) => d"Int"
-        _ => d"Unknown"
+        XTensor(nr, nc, data) => "Tensor"
+        XIf(cond, then_b, else_b, has_else, elsifs) => "Int"
+        _ => "Unknown"
 
 fn own_ident_ty(c: OC, name: String) -> String ! alloc
     t = tenv_type(c.env, name)
     if str_len(t) == 0
-        d"Unknown"
+        "Unknown"
     else
         t
 
 fn own_binary_ty(c: OC, op: String, l: Expr) -> String ! alloc
     if str_eq(op, "add") == 1
         if tt_is_string(own_expr_ty(c, l)) == 1
-            d"String"
+            "String"
         else
-            d"Int"
+            "Int"
     else
-        d"Int"
+        "Int"
 
 # ---- consuming ----
 fn consume_if_unique(c: OC, e: Expr, ty: String) -> Int ! alloc
@@ -424,7 +424,7 @@ fn track_if(c: OC, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, el
     _u = own_union(c.moved, acc, 0, list_len(acc))
     _f1 = list_free(base)
     _f2 = list_free(acc)
-    d"Int"
+    "Int"
 
 fn track_else(c: OC, else_b: TBlock, has_else: Int, base: List[String], acc: List[String]) -> Int ! alloc
     if has_else != 0
@@ -442,7 +442,7 @@ fn track_call(c: OC, name: String, args: List[Expr], e: Expr) -> String ! alloc
         _b = consume_moved_args(c, name, args, tys, 0, list_len(args), modes)
     _f = list_free(tys)
     if returns_owned_string(name) == 1
-        d"String"
+        "String"
     else
         own_call_ret(c, e)
 
@@ -450,7 +450,7 @@ fn track_call(c: OC, name: String, args: List[Expr], e: Expr) -> String ! alloc
 fn own_call_ret(c: OC, e: Expr) -> String ! alloc
     t = texpr_type(c.env, e)
     if str_len(t) == 0
-        d"Unknown"
+        "Unknown"
     else
         t
 
@@ -516,7 +516,7 @@ fn returns_owned_string(name: String) -> Int ! alloc
 fn track_use(c: OC, e: Expr, name: String) -> String ! alloc
     if is_moved_any(c, name) == 1
         _f = oc_fail(c, "use of moved value `" + name + "`")
-        d"Unknown"
+        "Unknown"
     else
         _u = own_note_param(c, c.used, name)
         own_expr_ty(c, e)
@@ -526,24 +526,24 @@ fn track_field(c: OC, e: Expr, base: Expr) -> String ! alloc
     key = own_field_key(e)
     if str_len(key) == 0
         _t = track_expr(c, base)
-        d"Unknown"
+        "Unknown"
     else
         who = own_ident_name(base)
         if is_moved(c, who) + is_moved(c, key) > 0
             _f = oc_fail(c, "use of moved value `" + who + "`")
-            d"Unknown"
+            "Unknown"
         else
             _u = own_note_param(c, c.used, who)
-            d"Unknown"
+            "Unknown"
 
 fn track_expr(c: OC, e: Expr) -> String ! alloc
     match e
-        XNone => d"Unit"
+        XNone => "Unit"
         _ => track_expr_live(c, e)
 
 fn track_expr_live(c: OC, e: Expr) -> String ! alloc
     if oc_failed(c) == 1
-        d"Unknown"
+        "Unknown"
     else
         track_expr_go(c, e)
 
@@ -568,11 +568,11 @@ fn track_binary(c: OC, op: String, l: Expr, r: Expr) -> String ! alloc
     _r = track_expr(c, r)
     if str_eq(op, "add") == 1
         if tt_is_string(lt) == 1
-            d"String"
+            "String"
         else
-            d"Int"
+            "Int"
     else
-        d"Int"
+        "Int"
 
 fn track_to(c: OC, inner: Expr) -> String ! alloc
     ty = track_expr(c, inner)
@@ -581,21 +581,21 @@ fn track_to(c: OC, inner: Expr) -> String ! alloc
 
 fn track_on(c: OC, body: TBlock) -> String ! alloc
     _t = track_block_scoped(c, body)
-    d"Unit"
+    "Unit"
 
 fn track_lambda(c: OC, param: String, body: Expr) -> String ! alloc
     mark = tenv_len(c.env)
     _b = tenv_bind(c.env, param, "Float")
     _t = track_expr(c, body)
     _s = tenv_truncate(c.env, mark)
-    d"Unknown"
+    "Unknown"
 
 # `match x`: the scrutinee is read, then each arm body runs with the names its pattern
 # binds in scope (moves persist from one arm to the next, as in the bootstrap).
 fn track_match(c: OC, scrut: Expr, arms: List[TArm]) -> String ! alloc
     _s = track_expr(c, scrut)
     _a = track_match_arms(c, arms, 0, list_len(arms))
-    d"Unknown"
+    "Unknown"
 
 fn track_match_arms(c: OC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -633,7 +633,7 @@ fn track_while(c: OC, cond: Expr, body: TBlock) -> String ! alloc
     div = track_block_scoped(c, body)
     _r = own_restore_if(c, saved, div)
     _f = list_free(saved)
-    d"Unit"
+    "Unit"
 
 fn own_restore_if(c: OC, saved: List[String], div: Int) -> Int ! alloc
     if div == 1
@@ -659,13 +659,13 @@ fn own_leftmost(e: Expr) -> String ! alloc
     match e
         XBin(op, l, r) => own_leftmost_add(op, l)
         XIdent(name) => name
-        _ => d""
+        _ => ""
 
 fn own_leftmost_add(op: String, l: Expr) -> String ! alloc
     if str_eq(op, "add") == 1
         own_leftmost(l)
     else
-        d""
+        ""
 
 # Consumes the left end of a chain when it is a plain local.
 fn own_consume_leftmost(c: OC, e: Expr, ty: String) -> Int ! alloc
@@ -862,7 +862,7 @@ fn infer_fn_modes(c: OC, f: TFn) -> String ! alloc
     _n = own_seed_names(c, f.params, 0, list_len(f.params))
     _t = track_block(c, f.body)
     _k = own_pin_tail(c, f.body.tail)
-    own_mode_text(c, f.params, 0, list_len(f.params), d"m", f.arena)
+    own_mode_text(c, f.params, 0, list_len(f.params), "m", f.arena)
 
 # `return t` takes that parameter. Pushed here, after the walk, so a moved tail match cannot drop it.
 fn own_pin_tail(c: OC, tail: Expr) -> Int ! alloc
@@ -885,7 +885,7 @@ fn own_table_explicit(table: HT, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
         0
     else
         f = list_get(fns, i)
-        _a = table.put(f.name, own_explicit_text(f.params, 0, list_len(f.params), d"m"))
+        _a = table.put(f.name, own_explicit_text(f.params, 0, list_len(f.params), "m"))
         own_table_explicit(table, fns, i + 1, n)
 
 # One round over every fn; returns 1 when some fn's modes differ from `table`.
@@ -936,7 +936,7 @@ fn ar_seed(fns: List[TFn], i: Int, n: Int, muts: HT) -> Int ! alloc
         0
     else
         f = list_get(fns, i)
-        _p = muts.put(f.name, ar_zeros(list_len(f.params), d""))
+        _p = muts.put(f.name, ar_zeros(list_len(f.params), ""))
         ar_seed(fns, i + 1, n, muts)
 
 fn ar_bit(text: String, i: Int) -> Int ! alloc
@@ -963,7 +963,7 @@ fn ar_mark(text: String, i: Int) -> String ! alloc
     elsif i < 0
         text
     else
-        ar_set_bit_go(text, i, 0, str_len(text), d"")
+        ar_set_bit_go(text, i, 0, str_len(text), "")
 
 fn ar_mode_at(table: HT, fname: String, i: Int) -> Int ! alloc
     text = table.get(fname)
@@ -985,7 +985,7 @@ fn ar_idx(params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
 
 fn ar_root(names: List[String], roots: List[String], name: String, i: Int, n: Int) -> String ! alloc
     if i >= n
-        d""
+        ""
     elsif str_eq(list_get(names, i), name) == 1
         list_get(roots, i)
     else
@@ -1002,27 +1002,27 @@ fn ar_param_of(f: TFn, names: List[String], roots: List[String], e: Expr) -> Int
         _ => -1
 
 fn ar_mut_builtin(name: String) -> Int ! alloc
-    if str_eq(name, d"list_push") == 1
+    if str_eq(name, "list_push") == 1
         1
-    elsif str_eq(name, d"list_set") == 1
+    elsif str_eq(name, "list_set") == 1
         1
-    elsif str_eq(name, d"list_pop") == 1
+    elsif str_eq(name, "list_pop") == 1
         1
-    elsif str_eq(name, d"dict_put") == 1
+    elsif str_eq(name, "dict_put") == 1
         1
-    elsif str_eq(name, d"dict_remove") == 1
+    elsif str_eq(name, "dict_remove") == 1
         1
-    elsif str_eq(name, d"str_append") == 1
+    elsif str_eq(name, "str_append") == 1
         1
-    elsif str_eq(name, d"bytes_set_u8") == 1
+    elsif str_eq(name, "bytes_set_u8") == 1
         1
-    elsif str_eq(name, d"bytes_set_u32") == 1
+    elsif str_eq(name, "bytes_set_u32") == 1
         1
-    elsif str_eq(name, d"bytes_fill") == 1
+    elsif str_eq(name, "bytes_fill") == 1
         1
-    elsif str_eq(name, d"bytes_fill_u32") == 1
+    elsif str_eq(name, "bytes_fill_u32") == 1
         1
-    elsif str_eq(name, d"bytes_copy") == 1
+    elsif str_eq(name, "bytes_copy") == 1
         1
     else
         0
@@ -1159,7 +1159,7 @@ fn ar_fn_flags(f: TFn, table: HT, muts: HT) -> String ! alloc
     names = list_new[String]()
     roots = list_new[String]()
     _s = ar_seed_alias(f.params, 0, list_len(f.params), names, roots)
-    flags = ar_block(f.body, f, names, roots, table, muts, ar_zeros(list_len(f.params), d""))
+    flags = ar_block(f.body, f, names, roots, table, muts, ar_zeros(list_len(f.params), ""))
     _a = list_free(names)
     _b = list_free(roots)
     flags
@@ -1190,13 +1190,13 @@ fn ar_fix(tp: TProgram, table: HT, muts: HT, nleft: Int) -> Int ! alloc
 
 fn ar_keep_bad(name: String, args: List[Expr], f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
     if str_len(table.get(name)) == 0
-        d""
+        ""
     else
         ar_keep_args(name, args, 0, list_len(args), f, names, roots, table, muts)
 
 fn ar_keep_args(name: String, args: List[Expr], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
     if i >= n
-        d""
+        ""
     else
         src = ar_param_of(f, names, roots, list_get(args, i))
         mode = ar_mode_at(table, name, i)
@@ -1216,29 +1216,29 @@ fn ar_keep_args(name: String, args: List[Expr], i: Int, n: Int, f: TFn, names: L
             ar_keep_args(name, args, i + 1, n, f, names, roots, table, muts)
 
 fn ar_store_bad(name: String, args: List[Expr], f: TFn, names: List[String], roots: List[String]) -> String ! alloc
-    if str_eq(name, d"list_push") + str_eq(name, d"list_set") + str_eq(name, d"dict_put") == 0
-        d""
+    if str_eq(name, "list_push") + str_eq(name, "list_set") + str_eq(name, "dict_put") == 0
+        ""
     elsif list_len(args) == 0
-        d""
+        ""
     else
         src = ar_param_of(f, names, roots, list_get(args, 0))
         if src < 0
-            d""
+            ""
         elsif list_get(f.params, src).mode != 3
-            d""
+            ""
         else
             ar_store_args(args, 1, list_len(args))
 
 fn ar_store_args(args: List[Expr], i: Int, n: Int) -> String ! alloc
     if i >= n
-        d""
+        ""
     else
         e = list_get(args, i)
         match e
-            XTensor(_r, _c, _d) => d"@arena keep cannot store this value"
+            XTensor(_r, _c, _d) => "@arena keep cannot store this value"
             XCall(name, _a, _t, _p) =>
-                if str_eq(name, d"load") == 1
-                    d"@arena keep cannot store this value"
+                if str_eq(name, "load") == 1
+                    "@arena keep cannot store this value"
                 else
                     ar_store_args(args, i + 1, n)
             _ => ar_store_args(args, i + 1, n)
@@ -1293,11 +1293,11 @@ fn ar_err_expr(e: Expr, f: TFn, names: List[String], roots: List[String], table:
                 msg
             else
                 ar_err_arms(arms, 0, list_len(arms), f, names, roots, table, muts)
-        _ => d""
+        _ => ""
 
 fn ar_err_args(args: List[Expr], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
     if i >= n
-        d""
+        ""
     else
         msg = ar_err_expr(list_get(args, i), f, names, roots, table, muts)
         if str_len(msg) > 0
@@ -1307,7 +1307,7 @@ fn ar_err_args(args: List[Expr], i: Int, n: Int, f: TFn, names: List[String], ro
 
 fn ar_err_elsifs(xs: List[TElsif], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
     if i >= n
-        d""
+        ""
     else
         el = list_get(xs, i)
         msg = ar_err_expr(el.cond, f, names, roots, table, muts)
@@ -1322,7 +1322,7 @@ fn ar_err_elsifs(xs: List[TElsif], i: Int, n: Int, f: TFn, names: List[String], 
 
 fn ar_err_arms(xs: List[TArm], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
     if i >= n
-        d""
+        ""
     else
         arm = list_get(xs, i)
         msg = ar_err_expr(arm.body, f, names, roots, table, muts)
@@ -1332,7 +1332,7 @@ fn ar_err_arms(xs: List[TArm], i: Int, n: Int, f: TFn, names: List[String], root
             msg2 = if arm.has_suite == 1
                 ar_err_block(arm.suite, f, names, roots, table, muts)
             else
-                d""
+                ""
             if str_len(msg2) > 0
                 msg2
             else
@@ -1340,7 +1340,7 @@ fn ar_err_arms(xs: List[TArm], i: Int, n: Int, f: TFn, names: List[String], root
 
 fn ar_err_stmts(xs: List[TStmt], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
     if i >= n
-        d""
+        ""
     else
         st = list_get(xs, i)
         _n = ar_note(st, names, roots)
@@ -1351,7 +1351,7 @@ fn ar_err_stmts(xs: List[TStmt], i: Int, n: Int, f: TFn, names: List[String], ro
             msg2 = if st.kind == 3
                 ar_err_expr(st.target, f, names, roots, table, muts)
             else
-                d""
+                ""
             if str_len(msg2) > 0
                 msg2
             else
@@ -1379,7 +1379,7 @@ fn ar_fn_err(f: TFn, table: HT, muts: HT) -> String ! alloc
 
 fn ar_param_err(f: TFn, table: HT, flags: String, i: Int, n: Int) -> String ! alloc
     if i >= n
-        d""
+        ""
     else
         pm = list_get(f.params, i)
         mode = ar_mode_at(table, f.name, i)
