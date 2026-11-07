@@ -1900,7 +1900,8 @@ fn mv_match_arms(arms: List[TArm], i: Int, n: Int, names: Int, md: Int) -> Int !
         mv_match_arms(arms, i + 1, n, names, md)
 
 fn mv_call(name: String, args: List[Expr], names: Int, md: Int) -> Int ! alloc
-    params = map_get(md, str_as_int("caller:" + name))
+    ck = ("caller:" + name).dup()
+    params = map_get(md, ck.to_int())
     if params != 0
         _t = mv_take_args(params, args, 0, list_len(args), names)
     else
@@ -2513,7 +2514,8 @@ fn fr_call_container_taint(c: FRC, name: String, args: List[Expr]) -> Int ! allo
 # Whether argument i of the call to `name` may be kept (a `take` parameter, or a builtin that
 # does not only read it): the caller then cannot keep the struct's fields.
 fn fr_keeps(c: FRC, name: String, i: Int) -> Int ! alloc
-    params = map_get(c.md, str_as_int("caller:" + name))
+    ck = ("caller:" + name).dup()
+    params = map_get(c.md, ck.to_int())
     if params != 0
         if i < vec_len(params)
             if vec_get(params, i) == 2
@@ -2799,31 +2801,36 @@ fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] bo
     denv = vec_new()
     _a = vec_push(denv, variant_map_t(tp, structs, enums))
     _o = owned_fns_put(vec_get(denv, 0), tp.fns, 0, list_len(tp.fns))
-    ro = dr_read_only_t(tp, vec_get(denv, 0))
+    cons = dr_cons_list(tp.fns)
+    ro = dr_read_only_t(tp, vec_get(denv, 0), cons)
     modes = map_new()
     table = own_mode_table(tp)
-    _m = modes_fill_t(modes, table, ro, tp.fns, 0, tp.fns.len())
+    _m = modes_fill_t(modes, table, cons, tp.fns, 0, tp.fns.len())
     _h = table.free()
     _b = vec_push(denv, modes)
     _c = vec_push(denv, ro)
     denv
 
-fn modes_fill_t(m: Int, table: HT, ro: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+fn modes_fill_t(m: Int, table: HT, cons: List[Int] borrow, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = fns.get(i)
         ms = vec_new()
-        _k = modes_vec(ms, table.get(f.name), 0, f.params.len())
-        _p = map_put(m, str_as_int(f.name.dup()), ms)
-        # The callers' view (`caller_param_modes` in src/ir.rs): a parameter whose fields the fn
-        # releases, or an inferred borrow that escapes the fn, is taken.
+        owned = table.get(f.name)
+        _k = modes_vec(ms, owned, 0, f.params.len())
+        nk = f.name.dup()
+        map_put(m, nk.to_int(), ms)
+        # Callers' view (`caller_param_modes`): an inferred borrow that the fn consumes is taken.
+        # A Copy field escapes without consuming, so the caller still releases the struct.
         caller = vec_new()
-        _c = modes_vec(caller, table.get(f.name), 0, f.params.len())
+        _c = modes_vec(caller, owned, 0, f.params.len())
         _r = mark_released_params(caller, f, releases_param_names(f))
-        _e = mark_escaping_params(caller, f.params, map_get(ro, str_as_int(f.name)), 0, f.params.len())
-        _q = map_put(m, str_as_int("caller:" + f.name), caller)
-        modes_fill_t(m, table, ro, fns, i + 1, n)
+        mark_escaping_params(caller, f.params, cons.get(i), 0, f.params.len())
+        _p = pin_tail_take(caller, f.params, f.body.tail, 0, f.params.len())
+        ck = ("caller:" + f.name).dup()
+        map_put(m, ck.to_int(), caller)
+        modes_fill_t(m, table, cons, fns, i + 1, n)
 
 # Sets to take (2) the modes of the parameters named in `names`.
 fn mark_released_params(modes: Int, f: TFn, names: Int) -> Int ! alloc
@@ -2839,8 +2846,8 @@ fn mark_released_go(modes: Int, params: List[TParam], i: Int, n: Int, names: Int
             0
         mark_released_go(modes, params, i + 1, n, names)
 
-# Sets to take (2) each inferred borrow whose read-only flag is 0 (`flags` 0: no entry).
-# A Copy field (`return p.n`) stays read-only, so it is not a take.
+# Sets to take (2) each inferred borrow the fn consumes (`flags` 1; 0 when the fn has no entry).
+# A Copy field (`return p.n`) is not consumed, so the caller keeps the struct.
 fn mark_escaping_params(modes: Int, params: List[TParam], flags: Int, i: Int, n: Int) -> Int ! alloc
     if flags == 0
         0
@@ -2853,13 +2860,29 @@ fn mark_escaping_params(modes: Int, params: List[TParam], flags: Int, i: Int, n:
             0
         mark_escaping_params(modes, params, flags, i + 1, n)
 
-# 1 when an inferred (`declared` 0) borrow (`mode` 1) is not read-only.
-fn escaping_borrow(mode: Int, declared: Int, read_only: Int) -> Int
+# `return t` moves the parameter out. Callers must not also release it.
+fn pin_tail_take(modes: Int, params: List[TParam], tail: Expr, i: Int, n: Int) -> Int ! alloc
+    match tail
+        XIdent(name) => pin_tail_go(modes, params, name, i, n)
+        _ => 0
+
+fn pin_tail_go(modes: Int, params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = params.get(i)
+        if pm.name.eq(name) == 1
+            vec_set(modes, i, 2)
+        else
+            pin_tail_go(modes, params, name, i + 1, n)
+
+# 1 when an inferred (`declared` 0) borrow (`mode` 1) is consumed.
+fn escaping_borrow(mode: Int, declared: Int, consumed: Int) -> Int
     if mode != 1
         0
     elsif declared != 0
         0
-    elsif read_only != 0
+    elsif consumed == 0
         0
     else
         1

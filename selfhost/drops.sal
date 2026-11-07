@@ -57,6 +57,8 @@ fn nm_free(m: NM) -> Int ! alloc
 # none can clear a flag), 2 depth inside blocks the transform skips, 3 loop depth.
 struct DC
     esc: NM
+    # Handed out for real (returned whole, stored, or passed on). A Copy field is in `esc` but not here.
+    took: NM
     defs: NM
     params: NM
     kinds: NM
@@ -76,21 +78,23 @@ struct DC
     variants: Int
     ro: Int
     ps: List[TParam]
-    scalars: Int
+    scalars: List[String]
+    copy_ok: List[Int]
 
-fn dr_new(variants: Int, ro: Int, lists: NM, ps: List[TParam], scalars: Int) -> DC ! alloc
+fn dr_new(variants: Int, ro: Int, lists: NM, ps: List[TParam], scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
     cells = list_new[Int]()
     _a = list_push(cells, 0)
     _b = list_push(cells, 0)
     _c = list_push(cells, 0)
     _d = list_push(cells, 0)
     _e = list_push(cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, ps, scalars)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, ps, scalars, copy_ok)
 
 fn dr_free(c: DC) -> Int ! alloc
     _l = nm_free(c.lists)
     _k = nm_free(c.copy_desc)
     _a = nm_free(c.esc)
+    _t = nm_free(c.took)
     _b = nm_free(c.defs)
     _c = nm_free(c.params)
     _d = nm_free(c.kinds)
@@ -105,6 +109,8 @@ fn dr_free(c: DC) -> Int ! alloc
     _k = list_free(c.m_scrut)
     _l = list_free(c.m_bound)
     _m = list_free(c.cells)
+    _s = list_free(c.scalars)
+    _o = list_free(c.copy_ok)
     0
 
 fn dr_cell(c: DC, i: Int) -> Int ! alloc
@@ -116,6 +122,16 @@ fn dr_set(c: DC, i: Int, v: Int) -> Int ! alloc
 
 fn dr_escape(c: DC, name: String) -> Int ! alloc
     nm_put(c.esc, name, 1)
+
+# The name was handed out, not merely read. A Copy field does not.
+method DC.take(name: String) -> Int ! alloc
+    nm_put(self.took, name, 1)
+
+# A block tail that is the parameter itself (`return t`) hands that value out.
+method DC.take_tail(e: Expr) -> Int ! alloc
+    match e
+        XIdent(n) => self.take(n)
+        _ => 0
 
 fn dr_bind(c: DC, name: String) -> Int ! alloc
     if nm_get(c.born, name) == 0
@@ -627,22 +643,26 @@ fn dr_arg(c: DC, a: Expr, mov: Int) -> Int ! alloc
         _ => dr_expr(c, a)
 
 # A field read in a moving position hands out a value that aliases its base: the base escapes.
-# `dr_copy_field` is 1 for a Copy leaf (`return p.n`): the base still escapes. The bootstrap's
-# consumed flag ignores that leaf; this walk keeps the escape.
+# A Copy leaf (`return p.n`) escapes so this function does not release the struct, but it is not
+# consumed: the caller still owns the fields.
 fn dr_arg_field(c: DC, a: Expr, mov: Int) -> Int ! alloc
     root = dr_field_root(a)
-    _e = if mov != 1
+    if mov != 1
         if root.len() == 0
             0
+        elsif dr_copy_field(c, a) == 1
+            dr_escape(c, root)
         else
+            c.take(root)
             dr_escape(c, root)
     else
         0
     dr_expr(c, a)
 
 # 1 when `a` is `param.field` and that field is Int, Float, or Bool.
+# Type texts keep a trailing space (`"Int "`); the scalar map is keyed by the trimmed name.
 fn dr_copy_field(c: DC, a: Expr) -> Int ! alloc
-    if c.scalars == 0
+    if c.scalars.len() == 0
         0
     else
         match a
@@ -659,7 +679,16 @@ fn dr_copy_param_field(c: DC, name: String, field: String) -> Int ! alloc
     if ty.len() == 0
         0
     else
-        map_get(c.scalars, str_as_int(ty + "." + field))
+        key = (trim_spaces(ty) + "." + field).dup()
+        dr_copy_scan(c.scalars, c.copy_ok, key, 0, c.scalars.len())
+
+fn dr_copy_scan(keys: List[String], oks: List[Int], key: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif keys.get(i).eq(key) == 1
+        oks.get(i)
+    else
+        dr_copy_scan(keys, oks, key, i + 1, n)
 
 fn dr_param_ty(ps: List[TParam], name: String, i: Int, n: Int) -> String ! alloc
     if i >= n
@@ -683,17 +712,21 @@ fn dr_arg_ident(c: DC, n: String, mov: Int) -> Int ! alloc
 
 fn dr_arg_escape(c: DC, name: String, mov: Int) -> Int ! alloc
     if dr_cell(c, 4) > 0
-        _s = nm_put(c.soft, name, 0)
+        c.take(name)
+        nm_put(c.soft, name, 0)
         dr_escape(c, name)
     elsif dr_cell(c, 1) == 0
+        c.take(name)
         dr_escape(c, name)
     elsif nm_get(c.born, name) == dr_cell(c, 3) + 1
+        c.take(name)
         dr_soft(c, dr_cell(c, 1), name)
         if mov == 3
             nm_put(c.box_shell, name, 1)
         else
             0
     else
+        c.take(name)
         dr_escape(c, name)
 
 # An `if` in a position `dr_xform_expr` rewrites: its branches are visited.
@@ -809,10 +842,11 @@ fn dr_propagate_once(c: DC, i: Int, n: Int, changed: Int) -> Int ! alloc
     if i >= n
         changed
     else
-        scrut = list_get(c.m_scrut, i)
+        scrut = c.m_scrut.get(i)
         if nm_get(c.esc, scrut) == 0
-            if dr_any_escaped(c, list_get(c.m_bound, i), 0, 0) == 1
-                _e = dr_escape(c, scrut)
+            if dr_any_escaped(c, c.m_bound.get(i), 0, 0) == 1
+                c.take(scrut)
+                dr_escape(c, scrut)
                 dr_propagate_once(c, i + 1, n, changed + 1)
             else
                 dr_propagate_once(c, i + 1, n, changed)
@@ -865,9 +899,13 @@ fn dr_if_arms(c: DC, arms: List[TElsif], i: Int, n: Int) -> Int ! alloc
         _b = dr_block(c, arm.body)
         dr_if_arms(c, arms, i + 1, n)
 
+fn dr_ident_out(c: DC, name: String) -> Int ! alloc
+    c.take(name)
+    dr_escape(c, name)
+
 fn dr_expr(c: DC, e: Expr) -> Int ! alloc
     match e
-        XIdent(n) => dr_escape(c, n)
+        XIdent(n) => dr_ident_out(c, n)
         XCall(name, args, targs, xp) => dr_call(c, name, args)
         XLambda(param, body) => dr_lambda(c, param, body)
         XBin(op, l, r) => dr_binary(c, l, r)
@@ -1559,65 +1597,169 @@ fn dr_seed_params(c: DC, i: Int, n: Int) -> Int ! alloc
         dr_seed_params(c, i + 1, n)
 
 # Escape facts of a fn body under the read-only assumptions `ro`.
-fn dr_facts(params: List[TParam], body: TBlock, variants: Int, ro: Int, lists: NM, scalars: Int) -> DC ! alloc
-    c = dr_new(variants, ro, lists, params, scalars)
+fn dr_facts(params: List[TParam], body: TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
+    c = dr_new(variants, ro, lists, params, scalars, copy_ok)
     n = c.ps.len()
     _s = dr_seed_params(c, 0, n)
     _w = dr_block(c, body)
+    _t = c.take_tail(body.tail)
     _p = dr_propagate(c)
     c
 
-# Per fn, per parameter: 1 when the fn only reads it. Optimistic fixpoint, as `drops.rs`.
-fn dr_read_only_t(tp: TProgram, variants: Int) -> Int ! alloc
+# `[read-only, consumed]`. Read-only is 1 when the fn only reads that parameter.
+# Consumed is 1 when the fn takes the parameter's data. A Copy field clears read-only
+# (the fn must not release the struct) without setting consumed. Optimistic fixpoint, as `drops.rs`.
+fn dr_read_only_t(tp: TProgram, variants: Int, cons: List[Int] borrow) -> Int ! alloc
     ro = map_new()
     _i = dr_ro_init(ro, tp.fns, 0, tp.fns.len())
-    scalars = dr_scalar_fields(tp.structs)
-    _l = dr_ro_loop(ro, tp.fns, variants, scalars)
+    scalars = list_new[String]()
+    oks = list_new[Int]()
+    _s = dr_scalar_structs(scalars, oks, tp.structs, 0, tp.structs.len())
+    _l = dr_ro_loop(ro, cons, tp.fns, variants, scalars, oks)
+    _f = list_free(scalars)
+    _o = list_free(oks)
     ro
 
-fn dr_scalar_fields(structs: List[TStruct]) -> Int ! alloc
-    m = map_new()
-    _s = dr_scalar_structs(m, structs, 0, structs.len())
-    m
-
-fn dr_scalar_structs(m: Int, structs: List[TStruct], i: Int, n: Int) -> Int ! alloc
+fn dr_scalar_structs(m: List[String], oks: List[Int], structs: List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         s = structs.get(i)
-        _f = dr_scalar_sfields(m, s.name, s.fields, 0, s.fields.len())
-        dr_scalar_structs(m, structs, i + 1, n)
+        _f = dr_scalar_sfields(m, oks, s.name, s.fields, 0, s.fields.len())
+        dr_scalar_structs(m, oks, structs, i + 1, n)
 
-fn dr_scalar_sfields(m: Int, sname: String, fields: List[TField], i: Int, n: Int) -> Int ! alloc
+# Copy fields, as `Type.field`. The key stays in the list: a map would keep a pointer the drop
+# pass can free.
+fn dr_scalar_sfields(m: List[String], oks: List[Int], sname: String, fields: List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = fields.get(i)
-        _p = if dr_ty_scalar(f.ty) == 1
-            map_put(m, str_as_int(sname + "." + f.name), 1)
+        ty = f.ty
+        # The flag is part of the key. Gating the push on it dropped the entry in stage1;
+        # storing the flag and looking up the `1:` key does not.
+        ok = if str_len(ty) == 3
+            if str_char(ty, 0) == 73
+                if str_char(ty, 2) == 116
+                    1
+                else
+                    0
+            else
+                0
+        elsif str_len(ty) == 4
+            if str_char(ty, 0) == 73
+                if str_char(ty, 3) == 32
+                    1
+                else
+                    0
+            else
+                0
+        else
+            dr_ty_scalar(ty)
+        key = (trim_spaces(sname) + "." + f.name).dup()
+        _p = m.push(key)
+        _q = oks.push(ok)
+        dr_scalar_sfields(m, oks, sname, fields, i + 1, n)
+
+# Type texts are the word or the word plus one trailing space (`"Int"` / `"Int "`).
+fn dr_ty_scalar(ty: String) -> Int ! alloc
+    n = str_len(ty)
+    if n == 4
+        if str_char(ty, 0) == 73
+            if str_char(ty, 1) == 110
+                if str_char(ty, 2) == 116
+                    if str_char(ty, 3) == 32
+                        1
+                    else
+                        0
+                else
+                    0
+            else
+                0
+        elsif str_char(ty, 0) == 66
+            if str_char(ty, 1) == 111
+                if str_char(ty, 2) == 111
+                    if str_char(ty, 3) == 108
+                        1
+                    else
+                        0
+                else
+                    0
+            else
+                0
         else
             0
-        dr_scalar_sfields(m, sname, fields, i + 1, n)
+    elsif n == 3
+        if str_char(ty, 0) == 73
+            if str_char(ty, 1) == 110
+                if str_char(ty, 2) == 116
+                    1
+                else
+                    0
+            else
+                0
+        else
+            0
+    elsif n == 5
+        dr_ty_scalar5(ty)
+    elsif n == 6
+        dr_ty_scalar6(ty)
+    else
+        0
 
-fn dr_ty_scalar(ty: String) -> Int
-    if ty.eq("Int") == 1
-        1
-    elsif ty.eq("Float") == 1
-        1
-    elsif ty.eq("Bool") == 1
+# `"Bool "` or `"Float"`.
+fn dr_ty_scalar5(ty: String) -> Int ! alloc
+    if str_char(ty, 0) == 66
+        if str_char(ty, 4) == 32
+            1
+        else
+            0
+    elsif str_char(ty, 0) == 70
         1
     else
         0
+
+# `"Float "`.
+fn dr_ty_scalar6(ty: String) -> Int ! alloc
+    if str_char(ty, 0) == 70
+        if str_char(ty, 5) == 32
+            1
+        else
+            0
+    else
+        0
+
+# One consumed-flag vec per fn, in source order. Indexed, not keyed by name: a string map
+# kept a single slot when the key text was overwritten, so every fn shared one flag.
+fn dr_cons_list(fns: List[TFn]) -> List[Int] ! alloc
+    dr_cons_fill(list_new[Int](), fns, 0, fns.len())
+
+fn dr_cons_fill(out: List[Int], fns: List[TFn], i: Int, n: Int) -> List[Int] ! alloc
+    if i >= n
+        out
+    else
+        took = vec_new()
+        _z = dr_ro_zeros(took, fns.get(i).params.len())
+        _p = out.push(took)
+        dr_cons_fill(out, fns, i + 1, n)
 
 fn dr_ro_init(ro: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fns, i)
+        f = fns.get(i)
         flags = vec_new()
-        _a = dr_ro_ones(flags, list_len(f.params))
-        _b = map_put(ro, str_as_int(strdup(f.name)), flags)
+        _o = dr_ro_ones(flags, f.params.len())
+        nk = f.name.dup()
+        map_put(ro, nk.to_int(), flags)
         dr_ro_init(ro, fns, i + 1, n)
+
+fn dr_ro_zeros(flags: Int, n: Int) -> Int ! alloc
+    if n == 0
+        0
+    else
+        vec_push(flags, 0)
+        dr_ro_zeros(flags, n - 1)
 
 fn dr_ro_ones(flags: Int, n: Int) -> Int ! alloc
     if n == 0
@@ -1626,29 +1768,48 @@ fn dr_ro_ones(flags: Int, n: Int) -> Int ! alloc
         _a = vec_push(flags, 1)
         dr_ro_ones(flags, n - 1)
 
-fn dr_ro_loop(ro: Int, fns: List[TFn], variants: Int, scalars: Int) -> Int ! alloc
-    if dr_ro_pass(ro, fns, variants, scalars, 0, fns.len(), 0) == 1
-        dr_ro_loop(ro, fns, variants, scalars)
+fn dr_oks_dup(src: List[Int] borrow, i: Int, n: Int, dst: List[Int]) -> List[Int] ! alloc
+    if i >= n
+        dst
+    else
+        _p = dst.push(src.get(i))
+        dr_oks_dup(src, i + 1, n, dst)
+
+fn dr_list_dup(src: List[String] borrow, i: Int, n: Int, dst: List[String]) -> List[String] ! alloc
+    if i >= n
+        dst
+    else
+        _p = dst.push(src.get(i).dup())
+        dr_list_dup(src, i + 1, n, dst)
+
+fn dr_ro_loop(ro: Int, cons: List[Int] borrow, fns: List[TFn], variants: Int, scalars: List[String] borrow, oks: List[Int] borrow) -> Int ! alloc
+    if dr_ro_pass(ro, cons, fns, variants, scalars, oks, 0, fns.len(), 0) == 1
+        dr_ro_loop(ro, cons, fns, variants, scalars, oks)
     else
         0
 
-# One sweep; returns 1 when some parameter lost its read-only flag.
-fn dr_ro_pass(ro: Int, fns: List[TFn], variants: Int, scalars: Int, i: Int, n: Int, changed: Int) -> Int ! alloc
+# One sweep; returns 1 when some parameter lost its read-only flag or became consumed.
+fn dr_ro_pass(ro: Int, cons: List[Int] borrow, fns: List[TFn], variants: Int, scalars: List[String] borrow, oks: List[Int] borrow, i: Int, n: Int, changed: Int) -> Int ! alloc
     if i >= n
         changed
     else
-        f = list_get(fns, i)
+        f = fns.get(i)
         name = f.name.dup()
-        c = dr_facts(f.params, f.body, variants, ro, nm_new(), scalars)
-        flags = map_get(ro, str_as_int(name))
+        mine = dr_list_dup(scalars, 0, scalars.len(), list_new[String]())
+        mine_ok = dr_oks_dup(oks, 0, oks.len(), list_new[Int]())
+        c = dr_facts(f.params, f.body, variants, ro, nm_new(), mine, mine_ok)
+        key = name.to_int()
+        flags = map_get(ro, key)
+        took = cons.get(i)
         nps = c.ps.len()
         ch = dr_ro_params(c, flags, c.ps, 0, nps)
-        _f = dr_free(c)
-        any = if ch == 1
+        tk = dr_cons_params(c, took, c.ps, 0, nps)
+        dr_free(c)
+        any = if ch + tk > 0
             1
         else
             changed
-        dr_ro_pass(ro, fns, variants, scalars, i + 1, n, any)
+        dr_ro_pass(ro, cons, fns, variants, scalars, oks, i + 1, n, any)
 
 fn dr_ro_params(c: DC, flags: Int, params: List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1663,6 +1824,24 @@ fn dr_ro_params(c: DC, flags: Int, params: List[TParam], i: Int, n: Int) -> Int 
         else
             0
         rest = dr_ro_params(c, flags, params, i + 1, n)
+        if ch == 1
+            1
+        else
+            rest
+
+# Sets a consumed flag the first time the parameter is in `c.took`. Returns 1 when one changed.
+fn dr_cons_params(c: DC, flags: Int, params: List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ch = if vec_get(flags, i) == 1
+            0
+        elsif nm_get(c.took, params.get(i).name) == 1
+            vec_set(flags, i, 1)
+            1
+        else
+            0
+        rest = dr_cons_params(c, flags, params, i + 1, n)
         if ch == 1
             1
         else
@@ -1890,7 +2069,7 @@ fn drops_body_go(f: TFn, denv: Int, view: Int) -> TBlock ! alloc
     h = HC(list_new[Int](), dr_lists_of(f.params, body, vec_get(denv, 0)), vec_get(denv, 0))
     _h = list_push(h.k, 0)
     hoisted = dr_hoist_block(h, body)
-    c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2), h.lists, 0)
+    c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
     res = dr_xform_block(c, hoisted)
     _a = dr_free(c)
     _g = list_free(h.k)

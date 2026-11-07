@@ -1114,11 +1114,16 @@ fn lit_pool_free_texts_go(texts: Int, i: Int, n: Int) -> Int ! alloc
             _f = free(s)
         lit_pool_free_texts_go(texts, i + 1, n)
 
-# Dup'd literal strings registered during one function; pool globals are kept.
+# Dup'd literal strings and their `sal_lit_N` names, registered during one function.
+# `ensure_sal_lit` indexes both lists together, so a repeat in the next function must not
+# resolve to a name from the previous one. Pool globals and the counter stay.
 fn lit_pool_free_texts(pool: Int) -> Int ! alloc
     texts = vec_get(pool, 1)
-    _a = lit_pool_free_texts_go(texts, 0, vec_len(texts))
-    _n = vec_set(pool, 1, vec_new())
+    lit_pool_free_texts_go(texts, 0, vec_len(texts))
+    vec_set(pool, 1, vec_new())
+    syms = vec_get(pool, 2)
+    lit_pool_free_texts_go(syms, 0, vec_len(syms))
+    vec_set(pool, 2, vec_new())
     0
 
 fn tc_lit_pool(tc: Tc) -> Int ! alloc

@@ -757,15 +757,27 @@ fn track_block_tail(c: OC, b: TBlock, consume: Int) -> Int ! alloc
     if track_stmts(c, b.stmts, 0, list_len(b.stmts)) == 1
         1
     else
-        match b.tail
-            XNone => 0
-            _ => track_tail(c, b.tail, consume)
+        track_tail(c, b.tail, consume)
 
+# One match: a later use of `tail` would see a moved expression.
 fn track_tail(c: OC, tail: Expr, consume: Int) -> Int ! alloc
+    match tail
+        XNone => 0
+        XIdent(name) => track_tail_name(c, name, consume)
+        _ => track_tail_other(c, tail, consume)
+
+# `return t` moves that parameter. `own_param_mode` still leaves a Copy type inferred.
+fn track_tail_name(c: OC, name: String, consume: Int) -> Int ! alloc
+    _u = own_note_param(c, c.used, name)
+    if consume == 1
+        own_note_param(c, c.taken, name)
+    else
+        0
+
+fn track_tail_other(c: OC, tail: Expr, consume: Int) -> Int ! alloc
     ty = track_expr(c, tail)
     if consume == 1
-        _m = consume_if_unique(c, tail, ty)
-        0
+        consume_if_unique(c, tail, ty)
     else
         0
 
@@ -843,7 +855,18 @@ fn infer_fn_modes(c: OC, f: TFn) -> String ! alloc
     _s = own_seed_params(c, f.params, 0, list_len(f.params))
     _n = own_seed_names(c, f.params, 0, list_len(f.params))
     _t = track_block(c, f.body)
+    _k = own_pin_tail(c, f.body.tail)
     own_mode_text(c, f.params, 0, list_len(f.params), d"m")
+
+# `return t` takes that parameter. Pushed here, after the walk, so a moved tail match cannot drop it.
+fn own_pin_tail(c: OC, tail: Expr) -> Int ! alloc
+    match tail
+        XIdent(name) => own_pin_name(c, name)
+        _ => 0
+
+fn own_pin_name(c: OC, name: String) -> Int ! alloc
+    _p = list_push(c.taken, name.dup())
+    0
 
 fn own_explicit_text(params: List[TParam], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
