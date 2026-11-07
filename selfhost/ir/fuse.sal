@@ -1511,6 +1511,13 @@ fn pop_final_ret(cx: Cx) -> Int ! alloc
     else
         0
 
+fn ir_prepend(cx: Cx, inst: Int) -> Int ! alloc
+    old = cx_insts(cx)
+    keep = vec_new()
+    _a = vec_push(keep, inst)
+    _b = copy_insts(old, keep, 0, vec_len(old))
+    cx_set_insts(cx, keep)
+
 fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
@@ -1535,10 +1542,18 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TE
     ret = pop_final_ret(cx)
     name = f.name.dup()
     _dr = emit_struct_drops(cx, f, body, vec_get(denv, 1), seen)
+    if f.arena == 1
+        _lv = ir_push(cx, ir_call(0, str_as_int(d"sal_arena_leave"), vec_new(), 0))
+    else
+        _lv = 0
     if ret != 0
         _rr = ir_push(cx, ret)
     else
         _rr = 0
+    if f.arena == 1
+        _en = ir_prepend(cx, ir_call(0, str_as_int(d"sal_arena_enter"), vec_new(), 0))
+    else
+        _en = 0
     out = vec_new()
     _d = vec_push(out, str_as_int(name))
     _e = vec_push(out, cx_dim_params(cx))

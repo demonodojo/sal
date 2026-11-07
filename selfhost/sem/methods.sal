@@ -100,7 +100,7 @@ fn mr_fns(xs: List[TFn], i: Int, n: Int, res: HT, out: List[TFn]) -> Int ! alloc
         0
     else
         f = list_get(xs, i)
-        _p = list_push(out, TFn(f.name, f.params, mr_block(f.body, res), f.ret, f.no_heap, f.fx, f.tparams, f.recv, f.mkind, f.deprecated, f.tyat))
+        _p = list_push(out, TFn(f.name, f.params, mr_block(f.body, res), f.ret, f.no_heap, f.arena, f.fx, f.tparams, f.recv, f.mkind, f.deprecated, f.tyat))
         mr_fns(xs, i + 1, n, res, out)
 
 fn mr_block(b: TBlock, res: HT) -> TBlock ! alloc

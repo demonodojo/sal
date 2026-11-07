@@ -1,0 +1,7 @@
+@arena
+fn work(n: Int) -> Int ! alloc
+    s = n.to_str()
+    s.len()
+
+fn main() -> Int ! alloc
+    work(12)

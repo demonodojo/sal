@@ -1,0 +1,7 @@
+# error: E_PARSE
+@arena
+struct P
+    x: Int
+
+fn main() -> Int
+    0

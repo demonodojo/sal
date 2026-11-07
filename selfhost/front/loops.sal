@@ -317,5 +317,5 @@ fn lp_fns(xs: List[TFn], i: Int, n: Int, out: List[TFn], errs: List[String]) -> 
         _b = list_push(cx, 0)
         _c = list_push(cx, 0)
         body = lp_block(f.body, d"", cx, errs)
-        _p = list_push(out, TFn(f.name, f.params, body, f.ret, f.no_heap, f.fx, f.tparams, f.recv, f.mkind, f.deprecated, f.tyat))
+        _p = list_push(out, TFn(f.name, f.params, body, f.ret, f.no_heap, f.arena, f.fx, f.tparams, f.recv, f.mkind, f.deprecated, f.tyat))
         lp_fns(xs, i + 1, n, out, errs)

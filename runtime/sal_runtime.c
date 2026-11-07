@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <regex.h>
+#include <sys/mman.h>
 
 #endif
 #if defined(__linux__) || defined(__APPLE__)
@@ -26,32 +27,221 @@ static void chmod_dst_exec(const char *dst) {
 static int64_t g_argc = 0;
 static const char **g_argv = NULL;
 
-#ifdef SAL_INSTRUMENT
-static void *sal_xmalloc(size_t n, const char *site) {
-    void *p = sal_instrument_malloc((int64_t)n, 0, site);
-    return p;
-}
-static void sal_xfree(void *p) {
-    sal_instrument_free(p);
-}
+/* Request arenas: a thread-local stack of page regions. Host heap allocated
+ * while one is active comes from its pages and dies with sal_arena_leave.
+ * gpu/tpu heaps and the fused tensor region (sal_region_*) stay out of this. */
+#define SAL_ARENA_PAGE ((size_t)64 * 1024)
+
+typedef struct SalPage {
+    struct SalPage *next;
+    size_t cap;
+    size_t off;
+    size_t map_size;
+    unsigned char *data;
+} SalPage;
+
+typedef struct SalArena {
+    struct SalArena *parent;
+    SalPage *pages;
+} SalArena;
+
+#ifdef SAL_SOSO
+static SalArena *g_arena = NULL;
 #else
-/* Real allocator: every owned block is returned with free(). */
-static void *sal_xmalloc(size_t n, const char *site) {
-    (void)site;
+static _Thread_local SalArena *g_arena = NULL;
+#endif
+
+static void *sal_sys_alloc_site(size_t n, const char *site) {
     if (n == 0) {
         n = 1;
     }
     n = (n + 15u) & ~15u;
-#ifdef SAL_SOSO
+#ifdef SAL_INSTRUMENT
+    return sal_instrument_malloc((int64_t)n, 0, site ? site : "?");
+#elif defined(SAL_SOSO)
     return malloc(n);
 #else
     return aligned_alloc(16, n);
 #endif
 }
-static void sal_xfree(void *p) {
-    free(p);
+
+static void *sal_sys_alloc(size_t n) {
+    return sal_sys_alloc_site(n, "arena");
 }
+
+static void sal_sys_free(void *p) {
+    if (!p) {
+        return;
+    }
+#ifdef SAL_INSTRUMENT
+    sal_instrument_free(p);
+#else
+    free(p);
 #endif
+}
+
+static SalPage *sal_page_map(size_t cap) {
+    size_t hdr = (sizeof(SalPage) + 15u) & ~15u;
+    size_t map_size = hdr + cap;
+    unsigned char *raw;
+#ifdef SAL_SOSO
+    raw = (unsigned char *)malloc(map_size);
+#else
+    raw = (unsigned char *)mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == (unsigned char *)MAP_FAILED) {
+        raw = NULL;
+    }
+#endif
+    if (!raw) {
+        sal_panic("oom");
+    }
+    SalPage *pg = (SalPage *)raw;
+    pg->next = NULL;
+    pg->cap = cap;
+    pg->off = 0;
+    pg->map_size = map_size;
+    pg->data = raw + hdr;
+    sal_instrument_alloc(pg->data, (int64_t)cap, 0, "arena");
+    return pg;
+}
+
+static void sal_page_unmap(SalPage *pg) {
+    unsigned char *raw = (unsigned char *)pg;
+    size_t n = pg->map_size;
+    sal_instrument_free(pg->data);
+#ifdef SAL_SOSO
+    free(raw);
+#else
+    munmap(raw, n);
+#endif
+}
+
+static int sal_ptr_in_arena(const SalArena *a, const void *p) {
+    const unsigned char *u = (const unsigned char *)p;
+    for (const SalPage *pg = a->pages; pg; pg = pg->next) {
+        if (u >= pg->data && u < pg->data + pg->cap) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int sal_ptr_in_any(const void *p) {
+    if (!p) {
+        return 0;
+    }
+    for (const SalArena *a = g_arena; a; a = a->parent) {
+        if (sal_ptr_in_arena(a, p)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static SalArena *sal_arena_owning(const void *p) {
+    if (!p) {
+        return NULL;
+    }
+    for (SalArena *a = g_arena; a; a = a->parent) {
+        if (sal_ptr_in_arena(a, p)) {
+            return a;
+        }
+    }
+    return NULL;
+}
+
+static void *sal_arena_bump(SalArena *a, size_t n) {
+    if (n == 0) {
+        n = 1;
+    }
+    n = (n + 15u) & ~15u;
+    SalPage *pg = a->pages;
+    if (pg && pg->off + n <= pg->cap) {
+        void *p = pg->data + pg->off;
+        pg->off += n;
+        return p;
+    }
+    size_t cap = n > SAL_ARENA_PAGE ? n : SAL_ARENA_PAGE;
+    SalPage *np = sal_page_map(cap);
+    np->next = a->pages;
+    a->pages = np;
+    np->off = n;
+    return np->data;
+}
+
+static SalArena *sal_arena_hold(void *owner) {
+    SalArena *prev = g_arena;
+    g_arena = owner ? sal_arena_owning(owner) : NULL;
+    return prev;
+}
+
+static void sal_arena_restore(SalArena *prev) {
+    g_arena = prev;
+}
+
+void sal_arena_enter(void) {
+    SalArena *a = (SalArena *)sal_sys_alloc(sizeof(SalArena));
+    if (!a) {
+        sal_panic("oom");
+    }
+    a->parent = g_arena;
+    a->pages = NULL;
+    g_arena = a;
+}
+
+void sal_arena_leave(void) {
+    SalArena *a = g_arena;
+    if (!a) {
+        return;
+    }
+    g_arena = a->parent;
+    SalPage *pg = a->pages;
+    while (pg) {
+        SalPage *n = pg->next;
+        sal_page_unmap(pg);
+        pg = n;
+    }
+    sal_sys_free(a);
+}
+
+void *sal_arena_alloc_in(void *owner, int64_t n) {
+    size_t sz = n > 0 ? (size_t)n : 1;
+    SalArena *own = owner ? sal_arena_owning(owner) : NULL;
+    if (!own) {
+        return sal_sys_alloc(sz);
+    }
+    return sal_arena_bump(own, sz);
+}
+
+void *sal_arena_realloc(void *old, int64_t old_n, int64_t new_n) {
+    size_t nn = new_n > 0 ? (size_t)new_n : 1;
+    size_t on = old_n > 0 ? (size_t)old_n : 0;
+    if (old && sal_ptr_in_any(old)) {
+        void *neu = sal_arena_alloc_in(old, (int64_t)nn);
+        if (!neu) {
+            return NULL;
+        }
+        if (on) {
+            memcpy(neu, old, on < nn ? on : nn);
+        }
+        return neu;
+    }
+    return realloc(old, nn);
+}
+
+static void *sal_xmalloc(size_t n, const char *site) {
+    if (g_arena) {
+        return sal_arena_bump(g_arena, n);
+    }
+    return sal_sys_alloc_site(n, site);
+}
+
+static void sal_xfree(void *p) {
+    if (!p || sal_ptr_in_any(p)) {
+        return;
+    }
+    sal_sys_free(p);
+}
 
 /* String layout: [cap: i64][len: i64][bytes…][0]; value points at bytes. */
 #define SAL_STR_HDR 16
@@ -784,20 +974,33 @@ int64_t sal_vec_push(void *vp, int64_t x) {
     }
     if (v->len + 1 > v->cap) {
         size_t ncap = v->cap ? v->cap * 2 : 8;
+        size_t bytes = ncap * sizeof(int64_t);
+        int64_t *nd;
+        void *anchor = v->data ? (void *)v->data : (void *)v;
+        if (sal_ptr_in_any(anchor)) {
+            nd = (int64_t *)sal_arena_alloc_in(anchor, (int64_t)bytes);
+            if (!nd) {
+                sal_panic("oom");
+            }
+            if (v->data && v->len) {
+                memcpy(nd, v->data, v->len * sizeof(int64_t));
+            }
+        } else {
 #ifdef SAL_INSTRUMENT
-        int64_t *nd = (int64_t *)realloc(v->data, ncap * sizeof(int64_t));
-        if (!nd) {
-            sal_panic("oom");
-        }
+            nd = (int64_t *)realloc(v->data, bytes);
+            if (!nd) {
+                sal_panic("oom");
+            }
 #else
-        int64_t *nd = (int64_t *)sal_xmalloc(ncap * sizeof(int64_t), "vec");
-        if (!nd) {
-            sal_panic("oom");
-        }
-        if (v->data && v->len) {
-            memcpy(nd, v->data, v->len * sizeof(int64_t));
-        }
+            nd = (int64_t *)sal_xmalloc(bytes, "vec");
+            if (!nd) {
+                sal_panic("oom");
+            }
+            if (v->data && v->len) {
+                memcpy(nd, v->data, v->len * sizeof(int64_t));
+            }
 #endif
+        }
         v->data = nd;
         v->cap = ncap;
     }
@@ -1025,7 +1228,9 @@ static size_t sal_map_hash(const char *s) {
 }
 
 static void sal_map_rehash(SalMap *m, size_t nslots) {
-    SalMapSlot *ns = (SalMapSlot *)sal_xmalloc(nslots * sizeof(SalMapSlot), "map");
+    size_t bytes = nslots * sizeof(SalMapSlot);
+    SalMapSlot *ns = (SalMapSlot *)(sal_ptr_in_any(m) ? sal_arena_alloc_in(m, (int64_t)bytes)
+                                                      : sal_xmalloc(bytes, "map"));
     if (!ns) {
         return;
     }
@@ -2030,7 +2235,7 @@ static int png_append(unsigned char **buf, size_t *len, size_t *cap, const unsig
         while (*len + n > ncap) {
             ncap *= 2;
         }
-        unsigned char *nd = (unsigned char *)realloc(*buf, ncap);
+        unsigned char *nd = (unsigned char *)sal_arena_realloc(*buf, (int64_t)*cap, (int64_t)ncap);
         if (!nd) {
             return 1;
         }
@@ -2388,7 +2593,11 @@ void sal_list_free(void *vp) {
     if (l->desc_owned) {
         free((void *)l->desc);
     }
-    free(l->vec.data);
+    /* The buffer comes from realloc (instrumented builds) or aligned_alloc, not
+     * from the probe table. An interior page pointer must not reach libc free. */
+    if (l->vec.data && !sal_ptr_in_any(l->vec.data)) {
+        free(l->vec.data);
+    }
     sal_xfree(l);
 }
 
@@ -2550,10 +2759,133 @@ void *sal_dict_put(void *dp, const char *key, int64_t val) {
         dict_val_release(d->val_kind, (int64_t)(intptr_t)sal_map_get(&d->map, k));
     }
     if (!present && !sal_dict_str_keys(d)) {
+        SalArena *prev = sal_arena_hold(d);
         k = sal_str_from_cstr(k);
+        sal_arena_restore(prev);
     }
     (void)sal_map_put(&d->map, k, val);
     return d;
+}
+
+/* Deep copy of a value into the arena currently held (the owner's). */
+static void *sal_list_clone(void *vp) {
+    SalList *in = (SalList *)vp;
+    if (!in) {
+        return NULL;
+    }
+    const char *desc = in->desc && in->desc[0] ? in->desc : "i";
+    void *outp = sal_list_new_desc(desc);
+    SalList *out = (SalList *)outp;
+    if (!out) {
+        return NULL;
+    }
+    out->owned = 1;
+    if (in->desc_owned && in->desc) {
+        size_t n = strlen(in->desc) + 1;
+        char *copy = (char *)malloc(n);
+        if (!copy) {
+            sal_panic("oom");
+        }
+        memcpy(copy, in->desc, n);
+        out->desc = copy;
+        out->desc_owned = 1;
+    }
+    for (size_t i = 0; i < in->vec.len; i++) {
+        int64_t elem = desc_copy(out->desc, in->vec.data[i]);
+        sal_list_push(out, elem);
+    }
+    return outp;
+}
+
+static void *sal_bytes_clone(void *vp) {
+    SalBytes *in = (SalBytes *)vp;
+    if (!in) {
+        return NULL;
+    }
+    void *outp = sal_bytes_new(in->len);
+    SalBytes *out = (SalBytes *)outp;
+    if (out && in->data && in->len > 0) {
+        memcpy(out->data, in->data, (size_t)in->len);
+    }
+    return outp;
+}
+
+static int64_t sal_dict_val_copy(int32_t kind, int64_t val) {
+    if (kind == 3) {
+        const char *s = (const char *)(uintptr_t)val;
+        if (!s || sal_str_cap(s) == 0) {
+            return val;
+        }
+        return (int64_t)(uintptr_t)sal_strdup(s);
+    }
+    if (kind == 5) {
+        return sal_enum_copy(val);
+    }
+    if ((kind & 15) == 4) {
+        int owned = 0;
+        const char *desc = desc_from_kind((int64_t)kind, &owned);
+        int64_t copy = desc_copy(desc, val);
+        if (owned) {
+            free((void *)desc);
+        }
+        return copy;
+    }
+    return val;
+}
+
+static const char *sal_key_export(const char *k) {
+    if (!k || sal_str_cap(k) == 0) {
+        return k;
+    }
+    return sal_strdup(k);
+}
+
+static void *sal_dict_clone(SalDict *in) {
+    if (!in) {
+        return NULL;
+    }
+    void *outp = sal_dict_new(in->key_kind, in->val_kind);
+    SalDict *out = (SalDict *)outp;
+    if (!out || !in->map.slots) {
+        return outp;
+    }
+    for (size_t i = 0; i < in->map.nslots; i++) {
+        if (!in->map.slots[i].key) {
+            continue;
+        }
+        const char *k = sal_key_export(in->map.slots[i].key);
+        int64_t val = sal_dict_val_copy(in->val_kind, in->map.slots[i].val);
+        sal_map_put(&out->map, k, val);
+    }
+    return outp;
+}
+
+int64_t sal_arena_export(void *owner, int64_t raw, int64_t tag, const char *desc) {
+    if (tag == 0 || !owner) {
+        return raw;
+    }
+    SalArena *prev = sal_arena_hold(owner);
+    int64_t out = raw;
+    if (tag == 1) {
+        const char *s = (const char *)(uintptr_t)raw;
+        if (!s || sal_str_cap(s) == 0) {
+            out = raw;
+        } else {
+            out = (int64_t)(uintptr_t)sal_strdup(s);
+        }
+    } else if (tag == 2) {
+        out = (int64_t)(uintptr_t)sal_list_clone((void *)(uintptr_t)raw);
+    } else if (tag == 3) {
+        out = (int64_t)(uintptr_t)sal_dict_clone((SalDict *)(uintptr_t)raw);
+    } else if (tag == 4) {
+        out = (int64_t)(uintptr_t)sal_bytes_clone((void *)(uintptr_t)raw);
+    } else if (tag == 5) {
+        out = sal_enum_copy(raw);
+    } else if (tag == 6 && desc) {
+        out = desc_copy(desc, raw);
+    }
+    sal_arena_restore(prev);
+    return out;
 }
 
 int64_t sal_dict_has(void *dp, const char *key) {
@@ -2936,7 +3268,7 @@ char *sal_exec_capture(const char *bin, const char *arg) {
         size_t n = strlen(tmp);
         if (len + n + 1 > cap) {
             cap *= 2;
-            char *nb = (char *)realloc(buf, cap);
+            char *nb = (char *)sal_arena_realloc(buf, (int64_t)(cap / 2), (int64_t)cap);
             if (!nb) {
                 free(buf);
                 pclose(fp);

@@ -41,7 +41,7 @@ fn examples_parse() {
         let src = std::fs::read_to_string(format!("examples/{name}.sal")).unwrap();
         let p = assert_parse(&src);
         assert!(!p.items.is_empty(), "{name} has no items");
-        assert_eq!(p.schema_version, 3);
+        assert_eq!(p.schema_version, 4);
     }
 }
 
@@ -314,9 +314,9 @@ fn id[T](x: T) -> T
 fn ast_json_roundtrip_with_schema() {
     let src = std::fs::read_to_string("examples/gpu_roundtrip.sal").unwrap();
     let p = assert_parse(&src);
-    assert_eq!(p.schema_version, 3);
+    assert_eq!(p.schema_version, 4);
     let j = serde_json::to_string(&p).unwrap();
-    assert!(j.contains("\"schema_version\":3") || j.contains("\"schema_version\": 3"));
+    assert!(j.contains("\"schema_version\":4") || j.contains("\"schema_version\": 4"));
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }

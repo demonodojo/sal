@@ -1,0 +1,7 @@
+# error: E_TYPE
+@arena
+fn f(s: String keep) -> Int
+    0
+
+fn main() -> Int
+    0

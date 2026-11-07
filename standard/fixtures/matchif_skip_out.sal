@@ -13,5 +13,72 @@ fn one(n: Int) -> Int
     else
         0
 
+fn early(n: Int) -> Int
+    if n == 1
+        return 10
+    elsif n == 2
+        return 20
+    else
+        return 0
+
+fn early_one(n: Int) -> Int
+    if n == 1
+        x = 2
+        return x
+    elsif n == 2
+        20
+    else
+        0
+
+fn nested(n: Int, m: Int) -> Int
+    if n == 1
+        if m == 1
+            10
+        else
+            20
+    elsif n == 2
+        30
+    else
+        0
+
+fn nested_branch(n: Int, m: Int) -> Int
+    if n == 1
+        10
+    elsif n == 2
+        if m == 1
+            20
+        else
+            30
+    else
+        0
+
+fn early_elsif(n: Int) -> Int
+    if n == 1
+        10
+    elsif n == 2
+        return 20
+    else
+        0
+
+fn early_else(n: Int) -> Int
+    if n == 1
+        10
+    elsif n == 2
+        20
+    else
+        return 0
+
+fn nested_else(n: Int, m: Int) -> Int
+    if n == 1
+        10
+    elsif n == 2
+        20
+    else
+        x = m
+        if x == 1
+            30
+        else
+            40
+
 fn main() -> Int
     f(1, 2)

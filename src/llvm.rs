@@ -519,6 +519,9 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_strdup(ptr)\n");
     s.push_str("declare ptr @sal_select_str(i64, ptr, ptr)\n");
     s.push_str("declare void @sal_free(ptr)\n");
+    s.push_str("declare void @sal_arena_enter()\n");
+    s.push_str("declare void @sal_arena_leave()\n");
+    s.push_str("declare i64 @sal_arena_export(ptr, i64, i64, ptr)\n");
     s.push_str("declare i64 @sal_copy_file(ptr, ptr)\n");
     s.push_str("declare i64 @sal_copy_self(ptr)\n");
     s.push_str("declare i64 @sal_not(i64)\n");
@@ -3232,6 +3235,23 @@ fn emit_runtime_or_user_call(
             s.push_str(&format!("  call void @sal_struct_free(i64 {a}, ptr {d})\n"));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_arena_enter" => {
+            s.push_str("  call void @sal_arena_enter()\n");
+        }
+        "sal_arena_leave" => {
+            s.push_str("  call void @sal_arena_leave()\n");
+        }
+        "sal_arena_export" => {
+            let owner = args.first().map(|a| ptr_arg(a, s, tmp)).unwrap_or_else(|| "null".into());
+            let raw = args.get(1).map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
+            let tag = args.get(2).map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
+            let desc = args.get(3).map(|a| ptr_arg(a, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_arena_export(ptr {owner}, i64 {raw}, i64 {tag}, ptr {desc})\n"
+                ));
             }
         }
         "sal_struct_free_box" => {

@@ -150,6 +150,19 @@ fn instrument_strict_freed_locals_are_clean() {
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
 }
 
+/// Pages of an `@arena` call are freed as one block, so strict mode reports no LEAK.
+#[test]
+fn instrument_strict_arena_pages_are_clean() {
+    let out = run_strict(
+        "@arena\nfn work(req: String) -> Int ! alloc\n    s = req + \"!\"\n    xs = list_new[Int]()\n    _a = list_push(xs, str_len(s))\n    str_len(s)\n\nfn main() -> Int ! alloc\n    work(\"ab\")\n",
+        "arena",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.code().is_some(), "arena crashed: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "arena double free: {stderr}");
+}
+
 /// A string handed to a user function that returns it is not freed by the caller
 /// (the result has unknown provenance), and strict mode reports it.
 #[test]

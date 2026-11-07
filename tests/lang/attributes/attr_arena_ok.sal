@@ -1,0 +1,10 @@
+# exit: 3
+@arena
+fn work(req: String) -> Int ! alloc
+    s = req + "!"
+    xs = list_new[Int]()
+    _a = list_push(xs, str_len(s))
+    str_len(s)
+
+fn main() -> Int ! alloc
+    work("ab")

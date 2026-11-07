@@ -127,6 +127,7 @@ struct TFn
     body: TBlock
     ret: String
     no_heap: Int
+    arena: Int
     fx: List[Int]
     tparams: List[String]
     recv: String

@@ -36,7 +36,7 @@ Salida de `check`: avisos en stderr (código tipo `Style/DupString`). Exit disti
 |-----|----------|
 | `Style/DupString` | `strdup("…")` → `d"…"` |
 | `Style/Elsif` | `else` + bloque con un solo `if` → `elsif` (casos ambiguos solo avisan) |
-| `Style/MatchIf` | `if` con al menos un `elsif` (y `else` opcional) sobre el mismo escrutado (`n == 1`, `s.eq("a") == 1`, `str_eq(s, "a") == 1`) → `match` con los mismos literales; cuerpos en bloque se conservan (`cop_matchif.sal`). Un solo `if`/`else` no se reescribe. No aplica con `break`, condiciones heterogéneas o mezcla int/cadena. `fix` puede necesitar varios pases si choca con `Style/Method` en `str_eq` |
+| `Style/MatchIf` | `if` con al menos un `elsif` (y `else` opcional) sobre el mismo escrutado (`n == 1`, `s.eq("a") == 1`, `str_eq(s, "a") == 1`) → `match` con los mismos literales; cuerpos en bloque se conservan (`cop_matchif.sal`). Un solo `if`/`else` no se reescribe. No aplica con `break`, `return`, un `if` o un `match` anidado en algún cuerpo, condiciones heterogéneas o mezcla int/cadena. El `match` anidado deja el arreglo quieto: si un `if` interior pasa a `match`, la cadena exterior no se reescribe en el pase siguiente. `fix` puede necesitar varios pases si choca con `Style/Method` en `str_eq` |
 | `Style/And` | `if A` cuyo then es un solo `if B`, y los dos `else` son el mismo bloque → `if A && B`. Si `A` o `B` tienen `\|\|` en la raíz, se parentizan. Un comentario que el parche tiraría solo avisa |
 | `Style/StringPlus` | `str_concat` / `str_append` → `+`; cadenas de `var = str_append(var, …)` en varias líneas → una asignación con `+` |
 | `Style/PlusLiteral` | `d"…"` operando de `+` → `"…"` (el `+` ya copia; no hace falta dup en constantes) |

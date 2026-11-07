@@ -1,0 +1,16 @@
+# exit: 2
+enum Option[T]
+    None
+    Some(T)
+
+@arena
+fn handle(cache: Dict[String, String] keep) -> Int ! alloc
+    _a = cache.put("k", int_to_str(42))
+    0
+
+fn main() -> Int ! alloc
+    cache = dict_new[String, String]()
+    _b = handle(cache)
+    match dict_get(cache, "k")
+        Some(s) => str_len(s)
+        None => 0

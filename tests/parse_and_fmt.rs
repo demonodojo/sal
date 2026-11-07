@@ -19,6 +19,22 @@ fn fmt_idempotent() {
 }
 
 #[test]
+fn fmt_arena_keep_idempotent() {
+    let src = "\
+@arena
+fn handle(cache: Dict[String, String] keep) -> Int ! alloc
+    0
+";
+    let p1 = parse(src).expect("parse");
+    let f1 = format_program(&p1);
+    let p2 = parse(&f1).expect("re-parse");
+    let f2 = format_program(&p2);
+    assert_eq!(f1, f2);
+    assert!(f1.contains("@arena"));
+    assert!(f1.contains("keep"));
+}
+
+#[test]
 fn ast_json_roundtrip() {
     let src = include_str!("../examples/hello.sal");
     let p = parse(src).expect("parse");

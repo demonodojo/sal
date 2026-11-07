@@ -1,0 +1,8 @@
+# error: E_TYPE
+@arena
+@no_heap
+fn f() -> Int
+    1
+
+fn main() -> Int
+    f()

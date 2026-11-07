@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
 
-pub const AST_SCHEMA_VERSION: u32 = 3;
+pub const AST_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Program {
@@ -90,6 +90,9 @@ pub struct FnDef {
     pub body: Block,
     #[serde(default)]
     pub no_heap: bool,
+    /// `@arena`: host heap during the call comes from pages discarded on return.
+    #[serde(default)]
+    pub arena: bool,
     /// `@deprecated("…")`: the message of the `W_DEPRECATED` warning at each use.
     #[serde(default)]
     pub deprecated: Option<String>,
@@ -111,6 +114,7 @@ pub enum ParamMode {
     Inferred,
     Borrow,
     Take,
+    Keep,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

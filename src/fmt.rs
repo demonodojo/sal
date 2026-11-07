@@ -113,6 +113,7 @@ fn format_protocol(p: &ProtocolDef) -> String {
         match m.self_mode {
             ParamMode::Take => out.push_str(" take"),
             ParamMode::Borrow => out.push_str(" borrow"),
+            ParamMode::Keep => out.push_str(" keep"),
             ParamMode::Inferred => {}
         }
         for param in &m.params {
@@ -123,6 +124,7 @@ fn format_protocol(p: &ProtocolDef) -> String {
             match param.mode {
                 ParamMode::Borrow => out.push_str(" borrow"),
                 ParamMode::Take => out.push_str(" take"),
+                ParamMode::Keep => out.push_str(" keep"),
                 ParamMode::Inferred => {}
             }
         }
@@ -170,6 +172,9 @@ fn format_frame(f: &FrameDef) -> String {
 
 fn format_fn(f: &FnDef) -> String {
     let mut s = deprecated_line(&f.deprecated);
+    if f.arena {
+        s.push_str("@arena\n");
+    }
     if f.no_heap {
         s.push_str("@no_heap\n");
     }
@@ -189,7 +194,8 @@ fn format_fn(f: &FnDef) -> String {
     if f.receiver.is_some() && f.self_mode != ParamMode::Inferred {
         s.push_str(match f.self_mode {
             ParamMode::Take => "self take",
-            _ => "self borrow",
+            ParamMode::Keep => "self keep",
+            ParamMode::Borrow | ParamMode::Inferred => "self borrow",
         });
         wrote = true;
     }
@@ -203,6 +209,7 @@ fn format_fn(f: &FnDef) -> String {
         match p.mode {
             ParamMode::Borrow => s.push_str(" borrow"),
             ParamMode::Take => s.push_str(" take"),
+            ParamMode::Keep => s.push_str(" keep"),
             ParamMode::Inferred => {}
         }
     }

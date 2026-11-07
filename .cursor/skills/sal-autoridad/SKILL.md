@@ -41,7 +41,7 @@ Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, 
 
 Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`.
 
-Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@resource`, `@shared`, `@arena`, `@copy`, `@unique`, `@no_gc`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). Las dependencias `path`, `git` y `github` de `Sal.toml`, `Sal.lock` y `sal fetch` / `sal install` / `sal add` están en el arranque; ver [sal-paquetes](../sal-paquetes/SKILL.md).
+Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@resource`, `@shared`, `@copy`, `@unique`, `@no_gc`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). `@arena` está admitido en `fn`, `method`, `static` e `init`. Las dependencias `path`, `git` y `github` de `Sal.toml`, `Sal.lock` y `sal fetch` / `sal install` / `sal add` están en el arranque; ver [sal-paquetes](../sal-paquetes/SKILL.md).
 
 ## Atributos (arranque)
 

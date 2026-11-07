@@ -30,7 +30,7 @@ Flags de `build` y `run`: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `
 
 `fmt` escribe la fuente canónica por stdout y sale 0 solo si el parseo ha ido bien. Si no parsea, no imprime una reescritura y sale distinto de cero.
 
-`emit ast` imprime el JSON del esquema vigente (`schema_version` 2). `emit typed` añade tipos, lugares y `borrow`/`take`. `emit ir` imprime la región fusionada y `peak_bytes`. `emit llvm` imprime el IR textual que se le pasa a Clang.
+`emit ast` imprime el JSON del esquema vigente (`schema_version` 4, con `FnDef.arena`). `emit typed` añade tipos, lugares y `borrow`/`take`/`keep`. `emit ir` imprime la región fusionada y `peak_bytes`. `emit llvm` imprime el IR textual que se le pasa a Clang.
 
 `sal build --device gpu` o `--device tpu` elige el controlador compilado dentro de `sal`. Si el dispositivo o su toolchain no están, `E_DEVICE_MISSING`. `sal check` sigue aceptando el programa.
 

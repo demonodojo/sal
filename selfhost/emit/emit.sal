@@ -399,6 +399,18 @@ fn collect_assigns_bin(l: Expr, r: Expr, names: Int) -> Int ! alloc
     _a = collect_assigns_expr(l, names)
     collect_assigns_expr(r, names)
 
+fn collect_assigns_match_arms(arms: List[TArm], i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _a = collect_assigns_expr(arm.body, names)
+        _b = if arm.has_suite == 1
+            collect_assigns_block(arm.suite, names)
+        else
+            0
+        collect_assigns_match_arms(arms, i + 1, n, names)
+
 fn collect_assigns_expr(e: Expr, names: Int) -> Int ! alloc
     match e
         XIf(cond, then_b, else_b, has_else, elsifs) => collect_assigns_if(cond, then_b, else_b, elsifs, names)
@@ -407,6 +419,13 @@ fn collect_assigns_expr(e: Expr, names: Int) -> Int ! alloc
         XCall(name, args, targs, xp) => collect_assigns_args(args, 0, list_len(args), names)
         XTo(place, inner) => collect_assigns_expr(inner, names)
         XOn(place, body, is_kern, has_index) => collect_assigns_block(body, names)
+        XMatch(sc, arms) =>
+            _m = collect_assigns_expr(sc, names)
+            collect_assigns_match_arms(arms, 0, list_len(arms), names)
+        XLambda(_param, body) => collect_assigns_expr(body, names)
+        XUnary(_op, inner) => collect_assigns_expr(inner, names)
+        XTry(inner) => collect_assigns_expr(inner, names)
+        XField(base, _field) => collect_assigns_expr(base, names)
         _ => 0
 
 fn collect_assigns_arms(arms: List[TElsif], i: Int, n: Int, names: Int) -> Int ! alloc
@@ -748,9 +767,102 @@ fn emit_c_where_list(out: String, col: String, mask_v: String, len_v: String, st
     _d = vec_push(stmts, str_as_int(oline))
     0
 
+fn emit_c_ty_head(ty: String, head: String) -> Int ! alloc
+    n = str_len(head)
+    if str_len(ty) < n
+        0
+    elsif str_eq(str_slice(ty, 0, n), head) == 0
+        0
+    elsif str_len(ty) == n
+        1
+    else
+        c = str_char(ty, n)
+        if c == 91
+            1
+        elsif c == 32
+            1
+        else
+            0
+
+fn emit_c_export_tag(ty: String) -> Int ! alloc
+    if emit_c_ty_head(ty, d"String") == 1
+        1
+    elsif emit_c_ty_head(ty, d"List") == 1
+        2
+    elsif emit_c_ty_head(ty, d"Dict") == 1
+        3
+    elsif emit_c_ty_head(ty, d"Bytes") == 1
+        4
+    else
+        0
+
+fn emit_c_keep_has(pool: Int, name: String) -> Int ! alloc
+    ks = vec_get(pool, 10)
+    names_has(ks, str_as_int(name), 0, vec_len(ks))
+
+fn emit_c_seed_keep(params: List[TParam], i: Int, n: Int, ks: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = list_get(params, i)
+        if pm.mode == 3
+            _p = vec_push(ks, str_as_int(pm.name))
+            emit_c_seed_keep(params, i + 1, n, ks)
+        else
+            emit_c_seed_keep(params, i + 1, n, ks)
+
+fn emit_c_keep_alias(tc: Tc, name: String, expr: Expr) -> Int ! alloc
+    match expr
+        XIdent(rhs) =>
+            if emit_c_keep_has(tc.pool, rhs) == 1
+                _p = vec_push(vec_get(tc.pool, 10), str_as_int(name))
+                0
+            else
+                0
+        _ => 0
+
+fn emit_c_export_one(args_e: List[Expr], arg_parts: Int, idx: Int, owner: String, stmts: Int, tc: Tc) -> Int ! alloc
+    if idx >= list_len(args_e)
+        0
+    elsif idx >= vec_len(arg_parts)
+        0
+    else
+        tag = emit_c_export_tag(texpr_type(tc.env, list_get(args_e, idx)))
+        if tag == 0
+            0
+        else
+            raw = str_from_int(vec_get(arg_parts, idx))
+            tname = tmp_fresh(tc)
+            line = "  int64_t " + tname + " = sal_arena_export((void *)(uintptr_t)(" + owner + "), " + raw + ", " + int_to_str(tag) + ", 0);\n"
+            _p = vec_push(stmts, str_as_int(line))
+            _s = vec_set(arg_parts, idx, str_as_int(tname))
+            0
+
+fn emit_c_keep_export(fname: String, args_e: List[Expr], arg_parts: Int, stmts: Int, tc: Tc) -> Int ! alloc
+    if list_len(args_e) == 0
+        0
+    elsif str_eq(fname, d"dict_put") + str_eq(fname, d"list_push") + str_eq(fname, d"list_set") == 0
+        0
+    else
+        match list_get(args_e, 0)
+            XIdent(name) =>
+                if emit_c_keep_has(tc.pool, name) == 0
+                    0
+                else
+                    owner = str_from_int(vec_get(arg_parts, 0))
+                    if str_eq(fname, d"list_push") == 1
+                        emit_c_export_one(args_e, arg_parts, 1, owner, stmts, tc)
+                    elsif str_eq(fname, d"list_set") == 1
+                        emit_c_export_one(args_e, arg_parts, 2, owner, stmts, tc)
+                    else
+                        _a = emit_c_export_one(args_e, arg_parts, 1, owner, stmts, tc)
+                        emit_c_export_one(args_e, arg_parts, 2, owner, stmts, tc)
+            _ => 0
+
 fn emit_c_call(fname: String, args_e: List[Expr], targs: String, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     hname = str_as_int(fname)
     arg_parts = emit_c_args(args_e, 0, list_len(args_e), user, stmts, tc, vec_new())
+    _kx = emit_c_keep_export(fname, args_e, arg_parts, stmts, tc)
     if names_has(user, hname, 0, vec_len(user)) == 1
         m = mangled(fname)
         acc = m + "("
@@ -1198,12 +1310,17 @@ fn emit_c_stmts(sts: List[TStmt], i: Int, n: Int, user: Int, stmts: Int, tc: Tc)
             _za = tc_set_acc(tc, 0)
             _lm = emit_c_lambda_reg(tc, st.name, st.expr)
             _ns = tenv_bind(tc.env, st.name, texpr_type(tc.env, st.expr))
+            _ka = emit_c_keep_alias(tc, st.name, st.expr)
             line = "  " + st.name + " = " + val + ";\n"
             _p = vec_push(stmts, str_as_int(line))
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
         elsif st.kind == 2
             val0 = emit_c_expr(st.expr, user, stmts, tc)
-            line = "  return " + val0 + ";\n"
+            leave = if vec_get(tc.pool, 9) == 1
+                d"  sal_arena_leave();\n"
+            else
+                d""
+            line = leave + "  return " + val0 + ";\n"
             _p = vec_push(stmts, str_as_int(line))
             1
         elsif st.kind == 3
@@ -1247,17 +1364,29 @@ fn emit_c_fn(tf: TFn, user: Int, linkable: Int, allow_main: Int, pool: Int, env:
         emit_c_fn_body(tf, user, is_main, acc, pool, env, enums)
 
 fn emit_c_fn_body(tf: TFn, user: Int, is_main: Int, acc: String, pool: Int, env: TEnv, enums: List[TEnum]) -> String ! alloc
+    _af = vec_set(pool, 9, tf.arena)
+    ks = vec_new()
+    _sk = emit_c_seed_keep(tf.params, 0, list_len(tf.params), ks)
+    _ak = vec_set(pool, 10, ks)
     body = drops_body_tc(tf, vec_get(pool, 8))
     names = vec_new()
     _c = collect_assigns_block(body, names)
     skip = tparam_names(tf.params, 0, list_len(tf.params), vec_new())
     acc = emit_decl_names_filtered(names, 0, vec_len(names), skip, acc)
+    if tf.arena == 1
+        acc = acc + "  sal_arena_enter();\n"
+    else
+        acc = acc
     stmts = vec_new()
     tc = tc_new(pool, env, enums)
     _sp = seed_string_params(tf.params, 0, list_len(tf.params), tc.env)
     val = emit_c_block(body, user, stmts, tc)
     acc = append_stmt_strings(acc, stmts, 0, vec_len(stmts))
     val = emit_c_matmul_exit(tc, is_main, val)
+    if tf.arena == 1
+        acc = acc + "  sal_arena_leave();\n"
+    else
+        acc = acc
     foot = emit_c_fn_footer(is_main, val)
     acc = acc + foot
     _lt = lit_pool_free_texts(pool)

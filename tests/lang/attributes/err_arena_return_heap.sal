@@ -1,0 +1,7 @@
+# error: E_TYPE
+@arena
+fn f() -> String
+    "x"
+
+fn main() -> Int
+    1

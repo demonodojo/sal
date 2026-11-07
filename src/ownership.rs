@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::string_expr::{add_chain_leftmost, is_string_type};
+use crate::string_expr::{add_chain_leftmost, is_string_type, StringEnv};
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::span::Span;
 use crate::typed::ExprTypeEntry;
@@ -97,7 +97,7 @@ pub fn check_ownership(prog: &Program, infer: &crate::infer::InferOutput) -> Dia
             check_fn_moves(f)?;
         }
     }
-    Ok(())
+    check_arena_params(&modded, infer)
 }
 
 /// Infer `borrow` / `take` on each parameter from the function body.
@@ -179,6 +179,9 @@ fn infer_fn_modes(f: &mut FnDef, structs: &HashMap<String, StructDef>) {
         if taken.contains(&p.name) {
             p.mode = ParamMode::Take;
         } else if used.contains(&p.name) {
+            p.mode = ParamMode::Borrow;
+        } else if f.arena {
+            // Unused unique inside @arena stays with the caller.
             p.mode = ParamMode::Borrow;
         } else {
             // Unused unique: ownership is taken and the value is dropped.
@@ -761,6 +764,427 @@ fn named(name: &str, span: Span) -> Type {
         args: vec![],
         span,
     }
+}
+
+fn is_list_or_dict(ty: &Type) -> bool {
+    match ty {
+        Type::Named { name, .. } | Type::Qualified { name, .. } => name == "List" || name == "Dict",
+        _ => false,
+    }
+}
+
+fn type_exportable(
+    ty: &Type,
+    structs: &HashMap<String, StructDef>,
+    enums: &HashMap<String, EnumDef>,
+    depth: u32,
+) -> bool {
+    if depth > 16 {
+        return false;
+    }
+    match ty {
+        Type::Tensor { .. } | Type::Fn { .. } => false,
+        Type::Named { name, args, .. } | Type::Qualified { name, args, .. } => match name.as_str() {
+            "Int" | "Float" | "Bool" | "Unit" | "String" | "List" | "Dict" | "Bytes" => args
+                .iter()
+                .all(|a| type_exportable(a, structs, enums, depth + 1)),
+            "any" | "Tensor" => false,
+            other if enums.contains_key(other) => {
+                args.iter().all(|a| type_exportable(a, structs, enums, depth + 1))
+            }
+            other => {
+                let Some(st) = structs.get(other) else {
+                    return false;
+                };
+                if !st.type_params.is_empty() || !args.is_empty() {
+                    return false;
+                }
+                st.fields
+                    .iter()
+                    .all(|f| type_exportable(&f.ty, structs, enums, depth + 1))
+            }
+        },
+    }
+}
+
+fn ident_name(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Ident { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn collect_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { name, init, .. } => {
+                if let Some(rhs) = ident_name(init) {
+                    out.push((name.clone(), rhs.to_string()));
+                }
+                collect_alias_pairs_expr(init, out);
+            }
+            Stmt::Assign { target, value, .. } => {
+                if let (Some(lhs), Some(rhs)) = (ident_name(target), ident_name(value)) {
+                    out.push((lhs.to_string(), rhs.to_string()));
+                }
+                collect_alias_pairs_expr(target, out);
+                collect_alias_pairs_expr(value, out);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    collect_alias_pairs_expr(v, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_alias_pairs_expr(cond, out);
+                collect_alias_pairs(body, out);
+            }
+            Stmt::Expr(e) => collect_alias_pairs_expr(e, out),
+            Stmt::Break { .. } => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        collect_alias_pairs_expr(t, out);
+    }
+}
+
+fn collect_alias_pairs_expr(e: &Expr, out: &mut Vec<(String, String)>) {
+    match e {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Call { func, args, .. } => {
+            collect_alias_pairs_expr(func, out);
+            for a in args {
+                collect_alias_pairs_expr(a, out);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_alias_pairs_expr(body, out),
+        Expr::Binary { left, right, .. } => {
+            collect_alias_pairs_expr(left, out);
+            collect_alias_pairs_expr(right, out);
+        }
+        Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => {
+            collect_alias_pairs_expr(expr, out);
+        }
+        Expr::Block(b) | Expr::On { body: b, .. } => collect_alias_pairs(b, out),
+        Expr::TensorLit { rows, .. } => {
+            for row in rows {
+                for c in row {
+                    collect_alias_pairs_expr(c, out);
+                }
+            }
+        }
+        Expr::Field { base, .. } => collect_alias_pairs_expr(base, out),
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_alias_pairs_expr(scrutinee, out);
+            for arm in arms {
+                collect_alias_pairs_expr(&arm.body, out);
+            }
+        }
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            collect_alias_pairs_expr(cond, out);
+            collect_alias_pairs(then_block, out);
+            for elsif in elsifs {
+                collect_alias_pairs_expr(&elsif.cond, out);
+                collect_alias_pairs(&elsif.body, out);
+            }
+            if let Some(b) = else_block {
+                collect_alias_pairs(b, out);
+            }
+        }
+    }
+}
+
+fn bind_aliases(f: &FnDef) -> HashMap<String, String> {
+    let mut root: HashMap<String, String> = HashMap::new();
+    for p in &f.params {
+        root.insert(p.name.clone(), p.name.clone());
+    }
+    let mut pairs = Vec::new();
+    collect_alias_pairs(&f.body, &mut pairs);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (lhs, rhs) in &pairs {
+            if root.contains_key(lhs) {
+                continue;
+            }
+            if let Some(r) = root.get(rhs).cloned() {
+                root.insert(lhs.clone(), r);
+                changed = true;
+            }
+        }
+    }
+    root
+}
+
+fn param_index(f: &FnDef, name: &str) -> Option<usize> {
+    f.params.iter().position(|p| p.name == name)
+}
+
+fn mutates_container(name: &str) -> bool {
+    matches!(
+        name,
+        "list_push"
+            | "list_set"
+            | "list_pop"
+            | "dict_put"
+            | "dict_remove"
+            | "str_append"
+            | "bytes_set_u8"
+            | "bytes_set_u32"
+            | "bytes_fill"
+            | "bytes_fill_u32"
+            | "bytes_copy"
+    )
+}
+
+fn walk_calls(
+    b: &Block,
+    f: &mut dyn FnMut(&str, &[Expr], Span) -> DiagResult<()>,
+) -> DiagResult<()> {
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { init, .. } => walk_calls_expr(init, f)?,
+            Stmt::Expr(e) => walk_calls_expr(e, f)?,
+            Stmt::Assign { target, value, .. } => {
+                walk_calls_expr(target, f)?;
+                walk_calls_expr(value, f)?;
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    walk_calls_expr(v, f)?;
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                walk_calls_expr(cond, f)?;
+                walk_calls(body, f)?;
+            }
+            Stmt::Break { .. } => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        walk_calls_expr(t, f)?;
+    }
+    Ok(())
+}
+
+fn walk_calls_expr(
+    e: &Expr,
+    f: &mut dyn FnMut(&str, &[Expr], Span) -> DiagResult<()>,
+) -> DiagResult<()> {
+    match e {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Call { func, args, span, .. } => {
+            for a in args {
+                walk_calls_expr(a, f)?;
+            }
+            if let Expr::Ident { name, .. } = func.as_ref() {
+                f(name, args, *span)?;
+            } else {
+                walk_calls_expr(func, f)?;
+            }
+        }
+        Expr::Lambda { body, .. } => walk_calls_expr(body, f)?,
+        Expr::Binary { left, right, .. } => {
+            walk_calls_expr(left, f)?;
+            walk_calls_expr(right, f)?;
+        }
+        Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => walk_calls_expr(expr, f)?,
+        Expr::Block(b) | Expr::On { body: b, .. } => walk_calls(b, f)?,
+        Expr::TensorLit { rows, .. } => {
+            for row in rows {
+                for c in row {
+                    walk_calls_expr(c, f)?;
+                }
+            }
+        }
+        Expr::Field { base, .. } => walk_calls_expr(base, f)?,
+        Expr::Match { scrutinee, arms, .. } => {
+            walk_calls_expr(scrutinee, f)?;
+            for arm in arms {
+                walk_calls_expr(&arm.body, f)?;
+            }
+        }
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            walk_calls_expr(cond, f)?;
+            walk_calls(then_block, f)?;
+            for elsif in elsifs {
+                walk_calls_expr(&elsif.cond, f)?;
+                walk_calls(&elsif.body, f)?;
+            }
+            if let Some(b) = else_block {
+                walk_calls(b, f)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mark_mutates(
+    f: &FnDef,
+    aliases: &HashMap<String, String>,
+    modes: &HashMap<String, Vec<ParamMode>>,
+    mutates: &HashMap<String, Vec<bool>>,
+    local: &mut [bool],
+) {
+    let _ = walk_calls(&f.body, &mut |name, args, _span| {
+        if mutates_container(name) {
+            if let Some(i) = args
+                .first()
+                .and_then(ident_name)
+                .and_then(|n| aliases.get(n))
+                .and_then(|root| param_index(f, root))
+            {
+                local[i] = true;
+            }
+        }
+        if let Some(sig) = modes.get(name) {
+            for (i, arg) in args.iter().enumerate() {
+                let Some(src) = ident_name(arg)
+                    .and_then(|n| aliases.get(n))
+                    .and_then(|root| param_index(f, root))
+                else {
+                    continue;
+                };
+                let mode = sig.get(i).copied().unwrap_or(ParamMode::Inferred);
+                let dest_mut = mutates.get(name).and_then(|m| m.get(i)).copied().unwrap_or(false);
+                if mode == ParamMode::Take || mode == ParamMode::Keep || dest_mut {
+                    local[src] = true;
+                }
+            }
+        }
+        Ok(())
+    });
+}
+
+fn check_keep_uses(
+    f: &FnDef,
+    aliases: &HashMap<String, String>,
+    modes: &HashMap<String, Vec<ParamMode>>,
+    mutates: &HashMap<String, Vec<bool>>,
+    env: &StringEnv,
+) -> DiagResult<()> {
+    walk_calls(&f.body, &mut |name, args, span| {
+        if matches!(name, "list_push" | "list_set" | "dict_put") {
+            let keep = args
+                .first()
+                .and_then(ident_name)
+                .and_then(|n| aliases.get(n))
+                .and_then(|root| f.params.iter().find(|p| &p.name == root))
+                .is_some_and(|p| p.mode == ParamMode::Keep);
+            if keep {
+                for arg in args.iter().skip(1) {
+                    if let Some(ty) = env.expr_type(arg) {
+                        if !type_exportable(ty, &env.structs, &env.enums, 0) {
+                            return Err(vec![Diagnostic::new(
+                                ErrorCode::EType,
+                                "@arena keep cannot store this value",
+                                span,
+                            )]);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(sig) = modes.get(name) {
+            for (i, arg) in args.iter().enumerate() {
+                let Some(root) = ident_name(arg).and_then(|n| aliases.get(n)) else {
+                    continue;
+                };
+                let Some(p) = f.params.iter().find(|p| &p.name == root) else {
+                    continue;
+                };
+                if p.mode != ParamMode::Keep {
+                    continue;
+                }
+                let mode = sig.get(i).copied().unwrap_or(ParamMode::Inferred);
+                let dest_mut = mutates.get(name).and_then(|m| m.get(i)).copied().unwrap_or(false);
+                if mode == ParamMode::Take || (dest_mut && mode != ParamMode::Keep) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("keep parameter `{}` cannot be passed here", p.name),
+                        span,
+                    )]);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+fn check_arena_params(prog: &Program, infer: &crate::infer::InferOutput) -> DiagResult<()> {
+    let env = StringEnv::from_program(prog).with_infer(infer);
+    let fns: Vec<&FnDef> = prog
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Fn(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    // Nothing to check when no function is `@arena` and no parameter is `keep`.
+    // The selfhost mirror skips the same way: walking every function there
+    // copies the whole program and exhausts memory while compiling itself.
+    if !fns.iter().any(|f| f.arena || f.params.iter().any(|p| p.mode == ParamMode::Keep)) {
+        return Ok(());
+    }
+    let modes: HashMap<String, Vec<ParamMode>> = fns
+        .iter()
+        .map(|f| (f.name.clone(), f.params.iter().map(|p| p.mode).collect()))
+        .collect();
+    let mut mutates: HashMap<String, Vec<bool>> = fns
+        .iter()
+        .map(|f| (f.name.clone(), vec![false; f.params.len()]))
+        .collect();
+    loop {
+        let mut changed = false;
+        for f in &fns {
+            let aliases = bind_aliases(f);
+            let mut local = vec![false; f.params.len()];
+            mark_mutates(f, &aliases, &modes, &mutates, &mut local);
+            if local != mutates[&f.name] {
+                mutates.insert(f.name.clone(), local);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for f in &fns {
+        for p in &f.params {
+            if p.mode == ParamMode::Keep && !f.arena {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "keep parameter requires @arena",
+                    p.span,
+                )]);
+            }
+            if p.mode == ParamMode::Keep && !is_list_or_dict(&p.ty) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("keep parameter `{}` must be a List or Dict", p.name),
+                    p.span,
+                )]);
+            }
+        }
+        if !f.arena {
+            continue;
+        }
+        let aliases = bind_aliases(f);
+        let flags = &mutates[&f.name];
+        for (i, p) in f.params.iter().enumerate() {
+            if p.mode != ParamMode::Keep && (flags[i] || p.mode == ParamMode::Take) {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("@arena parameter `{}` is read-only", p.name),
+                    p.span,
+                )]);
+            }
+        }
+        check_keep_uses(f, &aliases, &modes, &mutates, &env)?;
+    }
+    Ok(())
 }
 
 fn ty_with_span(mut ty: Type, span: Span) -> Type {

@@ -107,6 +107,28 @@ fn check_block_stack_lets(
     Ok(())
 }
 
+pub fn check_arena_fns(prog: &Program) -> DiagResult<()> {
+    let structs = collect_structs(prog);
+    for item in &prog.items {
+        let Item::Fn(f) = item else { continue };
+        if f.arena && f.no_heap {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "@arena function cannot be @no_heap",
+                f.span,
+            )]);
+        }
+        if f.arena && type_uses_heap(&f.ret, &structs) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                "@arena function cannot return a heap type",
+                f.span,
+            )]);
+        }
+    }
+    Ok(())
+}
+
 pub fn check_no_heap_fns(prog: &Program, env: &StringEnv) -> DiagResult<()> {
     let structs = collect_structs(prog);
     for item in &prog.items {

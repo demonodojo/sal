@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -602,6 +603,273 @@ fn field_chain_root<'a>(e: &'a Expr, fields: &mut Vec<&'a str>) -> Option<&'a st
     }
 }
 
+thread_local! {
+    static ARENA_KEEP: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+fn arena_leave() -> IrInst {
+    IrInst::Call {
+        dest: None,
+        func: "sal_arena_leave".into(),
+        args: vec![],
+    }
+}
+
+fn insert_arena_leaves(insts: &mut Vec<IrInst>) {
+    for inst in insts.iter_mut() {
+        match inst {
+            IrInst::If { then_body, else_body, .. } => {
+                insert_arena_leaves(then_body);
+                insert_arena_leaves(else_body);
+            }
+            IrInst::While { cond_insts, body, .. } => {
+                insert_arena_leaves(cond_insts);
+                insert_arena_leaves(body);
+            }
+            IrInst::Switch { arms, default_body, .. } => {
+                for arm in arms.iter_mut() {
+                    insert_arena_leaves(&mut arm.body);
+                }
+                insert_arena_leaves(default_body);
+            }
+            IrInst::KernelGrid { body, .. } => insert_arena_leaves(body),
+            _ => {}
+        }
+    }
+    let mut i = 0;
+    while i < insts.len() {
+        if matches!(insts[i], IrInst::Return { .. }) {
+            insts.insert(i, arena_leave());
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn is_arena_leave(inst: &IrInst) -> bool {
+    matches!(inst, IrInst::Call { func, dest: None, .. } if func == "sal_arena_leave")
+}
+
+fn sink_arena_leaves(insts: &mut Vec<IrInst>) {
+    for inst in insts.iter_mut() {
+        match inst {
+            IrInst::If { then_body, else_body, .. } => {
+                sink_arena_leaves(then_body);
+                sink_arena_leaves(else_body);
+            }
+            IrInst::While { cond_insts, body, .. } => {
+                sink_arena_leaves(cond_insts);
+                sink_arena_leaves(body);
+            }
+            IrInst::Switch { arms, default_body, .. } => {
+                for arm in arms.iter_mut() {
+                    sink_arena_leaves(&mut arm.body);
+                }
+                sink_arena_leaves(default_body);
+            }
+            IrInst::KernelGrid { body, .. } => sink_arena_leaves(body),
+            _ => {}
+        }
+    }
+    let Some(ret) = insts.iter().rposition(|i| matches!(i, IrInst::Return { .. })) else {
+        return;
+    };
+    let Some(leave) = insts[..ret].iter().rposition(is_arena_leave) else {
+        return;
+    };
+    if leave + 1 == ret {
+        return;
+    }
+    let inst = insts.remove(leave);
+    insts.insert(ret - 1, inst);
+}
+
+pub fn sink_arena_leaves_module(m: &mut IrModule) {
+    for f in &mut m.functions {
+        sink_arena_leaves(&mut f.instructions);
+    }
+}
+
+fn arena_keep_names(f: &FnDef) -> HashSet<String> {
+    let mut keep = HashSet::new();
+    for p in &f.params {
+        if p.mode == ParamMode::Keep {
+            keep.insert(p.name.clone());
+        }
+    }
+    let mut pairs = Vec::new();
+    arena_alias_pairs(&f.body, &mut pairs);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (lhs, rhs) in &pairs {
+            if keep.contains(lhs) {
+                continue;
+            }
+            if keep.contains(rhs) {
+                keep.insert(lhs.clone());
+                changed = true;
+            }
+        }
+    }
+    keep
+}
+
+fn arena_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { name, init, .. } => {
+                if let Expr::Ident { name: rhs, .. } = init {
+                    out.push((name.clone(), rhs.clone()));
+                }
+                arena_alias_pairs_expr(init, out);
+            }
+            Stmt::Assign { target, value, .. } => {
+                if let (Expr::Ident { name: lhs, .. }, Expr::Ident { name: rhs, .. }) = (target, value) {
+                    out.push((lhs.clone(), rhs.clone()));
+                }
+                arena_alias_pairs_expr(target, out);
+                arena_alias_pairs_expr(value, out);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    arena_alias_pairs_expr(v, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                arena_alias_pairs_expr(cond, out);
+                arena_alias_pairs(body, out);
+            }
+            Stmt::Expr(e) => arena_alias_pairs_expr(e, out),
+            Stmt::Break { .. } => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        arena_alias_pairs_expr(t, out);
+    }
+}
+
+fn arena_alias_pairs_expr(e: &Expr, out: &mut Vec<(String, String)>) {
+    match e {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Call { func, args, .. } => {
+            arena_alias_pairs_expr(func, out);
+            for a in args {
+                arena_alias_pairs_expr(a, out);
+            }
+        }
+        Expr::Lambda { body, .. } => arena_alias_pairs_expr(body, out),
+        Expr::Binary { left, right, .. } => {
+            arena_alias_pairs_expr(left, out);
+            arena_alias_pairs_expr(right, out);
+        }
+        Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => arena_alias_pairs_expr(expr, out),
+        Expr::Block(b) | Expr::On { body: b, .. } => arena_alias_pairs(b, out),
+        Expr::TensorLit { rows, .. } => {
+            for row in rows {
+                for c in row {
+                    arena_alias_pairs_expr(c, out);
+                }
+            }
+        }
+        Expr::Field { base, .. } => arena_alias_pairs_expr(base, out),
+        Expr::Match { scrutinee, arms, .. } => {
+            arena_alias_pairs_expr(scrutinee, out);
+            for arm in arms {
+                arena_alias_pairs_expr(&arm.body, out);
+            }
+        }
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            arena_alias_pairs_expr(cond, out);
+            arena_alias_pairs(then_block, out);
+            for elsif in elsifs {
+                arena_alias_pairs_expr(&elsif.cond, out);
+                arena_alias_pairs(&elsif.body, out);
+            }
+            if let Some(b) = else_block {
+                arena_alias_pairs(b, out);
+            }
+        }
+    }
+}
+
+fn export_tag(e: &Expr, strings: &StringEnv) -> Option<(i64, String)> {
+    let ty = strings.expr_type(e)?;
+    let (name, args) = match ty {
+        Type::Named { name, args, .. } | Type::Qualified { name, args, .. } => (name.as_str(), args),
+        Type::Tensor { .. } | Type::Fn { .. } => return None,
+    };
+    let _ = args;
+    match name {
+        "Int" | "Float" | "Bool" | "Unit" => None,
+        "String" => Some((1, String::new())),
+        "List" => Some((2, String::new())),
+        "Dict" => Some((3, String::new())),
+        "Bytes" => Some((4, String::new())),
+        "Tensor" | "any" => None,
+        other if strings.enums.contains_key(other) => Some((5, String::new())),
+        other => struct_desc(other, &strings.structs, &strings.enums).map(|d| (6, d)),
+    }
+}
+
+fn export_keep_args(
+    fname: &str,
+    args: &[Expr],
+    arg_names: &mut [String],
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+    strings: &StringEnv,
+) {
+    let idxs: &[usize] = match fname {
+        "list_push" => &[1],
+        "list_set" => &[2],
+        "dict_put" => &[1, 2],
+        _ => return,
+    };
+    let Some(root) = args.first().and_then(|e| match e {
+        Expr::Ident { name, .. } => Some(name.as_str()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let keep = ARENA_KEEP.with(|k| k.borrow().contains(root));
+    if !keep {
+        return;
+    }
+    let Some(owner) = arg_names.first().cloned() else {
+        return;
+    };
+    for &i in idxs {
+        if i >= args.len() || i >= arg_names.len() {
+            continue;
+        }
+        let Some((tag, desc)) = export_tag(&args[i], strings) else {
+            continue;
+        };
+        let raw = arg_names[i].clone();
+        let desc_ssa = if desc.is_empty() {
+            "0".to_string()
+        } else {
+            *counter += 1;
+            let d = format!("t{counter}");
+            instructions.push(IrInst::ConstString {
+                dest: d.clone(),
+                value: desc,
+            });
+            d
+        };
+        *counter += 1;
+        let dest = format!("t{counter}");
+        instructions.push(IrInst::Call {
+            dest: Some(dest.clone()),
+            func: "sal_arena_export".into(),
+            args: vec![owner.clone(), raw, tag.to_string(), desc_ssa],
+        });
+        arg_names[i] = dest;
+    }
+}
+
 fn lower_fn(
     f: &FnDef,
     fn_names: &HashMap<String, ()>,
@@ -618,6 +886,12 @@ fn lower_fn(
     let mut host_literals: Vec<IrHostLiteral> = Vec::new();
     let mut strings = base.clone();
     strings.seed_params(&f.params);
+    ARENA_KEEP.with(|k| {
+        k.borrow_mut().clear();
+        if f.arena {
+            *k.borrow_mut() = arena_keep_names(f);
+        }
+    });
 
     for p in &f.params {
         env.insert(p.name.clone(), p.name.clone());
@@ -701,6 +975,18 @@ fn lower_fn(
     if let Some(r) = ret {
         instructions.push(r);
     }
+    if f.arena {
+        insert_arena_leaves(&mut instructions);
+        instructions.insert(
+            0,
+            IrInst::Call {
+                dest: None,
+                func: "sal_arena_enter".into(),
+                args: vec![],
+            },
+        );
+    }
+    ARENA_KEEP.with(|k| k.borrow_mut().clear());
 
     IrFunction {
         name: f.name.clone(),
@@ -2834,6 +3120,7 @@ fn lower_expr(
                 n = maybe_box_for_any(a, n, instructions, counter, strings);
                 arg_names.push(n);
             }
+            export_keep_args(&fname, args, &mut arg_names, instructions, counter, strings);
             if let Some((param, lbody)) = strings.lambdas.get(&fname).cloned() {
                 if let Some(a) = arg_names.first() {
                     let mut lenv = env.clone();

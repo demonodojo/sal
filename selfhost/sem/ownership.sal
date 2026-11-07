@@ -824,13 +824,17 @@ fn check_ownership(tp: TProgram) -> Int ! alloc
     table = own_mode_table(tp)
     c = oc_new(tp, table)
     r = check_ownership_go(c, tp.fns, 0, list_len(tp.fns))
+    r2 = if result_is_err(r) == 1
+        r
+    else
+        check_arena(tp, c.table)
     _f = oc_free(c)
-    r
+    r2
 
 # ---- parameter modes (the mirror of `infer_param_modes` in src/ownership.rs) ----
 
 # The mode of parameter `pm` once the body has been tracked in `c` (as `infer_fn_modes` in Rust).
-fn own_param_mode(c: OC, pm: TParam) -> Int ! alloc
+fn own_param_mode(c: OC, pm: TParam, arena: Int) -> Int ! alloc
     if pm.mode != 0
         pm.mode
     elsif own_is_copy_ext(pm.ty, c.env.structs, 0) == 1
@@ -839,15 +843,17 @@ fn own_param_mode(c: OC, pm: TParam) -> Int ! alloc
         2
     elsif own_has(c.used, pm.name, 0, list_len(c.used)) == 1
         1
+    elsif arena == 1
+        1
     else
         2
 
-fn own_mode_text(c: OC, params: List[TParam], i: Int, n: Int, acc: String) -> String ! alloc
+fn own_mode_text(c: OC, params: List[TParam], i: Int, n: Int, acc: String, arena: Int) -> String ! alloc
     if i >= n
         acc
     else
-        m = own_param_mode(c, list_get(params, i))
-        own_mode_text(c, params, i + 1, n, acc + int_to_str(m))
+        m = own_param_mode(c, list_get(params, i), arena)
+        own_mode_text(c, params, i + 1, n, acc + int_to_str(m), arena)
 
 # "m" + the modes of `f` given the callee modes in `table`.
 fn infer_fn_modes(c: OC, f: TFn) -> String ! alloc
@@ -856,7 +862,7 @@ fn infer_fn_modes(c: OC, f: TFn) -> String ! alloc
     _n = own_seed_names(c, f.params, 0, list_len(f.params))
     _t = track_block(c, f.body)
     _k = own_pin_tail(c, f.body.tail)
-    own_mode_text(c, f.params, 0, list_len(f.params), d"m")
+    own_mode_text(c, f.params, 0, list_len(f.params), d"m", f.arena)
 
 # `return t` takes that parameter. Pushed here, after the walk, so a moved tail match cannot drop it.
 fn own_pin_tail(c: OC, tail: Expr) -> Int ! alloc
@@ -916,3 +922,510 @@ fn own_mode_table(tp: TProgram) -> HT ! alloc
     table = HT.new(list_len(tp.fns))
     _a = own_table_explicit(table, tp.fns, 0, list_len(tp.fns))
     own_table_fix(tp, table, 0)
+
+# ---- @arena: parameters are read-only, except `keep` ----
+
+fn ar_zeros(n: Int, acc: String) -> String ! alloc
+    if n <= 0
+        acc
+    else
+        ar_zeros(n - 1, acc + "0")
+
+fn ar_seed(fns: List[TFn], i: Int, n: Int, muts: HT) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        _p = muts.put(f.name, ar_zeros(list_len(f.params), d""))
+        ar_seed(fns, i + 1, n, muts)
+
+fn ar_bit(text: String, i: Int) -> Int ! alloc
+    if i < 0
+        0
+    elsif i >= str_len(text)
+        0
+    elsif str_char(text, i) == 49
+        1
+    else
+        0
+
+fn ar_set_bit_go(text: String, i: Int, at: Int, n: Int, acc: String) -> String ! alloc
+    if at >= n
+        acc
+    elsif at == i
+        ar_set_bit_go(text, i, at + 1, n, acc + "1")
+    else
+        ar_set_bit_go(text, i, at + 1, n, acc + char_to_str(str_char(text, at)))
+
+fn ar_mark(text: String, i: Int) -> String ! alloc
+    if ar_bit(text, i) == 1
+        text
+    elsif i < 0
+        text
+    else
+        ar_set_bit_go(text, i, 0, str_len(text), d"")
+
+fn ar_mode_at(table: HT, fname: String, i: Int) -> Int ! alloc
+    text = table.get(fname)
+    if i + 1 >= str_len(text)
+        0
+    else
+        str_char(text, i + 1) - 48
+
+fn ar_mut_at(muts: HT, fname: String, i: Int) -> Int ! alloc
+    ar_bit(muts.get(fname), i)
+
+fn ar_idx(params: List[TParam], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        -1
+    elsif str_eq(list_get(params, i).name, name) == 1
+        i
+    else
+        ar_idx(params, name, i + 1, n)
+
+fn ar_root(names: List[String], roots: List[String], name: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        d""
+    elsif str_eq(list_get(names, i), name) == 1
+        list_get(roots, i)
+    else
+        ar_root(names, roots, name, i + 1, n)
+
+fn ar_param_of(f: TFn, names: List[String], roots: List[String], e: Expr) -> Int ! alloc
+    match e
+        XIdent(name) =>
+            root = ar_root(names, roots, name, 0, list_len(names))
+            if str_len(root) == 0
+                -1
+            else
+                ar_idx(f.params, root, 0, list_len(f.params))
+        _ => -1
+
+fn ar_mut_builtin(name: String) -> Int ! alloc
+    if str_eq(name, d"list_push") == 1
+        1
+    elsif str_eq(name, d"list_set") == 1
+        1
+    elsif str_eq(name, d"list_pop") == 1
+        1
+    elsif str_eq(name, d"dict_put") == 1
+        1
+    elsif str_eq(name, d"dict_remove") == 1
+        1
+    elsif str_eq(name, d"str_append") == 1
+        1
+    elsif str_eq(name, d"bytes_set_u8") == 1
+        1
+    elsif str_eq(name, d"bytes_set_u32") == 1
+        1
+    elsif str_eq(name, d"bytes_fill") == 1
+        1
+    elsif str_eq(name, d"bytes_fill_u32") == 1
+        1
+    elsif str_eq(name, d"bytes_copy") == 1
+        1
+    else
+        0
+
+fn ar_apply(name: String, args: List[Expr], f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    flags1 = if ar_mut_builtin(name) == 1
+        if list_len(args) == 0
+            flags
+        else
+            ar_mark(flags, ar_param_of(f, names, roots, list_get(args, 0)))
+    else
+        flags
+    if str_len(table.get(name)) == 0
+        flags1
+    else
+        ar_apply_args(name, args, 0, list_len(args), f, names, roots, table, muts, flags1)
+
+fn ar_apply_args(name: String, args: List[Expr], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    if i >= n
+        flags
+    else
+        src = ar_param_of(f, names, roots, list_get(args, i))
+        mode = ar_mode_at(table, name, i)
+        dest_mut = ar_mut_at(muts, name, i)
+        flags2 = if src < 0
+            flags
+        elsif mode == 2
+            ar_mark(flags, src)
+        elsif mode == 3
+            ar_mark(flags, src)
+        elsif dest_mut == 1
+            ar_mark(flags, src)
+        else
+            flags
+        ar_apply_args(name, args, i + 1, n, f, names, roots, table, muts, flags2)
+
+fn ar_args(args: List[Expr], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    if i >= n
+        flags
+    else
+        flags2 = ar_expr(list_get(args, i), f, names, roots, table, muts, flags)
+        ar_args(args, i + 1, n, f, names, roots, table, muts, flags2)
+
+fn ar_elsifs(xs: List[TElsif], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    if i >= n
+        flags
+    else
+        el = list_get(xs, i)
+        flags2 = ar_expr(el.cond, f, names, roots, table, muts, flags)
+        flags3 = ar_block(el.body, f, names, roots, table, muts, flags2)
+        ar_elsifs(xs, i + 1, n, f, names, roots, table, muts, flags3)
+
+fn ar_arms(xs: List[TArm], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    if i >= n
+        flags
+    else
+        arm = list_get(xs, i)
+        flags2 = ar_expr(arm.body, f, names, roots, table, muts, flags)
+        flags3 = if arm.has_suite == 1
+            ar_block(arm.suite, f, names, roots, table, muts, flags2)
+        else
+            flags2
+        ar_arms(xs, i + 1, n, f, names, roots, table, muts, flags3)
+
+fn ar_expr(e: Expr, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    match e
+        XCall(name, args, _t, _p) =>
+            flags2 = ar_args(args, 0, list_len(args), f, names, roots, table, muts, flags)
+            ar_apply(name, args, f, names, roots, table, muts, flags2)
+        XBin(_op, l, r) =>
+            flags2 = ar_expr(l, f, names, roots, table, muts, flags)
+            ar_expr(r, f, names, roots, table, muts, flags2)
+        XUnary(_op, inner) => ar_expr(inner, f, names, roots, table, muts, flags)
+        XTo(_p, inner) => ar_expr(inner, f, names, roots, table, muts, flags)
+        XTry(inner) => ar_expr(inner, f, names, roots, table, muts, flags)
+        XField(base, _field) => ar_expr(base, f, names, roots, table, muts, flags)
+        XLambda(_param, body) => ar_expr(body, f, names, roots, table, muts, flags)
+        XIf(cond, th, el, _h, els) =>
+            flags2 = ar_expr(cond, f, names, roots, table, muts, flags)
+            flags3 = ar_block(th, f, names, roots, table, muts, flags2)
+            flags4 = ar_block(el, f, names, roots, table, muts, flags3)
+            ar_elsifs(els, 0, list_len(els), f, names, roots, table, muts, flags4)
+        XWhile(cond, body) =>
+            flags2 = ar_expr(cond, f, names, roots, table, muts, flags)
+            ar_block(body, f, names, roots, table, muts, flags2)
+        XOn(_place, body, _k, _i) => ar_block(body, f, names, roots, table, muts, flags)
+        XMatch(sc, arms) =>
+            flags2 = ar_expr(sc, f, names, roots, table, muts, flags)
+            ar_arms(arms, 0, list_len(arms), f, names, roots, table, muts, flags2)
+        _ => flags
+
+fn ar_note(st: TStmt, names: List[String], roots: List[String]) -> Int ! alloc
+    if st.kind != 1
+        0
+    else
+        match st.expr
+            XIdent(rhs) =>
+                root = ar_root(names, roots, rhs, 0, list_len(names))
+                if str_len(root) == 0
+                    0
+                else
+                    _a = list_push(names, st.name)
+                    _b = list_push(roots, root)
+                    0
+            _ => 0
+
+fn ar_stmts(xs: List[TStmt], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    if i >= n
+        flags
+    else
+        st = list_get(xs, i)
+        _n = ar_note(st, names, roots)
+        flags2 = ar_expr(st.expr, f, names, roots, table, muts, flags)
+        flags3 = if st.kind == 3
+            ar_expr(st.target, f, names, roots, table, muts, flags2)
+        else
+            flags2
+        ar_stmts(xs, i + 1, n, f, names, roots, table, muts, flags3)
+
+fn ar_block(b: TBlock, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT, flags: String) -> String ! alloc
+    flags2 = ar_stmts(b.stmts, 0, list_len(b.stmts), f, names, roots, table, muts, flags)
+    ar_expr(b.tail, f, names, roots, table, muts, flags2)
+
+fn ar_seed_alias(params: List[TParam], i: Int, n: Int, names: List[String], roots: List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = list_get(params, i)
+        _a = list_push(names, strdup(pm.name))
+        _b = list_push(roots, strdup(pm.name))
+        ar_seed_alias(params, i + 1, n, names, roots)
+
+fn ar_fn_flags(f: TFn, table: HT, muts: HT) -> String ! alloc
+    names = list_new[String]()
+    roots = list_new[String]()
+    _s = ar_seed_alias(f.params, 0, list_len(f.params), names, roots)
+    flags = ar_block(f.body, f, names, roots, table, muts, ar_zeros(list_len(f.params), d""))
+    _a = list_free(names)
+    _b = list_free(roots)
+    flags
+
+fn ar_round(fns: List[TFn], i: Int, n: Int, table: HT, muts: HT, changed: Int) -> Int ! alloc
+    if i >= n
+        changed
+    else
+        f = list_get(fns, i)
+        text = ar_fn_flags(f, table, muts)
+        old = muts.get(f.name)
+        ch = if str_eq(old, text) == 1
+            changed
+        else
+            _p = muts.put(f.name, text)
+            1
+        ar_round(fns, i + 1, n, table, muts, ch)
+
+fn ar_fix(tp: TProgram, table: HT, muts: HT, nleft: Int) -> Int ! alloc
+    if nleft <= 0
+        0
+    else
+        changed = ar_round(tp.fns, 0, list_len(tp.fns), table, muts, 0)
+        if changed == 0
+            0
+        else
+            ar_fix(tp, table, muts, nleft - 1)
+
+fn ar_keep_bad(name: String, args: List[Expr], f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    if str_len(table.get(name)) == 0
+        d""
+    else
+        ar_keep_args(name, args, 0, list_len(args), f, names, roots, table, muts)
+
+fn ar_keep_args(name: String, args: List[Expr], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    if i >= n
+        d""
+    else
+        src = ar_param_of(f, names, roots, list_get(args, i))
+        mode = ar_mode_at(table, name, i)
+        dest_mut = ar_mut_at(muts, name, i)
+        if src < 0
+            ar_keep_args(name, args, i + 1, n, f, names, roots, table, muts)
+        elsif list_get(f.params, src).mode != 3
+            ar_keep_args(name, args, i + 1, n, f, names, roots, table, muts)
+        elsif mode == 2
+            "keep parameter `" + list_get(f.params, src).name + "` cannot be passed here"
+        elsif dest_mut == 1
+            if mode == 3
+                ar_keep_args(name, args, i + 1, n, f, names, roots, table, muts)
+            else
+                "keep parameter `" + list_get(f.params, src).name + "` cannot be passed here"
+        else
+            ar_keep_args(name, args, i + 1, n, f, names, roots, table, muts)
+
+fn ar_store_bad(name: String, args: List[Expr], f: TFn, names: List[String], roots: List[String]) -> String ! alloc
+    if str_eq(name, d"list_push") + str_eq(name, d"list_set") + str_eq(name, d"dict_put") == 0
+        d""
+    elsif list_len(args) == 0
+        d""
+    else
+        src = ar_param_of(f, names, roots, list_get(args, 0))
+        if src < 0
+            d""
+        elsif list_get(f.params, src).mode != 3
+            d""
+        else
+            ar_store_args(args, 1, list_len(args))
+
+fn ar_store_args(args: List[Expr], i: Int, n: Int) -> String ! alloc
+    if i >= n
+        d""
+    else
+        e = list_get(args, i)
+        match e
+            XTensor(_r, _c, _d) => d"@arena keep cannot store this value"
+            XCall(name, _a, _t, _p) =>
+                if str_eq(name, d"load") == 1
+                    d"@arena keep cannot store this value"
+                else
+                    ar_store_args(args, i + 1, n)
+            _ => ar_store_args(args, i + 1, n)
+
+fn ar_err_expr(e: Expr, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    match e
+        XCall(name, args, _t, _p) =>
+            msg = ar_err_args(args, 0, list_len(args), f, names, roots, table, muts)
+            if str_len(msg) > 0
+                msg
+            else
+                bad = ar_keep_bad(name, args, f, names, roots, table, muts)
+                if str_len(bad) > 0
+                    bad
+                else
+                    ar_store_bad(name, args, f, names, roots)
+        XBin(_op, l, r) =>
+            msg = ar_err_expr(l, f, names, roots, table, muts)
+            if str_len(msg) > 0
+                msg
+            else
+                ar_err_expr(r, f, names, roots, table, muts)
+        XUnary(_op, inner) => ar_err_expr(inner, f, names, roots, table, muts)
+        XTo(_p, inner) => ar_err_expr(inner, f, names, roots, table, muts)
+        XTry(inner) => ar_err_expr(inner, f, names, roots, table, muts)
+        XField(base, _field) => ar_err_expr(base, f, names, roots, table, muts)
+        XLambda(_param, body) => ar_err_expr(body, f, names, roots, table, muts)
+        XIf(cond, th, el, _h, els) =>
+            msg = ar_err_expr(cond, f, names, roots, table, muts)
+            if str_len(msg) > 0
+                msg
+            else
+                msg2 = ar_err_block(th, f, names, roots, table, muts)
+                if str_len(msg2) > 0
+                    msg2
+                else
+                    msg3 = ar_err_block(el, f, names, roots, table, muts)
+                    if str_len(msg3) > 0
+                        msg3
+                    else
+                        ar_err_elsifs(els, 0, list_len(els), f, names, roots, table, muts)
+        XWhile(cond, body) =>
+            msg = ar_err_expr(cond, f, names, roots, table, muts)
+            if str_len(msg) > 0
+                msg
+            else
+                ar_err_block(body, f, names, roots, table, muts)
+        XOn(_place, body, _k, _i) => ar_err_block(body, f, names, roots, table, muts)
+        XMatch(sc, arms) =>
+            msg = ar_err_expr(sc, f, names, roots, table, muts)
+            if str_len(msg) > 0
+                msg
+            else
+                ar_err_arms(arms, 0, list_len(arms), f, names, roots, table, muts)
+        _ => d""
+
+fn ar_err_args(args: List[Expr], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    if i >= n
+        d""
+    else
+        msg = ar_err_expr(list_get(args, i), f, names, roots, table, muts)
+        if str_len(msg) > 0
+            msg
+        else
+            ar_err_args(args, i + 1, n, f, names, roots, table, muts)
+
+fn ar_err_elsifs(xs: List[TElsif], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    if i >= n
+        d""
+    else
+        el = list_get(xs, i)
+        msg = ar_err_expr(el.cond, f, names, roots, table, muts)
+        if str_len(msg) > 0
+            msg
+        else
+            msg2 = ar_err_block(el.body, f, names, roots, table, muts)
+            if str_len(msg2) > 0
+                msg2
+            else
+                ar_err_elsifs(xs, i + 1, n, f, names, roots, table, muts)
+
+fn ar_err_arms(xs: List[TArm], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    if i >= n
+        d""
+    else
+        arm = list_get(xs, i)
+        msg = ar_err_expr(arm.body, f, names, roots, table, muts)
+        if str_len(msg) > 0
+            msg
+        else
+            msg2 = if arm.has_suite == 1
+                ar_err_block(arm.suite, f, names, roots, table, muts)
+            else
+                d""
+            if str_len(msg2) > 0
+                msg2
+            else
+                ar_err_arms(xs, i + 1, n, f, names, roots, table, muts)
+
+fn ar_err_stmts(xs: List[TStmt], i: Int, n: Int, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    if i >= n
+        d""
+    else
+        st = list_get(xs, i)
+        _n = ar_note(st, names, roots)
+        msg = ar_err_expr(st.expr, f, names, roots, table, muts)
+        if str_len(msg) > 0
+            msg
+        else
+            msg2 = if st.kind == 3
+                ar_err_expr(st.target, f, names, roots, table, muts)
+            else
+                d""
+            if str_len(msg2) > 0
+                msg2
+            else
+                ar_err_stmts(xs, i + 1, n, f, names, roots, table, muts)
+
+fn ar_err_block(b: TBlock, f: TFn, names: List[String], roots: List[String], table: HT, muts: HT) -> String ! alloc
+    msg = ar_err_stmts(b.stmts, 0, list_len(b.stmts), f, names, roots, table, muts)
+    if str_len(msg) > 0
+        msg
+    else
+        ar_err_expr(b.tail, f, names, roots, table, muts)
+
+fn ar_fn_err(f: TFn, table: HT, muts: HT) -> String ! alloc
+    msg = ar_param_err(f, table, muts.get(f.name), 0, list_len(f.params))
+    if str_len(msg) > 0
+        msg
+    else
+        names = list_new[String]()
+        roots = list_new[String]()
+        _s = ar_seed_alias(f.params, 0, list_len(f.params), names, roots)
+        bad = ar_err_block(f.body, f, names, roots, table, muts)
+        _a = list_free(names)
+        _b = list_free(roots)
+        bad
+
+fn ar_param_err(f: TFn, table: HT, flags: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        d""
+    else
+        pm = list_get(f.params, i)
+        mode = ar_mode_at(table, f.name, i)
+        if pm.mode == 3
+            ar_param_err(f, table, flags, i + 1, n)
+        elsif ar_bit(flags, i) == 1
+            "@arena parameter `" + pm.name + "` is read-only"
+        elsif mode == 2
+            "@arena parameter `" + pm.name + "` is read-only"
+        else
+            ar_param_err(f, table, flags, i + 1, n)
+
+fn ar_report(fns: List[TFn], i: Int, n: Int, table: HT, muts: HT) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        f = list_get(fns, i)
+        if f.arena == 0
+            ar_report(fns, i + 1, n, table, muts)
+        else
+            msg = ar_fn_err(f, table, muts)
+            if str_len(msg) > 0
+                result_err_str(msg)
+            else
+                ar_report(fns, i + 1, n, table, muts)
+
+# The mutates fixpoint copies nothing it needs when no function is `@arena`.
+# Running it on the compiler itself (thousands of functions) exhausts memory.
+fn ar_any(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif list_get(fns, i).arena == 1
+        1
+    else
+        ar_any(fns, i + 1, n)
+
+fn check_arena(tp: TProgram, table: HT) -> Int ! alloc
+    if ar_any(tp.fns, 0, list_len(tp.fns)) == 0
+        result_ok(0)
+    else
+        check_arena_go(tp, table)
+
+fn check_arena_go(tp: TProgram, table: HT) -> Int ! alloc
+    muts = HT.new(list_len(tp.fns))
+    _z = ar_seed(tp.fns, 0, list_len(tp.fns), muts)
+    _r = ar_fix(tp, table, muts, list_len(tp.fns) + 1)
+    r = ar_report(tp.fns, 0, list_len(tp.fns), table, muts)
+    _f = muts.free()
+    r

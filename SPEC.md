@@ -93,6 +93,7 @@ param_list   → param_list "," param
 param        → IDENT ":" type param_mode
 param_mode   → "borrow"
              | "take"
+             | "keep"
              | ε
 effect_clause → "!" effect_list
               | ε
@@ -275,13 +276,14 @@ El árbol es `Binary(Sub, Binary(Sub, 1, 2), 3)`.
 
 ### Atributos
 
-El arranque admite cinco atributos, cada uno en un solo sitio. Pueden ir en líneas propias antes del item o del `let`. Cualquier otro nombre, un atributo en otro sitio, un argumento que no sea el indicado o un `@` suelto es `E_PARSE`.
+El arranque admite seis atributos, cada uno en un solo sitio. Pueden ir en líneas propias antes del item o del `let`. Cualquier otro nombre, un atributo en otro sitio, un argumento que no sea el indicado o un `@` suelto es `E_PARSE`.
 
 | Atributo | Va delante de | Regla (la violación es `E_TYPE`) |
 |----------|---------------|----------------------------------|
 | `@frozen` | `let` | El binding no se reasigna |
 | `@stack` | `let` | El tipo es de stack y construirlo no asigna |
 | `@no_heap` | `fn` | La función no asigna, no recibe ni devuelve un tipo de heap y no tiene `let` de heap |
+| `@arena` | `fn`, `method`, `static`, `init` | El retorno es de stack. Los parámetros solo se leen, salvo un `keep` (`List` o `Dict`): lo que se guarda ahí se copia al asignador de ese contenedor. Junto con `@no_heap` es `E_TYPE`. Sigue haciendo falta `! alloc` si el cuerpo asigna |
 | `@layout(c)` | `struct` | Los campos son solo `Int`, `Float` o `Bool`; `@layout(otro)` es `E_PARSE` |
 | `@deprecated("texto")` | `fn`, `method`, `struct`, `enum` | No es error: cada uso del item emite el aviso `W_DEPRECATED` con el texto y la compilación sigue. El argumento es una cadena; sin ella es `E_PARSE` |
 
@@ -297,7 +299,7 @@ No forman parte del arranque. El parser que las ve emite `E_PARSE` hasta su fase
 parallel_expr → "parallel" suite
 ```
 
-`@resource`, `@shared`, `@arena`, `@copy`, `@unique` y `@no_gc` usan `attr` pero no están admitidos.
+`@resource`, `@shared`, `@copy`, `@unique` y `@no_gc` usan `attr` pero no están admitidos.
 
 ## Tipos
 
@@ -329,7 +331,7 @@ Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos
 
 ### Métodos
 
-`method Tipo.nombre(params) -> R ! efectos` define una función `Tipo__nombre` cuyo primer parámetro es `self: Tipo`, implícito. `method` es contextual: solo es palabra clave al inicio de un item (`method` sigue valiendo como nombre de parámetro o variable). `self` no es palabra clave: es el identificador del primer parámetro, y un `self` en otro sitio es un nombre normal. El modo de `self` sale del cuerpo, como el de cualquier parámetro, salvo que se escriba: `method T.m(self take, k: Int)` o `self borrow` (`self` sin tipo; `self: T` es `E_PARSE`). Los atributos de `fn` valen delante de `method` (`@no_heap`).
+`method Tipo.nombre(params) -> R ! efectos` define una función `Tipo__nombre` cuyo primer parámetro es `self: Tipo`, implícito. `method` es contextual: solo es palabra clave al inicio de un item (`method` sigue valiendo como nombre de parámetro o variable). `self` no es palabra clave: es el identificador del primer parámetro, y un `self` en otro sitio es un nombre normal. El modo de `self` sale del cuerpo, como el de cualquier parámetro, salvo que se escriba: `method T.m(self take, k: Int)` o `self borrow` (`self` sin tipo; `self: T` es `E_PARSE`). Los atributos de `fn` valen delante de `method`, `static` e `init` (`@no_heap`, `@arena`). `self keep` sigue la regla de `keep`: solo en `@arena` y solo si el receptor es `List` o `Dict`.
 
 `expr.nombre(args)` es una llamada de método cuando `expr` no es un calificador de módulo. El compilador la resuelve por el tipo inferido de `expr` (un tipo nominal `T`) y la baja a `T__nombre(expr, args)`; no hay dispatch dinámico. `self` es un valor como cualquier `struct`: `self.x = v` solo cambia la copia, y un método que «muta» devuelve el valor nuevo.
 
@@ -390,8 +392,15 @@ Ruta inexistente, choque de nombre entre importados aplanados o con items locale
 - Move por defecto; copy solo tipos triviales.
 - Préstamo solo en argumento de llamada. En `p.m(…)`, `p` es el primer argumento: se presta o se mueve según el modo de `self`.
 - Un valor con dueño (`String`, `List`, `Dict`, enum, tensor, struct con algún campo que no sea Copy) se mueve al ligarlo a otro nombre, devolverlo, enviarlo con `to`, pasarlo a un parámetro `take`, guardarlo con `list_push`/`list_set`/`dict_put` (el valor, no el contenedor) o usarlo como argumento de un constructor de struct o de variante. Usarlo después es `E_MOVED`. El modo de cada parámetro sale del cuerpo y es interprocedural: una función que pasa su parámetro a una posición `take` de otra también lo toma. Los tipos que decide el pase salen de la inferencia (el resultado de una llamada, un campo o un `match` ya no se trata como Copy). El valor de cola de una rama de `if` no se mueve por sí mismo. El constructor de un `frame` no mueve sus columnas. Leer por valor un campo que no es Copy (`n = p.name`) mueve ese campo: `p.name` y `p` entero pasan a `E_MOVED`, pero los demás campos siguen usables, y `p.name = v` lo repone (solo con `p` local como base directa). Un local que se mueve solo en algunas ramas se suelta al final detrás de una bandera de drop (`__live_x`) que se baja justo después de la sentencia que lo mueve; si se mueve en un bucle más interno que su declaración, o en una cola de bloque, `match` o `on`, no se suelta (fuga, nunca doble liberación). Un `String` fresco que se pasa directo a un builtin que solo lo lee (`str_len`, `str_eq`, `str_slice`, `print_str`…) es un temporal: se liga a un local anterior a la sentencia y se suelta al final del ámbito. Una `List[S]` local de un struct plano (de 2 a 20 campos `Int`, `Float`, `Bool` o `String`) se suelta, con sus elementos, cuando todo lo que se le guarda es un constructor `S(…)` cuyos `String` son frescos; `list_get` sobre ella devuelve una copia (los `String` se duplican) y `list_set` suelta el elemento viejo.
-- Atributos admitidos: `@frozen`, `@stack`, `@no_heap`, `@layout(c)` (ver Atributos). `@resource` y el resto, reservados.
+- Atributos admitidos: `@frozen`, `@stack`, `@no_heap`, `@arena`, `@layout(c)` (ver Atributos). `@resource` y el resto, reservados.
+- `keep`, al lado de `borrow` y `take`, solo es válido en un parámetro `List` o `Dict` de una función `@arena`. En otra función, o sobre otro tipo, es `E_TYPE`. Es la única escritura permitida sobre un parámetro de `@arena`. Pasarlo a otro `keep` está permitido; pasarlo a una posición `take` o mutadora que no sea `keep` es `E_TYPE`.
 - Un `struct` es un valor: asignar un campo en una copia o dentro de una función llamada no cambia el original.
+
+### Funciones `@arena`
+
+Durante la llamada, el heap del host (`String`, `List`, `Dict`, `Bytes`, cajas de enum y de struct) sale de páginas de 64 KiB de una región por hilo. Una `@arena` anidada o recursiva apila otra región; un llamado sin `@arena` usa la región que haya activa. Al salir se descartan todas las páginas de esa región, después de los `free` que inserta el compilador: un `free` de un puntero interior es un no-op. El retorno es de stack (`Int`, `Float`, `Bool`, `Unit` o un struct cuyos campos lo son). Devolver heap es `E_TYPE`. Un parámetro que no es `keep` solo se lee: mutarlo, o pasarlo a una posición que muta o que es `take`, es `E_TYPE`. Los locales de heap sí se crean y se mutan: mueren con las páginas.
+
+Lo que se guarda en un `keep` (`put`, `push`, `set`, también a través de un alias) se copia en profundidad al asignador que ya posee ese contenedor: la región en cuya página cae su puntero, o el `malloc` del sistema si no cae en ninguna. La copia de la región se abandona y muere con las páginas. El crecimiento del propio contenedor reserva en ese mismo asignador. Leer la caché (`dict_get`, `list_get`) copia hacia la región actual y esa copia muere con la llamada. La copia cubre `String`, `List`, `Dict`, `Bytes`, enum y struct describible; un `Tensor` o un struct sin copia es `E_TYPE`. gpu y tpu no entran en las páginas: su `free` sigue siendo el de su lugar. Un pánico puede no ejecutar el descarte: la fuga de esas páginas es aceptable; un uso tras liberar no. `sal_region_begin` / `sal_region_end` (la región fusionada de tensores) es otro mecanismo y no cambia.
 
 ### Liberación de locales
 

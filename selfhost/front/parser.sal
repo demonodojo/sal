@@ -200,6 +200,8 @@ fn parse_type_text_ident(pr: Parser, depth: Int, acc: String, t: Int) -> String 
 fn type_text_is_mode(tx: String) -> Int ! alloc
     if str_eq(tx, "borrow") == 1
         1
+    elsif str_eq(tx, "keep") == 1
+        1
     else
         str_eq(tx, "take")
 
@@ -1181,6 +1183,9 @@ fn parse_param_mode(pr: Parser) -> Int ! alloc
         elsif str_eq(tok_text(pr, t), "take") == 1
             _b = p_advance(pr)
             2
+        elsif str_eq(tok_text(pr, t), "keep") == 1
+            _k = p_advance(pr)
+            3
         else
             0
     else
@@ -1216,7 +1221,7 @@ fn parse_struct_fields(pr: Parser, fields: List[TField]) -> List[TField] ! alloc
         _e = p_set_err(pr, d"parse error: expected struct field")
         fields
 
-# The bits of the attributes in front of an item: 1 @no_heap, 2 @layout(c), 4 @deprecated("…").
+# The bits of the attributes in front of an item: 1 @no_heap, 2 @layout(c), 4 @deprecated("…"), 8 @arena.
 # The message of @deprecated goes to `pr.dep`; -1 is an error (already set).
 fn parse_item_attrs(pr: Parser, bits: Int) -> Int ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_AT()
@@ -1271,6 +1276,8 @@ fn parse_item_attr_one(pr: Parser) -> Int ! alloc
                         2
         elsif str_eq(name, d"deprecated") == 1
             parse_deprecated_arg(pr)
+        elsif str_eq(name, d"arena") == 1
+            8
         elsif str_eq(name, d"shared") == 1
             _e = p_set_err(pr, d"parse error: attribute @shared is not in this version")
             -1
@@ -1513,10 +1520,10 @@ fn parse_fn(pr: Parser, no_heap: Int) -> TFn ! alloc
         _f = p_skip_nls(pr)
         _g = p_accept(pr, TK_INDENT())
         body = parse_block_after_indent(pr)
-        TFn(name, params, body, ret, no_heap, fx, tparams, d"", 0, d"", tyat_since(pr, start))
+        TFn(name, params, body, ret, no_heap, 0, fx, tparams, d"", 0, d"", tyat_since(pr, start))
     else
         _e = p_set_err(pr, d"parse error: expected function name")
-        TFn(d"_bad", list_new[TParam](), empty_block(), d"", 0, fx_list_new(), list_new[String](), d"", 0, d"", d"")
+        TFn(d"_bad", list_new[TParam](), empty_block(), d"", 0, 0, fx_list_new(), list_new[String](), d"", 0, d"", d"")
 
 # 1 `method`, 2 `static`, 3 `init` when the next token starts such an item and an identifier follows.
 fn parse_method_kw(pr: Parser) -> Int ! alloc
@@ -1533,7 +1540,7 @@ fn parse_method_kw(pr: Parser) -> Int ! alloc
         0
 
 fn method_bad() -> TFn ! alloc
-    TFn(d"_bad", list_new[TParam](), empty_block(), d"", 0, fx_list_new(), list_new[String](), d"", 0, d"", d"")
+    TFn(d"_bad", list_new[TParam](), empty_block(), d"", 0, 0, fx_list_new(), list_new[String](), d"", 0, d"", d"")
 
 # `method T.name(self, params) -> R`, `static T.name(params) -> R` and `init T(params) ! fx`: a function
 # `T__name` (`T__new` for `init`, which returns a `T`); a method takes `self: T` first.
@@ -1574,7 +1581,7 @@ fn parse_method_sig(pr: Parser, mk: Int, recv: String, name: String, tparams: Li
     _f = p_skip_nls(pr)
     _g = p_accept(pr, TK_INDENT())
     body = parse_block_after_indent(pr)
-    TFn(recv + "__" + name, params, body, ret, 0, fx, tparams, recv, mk, d"", tyat_since(pr, start))
+    TFn(recv + "__" + name, params, body, ret, 0, 0, fx, tparams, recv, mk, d"", tyat_since(pr, start))
 
 fn parse_method_ret(pr: Parser, mk: Int, recv: String) -> String ! alloc
     if mk == 3
@@ -1619,6 +1626,8 @@ fn parse_self_follows(pr: Parser, t: Int) -> Int ! alloc
         if str_eq(tok_text(pr, t), d"take") == 1
             1
         elsif str_eq(tok_text(pr, t), d"borrow") == 1
+            1
+        elsif str_eq(tok_text(pr, t), d"keep") == 1
             1
         else
             0
@@ -1685,28 +1694,29 @@ fn parse_attributed_item(pr: Parser, it: Items, bits: Int) -> Int ! alloc
     dep = take_dep(pr)
     nh = item_attr_has(bits, 1)
     lay = item_attr_has(bits, 2)
+    ar = item_attr_has(bits, 8)
     k = tok_kind(pr, p_peek(pr))
     if k == TK_FN()
         if lay == 1
             attr_not_here(pr)
         else
-            _c = list_push(it.fns, fn_with_attrs(parse_fn(pr, nh), nh, dep))
+            _c = list_push(it.fns, fn_with_attrs(parse_fn(pr, nh), nh, dep, ar))
             parse_program_go(pr, it)
     elsif k == TK_STRUCT()
-        if nh == 1
+        if nh + ar > 0
             attr_not_here(pr)
         else
             _s = list_push(it.structs, struct_with_dep(parse_struct(pr, lay), dep))
             parse_program_go(pr, it)
     elsif k == TK_ENUM()
-        if nh + lay > 0
+        if nh + lay + ar > 0
             attr_not_here(pr)
         else
             _s = list_push(it.enums, enum_with_dep(parse_enum(pr), dep))
             parse_program_go(pr, it)
     elsif k == TK_IDENT()
         if str_eq(tok_text(pr, p_peek(pr)), d"protocol") == 1
-            if nh + lay > 0
+            if nh + lay + ar > 0
                 attr_not_here(pr)
             else
                 _p = list_push(it.protocols, parse_protocol(pr))
@@ -1715,7 +1725,7 @@ fn parse_attributed_item(pr: Parser, it: Items, bits: Int) -> Int ! alloc
             if lay == 1
                 attr_not_here(pr)
             else
-                _m = list_push(it.fns, fn_with_attrs(parse_method_item(pr, parse_method_kw(pr)), nh, dep))
+                _m = list_push(it.fns, fn_with_attrs(parse_method_item(pr, parse_method_kw(pr)), nh, dep, ar))
                 parse_program_go(pr, it)
         else
             attr_not_here(pr)
@@ -1723,8 +1733,8 @@ fn parse_attributed_item(pr: Parser, it: Items, bits: Int) -> Int ! alloc
         attr_not_here(pr)
 
 # The item with its attributes: `nh` is @no_heap, `dep` the "d:" message ("" when none).
-fn fn_with_attrs(f: TFn, nh: Int, dep: String) -> TFn ! alloc
-    TFn(f.name, f.params, f.body, f.ret, nh, f.fx, f.tparams, f.recv, f.mkind, dep, f.tyat)
+fn fn_with_attrs(f: TFn, nh: Int, dep: String, ar: Int) -> TFn ! alloc
+    TFn(f.name, f.params, f.body, f.ret, nh, ar, f.fx, f.tparams, f.recv, f.mkind, dep, f.tyat)
 
 fn struct_with_dep(s: TStruct, dep: String) -> TStruct ! alloc
     TStruct(s.name, s.fields, s.layout_c, s.tparams, s.is_frame, s.protocols, dep, s.tyat)

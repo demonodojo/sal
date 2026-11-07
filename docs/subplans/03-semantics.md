@@ -105,6 +105,12 @@ El cuerpo no puede hacer un efecto que la firma no declara (`E_EFFECT`).
 
 `on tpu kernel` es `E_DEVICE`. Un tensor cuyo lugar no es el del `on` que lo usa, y que no es un escalar `copy` pasado por valor, es `E_PLACE`.
 
+## `@arena` y `keep`
+
+`src/attrs.rs` (`check_arena_fns`) rechaza el retorno de heap y `@arena` junto con `@no_heap` (`E_TYPE`). `src/ownership.rs` infiere el modo y, en una función `@arena`, un parámetro que no es `keep` no puede mutarse ni cederse: el punto fijo de «esta posición muta» es el de los parámetros de solo lectura (empieza en falso y crece; un builtin de contenedor o una posición `take`, `keep` o ya mutadora marca el argumento). El mensaje es `@arena parameter \`x\` is read-only`. Un parámetro sin usar pasa a `borrow`, no a `take`, para no liberar el valor del llamador.
+
+`keep` solo en `@arena` y solo sobre `List` o `Dict` (`keep parameter requires @arena`, `keep parameter \`x\` must be a List or Dict`). Pasarlo a una posición `take` o mutadora que no sea `keep` es `E_TYPE`. Guardar un `Tensor` o un struct sin copia es `E_TYPE`. El selfhost hace el mismo corte en `selfhost/sem/attrs.sal` y `selfhost/sem/ownership.sal`.
+
 ## Hecho cuando
 
 `tests/semantics.rs` falla con el código exacto:

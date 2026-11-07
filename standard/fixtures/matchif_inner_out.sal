@@ -1,0 +1,13 @@
+fn outer(n: Int, m: Int) -> Int
+    if n == 1
+        match m
+            1 => 10
+            2 => 20
+            _ => 0
+    elsif n == 2
+        30
+    else
+        0
+
+fn main() -> Int
+    outer(1, 1)

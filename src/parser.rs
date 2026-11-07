@@ -91,7 +91,7 @@ impl Parser {
                     }
                     self.expect(TokenKind::RParen, "expected ) after @layout(c")?;
                 }
-                "frozen" | "stack" | "no_heap" => {}
+                "frozen" | "stack" | "no_heap" | "arena" => {}
                 "deprecated" => {
                     self.expect(TokenKind::LParen, "expected (\"message\") after @deprecated")?;
                     let TokenKind::String(msg) = self.peek().kind.clone() else {
@@ -136,8 +136,9 @@ impl Parser {
             let deprecated = self.deprecated.take();
             return match self.parse_item()? {
                 Item::Fn(mut f) => {
-                    Self::reject_attrs(&attrs, &["no_heap", "deprecated"])?;
+                    Self::reject_attrs(&attrs, &["no_heap", "deprecated", "arena"])?;
                     f.no_heap = attrs.iter().any(|(n, _)| n == "no_heap");
+                    f.arena = attrs.iter().any(|(n, _)| n == "arena");
                     f.deprecated = deprecated;
                     Ok(Item::Fn(f))
                 }
@@ -313,21 +314,25 @@ impl Parser {
             let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
             let bare = match &next {
                 Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
-                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow",
+                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow" || m == "keep",
                 _ => false,
             };
             if !bare {
                 return Err(Diagnostic::new(
                     ErrorCode::EParse,
-                    "`self` in a protocol method: write `self`, `self take` or `self borrow`",
+                    "`self` in a protocol method: write `self`, `self take`, `self borrow` or `self keep`",
                     self.peek().span,
                 ));
             }
             self.bump();
             if let TokenKind::Ident(m) = self.peek().kind.clone() {
-                if m == "take" || m == "borrow" {
+                if m == "take" || m == "borrow" || m == "keep" {
                     self.bump();
-                    self_mode = if m == "take" { ParamMode::Take } else { ParamMode::Borrow };
+                    self_mode = match m.as_str() {
+                        "take" => ParamMode::Take,
+                        "keep" => ParamMode::Keep,
+                        _ => ParamMode::Borrow,
+                    };
                 }
             }
             self.skip_soft_layout();
@@ -562,21 +567,25 @@ impl Parser {
             let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
             let bare = match &next {
                 Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
-                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow",
+                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow" || m == "keep",
                 _ => false,
             };
             if !bare {
                 return Err(Diagnostic::new(
                     ErrorCode::EParse,
-                    "`self` is implicit in a method: write `self`, `self take` or `self borrow`",
+                    "`self` is implicit in a method: write `self`, `self take`, `self borrow` or `self keep`",
                     self.peek().span,
                 ));
             }
             self.bump();
             if let TokenKind::Ident(m) = self.peek().kind.clone() {
-                if m == "take" || m == "borrow" {
+                if m == "take" || m == "borrow" || m == "keep" {
                     self.bump();
-                    self_mode = if m == "take" { ParamMode::Take } else { ParamMode::Borrow };
+                    self_mode = match m.as_str() {
+                        "take" => ParamMode::Take,
+                        "keep" => ParamMode::Keep,
+                        _ => ParamMode::Borrow,
+                    };
                 }
             }
             self.skip_soft_layout();
@@ -627,6 +636,7 @@ impl Parser {
             effects,
             body,
             no_heap: false,
+            arena: false,
             span,
         })
     }
@@ -645,6 +655,10 @@ impl Parser {
             TokenKind::Ident(n) if n == "take" => {
                 self.bump();
                 ParamMode::Take
+            }
+            TokenKind::Ident(n) if n == "keep" => {
+                self.bump();
+                ParamMode::Keep
             }
             _ => ParamMode::Inferred,
         };

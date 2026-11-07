@@ -70,6 +70,13 @@ int64_t sal_place_launches(int64_t place);
 void sal_region_begin(int64_t place, int64_t peak_bytes);
 void sal_region_end(int64_t place);
 
+/* Request arena: host heap for the dynamic extent of an @arena call. */
+void sal_arena_enter(void);
+void sal_arena_leave(void);
+void *sal_arena_alloc_in(void *owner, int64_t n);
+void *sal_arena_realloc(void *old, int64_t old_n, int64_t new_n);
+int64_t sal_arena_export(void *owner, int64_t raw, int64_t tag, const char *desc);
+
 /* Process args (set from generated main via sal_runtime_init). */
 void sal_runtime_init(int64_t argc, const char **argv);
 int64_t sal_argc(void);

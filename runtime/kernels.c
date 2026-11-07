@@ -475,7 +475,8 @@ float *sal_tensor_append_f32(float *cache, int64_t *cap, int64_t *len, const flo
         while (new_cap < need) {
             new_cap *= 2;
         }
-        float *nbuf = (float *)realloc(cache, (size_t)new_cap * sizeof(float));
+        float *nbuf = (float *)sal_arena_realloc(cache, (*cap) * (int64_t)sizeof(float),
+                                                 new_cap * (int64_t)sizeof(float));
         if (!nbuf) {
             return cache;
         }

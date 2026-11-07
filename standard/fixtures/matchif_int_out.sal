@@ -4,5 +4,11 @@ fn f(n: Int) -> Int
         2 => 20
         _ => 0
 
+fn word(n: Int) -> String
+    match n
+        1 => "return"
+        2 => "if"
+        _ => "x"
+
 fn main() -> Int
     f(1)

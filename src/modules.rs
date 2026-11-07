@@ -585,6 +585,7 @@ pub fn check_module_semantics(
     crate::attrs::check_layout_structs(&module.program)?;
     crate::attrs::check_stack_lets(&module.program, &strings)?;
     crate::attrs::check_no_heap_fns(&module.program, &strings)?;
+    crate::attrs::check_arena_fns(&module.program)?;
     crate::effects::check_effects_with_graph(&module.program, &out, &programs)?;
     crate::ownership::check_ownership(&module.program, &out)?;
     crate::device::check_devices(&module.program)?;

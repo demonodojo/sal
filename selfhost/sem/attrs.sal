@@ -240,8 +240,60 @@ fn at_frozen_fn(f: TFn) -> Int ! alloc
     _f = list_free(names)
     r
 
+fn at_starts(ty: String, head: String) -> Int ! alloc
+    n = str_len(head)
+    if str_len(ty) < n
+        0
+    elsif str_eq(str_slice(ty, 0, n), head) == 0
+        0
+    elsif str_len(ty) == n
+        1
+    else
+        c = str_char(ty, n)
+        if c == 91
+            1
+        elsif c == 32
+            1
+        else
+            0
+
+fn at_is_list_or_dict(ty: String) -> Int ! alloc
+    if at_starts(ty, d"List") == 1
+        1
+    else
+        at_starts(ty, d"Dict")
+
+fn at_keep_params(f: TFn, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        pm = list_get(f.params, i)
+        if pm.mode == 3
+            if f.arena == 0
+                result_err_str(d"keep parameter requires @arena")
+            elsif at_is_list_or_dict(pm.ty) == 0
+                result_err_str("keep parameter `" + pm.name + "` must be a List or Dict")
+            else
+                at_keep_params(f, i + 1, n)
+        else
+            at_keep_params(f, i + 1, n)
+
+fn at_arena_head(structs: List[TStruct], f: TFn) -> Int ! alloc
+    if f.arena == 1
+        if f.no_heap == 1
+            result_err_str(d"@arena function cannot be @no_heap")
+        elsif at_ty_heap(structs, f.ret) == 1
+            result_err_str(d"@arena function cannot return a heap type")
+        else
+            at_keep_params(f, 0, list_len(f.params))
+    else
+        at_keep_params(f, 0, list_len(f.params))
+
 fn at_check_fn(structs: List[TStruct], f: TFn, env: TEnv) -> Int ! alloc
-    r = if f.no_heap == 1
+    r0 = at_arena_head(structs, f)
+    r = if result_is_err(r0) == 1
+        r0
+    elsif f.no_heap == 1
         at_no_heap_fn(structs, f, env)
     else
         result_ok(0)

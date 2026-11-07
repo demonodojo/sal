@@ -92,6 +92,7 @@ fn compile_program_at(
     crate::attrs::check_layout_structs(program)?;
     crate::attrs::check_stack_lets(program, &strings_for_attrs)?;
     crate::attrs::check_no_heap_fns(program, &strings_for_attrs)?;
+    crate::attrs::check_arena_fns(program)?;
     check_effects_with_infer(program, &infer_out)?;
     check_ownership(program, &infer_out)?;
     check_devices(program)?;

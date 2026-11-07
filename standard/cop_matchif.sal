@@ -556,6 +556,40 @@ fn body_has_break(b: String) -> Int ! alloc
     else
         0
 
+fn mi_not_after_dot(src: String, pos: Int) -> Int ! alloc
+    if pos <= 0
+        1
+    elsif src.char(pos - 1) == 46
+        0
+    else
+        1
+
+fn mi_ident_blocks(src: String, lex: Lex, i: Int) -> Int ! alloc
+    t = lex.text(src, i)
+    if t.eq("return") == 1 || t.eq("match") == 1
+        mi_not_after_dot(src, lex.start(i))
+    else
+        0
+
+fn mi_tok_blocks(src: String, lex: Lex, i: Int) -> Int ! alloc
+    if lex.kind(i) == TK_IF()
+        mi_not_after_dot(src, lex.start(i))
+    elsif lex.kind(i) == TK_IDENT()
+        mi_ident_blocks(src, lex, i)
+    else
+        0
+
+fn suite_has_return_or_if(src: String, lex: Lex, indent_i: Int, suite_end: Int) -> Int ! alloc
+    suite_has_return_or_if_go(src, lex, indent_i + 1, suite_end)
+
+fn suite_has_return_or_if_go(src: String, lex: Lex, i: Int, end: Int) -> Int ! alloc
+    if i >= end
+        0
+    elsif mi_tok_blocks(src, lex, i) == 1
+        1
+    else
+        suite_has_return_or_if_go(src, lex, i + 1, end)
+
 fn mi_arm_new(pat: String, body: String) -> MiArm ! alloc
     MiArm(pat, body, body_is_block(body))
 
@@ -635,6 +669,8 @@ fn mi_try_if_go(src: String, lex: Lex, if_i: Int, n: Int, ind: Int) -> MiPack ! 
     b0 = suite_body(src, lex, ind, suite_end)
     if body_has_break(b0) == 1
         return mi_fail()
+    if suite_has_return_or_if(src, lex, ind, suite_end) == 1
+        return mi_fail()
     j = skip_nl(lex, n, suite_end)
     if j >= n
         return mi_fail()
@@ -662,6 +698,8 @@ fn mi_collect_elsifs(src: String, lex: Lex, n: Int, if_i: Int, fam: Int, scrut: 
     b = suite_body(src, lex, ind, suite_end)
     if body_has_break(b) == 1
         return mi_fail()
+    if suite_has_return_or_if(src, lex, ind, suite_end) == 1
+        return mi_fail()
     _a = mi_push_arm(arms, mi_arm_new(p, b))
     j = skip_nl(lex, n, suite_end)
     if j >= n
@@ -680,6 +718,8 @@ fn mi_finish_else(src: String, lex: Lex, n: Int, if_i: Int, scrut: String, arms:
     suite_end = mi_consume_suite(lex, n, ind)
     b = suite_body(src, lex, ind, suite_end)
     if body_has_break(b) == 1
+        return mi_fail()
+    if suite_has_return_or_if(src, lex, ind, suite_end) == 1
         return mi_fail()
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
@@ -702,8 +742,18 @@ fn indent_block_go(body: String, i: Int, n: Int, prefix: String, acc: String) ->
             acc2 = acc + prefix + line + "\n"
             indent_block_go(body, nl + 1, n, prefix, acc2)
 
+fn mi_span_blank_tail(src: String, end: Int) -> Int ! alloc
+    if end < 2
+        0
+    elsif src.char(end - 1) != 10
+        0
+    elsif src.char(end - 2) != 10
+        0
+    else
+        1
+
 fn build_match_fix(pack: MiPack) -> String ! alloc
-    build_match_go(pack, 0, pack.arms.len(), pack.lead + d"match " + pack.scrut + d"\n", d"    ") + d"\n"
+    build_match_go(pack, 0, pack.arms.len(), pack.lead + d"match " + pack.scrut + d"\n", d"    ")
 
 fn build_match_go(pack: MiPack, i: Int, n: Int, acc: String, arm_lead: String) -> String ! alloc
     if i >= n
@@ -741,6 +791,8 @@ fn cop_matchif_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int
             pack = mi_try_if(src, lex, i, n)
         if pack.ok == 1
                 fix = build_match_fix(pack)
+                if mi_span_blank_tail(src, pack.end) == 1
+                    fix = fix + "\n"
                 msg = d"use match instead of if/elsif on the same scrutinee"
                 o = off_new(CODE_MATCHIF(), msg, pack.start, pack.end, 1, fix)
                 _p = offs.push(o)

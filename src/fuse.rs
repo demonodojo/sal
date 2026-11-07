@@ -13,6 +13,7 @@ pub fn fuse_module_opts(m: &mut IrModule, box_shell_drops: bool) {
     if box_shell_drops {
         crate::ir::finish_module_box_shell_drops(m);
     }
+    crate::ir::sink_arena_leaves_module(m);
 }
 
 fn fuse_function(f: &mut crate::ir::IrFunction) {

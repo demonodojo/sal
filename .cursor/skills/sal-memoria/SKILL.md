@@ -17,6 +17,8 @@ La autoridad es [SPEC.md](../../../SPEC.md) («Liberación de locales»). Resume
 
 Invariante: una fuga es aceptable; una doble liberación o un uso tras liberar no. Ante la duda, no sueltes.
 
+Dentro de una función `@arena`, el `free` de un puntero interior es un no-op y `sal_arena_leave` descarta las páginas al salir, después de esos `free`. Eso no sustituye la cola de drops fuera de `@arena`: un bloque del `malloc` del sistema se libera de verdad. Un `leave` que no llega (un pánico) puede fugar las páginas; no puede dejar un puntero vivo hacia ellas.
+
 ## Dos sitios, los dos compiladores
 
 | Qué | Arranque | Selfhost |
