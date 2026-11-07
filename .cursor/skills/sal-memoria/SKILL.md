@@ -22,9 +22,9 @@ Invariante: una fuga es aceptable; una doble liberación o un uso tras liberar n
 | Qué | Arranque | Selfhost |
 |-----|----------|----------|
 | Locales (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free`, `tensor_free`, `struct_free`, `struct_free_box`), antes de bajar | `src/drops.rs` (`insert_drops`) | `selfhost/drops.sal` (`drops_body_t`) |
-| Cola de campos de un struct (IR) | `src/ir.rs` (`free_struct_strings`, `field_reads`, `emit_struct_string_drops`, `field_drop`) | `selfhost/fuse.sal` (`drop_fields`, `fr_*`, `drop_field_fn`, `emit_struct_drops`) |
+| Cola de campos de un struct (IR) | `src/ir.rs` (`free_struct_strings`, `field_reads`, `emit_struct_string_drops`, `field_drop`) | `selfhost/frc.sal` (`FRC` y sus métodos, `drop_fields`, `fr_*`), `selfhost/desc.sal` (`drop_field_fn`), `selfhost/fuse.sal` (`emit_struct_drops`) |
 | Caja de copia `list_get`/`list_pop` tras llamada escalarizada (IR, tras fusión) | `src/ir.rs` (`finish_module_box_shell_drops`), invocado desde `src/fuse.rs` (`fuse_module` / `fuse_module_opts`) | el arranque en `emit ir` / tests; ver nota selfhost abajo |
-| Cola en C (stage2) | — | `selfhost/emit.sal` (`emit_c_struct_scope_frees`, importa helpers de `fuse`) |
+| Cola en C (stage2) | — | `selfhost/emit.sal` (`emit_c_struct_scope_frees`, importa `frc` y `desc`) |
 | Movimiento parcial y `borrow`/`take` | `src/ownership.rs` | `selfhost/ownership.sal` |
 | Runtime (`sal_dict_*`, `sal_enum_*`, vistas `bytes`, `sal_tensor_free`) | `runtime/sal_runtime.c` | el mismo |
 

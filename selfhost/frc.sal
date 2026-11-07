@@ -1,0 +1,525 @@
+# Field reads and the struct-field glue. `FRC` lives with its methods.
+# The vec membership helpers are also what the while-assign walk in fuse.sal uses.
+import tast
+import tytext
+import ttypes
+import drops
+import desc
+import ir
+
+fn assigned_add(names: Int, name: Int) -> Int ! alloc
+    if assigned_has(names, name, 0, vec_len(names)) == 0
+        vec_push(names, name)
+    else
+        0
+
+fn assigned_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(vec_get(names, i), name) == 1
+        1
+    else
+        assigned_has(names, name, i + 1, n)
+
+# ---- field reads (`field_reads` in src/ir.rs) ----
+# `sv`: locals read whole through a field, a struct value (`q = w.p`); `hm`: locals whose
+# List/Dict/Bytes field is handed on. Maps from the local's name to 1.
+# The lists of the environment the walk needs, not the TEnv itself: a struct local's glue would
+# release the flat lists of a TEnv it only borrows. `bparams` is a fresh list of dup'd names: the
+# glue must not see the `TFn` being lowered, whose body is the same pointer the later `tc_block`
+# still copies.
+struct FRC
+    structs: List[TStruct]
+    enums: List[TEnum]
+    names: List[String]
+    tys: List[String]
+    md: Int
+    sv: Int
+    hm: Int
+    al: Int
+    sm: Int
+    ct: Int
+    bparams: List[String]
+    fns: List[TFn]
+
+fn fr_new(env: TEnv borrow, enums: List[TEnum] borrow, md: Int, params: List[TParam] borrow, fns: List[TFn] borrow) -> FRC ! alloc
+    FRC(env.structs, enums, env.names, env.tys, md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fns)
+
+# Names of parameters whose mode is not take. Each name is dup'd, so freeing this list does not
+# free the function the caller still owns.
+static FRC.borrowed_params(params: List[TParam] borrow) -> List[String] ! alloc
+    FRC.borrowed_params_go(params, 0, params.len(), List.new[String]())
+
+static FRC.borrowed_params_go(params: List[TParam] borrow, i: Int, n: Int, out: List[String]) -> List[String] ! alloc
+    if i >= n
+        out
+    else
+        p = params.get(i)
+        if p.mode == 2
+            FRC.borrowed_params_go(params, i + 1, n, out)
+        else
+            out.push(p.name.dup())
+            FRC.borrowed_params_go(params, i + 1, n, out)
+
+# A struct local the glue must not release (`list_alias_locals` in src/ir.rs): the result of
+# `list_get(xs, i)` on a list whose struct is not describable (it hands out its boxes), or the
+# result of a call that returns one of the caller's borrowed parameters.
+method FRC.alias(name: String, e: Expr) -> Int ! alloc
+    match e
+        XCall(fname, args, targs, xp) => self.alias_call(name, fname, args)
+        _ => 0
+
+method FRC.alias_call(name: String, fname: String, args: List[Expr]) -> Int ! alloc
+    if self.returns_borrowed(args, fr_returned_params(self.fns, fname), 0) == 1
+        fr_add(self.al, name)
+    elsif fname.eq("list_get") == 0
+        0
+    else
+        t = trim_type_piece(self.type_of(name))
+        si = tt_struct_find(self.structs, t)
+        if si < 0
+            0
+        elsif desc_struct_text(self.structs, self.enums, t, 0).len() == 0
+            fr_add(self.al, name)
+        else
+            0
+
+# The parameter indices `fname` returns as the value of some branch tail (`returns_param_map`).
+# `fns` is every function of the module graph: the callee may be imported.
+fn fr_returned_params(fns: List[TFn], fname: String) -> List[Int] ! alloc
+    fr_returned_go(fns, fname, 0, fns.len())
+
+fn fr_returned_go(fns: List[TFn], fname: String, i: Int, n: Int) -> List[Int] ! alloc
+    if i >= n
+        List.new[Int]()
+    else
+        f = fns.get(i)
+        if f.name.eq(fname) == 1
+            fr_returned_idx(f.params, f.body, 0, f.params.len(), List.new[Int]())
+        else
+            fr_returned_go(fns, fname, i + 1, n)
+
+fn fr_returned_idx(params: List[TParam], body: TBlock, i: Int, n: Int, out: List[Int]) -> List[Int] ! alloc
+    if i >= n
+        out
+    else
+        fr_returned_push(out, body, params.get(i).name, i)
+        fr_returned_idx(params, body, i + 1, n, out)
+
+fn fr_returned_push(out: List[Int], body: TBlock, name: String, i: Int) -> Int ! alloc
+    if fr_tail_is_param(body.tail, name) == 1
+        out.push(i)
+        0
+    else
+        0
+
+# 1 when `e` is `name`, or an `if`/`match` whose value is `name` in some branch.
+fn fr_tail_is_param(e: Expr, name: String) -> Int ! alloc
+    match e
+        XIdent(nm) => nm.eq(name)
+        XIf(cond, then_b, else_b, has_else, elsifs) => fr_if_returns(then_b, else_b, has_else, elsifs, name)
+        XMatch(scrut, arms) => fr_arms_return(arms, name, 0, arms.len())
+        _ => 0
+
+fn fr_if_returns(then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif], name: String) -> Int ! alloc
+    if fr_tail_is_param(then_b.tail, name) == 1
+        1
+    elsif fr_elsifs_return(elsifs, name, 0, elsifs.len()) == 1
+        1
+    elsif has_else == 1
+        fr_tail_is_param(else_b.tail, name)
+    else
+        0
+
+fn fr_elsifs_return(elsifs: List[TElsif], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif fr_tail_is_param(elsifs.get(i).body.tail, name) == 1
+        1
+    else
+        fr_elsifs_return(elsifs, name, i + 1, n)
+
+fn fr_arms_return(arms: List[TArm], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif fr_tail_is_param(tarm_value(arms.get(i)), name) == 1
+        1
+    else
+        fr_arms_return(arms, name, i + 1, n)
+
+# 1 when the argument at one of `idx` is a borrowed parameter of the function being lowered, or a
+# field read off a value (`call_aliases_borrowed_arg`).
+method FRC.returns_borrowed(args: List[Expr], idx: List[Int], i: Int) -> Int ! alloc
+    if i >= idx.len()
+        0
+    elsif self.arg_borrowed(args, idx.get(i)) == 1
+        1
+    else
+        self.returns_borrowed(args, idx, i + 1)
+
+method FRC.arg_borrowed(args: List[Expr], i: Int) -> Int ! alloc
+    if i >= args.len()
+        0
+    else
+        self.arg_is_borrowed(args.get(i))
+
+method FRC.arg_is_borrowed(a: Expr) -> Int ! alloc
+    match a
+        XIdent(name) => self.param_borrowed(name)
+        XField(base, field) => 1
+        _ => 0
+
+# 1 when `name` is one of the borrowed parameters recorded in `bparams`.
+method FRC.param_borrowed(name: String) -> Int ! alloc
+    self.param_borrowed_at(name, 0, self.bparams.len())
+
+method FRC.param_borrowed_at(name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif self.bparams.get(i).eq(name) == 1
+        1
+    else
+        self.param_borrowed_at(name, i + 1, n)
+
+# The type text of the local `name` (`tenv_type`).
+method FRC.type_of(name: String) -> String ! alloc
+    self.type_at(name, self.names.len() - 1)
+
+method FRC.type_at(name: String, i: Int) -> String ! alloc
+    if i < 0
+        d""
+    elsif self.names.get(i).eq(name) == 1
+        self.tys.get(i)
+    else
+        self.type_at(name, i - 1)
+
+# Adds the local `name` (a string handle) to the set `set` (a vec of handles) unless it is there.
+fn fr_add(set: Int, name: String) -> Int ! alloc
+    if assigned_has(set, str_as_int(name), 0, vec_len(set)) == 0
+        vec_push(set, str_as_int(name))
+    else
+        0
+
+fn fr_is_container(t: String) -> Int ! alloc
+    base = ty_base(t)
+    if str_eq(base, "Bytes") == 1
+        1
+    elsif str_eq(base, "List") == 1
+        1
+    elsif str_eq(base, "Dict") == 1
+        1
+    else
+        0
+
+# The root local of a field chain `a.f1.f2`, pushing the field names onto `fl`; "" when the
+# expression is not such a chain.
+fn fr_chain(e: Expr, fl: List[String]) -> String ! alloc
+    match e
+        XIdent(name) => name
+        XField(base, field) => fr_chain_push(base, field, fl)
+        _ => d""
+
+fn fr_chain_push(base: Expr, field: String, fl: List[String]) -> String ! alloc
+    root = fr_chain(base, fl)
+    if str_len(root) == 0
+        d""
+    else
+        _p = list_push(fl, field)
+        root
+
+fn fr_note(c: FRC, e: Expr, moving: Int) -> Int ! alloc
+    fl = list_new[String]()
+    root = fr_chain(e, fl)
+    if str_len(root) == 0
+        0
+    else
+        si = tt_struct_find(c.structs, c.type_of(root))
+        if si < 0
+            0
+        else
+            fr_walk_fields(c, list_get(c.structs, si), root, fl, 0, list_len(fl), moving)
+
+fn fr_walk_fields(c: FRC, cur: TStruct, root: String, fl: List[String], k: Int, n: Int, moving: Int) -> Int ! alloc
+    if k >= n
+        0
+    else
+        fname = list_get(fl, k)
+        ty = fr_field_type(cur.fields, fname, 0, list_len(cur.fields))
+        last = if k + 1 == n
+            1
+        else
+            0
+        if str_len(ty) == 0
+            0
+        else
+            t = trim_type_piece(ty)
+            _h = fr_mark_heap(c, root, t, last, moving)
+            if last == 1
+                if moving == 1
+                    if str_eq(t, "String") == 1
+                        _m = fr_mark_string_moved(c, root, fl)
+                    elsif enum_named_t(c.enums, t, 0, list_len(c.enums)) == 1
+                        _m = fr_mark_string_moved(c, root, fl)
+                    else
+                        _m = 0
+                else
+                    _m = 0
+            else
+                _m = 0
+            si = tt_struct_find(c.structs, t)
+            if si < 0
+                0
+            elsif list_len(list_get(c.structs, si).tparams) > 0
+                0
+            else
+                _s = fr_mark_struct(c, root, last)
+                fr_walk_fields(c, list_get(c.structs, si), root, fl, k + 1, n, moving)
+
+# A List/Dict/Bytes field handed on (the last link of a moving chain): the local is not released.
+fn fr_mark_heap(c: FRC, root: String, t: String, last: Int, moving: Int) -> Int ! alloc
+    if last == 1
+        if moving == 1
+            if fr_is_container(t) == 1
+                fr_add(c.hm, root)
+            elsif str_eq(trim_type_piece(t), "String") == 1
+                0
+            else
+                0
+        else
+            0
+    else
+        0
+
+# Records a `String` field path handed out by value (`return n.name`).
+fn fr_mark_string_moved(c: FRC, root: String, fl: List[String]) -> Int ! alloc
+    path = fr_join_fields(fl, 0, list_len(fl), d"")
+    fr_add(c.sm, root + d"\x1e" + path)
+
+fn fr_join_fields(fl: List[String], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    elsif str_len(acc) == 0
+        fr_join_fields(fl, i + 1, n, list_get(fl, i))
+    else
+        fr_join_fields(fl, i + 1, n, acc + d"." + list_get(fl, i))
+
+fn fr_sm_has(c: FRC, root: String, path: String) -> Int ! alloc
+    assigned_has(c.sm, str_as_int(root + d"\x1e" + path), 0, vec_len(c.sm))
+
+fn fr_ct_has(c: FRC, root: String, path: String) -> Int ! alloc
+    assigned_has(c.ct, str_as_int(root + d"\x1e" + path), 0, vec_len(c.ct))
+
+# A struct field read whole (the last link): its nested structs are left alone.
+fn fr_mark_struct(c: FRC, root: String, last: Int) -> Int ! alloc
+    if last == 1
+        fr_add(c.sv, root)
+    else
+        0
+
+fn fr_field_type(fields: List[TField], name: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        d""
+    elsif str_eq(list_get(fields, i).name, name) == 1
+        list_get(fields, i).ty
+    else
+        fr_field_type(fields, name, i + 1, n)
+
+fn fr_ex(c: FRC, e: Expr, moving: Int) -> Int ! alloc
+    match e
+        XField(base, field) => fr_field(c, e, base, moving)
+        XCall(name, args, targs, xp) => fr_call(c, name, args, 0, list_len(args))
+        XBin(op, l, r) => fr_pair(c, l, r)
+        XUnary(op, inner) => fr_ex(c, inner, moving)
+        XTo(place, inner) => fr_ex(c, inner, moving)
+        XTry(inner) => fr_ex(c, inner, moving)
+        XOn(place, body, is_kern, has_index) => fr_blk(c, body)
+        XIf(cond, then_b, else_b, has_else, elsifs) => fr_if(c, cond, then_b, else_b, elsifs)
+        XWhile(cond, body) => fr_while(c, cond, body)
+        XMatch(scrut, arms) => fr_match(c, scrut, arms)
+        XLambda(param, body) => fr_ex(c, body, 1)
+        _ => 0
+
+fn fr_field(c: FRC, e: Expr, base: Expr, moving: Int) -> Int ! alloc
+    _n = fr_note(c, e, moving)
+    inner = fr_innermost(base)
+    match inner
+        XIdent(name) => 0
+        _ => fr_ex(c, inner, 0)
+
+fn fr_innermost(e: Expr) -> Expr ! alloc
+    match e
+        XField(base, field) => fr_innermost(base)
+        _ => e
+
+fn fr_pair(c: FRC, l: Expr, r: Expr) -> Int ! alloc
+    _a = fr_ex(c, l, 0)
+    fr_ex(c, r, 0)
+
+fn fr_call(c: FRC, name: String, args: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _t = fr_call_taint_if_zero(c, name, args, i)
+        keeps = fr_keeps(c, name, i)
+        _a = fr_ex(c, list_get(args, i), keeps)
+        fr_call(c, name, args, i + 1, n)
+
+fn fr_call_taint_if_zero(c: FRC, name: String, args: List[Expr], i: Int) -> Int ! alloc
+    if i == 0
+        fr_call_container_taint(c, name, args)
+    else
+        0
+
+fn fr_call_container_taint(c: FRC, name: String, args: List[Expr]) -> Int ! alloc
+    if str_eq(name, "list_push") + str_eq(name, "list_set") + str_eq(name, "dict_put") == 0
+        0
+    elsif list_len(args) < 2
+        0
+    else
+        fl = list_new[String]()
+        root = fr_chain(list_get(args, 0), fl)
+        path = fr_join_fields(fl, 0, list_len(fl), d"")
+        if str_len(root) == 0
+            0
+        elsif str_len(path) == 0
+            0
+        elsif owned_fresh_builtin(list_get(args, list_len(args) - 1)) == 1
+            0
+        else
+            fr_add(c.ct, root + d"\x1e" + path)
+
+# Whether argument i of the call to `name` may be kept (a `take` parameter, or a builtin that
+# does not only read it): the caller then cannot keep the struct's fields.
+fn fr_keeps(c: FRC, name: String, i: Int) -> Int ! alloc
+    ck = ("caller:" + name).dup()
+    params = map_get(c.md, ck.to_int())
+    if params != 0
+        if i < vec_len(params)
+            if vec_get(params, i) == 2
+                1
+            else
+                0
+        else
+            0
+    elsif dr_borrows(name) == 1
+        0
+    else
+        1
+
+fn fr_if(c: FRC, cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif]) -> Int ! alloc
+    _a = fr_ex(c, cond, 0)
+    _b = fr_blk(c, then_b)
+    _c = fr_elsifs(c, elsifs, 0, list_len(elsifs))
+    fr_blk(c, else_b)
+
+fn fr_elsifs(c: FRC, elsifs: List[TElsif], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(elsifs, i)
+        _a = fr_ex(c, arm.cond, 0)
+        _b = fr_blk(c, arm.body)
+        fr_elsifs(c, elsifs, i + 1, n)
+
+fn fr_while(c: FRC, cond: Expr, body: TBlock) -> Int ! alloc
+    _a = fr_ex(c, cond, 0)
+    fr_blk(c, body)
+
+fn fr_match(c: FRC, scrut: Expr, arms: List[TArm]) -> Int ! alloc
+    _a = fr_ex(c, scrut, 0)
+    fr_arms(c, arms, 0, list_len(arms))
+
+fn fr_arms(c: FRC, arms: List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        if arm.has_suite == 1
+            _a = fr_blk(c, arm.suite)
+        else
+            _a = fr_ex(c, arm.body, 1)
+        fr_arms(c, arms, i + 1, n)
+
+fn fr_blk(c: FRC, b: TBlock) -> Int ! alloc
+    _s = fr_stmts(c, b.stmts, 0, list_len(b.stmts))
+    fr_ex(c, b.tail, 1)
+
+fn fr_stmts(c: FRC, stmts: List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        k = st.kind
+        if k == 0
+            _a = fr_ex(c, st.expr, 0)
+        elsif k == 1
+            _al = c.alias(st.name, st.expr)
+            _a = fr_ex(c, st.expr, 1)
+        elsif k == 2
+            _a = fr_ex(c, st.expr, 1)
+        else
+            _a = fr_ex(c, st.target, 0)
+            _b = fr_ex(c, st.expr, 1)
+        fr_stmts(c, stmts, i + 1, n)
+
+# What the glue may release of the local `nm` (bit 0 nested structs, bit 1 containers).
+fn drop_glue_bits(fr: FRC, nm: Int) -> Int ! alloc
+    nested = if assigned_has(fr.sv, nm, 0, vec_len(fr.sv)) == 0
+        1
+    else
+        0
+    containers = if assigned_has(fr.hm, nm, 0, vec_len(fr.hm)) == 0
+        2
+    else
+        0
+    nested + containers
+
+# Frees the released fields of the struct value `base` (of type `sd`), in field order.
+fn drop_fields(cx: Cx, base: Int, sd: TStruct, fields: List[TField], i: Int, n: Int, depth: Int, g: Int, fr: FRC, root: String, path_p: String) -> Int ! alloc
+    if i >= n
+        0
+    else
+        fld = list_get(fields, i)
+        path = if str_len(path_p) == 0
+            fld.name
+        else
+            path_p + d"." + fld.name
+        taint = fr_ct_has(fr, root, path)
+        fnm = drop_field_fn(cx_structs(cx), cx.enums, fld.ty, g, depth, taint)
+        if str_len(fnm) == 0
+            _z = 0
+        elsif str_eq(fnm, "sal_free") == 1
+            if fr_sm_has(fr, root, path) == 1
+                _z = 0
+            else
+                ssa = drop_field_ssa(cx, base, sd, i)
+                _c = ir_push(cx, ir_call_named(ssa, str_as_int(fnm)))
+        elsif str_eq(fnm, "sal_enum_free") == 1
+            if fr_sm_has(fr, root, path) == 1
+                _z = 0
+            else
+                ssa = drop_field_ssa(cx, base, sd, i)
+                _c = ir_push(cx, ir_call_named(ssa, str_as_int(fnm)))
+        elsif str_eq(fnm, "struct") == 1
+            _n = drop_nested(cx, base, sd, i, fld.ty, depth, g, fr, root, path)
+        else
+            ssa = drop_field_ssa(cx, base, sd, i)
+            _c = ir_push(cx, ir_call_named(ssa, str_as_int(fnm)))
+        drop_fields(cx, base, sd, fields, i + 1, n, depth, g, fr, root, path_p)
+
+fn drop_field_ssa(cx: Cx, base: Int, sd: TStruct, i: Int) -> Int ! alloc
+    if list_len(sd.fields) == 1
+        base
+    else
+        d = fresh(cx)
+        _e = ir_push(cx, ir_extract(d, base, str_as_int(sd.name), i))
+        d
+
+# A nested struct field: its own released fields.
+fn drop_nested(cx: Cx, base: Int, sd: TStruct, i: Int, fty: String, depth: Int, g: Int, fr: FRC, root: String, path: String) -> Int ! alloc
+    inner = list_get(cx_structs(cx), tt_struct_find(cx_structs(cx), trim_type_piece(fty)))
+    ssa = drop_field_ssa(cx, base, sd, i)
+    drop_fields(cx, ssa, inner, inner.fields, 0, list_len(inner.fields), depth + 1, g, fr, root, path)
+
+fn drop_struct_fields(cx: Cx, base: Int, sd: TStruct, g: Int, fr: FRC, root: String) -> Int ! alloc
+    drop_fields(cx, base, sd, sd.fields, 0, list_len(sd.fields), 0, g, fr, root, d"")

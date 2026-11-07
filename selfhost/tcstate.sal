@@ -1,0 +1,92 @@
+# Emission state of one function on the AST → C path, with the operations on it.
+import tast
+import ttypes
+import cenv
+
+# Emission state of one function. The counter, the accumulator name and the small-matmul quirk live
+# in lists so callees can update them; `env` is the typed local environment shared by the program;
+# `lam_*` are the locals bound to a lambda (`f = x => body`), searched newest first.
+struct Tc
+    ctr: List[Int]
+    acc: List[Int]
+    mm_out: List[Int]
+    mm_n: List[Int]
+    lam_names: List[String]
+    lam_params: List[String]
+    lam_bodies: List[Expr]
+    pool: Int
+    env: TEnv
+    enums: List[TEnum]
+
+fn tc_new(pool: Int, env: TEnv borrow, enums: List[TEnum] borrow) -> Tc ! alloc
+    ctr = list_new[Int]()
+    _a = list_push(ctr, 0)
+    acc = list_new[Int]()
+    _b = list_push(acc, 0)
+    mm_out = list_new[Int]()
+    _c = list_push(mm_out, 0)
+    mm_n = list_new[Int]()
+    _d = list_push(mm_n, 0)
+    _t = tenv_truncate(env, 0)
+    Tc(ctr, acc, mm_out, mm_n, list_new[String](), list_new[String](), list_new[Expr](), pool, env, enums)
+
+# Releases the lists; the env and the pool are the caller's. Frees emit `body` and lambda AST copies.
+fn tc_free(tc: Tc, body: TBlock) -> Int ! alloc
+    _sc = tp_free_emit_scope(body, tc.lam_bodies)
+    _a = list_free(tc.ctr)
+    _b = list_free(tc.acc)
+    _c = list_free(tc.mm_out)
+    _d = list_free(tc.mm_n)
+    _e = list_free(tc.lam_names)
+    _f = list_free(tc.lam_params)
+    _g = list_free(tc.lam_bodies)
+    0
+
+fn tc_lit_pool(tc: Tc) -> Int ! alloc
+    tc.pool
+
+# Name of the binding an `x = x + ...` chain accumulates into (0 when none).
+fn tc_acc(tc: Tc) -> Int ! alloc
+    list_get(tc.acc, 0)
+
+fn tc_set_acc(tc: Tc, name: Int) -> Int ! alloc
+    _s = list_set(tc.acc, 0, name)
+    0
+
+fn tc_lam_find(tc: Tc, name: String, i: Int) -> Int ! alloc
+    if i < 0
+        0 - 1
+    elsif str_eq(list_get(tc.lam_names, i), name) == 1
+        i
+    else
+        tc_lam_find(tc, name, i - 1)
+
+fn tc_lam_add(tc: Tc, name: String, lam: Expr) -> Int ! alloc
+    match lam
+        XLambda(param, body) => tc_lam_push(tc, name, param, body)
+        _ => 0
+
+fn tc_lam_push(tc: Tc, name: String, param: String, body: Expr) -> Int ! alloc
+    _a = list_push(tc.lam_names, strdup(name))
+    _b = list_push(tc.lam_params, strdup(param))
+    _c = list_push(tc.lam_bodies, tc_expr(body))
+    0
+
+fn seed_string_params(params: List[TParam], i: Int, n: Int, env: TEnv) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = list_get(params, i)
+        _b = tenv_bind(env, pm.name, pm.ty)
+        seed_string_params(params, i + 1, n, env)
+
+fn tmp_fresh(tc: Tc) -> String ! alloc
+    n = list_get(tc.ctr, 0) + 1
+    _s = list_set(tc.ctr, 0, n)
+    "__t" + int_to_str(n)
+
+fn variant_code(tc: Tc, name: Int) -> Int ! alloc
+    map_get(lit_pool_variants(tc_lit_pool(tc)), name)
+
+fn variant_tag(code: Int) -> Int ! alloc
+    code / 2 - 1

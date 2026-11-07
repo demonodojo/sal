@@ -1,0 +1,469 @@
+# IR as text (`ir_to_text`).
+import tir
+import fused
+
+# ---- ir_to_text ----
+fn qquote() -> String ! alloc
+    char_to_str(34)
+
+fn ir_q() -> String ! alloc
+    char_to_str(34)
+
+fn emit_escape_arg(s: String, i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        c = str_char(s, i)
+        if c == 34
+            bs = d"\\"
+            a2 = acc + bs
+            # free(bs)
+            piece = char_to_str(34)
+            a3 = a2 + piece
+            # free(piece)
+            emit_escape_arg(s, i + 1, n, a3)
+        elsif c == 92
+            bs = d"\\\\"
+            a2 = acc + bs
+            # free(bs)
+            emit_escape_arg(s, i + 1, n, a2)
+        else
+            piece = char_to_str(c)
+            a2 = acc + piece
+            # free(piece)
+            emit_escape_arg(s, i + 1, n, a2)
+
+fn emit_arg_comma(i: Int) -> String ! alloc
+    if i > 0
+        d", "
+    else
+        d""
+
+fn emit_arg_list(args: List[String], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        comma = emit_arg_comma(i)
+        acc = acc + comma
+        acc = acc + ir_q()
+        a = list_get(args, i)
+        esc = emit_escape_arg(a, 0, str_len(a), d"")
+        acc = acc + esc
+        acc = acc + ir_q()
+        emit_arg_list(args, i + 1, n, acc)
+
+fn emit_inst(inst: Inst) -> String ! alloc
+    k = inst.kind
+    if k == II_CI()
+        emit_ci(inst)
+    elsif k == II_CS()
+        emit_cs(inst)
+    elsif k == II_BIN()
+        emit_bin(inst)
+    elsif k == II_CF()
+        emit_cf(inst)
+    elsif k == II_TBIN()
+        emit_tbin(inst)
+    elsif k == II_TUN()
+        emit_tun(inst)
+    elsif k == II_CALL()
+        emit_call(inst)
+    elsif k == II_PLACE()
+        emit_place(inst)
+    elsif k == II_RET()
+        emit_ret(inst)
+    elsif k == II_DROP()
+        emit_drop(inst)
+    elsif k == II_IF()
+        emit_if_inst(inst)
+    elsif k == II_WHILE()
+        emit_while_inst(inst)
+    elsif k == II_AGG()
+        emit_agg(inst)
+    elsif k == II_EXTRACT()
+        emit_extract(inst)
+    elsif k == II_REBIND()
+        emit_rebind(inst)
+    elsif k == II_EMAKE()
+        emit_emake(inst)
+    elsif k == II_EFIELD()
+        emit_efield(inst)
+    elsif k == II_SWITCH()
+        emit_switch(inst)
+    elsif k == II_ANYBOX()
+        emit_anybox(inst)
+    elsif k == II_ANYCALL()
+        emit_anycall(inst)
+    else
+        d""
+
+fn emit_ci(inst: Inst) -> String ! alloc
+    "  ConstInt { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + int_to_str(inst.n1) + " }\n"
+
+fn emit_cs(inst: Inst) -> String ! alloc
+    "  ConstString { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + ir_debug_escape_s(inst.s1) + ir_q() + " }\n"
+
+fn emit_bin(inst: Inst) -> String ! alloc
+    "  Binary { dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", left: " + ir_q() + inst.s2 + ir_q() + ", right: " + ir_q() + inst.s3 + ir_q() + " }\n"
+
+fn emit_cf(inst: Inst) -> String ! alloc
+    "  ConstFloat { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + inst.s1 + " }\n"
+
+fn emit_elem_name(code: Int) -> String ! alloc
+    if code == 1
+        d"I8"
+    elsif code == 2
+        d"F16"
+    elsif code == 3
+        d"BF16"
+    else
+        d"F32"
+
+fn emit_tbin_scalar(scalar: Int) -> String ! alloc
+    if scalar == 1
+        d"true"
+    else
+        d"false"
+
+fn emit_tun(inst: Inst) -> String ! alloc
+    elem = emit_elem_name(inst.n1)
+    "  TensorUnary { dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", input: " + ir_q() + inst.s3 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + " }\n"
+
+fn emit_tbin(inst: Inst) -> String ! alloc
+    elem = emit_elem_name(inst.n1)
+    sc = emit_tbin_scalar(inst.n2)
+    "  TensorBin { dest: " + ir_q() + inst.dest + ir_q() + ", op: " + ir_q() + inst.s1 + ir_q() + ", elem: " + elem + ", place: " + ir_q() + inst.s2 + ir_q() + ", left: " + ir_q() + inst.s3 + ir_q() + ", right: " + ir_q() + inst.s4 + ir_q() + ", len: " + ir_q() + inst.s5 + ir_q() + ", right_scalar: " + sc + " }\n"
+
+fn emit_call_dest(inst: Inst) -> String ! alloc
+    if inst.n1 == 1
+        "Some(" + ir_q() + inst.dest + ir_q() + ")"
+    else
+        d"None"
+
+fn emit_call(inst: Inst) -> String ! alloc
+    destbit = emit_call_dest(inst)
+    pref = "  Call { dest: " + destbit + ", func: " + ir_q() + inst.s1 + ir_q() + ", args: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), pref)
+    acc + "] }\n"
+
+fn emit_place(inst: Inst) -> String ! alloc
+    "  PlaceCopy { dest: " + ir_q() + inst.dest + ir_q() + ", from: " + ir_q() + inst.s1 + ir_q() + ", to_place: " + ir_q() + inst.s2 + ir_q() + " }\n"
+
+fn emit_ret(inst: Inst) -> String ! alloc
+    "  Return { value: " + ir_q() + inst.s1 + ir_q() + " }\n"
+
+fn emit_drop(inst: Inst) -> String ! alloc
+    "  Drop { name: " + ir_q() + inst.s1 + ir_q() + " }\n"
+
+fn emit_anybox(inst: Inst) -> String ! alloc
+    "  AnyBox { dest: " + ir_q() + inst.dest + ir_q() + ", vtable: " + ir_q() + inst.s1 + ir_q() + ", payload: " + ir_q() + inst.s2 + ir_q() + ", drop_slot: " + int_to_str(inst.n1) + " }\n"
+
+fn emit_anycall_dest(inst: Inst) -> String ! alloc
+    if str_len(inst.dest) == 0
+        d"None"
+    else
+        "Some(" + ir_q() + inst.dest + ir_q() + ")"
+
+fn emit_anycall(inst: Inst) -> String ! alloc
+    destbit = emit_anycall_dest(inst)
+    pref = "  AnyCall { dest: " + destbit + ", receiver: " + ir_q() + inst.s1 + ir_q() + ", slot: " + int_to_str(inst.n1) + ", args: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), pref)
+    acc + "] }\n"
+
+fn emit_if_comma(i: Int) -> String ! alloc
+    if i > 0
+        d", "
+    else
+        d""
+
+fn trim_nl(piece: String) -> String ! alloc
+    ln = str_len(piece)
+    if ln > 0
+        if str_char(piece, ln - 1) == 10
+            str_slice(piece, 0, ln - 1)
+        else
+            piece
+    else
+        piece
+
+fn emit_if_body(body: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        comma = emit_if_comma(i)
+        acc = acc + comma
+        piece = emit_inst(list_get(body, i))
+        piece2 = trim_nl(piece)
+        piece3 = strip_spaces(piece2)
+        acc = acc + piece3
+        emit_if_body(body, i + 1, n, acc)
+
+fn strip_spaces(s: String) -> String ! alloc
+    n = str_len(s)
+    strip_spaces_go(s, 0, n)
+
+fn strip_spaces_go(s: String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        d""
+    elsif str_char(s, i) == 32
+        strip_spaces_go(s, i + 1, n)
+    else
+        str_slice(s, i, n)
+
+fn emit_if_inst(inst: Inst) -> String ! alloc
+    acc = "  If { cond: " + ir_q() + inst.s1 + ir_q() + ", then_body: ["
+    acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
+    acc = acc + "], else_body: ["
+    acc = emit_if_body(inst.b2, 0, list_len(inst.b2), acc)
+    acc = acc + "], then_val: "
+    acc = acc + ir_q()
+    acc = acc + inst.s2
+    acc = acc + ir_q()
+    acc = acc + ", else_val: "
+    acc = acc + ir_q()
+    acc = acc + inst.s3
+    acc = acc + ir_q()
+    acc = acc + ", dest: "
+    acc = acc + ir_q()
+    acc = acc + inst.dest
+    acc = acc + ir_q()
+    if list_len(inst.rows) > 0
+        acc = acc + ", carried: ["
+        acc = emit_carries(inst.rows, 0, list_len(inst.rows), acc)
+        acc = acc + "]"
+    acc + " }\n"
+
+fn emit_rebind(inst: Inst) -> String ! alloc
+    "  TensorRebind { dest: " + ir_q() + inst.dest + ir_q() + ", src: " + ir_q() + inst.s1 + ir_q() + " }\n"
+
+fn emit_extract(inst: Inst) -> String ! alloc
+    "  Extract { dest: " + ir_q() + inst.dest + ir_q() + ", base: " + ir_q() + inst.s1 + ir_q() + ", struct_name: " + ir_q() + inst.s2 + ir_q() + ", field_index: " + int_to_str(inst.n1) + " }\n"
+
+fn emit_emake(inst: Inst) -> String ! alloc
+    acc = "  EnumMake { dest: " + ir_q() + inst.dest + ir_q()
+    acc = acc + ", enum_name: " + ir_q() + inst.s1 + ir_q()
+    acc = acc + ", variant_index: " + int_to_str(inst.n1) + ", payload: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), acc)
+    acc + "], owned: " + int_to_str(inst.n2) + " }\n"
+
+fn emit_efield(inst: Inst) -> String ! alloc
+    "  EnumField { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + inst.s1 + ir_q() + ", index: " + int_to_str(inst.n1) + " }\n"
+
+fn emit_switch(inst: Inst) -> String ! alloc
+    acc = "  Switch { scrut: " + ir_q() + inst.s1 + ir_q() + ", arms: ["
+    acc = emit_switch_arms(inst.rows, 0, list_len(inst.rows), acc)
+    acc = acc + "], default_body: ["
+    acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
+    acc = acc + "], default_val: " + ir_q() + inst.s2 + ir_q()
+    acc + ", dest: " + ir_q() + inst.dest + ir_q() + " }\n"
+
+fn emit_switch_arms(arms: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        a = list_get(arms, i)
+        acc = acc + emit_if_comma(i)
+        acc = acc + "SwitchArm { tag: " + int_to_str(a.n1) + ", body: ["
+        acc = emit_if_body(a.b1, 0, list_len(a.b1), acc)
+        acc = acc + "], value: " + ir_q() + a.s1 + ir_q() + " }"
+        emit_switch_arms(arms, i + 1, n, acc)
+
+fn emit_agg(inst: Inst) -> String ! alloc
+    acc = "  Aggregate { dest: " + ir_q() + inst.dest + ir_q()
+    acc = acc + ", struct_name: " + ir_q() + inst.s1 + ir_q() + ", fields: ["
+    acc = emit_arg_list(inst.strs, 0, list_len(inst.strs), acc)
+    acc + "] }\n"
+
+fn emit_while_inst(inst: Inst) -> String ! alloc
+    acc = "  While { cond_insts: ["
+    acc = emit_if_body(inst.b1, 0, list_len(inst.b1), acc)
+    acc = acc + "], cond: " + ir_q() + inst.s1 + ir_q() + ", body: ["
+    acc = emit_if_body(inst.b2, 0, list_len(inst.b2), acc)
+    acc = acc + "]"
+    if list_len(inst.rows) > 0
+        acc = acc + ", carried: ["
+        acc = emit_while_carries(inst.rows, 0, list_len(inst.rows), acc)
+        acc = acc + "]"
+    acc + " }\n"
+
+fn emit_while_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        c = list_get(cs, i)
+        acc = acc + emit_if_comma(i)
+        acc = acc + "WhileCarry { dest: " + ir_q() + c.dest + ir_q()
+        acc = acc + ", incoming: " + ir_q() + c.s1 + ir_q()
+        acc = acc + ", updated: " + ir_q() + c.s2 + ir_q() + " }"
+        emit_while_carries(cs, i + 1, n, acc)
+
+fn emit_carries(cs: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        c = list_get(cs, i)
+        acc = acc + emit_if_comma(i)
+        acc = acc + "IfCarry { dest: " + ir_q() + c.dest + ir_q()
+        acc = acc + ", then_val: " + ir_q() + c.s1 + ir_q()
+        acc = acc + ", else_val: " + ir_q() + c.s2 + ir_q() + " }"
+        emit_carries(cs, i + 1, n, acc)
+
+fn emit_fused_word(fused: Int) -> String ! alloc
+    select_str(fused == 1, d"true", d"false")
+
+fn emit_peak_bytes(r: Region) -> String ! alloc
+    if r.has_peak == 1
+        "{\"" + r.place + "\": " + int_to_str(r.peak) + "}"
+    else
+        d"{}"
+
+fn emit_peak_sym(r: Region) -> String ! alloc
+    if r.has_sym == 1
+        " peak_symbolic={\"" + r.place + "\": \"" + r.peak_sym + "\"}"
+    else
+        d""
+
+fn emit_region(r: Region) -> String ! alloc
+    fw = emit_fused_word(r.fused)
+    pb = emit_peak_bytes(r)
+    ps = emit_peak_sym(r)
+    acc = "  region on " + r.place + " fused=" + fw + " peak_bytes=" + pb + ps + "\n"
+    emit_region_ops(r.ops, 0, list_len(r.ops), acc)
+
+fn emit_op_matmul(op: FOp) -> String ! alloc
+    "    Matmul { lhs: " + ir_q() + op.a + ir_q() + ", rhs: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }\n"
+
+fn emit_op_epilogue(op: FOp) -> String ! alloc
+    "    MapEpilogue { op: " + ir_q() + op.a + ir_q() + ", input: " + ir_q() + op.b + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }  # fused epilogue, no intermediate buffer\n"
+
+fn emit_op_softmax(op: FOp) -> String ! alloc
+    "    Softmax { input: " + ir_q() + op.a + ir_q() + ", dest: " + ir_q() + op.c + ir_q() + " }\n"
+
+fn emit_column_scalar(op: FOp) -> String ! alloc
+    if op.nslots > 5
+        if str_len(op.scalar) == 0
+            d"None"
+        else
+            d"Some(" + ir_q() + op.scalar + ir_q() + ")"
+    else
+        if str_eq(op.a, d"mul") == 1
+            if str_eq(op.c, d"tmp") == 1
+                d"Some(" + ir_q() + d"tmp" + ir_q() + ")"
+            else
+                d"None"
+        else
+            d"None"
+
+fn emit_op_column(op: FOp) -> String ! alloc
+    sc = emit_column_scalar(op)
+    "    ColumnBin { op: " + ir_q() + op.a + ir_q() + ", left: " + ir_q() + op.b + ir_q() + ", right: " + ir_q() + op.c + ir_q() + ", dest: " + ir_q() + op.d + ir_q() + ", scalar: " + sc + " }\n"
+
+fn emit_one_op(op: FOp) -> String ! alloc
+    k = op.kind
+    if k == FO_MATMUL()
+        emit_op_matmul(op)
+    elsif k == FO_EPILOGUE()
+        emit_op_epilogue(op)
+    elsif k == FO_SOFTMAX()
+        emit_op_softmax(op)
+    elsif k == FO_COLUMN()
+        emit_op_column(op)
+    else
+        d""
+
+fn emit_region_ops(ops: List[FOp], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_one_op(list_get(ops, i))
+        acc2 = acc + piece
+        emit_region_ops(ops, i + 1, n, acc2)
+
+fn emit_dim_comma(i: Int) -> String ! alloc
+    if i > 0
+        d", "
+    else
+        d""
+
+fn emit_dim_params(dps: List[String], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        comma = emit_dim_comma(i)
+        acc = acc + comma
+        q = qquote()
+        acc = acc + q
+        acc = acc + list_get(dps, i)
+        acc = acc + q
+        emit_dim_params(dps, i + 1, n, acc)
+
+fn emit_dim_section(dps: List[String]) -> String ! alloc
+    if list_len(dps) > 0
+        acc = d"  dim_params=["
+        acc = emit_dim_params(dps, 0, list_len(dps), acc)
+        acc = acc + "]\n"
+        acc
+    else
+        d""
+
+fn emit_fn(irf: IrFn) -> String ! alloc
+    dims = emit_dim_section(irf.dps)
+    acc = "fn " + irf.name + ":\n" + dims
+    acc = emit_insts(irf.insts, 0, list_len(irf.insts), acc)
+    emit_regions(irf.regions, 0, list_len(irf.regions), acc)
+
+fn emit_insts(insts: List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_inst(list_get(insts, i))
+        acc = acc + piece
+        emit_insts(insts, i + 1, n, acc)
+
+fn emit_regions(regions: List[Region], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_region(list_get(regions, i))
+        acc = acc + piece
+        emit_regions(regions, i + 1, n, acc)
+
+# The IR module is a vec of function handles; it is read through its typed copy.
+fn ir_to_text(mod: Int) -> String ! alloc
+    fns = ti_module(mod)
+    text = emit_fns(fns, 0, list_len(fns), d"")
+    _f = ti_free_module(fns)
+    text
+
+fn emit_fns(fns: List[IrFn], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        piece = emit_fn(list_get(fns, i))
+        acc = acc + piece
+        emit_fns(fns, i + 1, n, acc)
+
+# Rust `{:?}` escaping of a string body (quotes are added by the caller).
+fn ir_debug_escape_s(s: String) -> String ! alloc
+    ir_debug_escape_go(s, 0, str_len(s), d"")
+
+fn ir_debug_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        c = str_char(s, i)
+        if c == 92
+            acc = acc + "\\\\"
+        elsif c == 34
+            acc = acc + "\\\""
+        elsif c == 10
+            acc = acc + "\\n"
+        elsif c == 9
+            acc = acc + "\\t"
+        elsif c == 13
+            acc = acc + "\\r"
+        elsif c == 0
+            acc = acc + "\\0"
+        else
+            acc = acc + char_to_str(c)
+        ir_debug_escape_go(s, i + 1, n, acc)

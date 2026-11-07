@@ -370,7 +370,7 @@ fn dx_flat_ctor(c: DC, name: String, args: List[Expr]) -> Int ! alloc
     else
         dx_flat_args_fresh(c, rec, args, 0, list_len(args))
 
-# Each field's class (`field_class_text` in fuse.sal): a String must be fresh, an enum field a
+# Each field's class (`field_class_text` in desc.sal): a String must be fresh, an enum field a
 # variant constructor, a struct field a fresh struct constructor; scalars need nothing.
 fn dx_flat_args_fresh(c: DC, rec: Int, args: List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n

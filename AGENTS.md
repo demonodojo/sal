@@ -43,7 +43,8 @@ Orden de pases: `parse` → `expand_interpolation` → `infer_program` → `attr
 ## Estilo de fuente `.sal`
 
 - Sangría de espacios (un tabulador es `E_PARSE`), comentarios con `#`, última expresión del bloque es el valor.
-- Al programar en sal, prefiere los métodos a las funciones: `s.len()` mejor que `str_len(s)`, `xs.push(v)` mejor que `list_push(xs, v)`, y `method T.f()` mejor que `fn f(t: T)` cuando `T` es un tipo propio del módulo. Vale también para `selfhost/`.
+- Al programar en sal, prefiere `method` y `static` a las funciones, tanto al definirlos como al llamarlos. Definición: `method T.f()` mejor que `fn f(t: T)` cuando hay receptor, y `static T.f()` mejor que `fn f(...)` cuando no lo hay y `T` es un tipo propio del módulo. Llamada: `s.len()` mejor que `str_len(s)`, `xs.push(v)` mejor que `list_push(xs, v)`, `List.new[Int]()` mejor que `list_new()`. Vale también para `selfhost/`.
+- Un struct por fichero, y el nombre del fichero es el del struct en snake_case (`TypeEnv` → `type_env.sal`). En el fichero, el struct con sus `method` y `static` va al principio; las funciones, al final. Agrupa los ficheros en carpetas y subcarpetas por función, con un nombre que diga de qué van.
 - Todo `.sal` editado pasa por `standard check`; usa `standard fix` y revisa el diff. Si una práctica se repite y ninguna regla la cubre, amplía `standard` en el mismo cambio (cop + `run_all_cops` + fixtures `_in/_out` + test en `tests/standard.rs`).
 - `sal fmt` es idempotente y no aplica las reglas de `standard`.
 
