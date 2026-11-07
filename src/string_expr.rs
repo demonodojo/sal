@@ -35,6 +35,8 @@ pub struct StringEnv {
     pub ctor_names: HashSet<String>,
     /// Parameter indices a function returns as a branch-tail value (see `ir::returns_param_map`).
     pub returns_param: HashMap<String, Vec<usize>>,
+    /// Module constants visible while lowering this function, after qualify.
+    pub consts: HashMap<String, crate::consteval::ConstValue>,
 }
 
 impl StringEnv {
@@ -106,6 +108,7 @@ impl StringEnv {
             protocols,
             ctor_names,
             returns_param,
+            consts: HashMap::new(),
         }
     }
 
@@ -124,6 +127,7 @@ impl StringEnv {
         self.types = Rc::new(map);
         self.protocol_calls = out.protocol_calls.clone();
         self.any_coercions = out.any_coercions.clone();
+        self.consts = out.consts.clone();
         self
     }
 

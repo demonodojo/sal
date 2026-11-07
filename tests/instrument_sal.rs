@@ -176,8 +176,7 @@ fn instrument_strict_reports_unfreed_string() {
 }
 
 /// Lists of enums own their boxes (`list_free` releases them, `list_set` replaces
-/// one) and `list_get` results are fresh copies the compiler releases at scope end,
-/// so strict mode reports nothing.
+/// one). `list_get` borrows the element, so the local is not released again.
 #[test]
 fn instrument_strict_enum_lists_are_clean() {
     for (tag, file) in [
@@ -191,8 +190,8 @@ fn instrument_strict_enum_lists_are_clean() {
     }
 }
 
-/// A value popped from an owned list, or read with `list_get` straight into a `match`, is a
-/// fresh copy the compiler releases at scope end: strict mode reports nothing.
+/// A value popped from an owned list is a fresh box the local releases. A `list_get` read
+/// straight into a `match` borrows the element: the list releases it, and strict mode is clean.
 #[test]
 fn instrument_strict_list_pop_and_match_temps_are_clean() {
     for (tag, file) in [
@@ -206,8 +205,8 @@ fn instrument_strict_list_pop_and_match_temps_are_clean() {
     }
 }
 
-/// Struct boxes (`struct_new`) of an owned struct list and the copy `list_get` hands out are
-/// freed by the compiler: strict mode reports no live block.
+/// An owned struct list frees its boxes. `list_get` borrows, so a read passed to a function
+/// that only looks at a field is not copied and not freed again.
 #[test]
 fn instrument_strict_struct_list_box_pass_fn_is_clean() {
     let src = std::fs::read_to_string(root().join("tests/lang/drops/drop_list_struct_box_pass_fn.sal"))
@@ -239,7 +238,7 @@ fn instrument_strict_list_pop_struct_is_clean() {
     assert_eq!(out.status.code(), Some(3), "stderr: {stderr}");
 }
 
-/// A fresh value discarded as a statement (`pop`, `get`) is released where it is dropped.
+/// A discarded `pop` is a fresh value the statement releases. A discarded `get` only borrows.
 #[test]
 fn instrument_strict_discarded_fresh_values_are_clean() {
     let src = std::fs::read_to_string(root().join("tests/lang/drops/drop_discard_fresh.sal")).expect("read");
@@ -247,6 +246,39 @@ fn instrument_strict_discarded_fresh_values_are_clean() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
     assert_eq!(out.status.code(), Some(4), "stderr: {stderr}");
+}
+
+/// Pushing a borrowed element copies it. Both lists free their own box: no leak, no double free.
+#[test]
+fn instrument_strict_list_get_pushed_copies_once() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    ys = list_new[P]()\n    list_push(ys, o)\n    list_len(xs) + list_len(ys)\n";
+    let out = run_strict(src, "struct_push");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+}
+
+/// Returning a borrowed element copies it. The caller frees that copy once.
+#[test]
+fn instrument_strict_list_get_returned_is_freed_once() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn give(xs: List[P]) -> P ! alloc\n    list_get(xs, 0)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    p = give(xs)\n    p.n\n";
+    let out = run_strict(src, "struct_ret");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+}
+
+/// A callee that stores the struct takes it: the caller copies, and that copy is freed once.
+#[test]
+fn instrument_strict_list_get_taken_is_freed_once() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn keep(p: P) -> Int ! alloc\n    ys = list_new[P]()\n    list_push(ys, p)\n    list_len(ys)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    keep(o)\n";
+    let out = run_strict(src, "struct_take");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
 }
 
 /// A user fn whose every result is a fresh String hands its caller an owned value: the caller

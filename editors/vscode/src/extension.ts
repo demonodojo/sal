@@ -11,6 +11,7 @@ import {
   bundledToolchainDir,
   checkFile,
   checkStyle,
+  byteRangeOfSelection,
   fixStyle,
   formatFile,
   MISSING_COMPILER_MESSAGE,
@@ -280,6 +281,7 @@ async function applyStandardFix(document: vscode.TextDocument): Promise<void> {
       cwd: cwdFor(document),
       run: spawnProcess,
       readText: async (filePath) => readFileSync(filePath, "utf8"),
+      range: selectionByteRange(document) ?? undefined,
     });
     if (outcome.missingStandard) {
       warnMissingStandard();
@@ -296,6 +298,25 @@ async function applyStandardFix(document: vscode.TextDocument): Promise<void> {
   } finally {
     await held.cleanup();
   }
+}
+
+function selectionByteRange(document: vscode.TextDocument): { start: number; end: number } | null {
+  const active = vscode.window.activeTextEditor;
+  const editor =
+    active && active.document.uri.toString() === document.uri.toString()
+      ? active
+      : vscode.window.visibleTextEditors.find(
+          (item) => item.document.uri.toString() === document.uri.toString(),
+        );
+  if (!editor) return null;
+  const sel = editor.selection;
+  return byteRangeOfSelection(
+    document.getText(),
+    sel.start.line,
+    sel.start.character,
+    sel.end.line,
+    sel.end.character,
+  );
 }
 
 async function holdSource(document: vscode.TextDocument): Promise<{

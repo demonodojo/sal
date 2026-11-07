@@ -1711,6 +1711,9 @@ fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] bo
     _h = table.free()
     _b = vec_push(denv, modes)
     _c = vec_push(denv, ro)
+    took = map_new()
+    _t = dr_took_map(took, tp.fns, cons, 0, tp.fns.len())
+    _k = vec_push(denv, took)
     denv
 
 fn modes_fill_t(m: Int, table: HT, cons: List[Int] borrow, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
@@ -1952,9 +1955,31 @@ fn flat_map_structs_t(m: Int, sts: List[TStruct], enums: List[TEnum], i: Int, n:
             _f = field_classes_t(flags, enums, sd.fields, 0, list_len(sd.fields))
             _p = map_put(m, str_as_int("struct:" + sd.name), flags)
             _d = map_put(m, str_as_int("desc:" + sd.name), str_as_int(desc_struct_text(sts, enums, sd.name, 0)))
+            _fd = field_desc_keys(m, sts, enums, sd.name, sd.fields, 0, list_len(sd.fields))
             flat_map_structs_t(m, sts, enums, i + 1, n)
         else
             flat_map_structs_t(m, sts, enums, i + 1, n)
+
+fn field_desc_keys(m: Int, structs: List[TStruct], enums: List[TEnum], sname: String, fields: List[TField], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fields, i)
+        d = desc_field_text(structs, enums, f.ty, 0)
+        _k = field_desc_one(m, structs, enums, sname, f, d)
+        field_desc_keys(m, structs, enums, sname, fields, i + 1, n)
+
+fn field_desc_one(m: Int, structs: List[TStruct], enums: List[TEnum], sname: String, f: TField, d: String) -> Int ! alloc
+    if str_eq(d, "i") + str_eq(d, "?") + str_eq(d, "") > 0
+        0
+    else
+        _p = map_put(m, str_as_int("fd:" + sname + "." + f.name), str_as_int(d))
+        ty = trim_type_piece(f.ty)
+        sd = desc_struct_text(structs, enums, ty, 0)
+        if str_len(sd) > 0
+            map_put(m, str_as_int("fs:" + sname + "." + f.name), str_as_int(ty))
+        else
+            0
 
 fn field_classes_t(out: Int, enums: List[TEnum], fields: List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n

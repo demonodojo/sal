@@ -16,7 +16,7 @@
 //! The inverse (a handle read from a container, used as a struct argument) unboxes with
 //! `Extract`. Both forms share the layout: one slot per field, nested structs boxed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{FnDef, Item, Program, StructDef, Type};
 use crate::ir::{IfCarry, IrFunction, IrInst, IrModule, SwitchArm, WhileCarry};
@@ -131,6 +131,10 @@ struct Pass<'a> {
     sigs: &'a HashMap<String, FnSig>,
     ret: Option<String>,
     fresh: u32,
+    /// SSA name of a string constant.
+    strs: HashMap<String, String>,
+    /// `sal_desc_copy` of a struct (`S...`): the box is freed after its fields move out.
+    copies: HashSet<String>,
 }
 
 pub fn scalarize_module(
@@ -165,6 +169,8 @@ fn scalarize_fn(
         sigs,
         ret: sig.ret.clone(),
         fresh: 0,
+        strs: HashMap::new(),
+        copies: HashSet::new(),
     };
     let mut scope = Scope::default();
     let mut params = Vec::new();
@@ -305,8 +311,10 @@ impl<'a> Pass<'a> {
 
     fn inst(&mut self, inst: &IrInst, scope: &mut Scope, out: &mut Vec<IrInst>) {
         match inst {
-            IrInst::ConstInt { .. } | IrInst::ConstString { .. } | IrInst::ConstFloat { .. } | IrInst::Drop { .. } => {
-                out.push(inst.clone())
+            IrInst::ConstInt { .. } | IrInst::ConstFloat { .. } | IrInst::Drop { .. } => out.push(inst.clone()),
+            IrInst::ConstString { dest, value } => {
+                self.strs.insert(dest.clone(), value.clone());
+                out.push(inst.clone());
             }
             IrInst::Binary { dest, op, left, right } => {
                 let l = self.plain(left, scope, out);
@@ -468,8 +476,17 @@ impl<'a> Pass<'a> {
             IrInst::AnyBox { .. } | IrInst::AnyCall { .. } => out.push(inst.clone()),
             IrInst::CallSret { .. } | IrInst::SretStore { .. } => out.push(inst.clone()),
             IrInst::Return { value } => {
+                let copy = self.copies.contains(value);
                 if let Some(rs) = self.ret.clone() {
                     let slots = self.slots_of(value, &rs, scope, out);
+                    if copy {
+                        out.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_struct_free_box".into(),
+                            args: vec![value.clone()],
+                        });
+                        self.copies.remove(value);
+                    }
                     out.push(IrInst::SretStore { values: slots });
                     out.push(IrInst::Return { value: "0".into() });
                 } else {
@@ -545,6 +562,13 @@ impl<'a> Pass<'a> {
     ) {
         let Some(sig) = self.sigs.get(func).cloned() else {
             let args = self.plain_all(args, scope, out);
+            if func == "sal_desc_copy" {
+                if let (Some(d), Some(desc)) = (dest, args.first()) {
+                    if self.strs.get(desc).is_some_and(|s| s.starts_with('S')) {
+                        self.copies.insert(d.clone());
+                    }
+                }
+            }
             out.push(IrInst::Call {
                 dest: dest.clone(),
                 func: func.to_string(),

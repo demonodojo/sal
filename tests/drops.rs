@@ -262,12 +262,15 @@ fn enum_box_returned_is_not_freed_but_read_only_arg_is() {
 }
 
 #[test]
-fn string_list_with_a_borrowed_value_is_not_freed() {
+fn string_list_that_stores_a_parameter_is_freed() {
     let ir = ir_of(
-        "string_list_tainted",
+        "string_list_param",
         "fn f(s: String) -> Int ! alloc\n    names = list_new[String]()\n    _a = list_push(names, s)\n    list_len(names)\n",
     );
-    assert!(!ir.contains("sal_list_free"), "{ir}");
+    assert!(
+        ir.contains("sal_list_free"),
+        "storing the parameter takes it, so the list owns the string:\n{ir}"
+    );
 }
 
 #[test]
@@ -465,12 +468,16 @@ fn list_get_struct_passed_to_fn_frees_box_shell_not_full_struct() {
     sal_compiler::fuse::fuse_module(&mut ir_mod);
     let ir = sal_compiler::ir::ir_to_text(&ir_mod);
     assert!(
-        ir.contains("func: \"sal_struct_free_box\""),
-        "box shell must be released after scalarized call:\n{ir}"
+        !ir.contains("func: \"sal_desc_copy\""),
+        "a borrow of list_get is not copied:\n{ir}"
     );
     assert!(
-        !ir.contains("func: \"sal_struct_free\"") || ir.matches("func: \"sal_struct_free\"").count() <= 1,
-        "full struct_free must not run when fields were passed:\n{ir}"
+        !ir.contains("func: \"sal_struct_free_box\""),
+        "a borrowed element is not a box this function frees:\n{ir}"
+    );
+    assert!(
+        !ir.contains("func: \"sal_struct_free\""),
+        "the list owns the element:\n{ir}"
     );
 }
 
@@ -499,8 +506,12 @@ fn bootstrap_module_ir_frees_list_get_struct_box() {
     sal_compiler::fuse::fuse_module(&mut ir);
     let ir = sal_compiler::ir::ir_to_text(&ir);
     assert!(
-        ir.contains("func: \"sal_struct_free_box\""),
-        "module pipeline must emit box shell free:\n{ir}"
+        !ir.contains("func: \"sal_desc_copy\""),
+        "module pipeline must not copy a borrowed list_get:\n{ir}"
+    );
+    assert!(
+        !ir.contains("func: \"sal_struct_free_box\""),
+        "module pipeline must not free the list's element:\n{ir}"
     );
 }
 
@@ -511,8 +522,34 @@ fn list_get_struct_pushed_does_not_free_box_shell() {
         "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    ys = list_new[P]()\n    list_push(ys, o)\n    list_len(ys)\n",
     );
     assert!(
+        ir.contains("func: \"sal_desc_copy\""),
+        "pushing a borrowed element copies it:\n{ir}"
+    );
+    assert!(
         !ir.contains("func: \"sal_struct_free_box\""),
-        "container took the box; no shell free:\n{ir}"
+        "the destination list owns the copy:\n{ir}"
+    );
+}
+
+#[test]
+fn list_get_struct_taken_is_copied_and_the_box_is_freed_once() {
+    let ir = ir_of(
+        "struct_box_take",
+        "struct P\n    name: String\n    n: Int\n\nfn keep(p: P) -> Int ! alloc\n    ys = list_new[P]()\n    list_push(ys, p)\n    list_len(ys)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    keep(o)\n",
+    );
+    assert_eq!(ir.matches("func: \"sal_desc_copy\"").count(), 1, "{ir}");
+    assert_eq!(ir.matches("func: \"sal_struct_free_box\"").count(), 1, "{ir}");
+}
+
+#[test]
+fn list_get_struct_returned_is_copied() {
+    let ir = ir_of(
+        "struct_box_ret",
+        "struct P\n    name: String\n    n: Int\n\nfn give(xs: List[P]) -> P ! alloc\n    list_get(xs, 0)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    p = give(xs)\n    p.n\n",
+    );
+    assert!(
+        ir.contains("func: \"sal_desc_copy\""),
+        "returning a borrowed element copies it:\n{ir}"
     );
 }
 

@@ -153,6 +153,11 @@ impl Parser {
                     en.deprecated = deprecated;
                     Ok(Item::Enum(en))
                 }
+                Item::Const(mut c) => {
+                    Self::reject_attrs(&attrs, &["deprecated"])?;
+                    c.deprecated = deprecated;
+                    Ok(Item::Const(c))
+                }
                 _ => Err(Diagnostic::new(
                     ErrorCode::EParse,
                     "attributes apply to fn, struct or let only",
@@ -208,10 +213,52 @@ impl Parser {
         {
             self.bump();
             self.parse_init_after_kw().map(Item::Fn)
+        } else if self.looks_like_const() {
+            Ok(Item::Const(self.parse_const_def()?))
         } else {
             self.expect(TokenKind::Fn, "expected fn, method, static, init, import, struct, enum or frame")?;
             self.parse_fn_after_kw().map(Item::Fn)
         }
+    }
+
+    /// `IDENT` at item position followed by `=` or `:`.
+    fn looks_like_const(&self) -> bool {
+        if !matches!(self.peek().kind, TokenKind::Ident(_)) {
+            return false;
+        }
+        matches!(
+            self.tokens.get(self.pos + 1).map(|t| &t.kind),
+            Some(TokenKind::Eq | TokenKind::Colon)
+        )
+    }
+
+    fn parse_const_def(&mut self) -> Result<ConstDef, Diagnostic> {
+        let tok = self.bump();
+        let TokenKind::Ident(name) = tok.kind.clone() else {
+            return Err(Diagnostic::new(ErrorCode::EParse, "expected a constant name", tok.span));
+        };
+        if !crate::consteval::is_const_name(&name) {
+            return Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "a module constant's name is uppercase",
+                tok.span,
+            ));
+        }
+        let ty = if self.at(TokenKind::Colon) {
+            self.bump();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect(TokenKind::Eq, "expected =")?;
+        let value = self.parse_expr()?;
+        Ok(ConstDef {
+            name,
+            ty,
+            value,
+            deprecated: self.deprecated.take(),
+            span: tok.span,
+        })
     }
 
     fn parse_method_after_kw(&mut self) -> Result<FnDef, Diagnostic> {

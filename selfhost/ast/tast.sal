@@ -137,6 +137,12 @@ struct TFn
     # read them: the parameters (`self` first), the result, then the body. Qualifiers are not listed.
     tyat: String
 
+struct TConst
+    name: String
+    ty: String
+    expr: Expr
+    deprecated: String
+
 struct TProgram
     fns: List[TFn]
     imports: List[String]
@@ -144,6 +150,7 @@ struct TProgram
     aliases: List[String]
     enums: List[TEnum]
     protocols: List[TProtocol]
+    consts: List[TConst]
 
 # ---- release ----
 # `tp_free` returns the boxes and lists of a typed tree. Strings stay, except in lists, which own
@@ -160,6 +167,8 @@ fn tp_free(tp: TProgram) -> Int ! alloc
     list_free(tp.protocols)
     list_free(tp.imports)
     list_free(tp.aliases)
+    tp_free_consts(tp.consts, 0, tp.consts.len())
+    list_free(tp.consts)
 
 # Parsed fn bodies may share nodes; one table for the whole `fns` list. Do not run on `TProgram`
 # metadata that still owns the same `String` handles as the bodies (use after emit, shallow only).
@@ -193,6 +202,15 @@ fn tp_free_shallow(tp: TProgram) -> Int ! alloc
     list_free(tp.protocols)
     list_free(tp.imports)
     list_free(tp.aliases)
+    tp_free_consts(tp.consts, 0, tp.consts.len())
+    list_free(tp.consts)
+
+fn tp_free_consts(cs: List[TConst], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        tp_free_expr(list_get(cs, i).expr)
+        tp_free_consts(cs, i + 1, n)
 
 fn tp_free_fns_shallow(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -291,10 +309,11 @@ fn tp_free_block(b: TBlock) -> Int ! alloc
 
 # One `seen`/`lseen` for trees that share nodes or lists (drops work buffers). Use only
 # after the caller holds an independent copy (`tv_block` / `tc_block`); not on parse trees.
-fn tp_free_drop_work(body: TBlock, hoisted: TBlock, res: TBlock) -> Int ! alloc
+fn tp_free_drop_work(body: TBlock, hoisted: TBlock, claimed: TBlock, res: TBlock) -> Int ! alloc
     seen = HT.new(512)
     lseen = HT.new(256)
     tp_free_block_go(res, seen, lseen)
+    tp_free_block_go(claimed, seen, lseen)
     tp_free_block_go(hoisted, seen, lseen)
     tp_free_block_go(body, seen, lseen)
     seen.free()

@@ -113,6 +113,7 @@ fn export_item_names(prog: &Program) -> Vec<String> {
             Item::Struct(s) => out.push(s.name.clone()),
             Item::Enum(e) => out.push(e.name.clone()),
             Item::Frame(f) => out.push(f.name.clone()),
+            Item::Const(c) => out.push(c.name.clone()),
             _ => {}
         }
     }
@@ -421,6 +422,12 @@ fn qualify_program(
                     }
                 }
             }
+            Item::Const(c) => {
+                if let Some(t) = &mut c.ty {
+                    qualify_type(t, &ctx)?;
+                }
+                qualify_expr(&mut c.value, &ctx)?;
+            }
             Item::Frame(_) | Item::Import(_) | Item::Protocol(_) => {}
         }
     }
@@ -460,6 +467,11 @@ fn rename_clashing_defs(
                 renames.insert(f.name.clone(), new.clone());
                 f.name = new;
             }
+            Item::Const(c) if clashes.contains(&c.name) => {
+                let new = link_name(&modid, &c.name, true);
+                renames.insert(c.name.clone(), new.clone());
+                c.name = new;
+            }
             _ => {}
         }
     }
@@ -471,10 +483,12 @@ fn rename_clashing_defs(
         match item {
             Item::Fn(f) => {
                 rename_type_refs(&mut f.ret, &renames);
+                let mut bound = HashSet::new();
                 for p in &mut f.params {
                     rename_type_refs(&mut p.ty, &renames);
+                    bound.insert(p.name.clone());
                 }
-                rename_block_refs(&mut f.body, &renames);
+                rename_block_refs(&mut f.body, &renames, &mut bound);
             }
             Item::Struct(s) => {
                 for field in &mut s.fields {
@@ -487,6 +501,12 @@ fn rename_clashing_defs(
                         rename_type_refs(t, &renames);
                     }
                 }
+            }
+            Item::Const(c) => {
+                if let Some(t) = &mut c.ty {
+                    rename_type_refs(t, &renames);
+                }
+                rename_expr_refs(&mut c.value, &renames, &mut HashSet::new());
             }
             Item::Frame(_) | Item::Import(_) | Item::Protocol(_) => {}
         }
@@ -518,46 +538,80 @@ fn rename_type_refs(ty: &mut Type, renames: &HashMap<String, String>) {
     }
 }
 
-fn rename_block_refs(block: &mut Block, renames: &HashMap<String, String>) {
+fn rename_block_refs(
+    block: &mut Block,
+    renames: &HashMap<String, String>,
+    bound: &mut HashSet<String>,
+) {
+    let mut added = Vec::new();
     for st in &mut block.stmts {
         match st {
             Stmt::Break { .. } => {}
-            Stmt::Let { ty, init, .. } => {
+            Stmt::Let { name, ty, init, .. } => {
                 if let Some(t) = ty {
                     rename_type_refs(t, renames);
                 }
-                rename_expr_refs(init, renames);
+                rename_expr_refs(init, renames, bound);
+                if bound.insert(name.clone()) {
+                    added.push(name.clone());
+                }
             }
-            Stmt::Expr(e) => rename_expr_refs(e, renames),
+            Stmt::Expr(e) => rename_expr_refs(e, renames, bound),
             Stmt::Assign { target, value, .. } => {
-                rename_expr_refs(target, renames);
-                rename_expr_refs(value, renames);
+                rename_expr_refs(target, renames, bound);
+                rename_expr_refs(value, renames, bound);
             }
             Stmt::Return { value, .. } => {
                 if let Some(v) = value {
-                    rename_expr_refs(v, renames);
+                    rename_expr_refs(v, renames, bound);
                 }
             }
             Stmt::While { cond, body, .. } => {
-                rename_expr_refs(cond, renames);
-                rename_block_refs(body, renames);
+                rename_expr_refs(cond, renames, bound);
+                rename_block_refs(body, renames, bound);
             }
         }
     }
     if let Some(t) = &mut block.tail {
-        rename_expr_refs(t, renames);
+        rename_expr_refs(t, renames, bound);
+    }
+    for name in added {
+        bound.remove(&name);
     }
 }
 
-fn rename_expr_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
+fn bind_pattern(pat: &Pattern, bound: &mut HashSet<String>, added: &mut Vec<String>) {
+    match pat {
+        Pattern::Ident(name, _) => {
+            if bound.insert(name.clone()) {
+                added.push(name.clone());
+            }
+        }
+        Pattern::Variant { args, .. } => {
+            for a in args {
+                bind_pattern(a, bound, added);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rename_expr_refs(expr: &mut Expr, renames: &HashMap<String, String>, bound: &mut HashSet<String>) {
     match expr {
+        Expr::Ident { name, .. } => {
+            if !bound.contains(name) {
+                if let Some(n) = renames.get(name.as_str()) {
+                    *name = n.clone();
+                }
+            }
+        }
         Expr::Call { func, type_args, args, .. } => {
             if let Expr::Ident { name, .. } = &mut **func {
                 if let Some(n) = renames.get(name.as_str()) {
                     *name = n.clone();
                 }
             } else {
-                rename_expr_refs(func, renames);
+                rename_expr_refs(func, renames, bound);
             }
             for a in type_args {
                 if let TypeArg::Type(t) = a {
@@ -565,7 +619,7 @@ fn rename_expr_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
                 }
             }
             for a in args {
-                rename_expr_refs(a, renames);
+                rename_expr_refs(a, renames, bound);
             }
         }
         // `T.name(…)`: a renamed type used as the base of a static call.
@@ -575,42 +629,58 @@ fn rename_expr_refs(expr: &mut Expr, renames: &HashMap<String, String>) {
                     *name = n.clone();
                 }
             }
-            other => rename_expr_refs(other, renames),
+            other => rename_expr_refs(other, renames, bound),
         },
         Expr::Binary { left, right, .. } => {
-            rename_expr_refs(left, renames);
-            rename_expr_refs(right, renames);
+            rename_expr_refs(left, renames, bound);
+            rename_expr_refs(right, renames, bound);
         }
         Expr::Unary { expr: inner, .. }
         | Expr::To { expr: inner, .. }
-        | Expr::Try { expr: inner, .. } => rename_expr_refs(inner, renames),
-        Expr::Block(b) => rename_block_refs(b, renames),
-        Expr::On { body, .. } => rename_block_refs(body, renames),
+        | Expr::Try { expr: inner, .. } => rename_expr_refs(inner, renames, bound),
+        Expr::Block(b) => rename_block_refs(b, renames, bound),
+        Expr::On { body, .. } => rename_block_refs(body, renames, bound),
         Expr::TensorLit { rows, .. } => {
             for row in rows {
                 for c in row {
-                    rename_expr_refs(c, renames);
+                    rename_expr_refs(c, renames, bound);
                 }
             }
         }
         Expr::Match { scrutinee, arms, .. } => {
-            rename_expr_refs(scrutinee, renames);
+            rename_expr_refs(scrutinee, renames, bound);
             for arm in arms {
-                rename_expr_refs(&mut arm.body, renames);
+                let mut added = Vec::new();
+                bind_pattern(&arm.pattern, bound, &mut added);
+                rename_expr_refs(&mut arm.body, renames, bound);
+                for name in added {
+                    bound.remove(&name);
+                }
             }
         }
         Expr::If { cond, then_block, elsifs, else_block, .. } => {
-            rename_expr_refs(cond, renames);
-            rename_block_refs(then_block, renames);
+            rename_expr_refs(cond, renames, bound);
+            rename_block_refs(then_block, renames, bound);
             for e in elsifs {
-                rename_expr_refs(&mut e.cond, renames);
-                rename_block_refs(&mut e.body, renames);
+                rename_expr_refs(&mut e.cond, renames, bound);
+                rename_block_refs(&mut e.body, renames, bound);
             }
             if let Some(b) = else_block {
-                rename_block_refs(b, renames);
+                rename_block_refs(b, renames, bound);
             }
         }
-        Expr::Lambda { body, .. } => rename_expr_refs(body, renames),
+        Expr::Lambda { params, body, .. } => {
+            let mut added = Vec::new();
+            for p in params {
+                if bound.insert(p.clone()) {
+                    added.push(p.clone());
+                }
+            }
+            rename_expr_refs(body, renames, bound);
+            for name in added {
+                bound.remove(&name);
+            }
+        }
         _ => {}
     }
 }

@@ -9,6 +9,17 @@ fn parse_hello() {
 }
 
 #[test]
+fn fmt_module_const_idempotent() {
+    for src in ["MAX = 1 + 2\n", "MAX: Int = 64\n", "@deprecated(\"old\")\nMAX = 1\n"] {
+        let p1 = parse(src).expect("parse");
+        let f1 = format_program(&p1);
+        let p2 = parse(&f1).expect("re-parse");
+        let f2 = format_program(&p2);
+        assert_eq!(f1, f2, "fmt not idempotent:\n{f1}");
+    }
+}
+
+#[test]
 fn fmt_idempotent() {
     let src = include_str!("../examples/hello.sal");
     let p1 = parse(src).expect("parse");

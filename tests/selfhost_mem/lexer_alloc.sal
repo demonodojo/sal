@@ -1,0 +1,5 @@
+import "../../selfhost/front/lexer.sal"
+
+fn main() -> Int ! alloc
+    t = lex("fn main() -> Int\n    1\n")
+    t.kinds.len()

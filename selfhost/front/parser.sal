@@ -1687,6 +1687,7 @@ struct Items
     protocols: List[TProtocol]
     imports: List[String]
     aliases: List[String]
+    consts: List[TConst]
 
 # The item after its attributes (`bits`, see `parse_item_attrs`): @no_heap goes to fn and method,
 # @layout(c) to struct, @deprecated to fn, method, struct and enum.
@@ -1727,6 +1728,15 @@ fn parse_attributed_item(pr: Parser, it: Items, bits: Int) -> Int ! alloc
             else
                 _m = list_push(it.fns, fn_with_attrs(parse_method_item(pr, parse_method_kw(pr)), nh, dep, ar))
                 parse_program_go(pr, it)
+        elsif looks_like_const(pr) == 1
+            if nh + lay + ar > 0
+                attr_not_here(pr)
+            else
+                _c = list_push(it.consts, parse_const_item(pr, dep))
+                if p_has_err(pr) == 0
+                    parse_program_go(pr, it)
+                else
+                    0
         else
             attr_not_here(pr)
     else
@@ -1789,6 +1799,12 @@ fn parse_program_go(pr: Parser, it: Items) -> Int ! alloc
         elsif parse_method_kw(pr) > 0
             _m = list_push(it.fns, parse_method_item(pr, parse_method_kw(pr)))
             parse_program_go(pr, it)
+        elsif looks_like_const(pr) == 1
+            _c = list_push(it.consts, parse_const_item(pr, ""))
+            if p_has_err(pr) == 0
+                parse_program_go(pr, it)
+            else
+                0
         else
             _d = p_advance(pr)
             parse_program_go(pr, it)
@@ -1897,20 +1913,91 @@ fn parse_program_methods(tp: TProgram, errs: List[String], ndots: Int) -> TProgr
 
 fn parse_program_raw(src: String, errs: List[String], flags: List[Int]) -> TProgram ! alloc
     pr = parser_new(lex(src))
-    it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[TProtocol](), list_new[String](), list_new[String]())
+    it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[TProtocol](), list_new[String](), list_new[String](), list_new[TConst]())
     _a = p_skip_nls(pr)
     _b = parse_program_go(pr, it)
-    msg = parse_program_error(pr, list_len(it.fns), list_len(it.structs), list_len(it.enums), src)
+    msg = parse_program_error(pr, list_len(it.fns), list_len(it.structs), list_len(it.enums), list_len(it.consts), src)
     _n = list_set(flags, 0, list_get(pr.st, 4))
     _f = parser_free(pr)
     if str_len(msg) > 0
         _e = list_push(errs, msg)
-        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums, it.protocols)
+        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums, it.protocols, it.consts)
     else
-        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums, it.protocols)
+        TProgram(it.fns, it.imports, it.structs, it.aliases, it.enums, it.protocols, it.consts)
+
+# An identifier at item position followed by `=` or `:`.
+fn looks_like_const(pr: Parser) -> Int ! alloc
+    t = p_peek(pr)
+    if tok_kind(pr, t) != TK_IDENT()
+        0
+    else
+        k = tok_kind(pr, t + 1)
+        if k == TK_EQ()
+            1
+        elsif k == TK_COLON()
+            1
+        else
+            0
+
+fn is_const_name(s: String) -> Int ! alloc
+    n = str_len(s)
+    if n == 0
+        0
+    else
+        c0 = str_char(s, 0)
+        if c0 < 65
+            0
+        elsif c0 > 90
+            0
+        else
+            is_const_rest(s, 1, n)
+
+fn is_const_rest(s: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    else
+        c = str_char(s, i)
+        if c >= 65
+            if c <= 90
+                is_const_rest(s, i + 1, n)
+            elsif c == 95
+                is_const_rest(s, i + 1, n)
+            else
+                0
+        elsif c >= 48
+            if c <= 57
+                is_const_rest(s, i + 1, n)
+            elsif c == 95
+                is_const_rest(s, i + 1, n)
+            else
+                0
+        elsif c == 95
+            is_const_rest(s, i + 1, n)
+        else
+            0
+
+fn parse_const_item(pr: Parser, dep: String) -> TConst ! alloc
+    t = p_advance(pr)
+    name = tok_own(pr, t)
+    if is_const_name(name) == 0
+        _e = p_set_err(pr, "parse error: a module constant's name is uppercase")
+        TConst(name, "", XNone, dep)
+    else
+        ty = ""
+        if tok_kind(pr, p_peek(pr)) == TK_COLON()
+            _c = p_advance(pr)
+            ty = parse_type_text(pr)
+        else
+            ty = ""
+        if tok_kind(pr, p_peek(pr)) != TK_EQ()
+            _e = p_set_err(pr, "parse error: expected =")
+            TConst(name, ty, XNone, dep)
+        else
+            _q = p_advance(pr)
+            TConst(name, ty, parse_expr(pr), dep)
 
 # The error text of the parse, empty when it went well.
-fn parse_program_error(pr: Parser, nfns: Int, nstructs: Int, nenums: Int, src: String) -> String ! alloc
+fn parse_program_error(pr: Parser, nfns: Int, nstructs: Int, nenums: Int, nconsts: Int, src: String) -> String ! alloc
     if p_has_err(pr) == 1
         strdup(p_err_msg(pr))
     elsif nfns > 0
@@ -1918,6 +2005,8 @@ fn parse_program_error(pr: Parser, nfns: Int, nstructs: Int, nenums: Int, src: S
     elsif nstructs > 0
         ""
     elsif nenums > 0
+        ""
+    elsif nconsts > 0
         ""
     elsif toks_has_code(pr, 0, list_len(pr.kinds)) == 1
         "parse error: expected fn"

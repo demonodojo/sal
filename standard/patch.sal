@@ -8,8 +8,19 @@ struct Off
     has_fix: Int
     fix: String
 
+struct RangedText
+    text: String
+    lo: Int
+    hi: Int
+
 method Off.has_fix() -> Int
     if self.has_fix == 1
+        1
+    else
+        0
+
+method Off.overlaps(lo: Int, hi: Int) -> Int
+    if self.start < hi && self.end > lo
         1
     else
         0
@@ -142,3 +153,69 @@ fn apply_right(src: String, offs: List[Off], idxs: List[Int], i: Int, n: Int) ->
         o = offs.get(idxs.get(i))
         next = patch_one(src, o.start, o.end, o.fix)
         apply_right(next, offs, idxs, i + 1, n)
+
+# Apply fixes whose span overlaps [lo, hi). The returned span is that range after the edits.
+fn apply_ranged_fixes(src: String, offs: List[Off], lo: Int, hi: Int) -> RangedText ! alloc
+    idxs = fix_indices_in_range(offs, lo, hi)
+    if idxs.len() == 0
+        RangedText(src, lo, hi)
+    else
+        ordered = sort_idxs(offs, idxs, 0)
+        chosen = greedy_take(offs, ordered)
+        right = sort_idxs(offs, chosen, 1)
+        text = apply_right(src, offs, right, 0, right.len())
+        RangedText(text, map_edge(offs, chosen, lo, 0), map_edge(offs, chosen, hi, 1))
+
+fn fix_indices_in_range(offs: List[Off], lo: Int, hi: Int) -> List[Int] ! alloc
+    v = List.new[Int]()
+    fix_indices_in_range_go(offs, v, lo, hi, 0, offs.len())
+
+fn fix_indices_in_range_go(offs: List[Off], v: List[Int], lo: Int, hi: Int, i: Int, n: Int) -> List[Int] ! alloc
+    if i >= n
+        v
+    else
+        o = offs.get(i)
+        if o.has_fix() == 0
+            fix_indices_in_range_go(offs, v, lo, hi, i + 1, n)
+        elsif o.overlaps(lo, hi) == 0
+            fix_indices_in_range_go(offs, v, lo, hi, i + 1, n)
+        else
+            v.push(i)
+            fix_indices_in_range_go(offs, v, lo, hi, i + 1, n)
+
+fn shift_before(offs: List[Off], chosen: List[Int], pos: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        o = offs.get(chosen.get(i))
+        if o.end <= pos
+            delta = o.fix.len() - (o.end - o.start)
+            shift_before(offs, chosen, pos, i + 1, n, acc + delta)
+        else
+            shift_before(offs, chosen, pos, i + 1, n, acc)
+
+fn strict_cover(offs: List[Off], chosen: List[Int], pos: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    else
+        ix = chosen.get(i)
+        o = offs.get(ix)
+        if o.start < pos && o.end > pos
+            ix
+        else
+            strict_cover(offs, chosen, pos, i + 1, n)
+
+fn map_edge(offs: List[Off], chosen: List[Int], pos: Int, as_end: Int) -> Int ! alloc
+    ix = strict_cover(offs, chosen, pos, 0, chosen.len())
+    if ix < 0
+        pos + shift_before(offs, chosen, pos, 0, chosen.len(), 0)
+    else
+        map_covered(offs, chosen, ix, as_end)
+
+fn map_covered(offs: List[Off], chosen: List[Int], ix: Int, as_end: Int) -> Int ! alloc
+    o = offs.get(ix)
+    base = o.start + shift_before(offs, chosen, o.start, 0, chosen.len(), 0)
+    if as_end == 1
+        base + o.fix.len()
+    else
+        base

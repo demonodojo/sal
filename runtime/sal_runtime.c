@@ -2520,6 +2520,15 @@ static int64_t desc_copy(const char *d, int64_t raw) {
     return raw;
 }
 
+/* Deep copy of one element. The compiler calls this when a borrowed `list_get` takes
+ * ownership (return, take, push/set/put, constructor). `list_get` itself does not. */
+int64_t sal_desc_copy(const char *d, int64_t raw) {
+    if (!d || !d[0]) {
+        return raw;
+    }
+    return desc_copy(d, raw);
+}
+
 /* The descriptor of a legacy packed kind: 0-2 Copy scalars, 3 String, and
  * 4 | n << 4 | mask << 12 a flat struct whose field i is a String when bit i of
  * mask is set. A struct descriptor is allocated and owned by the list. */
@@ -2551,7 +2560,8 @@ void *sal_list_new(void) {
 
 /* `list_new[T]()`: `desc` is the element descriptor (a string constant). A leading `+`
  * marks an owned list: `list_free` (and `list_set`) release its elements. Without it the
- * list only copies them on `list_get` and never releases them (it borrows them). */
+ * list never releases them. `list_get` always borrows the stored pointer; a deep copy is
+ * `sal_desc_copy`, which the compiler inserts only when the value takes ownership. */
 void *sal_list_new_desc(const char *desc) {
     SalList *l = (SalList *)sal_xmalloc(sizeof(SalList), "list_new");
     if (!l) {
@@ -2676,7 +2686,7 @@ int64_t sal_list_get_typed(void *vp, int64_t i) {
     if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_get: out of bounds");
     }
-    return desc_copy(l->desc, l->vec.data[i]);
+    return l->vec.data[i];
 }
 
 typedef struct {

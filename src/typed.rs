@@ -44,6 +44,7 @@ impl TypedProgram {
                 }
                 Item::Enum(e) => items.push(TypedItem::Enum(e)),
                 Item::Protocol(p) => items.push(TypedItem::Protocol(p)),
+                Item::Const(_) => {}
                 Item::Fn(f) => {
                     let types = entries
                         .iter()

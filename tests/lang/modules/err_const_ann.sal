@@ -1,0 +1,5 @@
+# error: E_TYPE
+MAX: String = 1
+
+fn main() -> Int
+    0

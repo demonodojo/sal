@@ -19,6 +19,7 @@ import {
 import { materializeSource } from "../materialize";
 import { scanSalLine } from "../syntaxScan";
 import {
+  byteRangeOfSelection,
   checkFile,
   checkStyle,
   fixStyle,
@@ -385,6 +386,33 @@ test("standard fix devuelve el texto reescrito si sale 0 o 1", async () => {
   });
   assert.equal(lex.text, null);
   assert.equal(lex.missingStandard, false);
+
+  const ranged = await fixStyle({
+    command: "standard",
+    filePath: "/tmp/main.sal",
+    cwd: "/tmp",
+    range: { start: 4, end: 9 },
+    run: async (_command, args) => {
+      assert.deepEqual(args, ["fix", "/tmp/main.sal", "--start", "4", "--end", "9"]);
+      return { stdout: "", stderr: "", exitCode: 0, notFound: false };
+    },
+    readText: async () => fixed,
+  });
+  assert.equal(ranged.text, fixed);
+});
+
+test("una selección no vacía es un intervalo de bytes UTF-8", () => {
+  const src = "fn main() -> String ! alloc\n    strdup(\"a\")\n    strdup(\"ñ\")\n";
+  const token = "strdup(\"ñ\")";
+  const startChar = 4;
+  const endChar = startChar + [...token].length;
+  const range = byteRangeOfSelection(src, 2, startChar, 2, endChar);
+  assert.ok(range);
+  assert.equal(
+    Buffer.from(src, "utf8").subarray(range.start, range.end).toString("utf8"),
+    token,
+  );
+  assert.equal(byteRangeOfSelection(src, 1, 0, 1, 0), null);
 });
 
 test("el temporal del buffer sucio se borra", async () => {

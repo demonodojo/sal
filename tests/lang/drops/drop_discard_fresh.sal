@@ -1,6 +1,6 @@
 # exit: 4
 # A fresh value discarded as a statement is released where it is dropped: the struct and the
-# String that `pop` gives up, and the copy `get` hands out.
+# String that `pop` gives up. `get` only borrows, so a discarded read frees nothing.
 struct P
     name: String
     n: Int

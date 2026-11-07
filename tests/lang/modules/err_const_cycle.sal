@@ -1,0 +1,6 @@
+# error: E_TYPE
+A = B
+B = A
+
+fn main() -> Int
+    A

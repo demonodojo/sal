@@ -58,8 +58,22 @@ fn format_program_raw(p: &Program) -> String {
             Item::Frame(f) => out.push_str(&format_frame(f)),
             Item::Enum(e) => out.push_str(&format_enum(e)),
             Item::Protocol(p) => out.push_str(&format_protocol(p)),
+            Item::Const(c) => out.push_str(&format_const(c)),
         }
     }
+    out
+}
+
+fn format_const(c: &ConstDef) -> String {
+    let mut out = deprecated_line(&c.deprecated);
+    out.push_str(&c.name);
+    if let Some(ty) = &c.ty {
+        out.push_str(": ");
+        out.push_str(&format_type(ty));
+    }
+    out.push_str(" = ");
+    out.push_str(&format_expr(&c.value, 0));
+    out.push('\n');
     out
 }
 

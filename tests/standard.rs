@@ -15,28 +15,34 @@ static COMPILE_LOCK: Mutex<()> = Mutex::new(());
 fn standard_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
-        let _guard = COMPILE_LOCK.lock().expect("standard compile lock");
-        let _ = fs::remove_dir_all(root().join("target/sal-out"));
-        let opts = CompileOptions {
-        toolchain: Default::default(),
-        output: None,
-            release: false,
-            instrument: false,
-            device: "cpu".into(),
-            project_root: root(),
-            skip_link: false,
-        };
-        let art =
-            compile_file(&root().join("standard/main.sal"), &opts).expect("compile standard");
-        let bin = art.binary.expect("standard binary");
-        let copy = PathBuf::from(format!(
-            "/tmp/sal-standard-bin-{}",
-            std::process::id()
-        ));
-        fs::copy(&bin, &copy).expect("copy standard bin");
-        copy
+        // The default test thread (2 MiB) is too small to compile standard/.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(compile_standard_bin)
+            .expect("spawn standard compile")
+            .join()
+            .expect("standard compile thread")
     })
     .clone()
+}
+
+fn compile_standard_bin() -> PathBuf {
+    let _guard = COMPILE_LOCK.lock().expect("standard compile lock");
+    let _ = fs::remove_dir_all(root().join("target/sal-out"));
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: root(),
+        skip_link: false,
+    };
+    let art = compile_file(&root().join("standard/main.sal"), &opts).expect("compile standard");
+    let bin = art.binary.expect("standard binary");
+    let copy = PathBuf::from(format!("/tmp/sal-standard-bin-{}", std::process::id()));
+    fs::copy(&bin, &copy).expect("copy standard bin");
+    copy
 }
 
 fn run_standard(args: &[&str]) -> std::process::Output {
@@ -51,11 +57,17 @@ fn read_fixture(name: &str) -> String {
 }
 
 fn fix_in_temp(input: &str) -> (tempfile::TempDir, String, std::process::Output) {
+    fix_with(input, &[])
+}
+
+fn fix_with(input: &str, extra: &[&str]) -> (tempfile::TempDir, String, std::process::Output) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("input.sal");
     fs::write(&path, input).expect("write temp input");
     let path_str = path.to_string_lossy().into_owned();
-    let out = run_standard(&["fix", &path_str]);
+    let mut args = vec!["fix", path_str.as_str()];
+    args.extend(extra);
+    let out = run_standard(&args);
     let got = fs::read_to_string(&path).expect("read fixed file");
     (dir, got, out)
 }
@@ -413,6 +425,77 @@ fn standard_fix_stdapi() {
     let (_dir, got, out) = fix_in_temp(&input);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(got, read_fixture("stdapi_min_out.sal"));
+}
+
+#[test]
+fn standard_fix_range_only_middle() {
+    let input = "fn main() -> String ! alloc\n    strdup(\"a\")\n    strdup(\"b\")\n    strdup(\"c\")\n";
+    let start = input.find("strdup(\"b\")").expect("middle call");
+    let end = start + "strdup(\"b\")".len();
+    let start_s = start.to_string();
+    let end_s = end.to_string();
+    let (_dir, got, out) = fix_with(input, &["--start", &start_s, "--end", &end_s]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        got,
+        "fn main() -> String ! alloc\n    strdup(\"a\")\n    d\"b\"\n    strdup(\"c\")\n"
+    );
+}
+
+#[test]
+fn standard_fix_range_second_pass_stays_inside() {
+    let input = "\
+fn keep() -> String ! alloc
+    strdup(\"z\")
+
+fn touch() -> Int
+    if a
+        1
+    else
+        if b
+            2
+        else
+            3
+";
+    let start = input.find("fn touch").expect("second fn");
+    let start_s = start.to_string();
+    let end_s = input.len().to_string();
+    let (_dir, got, out) = fix_with(input, &["--start", &start_s, "--end", &end_s]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        got,
+        "\
+fn keep() -> String ! alloc
+    strdup(\"z\")
+
+fn touch() -> Int
+    if a
+        1
+    elsif b
+        2
+    else
+        3
+"
+    );
+}
+
+#[test]
+fn standard_fix_range_rejects_bad_args() {
+    let input = read_fixture("dupstring_in.sal");
+    let (_dir, got, out) = fix_with(&input, &["--start"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(got, input);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage"));
 }
 
 #[test]

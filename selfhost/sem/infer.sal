@@ -9,6 +9,7 @@ import "../ast/ttypes.sal"
 import "../ast/thash.sal"
 import "../ast/tytext.sal"
 import protocols
+import consteval
 
 # `env` binds names to type texts; `err` is empty or holds the first message; `ret` and `allow`
 # are one-slot cells (the fn's declared return type and whether `return` is allowed); `sigs`
@@ -34,6 +35,7 @@ struct IC
     protocols: List[TProtocol]
     structs: List[TStruct]
     cur_fx: List[Int]
+    cvals: List[CVal]
 
 fn ic_new(tp: TProgram) -> IC ! alloc
     ic_build(tp, 0, 0)
@@ -56,7 +58,9 @@ fn ic_build(tp: TProgram, nres: Int, rec: Int) -> IC ! alloc
     _e = infer_names_enums(names, arity, vtab, tnames, tp.enums, 0, list_len(tp.enums))
     _t = infer_type_names_structs(tnames, tp.structs, 0, list_len(tp.structs))
     imports = list_len(tp.imports)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums, tp.aliases, tp.protocols, tp.structs, ic_fx_empty())
+    vals = list_new[CVal]()
+    _v0 = ce_eval(tp.consts, list_new[CVal](), vals)
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums, tp.aliases, tp.protocols, tp.structs, ic_fx_empty(), vals)
 
 fn ic_free(c: IC borrow) -> Int ! alloc
     _a = tenv_free(c.env)
@@ -68,6 +72,7 @@ fn ic_free(c: IC borrow) -> Int ! alloc
     _g = c.tnames.free()
     _h = c.res.free()
     _v = c.vtab.free()
+    _cv = list_free(c.cvals)
     c.arity.free()
 
 fn ic_count_variants(enums: List[TEnum], i: Int, n: Int, acc: Int) -> Int ! alloc
@@ -118,7 +123,7 @@ fn fx_has_alloc(fx: List[Int]) -> Int ! alloc
         0
 
 fn ic_tp(c: IC borrow) -> TProgram ! alloc
-    TProgram(c.fns, list_new[String](), c.structs, c.aliases, c.enums, c.protocols)
+    TProgram(c.fns, list_new[String](), c.structs, c.aliases, c.enums, c.protocols, list_new[TConst]())
 
 fn ty_compat_or_any(c: IC borrow, at: String, pt: String) -> Int ! alloc
     if str_len(ty_any_protocol(pt)) > 0
@@ -1746,6 +1751,8 @@ fn infer_ident(c: IC borrow, name: String) -> String ! alloc
             "Unknown"
         else
             t
+    elsif str_len(ce_type_of(c.cvals, name)) > 0
+        ce_type_of(c.cvals, name)
     elsif ic_get(c.names, name) != 0
         infer_variant_ty(c, name)
     elsif infer_imported_variant(c, name) == 1
@@ -2150,6 +2157,10 @@ fn infer_return_unit(c: IC borrow) -> Int ! alloc
         0
 
 fn infer_binding(c: IC borrow, st: TStmt) -> Int ! alloc
+    if st.is_let == 0
+        if ce_has(c.cvals, st.name) == 1
+            if tt_index_of(c.env.names, st.name, 0, list_len(c.env.names)) < 0
+                _k = ic_fail(c, "`" + st.name + "` is a constant and cannot be assigned")
     ty = infer_expr(c, st.expr)
     if str_len(st.ty) != 0
         _k = infer_check_known(c, st.ty)
@@ -2288,7 +2299,20 @@ fn infer_program_go(c: IC borrow, i: Int, n: Int) -> Int ! alloc
 
 # Ok(0), or Err(message) for the first type error.
 fn infer_program(tp: TProgram) -> Int ! alloc
+    vals = list_new[CVal]()
+    err = ce_eval(tp.consts, list_new[CVal](), vals)
+    if str_len(err) > 0
+        _f = list_free(vals)
+        result_err_str(err)
+    else
+        infer_with_vals(tp, vals)
+
+# `vals` already holds the constants visible in `tp` (its own and, when the caller
+# evaluated the graph, the imported ones).
+fn infer_with_vals(tp: TProgram, vals: List[CVal]) -> Int ! alloc
     c = ic_new(tp)
+    _s = list_free(c.cvals)
+    c.cvals = vals
     r = infer_program_go(c, 0, list_len(tp.fns))
     _f = ic_free(c)
     r

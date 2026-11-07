@@ -1,0 +1,5 @@
+import "../../selfhost/pkg/result.sal"
+
+fn main() -> Int ! alloc
+    r = result_ok(3)
+    result_unwrap(r)

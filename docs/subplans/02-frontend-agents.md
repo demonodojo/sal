@@ -23,7 +23,7 @@ El lexer no conoce la gramática de expresiones. Emite tokens e inserta layout:
 3. La sangría se mide en espacios. Si la columna sube, un `INDENT`. Si baja, tantos `DEDENT` como niveles desapilados. Si no coincide con un nivel abierto, `E_PARSE`.
 4. Un tabulador es `E_PARSE`.
 5. `->` es `Arrow`, `=>` es `FatArrow`, `==` `!=` `<=` `>=` son un token cada uno.
-6. Las palabras clave son las de la SPEC (`fn`, `let`, `if`, `elsif`, `else`, `match`, `on`, `to`, `kernel`, `return`, `import`, `try`, `struct`, `enum`, `frame`, `cpu`, `gpu`, `tpu`, `true`, `false`). `method`, `static` (solo al inicio de un item, seguidos de `Tipo.`), `init` (al inicio de un item, seguido de `Tipo(`), `borrow`, `take`, `io`, `alloc` y `panic` son `IDENT` que el parser reconoce en su sitio. `F32`, `F16`, `BF16` e `I8` también. Prefijos de cadena pegados al `STRING`: `d`, `f`, `r` (`DSTRING`, `FSTRING`, `RSTRING`; este último solo en patrones de `match`).
+6. Las palabras clave son las de la SPEC (`fn`, `let`, `if`, `elsif`, `else`, `match`, `on`, `to`, `kernel`, `return`, `import`, `try`, `struct`, `enum`, `frame`, `cpu`, `gpu`, `tpu`, `true`, `false`). Una constante de módulo no añade palabra clave: es un `IDENT` en mayúsculas al inicio de un item, seguido de `=` o de `:`. `method`, `static` (solo al inicio de un item, seguidos de `Tipo.`), `init` (al inicio de un item, seguido de `Tipo(`), `borrow`, `take`, `io`, `alloc` y `panic` son `IDENT` que el parser reconoce en su sitio. `F32`, `F16`, `BF16` e `I8` también. Prefijos de cadena pegados al `STRING`: `d`, `f`, `r` (`DSTRING`, `FSTRING`, `RSTRING`; este último solo en patrones de `match`).
 7. `STRING` guarda el texto literal (escapes `\`); no escanea interpolación.
 8. Si un `IDENT` es exactamente `d` y el siguiente carácter es `"`, el lexer emite un solo token `DupString` (gramática `DSTRING`) con el contenido de la cadena; el span va desde la `d` hasta la comilla de cierre. El parser lo desazucará a `Call { func: Ident("strdup"), args: [String …] }`.
 9. Si un `IDENT` es exactamente `f` y el siguiente carácter es `"`, el lexer emite un token `FString` (gramática `FSTRING`); el span va desde la `f` hasta la comilla de cierre. El parser guarda el texto y, si hay `#{IDENT}`, las partes `Lit` e `Interp`; `##{` es literal. Otra interpolación es `E_PARSE`.
@@ -77,7 +77,7 @@ Asignación: una línea `expr "=" expr` solo es `Stmt::Assign` si la izquierda e
 - `TypeArg::Type(Type)`
 - `TypeArg::Dim(Dim)` para `INT` y `?`
 
-`load[F32, 4, 4]("w.salt")` guarda `F32` como tipo y `4`, `4` como dimensiones. Sube `AST_SCHEMA_VERSION` a 2 y el JSON lo dice en `schema_version`.
+`load[F32, 4, 4]("w.salt")` guarda `F32` como tipo y `4`, `4` como dimensiones. El JSON lo dice en `schema_version`. Una constante de módulo es `Item::Const`: `schema_version` 5.
 
 Un `@` o la palabra `parallel` en el arranque es `E_PARSE`.
 

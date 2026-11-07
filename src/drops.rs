@@ -29,6 +29,8 @@ thread_local! {
     static EXPR_TYPES: std::cell::RefCell<HashMap<(u32, u32), Type>> = std::cell::RefCell::new(HashMap::new());
     /// The descriptor of each ownable struct (`ir::struct_desc`), for copies released at scope end.
     static STRUCT_DESC: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
+    /// Field name and type of every struct, so a borrowed field can be copied when it takes ownership.
+    static FIELDS: std::cell::RefCell<HashMap<String, Vec<(String, Type)>>> = std::cell::RefCell::new(HashMap::new());
     /// Structs a list can own (see `ir::struct_desc`): name -> the class of each field.
     static OWNABLE: std::cell::RefCell<HashMap<String, Vec<FieldOwn>>> = std::cell::RefCell::new(HashMap::new());
     /// Names of the enum types of the program (a `List[E]` of them owns its boxes).
@@ -101,6 +103,16 @@ fn collect_ownable(structs: &HashMap<String, StructDef>, enums: &HashMap<String,
         m.insert(sd.name.clone(), kinds);
     }
     OWNABLE.with(|f| *f.borrow_mut() = m);
+    let fields = structs
+        .iter()
+        .map(|(n, sd)| {
+            (
+                n.clone(),
+                sd.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
+            )
+        })
+        .collect();
+    FIELDS.with(|f| *f.borrow_mut() = fields);
     let descs = structs
         .keys()
         .filter_map(|n| crate::ir::struct_desc(n, &structs, &enums).map(|d| (n.clone(), d)))
@@ -108,27 +120,20 @@ fn collect_ownable(structs: &HashMap<String, StructDef>, enums: &HashMap<String,
     STRUCT_DESC.with(|f| *f.borrow_mut() = descs);
 }
 
-/// The release kind of a copy `list_get(xs, i)` of a describable struct: the copy is a deep
-/// copy (`desc_copy`), fresh whoever owns `xs`. `struct:<desc>` names the release.
+/// `list_get` borrows. Only an explicit `desc_copy` (inserted where the borrow takes
+/// ownership) is a fresh struct box. `struct:<desc>` names the release.
 fn struct_copy_kind(local: &str, init: &Expr) -> Option<&'static str> {
-    let Expr::Call { func, span, .. } = init else {
+    let _ = local;
+    let Expr::Call { func, args, .. } = init else {
         return None;
     };
-    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") {
+    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "desc_copy") {
         return None;
     }
-    // A hoisted temporary records its struct; otherwise the call's own recorded type.
-    let sn = match TMP_STRUCTS.with(|t| t.borrow().get(local).cloned()) {
-        Some(sn) => sn,
-        None => match EXPR_TYPES.with(|t| t.borrow().get(&(span.start, span.end)).cloned()) {
-            Some(Type::Named { name: sn, args, .. }) if args.is_empty() => sn,
-            _ => return None,
-        },
+    let desc = match args.first() {
+        Some(Expr::String { value, .. }) if value.starts_with('S') => value.clone(),
+        _ => return None,
     };
-    if !is_ownable_struct(&sn) {
-        return None;
-    }
-    let desc = STRUCT_DESC.with(|t| t.borrow().get(&sn).cloned())?;
     Some(Box::leak(format!("struct:{desc}").into_boxed_str()))
 }
 
@@ -228,9 +233,12 @@ thread_local! {
     static READ_ONLY: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
     /// Per user fn, per parameter: `true` when the fn consumes that parameter (last `insert_drops`).
     static CONSUMED: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
+    /// Per user fn, per parameter: `true` when the whole value is stored or returned
+    /// (a Copy field read does not count).
+    static KEPT: std::cell::RefCell<ReadOnly> = std::cell::RefCell::new(HashMap::new());
     /// Last whole-graph fixpoint. Compiling a module graph lowers one module at a time and each
     /// lowering would otherwise walk every function again.
-    static FIXPOINT_CACHE: std::cell::RefCell<Option<(u64, ReadOnly, ReadOnly)>> =
+    static FIXPOINT_CACHE: std::cell::RefCell<Option<(u64, ReadOnly, ReadOnly, ReadOnly)>> =
         std::cell::RefCell::new(None);
 }
 
@@ -650,22 +658,25 @@ fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> 
     };
     if cache_key != 0 {
         let hit = FIXPOINT_CACHE.with(|c| {
-            c.borrow().as_ref().and_then(|(k, ro, cons)| {
+            c.borrow().as_ref().and_then(|(k, ro, cons, kept)| {
                 if *k == cache_key {
-                    Some((ro.clone(), cons.clone()))
+                    Some((ro.clone(), cons.clone(), kept.clone()))
                 } else {
                     None
                 }
             })
         });
-        if let Some((ro, cons)) = hit {
+        if let Some((ro, cons, kept)) = hit {
             CONSUMED.with(|c| *c.borrow_mut() = cons);
+            KEPT.with(|k| *k.borrow_mut() = kept);
             return ro;
         }
     }
+    let mut kept_map = ReadOnly::new();
     for f in &fns {
         ro.insert(f.name.clone(), vec![true; f.params.len()]);
         cons.insert(f.name.clone(), vec![false; f.params.len()]);
+        kept_map.insert(f.name.clone(), vec![false; f.params.len()]);
     }
     loop {
         let mut changed = false;
@@ -673,6 +684,7 @@ fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> 
             let facts = fn_facts(f, variants, &ro, &cons);
             let flags = ro.get_mut(&f.name).unwrap();
             let took = cons.get_mut(&f.name).unwrap();
+            let kept = kept_map.get_mut(&f.name).unwrap();
             for (i, p) in f.params.iter().enumerate() {
                 if flags[i] && facts.escapes(&p.name) {
                     flags[i] = false;
@@ -682,15 +694,20 @@ fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> 
                     took[i] = true;
                     changed = true;
                 }
+                if !kept[i] && facts.kept.contains(&p.name) {
+                    kept[i] = true;
+                    changed = true;
+                }
             }
         }
         if !changed {
             if cache_key != 0 {
                 FIXPOINT_CACHE.with(|c| {
-                    *c.borrow_mut() = Some((cache_key, ro.clone(), cons.clone()));
+                    *c.borrow_mut() = Some((cache_key, ro.clone(), cons.clone(), kept_map.clone()));
                 });
             }
             CONSUMED.with(|c| *c.borrow_mut() = cons);
+            KEPT.with(|k| *k.borrow_mut() = kept_map);
             return ro;
         }
     }
@@ -705,6 +722,7 @@ fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly, cons: &ReadOnly) -> F
     };
     for p in &f.params {
         facts.bind(&p.name);
+        facts.param_tys.insert(p.name.clone(), p.ty.clone());
     }
     block(&f.body, &mut facts);
     propagate_payload_escapes(&mut facts);
@@ -738,6 +756,7 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "list_box_id"
             | "list_get"
             | "list_pop"
+            | "desc_copy"
             | "dict_get"
             | "dict_has"
             | "dict_len"
@@ -855,6 +874,23 @@ fn is_ownable_enum(name: &str) -> bool {
 /// A value whose ownership is certainly the container's once stored: a string
 /// literal, a fresh-string call or a `+` string chain. A name or a call to a
 /// user function may be someone else's value, so storing it taints the container.
+/// A parameter of `String`, a describable struct or an enum. The caller has moved or copied
+/// it, so a list that stores it owns that value.
+fn is_owned_param(e: &Expr, f: &Facts) -> bool {
+    let Expr::Ident { name, .. } = e else {
+        return false;
+    };
+    let Some(Type::Named { name: ty, args, .. }) = f.param_tys.get(name) else {
+        return false;
+    };
+    args.is_empty() && (ty == "String" || is_ownable_struct(ty) || is_ownable_enum(ty))
+}
+
+/// `desc_copy` builds a value the destination owns. Storing it does not alias the source.
+pub(crate) fn is_desc_copy(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "desc_copy"))
+}
+
 pub(crate) fn is_fresh_value(e: &Expr) -> bool {
     match e {
         Expr::String { .. } => true,
@@ -924,6 +960,9 @@ struct Facts {
     /// Handed out for real (returned, stored, or passed to a callee that consumes it).
     /// A Copy field (`return p.n`) is in `escaped` but not here.
     consumed: HashSet<String>,
+    /// The whole value was stored or returned. A Copy field read is not here, so a function
+    /// that only reads `p.n` does not keep `p`.
+    kept: HashSet<String>,
     /// The argument under `arg` is passed to a callee that consumes it.
     consume_arg: bool,
     /// `consume_arg` is a user function, not a builtin that merely fails `borrows_args`.
@@ -950,6 +989,8 @@ struct Facts {
     bind_depth: HashMap<String, u32>,
     /// Inside a struct constructor call: value arguments move out fully (not soft).
     hard_move: u32,
+    /// Parameter types. Storing one of these in a list moves a value this function owns.
+    param_tys: HashMap<String, Type>,
     /// Struct copies (`list_get`) passed to a user fn: only the fields move; the malloc box stays.
     box_shell: HashSet<String>,
 }
@@ -988,11 +1029,13 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
             f.escaped.insert(name.clone());
             if !copy_leaf {
                 f.consumed.insert(name.clone());
+                f.kept.insert(name.clone());
             }
         }
     }
     if let Expr::Ident { name, .. } = a {
         if !safe {
+            f.kept.insert(name.clone());
             if f.hard_move > 0 {
                 f.escaped.insert(name.clone());
                 f.consumed.insert(name.clone());
@@ -1241,7 +1284,13 @@ fn push_stmt(e: &Expr, f: &mut Facts) -> bool {
     }
     // The stored value is the last argument (`list_push(xs, v)`, `list_set(xs, i, v)`, `dict_put(d, k, v)`).
     if let (Expr::Ident { name: container, .. }, Some(v)) = (&args[0], args.last()) {
-        if args.len() >= 2 && !is_fresh_value(v) && !is_fresh_struct_ctor(v, &f.variants) && !is_fresh_variant_ctor(v, &f.variants) {
+        if args.len() >= 2
+            && !is_fresh_value(v)
+            && !is_desc_copy(v)
+            && !is_fresh_struct_ctor(v, &f.variants)
+            && !is_fresh_variant_ctor(v, &f.variants)
+            && !is_owned_param(v, f)
+        {
             f.tainted.insert(container.clone());
         }
     }
@@ -1361,7 +1410,7 @@ impl Ctx {
     /// (`list_pop`). `None` when the statement keeps nothing to release.
     fn discard_kind(&self, e: &Expr) -> Option<&'static str> {
         if let Expr::Call { func, args, .. } = e {
-            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") {
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop") {
                 if let Some(Expr::Ident { name: xs, .. }) = args.first() {
                     if self.facts.bindings.get(xs) == Some(&1) {
                         if let Some(k) = self.owned_elems.get(xs) {
@@ -1398,11 +1447,11 @@ impl Ctx {
                 }
             }
         }
-        // `list_get(xs, i)` is a deep copy of the element, and `list_pop(xs)` moves it out of
-        // the list: either way a fresh value of the owned list's element kind.
+        // `list_pop(xs)` moves the element out of the list: a fresh value of the owned
+        // list's element kind. `list_get` borrows and is not released here.
         let elem_release = match init {
             Expr::Call { func, args, .. }
-                if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") =>
+                if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop") =>
             {
                 match args.first() {
                     Some(Expr::Ident { name: xs, .. }) if self.facts.bindings.get(xs) == Some(&1) => {
@@ -1549,7 +1598,7 @@ fn struct_copy_from_types(init: &Expr) -> Option<&'static str> {
     let Expr::Call { func, span, .. } = init else {
         return None;
     };
-    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") {
+    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop") {
         return None;
     }
     let ty = EXPR_TYPES.with(|t| t.borrow().get(&(span.start, span.end)).cloned())?;
@@ -1567,7 +1616,7 @@ fn struct_copy_from_list(init: &Expr, elems: &HashMap<String, String>) -> Option
     let Expr::Call { func, args, .. } = init else {
         return None;
     };
-    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop") {
+    if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop") {
         return None;
     }
     let Expr::Ident { name: xs, .. } = args.first()? else {
@@ -1578,7 +1627,262 @@ fn struct_copy_from_list(init: &Expr, elems: &HashMap<String, String>) -> Option
     Some(Box::leak(format!("struct:{desc}").into_boxed_str()))
 }
 
+#[derive(Clone)]
+struct Borr {
+    desc: String,
+    /// Struct name when the borrowed value is a struct; empty for `String` and enum.
+    sn: String,
+}
+
+fn desc_of_type(t: &Type) -> Option<Borr> {
+    let Type::Named { name, args, .. } = t else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    match name.as_str() {
+        "String" => Some(Borr { desc: "s".into(), sn: String::new() }),
+        "Int" | "Float" | "Bool" | "Unit" => None,
+        n if is_ownable_struct(n) => {
+            let desc = STRUCT_DESC.with(|t| t.borrow().get(n).cloned())?;
+            Some(Borr { desc, sn: n.to_string() })
+        }
+        n if is_enum_type(n) => Some(Borr { desc: "E".into(), sn: String::new() }),
+        _ => None,
+    }
+}
+
+fn type_at(e: &Expr) -> Option<Type> {
+    let sp = e.span();
+    EXPR_TYPES.with(|t| t.borrow().get(&(sp.start, sp.end)).cloned())
+}
+
+fn field_borr(sn: &str, field: &str) -> Option<Borr> {
+    FIELDS.with(|f| {
+        let fields = f.borrow().get(sn)?.clone();
+        let ty = fields.into_iter().find(|(n, _)| n == field)?.1;
+        desc_of_type(&ty)
+    })
+}
+
+/// A `list_get`, a local bound to one, or a field of such a struct.
+fn borrow_of(e: &Expr, borrows: &HashMap<String, Borr>) -> Option<Borr> {
+    match e {
+        Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") => {
+            desc_of_type(&type_at(e)?)
+        }
+        Expr::Ident { name, .. } => borrows.get(name).cloned(),
+        Expr::Field { base, field, .. } => {
+            let b = borrow_of(base, borrows)?;
+            if b.sn.is_empty() {
+                None
+            } else {
+                field_borr(&b.sn, field)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn desc_copy_expr(inner: Expr, desc: &str) -> Expr {
+    let span = inner.span();
+    Expr::Call {
+        func: Box::new(Expr::Ident { name: "desc_copy".into(), span }),
+        type_args: vec![],
+        args: vec![
+            Expr::String { value: desc.to_string(), parts: vec![], span },
+            inner,
+        ],
+        span,
+    }
+}
+
+/// A user parameter that stores or returns the whole value. A function that only reads a
+/// Copy field does not. Unknown callees (builtins) are not user functions.
+fn user_param_owns(callee: &str, index: usize) -> bool {
+    KEPT.with(|k| k.borrow().get(callee).and_then(|v| v.get(index).copied()).unwrap_or(false))
+}
+
+fn arg_is_owning(callee: &str, index: usize, variants: &Variants) -> bool {
+    match callee {
+        "list_push" => index == 1,
+        "list_set" => index == 2,
+        "dict_put" => index == 2,
+        "desc_copy" => false,
+        _ if borrows_args(callee) => false,
+        _ if is_ownable_struct(callee) => true,
+        _ if variants.contains_key(callee) => true,
+        _ => user_param_owns(callee, index),
+    }
+}
+
+fn claim_expr(e: Expr, own: bool, borrows: &mut HashMap<String, Borr>, variants: &Variants) -> Expr {
+    if own {
+        if let Some(b) = borrow_of(&e, borrows) {
+            return desc_copy_expr(e, &b.desc);
+        }
+    }
+    match e {
+        Expr::Call { func, type_args, args, span } => {
+            let callee = match func.as_ref() {
+                Expr::Ident { name, .. } => name.clone(),
+                _ => String::new(),
+            };
+            let func = if matches!(func.as_ref(), Expr::Ident { .. }) {
+                func
+            } else {
+                Box::new(claim_expr(*func, false, borrows, variants))
+            };
+            let args = args
+                .into_iter()
+                .enumerate()
+                .map(|(i, a)| claim_expr(a, arg_is_owning(&callee, i, variants), borrows, variants))
+                .collect();
+            Expr::Call { func, type_args, args, span }
+        }
+        Expr::Binary { op, left, right, span } => Expr::Binary {
+            op,
+            left: Box::new(claim_expr(*left, false, borrows, variants)),
+            right: Box::new(claim_expr(*right, false, borrows, variants)),
+            span,
+        },
+        Expr::Unary { op, expr, span } => Expr::Unary {
+            op,
+            expr: Box::new(claim_expr(*expr, false, borrows, variants)),
+            span,
+        },
+        Expr::Field { base, field, span } => Expr::Field {
+            base: Box::new(claim_expr(*base, false, borrows, variants)),
+            field,
+            span,
+        },
+        Expr::If { cond, mut then_block, elsifs, else_block, span } => {
+            let cond = Box::new(claim_expr(*cond, false, borrows, variants));
+            claim_block(&mut then_block, own, borrows, variants);
+            let elsifs = elsifs
+                .into_iter()
+                .map(|mut a| {
+                    a.cond = claim_expr(a.cond, false, borrows, variants);
+                    claim_block(&mut a.body, own, borrows, variants);
+                    a
+                })
+                .collect();
+            let else_block = else_block.map(|mut b| {
+                claim_block(&mut b, own, borrows, variants);
+                b
+            });
+            Expr::If { cond, then_block, elsifs, else_block, span }
+        }
+        Expr::Match { scrutinee, arms, span } => Expr::Match {
+            scrutinee: Box::new(claim_expr(*scrutinee, false, borrows, variants)),
+            arms: arms
+                .into_iter()
+                .map(|a| MatchArm {
+                    body: claim_expr(a.body, own, borrows, variants),
+                    pattern: a.pattern,
+                    span: a.span,
+                })
+                .collect(),
+            span,
+        },
+        Expr::Block(mut b) => {
+            let mut inner = borrows.clone();
+            claim_block(&mut b, own, &mut inner, variants);
+            Expr::Block(b)
+        }
+        Expr::Lambda { params, body, span } => {
+            let mut inner = borrows.clone();
+            for p in &params {
+                inner.remove(p);
+            }
+            Expr::Lambda {
+                body: Box::new(claim_expr(*body, true, &mut inner, variants)),
+                params,
+                span,
+            }
+        }
+        Expr::On { place, kernel, kernel_index, mut body, span } => {
+            claim_block(&mut body, false, borrows, variants);
+            Expr::On { place, kernel, kernel_index, body, span }
+        }
+        Expr::To { place, expr, span } => Expr::To {
+            place,
+            expr: Box::new(claim_expr(*expr, true, borrows, variants)),
+            span,
+        },
+        Expr::Try { expr, span } => Expr::Try {
+            expr: Box::new(claim_expr(*expr, true, borrows, variants)),
+            span,
+        },
+        Expr::TensorLit { rows, span } => Expr::TensorLit {
+            rows: rows
+                .into_iter()
+                .map(|row| row.into_iter().map(|c| claim_expr(c, false, borrows, variants)).collect())
+                .collect(),
+            span,
+        },
+        other => other,
+    }
+}
+
+fn note_borrow(name: &str, init: &Expr, borrows: &mut HashMap<String, Borr>) {
+    if let Some(b) = borrow_of(init, borrows) {
+        borrows.insert(name.to_string(), b);
+    } else {
+        borrows.remove(name);
+    }
+}
+
+fn claim_stmt(st: Stmt, borrows: &mut HashMap<String, Borr>, variants: &Variants) -> Stmt {
+    match st {
+        Stmt::Let { name, ty, init, frozen, stack, span } => {
+            let init = claim_expr(init, false, borrows, variants);
+            note_borrow(&name, &init, borrows);
+            Stmt::Let { name, ty, init, frozen, stack, span }
+        }
+        Stmt::Assign { target, value, span } => match target {
+            Expr::Ident { name, span: ns } => {
+                let value = claim_expr(value, false, borrows, variants);
+                note_borrow(&name, &value, borrows);
+                Stmt::Assign {
+                    target: Expr::Ident { name, span: ns },
+                    value,
+                    span,
+                }
+            }
+            target => Stmt::Assign {
+                target,
+                value: claim_expr(value, true, borrows, variants),
+                span,
+            },
+        },
+        Stmt::Return { value, span } => Stmt::Return {
+            value: value.map(|v| claim_expr(v, true, borrows, variants)),
+            span,
+        },
+        Stmt::While { cond, mut body, span } => {
+            let cond = claim_expr(cond, false, borrows, variants);
+            claim_block(&mut body, false, borrows, variants);
+            Stmt::While { cond, body, span }
+        }
+        Stmt::Expr(e) => Stmt::Expr(claim_expr(e, false, borrows, variants)),
+        other => other,
+    }
+}
+
+fn claim_block(b: &mut Block, own_tail: bool, borrows: &mut HashMap<String, Borr>, variants: &Variants) {
+    let mut inner = borrows.clone();
+    let stmts = std::mem::take(&mut b.stmts);
+    b.stmts = stmts.into_iter().map(|st| claim_stmt(st, &mut inner, variants)).collect();
+    if let Some(t) = b.tail.take() {
+        b.tail = Some(Box::new(claim_expr(*t, own_tail, &mut inner, variants)));
+    }
+}
+
 fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
+    let mut borrows = HashMap::new();
+    claim_block(&mut f.body, true, &mut borrows, variants);
     let mut facts = fn_facts(f, variants, ro, &ReadOnly::new());
     let elems = list_elem_structs(f);
     let mut copy_locals = HashMap::new();

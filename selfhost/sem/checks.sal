@@ -6,6 +6,7 @@ import attrs
 import ownership
 import device
 import "../ast/tast.sal"
+import consteval
 
 # Ok(0), or Err(message) for the first violation in `prog`.
 fn check_program(tp: TProgram) -> Int ! alloc
@@ -16,7 +17,18 @@ fn check_program(tp: TProgram) -> Int ! alloc
 
 # `progs`: every program of the module graph (empty when single-file).
 fn check_program_in(tp: TProgram, progs: List[TProgram]) -> Int ! alloc
-    ty = infer_program(tp)
+    if list_len(progs) == 0
+        check_after_infer(tp, progs, infer_program(tp))
+    else
+        vals = list_new[CVal]()
+        err = ce_eval_all(progs, vals)
+        if str_len(err) > 0
+            _f = list_free(vals)
+            result_err_str(err)
+        else
+            check_after_infer(tp, progs, infer_with_vals(tp, vals))
+
+fn check_after_infer(tp: TProgram, progs: List[TProgram], ty: Int) -> Int ! alloc
     if result_is_err(ty) == 1
         ty
     else

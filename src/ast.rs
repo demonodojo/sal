@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
 
-pub const AST_SCHEMA_VERSION: u32 = 4;
+pub const AST_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Program {
@@ -22,6 +22,19 @@ pub enum Item {
     Enum(EnumDef),
     Frame(FrameDef),
     Protocol(ProtocolDef),
+    /// `NOMBRE = expr` at module scope. `ty` is `None` when the source omits it.
+    Const(ConstDef),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConstDef {
+    pub name: String,
+    #[serde(default)]
+    pub ty: Option<Type>,
+    pub value: Expr,
+    #[serde(default)]
+    pub deprecated: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

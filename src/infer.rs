@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::*;
+use crate::consteval::ConstValue;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::span::Span;
 use crate::string_expr::is_string_type;
@@ -10,6 +11,8 @@ pub struct InferOutput {
     pub expr_types_by_fn: Vec<(FnDef, Vec<ExprTypeEntry>)>,
     pub protocol_calls: HashMap<(u32, u32), (String, String, u32)>,
     pub any_coercions: HashMap<(u32, u32), (String, String)>,
+    /// Constants visible here, keyed by the name after qualify.
+    pub consts: HashMap<String, ConstValue>,
 }
 
 #[derive(Clone)]
@@ -39,6 +42,8 @@ pub struct TypeEnv {
     pub protocol_calls: std::cell::RefCell<HashMap<(u32, u32), (String, String, u32)>>,
     /// Argument expr span → box coercion `(type_name, protocol)`.
     pub any_coercions: std::cell::RefCell<HashMap<(u32, u32), (String, String)>>,
+    /// Constants visible in this module (own and imported), after qualify.
+    pub consts: HashMap<String, crate::consteval::ConstValue>,
 }
 
 impl TypeEnv {
@@ -66,13 +71,16 @@ impl Default for TypeEnv {
             fn_defs: HashMap::new(),
             protocol_calls: Default::default(),
             any_coercions: Default::default(),
+            consts: HashMap::new(),
         }
     }
 }
 
 
 pub fn infer_program(prog: &Program) -> DiagResult<InferOutput> {
-    infer_program_with_env(prog, &type_env_of_program(prog))
+    let mut types = type_env_of_program(prog);
+    types.consts = crate::consteval::eval_consts(prog, &HashMap::new())?;
+    infer_program_with_env(prog, &types)
 }
 
 /// The type environment of one program on its own (no imports).
@@ -128,6 +136,7 @@ pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<Inf
         expr_types_by_fn: out,
         protocol_calls: types.protocol_calls.borrow().clone(),
         any_coercions: types.any_coercions.borrow().clone(),
+        consts: types.consts.clone(),
     })
 }
 
@@ -491,6 +500,13 @@ fn check_stmt(
         Stmt::Assign { target, value, .. } => {
             let vty = check_expr(value, env, ctx, types, entries)?;
             if let Expr::Ident { name, span, .. } = target {
+                if !env.contains_key(name) && types.consts.contains_key(name) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("`{name}` is a constant and cannot be assigned"),
+                        *span,
+                    )]);
+                }
                 if let Some(old) = env.get(name) {
                     if !name.starts_with('_') && scalar_kinds_clash(old, &vty) {
                         return Err(vec![Diagnostic::new(
@@ -587,6 +603,7 @@ Expr::Int { .. } => Type::Named {
         },
         Expr::Ident { name, span } => match env.get(name) {
             Some(t) => t.clone(),
+            None if types.consts.contains_key(name) => types.consts[name].ty(*span),
             None => match find_enum_variant_call(name, types) {
                 // A payload-free variant used as a value.
                 Some((edef, v)) if v.fields.is_empty() => Type::Named {

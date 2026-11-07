@@ -5,7 +5,7 @@
 //! renamed to its link name). Method calls are already resolved to `T__m` calls at that point.
 //! A warning never stops the compilation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::*;
@@ -39,6 +39,7 @@ impl Warning {
 /// The warnings of `modules` (each with the path of its file), in module and source order.
 pub fn check_deprecations(modules: &[(PathBuf, &Program)]) -> Vec<Warning> {
     let mut deprecated: HashMap<String, String> = HashMap::new();
+    let mut const_names: HashSet<String> = HashSet::new();
     for (_, prog) in modules {
         for item in &prog.items {
             match item {
@@ -57,6 +58,12 @@ pub fn check_deprecations(modules: &[(PathBuf, &Program)]) -> Vec<Warning> {
                         deprecated.insert(e.name.clone(), msg.clone());
                     }
                 }
+                Item::Const(c) => {
+                    if let Some(msg) = &c.deprecated {
+                        deprecated.insert(c.name.clone(), msg.clone());
+                        const_names.insert(c.name.clone());
+                    }
+                }
                 _ => {}
             }
         }
@@ -68,6 +75,7 @@ pub fn check_deprecations(modules: &[(PathBuf, &Program)]) -> Vec<Warning> {
     for (path, prog) in modules {
         let mut walk = Walk {
             deprecated: &deprecated,
+            const_names: &const_names,
             path,
             out: &mut out,
         };
@@ -80,6 +88,9 @@ pub fn check_deprecations(modules: &[(PathBuf, &Program)]) -> Vec<Warning> {
 
 struct Walk<'a> {
     deprecated: &'a HashMap<String, String>,
+    /// Deprecated constants. A bare name warns only for these, so a deprecated
+    /// function's name used as an identifier does not warn twice.
+    const_names: &'a HashSet<String>,
     path: &'a Path,
     out: &'a mut Vec<Warning>,
 }
@@ -116,6 +127,12 @@ impl Walk<'_> {
                         self.ty(t);
                     }
                 }
+            }
+            Item::Const(c) => {
+                if let Some(t) = &c.ty {
+                    self.ty(t);
+                }
+                self.expr(&c.value);
             }
             Item::Import(_) | Item::Frame(_) | Item::Protocol(_) => {}
         }
@@ -238,11 +255,12 @@ impl Walk<'_> {
                     self.block(b);
                 }
             }
-            Expr::Int { .. }
-            | Expr::Float { .. }
-            | Expr::Bool { .. }
-            | Expr::String { .. }
-            | Expr::Ident { .. } => {}
+            Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {}
+            Expr::Ident { name, span } => {
+                if self.const_names.contains(name) {
+                    self.hit(name, *span);
+                }
+            }
         }
     }
 }

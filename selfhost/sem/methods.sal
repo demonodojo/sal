@@ -93,7 +93,7 @@ fn methods_resolve(tp: TProgram, c: IC) -> TProgram ! alloc
     fns = list_new[TFn]()
     _a = mr_fns(tp.fns, 0, list_len(tp.fns), c.res, fns)
     _f = ic_free(c)
-    TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums, tp.protocols)
+    TProgram(fns, tp.imports, tp.structs, tp.aliases, tp.enums, tp.protocols, tp.consts)
 
 fn mr_fns(xs: List[TFn], i: Int, n: Int, res: HT, out: List[TFn]) -> Int ! alloc
     if i >= n

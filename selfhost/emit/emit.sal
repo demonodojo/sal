@@ -11,6 +11,7 @@ import "../sem/methods.sal"
 import "../pkg/qualify.sal"
 import "../pkg/cache.sal"
 import "../sem/checks.sal"
+import "../sem/consteval.sal"
 import "../ast/tshape.sal"
 import "../ast/tir.sal"
 import "../ast/tast.sal"
@@ -39,7 +40,20 @@ fn resolve_module_graph_qualified(source_path: String, proot: String, order: Gra
             result_ok(0)
 
 fn emit_ir_from_prog(tp: TProgram) -> String ! alloc
+    _f = ce_prepare_one(tp)
     emit_ir_from_prog_with_extra(tp, vec_new())
+
+fn ce_prepare_one(tp: TProgram) -> Int ! alloc
+    vals = list_new[CVal]()
+    _e = ce_eval(tp.consts, list_new[CVal](), vals)
+    _f = ce_fold_fns(tp.fns, 0, list_len(tp.fns), vals)
+    list_free(vals)
+
+fn ce_prepare_graph(order: Graph) -> Int ! alloc
+    vals = list_new[CVal]()
+    _e = ce_eval_all(order.progs, vals)
+    _f = ce_fold_progs(order.progs, 0, list_len(order.progs), vals)
+    list_free(vals)
 
 fn emit_ir_from_prog_with_extra(tp: TProgram, extra: Int) -> String ! alloc
     ir = lower_program_with_callables(tp, extra)
@@ -119,6 +133,7 @@ fn dep_fn_names(order: Graph, i: Int, n: Int, out: Int) -> Int ! alloc
         dep_fn_names(order, i + 1, n, out2)
 
 fn emit_ir_from_graph(order: Graph, source_path: String) -> Int ! alloc
+    _c = ce_prepare_graph(order)
     _p = source_path
     n = list_len(order.mods)
     extra = vec_new()
@@ -1481,6 +1496,7 @@ fn fns_have_main(fns: List[TFn], i: Int, n: Int) -> Int ! alloc
         fns_have_main(fns, i + 1, n)
 
 fn emit_c_from_ast(tp: TProgram) -> String ! alloc
+    _f = ce_prepare_one(tp)
     user = collect_fn_names_t(tp.fns, 0, list_len(tp.fns), vec_new())
     env = tenv_new(tp)
     text = emit_c_from_ast_module(tp, user, vec_new(), 1, 0, list_new[TEnum](), env, tp.fns)
@@ -1527,6 +1543,7 @@ fn emit_c_compile_graph_go(graph: Graph, i: Int, n: Int, root_key: String, proot
                 emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, objs2, genums, env, seen)
 
 fn emit_c_compile_graph(order: Graph, root_key: String, out_path: String, proot: String) -> Int ! io, alloc
+    _c = ce_prepare_graph(order)
     env = tenv_for_graph(order)
     genums = graph_enums_t(order)
     seen = graph_fns(order)

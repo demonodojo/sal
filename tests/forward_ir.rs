@@ -126,6 +126,14 @@ fn lower_text(src: &str) -> String {
 }
 
 #[test]
+fn module_const_lowers_to_const_int() {
+    let text = lower_text("MAX = 64\nfn main() -> Int\n    MAX\n");
+    assert!(text.contains("ConstInt"), "{text}");
+    assert!(text.contains("64"), "{text}");
+    assert!(!text.contains("Call"), "{text}");
+}
+
+#[test]
 fn string_plus_typed_left_from_call_and_field() {
     // The decision is infer's type of the left operand, not the syntax.
     let by_call = lower_text(

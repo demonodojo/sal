@@ -1,0 +1,5 @@
+# error: E_TYPE
+N = 1 / 0
+
+fn main() -> Int
+    N

@@ -999,8 +999,16 @@ fn dr_taint_unless_flat(c: DC, name: String, v: Expr) -> Int ! alloc
         0
     elsif dx_is_fresh_variant(c, v) == 1
         0
+    elsif dx_is_desc_copy(v) == 1
+        0
     else
         nm_put(c.tainted, name, 1)
+
+# `desc_copy` builds a value the destination owns.
+fn dx_is_desc_copy(e: Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => str_eq(name, "desc_copy")
+        _ => 0
 
 # A variant constructor call `V(..)` builds a new box, and a unit variant `V` is a tag: both
 # are fresh values for a list to own (see `is_fresh_variant_ctor` in src/drops.rs).
@@ -1039,7 +1047,7 @@ fn dx_elem_release(c: DC, e: Expr) -> Int ! alloc
         _ => 0
 
 fn dx_elem_release_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
-    if str_eq(name, "list_get") + str_eq(name, "list_pop") == 0
+    if str_eq(name, "list_pop") == 0
         0
     elsif list_len(args) == 0
         0
@@ -1111,10 +1119,33 @@ fn dr_push_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
 fn dr_push_taint(c: DC, name: String, args: List[Expr]) -> Int ! alloc
     if list_len(args) >= 2
         last = list_get(args, list_len(args) - 1)
-        if dx_is_fresh_value(last) == 0
-            dr_taint_unless_flat(c, name, last)
-        else
+        if dx_is_fresh_value(last) == 1
             0
+        elsif dr_owned_param(c, last) == 1
+            0
+        else
+            dr_taint_unless_flat(c, name, last)
+    else
+        0
+
+# A `String`, describable struct or enum parameter. The caller moved or copied it.
+fn dr_owned_param(c: DC, e: Expr) -> Int ! alloc
+    match e
+        XIdent(name) =>
+            if nm_get(c.params, name) == 0
+                0
+            else
+                dr_owned_param_ty(c, dr_param_ty(c.ps, name, 0, c.ps.len()))
+        _ => 0
+
+fn dr_owned_param_ty(c: DC, ty: String) -> Int ! alloc
+    t = trim_spaces(ty)
+    if t.eq("String") == 1
+        1
+    elsif map_get(c.variants, ("struct:" + t).to_int()) != 0
+        1
+    elsif map_get(c.variants, ("enum:" + t).to_int()) != 0
+        1
     else
         0
 
@@ -1235,15 +1266,9 @@ fn dr_candidate_go(c: DC, name: String, kind: Int) -> Int ! alloc
 # (`struct:` release, kind 8), 0 otherwise.
 # `list_get` of a struct list the local does not own: a copy (`list_pop` only moves out of owned lists).
 fn dx_struct_copy(c: DC, e: Expr) -> Int ! alloc
-    match e
-        XCall(name, args, targs, xp) => dx_copy_get(c, name, args)
-        _ => 0
-
-fn dx_copy_get(c: DC, name: String, args: List[Expr]) -> Int ! alloc
-    if name.eq("list_get") == 0
-        0
-    else
-        dx_struct_copy_call(c, name, args)
+    # `list_get` borrows. A released struct box is only `list_pop` (see `dx_owned_struct_desc`).
+    _u = nm_get(c.kinds, dx_ident(e))
+    0
 
 fn dx_struct_copy_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
     if name.eq("list_get") + name.eq("list_pop") == 0
@@ -1261,11 +1286,15 @@ fn dx_struct_copy_call(c: DC, name: String, args: List[Expr]) -> Int ! alloc
             else
                 map_get(c.variants, str_as_int("desc:" + str_from_int(s)))
 
-# `list_get`/`list_pop` of an owned struct list: the element is a box the local releases
-# with `struct_free` under the list's element descriptor.
+# `list_pop` of an owned struct list: the element is a box the local releases
+# with `struct_free` under the list's element descriptor. `list_get` only borrows.
 fn dx_owned_struct_desc(c: DC, e: Expr) -> Int ! alloc
     match e
-        XCall(name, args, targs, xp) => dx_struct_copy_call(c, name, args)
+        XCall(name, args, targs, xp) =>
+            if str_eq(name, "list_pop") == 0
+                0
+            else
+                dx_struct_copy_call(c, name, args)
         _ => 0
 
 # Kinds whose container owns its elements.
@@ -1731,6 +1760,13 @@ fn dr_ty_scalar6(ty: String) -> Int ! alloc
 
 # One consumed-flag vec per fn, in source order. Indexed, not keyed by name: a string map
 # kept a single slot when the key text was overwritten, so every fn shared one flag.
+fn dr_took_map(m: Int, fns: List[TFn], cons: List[Int], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = map_put(m, str_as_int(list_get(fns, i).name.dup()), list_get(cons, i))
+        dr_took_map(m, fns, cons, i + 1, n)
+
 fn dr_cons_list(fns: List[TFn]) -> List[Int] ! alloc
     dr_cons_fill(list_new[Int](), fns, 0, fns.len())
 
@@ -2063,21 +2099,298 @@ fn dr_hoist_block(h: HC, b: TBlock) -> TBlock ! alloc
     tail = dr_hoist_expr(h, b.tail, out)
     TBlock(out, tail)
 
+# `list_get` borrows. Copy the element only where it takes ownership (`desc_copy`).
+fn br_text(m: NM, name: String) -> String ! alloc
+    h = nm_get(m, name)
+    if h == 0
+        ""
+    else
+        str_from_int(h)
+
+fn dr_elem_desc(targs: String, variants: Int) -> String ! alloc
+    t = trim_type_piece(targs)
+    if str_eq(t, "String") == 1
+        "s"
+    elsif map_get(variants, str_as_int("enum:" + t)) != 0
+        "E"
+    elsif map_get(variants, str_as_int("desc:" + t)) != 0
+        str_from_int(map_get(variants, str_as_int("desc:" + t)))
+    else
+        ""
+
+fn dr_seed_elems(lists: NM, variants: Int, elems: NM, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        name = list_get(lists.names, i)
+        sn = str_from_int(list_get(lists.vals, i))
+        h = map_get(variants, str_as_int("desc:" + sn))
+        _p = if h == 0
+            0
+        else
+            nm_put(elems, name, h)
+        dr_seed_elems(lists, variants, elems, i + 1, n)
+
+fn dr_note_params(ps: List[TParam], variants: Int, elems: NM, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = list_get(ps, i)
+        _a = if str_eq(ty_base(p.ty), "List") == 0
+            0
+        else
+            d = dr_elem_desc(dr_ty_arg0(p.ty), variants)
+            if str_len(d) == 0
+                0
+            else
+                nm_put(elems, p.name, str_as_int(strdup(d)))
+        dr_note_params(ps, variants, elems, i + 1, n)
+
+fn dr_note_list(name: String, e: Expr, variants: Int, elems: NM) -> Int ! alloc
+    match e
+        XCall(fname, args, targs, xp) =>
+            if str_eq(fname, "list_new") + str_eq(fname, "list_new_owned") == 0
+                0
+            else
+                d = dr_elem_desc(targs, variants)
+                if str_len(d) == 0
+                    0
+                else
+                    nm_put(elems, name, str_as_int(strdup(d)))
+        _ => 0
+
+fn dr_list_sn(xs: Expr, lists: NM) -> String ! alloc
+    match xs
+        XIdent(name) => br_text(lists, name)
+        _ => ""
+
+fn dr_borrow_sn(e: Expr, variants: Int, lists: NM, sns: NM) -> String ! alloc
+    match e
+        XIdent(name) => br_text(sns, name)
+        XCall(name, args, targs, xp) =>
+            if str_eq(name, "list_get") == 0
+                ""
+            elsif list_len(args) == 0
+                ""
+            else
+                dr_list_sn(list_get(args, 0), lists)
+        XField(base, field) =>
+            sn = dr_borrow_sn(base, variants, lists, sns)
+            if str_len(sn) == 0
+                ""
+            else
+                h = map_get(variants, str_as_int("fs:" + sn + "." + field))
+                if h == 0
+                    ""
+                else
+                    str_from_int(h)
+        _ => ""
+
+fn dr_borrow_desc(e: Expr, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            if str_eq(name, "list_get") == 0
+                ""
+            elsif list_len(args) == 0
+                ""
+            else
+                dr_get_desc(list_get(args, 0), elems)
+        XIdent(name) => br_text(borrows, name)
+        XField(base, field) =>
+            sn = dr_borrow_sn(base, variants, lists, sns)
+            if str_len(sn) == 0
+                ""
+            else
+                h = map_get(variants, str_as_int("fd:" + sn + "." + field))
+                if h == 0
+                    ""
+                else
+                    str_from_int(h)
+        _ => ""
+
+fn dr_get_desc(xs: Expr, elems: NM) -> String ! alloc
+    match xs
+        XIdent(name) => br_text(elems, name)
+        _ => ""
+
+fn dr_note_borrow(local: String, e: Expr, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM) -> Int ! alloc
+    d = dr_borrow_desc(e, variants, elems, borrows, lists, sns)
+    if str_len(d) == 0
+        _a = nm_put(borrows, local, 0)
+        nm_put(sns, local, 0)
+    else
+        _a = nm_put(borrows, local, str_as_int(strdup(d)))
+        sn = dr_borrow_sn(e, variants, lists, sns)
+        if str_len(sn) == 0
+            nm_put(sns, local, 0)
+        else
+            nm_put(sns, local, str_as_int(strdup(sn)))
+
+fn dr_wrap_copy(e: Expr, desc: String) -> Expr ! alloc
+    args = list_new[Expr]()
+    _a = list_push(args, XStr(strdup(desc)))
+    _b = list_push(args, e)
+    XCall("desc_copy", args, "", 0)
+
+fn dr_took_at(took: Int, callee: String, i: Int) -> Int ! alloc
+    flags = map_get(took, str_as_int(callee))
+    if flags == 0
+        0
+    elsif i >= vec_len(flags)
+        0
+    else
+        vec_get(flags, i)
+
+fn dr_arg_owns(callee: String, i: Int, variants: Int, took: Int) -> Int ! alloc
+    if str_eq(callee, "list_push") == 1
+        if i == 1
+            1
+        else
+            0
+    elsif str_eq(callee, "list_set") == 1
+        if i == 2
+            1
+        else
+            0
+    elsif str_eq(callee, "dict_put") == 1
+        if i == 2
+            1
+        else
+            0
+    elsif str_eq(callee, "desc_copy") == 1
+        0
+    elsif dr_borrows(callee) == 1
+        0
+    elsif map_get(variants, str_as_int("struct:" + callee)) != 0
+        1
+    elsif map_get(variants, str_as_int(callee)) != 0
+        1
+    else
+        dr_took_at(took, callee, i)
+
+fn dr_claim_expr(e: Expr, own: Int, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int) -> Expr ! alloc
+    if own == 0
+        dr_claim_walk(e, own, variants, elems, borrows, lists, sns, took)
+    else
+        d = dr_borrow_desc(e, variants, elems, borrows, lists, sns)
+        if str_len(d) == 0
+            dr_claim_walk(e, own, variants, elems, borrows, lists, sns, took)
+        else
+            dr_wrap_copy(e, d)
+
+fn dr_claim_walk(e: Expr, own: Int, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int) -> Expr ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            out = list_new[Expr]()
+            _a = dr_claim_args(args, 0, list_len(args), name, variants, elems, borrows, lists, sns, took, out)
+            XCall(strdup(name), out, strdup(targs), xp)
+        XBin(op, l, r) => XBin(strdup(op), dr_claim_expr(l, 0, variants, elems, borrows, lists, sns, took), dr_claim_expr(r, 0, variants, elems, borrows, lists, sns, took))
+        XUnary(op, x) => XUnary(strdup(op), dr_claim_expr(x, 0, variants, elems, borrows, lists, sns, took))
+        XField(base, field) => XField(dr_claim_expr(base, 0, variants, elems, borrows, lists, sns, took), strdup(field))
+        XIf(cond, then_b, else_b, has_else, elsifs) =>
+            c2 = dr_claim_expr(cond, 0, variants, elems, borrows, lists, sns, took)
+            t2 = dr_claim_block(then_b, own, variants, elems, borrows, lists, sns, took)
+            e2 = if has_else == 1
+                dr_claim_block(else_b, own, variants, elems, borrows, lists, sns, took)
+            else
+                else_b
+            arms = list_new[TElsif]()
+            _a = dr_claim_elsifs(elsifs, 0, list_len(elsifs), own, variants, elems, borrows, lists, sns, took, arms)
+            XIf(c2, t2, e2, has_else, arms)
+        XWhile(cond, body) => XWhile(dr_claim_expr(cond, 0, variants, elems, borrows, lists, sns, took), dr_claim_block(body, 0, variants, elems, borrows, lists, sns, took))
+        XMatch(scrut, arms) =>
+            s2 = dr_claim_expr(scrut, 0, variants, elems, borrows, lists, sns, took)
+            out = list_new[TArm]()
+            _a = dr_claim_arms(arms, 0, list_len(arms), own, variants, elems, borrows, lists, sns, took, out)
+            XMatch(s2, out)
+        XTo(place, x) => XTo(strdup(place), dr_claim_expr(x, 1, variants, elems, borrows, lists, sns, took))
+        XTry(x) => XTry(dr_claim_expr(x, 1, variants, elems, borrows, lists, sns, took))
+        XLambda(p, body) => XLambda(strdup(p), dr_claim_expr(body, 1, variants, elems, borrows, lists, sns, took))
+        _ => e
+
+fn dr_claim_args(args: List[Expr], i: Int, n: Int, callee: String, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int, out: List[Expr]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = dr_claim_expr(list_get(args, i), dr_arg_owns(callee, i, variants, took), variants, elems, borrows, lists, sns, took)
+        _p = list_push(out, a)
+        dr_claim_args(args, i + 1, n, callee, variants, elems, borrows, lists, sns, took, out)
+
+fn dr_claim_elsifs(elsifs: List[TElsif], i: Int, n: Int, own: Int, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int, out: List[TElsif]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(elsifs, i)
+        c = dr_claim_expr(a.cond, 0, variants, elems, borrows, lists, sns, took)
+        b = dr_claim_block(a.body, own, variants, elems, borrows, lists, sns, took)
+        _p = list_push(out, TElsif(c, b))
+        dr_claim_elsifs(elsifs, i + 1, n, own, variants, elems, borrows, lists, sns, took, out)
+
+fn dr_claim_arms(arms: List[TArm], i: Int, n: Int, own: Int, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int, out: List[TArm]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(arms, i)
+        b = dr_claim_expr(a.body, own, variants, elems, borrows, lists, sns, took)
+        s = if a.has_suite == 1
+            dr_claim_block(a.suite, own, variants, elems, borrows, lists, sns, took)
+        else
+            a.suite
+        _p = list_push(out, TArm(a.pat, b, s, a.has_suite))
+        dr_claim_arms(arms, i + 1, n, own, variants, elems, borrows, lists, sns, took, out)
+
+fn dr_claim_stmts(stmts: List[TStmt], i: Int, n: Int, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int, out: List[TStmt]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(stmts, i)
+        ne = dr_claim_stmt_expr(st, variants, elems, borrows, lists, sns, took)
+        _p = list_push(out, TStmt(st.kind, strdup(st.name), ne, strdup(st.ty), st.is_let, st.target, st.frozen, st.stack, st.id))
+        dr_claim_stmts(stmts, i + 1, n, variants, elems, borrows, lists, sns, took, out)
+
+fn dr_claim_stmt_expr(st: TStmt, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int) -> Expr ! alloc
+    if st.kind == 2
+        dr_claim_expr(st.expr, 1, variants, elems, borrows, lists, sns, took)
+    elsif st.kind == 1
+        _n = dr_note_list(st.name, st.expr, variants, elems)
+        ne = dr_claim_expr(st.expr, 0, variants, elems, borrows, lists, sns, took)
+        _b = dr_note_borrow(st.name, ne, variants, elems, borrows, lists, sns)
+        ne
+    elsif st.kind == 3
+        dr_claim_expr(st.expr, 1, variants, elems, borrows, lists, sns, took)
+    else
+        dr_claim_expr(st.expr, 0, variants, elems, borrows, lists, sns, took)
+
+fn dr_claim_block(b: TBlock, own: Int, variants: Int, elems: NM, borrows: NM, lists: NM, sns: NM, took: Int) -> TBlock ! alloc
+    out = list_new[TStmt]()
+    _a = dr_claim_stmts(b.stmts, 0, list_len(b.stmts), variants, elems, borrows, lists, sns, took, out)
+    tail = dr_claim_expr(b.tail, own, variants, elems, borrows, lists, sns, took)
+    TBlock(out, tail)
+
+fn dr_claim_fn(f: TFn, body: TBlock, variants: Int, lists: NM, took: Int) -> TBlock ! alloc
+    elems = nm_new()
+    borrows = nm_new()
+    sns = nm_new()
+    _s = dr_seed_elems(lists, variants, elems, 0, list_len(lists.names))
+    _p = dr_note_params(f.params, variants, elems, 0, list_len(f.params))
+    dr_claim_block(body, 1, variants, elems, borrows, lists, sns, took)
+
 # `view` 1 → `tv_block` for IR/lowering (strings outlive the fn); 0 → owned `tc_block` for emit C.
 fn drops_body_go(f: TFn, denv: Int, view: Int) -> TBlock ! alloc
     body = tc_block(f.body)
     h = HC(list_new[Int](), dr_lists_of(f.params, body, vec_get(denv, 0)), vec_get(denv, 0))
     _h = list_push(h.k, 0)
     hoisted = dr_hoist_block(h, body)
-    c = dr_facts(f.params, hoisted, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
-    res = dr_xform_block(c, hoisted)
+    claimed = dr_claim_fn(f, hoisted, vec_get(denv, 0), h.lists, vec_get(denv, 3))
+    c = dr_facts(f.params, claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
+    res = dr_xform_block(c, claimed)
     _a = dr_free(c)
     _g = list_free(h.k)
     if view == 1
         tv_block(res)
     else
         owned = tc_block(res)
-        _w = tp_free_drop_work(body, hoisted, res)
+        _w = tp_free_drop_work(body, hoisted, claimed, res)
         owned
 
 # View copy for `fuse.sal` / IR (`tv_block`); `body`/`hoisted`/`res` from the pass are left allocated.
@@ -2136,6 +2449,8 @@ fn dr_borrows(name: String) -> Int ! alloc
     elsif str_eq(name, "list_box_id") == 1
         1
     elsif str_eq(name, "list_get") == 1
+        1
+    elsif str_eq(name, "desc_copy") == 1
         1
     elsif str_eq(name, "list_pop") == 1
         1

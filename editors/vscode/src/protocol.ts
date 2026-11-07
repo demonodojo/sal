@@ -118,8 +118,53 @@ export function standardCheckArgs(filePath: string): string[] {
   return ["check", filePath, "--error-format", "json"];
 }
 
-export function standardFixArgs(filePath: string): string[] {
-  return ["fix", filePath];
+export interface ByteRange {
+  start: number;
+  end: number;
+}
+
+export function standardFixArgs(filePath: string, range?: ByteRange): string[] {
+  const args = ["fix", filePath];
+  if (!range) return args;
+  args.push("--start", String(range.start), "--end", String(range.end));
+  return args;
+}
+
+/** UTF-16 editor position → UTF-8 byte offset. A character past the line end clamps to that line. */
+export function positionToByteOffset(text: string, line: number, character: number): number {
+  const targetLine = line < 0 ? 0 : line;
+  const targetChar = character < 0 ? 0 : character;
+  let currentLine = 0;
+  let currentChar = 0;
+  let byte = 0;
+  for (const ch of text) {
+    if (currentLine === targetLine && currentChar >= targetChar) return byte;
+    if (currentLine > targetLine) return byte;
+    if (ch === "\n") {
+      if (currentLine === targetLine) return byte;
+      currentLine += 1;
+      currentChar = 0;
+    } else {
+      currentChar += utf16Units(ch);
+    }
+    byte += utf8Len(ch);
+  }
+  return byte;
+}
+
+/** Non-empty editor selection as a half-open UTF-8 byte span. Null when the selection is empty. */
+export function byteRangeOfSelection(
+  text: string,
+  startLine: number,
+  startCharacter: number,
+  endLine: number,
+  endCharacter: number,
+): ByteRange | null {
+  if (startLine === endLine && startCharacter === endCharacter) return null;
+  const start = positionToByteOffset(text, startLine, startCharacter);
+  const end = positionToByteOffset(text, endLine, endCharacter);
+  if (end <= start) return null;
+  return { start, end };
 }
 
 /** `warning[CODE]: message (path:line:col)` from `sal check` (p. ej. `W_DEPRECATED`). */
@@ -415,8 +460,13 @@ export async function fixStyle(input: {
   cwd: string;
   run: ProcessRunner;
   readText: (filePath: string) => Promise<string>;
+  range?: ByteRange;
 }): Promise<{ text: string | null; missingStandard: boolean }> {
-  const result = await input.run(input.command, standardFixArgs(input.filePath), input.cwd);
+  const result = await input.run(
+    input.command,
+    standardFixArgs(input.filePath, input.range),
+    input.cwd,
+  );
   if (result.notFound) {
     return { text: null, missingStandard: true };
   }

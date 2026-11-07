@@ -22,7 +22,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 
 | Instrucción | Origen |
 |-------------|--------|
-| `const` entero, float o cadena | literales |
+| `const` entero, float o cadena | literales, y un uso de constante de módulo que no está sombreado por un local (`ConstInt` / `ConstFloat` / `ConstString`; un `Bool` es `ConstInt` 0/1) |
 | `copy` | tipo trivial |
 | `move` | último uso de un único |
 | `drop` | fin de ámbito de un local fresco que sigue vivo. `String`, `List` (descriptor `i`/`s`/`E`/`S(…)` vía `sal_list_new_desc`; `list_new_owned` y prefijo `+` marcan dueño de elementos), `Dict` (kinds en `sal_dict_new`: escalares, `String`, enum, struct empaquetado), caja de enum, `Bytes` (incl. cabecera de `bytes_view`), literal `tensor` (`sal_tensor_free` / `sal_place_free`), copia completa de struct (`sal_struct_free`) y **solo la caja** de una copia cuyos campos se escalarizaron (`sal_struct_free_box`). `dict_get` → `Option` fresco (`enum_free`). Cola de struct en `lower_fn`: `sal_free`, `sal_enum_free`, `sal_list_free` (incl. `List[P]` describible), contenedores y anidados (SPEC). Pase `insert_drops` en `src/drops.rs` / `selfhost/ir/drops.sal` reescribe el AST antes de bajar; detalle en [03-semantics.md](03-semantics.md) y SPEC |
@@ -66,17 +66,19 @@ Sobre las instrucciones de un solo `on`, en orden:
 
 `reduce` y la suma de `softmax` recorren el eje en orden creciente de índice. La fusión no reordena esa reducción: el mismo fuente y los mismos datos dan el mismo número.
 
-### Caja de `list_get` tras fusión
+### Caja de la copia que toma posesión
+
+`sal_list_get` devuelve el puntero guardado (`String`, enum o struct describible). No llama a `desc_copy`. El pase de drops inserta `desc_copy` (baja a `sal_desc_copy`) solo donde ese préstamo pasa a tener dueño: `return`, parámetro `take`, `list_push` / `list_set` / `dict_put`, constructor de struct o de variante. `list_pop` sigue moviendo el elemento.
 
 Después de `fuse_function` en cada `IrFunction`, `finish_module_box_shell_drops` (`src/ir.rs`, invocado desde `fuse_module` / `fuse_module_opts` en `src/fuse.rs`) recorre la IR ya fusionada:
 
-1. Destinos de `sal_list_get` / `sal_list_pop` en `loop_depth == 0` quedan registrados como copias de struct.
-2. Si esa copia es el primer argumento de una llamada de usuario (no `sal_*`, salvo `list_push` / `list_set` / `dict_put`, que transfieren la caja), se marca para `sal_struct_free_box`.
-3. Se inserta `Call { func: "sal_struct_free_box", args: [copia] }` **antes** del último `Return` de la función (nunca después del retorno). Si esa función es `@arena`, `sink_arena_leaves` deja `sal_arena_leave` inmediatamente antes de cada `Return`, después de ese `free`: un `free` posterior al `leave` llamaría a `free` de libc sobre memoria ya devuelta.
+1. Destinos de `sal_desc_copy` cuyo descriptor empieza por `S`, y de `sal_list_pop`, en `loop_depth == 0` quedan registrados como cajas de struct.
+2. Si esa caja es el primer argumento de una llamada de usuario (no `sal_*`, salvo `list_push` / `list_set` / `dict_put`, que transfieren la caja), se marca para `sal_struct_free_box`.
+3. Se inserta `Call { func: "sal_struct_free_box", args: [copia] }` **antes** del último `Return` de la función (nunca después del retorno). Un `sal_desc_copy` de struct que es el valor devuelto lo suelta la escalarización después de copiar los campos al `sret`. Si esa función es `@arena`, `sink_arena_leaves` deja `sal_arena_leave` inmediatamente antes de cada `Return`, después de ese `free`: un `free` posterior al `leave` llamaría a `free` de libc sobre memoria ya devuelta.
 
 La misma regla no se aplica al compilar objetos de módulos cuyo path contiene el componente `selfhost` (`compile_file` → `fuse_module_opts(..., false)`), para evitar liberaciones al final de función sobre SSA definido dentro de bucles del propio compilador. `sal emit ir` y `bootstrap_ir_text` llaman `fuse_module` con el pase activo.
 
-Tests de IR: `tests/drops.rs` (`lower_program` + `fuse_module` antes de `ir_to_text`); ejecución estricta: `tests/instrument_sal.rs` (`struct_copy`).
+Tests de IR: `tests/drops.rs` (`lower_program` + `fuse_module` antes de `ir_to_text`); ejecución estricta: `tests/instrument_sal.rs`.
 
 ## Runtime
 

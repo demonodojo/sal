@@ -1,0 +1,5 @@
+# error: E_TYPE
+MAX = 1
+
+fn main() -> Int
+    MAX()

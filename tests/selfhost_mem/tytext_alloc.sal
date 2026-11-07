@@ -1,0 +1,4 @@
+import "../../selfhost/ast/tytext.sal"
+
+fn main() -> Int ! alloc
+    ty_base("List[String]").len()

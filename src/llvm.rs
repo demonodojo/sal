@@ -579,6 +579,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_list_push(ptr, i64)\n");
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
+    s.push_str("declare i64 @sal_desc_copy(ptr, i64)\n");
     s.push_str("declare i64 @sal_clang(ptr, ptr)\n");
     s.push_str("declare ptr @sal_realpath(ptr)\n");
     s.push_str("declare i64 @sal_clang_obj(ptr, ptr)\n");
@@ -3349,6 +3350,13 @@ fn emit_runtime_or_user_call(
             let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_list_get(ptr {a}, i64 {b})\n"));
+            }
+        }
+        "sal_desc_copy" => {
+            let dptr = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let raw = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_desc_copy(ptr {dptr}, i64 {raw})\n"));
             }
         }
         "sal_syscall" => {

@@ -1,0 +1,6 @@
+# exit: 66
+MAX = 64
+MORE = MAX + 2
+
+fn main() -> Int
+    MORE

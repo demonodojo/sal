@@ -18,6 +18,12 @@ struct LineCol
     line: Int
     col: Int
 
+struct FixArgs
+    limited: Int
+    lo: Int
+    hi: Int
+    bad: Int
+
 fn run_lex(src: String) -> Lex ! alloc
     lex(src)
 
@@ -127,18 +133,31 @@ fn print_offs_go(path: String, src: String, offs: List[Off], i: Int, n: Int) -> 
         print_offs_go(path, src, offs, i + 1, n)
 
 fn fix_to_point(src: String, pass: Int, max_pass: Int) -> String ! alloc
+    ranged = fix_to_point_span(src, pass, max_pass, 0, 0, 0)
+    ranged.text
+
+fn fix_to_point_span(src: String, pass: Int, max_pass: Int, lo: Int, hi: Int, limited: Int) -> RangedText ! alloc
     if pass >= max_pass
-        src
+        RangedText(src, lo, hi)
     else
         pack = run_all_cops(src)
         if pack.status != LEX_OK()
-            src
-        else
+            RangedText(src, lo, hi)
+        elsif limited == 0
             next = apply_all_fixes(src, pack.offs)
             if src.eq(next) == 1
-                src
+                RangedText(src, lo, hi)
             else
-                fix_to_point(next, pass + 1, max_pass)
+                fix_to_point_span(next, pass + 1, max_pass, lo, hi, 0)
+        else
+            ranged = apply_ranged_fixes(src, pack.offs, lo, hi)
+            lo2 = ranged.lo
+            hi2 = ranged.hi
+            next = ranged.text
+            if src.eq(next) == 1
+                RangedText(next, lo2, hi2)
+            else
+                fix_to_point_span(next, pass + 1, max_pass, lo2, hi2, 1)
 
 fn run_check(path: String, src: String, as_json: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
@@ -164,24 +183,100 @@ fn wants_json() -> Int ! alloc
     else
         0
 
+fn parse_nonneg(s: String) -> Int ! alloc
+    parse_nonneg_go(s, 0, s.len(), 0, 0)
+
+fn parse_nonneg_go(s: String, i: Int, n: Int, acc: Int, ok: Int) -> Int ! alloc
+    if i >= n
+        if ok == 1
+            acc
+        else
+            0 - 1
+    else
+        c = s.char(i)
+        if c < 48
+            0 - 1
+        elsif c > 57
+            0 - 1
+        else
+            parse_nonneg_go(s, i + 1, n, acc * 10 + (c - 48), 1)
+
+fn parse_fix_args() -> FixArgs ! alloc
+    flag = argv(3)
+    if flag.eq("") == 1
+        FixArgs(0, 0, 0, 0)
+    else
+        parse_fix_args_flag(flag)
+
+fn parse_fix_args_flag(flag: String) -> FixArgs ! alloc
+    if flag.eq("--start") == 1
+        parse_fix_range()
+    else
+        FixArgs(0, 0, 0, 1)
+
+fn parse_fix_range() -> FixArgs ! alloc
+    lo = parse_nonneg(argv(4))
+    endf = argv(5)
+    hi = parse_nonneg(argv(6))
+    extra = argv(7)
+    if extra.eq("") == 0
+        FixArgs(0, 0, 0, 1)
+    elsif endf.eq("--end") == 0
+        FixArgs(0, 0, 0, 1)
+    elsif lo < 0
+        FixArgs(0, 0, 0, 1)
+    elsif hi < 0
+        FixArgs(0, 0, 0, 1)
+    elsif hi < lo
+        FixArgs(0, 0, 0, 1)
+    else
+        FixArgs(1, lo, hi, 0)
+
+fn clamp_max(x: Int, n: Int) -> Int
+    if x > n
+        n
+    else
+        x
+
+fn fixed_source(src: String, args: FixArgs) -> String ! alloc
+    if args.limited == 0
+        fix_to_point(src, 0, 16)
+    else
+        n = src.len()
+        lo = clamp_max(args.lo, n)
+        hi = clamp_max(args.hi, n)
+        ranged = fix_to_point_span(src, 0, 16, lo, hi, 1)
+        ranged.text
+
+fn report_fixed(path: String, src: String) -> Int ! io, alloc
+    pack = run_all_cops(src)
+    if pack.status != LEX_OK()
+        2
+    else
+        n = pack.offs.len()
+        if n == 0
+            0
+        else
+            print_offs(path, src, pack.offs)
+            1
+
 fn run_fix(path: String, src: String) -> Int ! io, alloc
+    args = parse_fix_args()
+    if args.bad == 1
+        eprint_str(d"usage: fix FILE [--start N --end M]\n")
+        2
+    else
+        run_fix_checked(path, src, args)
+
+fn run_fix_checked(path: String, src: String, args: FixArgs) -> Int ! io, alloc
     pack = run_all_cops(src)
     if pack.status != LEX_OK()
         eprint_str(d"lex error\n")
         2
     else
-        fixed = fix_to_point(src, 0, 16)
+        fixed = fixed_source(src, args)
         write_file(path, fixed)
-        pack2 = run_all_cops(fixed)
-        if pack2.status != LEX_OK()
-            2
-        else
-            n = pack2.offs.len()
-            if n == 0
-                0
-            else
-                print_offs(path, fixed, pack2.offs)
-                1
+        report_fixed(path, fixed)
 
 fn main() -> Int ! io, alloc
     cmd = argv(1)
@@ -189,7 +284,11 @@ fn main() -> Int ! io, alloc
     src = read_file(path)
     if cmd.eq("check") == 1
         run_check(path, src, wants_json())
-    elsif cmd.eq("fix") == 1
+    else
+        main_fix_or_usage(cmd, path, src)
+
+fn main_fix_or_usage(cmd: String, path: String, src: String) -> Int ! io, alloc
+    if cmd.eq("fix") == 1
         run_fix(path, src)
     else
         eprint_str(d"usage: check|fix FILE\n")

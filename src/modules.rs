@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::ast::{EnumDef, FnDef, FrameDef, Item, Program, StructDef};
+use crate::consteval::ConstValue;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::parser::parse;
 use crate::span::Span;
@@ -15,6 +16,7 @@ pub struct ModuleExports {
     pub frames: HashMap<String, FrameDef>,
     pub fns: HashMap<String, FnDef>,
     pub protocols: HashMap<String, crate::ast::ProtocolDef>,
+    pub consts: HashMap<String, ConstValue>,
 }
 
 #[derive(Clone)]
@@ -227,7 +229,7 @@ pub fn exports_for_module(module: &LoadedModule) -> ModuleExports {
             Item::Protocol(p) => {
                 out.protocols.insert(p.name.clone(), p.clone());
             }
-            _ => {}
+            Item::Const(_) | Item::Import(_) => {}
         }
     }
     out
@@ -243,6 +245,7 @@ fn merge_exports(
             || into.structs.contains_key(name)
             || into.enums.contains_key(name)
             || into.fns.contains_key(name)
+            || into.consts.contains_key(name)
         {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -257,6 +260,7 @@ fn merge_exports(
             || into.frames.contains_key(name)
             || into.enums.contains_key(name)
             || into.fns.contains_key(name)
+            || into.consts.contains_key(name)
         {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -270,6 +274,7 @@ fn merge_exports(
         if into.structs.contains_key(name)
             || into.enums.contains_key(name)
             || into.fns.contains_key(name)
+            || into.consts.contains_key(name)
         {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -283,6 +288,7 @@ fn merge_exports(
         if into.structs.contains_key(name)
             || into.enums.contains_key(name)
             || into.fns.contains_key(name)
+            || into.consts.contains_key(name)
         {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -297,6 +303,7 @@ fn merge_exports(
             || into.structs.contains_key(name)
             || into.enums.contains_key(name)
             || into.fns.contains_key(name)
+            || into.consts.contains_key(name)
         {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
@@ -305,6 +312,22 @@ fn merge_exports(
             )]);
         }
         into.protocols.insert(name.clone(), p.clone());
+    }
+    for (name, v) in &from.consts {
+        if into.consts.contains_key(name)
+            || into.structs.contains_key(name)
+            || into.enums.contains_key(name)
+            || into.fns.contains_key(name)
+            || into.frames.contains_key(name)
+            || into.protocols.contains_key(name)
+        {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!("name `{name}` defined in more than one imported module"),
+                at,
+            )]);
+        }
+        into.consts.insert(name.clone(), v.clone());
     }
     Ok(())
 }
@@ -414,9 +437,13 @@ pub fn type_env_for_module(
     module: &LoadedModule,
     graph: &ModuleGraph,
 ) -> Result<crate::infer::TypeEnv, Vec<Diagnostic>> {
+    let own_consts = own_consts_by_module(graph)?;
     let mut imports = ModuleExports::default();
     for dep in flat_transitive_import_modules(module, graph)? {
-        let exp = exports_for_module(dep);
+        let mut exp = exports_for_module(dep);
+        if let Some(cs) = own_consts.get(&path_key(&dep.path)) {
+            exp.consts = cs.clone();
+        }
         let span = module
             .program
             .items
@@ -446,6 +473,7 @@ pub fn type_env_for_module(
     env.enums = imports.enums.clone();
     env.frames = imports.frames.clone();
     env.protocols = imports.protocols.clone();
+    env.consts = imports.consts.clone();
     for f in imports.fns.values() {
         crate::infer::register_fn(&mut env, f);
     }
@@ -466,6 +494,27 @@ pub fn type_env_for_module(
             }
         }
     }
+    // `import … as alias` does not flatten, but `alias.NOMBRE` was rewritten to the
+    // link name, so that constant's value has to be visible under that name.
+    for item in &module.program.items {
+        let Item::Import(imp) = item else { continue };
+        if imp.alias.is_none() {
+            continue;
+        }
+        let Some(dep_path) = resolve_import_path_with_manifest(
+            &imp.path,
+            &module.path,
+            &graph.project_root,
+        ) else {
+            continue;
+        };
+        let Some(cs) = own_consts.get(&path_key(&dep_path)) else {
+            continue;
+        };
+        for (n, v) in cs {
+            env.consts.entry(n.clone()).or_insert_with(|| v.clone());
+        }
+    }
     for item in &module.program.items {
         match item {
             Item::Struct(s) => {
@@ -473,6 +522,7 @@ pub fn type_env_for_module(
                     || env.enums.contains_key(&s.name)
                     || env.fns.contains_key(&s.name)
                     || env.frames.contains_key(&s.name)
+                    || env.consts.contains_key(&s.name)
                 {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -487,6 +537,7 @@ pub fn type_env_for_module(
                     || env.enums.contains_key(&f.name)
                     || env.fns.contains_key(&f.name)
                     || env.frames.contains_key(&f.name)
+                    || env.consts.contains_key(&f.name)
                 {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -502,6 +553,7 @@ pub fn type_env_for_module(
                 if env.structs.contains_key(&e.name)
                     || env.enums.contains_key(&e.name)
                     || env.fns.contains_key(&e.name)
+                    || env.consts.contains_key(&e.name)
                 {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -515,6 +567,7 @@ pub fn type_env_for_module(
                 if env.structs.contains_key(&f.name)
                     || env.enums.contains_key(&f.name)
                     || env.fns.contains_key(&f.name)
+                    || env.consts.contains_key(&f.name)
                 {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -529,6 +582,7 @@ pub fn type_env_for_module(
                     || env.structs.contains_key(&p.name)
                     || env.enums.contains_key(&p.name)
                     || env.fns.contains_key(&p.name)
+                    || env.consts.contains_key(&p.name)
                 {
                     return Err(vec![Diagnostic::new(
                         ErrorCode::EType,
@@ -538,10 +592,103 @@ pub fn type_env_for_module(
                 }
                 env.protocols.insert(p.name.clone(), p.clone());
             }
+            Item::Const(c) => {
+                if env.structs.contains_key(&c.name)
+                    || env.enums.contains_key(&c.name)
+                    || env.fns.contains_key(&c.name)
+                    || env.frames.contains_key(&c.name)
+                    || env.protocols.contains_key(&c.name)
+                    || env.consts.contains_key(&c.name)
+                {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("name `{}` already defined", c.name),
+                        c.span,
+                    )]);
+                }
+            }
             Item::Import(_) => {}
         }
     }
+    for item in &module.program.items {
+        let Item::Const(c) = item else { continue };
+        if local_item_named(&module.program, &c.name, c.span).is_some() {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!("name `{}` already defined", c.name),
+                c.span,
+            )]);
+        }
+    }
+    let own = crate::consteval::eval_consts(&module.program, &env.consts)?;
+    env.consts.extend(own);
     Ok(env)
+}
+
+/// Another item of `prog` (not this constant) already uses `name`.
+fn local_item_named(prog: &Program, name: &str, self_span: Span) -> Option<Span> {
+    for item in &prog.items {
+        let (n, span) = match item {
+            Item::Fn(f) => (f.name.as_str(), f.span),
+            Item::Struct(s) => (s.name.as_str(), s.span),
+            Item::Enum(e) => (e.name.as_str(), e.span),
+            Item::Frame(f) => (f.name.as_str(), f.span),
+            Item::Protocol(p) => (p.name.as_str(), p.span),
+            Item::Const(c) if c.span != self_span => (c.name.as_str(), c.span),
+            _ => continue,
+        };
+        if n == name {
+            return Some(span);
+        }
+    }
+    None
+}
+
+/// Each module's own constants, dependencies first. The key is `path_key`.
+fn own_consts_by_module(
+    graph: &ModuleGraph,
+) -> Result<HashMap<PathBuf, HashMap<String, ConstValue>>, Vec<Diagnostic>> {
+    let mut cache: HashMap<PathBuf, HashMap<String, ConstValue>> = HashMap::new();
+    for m in &graph.order {
+        let mut visible: HashMap<String, ConstValue> = HashMap::new();
+        for dep in flat_transitive_import_modules(m, graph)? {
+            let Some(cs) = cache.get(&path_key(&dep.path)) else {
+                continue;
+            };
+            for (n, v) in cs {
+                if visible.contains_key(n) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("name `{n}` defined in more than one imported module"),
+                        Span::default(),
+                    )]);
+                }
+                visible.insert(n.clone(), v.clone());
+            }
+        }
+        for item in &m.program.items {
+            let Item::Import(imp) = item else { continue };
+            if imp.alias.is_none() {
+                continue;
+            }
+            let Some(dep_path) = resolve_import_path_with_manifest(
+                &imp.path,
+                &m.path,
+                &graph.project_root,
+            ) else {
+                continue;
+            };
+            let Some(cs) = cache.get(&path_key(&dep_path)) else {
+                continue;
+            };
+            for (n, v) in cs {
+                visible.entry(n.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        let own = crate::consteval::eval_consts(&m.program, &visible)?;
+        cache.insert(path_key(&m.path), own);
+    }
+    Ok(cache)
 }
 
 /// Callable user function names visible when lowering `module` (imports + local).

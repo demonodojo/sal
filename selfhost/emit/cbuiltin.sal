@@ -75,6 +75,10 @@ fn emit_c_builtin2(fname: String, args: Int, stmts: Int) -> String ! alloc
             a = arg_at(args, 0)
             b = arg_at(args, 1)
             "((int64_t)(uintptr_t)sal_str_concat((const char*)(uintptr_t)" + a + ",(const char*)(uintptr_t)" + b + "))"
+        "desc_copy" =>
+            a = arg_at(args, 0)
+            b = arg_at(args, 1)
+            "sal_desc_copy((const char*)(uintptr_t)" + a + "," + b + ")"
         "str_slice" =>
             a = arg_at(args, 0)
             b = arg_at(args, 1)

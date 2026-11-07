@@ -25,7 +25,7 @@ Dentro de una función `@arena`, el `free` de un puntero interior es un no-op y 
 |-----|----------|----------|
 | Locales (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free`, `tensor_free`, `struct_free`, `struct_free_box`), antes de bajar | `src/drops.rs` (`insert_drops`) | `selfhost/ir/drops.sal` (`drops_body_t`) |
 | Cola de campos de un struct (IR) | `src/ir.rs` (`free_struct_strings`, `field_reads`, `emit_struct_string_drops`, `field_drop`) | `selfhost/ir/frc.sal` (`FRC` y sus métodos, `drop_fields`, `fr_*`), `selfhost/ir/desc.sal` (`drop_field_fn`), `selfhost/ir/fuse.sal` (`emit_struct_drops`) |
-| Caja de copia `list_get`/`list_pop` tras llamada escalarizada (IR, tras fusión) | `src/ir.rs` (`finish_module_box_shell_drops`), invocado desde `src/fuse.rs` (`fuse_module` / `fuse_module_opts`) | el arranque en `emit ir` / tests; ver nota selfhost abajo |
+| Caja de la copia que toma posesión (`sal_desc_copy` de `S…`, `sal_list_pop`) tras fusión | `src/ir.rs` (`finish_module_box_shell_drops`), invocado desde `src/fuse.rs` | el arranque en `emit ir` / tests; ver nota selfhost abajo |
 | Cola en C (stage2) | — | `selfhost/emit/emit.sal` (`emit_c_struct_scope_frees`, importa `frc` y `desc`) |
 | Movimiento parcial y `borrow`/`take` | `src/ownership.rs` | `selfhost/sem/ownership.sal` |
 | Runtime (`sal_dict_*`, `sal_enum_*`, vistas `bytes`, `sal_tensor_free`) | `runtime/sal_runtime.c` | el mismo |
@@ -55,21 +55,21 @@ Otras reglas:
 - **`__live_x`**: escape solo en algunas ramas del mismo nivel de bucle.
 - **`list_push` / `list_set` / `dict_put`**: prestados como sentencia o `_nombre`; `ys = xs.push(v)` escapa.
 
-### Copia de struct (`list_get` / `list_pop`)
+### Préstamo de `list_get` y copia al tomar posesión
 
-Un `list_get` de lista de struct describible entrega una **caja** (`struct_copy` en instrumentación) más campos copiados. Hay que distinguir el destino del argumento:
+`list_get` de `String`, struct describible o enum **presta** el puntero guardado. No llama a `desc_copy` y el local no se libera: lo suelta la lista (`list_free` / `list_pop`). Pasarlo a un parámetro que solo lee, o leer un campo, sigue prestando.
 
-| Destino | Qué pasa con la caja | Local / bandera |
-|---------|----------------------|-----------------|
-| `list_push`, `list_set`, `dict_put` o ctor de struct (`hard_move`) | La caja la absorbe el contenedor o el ctor | `__live` a 0; no `struct_free` ni `struct_free_box` |
-| Función de usuario (parámetro struct; la bajada **escalariza** campos) | Se mueven los campos; la caja queda huérfana | `ArgMove::TakeFields`, `box_shell`; suelta con `struct_free_box` (solo el `malloc` del bloque) |
-| Solo lectura (`borrow`, builtin lector, arg read-only) | No mueve | `ArgMove::Read` |
+La copia profunda (`desc_copy`, sitio `struct_copy`) se inserta solo donde el valor pasa a tener dueño: `return`, parámetro que guarda o devuelve el valor entero, `list_push` / `list_set` / `dict_put`, constructor de struct o de variante. El destino posee esa copia y se libera una vez. `list_pop` sigue moviendo (el elemento sale de la lista). Un `desc_copy` guardado en una lista es un valor fresco: la lista no queda tainted y `list_free` suelta la copia.
 
-En **`src/drops.rs`**: `mark_box_shell_calls` recorre sentencias **y el tail** del bloque; `clear_moved` puede emitir `struct_free_box` al mover; `release` con bandera usa `if __live == 1` → `struct_free` else → `struct_free_box` cuando `box_shell`.
+| Destino de la copia | Qué pasa con la caja |
+|---------------------|----------------------|
+| `list_push`, `list_set`, `dict_put` o ctor | El contenedor o el ctor absorbe el puntero. No `struct_free_box` |
+| Función de usuario que guarda o devuelve el struct | `sal_desc_copy` y, tras escalarizar, `sal_struct_free_box` de esa caja |
+| Solo lectura | No hay copia ni `struct_free_box` |
 
-En **`src/ir.rs`**, tras **`fuse_module`**: `scan_struct_box_shell` registra destinos de `sal_list_get`/`sal_list_pop` (solo si `loop_depth == 0` en esa función), marca el shell al pasar la copia a una llamada no-`sal_` que no transfiere caja, e inserta `sal_struct_free_box` **inmediatamente antes** del último `Return` (nunca después). Copias ligadas dentro de un `While`/`If` anidado no entran en el shell de fin de función (evita LLVM inválido).
+En **`src/ir.rs`**, tras **`fuse_module`**: `scan_struct_box_shell` registra destinos de `sal_desc_copy` cuyo descriptor empieza por `S` y de `sal_list_pop` (solo si `loop_depth == 0`). No registra `sal_list_get`. Marca el shell al pasar la copia a una llamada no-`sal_` que no transfiere caja, e inserta `sal_struct_free_box` **inmediatamente antes** del último `Return`. Una copia devuelta la suelta `scalarize` después de extraer los campos al `sret`, no este pase (soltarla antes sería un uso tras liberar).
 
-Runtime: **`sal_struct_free_box`** libera solo el bloque; **`sal_struct_free(desc)`** recorre campos y la caja (copia completa con bandera a 1).
+Runtime: **`sal_list_get_typed`** devuelve el elemento tal cual. **`sal_desc_copy`** es la copia explícita. **`sal_struct_free_box`** libera solo el bloque; **`sal_struct_free(desc)`** recorre campos y la caja.
 
 Al **compilar módulos bajo `selfhost/`**, `src/compile.rs` llama `fuse_module_opts(..., box_shell_drops: false)` para no aplicar ese pase IR al código del autohospedador (mismo motivo de ámbito/SSA en bucles del compilador). `sal emit ir` y tests del arranque siguen usando `fuse_module` con el pase activo.
 
@@ -98,7 +98,7 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 ## Autohospedaje (`selfhost/ast/tast.sal`)
 
 - **`tp_free_*`**: `seen` deduplica cajas por `enum_box_id` (una variante unitaria da 0 y no hay nada que soltar). `lseen` deduplica listas por `list_box_id` (`stmts` de un bloque, argumentos de llamada, `elsifs`, `arms`), porque el desazucarado comparte listas entre bloques (`lp_unit` devuelve `TBlock(b.stmts, XNone)`).
-- Descriptores: `List[TStmt]` es `S(isEsiEiii)` (`+` si es dueña). `list_get` devuelve una copia y sus cajas `E` se copian con `sal_enum_copy`, que solo copia los campos poseídos. `List[TFn]`, `List[TProgram]`, `List[TStruct]`, `List[TEnum]`, `List[TArm]` y `List[TElsif]` son `i`: `list_get` devuelve el mismo valor, y `list_set`/`list_free` no sueltan el elemento.
+- Descriptores: `List[TStmt]` es `S(isEsiEiii)` (`+` si es dueña). `list_get` presta el elemento; la copia (`sal_desc_copy` / `sal_enum_copy`) ocurre solo al tomar posesión. `List[TFn]`, `List[TProgram]`, `List[TStruct]`, `List[TEnum]`, `List[TArm]` y `List[TElsif]` son `i`: `list_get` devuelve el mismo valor, y `list_set`/`list_free` no sueltan el elemento.
 - **`sal_bytes_view`**: flag `view`; `sal_bytes_free` no libera el `data` ajeno.
 - **`sal_dict_free` / `dict_put`**: `dict_val_release` para `String`, enum (kind 5) y struct empaquetado (kind `4|…`).
 
@@ -118,7 +118,7 @@ Campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String
 | `src/drops.rs`, `src/ir.rs`, `src/fuse.rs`, `tests/drops.rs` | `cargo test --test drops` |
 | `tests/lang/drops/` (p. ej. `drop_list_struct_box_pass_fn.sal`, `drop_struct_list_field.sal`) | `cargo test --test lang` (`# exit:` = retorno de `main`, no “OK = 0”; ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
 | Selfhost drops/fuse/emit | `cargo run -- parity <fichero>`; `cargo test --test selfhost_ir -- --test-threads=1` (paridad IR puede diferir en programas con caja si solo el arranque aplica el pase IR) |
-| Runtime | `tests/instrument_sal.rs` (`struct_copy`, caja tras `list_get`) + `tests/drops.rs` |
+| Runtime | `tests/instrument_sal.rs` (lectura sin `struct_copy`; la copia que escapa sin `LEAK` ni `DOUBLE_FREE`) + `tests/drops.rs` |
 
 `SAL_INSTRUMENT_STRICT=1` tras `sal build --instrument`: stderr sin `LEAK` ni `struct_copy` residual en programas que el compilador debe cerrar (`USE_AFTER_FREE`, `DOUBLE_FREE` siguen siendo fallo duro).
 

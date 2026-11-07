@@ -1040,9 +1040,9 @@ fn call_aliases_borrowed_arg(f: &FnDef, init: &Expr, strings: &StringEnv) -> boo
     })
 }
 
-/// Struct locals the glue must not release: the result of `list_get(xs, i)` on a list whose
-/// element struct is not describable (it hands out its boxes, not copies), and the result of a
-/// call that returns one of the caller's borrowed parameters.
+/// Struct locals the glue must not release: the result of `list_get(xs, i)` (a borrow of the
+/// element, describable or not), and the result of a call that returns one of the caller's
+/// borrowed parameters.
 fn list_alias_locals(f: &FnDef, strings: &StringEnv) -> HashSet<String> {
     fn note(f: &FnDef, name: &str, init: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
         if strings.struct_types.contains_key(name) && call_aliases_borrowed_arg(f, init, strings) {
@@ -1055,10 +1055,7 @@ fn list_alias_locals(f: &FnDef, strings: &StringEnv) -> HashSet<String> {
         if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") {
             return;
         }
-        let Some(sn) = strings.struct_types.get(name) else {
-            return;
-        };
-        if struct_desc(sn, &strings.structs, &strings.enums).is_none() {
+        if strings.struct_types.contains_key(name) {
             out.insert(name.to_string());
         }
     }
@@ -1105,8 +1102,35 @@ fn callee_transfers_struct_box_runtime(func: &str) -> bool {
     matches!(func, "sal_list_push" | "sal_list_set" | "sal_dict_put")
 }
 
+fn collect_const_strings(insts: &[IrInst], out: &mut HashMap<String, String>) {
+    for inst in insts {
+        match inst {
+            IrInst::ConstString { dest, value } => {
+                out.insert(dest.clone(), value.clone());
+            }
+            IrInst::While { cond_insts, body, .. } => {
+                collect_const_strings(cond_insts, out);
+                collect_const_strings(body, out);
+            }
+            IrInst::If { then_body, else_body, .. } => {
+                collect_const_strings(then_body, out);
+                collect_const_strings(else_body, out);
+            }
+            IrInst::Switch { arms, default_body, .. } => {
+                for arm in arms {
+                    collect_const_strings(&arm.body, out);
+                }
+                collect_const_strings(default_body, out);
+            }
+            IrInst::KernelGrid { body, .. } => collect_const_strings(body, out),
+            _ => {}
+        }
+    }
+}
+
 fn scan_struct_box_shell(
     insts: &[IrInst],
+    strs: &HashMap<String, String>,
     copies: &mut HashMap<String, u32>,
     shell: &mut HashSet<String>,
     loop_depth: u32,
@@ -1114,16 +1138,18 @@ fn scan_struct_box_shell(
     for inst in insts {
         match inst {
             IrInst::While { cond_insts, body, .. } => {
-                scan_struct_box_shell(cond_insts, copies, shell, loop_depth + 1);
-                scan_struct_box_shell(body, copies, shell, loop_depth + 1);
+                scan_struct_box_shell(cond_insts, strs, copies, shell, loop_depth + 1);
+                scan_struct_box_shell(body, strs, copies, shell, loop_depth + 1);
             }
             IrInst::If { then_body, else_body, .. } => {
                 // A copy inside a branch does not dominate the function return.
-                scan_struct_box_shell(then_body, copies, shell, loop_depth + 1);
-                scan_struct_box_shell(else_body, copies, shell, loop_depth + 1);
+                scan_struct_box_shell(then_body, strs, copies, shell, loop_depth + 1);
+                scan_struct_box_shell(else_body, strs, copies, shell, loop_depth + 1);
             }
             IrInst::Call { func, args, dest, .. } => {
-                if func == "sal_list_get" || func == "sal_list_pop" {
+                let struct_copy = func == "sal_desc_copy"
+                    && args.first().is_some_and(|d| strs.get(d).is_some_and(|s| s.starts_with('S')));
+                if struct_copy || func == "sal_list_pop" {
                     if let Some(d) = dest {
                         copies.insert(d.clone(), loop_depth);
                     }
@@ -1154,9 +1180,11 @@ pub fn finish_module_box_shell_drops(m: &mut IrModule) {
 
 /// After a scalarizing user call, free the `list_get` struct box once the local is done with.
 fn emit_struct_box_shell_drops(instructions: &mut Vec<IrInst>) {
+    let mut strs = HashMap::new();
+    collect_const_strings(instructions, &mut strs);
     let mut copies: HashMap<String, u32> = HashMap::new();
     let mut shell: HashSet<String> = HashSet::new();
-    scan_struct_box_shell(instructions, &mut copies, &mut shell, 0);
+    scan_struct_box_shell(instructions, &strs, &mut copies, &mut shell, 0);
     if shell.is_empty() {
         return;
     }
@@ -1517,7 +1545,7 @@ fn field_reads(
                         if let (Some((root, path)), Some(v)) =
                             (container_field_path(&args[0]), args.last())
                         {
-                            if !crate::drops::is_fresh_value(v) {
+                            if !crate::drops::is_fresh_value(v) && !crate::drops::is_desc_copy(v) {
                                 self.out
                                     .container_tainted
                                     .entry(root)
@@ -2847,6 +2875,37 @@ fn lower_expr(
         Expr::Ident { name, .. } => {
             if let Some(v) = env.get(name) {
                 return v.clone();
+            }
+            if let Some(cv) = strings.consts.get(name).cloned() {
+                *counter += 1;
+                let dest = format!("t{counter}");
+                match cv {
+                    crate::consteval::ConstValue::Int(value) => {
+                        instructions.push(IrInst::ConstInt {
+                            dest: dest.clone(),
+                            value,
+                        });
+                    }
+                    crate::consteval::ConstValue::Bool(value) => {
+                        instructions.push(IrInst::ConstInt {
+                            dest: dest.clone(),
+                            value: if value { 1 } else { 0 },
+                        });
+                    }
+                    crate::consteval::ConstValue::Float(value) => {
+                        instructions.push(IrInst::ConstFloat {
+                            dest: dest.clone(),
+                            value,
+                        });
+                    }
+                    crate::consteval::ConstValue::Str(value) => {
+                        instructions.push(IrInst::ConstString {
+                            dest: dest.clone(),
+                            value,
+                        });
+                    }
+                }
+                return dest;
             }
             if let Some((edef, vdef)) = find_variant_in_enums(name, &strings.enums) {
                 if vdef.fields.is_empty() {

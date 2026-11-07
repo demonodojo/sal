@@ -26,7 +26,10 @@ Tras `cargo build --bins`:
 ```bash
 cargo run --bin standard -- check path/to/file.sal
 cargo run --bin standard -- fix path/to/file.sal   # reescribe el fichero in situ
+cargo run --bin standard -- fix path/to/file.sal --start N --end M
 ```
+
+`--start` y `--end` son bytes UTF-8, intervalo semiabierto. Solo se aplican los arreglos cuyo span solapa `[N, M)`; el resto del fichero queda igual. Sin esos flags, `fix` reescribe el fichero entero. Un flag mal formado sale 2 y no escribe.
 
 Salida de `check`: avisos en stderr (código tipo `Style/DupString`). Exit distinto de 0 si hay infracciones. Con `--error-format json`, una línea JSON por aviso, con `code`, `message`, `span` (`start`/`end` en bytes) y `fix` (texto de reemplazo, o `null` si no hay arreglo). La extensión usa ese `fix` como quick fix.
 
@@ -44,7 +47,7 @@ Salida de `check`: avisos en stderr (código tipo `Style/DupString`). Exit disti
 | `Style/StdApi` | Llamadas libres de `std` con reemplazo que no cambia ownership (`read_fd` → `Fd.new(…).read(…)`, `http_get` → `Response.get(…).raw`, `getcwd_str` → `Path.cwd()`, …); tabla cerrada en `cop_stdapi.sal` |
 | `Style/Method` | Llamada a un builtin que ya es método (tabla de la SPEC): `str_len(s)` → `s.len()`, `list_push(xs, v)` → `xs.push(v)`, `bytes_copy(b, …)` → `b.copy(…)`, `int_to_str(n)` → `n.to_str()`, `float_pow(x, y)` → `x.pow(y)`, `list_new[T]()` → `List.new[T]()`, `dict_new[K, V]()` → `Dict.new[K, V]()`, `bytes_new(n)` → `Bytes.new(n)`, `char_to_str(c)` → `String.from_char(c)`, `strdup(s)` → `s.dup()`. El receptor se envuelve en paréntesis si no es un postfix (`(a - b).abs()`, `(1.5).sqrt()`). No toca `str_concat` ni `str_append` (los cubre `Style/StringPlus`), ni una definición `fn`, ni un nombre cualificado (`m.str_len`), ni una aridad o unos argumentos de tipo que no coinciden (`list_new()`, `dict_new[Int]()`) |
 
-`sal fmt` **no** aplica estas sustituciones; para estilo de API de runtime usar `standard fix` o corregir a mano y dejar `standard check` limpio. La extensión de VS Code muestra los avisos de `standard check` junto a los `E_*`. Si el aviso trae reemplazo, la bombilla lo aplica; `SAL: Standard Fix` aplica `fix` al buffer entero.
+`sal fmt` **no** aplica estas sustituciones; para estilo de API de runtime usar `standard fix` o corregir a mano y dejar `standard check` limpio. La extensión de VS Code muestra los avisos de `standard check` junto a los `E_*`. Si el aviso trae reemplazo, la bombilla lo aplica. `SAL: Standard Fix` aplica `fix` al buffer entero, o solo a la selección si el editor tiene un trozo marcado (`--start`/`--end`).
 
 ## Layout
 

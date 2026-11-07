@@ -222,8 +222,8 @@ struct Toks
     kinds: List[Int]
     texts: List[String]
     ivals: List[Int]
-    # Byte offset of each token in the preprocessed source (see `lex_go`); `cur` holds the offset the
-    # lexer is at and is released once lexing ends.
+    # Byte offset of each token in the preprocessed source (see `lex_go`). `cur` is the offset the
+    # lexer is at; it stays owned by this struct and is released when the caller drops `Toks`.
     offs: List[Int]
     cur: List[Int]
 
@@ -781,7 +781,6 @@ fn lex(src: String) -> Toks ! alloc
     st = indent_stack_new()
     lex_go(src, 0, src.len(), out, st, 1)
     list_free(st)
-    list_free(out.cur)
     out
 
 fn preprocess_scan(src: String, i: Int, n: Int, limit: Int) -> Int ! alloc

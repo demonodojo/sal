@@ -20,6 +20,22 @@ fn assert_fmt_idempotent(src: &str) {
 }
 
 #[test]
+fn module_const_parses_without_annotation() {
+    let p = assert_parse("MAX = 1 + 2\nNAME: String = \"sal\"\n");
+    assert_eq!(p.schema_version, 5);
+    let Item::Const(a) = &p.items[0] else { panic!("expected const") };
+    assert_eq!(a.name, "MAX");
+    assert!(a.ty.is_none());
+    let Item::Const(b) = &p.items[1] else { panic!("expected annotated const") };
+    assert_eq!(b.name, "NAME");
+    assert!(matches!(&b.ty, Some(Type::Named { name, .. }) if name == "String"));
+    let j = serde_json::to_string(&p).unwrap();
+    assert!(j.contains("\"schema_version\":5") || j.contains("\"schema_version\": 5"));
+    let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
+    assert_eq!(p, p2);
+}
+
+#[test]
 fn int_bitwise_operators_parse() {
     assert_parse(
         r#"fn main() -> Int
@@ -41,7 +57,7 @@ fn examples_parse() {
         let src = std::fs::read_to_string(format!("examples/{name}.sal")).unwrap();
         let p = assert_parse(&src);
         assert!(!p.items.is_empty(), "{name} has no items");
-        assert_eq!(p.schema_version, 4);
+        assert_eq!(p.schema_version, 5);
     }
 }
 
@@ -314,9 +330,9 @@ fn id[T](x: T) -> T
 fn ast_json_roundtrip_with_schema() {
     let src = std::fs::read_to_string("examples/gpu_roundtrip.sal").unwrap();
     let p = assert_parse(&src);
-    assert_eq!(p.schema_version, 4);
+    assert_eq!(p.schema_version, 5);
     let j = serde_json::to_string(&p).unwrap();
-    assert!(j.contains("\"schema_version\":4") || j.contains("\"schema_version\": 4"));
+    assert!(j.contains("\"schema_version\":5") || j.contains("\"schema_version\": 5"));
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }

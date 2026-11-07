@@ -1,0 +1,5 @@
+# error: E_PARSE
+max = 1
+
+fn main() -> Int
+    0

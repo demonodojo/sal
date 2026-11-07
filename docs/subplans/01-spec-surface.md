@@ -50,6 +50,7 @@ Además de `fn` e `import`:
 - `try`, `if` con `elsif` y `else` opcionales, y `let` con tipo opcional.
 - Tipos `Tensor[Elem, dims…] on lugar`, con `?` en un eje.
 - `protocol P` con firmas de método sin cuerpo; `struct T impl P, …` / `enum T impl P, …` en la cabecera; tipo `any[P]`.
+- Constante de módulo `NOMBRE = expr` (tipo opcional). El nombre es `^[A-Z][A-Z0-9_]*$`. No es palabra clave del lexer.
 
 ## Códigos
 

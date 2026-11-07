@@ -87,8 +87,18 @@ fn module_defines(tp: TProgram, name: String) -> Int ! alloc
         1
     elsif tt_struct_find(tp.structs, name) >= 0
         1
+    elsif const_defined(tp.consts, name, 0, list_len(tp.consts)) == 1
+        1
     else
         0
+
+fn const_defined(cs: List[TConst], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif str_eq(list_get(cs, i).name, name) == 1
+        1
+    else
+        const_defined(cs, name, i + 1, n)
 
 fn name_is_clashing(order: Graph, n: Int, name: Int) -> Int ! alloc
     if name_clash_count(order, n, name) > 1
@@ -108,8 +118,18 @@ fn graph_has_any_clash_go(order: Graph, i: Int, n: Int) -> Int ! alloc
             1
         elsif struct_list_has_clash(order, n, tp.structs, 0, list_len(tp.structs)) == 1
             1
+        elsif const_list_has_clash(order, n, tp.consts, 0, list_len(tp.consts)) == 1
+            1
         else
             graph_has_any_clash_go(order, i + 1, n)
+
+fn const_list_has_clash(order: Graph, n: Int, cs: List[TConst], i: Int, cn: Int) -> Int ! alloc
+    if i >= cn
+        0
+    elsif name_is_clashing(order, n, str_as_int(list_get(cs, i).name)) == 1
+        1
+    else
+        const_list_has_clash(order, n, cs, i + 1, cn)
 
 fn fn_list_has_clash(order: Graph, n: Int, fns: List[TFn], i: Int, fn_n: Int) -> Int ! alloc
     if i >= fn_n
@@ -168,8 +188,19 @@ fn build_export_links_go(order: Graph, i: Int, n: Int, proot: String, links: Int
         tp = list_get(order.progs, i)
         links2 = push_fn_links_go(order, n, key, modid, tp.fns, 0, list_len(tp.fns), links)
         links3 = push_struct_links_go(order, n, key, modid, tp.structs, 0, list_len(tp.structs), links2)
-        links4 = push_variant_links_go(key, tp.enums, 0, list_len(tp.enums), links3)
-        build_export_links_go(order, i + 1, n, proot, links4)
+        links4 = push_const_links_go(order, n, key, modid, tp.consts, 0, list_len(tp.consts), links3)
+        links5 = push_variant_links_go(key, tp.enums, 0, list_len(tp.enums), links4)
+        build_export_links_go(order, i + 1, n, proot, links5)
+
+fn push_const_links_go(order: Graph, n: Int, key: Int, modid: String, cs: List[TConst], i: Int, cn: Int, links: Int) -> Int ! alloc
+    if i >= cn
+        links
+    else
+        nm = str_as_int(list_get(cs, i).name)
+        clash = name_is_clashing(order, n, nm)
+        lk = str_as_int(link_name(modid, str_from_int(nm), clash))
+        links2 = links_push(links, key, nm, lk)
+        push_const_links_go(order, n, key, modid, cs, i + 1, cn, links2)
 
 # `alias.Variante` names a variant of the module (SPEC: enums are not exports). Variants keep their
 # names in the selfhost, so the link is the name itself.
@@ -619,6 +650,14 @@ fn fields_copy(fs: List[TField], i: Int, n: Int, out: List[TField]) -> Int ! all
         _a = list_push(out, TField(strdup(f.name), strdup(f.ty)))
         fields_copy(fs, i + 1, n, out)
 
+fn qualify_consts(cs: List[TConst], i: Int, n: Int, ctx: Int, links: Int, r: Int, out: List[TConst]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        c = list_get(cs, i)
+        _a = list_push(out, TConst(link_or_same(r, c.name), strdup(c.ty), qx(c.expr, ctx, links), strdup(c.deprecated)))
+        qualify_consts(cs, i + 1, n, ctx, links, r, out)
+
 fn qualify_structs(sts: List[TStruct], i: Int, n: Int, r: Int, out: List[TStruct]) -> Int ! alloc
     if i >= n
         0
@@ -636,7 +675,11 @@ fn qualify_typed(order: Graph, mi: Int, ctx: Int, links: Int, r: Int) -> Int ! a
     _a = qualify_fns(old.fns, 0, list_len(old.fns), ctx, links, r, fns)
     sts = list_new[TStruct]()
     _b = qualify_structs(old.structs, 0, list_len(old.structs), r, sts)
-    neu = TProgram(fns, tc_strs(old.imports), sts, tc_strs(old.aliases), old.enums, old.protocols)
+    cs = list_new[TConst]()
+    _k = qualify_consts(old.consts, 0, list_len(old.consts), ctx, links, r, cs)
+    neu = TProgram(fns, tc_strs(old.imports), sts, tc_strs(old.aliases), old.enums, old.protocols, cs)
+    _kc = tp_free_consts(old.consts, 0, list_len(old.consts))
+    _kl = list_free(old.consts)
     _c = tp_free_fn_bodies(old.fns, 0, list_len(old.fns))
     _d = tp_free_fns_shallow(old.fns, 0, list_len(old.fns))
     _e = list_free(old.fns)
@@ -679,7 +722,7 @@ fn check_flat_go(tp: TProgram, i: Int, n: Int, mpath: String, proot: String, ord
                         check_flat_go(tp, i + 1, n, mpath, proot, order, seen2)
 
 fn check_flat_dep_exports(tp: TProgram, seen: Int) -> Int ! alloc
-    seen2 = merge_struct_names_seen(tp.structs, 0, list_len(tp.structs), merge_fn_names_seen(tp.fns, 0, list_len(tp.fns), seen))
+    seen2 = merge_const_names_seen(tp.consts, 0, list_len(tp.consts), merge_struct_names_seen(tp.structs, 0, list_len(tp.structs), merge_fn_names_seen(tp.fns, 0, list_len(tp.fns), seen)))
     if seen2 == 0
         result_err_str("name defined in more than one imported module")
     else
@@ -697,6 +740,19 @@ fn merge_fn_names_seen(fns: List[TFn], i: Int, n: Int, seen: Int) -> Int ! alloc
         else
             _p = vec_push(seen, nm)
             merge_fn_names_seen(fns, i + 1, n, seen)
+
+fn merge_const_names_seen(cs: List[TConst], i: Int, n: Int, seen: Int) -> Int ! alloc
+    if seen == 0
+        0
+    elsif i >= n
+        seen
+    else
+        nm = str_as_int(list_get(cs, i).name)
+        if flat_export_name_seen(seen, nm) == 1
+            0
+        else
+            _p = vec_push(seen, nm)
+            merge_const_names_seen(cs, i + 1, n, seen)
 
 fn merge_struct_names_seen(sts: List[TStruct], i: Int, n: Int, seen: Int) -> Int ! alloc
     if seen == 0
@@ -724,7 +780,19 @@ fn clash_map_modules(order: Graph, i: Int, n: Int, total: Int, clash: Int) -> In
         tp = list_get(order.progs, i)
         _f = clash_map_fns(order, total, tp.fns, 0, list_len(tp.fns), clash)
         _s = clash_map_structs(order, total, tp.structs, 0, list_len(tp.structs), clash)
+        _c = clash_map_consts(order, total, tp.consts, 0, list_len(tp.consts), clash)
         clash_map_modules(order, i + 1, n, total, clash)
+
+fn clash_map_consts(order: Graph, total: Int, cs: List[TConst], i: Int, n: Int, clash: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = str_as_int(list_get(cs, i).name)
+        if name_is_clashing(order, total, nm) == 1
+            _p = map_put(clash, nm, 1)
+            clash_map_consts(order, total, cs, i + 1, n, clash)
+        else
+            clash_map_consts(order, total, cs, i + 1, n, clash)
 
 fn clash_map_fns(order: Graph, total: Int, fns: List[TFn], i: Int, n: Int, clash: Int) -> Int ! alloc
     if i >= n
@@ -753,8 +821,20 @@ fn local_renames(tp: TProgram, clash: Int, modid: String) -> Int ! alloc
     r = map_new()
     _a = local_renames_fns(tp.fns, 0, list_len(tp.fns), clash, modid, r)
     _b = local_renames_structs(tp.structs, 0, list_len(tp.structs), clash, modid, r)
+    _k = local_renames_consts(tp.consts, 0, list_len(tp.consts), clash, modid, r)
     _c = local_renames_methods(tp.fns, 0, list_len(tp.fns), r)
     r
+
+fn local_renames_consts(cs: List[TConst], i: Int, n: Int, clash: Int, modid: String, r: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        nm = list_get(cs, i).name
+        if map_get(clash, str_as_int(nm)) == 1
+            _p = map_put(r, str_as_int(nm), str_as_int(link_name(modid, nm, 1)))
+            local_renames_consts(cs, i + 1, n, clash, modid, r)
+        else
+            local_renames_consts(cs, i + 1, n, clash, modid, r)
 
 # A method or static of a renamed type follows its type: `T__m` -> `mod__T__m`.
 fn local_renames_methods(fns: List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc

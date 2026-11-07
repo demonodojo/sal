@@ -79,10 +79,8 @@ method FRC.alias_call(name: String, fname: String, args: List[Expr]) -> Int ! al
         si = tt_struct_find(self.structs, t)
         if si < 0
             0
-        elsif desc_struct_text(self.structs, self.enums, t, 0).len() == 0
-            fr_add(self.al, name)
         else
-            0
+            fr_add(self.al, name)
 
 # The parameter indices `fname` returns as the value of some branch tail (`returns_param_map`).
 # `fns` is every function of the module graph: the callee may be imported.

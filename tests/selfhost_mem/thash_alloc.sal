@@ -1,0 +1,9 @@
+import "../../selfhost/ast/thash.sal"
+
+fn main() -> Int ! alloc
+    t = HT.new(4)
+    t.put("a", "1")
+    t.put("b", "2")
+    n = t.get("a").len()
+    t.free()
+    n

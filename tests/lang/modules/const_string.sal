@@ -1,0 +1,7 @@
+# exit: 0
+# stdout: sal
+NAME = "sal"
+
+fn main() -> Int ! io, alloc
+    print(NAME)
+    0
