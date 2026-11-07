@@ -1,0 +1,28 @@
+B = 3
+
+fn A() -> Int
+    B
+
+fn TK_EOF() -> Int
+    0
+
+fn TK_NEXT() -> Int
+    TK_EOF() + 1
+
+static Lexer.TK_EQ() -> Int
+    19
+
+method Flag.OK(self) -> Bool
+    true
+
+fn NEG() -> Int
+    -(1 + 2)
+
+fn NAME() -> String
+    "sal"
+
+fn SHOW(s: String) -> String
+    "keep"
+
+fn main() -> Int
+    TK_EOF() + TK_NEXT() + Lexer.TK_EQ() + Flag.OK() + A() + NEG()

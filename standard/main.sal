@@ -9,6 +9,7 @@ import cop_plusliteral
 import cop_unusedbinding
 import cop_method
 import cop_stdapi
+import cop_constfn
 
 struct CopsResult
     status: Int
@@ -42,6 +43,7 @@ fn run_all_cops(src: String) -> CopsResult ! alloc
         cop_unusedbinding(src, lx, offs)
         cop_method(src, lx, offs)
         cop_stdapi(src, lx, offs)
+        cop_constfn(src, lx, offs)
         CopsResult(LEX_OK(), offs)
 
 fn byte_line_col(src: String, pos: Int, i: Int, line: Int, col: Int) -> LineCol ! alloc

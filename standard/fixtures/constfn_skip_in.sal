@@ -1,0 +1,30 @@
+fn lower() -> Int
+    1
+
+fn Max() -> Int
+    1
+
+fn UPPER(x: Int) -> Int
+    1
+
+fn EFFECT() -> Int ! alloc
+    1
+
+fn CALL() -> Int
+    f()
+
+fn NOTE() -> Int
+    # keep
+    1
+
+UPPER = 1
+
+method Box.NO() -> Int
+    1
+
+fn use_no() -> Int
+    g().NO()
+
+fn main() -> Int
+    lower()
+    0

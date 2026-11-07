@@ -517,6 +517,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_str_concat(ptr, ptr)\n");
     s.push_str("declare ptr @sal_str_append(ptr, ptr)\n");
     s.push_str("declare ptr @sal_strdup(ptr)\n");
+    s.push_str("declare ptr @sal_str_share(ptr)\n");
     s.push_str("declare ptr @sal_select_str(i64, ptr, ptr)\n");
     s.push_str("declare void @sal_free(ptr)\n");
     s.push_str("declare void @sal_arena_enter()\n");
@@ -550,8 +551,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_enum_new(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_set(i64, i64, i64)\n");
     s.push_str("declare void @sal_enum_free(i64)\n");
+    s.push_str("declare void @sal_enum_free_shell(i64)\n");
     s.push_str("declare void @sal_struct_free(i64, ptr)\n");
     s.push_str("declare void @sal_struct_free_box(i64)\n");
+    s.push_str("declare i64 @sal_struct_set(i64, i64, i64)\n");
     s.push_str("declare i64 @sal_struct_new(i64)\n");
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
     s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
@@ -560,6 +563,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_vec_len(ptr)\n");
     s.push_str("declare void @sal_vec_free(ptr)\n");
     s.push_str("declare void @sal_list_free(ptr)\n");
+    s.push_str("declare void @sal_list_free_shell(ptr)\n");
     s.push_str("declare i64 @sal_list_box_id(ptr)\n");
     s.push_str("declare void @sal_dict_free(ptr)\n");
     s.push_str("declare void @sal_bytes_free(ptr)\n");
@@ -577,6 +581,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_list_new()\n");
     s.push_str("declare ptr @sal_list_new_desc(ptr)\n");
     s.push_str("declare ptr @sal_list_push(ptr, i64)\n");
+    s.push_str("declare ptr @sal_list_push_share(ptr, i64)\n");
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
     s.push_str("declare i64 @sal_desc_copy(ptr, i64)\n");
@@ -2984,6 +2989,13 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
         }
+        "sal_str_share" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_str_share(ptr {a})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
         "sal_select_str" => {
             let c = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             let a = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
@@ -3262,11 +3274,42 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
         }
+        "sal_struct_set" => {
+            let raw = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let idx = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let val = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!(
+                    "  %{d} = call i64 @sal_struct_set(i64 {raw}, i64 {idx}, i64 {val})\n"
+                ));
+            } else {
+                s.push_str(&format!(
+                    "  call i64 @sal_struct_set(i64 {raw}, i64 {idx}, i64 {val})\n"
+                ));
+            }
+        }
         "sal_enum_free" => {
             let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             s.push_str(&format!("  call void @sal_enum_free(i64 {a})\n"));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_enum_free_shell" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            s.push_str(&format!("  call void @sal_enum_free_shell(i64 {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_enum_set" => {
+            let v = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let i = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let x = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_enum_set(i64 {v}, i64 {i}, i64 {x})\n"));
+            } else {
+                s.push_str(&format!("  call i64 @sal_enum_set(i64 {v}, i64 {i}, i64 {x})\n"));
             }
         }
         "sal_tensor_free" => {
@@ -3337,6 +3380,23 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             } else {
                 s.push_str(&format!("  call ptr @sal_list_push(ptr {a}, i64 {b})\n"));
+            }
+        }
+        "sal_list_push_share" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d}_p = call ptr @sal_list_push_share(ptr {a}, i64 {b})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            } else {
+                s.push_str(&format!("  call ptr @sal_list_push_share(ptr {a}, i64 {b})\n"));
+            }
+        }
+        "sal_list_free_shell" => {
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            s.push_str(&format!("  call void @sal_list_free_shell(ptr {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
         }
         "sal_list_len" => {

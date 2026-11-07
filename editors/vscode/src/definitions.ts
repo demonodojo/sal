@@ -91,6 +91,8 @@ export function functionDefinitionsIn(text: string): NamedSpan[] {
       pushNameSpan(out, line, `${recv}__new`, init[0].length - recv.length);
       continue;
     }
+    const constant = /^([A-Z][A-Z0-9_]*)[ \t]*(?::[ \t]*[A-Za-z_][A-Za-z0-9_]*)?[ \t]*=/.exec(code);
+    if (constant) pushNameSpan(out, line, constant[1], constant.index);
   }
   return out;
 }

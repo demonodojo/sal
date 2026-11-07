@@ -57,15 +57,15 @@ Otras reglas:
 
 ### Préstamo de `list_get` y copia al tomar posesión
 
-`list_get` de `String`, struct describible o enum **presta** el puntero guardado. No llama a `desc_copy` y el local no se libera: lo suelta la lista (`list_free` / `list_pop`). Pasarlo a un parámetro que solo lee, o leer un campo, sigue prestando.
+`list_get` de `String`, struct describible o enum **presta** el puntero guardado. No llama a `desc_copy` y el local no se libera: lo suelta la lista (`list_free` / `list_pop`). Pasarlo a una función que solo lee campos, o que los recompone (`P(p.name, p.n)`), sigue prestando: el llamador no clona. El resultado es un alias (los mismos punteros) y la cola no suelta sus hijos. `p.x = v` sobre ese elemento escribe el hueco (`sal_struct_set`); no reserva otro bloque.
 
-La copia profunda (`desc_copy`, sitio `struct_copy`) se inserta solo donde el valor pasa a tener dueño: `return`, parámetro que guarda o devuelve el valor entero, `list_push` / `list_set` / `dict_put`, constructor de struct o de variante. El destino posee esa copia y se libera una vez. `list_pop` sigue moviendo (el elemento sale de la lista). Un `desc_copy` guardado en una lista es un valor fresco: la lista no queda tainted y `list_free` suelta la copia.
+La copia profunda (`desc_copy`, sitio `struct_copy`) queda solo para una segunda dueña que libera por su cuenta: `return` cuyo destino vive más que la lista, el parámetro mismo guardado o devuelto (`list_push(ys, p)`, `return p`), `list_push` / `list_set` / `dict_put`, y el payload de una variante. Un constructor armado solo con campos prestados no copia. El destino posee esa copia y se libera una vez. `list_pop` sigue moviendo (el elemento sale de la lista). Un `desc_copy` guardado en una lista es un valor fresco: la lista no queda tainted y `list_free` suelta la copia.
 
-| Destino de la copia | Qué pasa con la caja |
-|---------------------|----------------------|
-| `list_push`, `list_set`, `dict_put` o ctor | El contenedor o el ctor absorbe el puntero. No `struct_free_box` |
-| Función de usuario que guarda o devuelve el struct | `sal_desc_copy` y, tras escalarizar, `sal_struct_free_box` de esa caja |
-| Solo lectura | No hay copia ni `struct_free_box` |
+| Destino | Qué pasa |
+|---------|----------|
+| `list_push`, `list_set`, `dict_put` del alias | Un `sal_desc_copy`. La lista absorbe la copia. No `struct_free_box` |
+| Función que guarda o devuelve el parámetro mismo | `sal_desc_copy` en la llamada y, tras escalarizar, `sal_struct_free_box` de esa caja |
+| Lectura de campos, o recomponerlos | No hay copia ni `struct_free_box`. El resultado es un alias |
 
 En **`src/ir.rs`**, tras **`fuse_module`**: `scan_struct_box_shell` registra destinos de `sal_desc_copy` cuyo descriptor empieza por `S` y de `sal_list_pop` (solo si `loop_depth == 0`). No registra `sal_list_get`. Marca el shell al pasar la copia a una llamada no-`sal_` que no transfiere caja, e inserta `sal_struct_free_box` **inmediatamente antes** del último `Return`. Una copia devuelta la suelta `scalarize` después de extraer los campos al `sret`, no este pase (soltarla antes sería un uso tras liberar).
 

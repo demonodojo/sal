@@ -22,6 +22,7 @@ fn call_returns_string2(name: String) -> Int ! alloc
         "int_to_str" => 1
         "char_to_str" => 1
         "strdup" => 1
+        "str_share" => 1
         _ => call_returns_string3(name)
 
 fn call_returns_string3(name: String) -> Int ! alloc

@@ -30,9 +30,10 @@ fn tc_new(pool: Int, env: TEnv borrow, enums: List[TEnum] borrow) -> Tc ! alloc
     tenv_truncate(env, 0)
     Tc(ctr, acc, mm_out, mm_n, List.new[String](), List.new[String](), List.new[Expr](), pool, env, enums)
 
-# Releases the lists; the env and the pool are the caller's. Frees emit `body` and lambda AST copies.
+# Releases the emitter lists and the lambda copies. The body stays: IR and the program share its strings.
 fn tc_free(tc: Tc, body: TBlock) -> Int ! alloc
-    tp_free_emit_scope(body, tc.lam_bodies)
+    _k = list_len(body.stmts)
+    tp_free_expr_list(tc.lam_bodies)
     list_free(tc.ctr)
     list_free(tc.acc)
     list_free(tc.mm_out)

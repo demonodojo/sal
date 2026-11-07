@@ -10,6 +10,7 @@
     { "include": "#function-def" },
     { "include": "#attribute" },
     { "include": "#type-builtin" },
+    { "include": "#module-const" },
     { "include": "#type-name" },
     { "include": "#tensor" },
     { "include": "#method" },
@@ -91,6 +92,10 @@
     "type-builtin": {
       "name": "storage.type.sal",
       "match": "\\b(?:Tensor|List|Dict|Int|Float|Bool|String|Bytes|Unit|BF16|F16|F32|I8)\\b"
+    },
+    "module-const": {
+      "name": "constant.other.sal",
+      "match": "\\b[A-Z][A-Z0-9_]*\\b"
     },
     "type-name": {
       "name": "entity.name.type.sal",

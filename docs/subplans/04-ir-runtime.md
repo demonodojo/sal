@@ -68,7 +68,7 @@ Sobre las instrucciones de un solo `on`, en orden:
 
 ### Caja de la copia que toma posesión
 
-`sal_list_get` devuelve el puntero guardado (`String`, enum o struct describible). No llama a `desc_copy`. El pase de drops inserta `desc_copy` (baja a `sal_desc_copy`) solo donde ese préstamo pasa a tener dueño: `return`, parámetro `take`, `list_push` / `list_set` / `dict_put`, constructor de struct o de variante. `list_pop` sigue moviendo el elemento.
+`sal_list_get` devuelve el puntero guardado (`String`, enum o struct describible). No llama a `desc_copy`. Un struct se mueve: pasarlo a una función que solo lee campos, o que los recompone (`P(p.name, p.n)`), no clona. Ese resultado es un alias (los mismos punteros); la cola no suelta sus hijos. El pase de drops inserta `desc_copy` (baja a `sal_desc_copy`) solo para una segunda dueña: `return` del valor cuando su destino vive más que quien posee los hijos, el parámetro mismo guardado o devuelto (`list_push(ys, p)`, `return p`), `list_push` / `list_set` / `dict_put`, y el payload de una variante. Un constructor armado solo con campos prestados no copia. `p.x = v` sobre un elemento de lista escribe el hueco del bloque (`sal_struct_set`); no reserva otro. `list_pop` sigue moviendo el elemento.
 
 Después de `fuse_function` en cada `IrFunction`, `finish_module_box_shell_drops` (`src/ir.rs`, invocado desde `fuse_module` / `fuse_module_opts` en `src/fuse.rs`) recorre la IR ya fusionada:
 

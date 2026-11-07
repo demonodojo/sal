@@ -61,6 +61,7 @@ function collectTypeNames(
   let match: RegExpExecArray | null;
   while ((match = TYPE_NAME_RE.exec(code))) {
     if (BUILTIN_TYPE_SET.has(match[0])) continue;
+    if (/^[A-Z][A-Z0-9_]*$/.test(match[0])) continue;
     pushSpan(match, skip, out);
   }
 }

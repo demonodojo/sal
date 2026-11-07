@@ -182,6 +182,19 @@ fn emit_c_builtin5(fname: String, args: Int, stmts: Int) -> String ! alloc
             line = "  sal_enum_free(" + a0 + ");\n"
             _p = vec_push(stmts, line)
             "0"
+        "enum_free_shell" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_enum_free_shell(" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
+        "list_free_shell" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_list_free_shell((void*)(uintptr_t)" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
+        "enum_set" => "sal_enum_set(" + arg_at(args, 0) + ", " + arg_at(args, 1) + ", " + arg_at(args, 2) + ")"
+        "str_share" => "((int64_t)(uintptr_t)sal_str_share((const char*)(uintptr_t)" + arg_at(args, 0) + "))"
+        "list_push_share" => "((int64_t)(uintptr_t)sal_list_push_share((void*)(uintptr_t)" + arg_at(args, 0) + ", " + arg_at(args, 1) + "))"
         "enum_owns" => "sal_enum_owns(" + arg_at(args, 0) + ", " + arg_at(args, 1) + ")"
         "enum_box_id" => "sal_enum_box_id(" + arg_at(args, 0) + ")"
         "list_box_id" => "sal_list_box_id((void *)(uintptr_t)" + arg_at(args, 0) + ")"

@@ -1864,7 +1864,7 @@ fn infer_call(
         | "str_index_from" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
-        | "vec_len" | "vec_free" | "list_free" | "dict_free" | "enum_free" | "enum_owns" | "enum_box_id"
+        | "vec_len" | "vec_free" | "list_free" | "list_free_shell" | "list_push_share" | "dict_free" | "enum_free" | "enum_free_shell" | "enum_set" | "enum_owns" | "enum_box_id"
         | "list_box_id" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
@@ -2004,7 +2004,7 @@ fn infer_call(
             })
         }
         "argv" | "read_file" | "str_concat" | "str_append" | "str_slice" | "int_to_str"
-        | "char_to_str" | "strdup" | "select_str" | "tmp_path" | "exec_capture" | "getenv"
+        | "char_to_str" | "strdup" | "str_share" | "select_str" | "tmp_path" | "exec_capture" | "getenv"
         | "realpath" | "ir_text" => {
             for a in args {
                 check_expr(a, env, ctx, types, entries)?;

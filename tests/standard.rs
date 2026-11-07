@@ -490,6 +490,49 @@ fn touch() -> Int
 }
 
 #[test]
+fn standard_fix_constfn() {
+    let input = read_fixture("constfn_in.sal");
+    let (dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let want = read_fixture("constfn_out.sal");
+    assert_eq!(got, want);
+    let path = dir.path().join("input.sal");
+    let path_str = path.to_string_lossy().into_owned();
+    let out2 = run_standard(&["fix", &path_str]);
+    assert_eq!(out2.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out2.stderr));
+    let got2 = fs::read_to_string(&path).expect("read again");
+    assert_eq!(got2, want);
+}
+
+#[test]
+fn standard_check_constfn_reports() {
+    let path = root()
+        .join("standard/fixtures/constfn_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let out = run_standard(&["check", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Style/ConstFn"), "stderr: {err}");
+    assert!(err.contains("use a module constant instead of TK_EOF"), "stderr: {err}");
+    assert!(err.contains("call the module constant TK_EOF"), "stderr: {err}");
+}
+
+#[test]
+fn standard_constfn_skip_is_clean() {
+    let input = read_fixture("constfn_skip_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, input);
+    let path = root()
+        .join("standard/fixtures/constfn_skip_in.sal")
+        .to_string_lossy()
+        .into_owned();
+    let check = run_standard(&["check", &path]);
+    assert_eq!(check.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&check.stderr));
+}
+
+#[test]
 fn standard_fix_range_rejects_bad_args() {
     let input = read_fixture("dupstring_in.sal");
     let (_dir, got, out) = fix_with(&input, &["--start"]);

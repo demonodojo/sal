@@ -554,6 +554,35 @@ fn list_get_struct_returned_is_copied() {
 }
 
 #[test]
+fn list_get_struct_rebuilt_from_fields_is_not_copied() {
+    let ir = ir_of(
+        "struct_box_rebuild",
+        "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: P) -> P ! alloc\n    P(p.name, p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    q.n\n",
+    );
+    assert!(
+        !ir.contains("func: \"sal_desc_copy\""),
+        "rebuilding from borrowed fields shares them:\n{ir}"
+    );
+    assert!(
+        !ir.contains("func: \"sal_struct_free\""),
+        "the alias is not freed; the list owns the fields:\n{ir}"
+    );
+}
+
+#[test]
+fn list_get_struct_rebuilt_then_pushed_is_copied_once() {
+    let ir = ir_of(
+        "struct_box_rebuild_push",
+        "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: P) -> P ! alloc\n    P(p.name, p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    ys = list_new[P]()\n    list_push(ys, q)\n    list_len(ys)\n",
+    );
+    assert_eq!(
+        ir.matches("func: \"sal_desc_copy\"").count(),
+        1,
+        "the second list copies the alias once:\n{ir}"
+    );
+}
+
+#[test]
 fn struct_glue_frees_owned_struct_list_field() {
     let ir = ir_of(
         "struct_list_field",

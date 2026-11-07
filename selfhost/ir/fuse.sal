@@ -1525,23 +1525,21 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(dst, vec_get(src, i))
         copy_insts(src, dst, i + 1, n)
 
-# The IR keeps identifier and literal texts by handle until `ti_fn`. `drops_body_t` copies
-# them into boxes that own the copies, so this function must not release `body`: freeing
-# the block reuses those texts while the instruction vec still points at them.
+# The IR keeps identifier and literal texts by handle until `ti_fn`. `drops_body` moved
+# this body once; freeing it would reuse those texts while the instruction vec still points at them.
 fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow, seen: List[TFn]) -> Int ! alloc
     env = tenv_clone(env_tpl)
     _t = tenv_truncate(env, 0)
     cx = cx_new(fn_names, fm, env, enums, prog_fns, prog_protocols)
     _a = lower_params(cx, f.params, 0, list_len(f.params))
-    body = drops_body_t(f, denv)
-    stopped = lower_stmts(cx, body.stmts, 0, list_len(body.stmts))
+    stopped = lower_stmts(cx, f.body.stmts, 0, list_len(f.body.stmts))
     if stopped == 0
-        _c = lower_fn_tail(cx, body.tail)
+        _c = lower_fn_tail(cx, f.body.tail)
     else
         _c = 0
     ret = pop_final_ret(cx)
     name = f.name.dup()
-    _dr = emit_struct_drops(cx, f, body, vec_get(denv, 1), seen)
+    _dr = emit_struct_drops(cx, f, f.body, vec_get(denv, 1), seen)
     if f.arena == 1
         _lv = ir_push(cx, ir_call(0, str_as_int("sal_arena_leave"), vec_new(), 0))
     else
@@ -1561,7 +1559,7 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TE
     _g = vec_push(out, cx_regions(cx))
     _h = vec_push(out, cx_literals(cx))
     _z = cx_free(cx)
-    keep_block(body)
+    keep_block(f.body)
     out
 
 # Hands a block to no one. The IR aliases its strings, and releasing the block would free them.
@@ -1691,7 +1689,7 @@ fn lower_program_typed(tp: TProgram, extra: Int, env_tpl: TEnv borrow, em: List[
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
-    denv = drop_env_t(tp, env_tpl.structs, em)
+    denv = drop_env_t(tp, env_tpl.structs, em, seen)
     lower_fns(tp.fns, names, fm, env_tpl, em, denv, tp.fns, tp.protocols, seen, 0, list_len(tp.fns), out)
     out
 
@@ -1699,9 +1697,9 @@ fn lower_program_typed(tp: TProgram, extra: Int, env_tpl: TEnv borrow, em: List[
 # each parameter (0 copy, 1 borrow, 2 take), and the read-only flags.
 # `structs`/`enums` are the whole module graph's (the imported ones included), as the drops pass
 # of src/drops.rs sees them; the variants are the module's own.
-fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] borrow) -> Int ! alloc
+fn drop_env_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] borrow, seen: List[TFn]) -> Int ! alloc
     denv = vec_new()
-    _a = vec_push(denv, variant_map_t(tp, structs, enums))
+    _a = vec_push(denv, variant_map_t(tp, structs, enums, seen))
     _o = owned_fns_put(vec_get(denv, 0), tp.fns, 0, list_len(tp.fns))
     cons = dr_cons_list(tp.fns)
     ro = dr_read_only_t(tp, vec_get(denv, 0), cons)
@@ -1928,12 +1926,26 @@ fn modes_vec(out: Int, text: String, i: Int, n: Int) -> Int ! alloc
         modes_vec(out, text, i + 1, n)
 
 # Variant name -> [1 when it has fields or 2 when unit, per-field "may own heap" flags].
-fn variant_map_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] borrow) -> Int ! alloc
+fn variant_map_t(tp: TProgram, structs: List[TStruct] borrow, enums: List[TEnum] borrow, seen: List[TFn]) -> Int ! alloc
     m = map_new()
     _a = variant_map_enums_t(m, tp.enums, 0, list_len(tp.enums))
     _k = enum_keys_t(m, enums, 0, list_len(enums))
     _b = flat_map_structs_t(m, structs, enums, 0, list_len(structs))
+    _r = ret_desc_keys(m, seen, 0, list_len(seen))
     m
+
+# `rd:fname` is the descriptor of a function whose result is an ownable struct.
+fn ret_desc_keys(m: Int, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = list_get(fns, i)
+        h = map_get(m, str_as_int("desc:" + trim_spaces(f.ret)))
+        if h == 0
+            ret_desc_keys(m, fns, i + 1, n)
+        else
+            _p = map_put(m, str_as_int("rd:" + f.name), h)
+            ret_desc_keys(m, fns, i + 1, n)
 
 # `enum:Name` for every enum of the module graph.
 fn enum_keys_t(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
@@ -2024,6 +2036,8 @@ fn lower_fns(fns: List[TFn], names: Int, fm: Int, env_tpl: TEnv borrow, em: List
     if i >= n
         out
     else
-        irf = lower_fn(fns.get(i), names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen)
+        f = list_get(fns, i)
+        f.body = drops_body(f, denv)
+        irf = lower_fn(f, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen)
         _p = vec_push(out, irf)
         lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen, i + 1, n, out)

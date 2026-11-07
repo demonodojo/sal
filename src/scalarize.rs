@@ -561,6 +561,11 @@ impl<'a> Pass<'a> {
         out: &mut Vec<IrInst>,
     ) {
         let Some(sig) = self.sigs.get(func).cloned() else {
+            // Boxing a scalarised alias for `desc_copy` allocates a shallow block.
+            // The deep copy is what the second owner keeps; the shallow block is freed here.
+            let shallow = func == "sal_desc_copy"
+                && args.get(1).is_some_and(|a| scope.vals.contains_key(a));
+            let shallow_name = args.get(1).cloned();
             let args = self.plain_all(args, scope, out);
             if func == "sal_desc_copy" {
                 if let (Some(d), Some(desc)) = (dest, args.first()) {
@@ -572,8 +577,20 @@ impl<'a> Pass<'a> {
             out.push(IrInst::Call {
                 dest: dest.clone(),
                 func: func.to_string(),
-                args,
+                args: args.clone(),
             });
+            if shallow {
+                if let Some(name) = shallow_name {
+                    scope.boxed.remove(&name);
+                }
+                if let Some(b) = args.get(1) {
+                    out.push(IrInst::Call {
+                        dest: None,
+                        func: "sal_struct_free_box".into(),
+                        args: vec![b.clone()],
+                    });
+                }
+            }
             return;
         };
         let mut flat = Vec::new();

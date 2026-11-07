@@ -2126,6 +2126,14 @@ void sal_enum_free(int64_t v) {
     sal_xfree(b);
 }
 
+/* The box only. A moved child still lives in the node that received it. */
+void sal_enum_free_shell(int64_t v) {
+    if (v < 4096) {
+        return;
+    }
+    sal_xfree((void *)(intptr_t)v);
+}
+
 /* A deep copy of an enum value: owned Strings and boxes are copied, the other
  * fields are shared as they are (they are not owned by the box). */
 int64_t sal_enum_copy(int64_t v) {
@@ -2432,6 +2440,16 @@ void sal_struct_free_box(int64_t raw) {
     sal_xfree((void *)(uintptr_t)raw);
 }
 
+/* `p.x = v` on a boxed struct writes the slot. The block stays the one the list holds. */
+int64_t sal_struct_set(int64_t raw, int64_t index, int64_t value) {
+    if (raw < 4096 || index < 0) {
+        return raw;
+    }
+    int64_t *slots = (int64_t *)(uintptr_t)raw;
+    slots[index] = value;
+    return raw;
+}
+
 typedef struct {
     int64_t vtable;
     int64_t payload;
@@ -2613,6 +2631,29 @@ void sal_list_free(void *vp) {
         free(l->vec.data);
     }
     sal_xfree(l);
+}
+
+/* The vector and the header. Elements stay where the new tree stored them. */
+void sal_list_free_shell(void *vp) {
+    SalList *l = (SalList *)vp;
+    if (!l) {
+        return;
+    }
+    if (l->desc_owned) {
+        free((void *)l->desc);
+    }
+    if (l->vec.data && !sal_ptr_in_any(l->vec.data)) {
+        free(l->vec.data);
+    }
+    sal_xfree(l);
+}
+
+void *sal_list_push_share(void *vp, int64_t x) {
+    return sal_list_push(vp, x);
+}
+
+char *sal_str_share(const char *s) {
+    return (char *)s;
 }
 
 void *sal_list_push(void *vp, int64_t x) {

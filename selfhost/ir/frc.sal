@@ -72,15 +72,71 @@ method FRC.alias(name: String, e: Expr) -> Int ! alloc
 method FRC.alias_call(name: String, fname: String, args: List[Expr]) -> Int ! alloc
     if self.returns_borrowed(args, fr_returned_params(self.fns, fname), 0) == 1
         fr_add(self.al, name)
-    elsif fname.eq("list_get") == 0
-        0
-    else
+    elsif fname.eq("list_get") == 1
         t = trim_type_piece(self.type_of(name))
         si = tt_struct_find(self.structs, t)
         if si < 0
             0
         else
             fr_add(self.al, name)
+    elsif self.ctor_alias(fname, args) == 1
+        fr_add(self.al, name)
+    elsif self.call_shares(name, fname, args) == 1
+        fr_add(self.al, name)
+    else
+        0
+
+# `P(o.name, o.n)`: every argument is a borrowed field or a Copy literal.
+method FRC.ctor_alias(fname: String, args: List[Expr]) -> Int ! alloc
+    if tt_struct_find(self.structs, fname) < 0
+        0
+    else
+        self.ctor_args(args, 0, args.len(), 0)
+
+method FRC.ctor_args(args: List[Expr], i: Int, n: Int, saw: Int) -> Int ! alloc
+    if i >= n
+        saw
+    elsif self.ctor_piece(args.get(i)) == 0
+        0
+    else
+        heap = if self.arg_is_alias(args.get(i)) == 1
+            1
+        else
+            saw
+        self.ctor_args(args, i + 1, n, heap)
+
+method FRC.ctor_piece(a: Expr) -> Int ! alloc
+    match a
+        XIdent(name) => self.arg_is_alias(a)
+        XField(base, field) => self.arg_is_alias(base)
+        XInt(v) => 1
+        XFloat(bits, txt) => 1
+        XBool(v) => 1
+        _ => 0
+
+method FRC.arg_is_alias(a: Expr) -> Int ! alloc
+    match a
+        XIdent(name) => assigned_has(self.al, str_as_int(name), 0, vec_len(self.al))
+        XField(base, field) => self.arg_is_alias(base)
+        _ => 0
+
+# The callee returns a struct built from an alias it does not store or return whole.
+method FRC.call_shares(local: String, fname: String, args: List[Expr]) -> Int ! alloc
+    t = trim_type_piece(self.type_of(local))
+    if tt_struct_find(self.structs, t) < 0
+        0
+    else
+        self.call_shares_arg(fname, args, 0, args.len())
+
+method FRC.call_shares_arg(fname: String, args: List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif self.arg_is_alias(args.get(i)) == 0
+        self.call_shares_arg(fname, args, i + 1, n)
+    elsif fr_keeps_param(self.fns, fname, i) == 1
+        self.call_shares_arg(fname, args, i + 1, n)
+    else
+        1
 
 # The parameter indices `fname` returns as the value of some branch tail (`returns_param_map`).
 # `fns` is every function of the module graph: the callee may be imported.
@@ -197,6 +253,125 @@ fn fr_add(set: Int, name: String) -> Int ! alloc
         vec_push(set, str_as_int(name))
     else
         0
+
+# 1 when `fname`'s parameter `index` is stored or returned as a whole, not only through a field.
+fn fr_keeps_param(fns: List[TFn], fname: String, index: Int) -> Int ! alloc
+    fr_keeps_go(fns, fname, index, 0, fns.len())
+
+fn fr_keeps_go(fns: List[TFn], fname: String, index: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = fns.get(i)
+        if f.name.eq(fname) == 0
+            fr_keeps_go(fns, fname, index, i + 1, n)
+        elsif index >= f.params.len()
+            0
+        else
+            fr_block_uses(f.body, f.params.get(index).name)
+
+fn fr_block_uses(b: TBlock, name: String) -> Int ! alloc
+    if fr_stmts_use(b.stmts, name, 0, b.stmts.len()) == 1
+        1
+    else
+        fr_expr_uses(b.tail, name)
+
+fn fr_stmts_use(stmts: List[TStmt], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = stmts.get(i)
+        hit = if st.kind == 3
+            if fr_expr_uses(st.target, name) + fr_expr_uses(st.expr, name) > 0
+                1
+            else
+                0
+        else
+            fr_expr_uses(st.expr, name)
+        if hit == 1
+            1
+        else
+            fr_stmts_use(stmts, name, i + 1, n)
+
+fn fr_expr_uses(e: Expr, name: String) -> Int ! alloc
+    match e
+        XIdent(n) => n.eq(name)
+        XField(base, field) => fr_field_base_uses(base, name)
+        XCall(fname, args, targs, xp) => fr_args_use(args, name, 0, args.len())
+        XBin(op, l, r) =>
+            if fr_expr_uses(l, name) == 1
+                1
+            else
+                fr_expr_uses(r, name)
+        XUnary(op, x) => fr_expr_uses(x, name)
+        XIf(cond, then_b, else_b, has_else, elsifs) => fr_if_uses(cond, then_b, else_b, has_else, elsifs, name)
+        XMatch(scrut, arms) => fr_match_uses(scrut, arms, name)
+        XWhile(cond, body) =>
+            if fr_expr_uses(cond, name) == 1
+                1
+            else
+                fr_block_uses(body, name)
+        XTo(place, x) => fr_expr_uses(x, name)
+        XTry(x) => fr_expr_uses(x, name)
+        _ => 0
+
+# The root of a field chain is not a whole use. A call in the base still is.
+fn fr_field_base_uses(base: Expr, name: String) -> Int ! alloc
+    match base
+        XIdent(n) => 0
+        XField(inner, field) => fr_field_base_uses(inner, name)
+        _ => fr_expr_uses(base, name)
+
+fn fr_args_use(args: List[Expr], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif fr_expr_uses(args.get(i), name) == 1
+        1
+    else
+        fr_args_use(args, name, i + 1, n)
+
+fn fr_if_uses(cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif], name: String) -> Int ! alloc
+    if fr_expr_uses(cond, name) == 1
+        1
+    elsif fr_block_uses(then_b, name) == 1
+        1
+    elsif has_else == 1
+        if fr_block_uses(else_b, name) == 1
+            1
+        else
+            fr_elsifs_use(elsifs, name, 0, elsifs.len())
+    else
+        fr_elsifs_use(elsifs, name, 0, elsifs.len())
+
+fn fr_elsifs_use(elsifs: List[TElsif], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = elsifs.get(i)
+        if fr_expr_uses(a.cond, name) + fr_block_uses(a.body, name) > 0
+            1
+        else
+            fr_elsifs_use(elsifs, name, i + 1, n)
+
+fn fr_match_uses(scrut: Expr, arms: List[TArm], name: String) -> Int ! alloc
+    if fr_expr_uses(scrut, name) == 1
+        1
+    else
+        fr_arms_use(arms, name, 0, arms.len())
+
+fn fr_arms_use(arms: List[TArm], name: String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = arms.get(i)
+        hit = if arm.has_suite == 1
+            fr_block_uses(arm.suite, name)
+        else
+            fr_expr_uses(arm.body, name)
+        if hit == 1
+            1
+        else
+            fr_arms_use(arms, name, i + 1, n)
 
 fn fr_is_container(t: String) -> Int ! alloc
     base = ty_base(t)

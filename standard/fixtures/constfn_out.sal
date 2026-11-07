@@ -1,0 +1,21 @@
+B = 3
+
+A = B
+
+TK_EOF = 0
+
+TK_NEXT = TK_EOF + 1
+
+TK_EQ = 19
+
+OK = true
+
+NEG = -(1 + 2)
+
+NAME = "sal"
+
+fn SHOW(s: String) -> String
+    "keep"
+
+fn main() -> Int
+    TK_EOF + TK_NEXT + TK_EQ + OK + A + NEG

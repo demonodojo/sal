@@ -1086,29 +1086,15 @@ fn emit_c_field(base_e: Expr, field: String, user: Int, stmts: Int, tc: Tc) -> S
             idx = tt_field_index(sd.fields, field, 0, list_len(sd.fields))
             "(((int64_t *)(" + base + "))[" + int_to_str(idx) + "])"
 
-# A struct is a value: `p.x = v` writes into a private copy of `p`, so a caller
-# that still holds the original (or another name for it) never sees the update.
+# `p.x = v` writes the slot of the block that already exists (`emit_c_field`).
+# The arguments are read so the call keeps borrowing them.
 fn emit_c_field_copy(target: Expr, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
     match target
-        XField(b, field) => emit_c_field_copy_base(b, user, stmts, tc)
+        XField(b, field) =>
+            _ty = texpr_type(tc.env, b)
+            _u = user + stmts + str_len(field)
+            0
         _ => 0
-
-fn emit_c_field_copy_base(b: Expr, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
-    match b
-        XIdent(nm) => emit_c_field_copy_ident(b, user, stmts, tc)
-        _ => 0
-
-fn emit_c_field_copy_ident(b: Expr, user: Int, stmts: Int, tc: Tc) -> Int ! alloc
-    si = tt_struct_find(tc.env.structs, texpr_type(tc.env, b))
-    if si < 0
-        0
-    elsif list_len(list_get(tc.env.structs, si).fields) < 2
-        0
-    else
-        name = emit_c_expr(b, user, stmts, tc)
-        bytes = int_to_str(list_len(list_get(tc.env.structs, si).fields) * 8)
-        line = "  " + name + " = ({ int64_t *__d = (int64_t *)malloc(" + bytes + "); __builtin_memcpy(__d, (int64_t *)(" + name + "), " + bytes + "); (int64_t)__d; });\n"
-        vec_push(stmts, str_as_int(line))
 
 fn emit_c_while(cond: Expr, body: TBlock, user: Int, stmts: Int, tc: Tc) -> String ! alloc
     cond_stmts = vec_new()
@@ -1383,7 +1369,7 @@ fn emit_c_fn_body(tf: TFn, user: Int, is_main: Int, acc: String, pool: Int, env:
     ks = vec_new()
     _sk = emit_c_seed_keep(tf.params, 0, list_len(tf.params), ks)
     _ak = vec_set(pool, 10, ks)
-    body = drops_body_tc(tf, vec_get(pool, 8))
+    body = tf.body
     names = vec_new()
     _c = collect_assigns_block(body, names)
     skip = tparam_names(tf.params, 0, list_len(tf.params), vec_new())
@@ -1463,7 +1449,7 @@ fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main
     _e1 = enums_push(enums, genums, 0, list_len(genums))
     _e2 = enums_push(enums, tp.enums, 0, list_len(tp.enums))
     _vr = variants_register(lit_pool_variants(pool), lit_pool_variant_fields(pool), enums, 0, list_len(enums))
-    _dv = vec_set(pool, 8, drop_env_t(tp, env.structs, enums))
+    _dv = vec_set(pool, 8, drop_env_t(tp, env.structs, enums, seen))
     acc = runtime_decls()
     acc = acc + "#include <stdint.h>\n"
     acc = emit_extern_decls(externs, 0, vec_len(externs), acc)

@@ -605,6 +605,8 @@ fn field_chain_root<'a>(e: &'a Expr, fields: &mut Vec<&'a str>) -> Option<&'a st
 
 thread_local! {
     static ARENA_KEEP: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Locals that are the pointer of a `list_get` element. `p.x = v` writes that block.
+    static BOX_PLACE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 fn arena_leave() -> IrInst {
@@ -892,6 +894,7 @@ fn lower_fn(
             *k.borrow_mut() = arena_keep_names(f);
         }
     });
+    BOX_PLACE.with(|b| *b.borrow_mut() = box_places(f));
 
     for p in &f.params {
         env.insert(p.name.clone(), p.name.clone());
@@ -1041,21 +1044,126 @@ fn call_aliases_borrowed_arg(f: &FnDef, init: &Expr, strings: &StringEnv) -> boo
 }
 
 /// Struct locals the glue must not release: the result of `list_get(xs, i)` (a borrow of the
-/// element, describable or not), and the result of a call that returns one of the caller's
-/// borrowed parameters.
+/// element), a constructor built only from those fields, a call that recomposes them without
+/// taking the struct, and a call that returns one of the caller's borrowed parameters.
+
+fn alias_root(e: &Expr, alias: &HashSet<String>) -> bool {
+    match e {
+        Expr::Ident { name, .. } => alias.contains(name),
+        Expr::Field { base, .. } => alias_root(base, alias),
+        _ => false,
+    }
+}
+
+fn piece_of_alias(e: &Expr, alias: &HashSet<String>) -> bool {
+    match e {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } => true,
+        Expr::Ident { name, .. } => alias.contains(name),
+        Expr::Field { base, .. } => alias_root(base, alias),
+        _ => false,
+    }
+}
+
+/// `P(o.name, o.n)` where every argument is a borrowed field or a Copy literal.
+fn ctor_of_borrowed_fields(init: &Expr, strings: &StringEnv, alias: &HashSet<String>) -> bool {
+    let Expr::Call { func, args, .. } = init else {
+        return false;
+    };
+    let Expr::Ident { name, .. } = func.as_ref() else {
+        return false;
+    };
+    strings.structs.contains_key(name)
+        && args.iter().all(|a| piece_of_alias(a, alias))
+        && args.iter().any(|a| alias_root(a, alias))
+}
+
+/// A call that passes an alias and does not store or return that parameter.
+fn call_shares_alias(init: &Expr, strings: &StringEnv, alias: &HashSet<String>) -> bool {
+    let Expr::Call { func, args, .. } = init else {
+        return false;
+    };
+    let Expr::Ident { name: callee, .. } = func.as_ref() else {
+        return false;
+    };
+    if !strings.fn_struct_rets.contains_key(callee) {
+        return false;
+    }
+    args.iter().enumerate().any(|(i, a)| {
+        alias_root(a, alias) && !crate::drops::user_param_owns(callee, i)
+    })
+}
+
+/// Locals bound to `list_get`: field stores write that block.
+fn box_places(f: &FnDef) -> HashSet<String> {
+    fn expr(e: &Expr, out: &mut HashSet<String>) {
+        match e {
+            Expr::If { then_block, elsifs, else_block, .. } => {
+                block(then_block, out);
+                for a in elsifs {
+                    block(&a.body, out);
+                }
+                if let Some(b) = else_block {
+                    block(b, out);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for a in arms {
+                    expr(&a.body, out);
+                }
+            }
+            Expr::Block(b) | Expr::On { body: b, .. } => block(b, out),
+            _ => {}
+        }
+    }
+    fn is_get(e: &Expr) -> bool {
+        matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get"))
+    }
+    fn block(b: &Block, out: &mut HashSet<String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, init, .. } => {
+                    if is_get(init) {
+                        out.insert(name.clone());
+                    }
+                    expr(init, out);
+                }
+                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => {
+                    if is_get(value) {
+                        out.insert(name.clone());
+                    } else {
+                        out.remove(name);
+                    }
+                    expr(value, out);
+                }
+                Stmt::While { body, .. } => block(body, out),
+                Stmt::Expr(e) => expr(e, out),
+                _ => {}
+            }
+        }
+        if let Some(t) = &b.tail {
+            expr(t, out);
+        }
+    }
+    let mut out = HashSet::new();
+    block(&f.body, &mut out);
+    out
+}
 fn list_alias_locals(f: &FnDef, strings: &StringEnv) -> HashSet<String> {
     fn note(f: &FnDef, name: &str, init: &Expr, strings: &StringEnv, out: &mut HashSet<String>) {
-        if strings.struct_types.contains_key(name) && call_aliases_borrowed_arg(f, init, strings) {
+        if !strings.struct_types.contains_key(name) {
+            return;
+        }
+        if call_aliases_borrowed_arg(f, init, strings)
+            || ctor_of_borrowed_fields(init, strings, out)
+            || call_shares_alias(init, strings, out)
+        {
             out.insert(name.to_string());
             return;
         }
         let Expr::Call { func, .. } = init else {
             return;
         };
-        if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") {
-            return;
-        }
-        if strings.struct_types.contains_key(name) {
+        if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") {
             out.insert(name.to_string());
         }
     }
@@ -1994,6 +2102,7 @@ fn lower_stmt(
                                 return false;
                             }
                             if let Some(idx) = struct_field_index(&sdef, field) {
+                                let writes_box = BOX_PLACE.with(|b| b.borrow().contains(name));
                                 let new_val = lower_expr(
                                     value,
                                     instructions,
@@ -2007,6 +2116,20 @@ fn lower_stmt(
                                     strings,
                                 );
                                 let base_ssa = env.get(name).cloned().unwrap_or_else(|| "0".into());
+                                if writes_box {
+                                    *counter += 1;
+                                    let idx_ssa = format!("t{counter}");
+                                    instructions.push(IrInst::ConstInt {
+                                        dest: idx_ssa.clone(),
+                                        value: idx as i64,
+                                    });
+                                    instructions.push(IrInst::Call {
+                                        dest: None,
+                                        func: "sal_struct_set".into(),
+                                        args: vec![base_ssa, idx_ssa, new_val],
+                                    });
+                                    return false;
+                                }
                                 let mut field_ssas = Vec::new();
                                 for i in 0..sdef.fields.len() {
                                     if i == idx {

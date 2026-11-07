@@ -35,16 +35,24 @@ thread_local! {
     static OWNABLE: std::cell::RefCell<HashMap<String, Vec<FieldOwn>>> = std::cell::RefCell::new(HashMap::new());
     /// Names of the enum types of the program (a `List[E]` of them owns its boxes).
     static ENUM_TYPES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// Variant constructor names (`Some`, `None`, …). A call of one owns its payload.
+    static VARIANT_CTORS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns whose `String` result is always fresh: the caller owns it (see `owned_return_fns`).
     static OWNED_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
 fn collect_enum_types(enums: &HashMap<String, EnumDef>) {
-    let set = enums
-        .keys()
-        .cloned()
+    let set = enums.keys().cloned().collect::<HashSet<String>>();
+    let ctors = enums
+        .values()
+        .flat_map(|e| e.variants.iter().map(|v| v.name.clone()))
         .collect::<HashSet<String>>();
     ENUM_TYPES.with(|f| *f.borrow_mut() = set);
+    VARIANT_CTORS.with(|f| *f.borrow_mut() = ctors);
+}
+
+fn is_variant_ctor(name: &str) -> bool {
+    VARIANT_CTORS.with(|f| f.borrow().contains(name))
 }
 
 fn is_enum_type(name: &str) -> bool {
@@ -765,6 +773,11 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "dict_values"
             | "enum_owns"
             | "enum_box_id"
+            | "enum_set"
+            | "enum_free_shell"
+            | "list_free_shell"
+            | "list_push_share"
+            | "str_share"
             | "bytes_len"
             | "bytes_get_u8"
             | "bytes_get_u16"
@@ -1022,14 +1035,15 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
             root = base;
             is_field = true;
         }
-        // A Copy leaf (`return p.n`) aliases nothing on the heap: the base must not be
-        // released by this function, but the caller still owns the struct.
+        // A Copy leaf (`return p.n`) aliases nothing on the heap. A non-Copy field
+        // (`P(p.name, p.n)`) shares the caller's pointer: the base escapes so this
+        // function does not release it, but it is not `kept`. Only the parameter
+        // ident itself, stored or returned, makes the caller clone.
         let copy_leaf = is_field && expr_is_copy_scalar(a);
         if let (true, Expr::Ident { name, .. }) = (is_field, root) {
             f.escaped.insert(name.clone());
             if !copy_leaf {
                 f.consumed.insert(name.clone());
-                f.kept.insert(name.clone());
             }
         }
     }
@@ -1666,11 +1680,52 @@ fn field_borr(sn: &str, field: &str) -> Option<Borr> {
     })
 }
 
-/// A `list_get`, a local bound to one, or a field of such a struct.
+/// A field of a borrowed struct, including a Copy leaf the descriptor does not name.
+fn field_of_borrow(e: &Expr, borrows: &HashMap<String, Borr>) -> bool {
+    let Expr::Field { base, .. } = e else {
+        return false;
+    };
+    borrow_of(base, borrows).is_some_and(|b| !b.sn.is_empty())
+}
+
+/// An argument a struct constructor may share: a borrow, a Copy field of one, or a Copy literal.
+fn arg_shares(e: &Expr, borrows: &HashMap<String, Borr>) -> bool {
+    borrow_of(e, borrows).is_some() || expr_is_copy_scalar(e) || field_of_borrow(e, borrows)
+}
+
+/// `Nombre(…)` built only from borrowed fields. The result aliases those pointers.
+fn ctor_is_alias(name: &str, args: &[Expr], borrows: &HashMap<String, Borr>) -> bool {
+    is_ownable_struct(name)
+        && args.iter().all(|a| arg_shares(a, borrows))
+        && args.iter().any(|a| borrow_of(a, borrows).is_some() || field_of_borrow(a, borrows))
+}
+
+/// A `list_get`, a local bound to one, a field of such a struct, a constructor of those
+/// fields, or a call that returns them without taking the struct.
 fn borrow_of(e: &Expr, borrows: &HashMap<String, Borr>) -> Option<Borr> {
     match e {
-        Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get") => {
-            desc_of_type(&type_at(e)?)
+        Expr::Call { func, args, .. } => {
+            let Expr::Ident { name, .. } = func.as_ref() else {
+                return None;
+            };
+            if name == "list_get" {
+                return desc_of_type(&type_at(e)?);
+            }
+            if ctor_is_alias(name, args, borrows) {
+                let desc = STRUCT_DESC.with(|t| t.borrow().get(name).cloned())?;
+                return Some(Borr { desc, sn: name.clone() });
+            }
+            if borrows_args(name) || is_ownable_struct(name) || is_variant_ctor(name) {
+                return None;
+            }
+            let shares = args.iter().enumerate().any(|(i, a)| {
+                !user_param_owns(name, i) && (borrow_of(a, borrows).is_some() || field_of_borrow(a, borrows))
+            });
+            if shares {
+                desc_of_type(&type_at(e)?)
+            } else {
+                None
+            }
         }
         Expr::Ident { name, .. } => borrows.get(name).cloned(),
         Expr::Field { base, field, .. } => {
@@ -1698,9 +1753,9 @@ fn desc_copy_expr(inner: Expr, desc: &str) -> Expr {
     }
 }
 
-/// A user parameter that stores or returns the whole value. A function that only reads a
-/// Copy field does not. Unknown callees (builtins) are not user functions.
-fn user_param_owns(callee: &str, index: usize) -> bool {
+/// A user parameter stored or returned as a whole (`list_push(ys, p)`, `return p`).
+/// Reading or recomposing its fields does not. Unknown callees are not user functions.
+pub(crate) fn user_param_owns(callee: &str, index: usize) -> bool {
     KEPT.with(|k| k.borrow().get(callee).and_then(|v| v.get(index).copied()).unwrap_or(false))
 }
 
@@ -1711,7 +1766,9 @@ fn arg_is_owning(callee: &str, index: usize, variants: &Variants) -> bool {
         "dict_put" => index == 2,
         "desc_copy" => false,
         _ if borrows_args(callee) => false,
-        _ if is_ownable_struct(callee) => true,
+        // A struct constructor shares borrowed fields. The copy, if any, is of the
+        // finished value when a second owner (`list_push`, a variant) takes it.
+        _ if is_ownable_struct(callee) => false,
         _ if variants.contains_key(callee) => true,
         _ => user_param_owns(callee, index),
     }
@@ -1734,10 +1791,20 @@ fn claim_expr(e: Expr, own: bool, borrows: &mut HashMap<String, Borr>, variants:
             } else {
                 Box::new(claim_expr(*func, false, borrows, variants))
             };
+            let pure = ctor_is_alias(&callee, &args, borrows);
             let args = args
                 .into_iter()
                 .enumerate()
-                .map(|(i, a)| claim_expr(a, arg_is_owning(&callee, i, variants), borrows, variants))
+                .map(|(i, a)| {
+                    let own_arg = if is_ownable_struct(&callee) {
+                        // A constructor of only borrowed fields shares them. Any other
+                        // borrowed argument is copied so the result owns every child.
+                        !pure && borrow_of(&a, borrows).is_some()
+                    } else {
+                        arg_is_owning(&callee, i, variants)
+                    };
+                    claim_expr(a, own_arg, borrows, variants)
+                })
                 .collect();
             Expr::Call { func, type_args, args, span }
         }

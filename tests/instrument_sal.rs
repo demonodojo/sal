@@ -270,6 +270,50 @@ fn instrument_strict_list_get_returned_is_freed_once() {
     assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
 }
 
+/// Reading a field of a borrowed struct does not copy it.
+#[test]
+fn instrument_strict_list_get_field_read_is_clean() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn read_n(p: P) -> Int ! alloc\n    p.n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    read_n(o)\n";
+    let out = run_strict(src, "struct_read");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+}
+
+/// Rebuilding a borrowed struct from its fields shares the pointers. No copy, no leak.
+#[test]
+fn instrument_strict_list_get_rebuilt_is_clean() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: P) -> P ! alloc\n    P(p.name, p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    q.n\n";
+    let out = run_strict(src, "struct_rebuild");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+}
+
+/// Pushing the rebuilt alias copies it once. Both lists free their own strings.
+#[test]
+fn instrument_strict_list_get_rebuilt_then_pushed_is_clean() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: P) -> P ! alloc\n    P(p.name, p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    ys = list_new[P]()\n    list_push(ys, q)\n    list_len(xs) + list_len(ys)\n";
+    let out = run_strict(src, "struct_rebuild_push");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+}
+
+/// `o.n = v` on a list element writes that element.
+#[test]
+fn instrument_strict_field_write_updates_the_list_element() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    o.n = 9\n    p = list_get(xs, 0)\n    p.n\n";
+    let out = run_strict(src, "struct_field_write");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(9), "stderr: {stderr}");
+}
+
 /// A callee that stores the struct takes it: the caller copies, and that copy is freed once.
 #[test]
 fn instrument_strict_list_get_taken_is_freed_once() {

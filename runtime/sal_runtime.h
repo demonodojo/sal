@@ -157,10 +157,18 @@ void *sal_dict_values(void *dp);
 int64_t sal_enum_new(int64_t tag, int64_t n);
 int64_t sal_enum_set(int64_t v, int64_t i, int64_t x);
 void sal_enum_free(int64_t v);
+/* Frees the box only. Strings and child boxes stay with whoever still holds them. */
+void sal_enum_free_shell(int64_t v);
 int64_t sal_enum_tag(int64_t v);
 int64_t sal_enum_owns(int64_t v, int64_t i);
 int64_t sal_enum_field(int64_t v, int64_t i);
 void sal_list_free(void *v);
+/* Frees the list header and its vector, not the elements. */
+void sal_list_free_shell(void *v);
+/* Stores the element pointer as `list_push` does, without a compiler-inserted copy. */
+void *sal_list_push_share(void *v, int64_t x);
+/* The same String pointer. The caller keeps the one owner. */
+char *sal_str_share(const char *s);
 int64_t sal_any_box(int64_t vtable, int64_t drop_slot, int64_t payload);
 void sal_any_free(int64_t box);
 int64_t sal_any_call(int64_t box, int64_t slot, int64_t argc, int64_t a0, int64_t a1, int64_t a2,
@@ -199,6 +207,8 @@ int64_t sal_desc_copy(const char *desc, int64_t raw);
 void *sal_list_new_desc(const char *desc);
 void sal_struct_free(int64_t raw, const char *desc);
 void sal_struct_free_box(int64_t raw);
+/* Writes one slot of an existing struct block and returns the same pointer. */
+int64_t sal_struct_set(int64_t raw, int64_t index, int64_t value);
 int64_t sal_struct_new(int64_t n);
 /* Legacy packed kind: 0 Int, 1 Float (bits), 2 Bool, 3 String, 4|n<<4|mask<<12 flat struct. */
 void *sal_list_new_typed(int64_t elem_kind);

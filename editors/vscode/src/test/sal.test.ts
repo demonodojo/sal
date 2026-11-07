@@ -488,6 +488,7 @@ test("la gramática colorea las palabras del lexer", async () => {
       fstring: { begin: string };
       "type-builtin": { match: string };
       "type-name": { match: string };
+      "module-const": { name: string; match: string };
       tensor: { match: string };
       attribute: { match: string };
       functionDef: { captures: { "2": { name: string } } };
@@ -514,6 +515,8 @@ test("la gramática colorea las palabras del lexer", async () => {
     assert.ok(grammar.repository["type-builtin"].match.includes(word), word);
   }
   assert.match(grammar.repository["type-name"].match, /\[A-Z\]/);
+  assert.equal(grammar.repository["module-const"].name, "constant.other.sal");
+  assert.match(grammar.repository["module-const"].match, /\[A-Z\]\[A-Z0-9_\]/);
   assert.match(grammar.repository.tensor.match, /tensor/);
   const language = JSON.parse(
     await readFile(path.join(extensionRoot, "language-configuration.json"), "utf8"),
@@ -543,6 +546,30 @@ test("scanSalLine marca String y struct en sitios distintos", () => {
   assert.ok(structLine.types.some((s) => s.start === 7 && s.length === 4));
   const typed = scanSalLine("    mode: Int");
   assert.ok(typed.types.some((s) => s.start >= 10 && s.length === 3));
+});
+
+test("una constante de módulo se indexa y no se pinta como tipo", () => {
+  const text = "MAX = 64\nNAME: String = \"sal\"\n\nfn main() -> Int\n    MAX\n";
+  const names = functionDefinitionsIn(text).map((def) => def.name).sort();
+  assert.deepEqual(names, ["MAX", "NAME", "main"]);
+  const use = text.split("\n")[4];
+  const ident = identifierAt(text, 4, use.indexOf("MAX"));
+  assert.equal(ident?.name, "MAX");
+  const defs = definitionsOf({
+    name: "MAX",
+    sourceFile: "/tmp/main.sal",
+    sourceText: text,
+    projectRoot: "/tmp",
+    dependencyBases: [],
+    files: memfs({}),
+  });
+  assert.equal(defs.length, 1);
+  assert.equal(defs[0].location.line, 0);
+  assert.equal(defs[0].location.character, 0);
+  const scanned = scanSalLine("MAX = 1");
+  assert.equal(scanned.types.length, 0);
+  const typed = scanSalLine("value: Spec");
+  assert.ok(typed.types.some((span) => span.length === 4));
 });
 
 test("method y static indexan T__nombre", () => {

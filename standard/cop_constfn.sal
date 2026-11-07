@@ -1,0 +1,903 @@
+# An uppercase fn, method or static whose body is a constant expression
+# becomes a module constant. Calls of that name lose their empty parentheses.
+import lexer
+import patch
+import util
+
+struct Cand
+    kind: Int
+    name_at: Int
+    nlo: Int
+    nhi: Int
+    rlo: Int
+    rhi: Int
+    start: Int
+    endb: Int
+    blo: Int
+    bhi: Int
+
+fn CODE_CONST() -> String ! alloc
+    d"Style/ConstFn"
+
+fn cop_constfn(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+    n = lex.len()
+    cs = List.new[Cand]()
+    known = List.new[String]()
+    scan_items(src, lex, 0, n, 0, cs, known)
+    mark = List.new[Int]()
+    zero_marks(cs, mark)
+    kill_complex(src, lex, n, cs, mark)
+    fill_eligible(src, cs, known, mark)
+    emit_defs(src, offs, cs, mark, known)
+    emit_calls(src, lex, offs, n, cs, mark)
+
+fn zero_marks(cs: List[Cand] borrow, mark: List[Int] borrow) -> Int ! alloc
+    zero_marks_go(cs, mark, 0, cs.len())
+
+fn zero_marks_go(cs: List[Cand] borrow, mark: List[Int] borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        mark.push(0)
+        zero_marks_go(cs, mark, i + 1, n)
+
+fn cf_ws(c: Int) -> Int
+    match c
+        32 => 1
+        10 => 1
+        13 => 1
+        _ => 0
+
+fn cf_digit(c: Int) -> Int
+    if c >= 48 && c <= 57
+        1
+    else
+        0
+
+fn cf_ident_start(c: Int) -> Int
+    if c >= 65
+        if c <= 90
+            1
+        elsif c >= 97
+            if c <= 122
+                1
+            else
+                0
+        else
+            0
+    elsif c == 95
+        1
+    else
+        0
+
+fn is_const_name(s: String borrow) -> Int ! alloc
+    n = s.len()
+    if n == 0
+        0
+    else
+        c0 = s.char(0)
+        if c0 < 65
+            0
+        elsif c0 > 90
+            0
+        else
+            is_const_rest(s, 1, n)
+
+fn is_const_rest(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    else
+        c = s.char(i)
+        if c >= 65
+            if c <= 90
+                is_const_rest(s, i + 1, n)
+            elsif c == 95
+                is_const_rest(s, i + 1, n)
+            else
+                0
+        elsif c >= 48
+            if c <= 57
+                is_const_rest(s, i + 1, n)
+            elsif c == 95
+                is_const_rest(s, i + 1, n)
+            else
+                0
+        elsif c == 95
+            is_const_rest(s, i + 1, n)
+        else
+            0
+
+fn has_char(s: String borrow, c: Int) -> Int ! alloc
+    has_char_go(s, c, 0, s.len())
+
+fn has_char_go(s: String borrow, c: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif s.char(i) == c
+        1
+    else
+        has_char_go(s, c, i + 1, n)
+
+fn names_has(names: List[String] borrow, s: String borrow) -> Int ! alloc
+    names_has_go(names, s, 0, names.len())
+
+fn names_has_go(names: List[String] borrow, s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif names.get(i).eq(s) == 1
+        1
+    else
+        names_has_go(names, s, i + 1, n)
+
+fn kw_kind_of(text: String borrow) -> Int ! alloc
+    match text
+        "fn" => 0
+        "method" => 1
+        "static" => 2
+        _ => 0 - 1
+
+fn at_col0(src: String borrow, lex: Lex, i: Int) -> Int ! alloc
+    st = lex.start(i)
+    if st == 0
+        1
+    elsif src.char(st - 1) == 10
+        1
+    else
+        0
+
+fn line_start(src: String borrow, pos: Int) -> Int ! alloc
+    if pos <= 0
+        0
+    elsif src.char(pos - 1) == 10
+        pos
+    else
+        line_start(src, pos - 1)
+
+fn trim_lo(src: String borrow, lo: Int, hi: Int) -> Int ! alloc
+    if lo >= hi
+        lo
+    elsif cf_ws(src.char(lo)) == 1
+        trim_lo(src, lo + 1, hi)
+    else
+        lo
+
+fn trim_hi(src: String borrow, lo: Int, hi: Int) -> Int ! alloc
+    if hi <= lo
+        hi
+    elsif cf_ws(src.char(hi - 1)) == 1
+        trim_hi(src, lo, hi - 1)
+    else
+        hi
+
+fn deprecated_line(line: String borrow) -> Int ! alloc
+    p = "@deprecated"
+    if line.len() < p.len()
+        0
+    elsif line.slice(0, p.len()).eq(p) == 0
+        0
+    else
+        rest = line.slice(p.len(), line.len())
+        if rest.len() == 0
+            1
+        elsif rest.char(0) != 40
+            0
+        elsif has_char(rest, 64) == 1
+            0
+        else
+            1
+
+fn prefix_ok(src: String borrow, kw: Int) -> Int ! alloc
+    if kw == 0
+        1
+    else
+        prev_hi = kw - 1
+        prev_lo = line_start(src, prev_hi)
+        tlo = trim_lo(src, prev_lo, prev_hi)
+        thi = trim_hi(src, tlo, prev_hi)
+        if tlo >= thi
+            prefix_ok(src, prev_lo)
+        else
+            line = src.slice(tlo, thi)
+            if line.char(0) == 35
+                prefix_ok(src, prev_lo)
+            elsif line.char(0) == 64
+                if deprecated_line(line) == 1
+                    prefix_ok(src, prev_lo)
+                else
+                    0
+            else
+                1
+
+fn gap_is_dot(src: String borrow, lo: Int, hi: Int) -> Int ! alloc
+    gap_is_dot_go(src, lo, hi, 0)
+
+fn gap_is_dot_go(src: String borrow, lo: Int, hi: Int, dots: Int) -> Int ! alloc
+    if lo >= hi
+        if dots == 1
+            1
+        else
+            0
+    else
+        c = src.char(lo)
+        if c == 46
+            gap_is_dot_go(src, lo + 1, hi, dots + 1)
+        elsif cf_ws(c) == 1
+            gap_is_dot_go(src, lo + 1, hi, dots)
+        else
+            0
+
+fn params_ok(kind: Int, text: String borrow) -> Int ! alloc
+    if text.eq("") == 1
+        1
+    elsif kind != 1
+        0
+    else
+        params_self(text)
+
+fn params_self(text: String borrow) -> Int ! alloc
+    match text
+        "self" => 1
+        "self borrow" => 1
+        "self take" => 1
+        _ => 0
+
+fn header_clean(src: String borrow, lex: Lex, n: Int, rparen: Int) -> Int ! alloc
+    j = header_end(lex, n, rparen + 1)
+    if j >= n
+        0
+    else
+        chunk = src.slice(lex.end(rparen), lex.start(j))
+        if has_char(chunk, 33) == 1
+            0
+        elsif has_char(chunk, 35) == 1
+            0
+        else
+            1
+
+fn header_end(lex: Lex, n: Int, j: Int) -> Int ! alloc
+    if j >= n
+        j
+    else
+        k = lex.kind(j)
+        if k == TK_NL()
+            j
+        elsif k == TK_INDENT()
+            j
+        else
+            header_end(lex, n, j + 1)
+
+fn skip_ws(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif cf_ws(s.char(i)) == 1
+        skip_ws(s, i + 1, n)
+    else
+        i
+
+fn binop_len(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        binop_of(s, i, n, s.char(i))
+
+fn binop_of(s: String borrow, i: Int, n: Int, c: Int) -> Int ! alloc
+    match c
+        38 => two_char(s, i, n, 38)
+        124 => two_char(s, i, n, 124)
+        61 => two_char(s, i, n, 61)
+        33 => bang_eq(s, i, n)
+        60 => opt_eq(s, i, n)
+        62 => opt_eq(s, i, n)
+        43 => 1
+        45 => 1
+        42 => 1
+        47 => 1
+        37 => 1
+        _ => 0
+
+fn two_char(s: String borrow, i: Int, n: Int, c: Int) -> Int ! alloc
+    if i + 1 < n && s.char(i + 1) == c
+        2
+    else
+        0
+
+fn bang_eq(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i + 1 < n && s.char(i + 1) == 61
+        2
+    else
+        0
+
+fn opt_eq(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i + 1 < n && s.char(i + 1) == 61
+        2
+    else
+        1
+
+fn cf_string_end(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    cf_string_end_go(s, i + 1, n)
+
+fn cf_string_end_go(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    else
+        c = s.char(i)
+        if c == 34
+            i + 1
+        elsif c == 10
+            0 - 1
+        elsif c == 92
+            if i + 1 >= n
+                0 - 1
+            else
+                cf_string_end_go(s, i + 2, n)
+        else
+            cf_string_end_go(s, i + 1, n)
+
+fn ce_expr(s: String borrow, i: Int, n: Int, names: List[String] borrow) -> Int ! alloc
+    j = ce_unary(s, i, n, names)
+    if j < 0
+        0 - 1
+    else
+        ce_more(s, j, n, names)
+
+fn ce_more(s: String borrow, i: Int, n: Int, names: List[String] borrow) -> Int ! alloc
+    j = skip_ws(s, i, n)
+    op = binop_len(s, j, n)
+    if op == 0
+        j
+    else
+        k = ce_unary(s, j + op, n, names)
+        if k < 0
+            0 - 1
+        else
+            ce_more(s, k, n, names)
+
+fn ce_unary(s: String borrow, i: Int, n: Int, names: List[String] borrow) -> Int ! alloc
+    j = skip_ws(s, i, n)
+    if j >= n
+        0 - 1
+    else
+        c = s.char(j)
+        match c
+            45 => ce_unary(s, j + 1, n, names)
+            33 => ce_unary(s, j + 1, n, names)
+            _ => ce_primary(s, j, n, names)
+
+fn ce_primary(s: String borrow, i: Int, n: Int, names: List[String] borrow) -> Int ! alloc
+    if i >= n
+        0 - 1
+    else
+        c = s.char(i)
+        if c == 40
+            ce_paren(s, i, n, names)
+        elsif c == 34
+            cf_string_end(s, i, n)
+        elsif cf_digit(c) == 1
+            ce_number(s, i, n)
+        elsif cf_ident_start(c) == 1
+            ce_ident(s, i, n, names)
+        else
+            0 - 1
+
+fn ce_paren(s: String borrow, i: Int, n: Int, names: List[String] borrow) -> Int ! alloc
+    k = ce_expr(s, i + 1, n, names)
+    if k < 0
+        0 - 1
+    else
+        m = skip_ws(s, k, n)
+        if m >= n
+            0 - 1
+        elsif s.char(m) == 41
+            m + 1
+        else
+            0 - 1
+
+fn ce_number(s: String borrow, i: Int, n: Int) -> Int ! alloc
+    end = s.skip(i, 3, 0)
+    if end < n && s.char(end) == 46 && end + 1 < n && cf_digit(s.char(end + 1)) == 1
+        s.skip(end + 1, 3, 0)
+    else
+        end
+
+fn ce_ident(s: String borrow, i: Int, n: Int, names: List[String] borrow) -> Int ! alloc
+    end = s.skip(i, 2, 0)
+    text = s.slice(i, end)
+    if text.eq("true") == 1
+        end
+    elsif text.eq("false") == 1
+        end
+    elsif is_const_name(text) == 0
+        0 - 1
+    elsif names_has(names, text) == 0
+        0 - 1
+    else
+        ce_known_call(s, end, n)
+
+fn ce_known_call(s: String borrow, end: Int, n: Int) -> Int ! alloc
+    k = skip_ws(s, end, n)
+    if k >= n
+        end
+    elsif s.char(k) != 40
+        end
+    else
+        m = skip_ws(s, k + 1, n)
+        if m >= n
+            0 - 1
+        elsif s.char(m) == 41
+            m + 1
+        else
+            0 - 1
+
+fn body_is_const(body: String borrow, names: List[String] borrow) -> Int ! alloc
+    n = body.len()
+    if n == 0
+        0
+    elsif has_char(body, 10) == 1
+        0
+    elsif has_char(body, 35) == 1
+        0
+    else
+        end = ce_expr(body, 0, n, names)
+        if end < 0
+            0
+        else
+            j = skip_ws(body, end, n)
+            if j == n
+                1
+            else
+                0
+
+fn empty_call_end(s: String borrow, end: Int, n: Int) -> Int ! alloc
+    k = skip_ws(s, end, n)
+    if k >= n
+        0 - 1
+    elsif s.char(k) != 40
+        0 - 1
+    else
+        m = skip_ws(s, k + 1, n)
+        if m >= n
+            0 - 1
+        elsif s.char(m) == 41
+            m + 1
+        else
+            0 - 1
+
+fn fold_body(s: String borrow, names: List[String] borrow) -> String ! alloc
+    fold_go(s, 0, s.len(), names, "")
+
+fn fold_go(s: String borrow, i: Int, n: Int, names: List[String] borrow, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    else
+        c = s.char(i)
+        if c == 34
+            e = cf_string_end(s, i, n)
+            if e < 0
+                acc
+            else
+                fold_go(s, e, n, names, acc + s.slice(i, e))
+        elsif cf_ident_start(c) == 1
+            fold_ident(s, i, n, names, acc)
+        else
+            fold_go(s, i + 1, n, names, acc + s.slice(i, i + 1))
+
+fn fold_ident(s: String borrow, i: Int, n: Int, names: List[String] borrow, acc: String) -> String ! alloc
+    e = s.skip(i, 2, 0)
+    word = s.slice(i, e)
+    if is_const_name(word) == 1 && names_has(names, word) == 1
+        k = empty_call_end(s, e, n)
+        if k > e
+            fold_go(s, k, n, names, acc + word)
+        else
+            fold_go(s, e, n, names, acc + word)
+    else
+        fold_go(s, e, n, names, acc + word)
+
+fn cand_name(src: String borrow, cs: List[Cand] borrow, i: Int) -> String ! alloc
+    c = cs.get(i)
+    src.slice(c.nlo, c.nhi)
+
+fn prev_tok(lex: Lex, i: Int) -> Int ! alloc
+    if i <= 0
+        0 - 1
+    elsif lex.kind(i - 1) == TK_NL()
+        prev_tok(lex, i - 1)
+    else
+        i - 1
+
+fn dot_before(src: String borrow, start: Int) -> Int ! alloc
+    dot_before_go(src, start - 1)
+
+fn dot_before_go(src: String borrow, j: Int) -> Int ! alloc
+    if j < 0
+        0
+    elsif cf_ws(src.char(j)) == 1
+        dot_before_go(src, j - 1)
+    elsif src.char(j) == 46
+        1
+    else
+        0
+
+fn empty_parens(lex: Lex, n: Int, i: Int) -> Int ! alloc
+    j = skip_nl(lex, n, i + 1)
+    if j >= n
+        0 - 1
+    elsif lex.kind(j) != TK_LPAREN()
+        0 - 1
+    else
+        k = skip_nl(lex, n, j + 1)
+        if k >= n
+            0 - 1
+        elsif lex.kind(k) != TK_RPAREN()
+            0 - 1
+        else
+            k
+
+fn call_is_complex(src: String borrow, lex: Lex, n: Int, i: Int) -> Int ! alloc
+    if dot_before(src, lex.start(i)) == 0
+        0
+    else
+        p = prev_tok(lex, i)
+        if p < 0
+            1
+        elsif lex.kind(p) != TK_IDENT()
+            1
+        elsif gap_is_dot(src, lex.end(p), lex.start(i)) == 0
+            1
+        else
+            0
+
+fn kill_complex(src: String borrow, lex: Lex, n: Int, cs: List[Cand] borrow, mark: List[Int] borrow) -> Int ! alloc
+    kill_complex_go(src, lex, n, cs, mark, 0, cs.len())
+
+fn kill_complex_go(src: String borrow, lex: Lex, n: Int, cs: List[Cand] borrow, mark: List[Int] borrow, i: Int, cn: Int) -> Int ! alloc
+    if i >= cn
+        0
+    else
+        c = cs.get(i)
+        if c.kind == 0
+            kill_complex_go(src, lex, n, cs, mark, i + 1, cn)
+        elsif has_complex_call(src, lex, n, cs, i) == 1
+            mark.set(i, 0 - 1)
+            kill_complex_go(src, lex, n, cs, mark, i + 1, cn)
+        else
+            kill_complex_go(src, lex, n, cs, mark, i + 1, cn)
+
+fn has_complex_call(src: String borrow, lex: Lex, n: Int, cs: List[Cand] borrow, ci: Int) -> Int ! alloc
+    name = cand_name(src, cs, ci)
+    at = cs.get(ci).name_at
+    has_complex_go(src, lex, n, name, at, 0)
+
+fn has_complex_go(src: String borrow, lex: Lex, n: Int, name: String borrow, at: Int, i: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif lex.kind(i) != TK_IDENT()
+        has_complex_go(src, lex, n, name, at, i + 1)
+    elsif i == at
+        has_complex_go(src, lex, n, name, at, i + 1)
+    elsif lex.text(src, i).eq(name) == 0
+        has_complex_go(src, lex, n, name, at, i + 1)
+    elsif empty_parens(lex, n, i) < 0
+        has_complex_go(src, lex, n, name, at, i + 1)
+    elsif call_is_complex(src, lex, n, i) == 1
+        1
+    else
+        has_complex_go(src, lex, n, name, at, i + 1)
+
+fn fill_eligible(src: String borrow, cs: List[Cand] borrow, known: List[String] borrow, mark: List[Int] borrow) -> Int ! alloc
+    step = fill_pass(src, cs, known, mark)
+    if step == 0
+        0
+    else
+        fill_eligible(src, cs, known, mark)
+
+fn fill_pass(src: String borrow, cs: List[Cand] borrow, known: List[String] borrow, mark: List[Int] borrow) -> Int ! alloc
+    fill_pass_go(src, cs, known, mark, 0, cs.len(), 0)
+
+fn fill_pass_go(src: String borrow, cs: List[Cand] borrow, known: List[String] borrow, mark: List[Int] borrow, i: Int, n: Int, changed: Int) -> Int ! alloc
+    if i >= n
+        changed
+    elsif mark.get(i) != 0
+        fill_pass_go(src, cs, known, mark, i + 1, n, changed)
+    else
+        c = cs.get(i)
+        body = src.slice(c.blo, c.bhi)
+        if body_is_const(body, known) == 0
+            fill_pass_go(src, cs, known, mark, i + 1, n, changed)
+        else
+            mark.set(i, 1)
+            known.push(cand_name(src, cs, i))
+            fill_pass_go(src, cs, known, mark, i + 1, n, 1)
+
+fn emit_defs(src: String borrow, offs: List[Off] borrow, cs: List[Cand] borrow, mark: List[Int] borrow, known: List[String] borrow) -> Int ! alloc
+    emit_defs_go(src, offs, cs, mark, known, 0, cs.len())
+
+fn emit_defs_go(src: String borrow, offs: List[Off] borrow, cs: List[Cand] borrow, mark: List[Int] borrow, known: List[String] borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif mark.get(i) != 1
+        emit_defs_go(src, offs, cs, mark, known, i + 1, n)
+    else
+        c = cs.get(i)
+        name = src.slice(c.nlo, c.nhi)
+        body = src.slice(c.blo, c.bhi)
+        fix = name + " = " + fold_body(body, known)
+        msg = "use a module constant instead of " + name
+        o = off_new(CODE_CONST(), msg, c.start, c.endb, 1, fix)
+        offs.push(o)
+        emit_defs_go(src, offs, cs, mark, known, i + 1, n)
+
+fn in_def(cs: List[Cand] borrow, mark: List[Int] borrow, pos: Int) -> Int ! alloc
+    in_def_go(cs, mark, pos, 0, cs.len())
+
+fn in_def_go(cs: List[Cand] borrow, mark: List[Int] borrow, pos: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif mark.get(i) != 1
+        in_def_go(cs, mark, pos, i + 1, n)
+    else
+        c = cs.get(i)
+        if pos >= c.start && pos < c.endb
+            1
+        else
+            in_def_go(cs, mark, pos, i + 1, n)
+
+fn emit_calls(src: String borrow, lex: Lex, offs: List[Off] borrow, n: Int, cs: List[Cand] borrow, mark: List[Int] borrow) -> Int ! alloc
+    el = List.new[String]()
+    eligible_names(src, cs, mark, el)
+    emit_calls_go(src, lex, offs, n, cs, mark, el, 0)
+
+fn eligible_names(src: String borrow, cs: List[Cand] borrow, mark: List[Int] borrow, el: List[String] borrow) -> Int ! alloc
+    eligible_names_go(src, cs, mark, el, 0, cs.len())
+
+fn eligible_names_go(src: String borrow, cs: List[Cand] borrow, mark: List[Int] borrow, el: List[String] borrow, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif mark.get(i) != 1
+        eligible_names_go(src, cs, mark, el, i + 1, n)
+    else
+        el.push(cand_name(src, cs, i))
+        eligible_names_go(src, cs, mark, el, i + 1, n)
+
+fn emit_calls_go(src: String borrow, lex: Lex, offs: List[Off] borrow, n: Int, cs: List[Cand] borrow, mark: List[Int] borrow, el: List[String] borrow, i: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif lex.kind(i) != TK_IDENT()
+        emit_calls_go(src, lex, offs, n, cs, mark, el, i + 1)
+    else
+        name = lex.text(src, i)
+        if names_has(el, name) == 0
+            emit_calls_go(src, lex, offs, n, cs, mark, el, i + 1)
+        elsif in_def(cs, mark, lex.start(i)) == 1
+            emit_calls_go(src, lex, offs, n, cs, mark, el, i + 1)
+        else
+            rp = empty_parens(lex, n, i)
+            if rp < 0
+                emit_calls_go(src, lex, offs, n, cs, mark, el, i + 1)
+            elsif dot_before(src, lex.start(i)) == 1
+                emit_recv_call(src, lex, offs, name, i, rp)
+                emit_calls_go(src, lex, offs, n, cs, mark, el, rp + 1)
+            else
+                o = off_new(CODE_CONST(), "call the module constant " + name, lex.start(i), lex.end(rp), 1, name)
+                offs.push(o)
+                emit_calls_go(src, lex, offs, n, cs, mark, el, rp + 1)
+
+fn emit_recv_call(src: String borrow, lex: Lex, offs: List[Off] borrow, name: String borrow, i: Int, rp: Int) -> Int ! alloc
+    p = prev_tok(lex, i)
+    if p < 0
+        0
+    elsif lex.kind(p) != TK_IDENT()
+        0
+    elsif gap_is_dot(src, lex.end(p), lex.start(i)) == 0
+        0
+    else
+        o = off_new(CODE_CONST(), "call the module constant " + name, lex.start(p), lex.end(rp), 1, name)
+        offs.push(o)
+        0
+
+fn scan_items(src: String borrow, lex: Lex, i: Int, n: Int, depth: Int, cs: List[Cand] borrow, known: List[String] borrow) -> Int ! alloc
+    if i >= n
+        0
+    else
+        k = lex.kind(i)
+        if k == TK_INDENT()
+            scan_items(src, lex, i + 1, n, depth + 1, cs, known)
+        elsif k == TK_DEDENT()
+            scan_items(src, lex, i + 1, n, depth - 1, cs, known)
+        elsif depth != 0
+            scan_items(src, lex, i + 1, n, depth, cs, known)
+        elsif k != TK_IDENT()
+            scan_items(src, lex, i + 1, n, depth, cs, known)
+        else
+            scan_ident(src, lex, i, n, cs, known)
+
+fn scan_ident(src: String borrow, lex: Lex, i: Int, n: Int, cs: List[Cand] borrow, known: List[String] borrow) -> Int ! alloc
+    text = lex.text(src, i)
+    kind = kw_kind_of(text)
+    if kind >= 0
+        if at_col0(src, lex, i) == 1
+            nxt = try_cand(src, lex, n, i, kind, cs)
+            if nxt > i
+                scan_items(src, lex, nxt, n, 0, cs, known)
+            else
+                scan_items(src, lex, i + 1, n, 0, cs, known)
+        else
+            scan_items(src, lex, i + 1, n, 0, cs, known)
+    elsif is_const_name(text) == 1
+        note_if_const(src, lex, n, i, known)
+        scan_items(src, lex, i + 1, n, 0, cs, known)
+    else
+        scan_items(src, lex, i + 1, n, 0, cs, known)
+
+fn note_if_const(src: String borrow, lex: Lex, n: Int, i: Int, known: List[String] borrow) -> Int ! alloc
+    if at_col0(src, lex, i) == 1
+        note_const(src, lex, n, i, known)
+    else
+        0
+
+fn note_const(src: String borrow, lex: Lex, n: Int, i: Int, known: List[String] borrow) -> Int ! alloc
+    if looks_like_const_item(lex, n, i) == 0
+        0
+    else
+        name = lex.text(src, i)
+        if names_has(known, name) == 1
+            0
+        else
+            known.push(name)
+            0
+
+fn looks_like_const_item(lex: Lex, n: Int, i: Int) -> Int ! alloc
+    j = skip_nl(lex, n, i + 1)
+    if j >= n
+        0
+    elsif lex.kind(j) == TK_LPAREN()
+        0
+    elsif lex.kind(j) == TK_EQ()
+        1
+    else
+        eq_before_nl(lex, n, j)
+
+fn eq_before_nl(lex: Lex, n: Int, j: Int) -> Int ! alloc
+    if j >= n
+        0
+    elsif lex.kind(j) == TK_NL()
+        0
+    elsif lex.kind(j) == TK_LPAREN()
+        0
+    elsif lex.kind(j) == TK_EQ()
+        1
+    else
+        eq_before_nl(lex, n, j + 1)
+
+fn try_cand(src: String borrow, lex: Lex, n: Int, i: Int, kind: Int, cs: List[Cand] borrow) -> Int ! alloc
+    if prefix_ok(src, lex.start(i)) == 0
+        0 - 1
+    else
+        try_cand_go(src, lex, n, i, kind, cs)
+
+fn try_cand_go(src: String borrow, lex: Lex, n: Int, i: Int, kind: Int, cs: List[Cand] borrow) -> Int ! alloc
+    ids = List.new[Int]()
+    j = collect_idents(lex, n, skip_nl(lex, n, i + 1), ids)
+    if j >= n
+        0 - 1
+    elsif lex.kind(j) != TK_LPAREN()
+        0 - 1
+    elsif idents_ok(src, lex, kind, ids) == 0
+        0 - 1
+    else
+        try_after_paren(src, lex, n, i, kind, ids, j, cs)
+
+fn collect_idents(lex: Lex, n: Int, j: Int, ids: List[Int] borrow) -> Int ! alloc
+    if j >= n
+        j
+    elsif lex.kind(j) != TK_IDENT()
+        j
+    else
+        ids.push(j)
+        collect_idents(lex, n, skip_nl(lex, n, j + 1), ids)
+
+fn idents_ok(src: String borrow, lex: Lex, kind: Int, ids: List[Int] borrow) -> Int ! alloc
+    if kind == 0
+        if ids.len() == 1
+            is_const_name(lex.text(src, ids.get(0)))
+        else
+            0
+    elsif ids.len() == 2
+        if is_const_name(lex.text(src, ids.get(1))) == 0
+            0
+        else
+            gap_is_dot(src, lex.end(ids.get(0)), lex.start(ids.get(1)))
+    else
+        0
+
+fn try_after_paren(src: String borrow, lex: Lex, n: Int, kw: Int, kind: Int, ids: List[Int] borrow, lp: Int, cs: List[Cand] borrow) -> Int ! alloc
+    rp = match_rparen(lex, n, lp + 1, 1)
+    if rp < 0
+        0 - 1
+    elsif params_ok(kind, trim_params(src, lex, lp, rp)) == 0
+        0 - 1
+    elsif header_clean(src, lex, n, rp) == 0
+        0 - 1
+    else
+        try_body(src, lex, n, kw, kind, ids, rp, cs)
+
+fn trim_params(src: String borrow, lex: Lex, lp: Int, rp: Int) -> String ! alloc
+    lo = trim_lo(src, lex.end(lp), lex.start(rp))
+    hi = trim_hi(src, lo, lex.start(rp))
+    src.slice(lo, hi)
+
+fn match_rparen(lex: Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
+    if j >= n
+        0 - 1
+    elsif lex.kind(j) == TK_LPAREN()
+        match_rparen(lex, n, j + 1, depth + 1)
+    elsif lex.kind(j) == TK_RPAREN()
+        if depth == 1
+            j
+        else
+            match_rparen(lex, n, j + 1, depth - 1)
+    else
+        match_rparen(lex, n, j + 1, depth)
+
+fn try_body(src: String borrow, lex: Lex, n: Int, kw: Int, kind: Int, ids: List[Int] borrow, rp: Int, cs: List[Cand] borrow) -> Int ! alloc
+    j = skip_nl(lex, n, header_end(lex, n, rp + 1))
+    if j >= n
+        0 - 1
+    elsif lex.kind(j) != TK_INDENT()
+        0 - 1
+    else
+        close = body_dedent(lex, n, j + 1, 1)
+        if close < 0
+            0 - 1
+        else
+            keep_body(src, lex, kw, kind, ids, j, close, cs)
+
+fn body_dedent(lex: Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
+    if j >= n
+        0 - 1
+    elsif lex.kind(j) == TK_INDENT()
+        body_dedent(lex, n, j + 1, depth + 1)
+    elsif lex.kind(j) == TK_DEDENT()
+        if depth == 1
+            j
+        else
+            body_dedent(lex, n, j + 1, depth - 1)
+    else
+        body_dedent(lex, n, j + 1, depth)
+
+fn keep_body(src: String borrow, lex: Lex, kw: Int, kind: Int, ids: List[Int] borrow, ind: Int, close: Int, cs: List[Cand] borrow) -> Int ! alloc
+    raw_lo = lex.end(ind)
+    raw_hi = lex.start(close)
+    blo = trim_lo(src, raw_lo, raw_hi)
+    bhi = trim_hi(src, blo, raw_hi)
+    body = src.slice(blo, bhi)
+    whole = src.slice(lex.start(kw), bhi)
+    if body.len() == 0 || has_char(body, 10) == 1 || has_char(whole, 35) == 1
+        close + 1
+    else
+        push_cand(src, lex, kw, kind, ids, blo, bhi, cs)
+        close + 1
+
+fn push_cand(src: String borrow, lex: Lex, kw: Int, kind: Int, ids: List[Int] borrow, blo: Int, bhi: Int, cs: List[Cand] borrow) -> Int ! alloc
+    name_i = name_index(kind, ids)
+    recv = recv_span(lex, kind, ids)
+    cs.push(Cand(kind, name_i, lex.start(name_i), lex.end(name_i), recv, recv_end(lex, kind, ids), lex.start(kw), bhi, blo, bhi))
+    0
+
+fn name_index(kind: Int, ids: List[Int] borrow) -> Int ! alloc
+    if kind == 0
+        ids.get(0)
+    else
+        ids.get(1)
+
+fn recv_span(lex: Lex, kind: Int, ids: List[Int] borrow) -> Int ! alloc
+    if kind == 0
+        0
+    else
+        lex.start(ids.get(0))
+
+fn recv_end(lex: Lex, kind: Int, ids: List[Int] borrow) -> Int ! alloc
+    if kind == 0
+        0
+    else
+        lex.end(ids.get(0))
