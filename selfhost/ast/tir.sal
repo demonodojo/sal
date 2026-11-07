@@ -61,7 +61,7 @@ struct IrFn
     lits: List[Lit]
 
 fn ti_s(h: Int) -> String ! alloc
-    strdup(tt_str(h))
+    tt_str(h).dup()
 
 fn ti_slot_s(v: Int, i: Int) -> String ! alloc
     ti_s(tt_slot(v, i))
@@ -77,7 +77,7 @@ fn ti_call_shape(h: Int) -> Int ! alloc
         0
 
 fn ti_no_insts() -> List[Inst] ! alloc
-    list_new[Inst]()
+    List.new[Inst]()
 
 fn ti_insts(hs: Int, out: List[Inst]) -> Int ! alloc
     ti_insts_go(hs, 0, vec_len(hs), out)
@@ -86,12 +86,12 @@ fn ti_insts_go(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, ti_inst(vec_get(hs, i)))
+        out.push(ti_inst(vec_get(hs, i)))
         ti_insts_go(hs, i + 1, n, out)
 
 fn ti_insts_of(hs: Int) -> List[Inst] ! alloc
-    out = list_new[Inst]()
-    _a = ti_insts(hs, out)
+    out = List.new[Inst]()
+    ti_insts(hs, out)
     out
 
 # Carried rows `[dest, a, b]`.
@@ -100,12 +100,12 @@ fn ti_carries(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
         0
     else
         c = vec_get(hs, i)
-        _a = list_push(out, ti_mk(0, ti_slot_s(c, 0), ti_slot_s(c, 1), ti_slot_s(c, 2), d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts()))
+        out.push(ti_mk(0, ti_slot_s(c, 0), ti_slot_s(c, 1), ti_slot_s(c, 2), d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts()))
         ti_carries(hs, i + 1, n, out)
 
 fn ti_carries_of(hs: Int) -> List[Inst] ! alloc
-    out = list_new[Inst]()
-    _a = ti_carries(hs, 0, vec_len(hs), out)
+    out = List.new[Inst]()
+    ti_carries(hs, 0, vec_len(hs), out)
     out
 
 # Switch arms `[tag, body, value]`.
@@ -114,58 +114,58 @@ fn ti_arms(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
         0
     else
         a = vec_get(hs, i)
-        _a = list_push(out, ti_mk(0, d"", ti_slot_s(a, 2), d"", d"", d"", d"", vec_get(a, 0), 0, 0, list_new[String](), ti_insts_of(vec_get(a, 1)), ti_no_insts(), ti_no_insts()))
+        _a = out.push(ti_mk(0, d"", ti_slot_s(a, 2), d"", d"", d"", d"", vec_get(a, 0), 0, 0, List.new[String](), ti_insts_of(vec_get(a, 1)), ti_no_insts(), ti_no_insts()))
         ti_arms(hs, i + 1, n, out)
 
 fn ti_arms_of(hs: Int) -> List[Inst] ! alloc
-    out = list_new[Inst]()
-    _a = ti_arms(hs, 0, vec_len(hs), out)
+    out = List.new[Inst]()
+    ti_arms(hs, 0, vec_len(hs), out)
     out
 
 fn ti_inst(h: Int) -> Inst ! alloc
     k = vec_get(h, 0)
     if k == II_CI()
-        ti_mk(k, ti_slot_s(h, 1), d"", d"", d"", d"", d"", vec_get(h, 2), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), d"", d"", d"", d"", d"", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CS()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_BIN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), ti_slot_s(h, 4), d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), ti_slot_s(h, 4), d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CF()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 3), d"", d"", d"", d"", vec_get(h, 2), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 3), d"", d"", d"", d"", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_TBIN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), ti_slot_s(h, 6), ti_slot_s(h, 7), vec_get(h, 3), vec_get(h, 8), 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), ti_slot_s(h, 6), ti_slot_s(h, 7), vec_get(h, 3), vec_get(h, 8), 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_TUN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), d"", ti_slot_s(h, 6), vec_get(h, 3), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), d"", ti_slot_s(h, 6), vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_CALL()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 4), ti_call_shape(h), 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_PLACE()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_RET()
-        ti_mk(k, d"", ti_slot_s(h, 1), d"", d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, d"", ti_slot_s(h, 1), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_DROP()
-        ti_mk(k, d"", ti_slot_s(h, 1), d"", d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, d"", ti_slot_s(h, 1), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_IF()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), ti_slot_s(h, 6), d"", d"", 0, 0, 0, list_new[String](), ti_insts_of(vec_get(h, 3)), ti_insts_of(vec_get(h, 4)), ti_carries_of(vec_get(h, 7)))
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), ti_slot_s(h, 6), d"", d"", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 3)), ti_insts_of(vec_get(h, 4)), ti_carries_of(vec_get(h, 7)))
     elsif k == II_WHILE()
-        ti_mk(k, d"", ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, list_new[String](), ti_insts_of(vec_get(h, 1)), ti_insts_of(vec_get(h, 3)), ti_carries_of(vec_get(h, 4)))
+        ti_mk(k, d"", ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 1)), ti_insts_of(vec_get(h, 3)), ti_carries_of(vec_get(h, 4)))
     elsif k == II_AGG()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_EXTRACT()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", vec_get(h, 4), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_REBIND()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_EMAKE()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 3), vec_get(h, 5), 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_EFIELD()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 3), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_SWITCH()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), d"", d"", d"", 0, 0, 0, list_new[String](), ti_insts_of(vec_get(h, 4)), ti_no_insts(), ti_arms_of(vec_get(h, 3)))
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), d"", d"", d"", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 4)), ti_no_insts(), ti_arms_of(vec_get(h, 3)))
     elsif k == II_ANYBOX()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", vec_get(h, 4), 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), d"", d"", d"", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_ANYCALL()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), d"", d"", d"", d"", vec_get(h, 3), 0, 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     else
-        ti_mk(k, d"", d"", d"", d"", d"", d"", 0, 0, 0, list_new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+        ti_mk(k, d"", d"", d"", d"", d"", d"", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
 
 # ---- regions ----
 fn ti_ops(hs: Int, i: Int, n: Int, out: List[FOp]) -> Int ! alloc
@@ -173,7 +173,7 @@ fn ti_ops(hs: Int, i: Int, n: Int, out: List[FOp]) -> Int ! alloc
         0
     else
         o = vec_get(hs, i)
-        _a = list_push(out, FOp(vec_get(o, 0), ti_slot_s(o, 1), ti_slot_s(o, 2), ti_slot_s(o, 3), ti_slot_s(o, 4), ti_slot_s(o, 5), vec_len(o)))
+        out.push(FOp(vec_get(o, 0), ti_slot_s(o, 1), ti_slot_s(o, 2), ti_slot_s(o, 3), ti_slot_s(o, 4), ti_slot_s(o, 5), vec_len(o)))
         ti_ops(hs, i + 1, n, out)
 
 fn ti_regions(hs: Int, i: Int, n: Int, out: List[Region]) -> Int ! alloc
@@ -181,9 +181,9 @@ fn ti_regions(hs: Int, i: Int, n: Int, out: List[Region]) -> Int ! alloc
         0
     else
         r = vec_get(hs, i)
-        ops = list_new[FOp]()
-        _o = ti_ops(vec_get(r, 1), 0, vec_len(vec_get(r, 1)), ops)
-        _a = list_push(out, Region(ti_slot_s(r, 0), vec_get(r, 2), vec_get(r, 3), vec_get(r, 4), vec_get(r, 5), ti_slot_s(r, 6), ops))
+        ops = List.new[FOp]()
+        ti_ops(vec_get(r, 1), 0, vec_len(vec_get(r, 1)), ops)
+        out.push(Region(ti_slot_s(r, 0), vec_get(r, 2), vec_get(r, 3), vec_get(r, 4), vec_get(r, 5), ti_slot_s(r, 6), ops))
         ti_regions(hs, i + 1, n, out)
 
 fn ti_lits(hs: Int, i: Int, n: Int, out: List[Lit]) -> Int ! alloc
@@ -191,13 +191,13 @@ fn ti_lits(hs: Int, i: Int, n: Int, out: List[Lit]) -> Int ! alloc
         0
     else
         l = vec_get(hs, i)
-        _a = list_push(out, Lit(ti_slot_s(l, 0), tt_str_list(vec_get(l, 1))))
+        out.push(Lit(ti_slot_s(l, 0), tt_str_list(vec_get(l, 1))))
         ti_lits(hs, i + 1, n, out)
 
 fn ti_fn(f: Int) -> IrFn ! alloc
-    regions = list_new[Region]()
-    _r = ti_regions(vec_get(f, 3), 0, vec_len(vec_get(f, 3)), regions)
-    lits = list_new[Lit]()
+    regions = List.new[Region]()
+    ti_regions(vec_get(f, 3), 0, vec_len(vec_get(f, 3)), regions)
+    lits = List.new[Lit]()
     if tt_slot(f, 4) != 0
         _l = ti_lits(vec_get(f, 4), 0, vec_len(vec_get(f, 4)), lits)
     IrFn(ti_s(vec_get(f, 0)), tt_str_list(vec_get(f, 1)), ti_insts_of(vec_get(f, 2)), regions, lits)
@@ -206,71 +206,71 @@ fn ti_fns(m: Int, i: Int, n: Int, out: List[IrFn]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, ti_fn(vec_get(m, i)))
+        out.push(ti_fn(vec_get(m, i)))
         ti_fns(m, i + 1, n, out)
 
 # The typed form of an IR module (a vec of function handles).
 fn ti_module(m: Int) -> List[IrFn] ! alloc
-    out = list_new[IrFn]()
-    _a = ti_fns(m, 0, vec_len(m), out)
+    out = List.new[IrFn]()
+    ti_fns(m, 0, vec_len(m), out)
     out
 
 # ---- release ----
 fn ti_free_insts(xs: List[Inst]) -> Int ! alloc
-    _a = ti_free_each(xs, 0, list_len(xs))
+    ti_free_each(xs, 0, xs.len())
     list_free(xs)
 
 fn ti_free_each(xs: List[Inst], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        x = list_get(xs, i)
-        _a = list_free(x.strs)
-        _b = ti_free_insts(x.b1)
-        _c = ti_free_insts(x.b2)
-        _d = ti_free_insts(x.rows)
+        x = xs.get(i)
+        list_free(x.strs)
+        ti_free_insts(x.b1)
+        ti_free_insts(x.b2)
+        ti_free_insts(x.rows)
         ti_free_each(xs, i + 1, n)
 
 fn ti_free_regions(rs: List[Region], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        r = list_get(rs, i)
-        _a = list_free(r.ops)
+        r = rs.get(i)
+        list_free(r.ops)
         ti_free_regions(rs, i + 1, n)
 
 fn ti_free_lits(ls: List[Lit], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        l = list_get(ls, i)
-        _a = list_free(l.data)
+        l = ls.get(i)
+        list_free(l.data)
         ti_free_lits(ls, i + 1, n)
 
 # Releases one function's lists (the function itself is a copy or an element the caller frees).
 fn ti_free_fn_parts(f: IrFn) -> Int ! alloc
-    _a = list_free(f.dps)
-    _b = ti_free_insts(f.insts)
-    _c = ti_free_regions(f.regions, 0, list_len(f.regions))
-    _d = list_free(f.regions)
-    _e = ti_free_lits(f.lits, 0, list_len(f.lits))
+    list_free(f.dps)
+    ti_free_insts(f.insts)
+    ti_free_regions(f.regions, 0, f.regions.len())
+    list_free(f.regions)
+    ti_free_lits(f.lits, 0, f.lits.len())
     list_free(f.lits)
 
 fn ti_free_fns(fs: List[IrFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fs, i)
-        _a = list_free(f.dps)
-        _b = ti_free_insts(f.insts)
-        _c = ti_free_regions(f.regions, 0, list_len(f.regions))
-        _d = list_free(f.regions)
-        _e = ti_free_lits(f.lits, 0, list_len(f.lits))
-        _g = list_free(f.lits)
+        f = fs.get(i)
+        list_free(f.dps)
+        ti_free_insts(f.insts)
+        ti_free_regions(f.regions, 0, f.regions.len())
+        list_free(f.regions)
+        ti_free_lits(f.lits, 0, f.lits.len())
+        list_free(f.lits)
         ti_free_fns(fs, i + 1, n)
 
 fn ti_free_module(fs: List[IrFn]) -> Int ! alloc
-    _a = ti_free_fns(fs, 0, list_len(fs))
+    ti_free_fns(fs, 0, fs.len())
     list_free(fs)
 
 # ---- handle text helpers (the IR is still built from handles) ----
@@ -291,10 +291,10 @@ fn tt_strs(hs: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push(out, strdup(tt_str(vec_get(hs, i))))
+        out.push(tt_str(vec_get(hs, i)).dup())
         tt_strs(hs, i + 1, n, out)
 
 fn tt_str_list(hs: Int) -> List[String] ! alloc
-    out = list_new[String]()
-    _a = tt_strs(hs, 0, vec_len(hs), out)
+    out = List.new[String]()
+    tt_strs(hs, 0, vec_len(hs), out)
     out

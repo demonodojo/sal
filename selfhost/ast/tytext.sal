@@ -1,97 +1,80 @@
 # Helpers over type text (`List[Int]`, `Map[String, Int]`) and builtin names, shared by the passes.
 
 fn ty_is_string(ty: String) -> Int ! alloc
-    if str_eq(ty, "String") == 1
+    if ty.eq("String") == 1
         1
     else
-        str_eq(ty, "String ") == 1
+        ty.eq("String ") == 1
 
 fn call_returns_string(name: String) -> Int ! alloc
-    if str_eq(name, "argv") == 1
-        1
-    elsif str_eq(name, "read_file") == 1
-        1
-    elsif str_eq(name, "str_concat") == 1
-        1
-    elsif str_eq(name, "str_append") == 1
-        1
-    elsif str_eq(name, "str_from_int") == 1
-        1
-    elsif str_eq(name, "realpath") == 1
-        1
-    else
-        call_returns_string2(name)
+    match name
+        "argv" => 1
+        "read_file" => 1
+        "str_concat" => 1
+        "str_append" => 1
+        "str_from_int" => 1
+        "realpath" => 1
+        _ => call_returns_string2(name)
 
 fn call_returns_string2(name: String) -> Int ! alloc
-    if str_eq(name, "str_slice") == 1
-        1
-    elsif str_eq(name, "int_to_str") == 1
-        1
-    elsif str_eq(name, "char_to_str") == 1
-        1
-    elsif str_eq(name, "strdup") == 1
-        1
-    else
-        call_returns_string3(name)
+    match name
+        "str_slice" => 1
+        "int_to_str" => 1
+        "char_to_str" => 1
+        "strdup" => 1
+        _ => call_returns_string3(name)
 
 fn call_returns_string3(name: String) -> Int ! alloc
-    if str_eq(name, "select_str") == 1
-        1
-    elsif str_eq(name, "tmp_path") == 1
-        1
-    elsif str_eq(name, "exec_capture") == 1
-        1
-    elsif str_eq(name, "getenv") == 1
-        1
-    elsif str_eq(name, "ir_text") == 1
-        1
-    else
-        0
+    match name
+        "select_str" => 1
+        "tmp_path" => 1
+        "exec_capture" => 1
+        "getenv" => 1
+        "ir_text" => 1
+        _ =>
+            0
 
-# Builtins whose String result is a fresh heap temporary nobody else owns.
+            # Builtins whose String result is a fresh heap temporary nobody else owns.
 fn call_allocates_fresh_string(name: String) -> Int ! alloc
-    if str_eq(name, "int_to_str") == 1
-        1
-    elsif str_eq(name, "char_to_str") == 1
-        1
-    elsif str_eq(name, "str_slice") == 1
-        1
-    elsif str_eq(name, "strdup") == 1
-        1
-    else
-        str_eq(name, "read_file")
+    match name
+        "int_to_str" => 1
+        "char_to_str" => 1
+        "str_slice" => 1
+        "strdup" => 1
+        _ =>
+            name.eq("read_file")
 
-# `i`-th top-level type argument of `Name[A, B]`, or 0. Nested brackets are kept whole.
+            # `i`-th top-level type argument of `Name[A, B]`, or 0. Nested brackets are kept whole.
 fn nth_type_arg(t: String, i: Int) -> Int ! alloc
     open = ty_find_open(t, 0)
     if open < 0
         0
     else
-        nth_type_arg_go(str_slice(t, open + 1, str_len(t) - 1), i, 0, 0, 0)
+        nth_type_arg_go(t.slice(open + 1, t.len() - 1), i, 0, 0, 0)
 
 fn nth_type_arg_go(s: String, want: Int, pos: Int, start: Int, k: Int) -> Int ! alloc
-    n = str_len(s)
+    n = s.len()
     if pos >= n
         if k == want
-            str_as_int(trim_spaces(str_slice(s, start, n)))
+            trim_spaces(s.slice(start, n)).to_int()
         else
             0
     else
-        c = str_char(s, pos)
+        c = s.char(pos)
         if c == 91
             nth_type_arg_go(s, want, ty_skip_brackets(s, pos + 1, 1), start, k)
         elsif c == 44
             if k == want
-                str_as_int(trim_spaces(str_slice(s, start, pos)))
+                trim_spaces(s.slice(start, pos)).to_int()
             else
                 nth_type_arg_go(s, want, pos + 1, pos + 1, k + 1)
         else
             nth_type_arg_go(s, want, pos + 1, start, k)
 
 fn ty_find_open(t: String, i: Int) -> Int ! alloc
-    if i >= str_len(t)
+    if i >= t.len()
         0 - 1
-    elsif str_char(t, i) == 91
+    elsif t.char(i) == 91
         i
     else
         ty_find_open(t, i + 1)
@@ -102,14 +85,14 @@ fn ty_base(t: String) -> String ! alloc
     if open < 0
         trim_spaces(t)
     else
-        trim_spaces(str_slice(t, 0, open))
+        trim_spaces(t.slice(0, open))
 
 # Position after the `]` that closes the bracket opened before `pos` (depth 1).
 fn ty_skip_brackets(s: String, pos: Int, depth: Int) -> Int ! alloc
-    if pos >= str_len(s)
+    if pos >= s.len()
         pos
     else
-        c = str_char(s, pos)
+        c = s.char(pos)
         if c == 91
             ty_skip_brackets(s, pos + 1, depth + 1)
         elsif c == 93
@@ -121,12 +104,12 @@ fn ty_skip_brackets(s: String, pos: Int, depth: Int) -> Int ! alloc
             ty_skip_brackets(s, pos + 1, depth)
 
 fn trim_spaces(s: String) -> String ! alloc
-    n = str_len(s)
+    n = s.len()
     if n > 0
-        if str_char(s, 0) == 32
-            trim_spaces(str_slice(s, 1, n))
-        elsif str_char(s, n - 1) == 32
-            trim_spaces(str_slice(s, 0, n - 1))
+        if s.char(0) == 32
+            trim_spaces(s.slice(1, n))
+        elsif s.char(n - 1) == 32
+            trim_spaces(s.slice(0, n - 1))
         else
             s
     else
@@ -141,7 +124,7 @@ fn ty_type_arg(t: String, i: Int) -> String ! alloc
 
 # Protocol name inside `any[P]`, or "" when `t` is not `any[…]`.
 fn ty_any_protocol(t: String) -> String ! alloc
-    if str_eq(ty_base(t), "any") == 0
+    if ty_base(t).eq("any") == 0
         d""
     else
         ty_type_arg(t, 0)

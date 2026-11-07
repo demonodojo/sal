@@ -6,10 +6,10 @@ fn ty_trim(t: Int) -> String ! alloc
         ty_trim_go(str_from_int(t))
 
 fn ty_trim_go(s: String) -> String ! alloc
-    n = str_len(s)
+    n = s.len()
     if n > 0
-        if str_char(s, n - 1) == 32
-            ty_trim_go(str_slice(s, 0, n - 1))
+        if s.char(n - 1) == 32
+            ty_trim_go(s.slice(0, n - 1))
         else
             s
     else
@@ -20,17 +20,14 @@ fn ty_trim_go(s: String) -> String ! alloc
 fn tt_open(s: String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
-    elsif str_char(s, i) == 91
+    elsif s.char(i) == 91
         i + 1
     else
         tt_open(s, i + 1, n)
 
 fn tt_trim_left(s: String) -> String ! alloc
-    if str_len(s) > 0
-        if str_char(s, 0) == 32
-            tt_trim_left(str_slice(s, 1, str_len(s)))
-        else
-            s
+    if s.len() > 0 && s.char(0) == 32
+        tt_trim_left(s.slice(1, s.len()))
     else
         s
 
@@ -38,18 +35,18 @@ fn tt_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int !
     if i >= n
         out
     else
-        ch = str_char(s, i)
+        ch = s.char(i)
         if ch == 91
             tt_parts(s, i + 1, n, from, depth + 1, out)
         elsif ch == 93
             if depth == 0
-                _p = vec_push(out, str_as_int(ty_trim_go(tt_trim_left(str_slice(s, from, i)))))
+                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
                 out
             else
                 tt_parts(s, i + 1, n, from, depth - 1, out)
         elsif ch == 44
             if depth == 0
-                _p = vec_push(out, str_as_int(ty_trim_go(tt_trim_left(str_slice(s, from, i)))))
+                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
                 tt_parts(s, i + 1, n, i + 1, depth, out)
             else
                 tt_parts(s, i + 1, n, from, depth, out)
@@ -58,29 +55,29 @@ fn tt_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int !
 
 fn tt_split(t: Int) -> Int ! alloc
     s = ty_trim(t)
-    o = tt_open(s, 0, str_len(s))
-    tt_parts(s, o, str_len(s), o, 0, vec_new())
+    o = tt_open(s, 0, s.len())
+    tt_parts(s, o, s.len(), o, 0, vec_new())
 
 fn tt_place(t: Int) -> String ! alloc
     s = ty_trim(t)
-    tt_place_go(s, str_len(s) - 1, str_len(s))
+    tt_place_go(s, s.len() - 1, s.len())
 
 fn tt_place_go(s: String, i: Int, n: Int) -> String ! alloc
     if i < 0
         d"cpu"
-    elsif str_char(s, i) == 32
-        str_slice(s, i + 1, n)
-    elsif str_char(s, i) == 93
+    elsif s.char(i) == 32
+        s.slice(i + 1, n)
+    elsif s.char(i) == 93
         d"cpu"
     else
         tt_place_go(s, i - 1, n)
 
 fn tt_is_static(d: Int) -> Int ! alloc
     s = str_from_int(d)
-    if str_len(s) == 0
+    if s.len() == 0
         0
-    elsif str_char(s, 0) >= 48
-        if str_char(s, 0) <= 57
+    elsif s.char(0) >= 48
+        if s.char(0) <= 57
             1
         else
             0
@@ -95,13 +92,13 @@ fn tt_join_dims(parts: Int, lo: Int, hi: Int, acc: String) -> String ! alloc
 
 # Text `Tensor[F32, 2, 3] on cpu` of the `a @ b` result, or 0 when a shape is not literal.
 fn tt_dim_val(d: Int) -> Int ! alloc
-    tt_dim_go(str_from_int(d), 0, str_len(str_from_int(d)), 0)
+    tt_dim_go(str_from_int(d), 0, str_from_int(d).len(), 0)
 
 fn tt_dim_go(s: String, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
-        tt_dim_go(s, i + 1, n, acc * 10 + str_char(s, i) - 48)
+        tt_dim_go(s, i + 1, n, acc * 10 + s.char(i) - 48)
 
 fn tt_matmul_text(ta: Int, tb: Int) -> Int ! alloc
     pa = tt_split(ta)
@@ -113,12 +110,12 @@ fn tt_matmul_text(ta: Int, tb: Int) -> Int ! alloc
     else
         head = "Tensor[" + str_from_int(vec_get(pa, 0))
         mid = tt_join_dims(pa, 1, vec_len(pa) - 1, head)
-        str_as_int(mid + ", " + str_from_int(vec_get(pb, vec_len(pb) - 1)) + "] on " + tt_place(ta))
+        (mid + ", " + str_from_int(vec_get(pb, vec_len(pb) - 1)) + "] on " + tt_place(ta)).to_int()
 
 # ---- typed forms: type texts as `String`, shape parts as `List[String]` ----
 # "" stands for an absent type and trims to "Unknown".
 fn ts_trim(s: String) -> String ! alloc
-    if str_len(s) == 0
+    if s.len() == 0
         d"Unknown"
     else
         ty_trim_go(s)
@@ -127,18 +124,18 @@ fn ts_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: List[String])
     if i >= n
         0
     else
-        ch = str_char(s, i)
+        ch = s.char(i)
         if ch == 91
             ts_parts(s, i + 1, n, from, depth + 1, out)
         elsif ch == 93
             if depth == 0
-                _p = list_push(out, strdup(ty_trim_go(tt_trim_left(str_slice(s, from, i)))))
+                _p = out.push(ty_trim_go(tt_trim_left(s.slice(from, i))).dup())
                 0
             else
                 ts_parts(s, i + 1, n, from, depth - 1, out)
         elsif ch == 44
             if depth == 0
-                _p = list_push(out, strdup(ty_trim_go(tt_trim_left(str_slice(s, from, i)))))
+                _p = out.push(ty_trim_go(tt_trim_left(s.slice(from, i))).dup())
                 ts_parts(s, i + 1, n, i + 1, depth, out)
             else
                 ts_parts(s, i + 1, n, from, depth, out)
@@ -148,20 +145,20 @@ fn ts_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: List[String])
 # `Tensor[F32, 2, 3] on cpu` -> ["F32", "2", "3"].
 fn ts_split(t: String) -> List[String] ! alloc
     s = ts_trim(t)
-    o = tt_open(s, 0, str_len(s))
-    out = list_new[String]()
-    _a = ts_parts(s, o, str_len(s), o, 0, out)
+    o = tt_open(s, 0, s.len())
+    out = List.new[String]()
+    ts_parts(s, o, s.len(), o, 0, out)
     out
 
 fn ts_place(t: String) -> String ! alloc
     s = ts_trim(t)
-    tt_place_go(s, str_len(s) - 1, str_len(s))
+    tt_place_go(s, s.len() - 1, s.len())
 
 fn ts_static(d: String) -> Int ! alloc
-    if str_len(d) == 0
+    if d.len() == 0
         0
-    elsif str_char(d, 0) >= 48
-        if str_char(d, 0) <= 57
+    elsif d.char(0) >= 48
+        if d.char(0) <= 57
             1
         else
             0
@@ -169,10 +166,10 @@ fn ts_static(d: String) -> Int ! alloc
         0
 
 fn ts_dim(d: String) -> Int ! alloc
-    tt_dim_go(d, 0, str_len(d), 0)
+    tt_dim_go(d, 0, d.len(), 0)
 
 fn ts_join(parts: List[String], lo: Int, hi: Int, acc: String) -> String ! alloc
     if lo >= hi
         acc
     else
-        ts_join(parts, lo + 1, hi, acc + ", " + list_get(parts, lo))
+        ts_join(parts, lo + 1, hi, acc + ", " + parts.get(lo))
