@@ -1,5 +1,4 @@
 # exit: 1
-# selfhost-xfail: el stage1 aborta en lower_params al bajar un match sobre una referencia
 enum E
     No
     Yes

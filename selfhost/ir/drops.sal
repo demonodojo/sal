@@ -1834,6 +1834,7 @@ fn dr_ro_pass(ro: Int, cons: &List[Int], fns: &List[TFn], variants: Int, scalars
         ch = dr_ro_params(&c, flags, &c.ps, 0, nps)
         tk = dr_cons_params(&c, took, &c.ps, 0, nps)
         dr_free(&c)
+        _pp = dr_pin_params(c.ps)
         any = if ch + tk > 0
             1
         else
@@ -1927,6 +1928,11 @@ fn dr_pin_list(xs: List[TStmt]) -> Int ! alloc
     0
 
 fn dr_pin_expr(e: Expr) -> Int ! alloc
+    0
+
+# `DC.ps` is the caller's parameter list, not a fresh one. Taking it here keeps the
+# scope-end glue from `list_free`ing the `TFn` that still owns it.
+fn dr_pin_params(xs: List[TParam]) -> Int ! alloc
     0
 
 # ---- temporaries ----
@@ -2584,6 +2590,7 @@ fn drops_body(f: &TFn, denv: Int) -> TBlock ! alloc
     claimed = dr_claim_fn(f, &hoisted, vec_get(denv, 0), &h.lists, vec_get(denv, 3))
     c = dr_facts(f.params, &claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
     res = dr_xform_block(&c, &claimed)
+    _pp = dr_pin_params(c.ps)
     _ph = dr_pin_list(hoisted.stmts)
     _pt = dr_pin_expr(hoisted.tail)
     _pc = dr_pin_list(claimed.stmts)

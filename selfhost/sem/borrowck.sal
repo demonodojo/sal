@@ -1,0 +1,823 @@
+# Borrow checker, the mirror of check_borrows in src/borrowck.rs.
+# Moves stay in ownership.sal (E_MOVED). This pass adds E_BORROW: a loan that
+# overlaps a mutation or another exclusive loan, a reference that outlives its
+# referent, and moving a non-Copy value out of a reference (`*r`).
+import "../pkg/result.sal"
+import "../ast/tast.sal"
+import "../ast/ttypes.sal"
+import ownership
+
+# Positions are a counter shared by the scan (last use of each loan) and the
+# walk (the loans and the moves). `cells[0]` is that counter.
+struct BK
+    env: TEnv
+    err: List[String]
+    l_place: List[String]
+    l_mut: List[Int]
+    l_start: List[Int]
+    l_end: List[Int]
+    m_place: List[String]
+    m_at: List[Int]
+    ne_at: List[Int]
+    ne_end: List[Int]
+    o_name: List[String]
+    o_kind: List[Int]
+    o_place: List[String]
+    o_at: List[Int]
+    scope_o: List[Int]
+    scope_t: List[Int]
+    w_start: List[Int]
+    w_end: List[Int]
+    cells: List[Int]
+
+fn bk_new(tp: &TProgram) -> BK ! alloc
+    cells = list_new[Int]()
+    _c = list_push(&cells, 0)
+    BK(tenv_new(tp), list_new[String](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), cells)
+
+fn bk_clock(c: &BK) -> Int ! alloc
+    list_get(&c.cells, 0)
+
+fn bk_tick(c: &BK) -> Int ! alloc
+    n = list_get(&c.cells, 0) + 1
+    _s = list_set(&c.cells, 0, n)
+    n
+
+fn bk_reset_clock(c: &BK) -> Int ! alloc
+    _s = list_set(&c.cells, 0, 0)
+    0
+
+fn bk_failed(c: &BK) -> Int ! alloc
+    if list_len(&c.err) == 0
+        0
+    else
+        1
+
+fn bk_fail(c: &BK, msg: &String) -> Int ! alloc
+    if list_len(&c.err) == 0
+        _a = list_push(&c.err, strdup(msg))
+        0
+    else
+        0
+
+fn bk_push(c: &BK) -> Int ! alloc
+    _a = list_push(&c.scope_o, list_len(&c.o_name))
+    _b = list_push(&c.scope_t, tenv_len(&c.env))
+    0
+
+fn bk_trunc(c: &BK, n: Int) -> Int ! alloc
+    if list_len(&c.o_name) <= n
+        0
+    else
+        _a = list_pop(&c.o_name)
+        _b = list_pop(&c.o_kind)
+        _c = list_pop(&c.o_place)
+        _d = list_pop(&c.o_at)
+        bk_trunc(c, n)
+
+fn bk_pop(c: &BK) -> Int ! alloc
+    _a = bk_trunc(c, list_pop(&c.scope_o))
+    tenv_truncate(&c.env, list_pop(&c.scope_t))
+
+fn bk_find(c: &BK, name: &String, i: Int) -> Int ! alloc
+    if i < 0
+        0 - 1
+    elsif str_eq(&list_get(&c.o_name, i), name) == 1
+        i
+    else
+        bk_find(c, name, i - 1)
+
+fn bk_idx(c: &BK, name: &String) -> Int ! alloc
+    bk_find(c, name, list_len(&c.o_name) - 1)
+
+fn bk_bind(c: &BK, name: &String, ty: &String, kind: Int, place: &String, at: Int) -> Int ! alloc
+    _a = list_push(&c.o_name, strdup(name))
+    _b = list_push(&c.o_kind, kind)
+    _c = list_push(&c.o_place, strdup(place))
+    _d = list_push(&c.o_at, at)
+    tenv_bind(&c.env, name, ty)
+
+fn bk_kind(c: &BK, name: &String) -> Int ! alloc
+    i = bk_idx(c, name)
+    if i < 0
+        0 - 1
+    else
+        list_get(&c.o_kind, i)
+
+fn bk_at(c: &BK, name: &String) -> Int ! alloc
+    i = bk_idx(c, name)
+    if i < 0
+        0 - 1
+    elsif list_get(&c.o_kind, i) == 2
+        list_get(&c.o_at, i)
+    else
+        0 - 1
+
+fn bk_origin_place(c: &BK, name: &String) -> String ! alloc
+    i = bk_idx(c, name)
+    if i < 0
+        ""
+    else
+        list_get(&c.o_place, i)
+
+fn bk_ne_find(c: &BK, at: Int, i: Int) -> Int ! alloc
+    if i >= list_len(&c.ne_at)
+        0 - 1
+    elsif list_get(&c.ne_at, i) == at
+        i
+    else
+        bk_ne_find(c, at, i + 1)
+
+fn bk_ne_set(c: &BK, at: Int, end: Int) -> Int ! alloc
+    i = bk_ne_find(c, at, 0)
+    if i < 0
+        _a = list_push(&c.ne_at, at)
+        _b = list_push(&c.ne_end, end)
+        0
+    elsif list_get(&c.ne_end, i) < end
+        _s = list_set(&c.ne_end, i, end)
+        0
+    else
+        0
+
+fn bk_ne_get(c: &BK, at: Int) -> Int ! alloc
+    i = bk_ne_find(c, at, 0)
+    if i < 0
+        at
+    else
+        list_get(&c.ne_end, i)
+
+fn bk_note(c: &BK, name: &String, end: Int) -> Int ! alloc
+    at = bk_at(c, name)
+    if at < 0
+        0
+    else
+        bk_ne_set(c, at, end)
+
+fn bk_copy(c: &BK, ty: &String) -> Int ! alloc
+    if str_len(ty) == 0
+        1
+    elsif own_ty_is_ref(ty) == 1
+        if bk_mut_ref(ty) == 1
+            0
+        else
+            1
+    else
+        own_is_copy_ext(ty, &c.env.structs, 0)
+
+fn bk_mut_ref(ty: &String) -> Int ! alloc
+    if str_len(ty) >= 5
+        str_eq(&str_slice(ty, 0, 5), &"&mut ")
+    else
+        0
+
+fn bk_peel(ty: &String) -> String ! alloc
+    if bk_mut_ref(ty) == 1
+        str_slice(ty, 5, str_len(ty))
+    elsif str_len(ty) >= 1
+        if str_eq(&str_slice(ty, 0, 1), &"&") == 1
+            bk_after_amp(&str_slice(ty, 1, str_len(ty)))
+        else
+            strdup(ty)
+    else
+        strdup(ty)
+
+fn bk_after_amp(rest: &String) -> String ! alloc
+    if str_len(rest) >= 1
+        if str_char(rest, 0) == 39
+            bk_after_life(rest, 1, str_len(rest))
+        else
+            strdup(rest)
+    else
+        strdup(rest)
+
+fn bk_after_life(rest: &String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        ""
+    elsif str_char(rest, i) == 32
+        bk_skip_mut(&str_slice(rest, i + 1, n))
+    else
+        bk_after_life(rest, i + 1, n)
+
+fn bk_skip_mut(rest: &String) -> String ! alloc
+    if str_len(rest) >= 4
+        if str_eq(&str_slice(rest, 0, 4), &"mut ") == 1
+            str_slice(rest, 4, str_len(rest))
+        else
+            strdup(rest)
+    else
+        strdup(rest)
+
+fn bk_place(e: &Expr) -> String ! alloc
+    match e
+        XIdent(name) => strdup(name)
+        XField(base, field) => bk_place_field(&base, &field)
+        _ => ""
+
+fn bk_place_field(base: &Expr, field: &String) -> String ! alloc
+    p = bk_place(base)
+    if str_len(&p) == 0
+        ""
+    else
+        p + "." + field
+
+fn bk_ref_place(e: &Expr) -> String ! alloc
+    match e
+        XUnary(op, inner) => bk_ref_place_op(&op, &inner)
+        _ => ""
+
+fn bk_ref_place_op(op: &String, inner: &Expr) -> String ! alloc
+    if str_eq(op, &"ref") + str_eq(op, &"refmut") == 1
+        bk_place(inner)
+    else
+        ""
+
+fn bk_ref_mut(e: &Expr) -> Int ! alloc
+    match e
+        XUnary(op, inner) => str_eq(&op, &"refmut")
+        _ => 0
+
+fn bk_bound_ty(c: &BK, st: &TStmt) -> String ! alloc
+    if str_len(&st.ty) > 0
+        strdup(st.ty)
+    else
+        known = texpr_type(&c.env, &st.expr)
+        if str_len(&known) > 0
+            known
+        else
+            bk_expr_ty(c, &st.expr)
+
+fn bk_expr_ty(c: &BK, e: &Expr) -> String ! alloc
+    match e
+        XIdent(name) => tenv_type(&c.env, &name)
+        XUnary(op, inner) => bk_guess_unary(c, &op, &inner)
+        XStr(s) => "String"
+        XInt(v) => "Int"
+        XBool(v) => "Bool"
+        XFloat(bits, txt) => "Float"
+        _ => ""
+
+fn bk_guess_unary(c: &BK, op: &String, inner: &Expr) -> String ! alloc
+    u = bk_expr_ty(c, inner)
+    if str_eq(op, &"ref") == 1
+        "&" + u
+    elsif str_eq(op, &"refmut") == 1
+        "&mut " + u
+    elsif str_eq(op, &"deref") == 1
+        bk_peel(&u)
+    else
+        u
+
+fn bk_root(place: &String) -> String ! alloc
+    i = bk_dot(place, 0, str_len(place))
+    if i < 0
+        strdup(place)
+    else
+        str_slice(place, 0, i)
+
+fn bk_dot(place: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_char(place, i) == 46
+        i
+    else
+        bk_dot(place, i + 1, n)
+
+fn bk_root_param(c: &BK, place: &String) -> Int ! alloc
+    root = bk_root(place)
+    if bk_kind(c, &root) == 1
+        1
+    else
+        0
+
+fn bk_overlaps(a: &String, b: &String) -> Int ! alloc
+    if str_eq(a, b) == 1
+        1
+    elsif bk_prefix(a, b) == 1
+        1
+    elsif bk_prefix(b, a) == 1
+        1
+    else
+        0
+
+fn bk_prefix(longer: &String, shorter: &String) -> Int ! alloc
+    n = str_len(shorter)
+    if str_len(longer) <= n
+        0
+    elsif str_eq(&str_slice(longer, 0, n), shorter) == 0
+        0
+    elsif str_char(longer, n) == 46
+        1
+    else
+        0
+
+fn bk_ranges(a0: Int, a1: Int, b0: Int, b1: Int) -> Int ! alloc
+    if a0 < b1
+        if b0 < a1
+            1
+        else
+            0
+    else
+        0
+
+fn bk_loan(c: &BK, place: &String, mutable: Int, start: Int, end: Int) -> Int ! alloc
+    if str_len(place) == 0
+        0
+    else
+        _a = list_push(&c.l_place, strdup(place))
+        _b = list_push(&c.l_mut, mutable)
+        _c = list_push(&c.l_start, start)
+        _d = list_push(&c.l_end, end)
+        0
+
+fn bk_move(c: &BK, place: &String, at: Int) -> Int ! alloc
+    if str_len(place) == 0
+        0
+    else
+        _a = list_push(&c.m_place, strdup(place))
+        _b = list_push(&c.m_at, at)
+        0
+
+fn bk_maybe_move(c: &BK, name: &String, at: Int) -> Int ! alloc
+    ty = tenv_type(&c.env, name)
+    if bk_copy(c, &ty) == 1
+        0
+    else
+        bk_move(c, name, at)
+
+fn bk_check_deref(c: &BK, inner: &Expr) -> Int ! alloc
+    ty = bk_deref_ty(c, inner)
+    if own_ty_is_ref(&ty) == 0
+        0
+    elsif bk_copy(c, &bk_peel(&ty)) == 1
+        0
+    else
+        bk_fail(c, &"E_BORROW: cannot move a non-Copy value out of a reference")
+
+fn bk_deref_ty(c: &BK, inner: &Expr) -> String ! alloc
+    known = texpr_type(&c.env, inner)
+    if str_len(&known) > 0
+        known
+    else
+        bk_expr_ty(c, inner)
+
+fn bk_params(c: &BK, ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = list_get(ps, i)
+        kind = if own_ty_is_ref(&pm.ty) == 1
+            1
+        else
+            0
+        _b = bk_bind(c, &pm.name, &pm.ty, kind, &"", 0)
+        bk_params(c, ps, i + 1, n)
+
+# mode 0 scans (notes last uses and bindings). mode 1 reads. mode 2 moves.
+fn bk_child(mode: Int) -> Int ! alloc
+    if mode == 0
+        0
+    else
+        1
+
+fn bk_visit(c: &BK, e: &Expr, mode: Int) -> Int ! alloc
+    pos = bk_tick(c)
+    _g = bk_visit_go(c, e, mode, pos)
+    pos
+
+fn bk_visit_go(c: &BK, e: &Expr, mode: Int, pos: Int) -> Int ! alloc
+    match e
+        XIdent(name) => bk_visit_ident(c, &name, mode, pos)
+        XUnary(op, inner) => bk_visit_unary(c, &op, &inner, mode)
+        XCall(name, args, targs, xp) => bk_visit_call(c, &args, mode)
+        XField(base, field) => bk_visit_field(c, e, &base, mode, pos)
+        XBin(op, l, r) => bk_visit_bin(c, &l, &r, mode)
+        XIf(cond, then_b, else_b, has_else, elsifs) => bk_visit_if(c, &cond, &then_b, &else_b, has_else, &elsifs, mode)
+        XWhile(cond, body) => bk_visit_while(c, &cond, &body, mode, pos)
+        XMatch(scrut, arms) => bk_visit_match(c, &scrut, &arms, mode)
+        XTo(place, inner) => bk_visit(c, &inner, bk_move_mode(mode))
+        XTry(inner) => bk_visit(c, &inner, bk_move_mode(mode))
+        XLambda(param, body) => bk_visit(c, &body, bk_child(mode))
+        XOn(place, body, is_kern, has_index) => bk_block(c, &body, 0, mode)
+        _ => 0
+
+fn bk_move_mode(mode: Int) -> Int ! alloc
+    if mode == 0
+        0
+    else
+        2
+
+fn bk_visit_ident(c: &BK, name: &String, mode: Int, pos: Int) -> Int ! alloc
+    if mode == 0
+        bk_note(c, name, pos)
+    elsif mode == 2
+        bk_maybe_move(c, name, pos)
+    else
+        0
+
+fn bk_visit_unary(c: &BK, op: &String, inner: &Expr, mode: Int) -> Int ! alloc
+    if str_eq(op, &"deref") == 1
+        if mode != 0
+            _d = bk_check_deref(c, inner)
+            bk_visit(c, inner, bk_child(mode))
+        else
+            bk_visit(c, inner, 0)
+    else
+        bk_visit(c, inner, bk_child(mode))
+
+fn bk_visit_field(c: &BK, e: &Expr, base: &Expr, mode: Int, pos: Int) -> Int ! alloc
+    if mode == 2
+        ty = texpr_type(&c.env, e)
+        if bk_copy(c, &ty) == 0
+            _m = bk_move(c, &bk_place(e), pos)
+            bk_visit(c, base, bk_child(mode))
+        else
+            bk_visit(c, base, bk_child(mode))
+    else
+        bk_visit(c, base, bk_child(mode))
+
+fn bk_visit_bin(c: &BK, l: &Expr, r: &Expr, mode: Int) -> Int ! alloc
+    _a = bk_visit(c, l, bk_child(mode))
+    bk_visit(c, r, bk_child(mode))
+
+fn bk_visit_if(c: &BK, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], mode: Int) -> Int ! alloc
+    _a = bk_visit(c, cond, bk_child(mode))
+    _b = bk_block(c, then_b, 0, mode)
+    _e = bk_elsifs(c, elsifs, 0, list_len(elsifs), mode)
+    if has_else == 1
+        bk_block(c, else_b, 0, mode)
+    else
+        0
+
+fn bk_elsifs(c: &BK, elsifs: &List[TElsif], i: Int, n: Int, mode: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(elsifs, i)
+        _a = bk_visit(c, &arm.cond, bk_child(mode))
+        _b = bk_block(c, &arm.body, 0, mode)
+        bk_elsifs(c, elsifs, i + 1, n, mode)
+
+fn bk_visit_while(c: &BK, cond: &Expr, body: &TBlock, mode: Int, pos: Int) -> Int ! alloc
+    if mode == 0
+        _w = list_push(&c.w_start, pos)
+        _a = bk_visit(c, cond, 0)
+        _b = bk_block(c, body, 0, 0)
+        _e = list_push(&c.w_end, bk_clock(c))
+        0
+    else
+        _a = bk_visit(c, cond, 1)
+        bk_block(c, body, 0, mode)
+
+fn bk_visit_match(c: &BK, scrut: &Expr, arms: &List[TArm], mode: Int) -> Int ! alloc
+    _a = bk_visit(c, scrut, bk_child(mode))
+    bk_arms(c, arms, 0, list_len(arms), mode)
+
+fn bk_arms(c: &BK, arms: &List[TArm], i: Int, n: Int, mode: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _a = bk_arm(c, &arm, mode)
+        bk_arms(c, arms, i + 1, n, mode)
+
+fn bk_arm(c: &BK, arm: &TArm, mode: Int) -> Int ! alloc
+    if arm.has_suite == 1
+        bk_block(c, &arm.suite, 0, mode)
+    else
+        bk_visit(c, &arm.body, mode)
+
+fn bk_visit_call(c: &BK, args: &List[Expr], mode: Int) -> Int ! alloc
+    n0 = list_len(&c.l_place)
+    _a = bk_call_args(c, args, 0, list_len(args), mode)
+    if mode == 0
+        0
+    else
+        bk_extend_loans(c, n0, list_len(&c.l_place), bk_clock(c))
+
+fn bk_call_args(c: &BK, args: &List[Expr], i: Int, n: Int, mode: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = list_get(args, i)
+        apos = bk_visit(c, &a, bk_child(mode))
+        _l = bk_call_arg_loan(c, &a, mode, apos)
+        bk_call_args(c, args, i + 1, n, mode)
+
+fn bk_call_arg_loan(c: &BK, a: &Expr, mode: Int, apos: Int) -> Int ! alloc
+    if mode == 0
+        0
+    else
+        place = bk_ref_place(a)
+        if str_len(&place) == 0
+            0
+        else
+            bk_loan(c, &place, bk_ref_mut(a), apos, apos)
+
+fn bk_extend_loans(c: &BK, i: Int, n: Int, end: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _s = list_set(&c.l_end, i, end)
+        bk_extend_loans(c, i + 1, n, end)
+
+fn bk_block(c: &BK, b: &TBlock, fn_tail: Int, mode: Int) -> Int ! alloc
+    _p = bk_push(c)
+    _s = bk_stmts(c, &b.stmts, 0, list_len(&b.stmts), mode)
+    _t = bk_tail(c, &b.tail, fn_tail, mode)
+    bk_pop(c)
+
+fn bk_tail(c: &BK, e: &Expr, fn_tail: Int, mode: Int) -> Int ! alloc
+    match e
+        XNone => 0
+        _ => bk_tail_go(c, e, fn_tail, mode)
+
+fn bk_tail_go(c: &BK, e: &Expr, fn_tail: Int, mode: Int) -> Int ! alloc
+    if fn_tail == 1
+        if mode != 0
+            _r = bk_returned(c, e)
+            bk_visit(c, e, 2)
+        else
+            bk_visit(c, e, 0)
+    else
+        bk_visit(c, e, bk_child(mode))
+
+fn bk_stmts(c: &BK, xs: &List[TStmt], i: Int, n: Int, mode: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = list_get(xs, i)
+        _a = bk_stmt(c, &st, mode)
+        bk_stmts(c, xs, i + 1, n, mode)
+
+fn bk_stmt(c: &BK, st: &TStmt, mode: Int) -> Int ! alloc
+    _t = bk_tick(c)
+    if st.kind == 2
+        bk_stmt_return(c, &st.expr, mode)
+    elsif st.kind == 1
+        bk_stmt_bind(c, st, mode)
+    elsif st.kind == 3
+        bk_stmt_field(c, st, mode)
+    elsif st.kind == 0
+        bk_visit(c, &st.expr, bk_child(mode))
+    else
+        0
+
+fn bk_stmt_return(c: &BK, e: &Expr, mode: Int) -> Int ! alloc
+    match e
+        XNone => 0
+        _ => bk_stmt_return_go(c, e, mode)
+
+fn bk_stmt_return_go(c: &BK, e: &Expr, mode: Int) -> Int ! alloc
+    if mode != 0
+        _r = bk_returned(c, e)
+        bk_visit(c, e, 2)
+    else
+        bk_visit(c, e, 0)
+
+fn bk_stmt_bind(c: &BK, st: &TStmt, mode: Int) -> Int ! alloc
+    place = bk_ref_place(&st.expr)
+    if str_len(&place) > 0
+        epos = bk_visit(c, &st.expr, bk_child(mode))
+        _n = bk_bind_ref(c, st, &place, epos, mode)
+        0
+    else
+        _v = bk_visit(c, &st.expr, bk_move_mode(mode))
+        ty = bk_bound_ty(c, st)
+        bk_bind(c, &st.name, &ty, 0, &"", 0)
+
+fn bk_bind_ref(c: &BK, st: &TStmt, place: &String, epos: Int, mode: Int) -> Int ! alloc
+    if mode == 0
+        _n = bk_ne_set(c, epos, epos)
+        ty = bk_bound_ty(c, st)
+        bk_bind(c, &st.name, &ty, 2, place, epos)
+    else
+        _l = bk_loan(c, place, bk_ref_mut(&st.expr), epos, bk_ne_get(c, epos))
+        ty = bk_bound_ty(c, st)
+        bk_bind(c, &st.name, &ty, 2, place, epos)
+
+fn bk_stmt_field(c: &BK, st: &TStmt, mode: Int) -> Int ! alloc
+    _v = bk_visit(c, &st.expr, bk_move_mode(mode))
+    if mode == 0
+        0
+    else
+        bk_move(c, &bk_place(&st.target), bk_clock(c))
+
+fn bk_returned(c: &BK, e: &Expr) -> Int ! alloc
+    if bk_escapes(c, e) == 1
+        bk_fail(c, &"E_BORROW: returning a reference to a local")
+    else
+        0
+
+fn bk_escapes(c: &BK, e: &Expr) -> Int ! alloc
+    match e
+        XUnary(op, inner) => bk_escapes_ref(c, &op, &inner)
+        XIdent(name) => bk_escapes_ident(c, &name)
+        XField(base, field) => bk_escapes_field(c, e, &base)
+        XIf(cond, then_b, else_b, has_else, elsifs) => bk_escapes_if(c, &then_b, &else_b, has_else, &elsifs)
+        _ => 0
+
+fn bk_escapes_ref(c: &BK, op: &String, inner: &Expr) -> Int ! alloc
+    if str_eq(op, &"ref") + str_eq(op, &"refmut") == 0
+        0
+    else
+        place = bk_place(inner)
+        if str_len(&place) == 0
+            0
+        elsif bk_root_param(c, &place) == 1
+            0
+        else
+            1
+
+fn bk_escapes_ident(c: &BK, name: &String) -> Int ! alloc
+    k = bk_kind(c, name)
+    if k == 1
+        0
+    elsif k == 2
+        if bk_root_param(c, &bk_origin_place(c, name)) == 1
+            0
+        else
+            1
+    elsif k == 0
+        own_ty_is_ref(&tenv_type(&c.env, name))
+    else
+        0
+
+fn bk_escapes_field(c: &BK, e: &Expr, base: &Expr) -> Int ! alloc
+    ty = texpr_type(&c.env, e)
+    if own_ty_is_ref(&ty) == 0
+        0
+    else
+        bk_escapes(c, base)
+
+fn bk_escapes_if(c: &BK, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Int ! alloc
+    if bk_escapes(c, &then_b.tail) == 1
+        1
+    elsif bk_escapes_elsifs(c, elsifs, 0, list_len(elsifs)) == 1
+        1
+    elsif has_else == 1
+        bk_escapes(c, &else_b.tail)
+    else
+        0
+
+fn bk_escapes_elsifs(c: &BK, elsifs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(elsifs, i)
+        if bk_escapes(c, &arm.body.tail) == 1
+            1
+        else
+            bk_escapes_elsifs(c, elsifs, i + 1, n)
+
+fn bk_fn(c: &BK, f: &TFn) -> Int ! alloc
+    _p = bk_params(c, &f.params, 0, list_len(&f.params))
+    _s = bk_block(c, &f.body, 1, 0)
+    _r = bk_reset_clock(c)
+    _w = bk_block(c, &f.body, 1, 1)
+    bk_finish(c)
+
+fn bk_fns(c: &BK, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        result_ok(0)
+    elsif bk_failed(c) == 1
+        result_err_str(&list_get(&c.err, 0))
+    else
+        _a = bk_fn(c, &list_get(fns, i))
+        if bk_failed(c) == 1
+            result_err_str(&list_get(&c.err, 0))
+        else
+            bk_clear_fn(c)
+            bk_fns(c, fns, i + 1, n)
+
+fn bk_clear_fn(c: &BK) -> Int ! alloc
+    _a = bk_clear_str(&c.l_place)
+    _b = bk_clear_int(&c.l_mut)
+    _c = bk_clear_int(&c.l_start)
+    _d = bk_clear_int(&c.l_end)
+    _e = bk_clear_str(&c.m_place)
+    _f = bk_clear_int(&c.m_at)
+    _g = bk_clear_int(&c.ne_at)
+    _h = bk_clear_int(&c.ne_end)
+    _i = bk_clear_str(&c.o_name)
+    _j = bk_clear_int(&c.o_kind)
+    _k = bk_clear_str(&c.o_place)
+    _l = bk_clear_int(&c.o_at)
+    _m = bk_clear_int(&c.w_start)
+    _n = bk_clear_int(&c.w_end)
+    _t = tenv_truncate(&c.env, 0)
+    bk_reset_clock(c)
+
+fn bk_clear_str(xs: &List[String]) -> Int ! alloc
+    if list_len(xs) == 0
+        0
+    else
+        _a = list_pop(xs)
+        bk_clear_str(xs)
+
+fn bk_clear_int(xs: &List[Int]) -> Int ! alloc
+    if list_len(xs) == 0
+        0
+    else
+        _a = list_pop(xs)
+        bk_clear_int(xs)
+
+fn bk_finish(c: &BK) -> Int ! alloc
+    _w = bk_widen(c, 0, list_len(&c.l_place))
+    _a = bk_conf(c, 0, list_len(&c.l_place))
+    bk_moved(c, 0, list_len(&c.m_place))
+
+fn bk_widen(c: &BK, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = bk_widen_one(c, i, 0, list_len(&c.w_start))
+        bk_widen(c, i + 1, n)
+
+fn bk_widen_one(c: &BK, i: Int, j: Int, n: Int) -> Int ! alloc
+    if j >= n
+        0
+    else
+        start = list_get(&c.l_start, i)
+        end = list_get(&c.l_end, i)
+        ws = list_get(&c.w_start, j)
+        we = list_get(&c.w_end, j)
+        if start < ws
+            if end >= ws
+                if end <= we
+                    _s = list_set(&c.l_end, i, we)
+                    bk_widen_one(c, i, j + 1, n)
+                else
+                    bk_widen_one(c, i, j + 1, n)
+            else
+                bk_widen_one(c, i, j + 1, n)
+        else
+            bk_widen_one(c, i, j + 1, n)
+
+fn bk_conf(c: &BK, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif bk_failed(c) == 1
+        0
+    else
+        _a = bk_conf_j(c, i, i + 1, n)
+        bk_conf(c, i + 1, n)
+
+fn bk_conf_j(c: &BK, i: Int, j: Int, n: Int) -> Int ! alloc
+    if j >= n
+        0
+    elsif bk_failed(c) == 1
+        0
+    else
+        _a = bk_conf_pair(c, i, j)
+        bk_conf_j(c, i, j + 1, n)
+
+fn bk_conf_pair(c: &BK, i: Int, j: Int) -> Int ! alloc
+    pi = list_get(&c.l_place, i)
+    pj = list_get(&c.l_place, j)
+    if bk_overlaps(&pi, &pj) == 0
+        0
+    elsif bk_ranges(list_get(&c.l_start, i), list_get(&c.l_end, i), list_get(&c.l_start, j), list_get(&c.l_end, j)) == 0
+        0
+    elsif list_get(&c.l_mut, i) + list_get(&c.l_mut, j) == 0
+        0
+    else
+        bk_fail(c, &("E_BORROW: `" + bk_shorter(&pi, &pj) + "` is already borrowed"))
+
+fn bk_shorter(a: &String, b: &String) -> String ! alloc
+    if str_len(a) <= str_len(b)
+        strdup(a)
+    else
+        strdup(b)
+
+fn bk_moved(c: &BK, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif bk_failed(c) == 1
+        0
+    else
+        _a = bk_moved_loans(c, i, 0, list_len(&c.l_place))
+        bk_moved(c, i + 1, n)
+
+fn bk_moved_loans(c: &BK, i: Int, j: Int, n: Int) -> Int ! alloc
+    if j >= n
+        0
+    elsif bk_failed(c) == 1
+        0
+    else
+        place = list_get(&c.m_place, i)
+        lp = list_get(&c.l_place, j)
+        at = list_get(&c.m_at, i)
+        if bk_overlaps(&place, &lp) == 0
+            bk_moved_loans(c, i, j + 1, n)
+        elsif at >= list_get(&c.l_start, j)
+            if at < list_get(&c.l_end, j)
+                bk_fail(c, &("E_BORROW: `" + place + "` is already borrowed"))
+            else
+                bk_moved_loans(c, i, j + 1, n)
+        else
+            bk_moved_loans(c, i, j + 1, n)
+
+fn check_borrows(tp: &TProgram) -> Int ! alloc
+    c = bk_new(tp)
+    bk_fns(&c, &tp.fns, 0, list_len(&tp.fns))

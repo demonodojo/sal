@@ -4,6 +4,7 @@ import infer
 import effects
 import attrs
 import ownership
+import borrowck
 import device
 import "../ast/tast.sal"
 import consteval
@@ -45,4 +46,8 @@ fn check_typed(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
             if result_is_err(own) == 1
                 own
             else
-                check_devices(tp)
+                br = check_borrows(tp)
+                if result_is_err(br) == 1
+                    br
+                else
+                    check_devices(tp)

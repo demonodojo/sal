@@ -217,6 +217,9 @@ fn mr_prepend_local(e: &Expr, name: &String, args: &List[Expr], target: &String)
     _b = mr_share_args(&nargs, args, 0, list_len(args))
     _c = list_free_shell(args)
     _d = enum_set(e, 1, nargs)
+    # Mentioning `nargs` marks it escaped, so the scope-end glue does not free the vector
+    # now stored in the call.
+    nargs
     mr_set_str(e, 0, name, target)
 
 fn mr_share_args(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
