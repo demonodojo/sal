@@ -482,6 +482,25 @@ fn fr_sm_has(c: &FRC, root: &String, path: &String) -> Int ! alloc
 fn fr_ct_has(c: &FRC, root: &String, path: &String) -> Int ! alloc
     assigned_has(c.ct, str_as_int(&(root + "\x1e" + path)), 0, vec_len(c.ct))
 
+# 1 when some entry of `set` ("root\x1epath") belongs to `root`.
+fn fr_root_marked(set: Int, root: &String, i: Int) -> Int ! alloc
+    if i >= vec_len(set)
+        0
+    elsif fr_key_of(vec_get(set, i), root) == 1
+        1
+    else
+        fr_root_marked(set, root, i + 1)
+
+fn fr_key_of(h: Int, root: &String) -> Int ! alloc
+    key = str_from_int(h)
+    pre = root + "\x1e"
+    if key.len() < pre.len()
+        0
+    elsif key.slice(0, pre.len()).eq(pre) == 1
+        1
+    else
+        0
+
 # A struct field read whole (the last link): its nested structs are left alone.
 fn fr_mark_struct(c: &FRC, root: &String, last: Int) -> Int ! alloc
     if last == 1

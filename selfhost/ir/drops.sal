@@ -736,7 +736,11 @@ fn dr_call_args(c: &DC, callee: &String, args: &List[Expr], i: Int, n: Int, borr
         0
     else
         reads = dr_ro_at(ro, i)
-        mov = if borrow == 1
+        # `str_as_int(&s)` stores the string as a handle the IR reads later: the local escapes
+        # (the bootstrap's `escaped` rule for `str_as_int`), so nothing releases it here.
+        mov = if str_eq(callee, "str_as_int") == 1
+            2
+        elsif borrow == 1
             1
         elsif reads == 1
             1

@@ -219,7 +219,7 @@ fn bytes_view_keeps_the_parent_alive() {
 
 #[test]
 fn struct_enum_field_is_freed_with_glue() {
-    let ir = ir_of(
+    let ir = ir_expanded(
         "struct_enum",
         "enum E\n    Some(String)\n\nstruct B\n    e: E\n    n: Int\n\nfn main() -> Int ! alloc\n    e = Some(\"a\" + \"b\")\n    b = B(e, 1)\n    b.n\n",
     );
@@ -410,7 +410,7 @@ const NESTED_DECLS: &str = "struct P\n    name: String\n    tag: String\n\nstruc
 
 #[test]
 fn nested_struct_string_fields_are_freed() {
-    let ir = ir_of(
+    let ir = ir_expanded(
         "nested_struct_strings",
         &format!("{NESTED_DECLS}fn main() -> Int ! alloc\n    w = W(P(\"a\" + \"b\", \"c\" + \"d\"), 1)\n    w.n\n"),
     );
@@ -419,7 +419,7 @@ fn nested_struct_string_fields_are_freed() {
 
 #[test]
 fn two_levels_of_nesting_are_freed() {
-    let ir = ir_of(
+    let ir = ir_expanded(
         "nested_struct_two_levels",
         &format!("{NESTED_DECLS}fn main() -> Int ! alloc\n    v = V(W(P(\"a\" + \"b\", \"c\" + \"d\"), 1), \"e\" + \"f\")\n    v.w.n\n"),
     );
@@ -429,7 +429,7 @@ fn two_levels_of_nesting_are_freed() {
 
 #[test]
 fn nested_struct_read_by_value_is_not_freed_twice() {
-    let ir = ir_of(
+    let ir = ir_expanded(
         "nested_struct_read",
         &format!("{NESTED_DECLS}fn main() -> Int ! alloc\n    w = W(P(\"a\" + \"b\", \"c\" + \"d\"), 1)\n    q = w.p\n    str_len(q.name)\n"),
     );
@@ -441,7 +441,7 @@ const CONTAINER_DECLS: &str = "struct B\n    xs: List[Int]\n    raw: Bytes\n    
 
 #[test]
 fn struct_glue_releases_flat_containers_and_bytes() {
-    let ir = ir_of(
+    let ir = ir_expanded(
         "glue_containers",
         &format!("{CONTAINER_DECLS}fn main() -> Int ! alloc\n    xs = List.new[Int]()\n    xs.push(1)\n    d = Dict.new[String, Int]()\n    d.put(\"a\", 2)\n    o = O(B(xs, Bytes.new(8), d, 3), \"t\" + \"u\")\n    o.b.n\n"),
     );
@@ -605,7 +605,7 @@ fn list_get_struct_rebuilt_then_pushed_is_copied_once() {
 
 #[test]
 fn struct_glue_frees_owned_struct_list_field() {
-    let ir = ir_of(
+    let ir = ir_expanded(
         "struct_list_field",
         "struct P\n    name: String\n    n: Int\n\nstruct W\n    xs: List[P]\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = List.new[P]()\n    xs.push(P(\"a\" + \"b\", 1))\n    w = W(xs, 2)\n    w.n\n",
     );
@@ -614,7 +614,7 @@ fn struct_glue_frees_owned_struct_list_field() {
 
 #[test]
 fn struct_glue_frees_string_list_when_only_fresh_values() {
-    let ir = ir_of(
+    let ir = ir_expanded(
         "glue_string_list",
         "struct B\n    names: List[String]\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = List.new[String]()\n    xs.push(\"a\" + \"b\")\n    b = B(xs, 3)\n    b.n\n",
     );
@@ -744,4 +744,46 @@ fn struct_glue_fn_releases_heap_fields_in_declaration_order() {
     let list = leaf.find("func: \"sal_list_free\"").expect(&ir);
     assert!(free < list, "fields in declaration order:\n{leaf}");
     assert!(!leaf.contains("func: \"sal_enum_free\""), "{leaf}");
+}
+
+/// The IR of a program with each call `drop.<S>(local)` replaced by the releases of that
+/// glue, on `local`. Release counts then read the same as with inline releases.
+fn ir_expanded(name: &str, src: &str) -> String {
+    let full = ir_full(name, src);
+    let mut bodies: std::collections::HashMap<String, Vec<String>> = Default::default();
+    let mut cur: Option<String> = None;
+    for line in full.lines() {
+        if let Some(f) = line.strip_prefix("fn ") {
+            cur = f.strip_suffix(':').filter(|n| n.starts_with("drop.")).map(str::to_string);
+            if let Some(n) = &cur {
+                bodies.insert(n.clone(), Vec::new());
+            }
+        } else if let Some(n) = &cur {
+            if line.contains("func: \"sal_") || line.contains("Extract") {
+                bodies.get_mut(n).unwrap().push(line.to_string());
+            }
+        }
+    }
+    let mut out = String::new();
+    let mut in_glue = false;
+    for line in full.lines() {
+        if let Some(f) = line.strip_prefix("fn ") {
+            in_glue = f.starts_with("drop.");
+        }
+        if in_glue {
+            continue;
+        }
+        if let Some(i) = line.find("func: \"drop.") {
+            let func = line[i + 7..].split('"').next().unwrap().to_string();
+            let arg = line.split("args: [\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+            for body in bodies.get(&func).cloned().unwrap_or_default() {
+                out.push_str(&body.replace("base: \"v\"", &format!("base: \"{arg}\"")));
+                out.push('\n');
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }

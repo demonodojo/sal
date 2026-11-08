@@ -275,59 +275,82 @@ fn assign_accumulates_string(target: &str, value: &Expr, strings: &StringEnv) ->
         && matches!(add_chain_leftmost(value), Expr::Ident { name, .. } if name == target)
 }
 
-/// The per-type glue of each non-generic struct with heap fields (SPEC «Liberación de
-/// locales»): `drop.<Struct>` releases its `String` and `List` fields in declaration order.
-/// Nested structs, enums and `Dict`/`Bytes` fields are not released here yet.
+/// The per-type glue of each non-generic struct of this module that frees something
+/// (SPEC «Liberación de locales»): `drop.<Struct>(v)` releases the value's heap fields, the
+/// same releases a local of that struct gets when nothing moved or read it whole.
 fn struct_glue_fns(strings: &StringEnv, own: &HashSet<&str>) -> Vec<IrFunction> {
     let mut names: Vec<&String> = strings.structs.keys().filter(|n| own.contains(n.as_str())).collect();
     names.sort();
     let mut out = Vec::new();
     for name in names {
-        let sd = &strings.structs[name];
-        if !sd.type_params.is_empty() {
-            continue;
-        }
-        let mut ins = Vec::new();
-        for (i, field) in sd.fields.iter().enumerate() {
-            let Type::Named { name: fname, args, .. } = &field.ty else {
-                continue;
-            };
-            let callee = match (fname.as_str(), args.as_slice()) {
-                ("String", []) => "sal_free",
-                ("List", [_]) => "sal_list_free",
-                _ => continue,
-            };
-            let dest = format!("f{i}");
-            ins.push(IrInst::Extract {
-                dest: dest.clone(),
-                base: "v".into(),
-                struct_name: name.clone(),
-                field_index: i as u32,
-            });
-            ins.push(IrInst::Call {
-                dest: None,
-                func: callee.into(),
-                args: vec![dest],
+        if let Some(body) = struct_glue_body(name, strings) {
+            out.push(IrFunction {
+                name: format!("drop.{name}"),
+                params: vec!["v".into()],
+                instructions: body,
+                regions: Vec::new(),
+                dim_params: Vec::new(),
+                host_literals: Vec::new(),
             });
         }
-        if ins.is_empty() {
-            continue;
-        }
-        ins.push(IrInst::ConstInt {
-            dest: "r".into(),
-            value: 0,
-        });
-        ins.push(IrInst::Return { value: "r".into() });
-        out.push(IrFunction {
-            name: format!("drop.{name}"),
-            params: vec!["v".into()],
-            instructions: ins,
-            regions: Vec::new(),
-            dim_params: Vec::new(),
-            host_literals: Vec::new(),
-        });
     }
     out
+}
+
+/// The glue of the structs that another module defines (`drop.<Struct>`, arity 1): a call to
+/// it is linked to that module's definition. The module's own structs are defined here instead.
+pub fn struct_glue_externs(strings: &StringEnv, program: &Program) -> HashMap<String, usize> {
+    let own: HashSet<&str> = program
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Struct(sd) => Some(sd.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    strings
+        .structs
+        .keys()
+        .filter(|n| !own.contains(n.as_str()) && struct_glue_body(n, strings).is_some())
+        .map(|n| (format!("drop.{n}"), 1usize))
+        .collect()
+}
+
+/// The body of `drop.<name>`, or `None` when that struct frees nothing. The same function
+/// as the inline releases of a clean local (`free_struct_strings`), so both release alike.
+fn struct_glue_body(name: &str, strings: &StringEnv) -> Option<Vec<IrInst>> {
+    let sd = strings.structs.get(name)?;
+    if !sd.type_params.is_empty() {
+        return None;
+    }
+    let mut ins = Vec::new();
+    let mut counter = 0u32;
+    let glue = Glue {
+        nested: true,
+        containers: true,
+    };
+    free_struct_strings(
+        "v",
+        sd,
+        strings,
+        glue,
+        0,
+        &mut counter,
+        &mut ins,
+        None,
+        "",
+        None,
+        name,
+    );
+    if ins.is_empty() {
+        return None;
+    }
+    ins.push(IrInst::ConstInt {
+        dest: "r".into(),
+        value: 0,
+    });
+    ins.push(IrInst::Return { value: "r".into() });
+    Some(ins)
 }
 
 pub fn lower_program_with_callables_env(
@@ -1418,6 +1441,20 @@ fn emit_struct_string_drops(
         let Some(base) = env.get(&name).cloned() else {
             continue;
         };
+        // A clean local (nothing moved, read whole or tainted) is released by the glue of its
+        // struct: the same releases, one call. Any other local keeps the inline releases below.
+        let clean = !reads.struct_valued.contains(&name)
+            && !reads.heap_moved.contains(&name)
+            && reads.strings_moved.get(&name).map_or(true, |s| s.is_empty())
+            && reads.container_tainted.get(&name).map_or(true, |s| s.is_empty());
+        if clean && struct_glue_body(&sn, strings).is_some() {
+            instructions.push(IrInst::Call {
+                dest: None,
+                func: format!("drop.{sn}"),
+                args: vec![base],
+            });
+            continue;
+        }
         // A struct-valued field read by value (`q = w.p`) hands those strings to
         // someone else: leave that local's nested structs alone (a leak, never a
         // double free).

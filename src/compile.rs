@@ -191,7 +191,9 @@ fn compile_file_with_imports(
         };
         let key_m = cache_key_with_deps(&m.program, &typed_m, &flags_m, &deps_m);
         let callables = callable_fn_names(m, &graph);
-        let externs = extern_fn_arity(m, &graph, &callables, &strings_env);
+        let mut externs = extern_fn_arity(m, &graph, &callables, &strings_env);
+        // The per-type glue of the other modules' structs (`drop.<Struct>`) is linked, not emitted here.
+        externs.extend(crate::ir::struct_glue_externs(&strings_env, &m.program));
         let artifacts = compile_single_module(
             &m.program,
             &typed_m,
