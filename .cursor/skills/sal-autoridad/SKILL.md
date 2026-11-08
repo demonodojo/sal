@@ -25,6 +25,7 @@ Recursiva por la izquierda en listas, operadores binarios y postfijos. Esa recur
 
 - `1 - 2 - 3` es `(1 - 2) - 3`. El árbol es `Binary { op: Sub, left: Binary(Sub, 1, 2), right: 3 }`.
 - Igual `(a * b) * c`, `(a == b) == c`, `(a.b).c`, `(f(x))(y)`.
+- Memoria: el modelo es el de Rust (mover por defecto, `&T`/`&mut T` con lifetimes, `x.clone()` explícito, glue `drop.<Tipo>`), más `@arena`. No hay `borrow`/`take` inferidos ni copias implícitas. Un test o una línea de código que diga otra cosa es una divergencia de la SPEC.
 - Prefijos (`try`, `-`, `!`, `to`, `&`, `&mut`, `*`) y la lambda asocian a la derecha: `x => y => z` es `x => (y => z)`. `&T` y `&mut T` son tipos; el lifetime `'a` se escribe `&'a T`. `borrow`/`take`/`keep` son `E_PARSE`.
 - `load[F32, 4, 4]("w.salt")` es `postfix` con `type_arg` (tipo, `INT` o `?`). `4` no es un tipo de nombre `"4"`.
 - `if_expr` → `"if" expr suite elsif_list ("else" suite | ε)`, con `elsif_list` recursiva por la izquierda. Sin `else`, tipo `Unit` aunque haya `elsif`; con `else`, el tipo es el de la rama then. `elsif` y `else` se asocian al `if` interno que acaba de cerrar su suite. Dentro de `match`, `=>` es un brazo, no una lambda.

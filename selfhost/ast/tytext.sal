@@ -88,6 +88,46 @@ fn ty_base(t: &String) -> String ! alloc
     else
         trim_spaces(t.slice(0, open))
 
+# The type a reference points to (`&'a mut Items` gives `Items`); any other type is unchanged.
+fn ty_deref(t: &String) -> String ! alloc
+    n = t.len()
+    i = ty_deref_skip(t, 0, n)
+    trim_spaces(t.slice(i, n))
+
+# Past a leading `&`, its lifetime and `mut`, repeated for `&&T`.
+fn ty_deref_skip(t: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif t.char(i) != 38
+        i
+    else
+        ty_deref_skip(t, ty_deref_mut(t, ty_deref_life(t, i + 1, n), n), n)
+
+fn ty_deref_life(t: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif t.char(i) != 39
+        i
+    else
+        ty_deref_word(t, i + 1, n)
+
+fn ty_deref_word(t: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif t.char(i) == 32
+        i + 1
+    else
+        ty_deref_word(t, i + 1, n)
+
+fn ty_deref_mut(t: &String, i: Int, n: Int) -> Int ! alloc
+    if i + 4 <= n
+        if str_eq(str_slice(t, i, i + 4), "mut ") == 1
+            i + 4
+        else
+            i
+    else
+        i
+
 # Position after the `]` that closes the bracket opened before `pos` (depth 1).
 fn ty_skip_brackets(s: &String, pos: Int, depth: Int) -> Int ! alloc
     if pos >= s.len()

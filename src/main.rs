@@ -490,6 +490,8 @@ fn bootstrap_ir_text(
         graph.order.iter().map(|m| &m.program).collect();
     let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
     let callees = graph_callee_fns(&graph);
+    // The drops pass reads the moves the borrow checker publishes (SPEC «Memoria»).
+    sal_compiler::borrowck::publish_moved_locals(&root_mod.program, &infer_out);
     let mut ir = lower_program_with_callables_env(&root_mod.program, &callables, strings, &callees);
     fuse_module(&mut ir);
     Ok(ir_to_text(&ir))

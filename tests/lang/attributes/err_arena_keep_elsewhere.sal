@@ -1,6 +1,0 @@
-# error: E_TYPE
-fn f(cache: Dict[String, String] keep) -> Int
-    0
-
-fn main() -> Int
-    0

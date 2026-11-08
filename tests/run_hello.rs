@@ -413,7 +413,7 @@ fn moved_string_newtype_drops_clean() {
 struct Msg
     text: String
 
-fn eat(m: Msg take) -> Int
+fn eat(m: Msg) -> Int
     str_len(m.text)
 
 fn main() -> Int ! alloc

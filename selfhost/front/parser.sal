@@ -1365,6 +1365,23 @@ fn parse_type_params_go(pr: &Parser, ps: List[String]) -> List[String] ! alloc
     else
         ps
 
+# Copies the names of `xs` that are lifetimes (`tick` 1: they start with `'`) or type parameters
+# (`tick` 0) into `out`, in order.
+fn split_tick_names(xs: &List[String], i: Int, n: Int, tick: Int, out: &List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        x = xs.get(i)
+        is_lt = if x.len() > 0 && x.char(0) == 39
+            1
+        else
+            0
+        if is_lt == tick
+            _p = out.push(x.dup())
+        else
+            _q = 0
+        split_tick_names(xs, i + 1, n, tick, out)
+
 fn parse_type_param_tick(pr: &Parser, ps: List[String]) -> List[String] ! alloc
     _a = p_advance(pr)
     nt = p_peek(pr)
@@ -1439,7 +1456,11 @@ fn parse_struct(pr: &Parser, layout_c: Int) -> TStruct ! alloc
         name = or_fn_name(&tok_own(pr, nt))
         if str_eq(name, "any") == 1
             _e = p_set_err(pr, "parse error: struct name `any` is reserved")
-        sparams = parse_type_params(pr)
+        declared = parse_type_params(pr)
+        sparams = list_new[String]()
+        lifetimes = list_new[String]()
+        _tp = split_tick_names(&declared, 0, list_len(&declared), 0, &sparams)
+        _lt = split_tick_names(&declared, 0, list_len(&declared), 1, &lifetimes)
         impls = parse_impl_clause(pr)
         if list_len(&sparams) > 0
             if list_len(&impls) > 0
@@ -1451,10 +1472,10 @@ fn parse_struct(pr: &Parser, layout_c: Int) -> TStruct ! alloc
             _d = p_accept(pr, TK_DEDENT())
         else
             _d = 0
-        TStruct(name, fields, layout_c, sparams, is_frame, impls, "", tyat_since(pr, start))
+        TStruct(name, fields, layout_c, sparams, is_frame, impls, "", tyat_since(pr, start), lifetimes)
     else
         _e = p_set_err(pr, "parse error: expected struct name")
-        TStruct("_bad", list_new[TField](), 0, list_new[String](), 0, list_new[String](), "", "")
+        TStruct("_bad", list_new[TField](), 0, list_new[String](), 0, list_new[String](), "", "", list_new[String]())
 
 fn parse_impl_clause(pr: &Parser) -> List[String] ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_IDENT()
@@ -1823,7 +1844,7 @@ fn fn_with_attrs(f: &TFn, nh: Int, dep: &String, ar: Int) -> TFn ! alloc
     TFn(f.name, f.params, f.body, f.ret, nh, ar, f.fx, f.tparams, f.recv, f.mkind, dep.dup(), f.tyat)
 
 fn struct_with_dep(s: &TStruct, dep: &String) -> TStruct ! alloc
-    TStruct(s.name, s.fields, s.layout_c, s.tparams, s.is_frame, s.protocols, dep.dup(), s.tyat)
+    TStruct(s.name, s.fields, s.layout_c, s.tparams, s.is_frame, s.protocols, dep.dup(), s.tyat, s.lifetimes)
 
 fn enum_with_dep(e: &TEnum, dep: &String) -> TEnum ! alloc
     TEnum(e.name, e.variants, e.tparams, e.protocols, dep.dup(), e.tyat)

@@ -60,7 +60,7 @@ fn ic_build(tp: &TProgram, nres: Int, rec: Int) -> IC ! alloc
     imports = list_len(&tp.imports)
     vals = list_new[CVal]()
     _v0 = ce_eval(&tp.consts, &list_new[CVal](), &vals)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums, tp.aliases, tp.protocols, tp.structs, ic_fx_empty(), vals)
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums, tp.aliases, tp.protocols, tstructs_copy(&tp.structs), ic_fx_empty(), vals)
 
 fn ic_free(c: &IC) -> Int ! alloc
     _a = tenv_free(&c.env)
@@ -1838,8 +1838,9 @@ fn infer_imported_variant(c: &IC, name: &String) -> Int ! alloc
     else
         0
 
+# A field of a reference is a field of the value (`it.xs` with `it: &Items`).
 fn infer_field(c: &IC, base: &Expr, field: &String) -> String ! alloc
-    bt = infer_expr(c, base)
+    bt = ty_deref(&infer_expr(c, base))
     if ty_is_scalar(&bt) == 1
         _f = ic_fail(c, &("type `" + ty_msg(&bt) + "` has no field `" + field + "`"))
         "Unknown"

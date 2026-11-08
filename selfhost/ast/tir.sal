@@ -216,62 +216,28 @@ fn ti_module(m: Int) -> List[IrFn] ! alloc
     out
 
 # ---- release ----
+# The typed copy is owned by its holder: the glue of each list releases what it holds, so these
+# helpers release nothing (a manual release here would free what the owner still releases).
 fn ti_free_insts(xs: &List[Inst]) -> Int ! alloc
-    ti_free_each(xs, 0, xs.len())
-    list_free(xs)
+    0
 
 fn ti_free_each(xs: &List[Inst], i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        x = xs.get(i)
-        list_free(x.strs)
-        ti_free_insts(&x.b1)
-        ti_free_insts(&x.b2)
-        ti_free_insts(&x.rows)
-        ti_free_each(xs, i + 1, n)
+    0
 
 fn ti_free_regions(rs: &List[Region], i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        r = rs.get(i)
-        list_free(r.ops)
-        ti_free_regions(rs, i + 1, n)
+    0
 
 fn ti_free_lits(ls: &List[Lit], i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        l = ls.get(i)
-        list_free(l.data)
-        ti_free_lits(ls, i + 1, n)
+    0
 
-# Releases one function's lists (the function itself is a copy or an element the caller frees).
 fn ti_free_fn_parts(f: &IrFn) -> Int ! alloc
-    list_free(f.dps)
-    ti_free_insts(&f.insts)
-    ti_free_regions(&f.regions, 0, f.regions.len())
-    list_free(f.regions)
-    ti_free_lits(&f.lits, 0, f.lits.len())
-    list_free(f.lits)
+    0
 
 fn ti_free_fns(fs: &List[IrFn], i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = fs.get(i)
-        list_free(f.dps)
-        ti_free_insts(&f.insts)
-        ti_free_regions(&f.regions, 0, f.regions.len())
-        list_free(f.regions)
-        ti_free_lits(&f.lits, 0, f.lits.len())
-        list_free(f.lits)
-        ti_free_fns(fs, i + 1, n)
+    0
 
 fn ti_free_module(fs: &List[IrFn]) -> Int ! alloc
-    ti_free_fns(fs, 0, fs.len())
-    list_free(fs)
+    0
 
 # ---- handle text helpers (the IR is still built from handles) ----
 # Slot `i` of a handle, 0 when the vec is shorter.

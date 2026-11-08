@@ -397,12 +397,9 @@ fn qx_moved(old: &Expr, neu: &Expr) -> Int ! alloc
         1
 
 # The same pointer. `*e` would move a non-Copy value out of the reference.
+# An owned copy of `e` (`clone`): a list that carried an alias released the caller's tree.
 fn qx_same(e: &Expr) -> Expr ! alloc
-    box = List.new[Expr]()
-    _p = list_push_share(box, e)
-    got = list_get(box, 0)
-    _f = list_free_shell(box)
-    got
+    tc_expr(e)
 
 fn qx_share_list(xs: &List[Expr]) -> List[Expr] ! alloc
     box = List.new[List[Expr]]()

@@ -43,7 +43,7 @@ struct FRC
     fns: List[TFn]
 
 fn fr_new(env: &TEnv, enums: &List[TEnum], md: Int, params: &List[TParam], fns: &List[TFn]) -> FRC ! alloc
-    FRC(env.structs.clone(), enums.clone(), env.names.clone(), env.tys.clone(), md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fns.clone())
+    FRC(tstructs_copy(&env.structs), enums.clone(), env.names.clone(), env.tys.clone(), md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fns.clone())
 
 # Names of parameters whose mode is not take. Each name is dup'd, so freeing this list does not
 # free the function the caller still owns.

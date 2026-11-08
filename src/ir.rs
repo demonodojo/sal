@@ -284,6 +284,7 @@ fn struct_glue_fns(strings: &StringEnv, own: &HashSet<&str>) -> Vec<IrFunction> 
     let mut out = Vec::new();
     for name in names {
         if let Some(body) = struct_glue_body(name, strings) {
+            let boxed = struct_is_boxed(name, strings);
             out.push(IrFunction {
                 name: format!("drop.{name}"),
                 params: vec!["v".into()],
@@ -292,9 +293,55 @@ fn struct_glue_fns(strings: &StringEnv, own: &HashSet<&str>) -> Vec<IrFunction> 
                 dim_params: Vec::new(),
                 host_literals: Vec::new(),
             });
+            if boxed {
+                out.push(struct_elem_glue_fn(name));
+            }
         }
     }
     out
+}
+
+/// A struct of two or more fields is a block on the heap (a list element is that block). A
+/// one-field struct is its field's value, with no block.
+fn struct_is_boxed(name: &str, strings: &StringEnv) -> bool {
+    strings.structs.get(name).is_some_and(|sd| !is_transparent_struct(sd))
+}
+
+/// The glue a list calls for each element of struct `name`: `drop.<name>` releases the fields,
+/// and the element's block goes too (`drop.elem.<name>`, which the list holds).
+fn struct_elem_glue_name(name: &str, strings: &StringEnv) -> String {
+    if struct_is_boxed(name, strings) {
+        format!("drop.elem.{name}")
+    } else {
+        format!("drop.{name}")
+    }
+}
+
+fn struct_elem_glue_fn(name: &str) -> IrFunction {
+    IrFunction {
+        name: format!("drop.elem.{name}"),
+        params: vec!["v".into()],
+        instructions: vec![
+            IrInst::Call {
+                dest: None,
+                func: format!("drop.{name}"),
+                args: vec!["v".into()],
+            },
+            IrInst::Call {
+                dest: None,
+                func: "sal_struct_free_box".into(),
+                args: vec!["v".into()],
+            },
+            IrInst::ConstInt {
+                dest: "r".into(),
+                value: 0,
+            },
+            IrInst::Return { value: "r".into() },
+        ],
+        regions: Vec::new(),
+        dim_params: Vec::new(),
+        host_literals: Vec::new(),
+    }
 }
 
 /// The glue of the structs that another module defines (`drop.<Struct>`, arity 1): a call to
@@ -312,8 +359,38 @@ pub fn struct_glue_externs(strings: &StringEnv, program: &Program) -> HashMap<St
         .structs
         .keys()
         .filter(|n| !own.contains(n.as_str()) && struct_glue_body(n, strings).is_some())
-        .map(|n| (format!("drop.{n}"), 1usize))
+        .flat_map(|n| {
+            let mut names = vec![(format!("drop.{n}"), 1usize)];
+            if struct_is_boxed(n, strings) {
+                names.push((format!("drop.elem.{n}"), 1usize));
+            }
+            names
+        })
         .collect()
+}
+
+thread_local! {
+    /// Per lowering: whether each struct has glue. `None` while the struct is being decided, so
+    /// a struct that holds a list of itself (a tree) does not recurse forever.
+    static GLUE_HAS: std::cell::RefCell<HashMap<String, Option<bool>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Forgets the glue decisions of the previous lowering (called once per program).
+fn glue_memo_reset() {
+    GLUE_HAS.with(|m| m.borrow_mut().clear());
+}
+
+/// Whether the struct `name` has glue (`struct_glue_body` is `Some`), memoized.
+fn struct_glue_has(name: &str, strings: &StringEnv) -> bool {
+    match GLUE_HAS.with(|m| m.borrow().get(name).copied()) {
+        Some(Some(has)) => return has,
+        Some(None) => return true,
+        None => {}
+    }
+    GLUE_HAS.with(|m| m.borrow_mut().insert(name.to_string(), None));
+    let has = struct_glue_body(name, strings).is_some();
+    GLUE_HAS.with(|m| m.borrow_mut().insert(name.to_string(), Some(has)));
+    has
 }
 
 /// The body of `drop.<name>`, or `None` when that struct frees nothing. The same function
@@ -359,6 +436,7 @@ pub fn lower_program_with_callables_env(
     mut strings: StringEnv,
     callees: &[&FnDef],
 ) -> IrModule {
+    glue_memo_reset();
     let fn_names = callable_fns;
     let moded = crate::ownership::infer_param_modes(prog);
     let dropped = crate::drops::insert_drops(
@@ -1399,6 +1477,92 @@ fn emit_struct_box_shell_drops(instructions: &mut Vec<IrInst>) {
     }
 }
 
+/// The struct type of each binding of `f`: its parameters and the `let`/assignment locals
+/// (also inside `while` bodies and `if` branches) whose type is a struct.
+fn fn_struct_bindings(f: &FnDef, strings: &StringEnv) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    for p in &f.params {
+        if let Some(sn) = struct_of_type(&p.ty) {
+            out.insert(p.name.clone(), sn);
+        }
+    }
+    fn walk(b: &Block, strings: &StringEnv, out: &mut HashMap<String, String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, ty, init, .. } => {
+                    let sn = match ty {
+                        Some(t) => struct_of_type(t),
+                        None => value_struct(init, strings, out),
+                    };
+                    match sn {
+                        Some(sn) => {
+                            out.insert(name.clone(), sn);
+                        }
+                        None => {
+                            out.remove(name);
+                        }
+                    }
+                }
+                // `x = value` binds `x` too (the language's first binding is an assignment).
+                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => {
+                    if let Some(sn) = value_struct(value, strings, out) {
+                        out.insert(name.clone(), sn);
+                    }
+                }
+                Stmt::While { body, .. } => walk(body, strings, out),
+                Stmt::Expr(Expr::If { then_block, elsifs, else_block, .. }) => {
+                    walk(then_block, strings, out);
+                    for a in elsifs {
+                        walk(&a.body, strings, out);
+                    }
+                    if let Some(b) = else_block {
+                        walk(b, strings, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(&f.body, strings, &mut out);
+    out
+}
+
+/// The struct a bound value has: its initializer's struct, a bound struct local it copies, or the
+/// field of a bound struct local it reads (`q = w.p`). Expression types are not used: their spans
+/// are only unique within one file, and the graph has many.
+fn value_struct(value: &Expr, strings: &StringEnv, out: &HashMap<String, String>) -> Option<String> {
+    if let Some(sn) = crate::string_expr::struct_name_from_init(value, strings) {
+        return Some(sn);
+    }
+    match value {
+        Expr::Ident { name: src, .. } => out.get(src).cloned(),
+        Expr::Field { base, field, .. } => {
+            let Expr::Ident { name: b, .. } = base.as_ref() else {
+                return None;
+            };
+            let sd = strings.structs.get(out.get(b)?)?;
+            let fd = sd.fields.iter().find(|f| &f.name == field)?;
+            let sn = struct_of_type(&fd.ty)?;
+            strings.structs.contains_key(&sn).then_some(sn)
+        }
+        _ => None,
+    }
+}
+
+/// The struct a type names (through references), when it is a non-generic struct.
+fn struct_of_type(t: &Type) -> Option<String> {
+    let mut t = t;
+    while let Type::Ref { inner, .. } = t {
+        t = inner;
+    }
+    match t {
+        Type::Named { name, args, .. } | Type::Qualified { name, args, .. } if args.is_empty() => {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
 fn emit_struct_string_drops(
     f: &FnDef,
     instructions: &mut Vec<IrInst>,
@@ -1421,7 +1585,10 @@ fn emit_struct_string_drops(
         .zip(effective_modes.iter())
         .map(|(p, m)| (p.name.as_str(), *m))
         .collect();
-    let mut names: Vec<String> = strings.struct_types.keys().cloned().collect();
+    // The struct bindings of this fn only: `struct_types` is keyed by name across the program,
+    // so a local named like another fn's struct binding is not a struct here.
+    let fn_structs = fn_struct_bindings(f, strings);
+    let mut names: Vec<String> = fn_structs.keys().cloned().collect();
     names.sort();
     for name in names {
         if moved.contains(&name) || alias.contains(&name) {
@@ -1432,7 +1599,7 @@ fn emit_struct_string_drops(
                 continue;
             }
         }
-        let Some(sn) = strings.struct_types.get(&name).cloned() else {
+        let Some(sn) = fn_structs.get(&name).cloned() else {
             continue;
         };
         let Some(sdef) = strings.structs.get(&sn) else {
@@ -1447,7 +1614,7 @@ fn emit_struct_string_drops(
             && !reads.heap_moved.contains(&name)
             && reads.strings_moved.get(&name).map_or(true, |s| s.is_empty())
             && reads.container_tainted.get(&name).map_or(true, |s| s.is_empty());
-        if clean && struct_glue_body(&sn, strings).is_some() {
+        if clean && struct_glue_has(&sn, strings) {
             instructions.push(IrInst::Call {
                 dest: None,
                 func: format!("drop.{sn}"),
@@ -1536,6 +1703,18 @@ fn field_drop<'a>(
                 && args.is_empty()
                 && !tainted
                 && crate::ir::struct_desc(sn, &strings.structs, &strings.enums).is_some() =>
+        {
+            Some(FieldDrop::Call("sal_list_free"))
+        }
+        // A list of structs with glue: its block releases each element through `drop.<S>`.
+        ("List", [crate::ast::Type::Named { name: en, .. }]) if glue.containers && en == "List" && !tainted => {
+            Some(FieldDrop::Call("sal_list_free"))
+        }
+        ("List", [crate::ast::Type::Named { name: sn, args, .. }])
+            if glue.containers
+                && args.is_empty()
+                && !tainted
+                && struct_glue_has(sn, strings) =>
         {
             Some(FieldDrop::Call("sal_list_free"))
         }
@@ -2081,6 +2260,12 @@ fn collect_assigned_expr(e: &Expr, names: &mut HashSet<String>) {
             }
         }
         Expr::On { body, .. } | Expr::Block(body) => collect_assigned_block(body, names),
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_assigned_expr(scrutinee, names);
+            for a in arms {
+                collect_assigned_expr(&a.body, names);
+            }
+        }
         Expr::Call { func, args, .. } => {
             collect_assigned_expr(func, names);
             for a in args {
@@ -3540,6 +3725,25 @@ fn lower_expr(
                     func: "sal_list_new_desc".into(),
                     args: vec![desc],
                 });
+                // A list of structs that have glue owns them: its block holds their `drop.<S>`
+                // (SPEC «Liberación de locales»), so releasing the list releases each element.
+                if let Some(TypeArg::Type(Type::Named { name, args, .. })) = type_args.first() {
+                    if name == "List" && !args.is_empty() && fname == "list_new" {
+                        // Elements that are lists are released by `sal_list_free_elem`.
+                        instructions.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_list_set_drop".into(),
+                            args: vec![dest.clone(), "sal_list_free_elem".into()],
+                        });
+                    }
+                    if args.is_empty() && fname == "list_new" && struct_glue_has(name, strings) {
+                        instructions.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_list_set_drop".into(),
+                            args: vec![dest.clone(), struct_elem_glue_name(name, strings)],
+                        });
+                    }
+                }
                 return dest;
             }
             if fname == "dict_new" {
@@ -4496,7 +4700,9 @@ fn lower_match_chain(
         *counter += 1;
         return format!("t{counter}");
     }
-    if match_should_use_switch(arms, scrut_ty.as_ref(), strings) {
+    // A `Switch` has no carries: an arm that assigns a name of the enclosing scope needs the
+    // chain form, whose branches merge their assignments like an `if` does (SPEC «Memoria»).
+    if !arms_assign_outer(arms, env) && match_should_use_switch(arms, scrut_ty.as_ref(), strings) {
         return lower_match_switch(
             scrut,
             scrut_ty,
@@ -4512,6 +4718,7 @@ fn lower_match_chain(
             strings,
         );
     }
+    let parent = env.clone();
     let arm = &arms[0];
     let rest = &arms[1..];
     let (cond_ssa, mut arm_env) = match_arm_cond(
@@ -4540,6 +4747,7 @@ fn lower_match_chain(
         strings,
     );
     if rest.is_empty() {
+        let carried = merge_if_carries(&parent, &arm_env, &parent, counter, env, tensors);
         *counter += 1;
         let dest = format!("t{counter}");
         instructions.push(IrInst::If {
@@ -4549,16 +4757,18 @@ fn lower_match_chain(
             then_val,
             else_val: "0".into(),
             dest: dest.clone(),
-            carried: Vec::new(),
+            carried,
         });
         return dest;
     }
-    let else_val = lower_match_chain(
+    let mut else_env = parent.clone();
+    let mut else_body = Vec::new();
+    let else_val = lower_match_chain_into(
         scrut.clone(),
         scrut_ty.clone(),
         rest,
-        instructions,
-        env,
+        &mut else_body,
+        &mut else_env,
         counter,
         regions,
         tensors,
@@ -4567,18 +4777,59 @@ fn lower_match_chain(
         host_literals,
         strings,
     );
+    let carried = merge_if_carries(&parent, &arm_env, &else_env, counter, env, tensors);
     *counter += 1;
     let dest = format!("t{counter}");
     instructions.push(IrInst::If {
         cond: cond_ssa,
         then_body,
-        else_body: Vec::new(),
+        else_body,
         then_val,
         else_val,
         dest: dest.clone(),
-        carried: Vec::new(),
+        carried,
     });
     dest
+}
+
+/// The chain of `arms` with its instructions in `out` (the else branch of an enclosing `if`).
+fn lower_match_chain_into(
+    scrut: String,
+    scrut_ty: Option<Type>,
+    arms: &[MatchArm],
+    out: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+    regions: &mut Vec<FusedRegion>,
+    tensors: &mut HashMap<String, TensorInfo>,
+    dim_params: &mut Vec<String>,
+    fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
+    strings: &mut StringEnv,
+) -> String {
+    lower_match_chain(
+        scrut,
+        scrut_ty,
+        arms,
+        out,
+        env,
+        counter,
+        regions,
+        tensors,
+        dim_params,
+        fn_names,
+        host_literals,
+        strings,
+    )
+}
+
+/// True when some arm assigns a name that the enclosing scope already binds.
+fn arms_assign_outer(arms: &[MatchArm], env: &HashMap<String, String>) -> bool {
+    let mut assigned = HashSet::new();
+    for arm in arms {
+        collect_assigned_expr(&arm.body, &mut assigned);
+    }
+    assigned.iter().any(|n| env.contains_key(n))
 }
 
 fn lower_match_switch(

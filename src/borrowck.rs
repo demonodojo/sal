@@ -3,7 +3,7 @@
 //! exclusive loan, a reference that outlives its referent, and moving a
 //! non-`Copy` value out of a reference (`*r`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, DiagResult, ErrorCode};
@@ -23,6 +23,8 @@ struct Loan {
 struct MoveOf {
     place: String,
     span: Span,
+    /// An assignment to the place (a mutation, not a move): only conflicts with loans.
+    mutation: bool,
 }
 
 #[derive(Clone)]
@@ -43,6 +45,7 @@ struct Binding {
 }
 
 struct Cx {
+    publish_moves: bool,
     types: HashMap<(u32, u32), Type>,
     structs: HashMap<String, StructDef>,
     scopes: Vec<HashMap<String, Binding>>,
@@ -94,12 +97,61 @@ fn collect_structs(prog: &Program) -> HashMap<String, StructDef> {
     structs
 }
 
+thread_local! {
+    /// The moved locals of each fn of the last checked program (`publish_moved_locals`).
+    static PUBLISHED: std::cell::RefCell<Option<HashMap<String, HashSet<String>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Publishes the moved locals of `prog` for the drops pass that lowers it next.
+pub fn publish_moved_locals(prog: &Program, infer: &InferOutput) {
+    let moved = moved_locals(prog, infer);
+    PUBLISHED.with(|p| *p.borrow_mut() = Some(moved));
+}
+
+/// The locals `fn_name` moves, as published; `None` when no program was checked.
+pub fn published_moved_locals(fn_name: &str) -> Option<HashSet<String>> {
+    PUBLISHED.with(|p| p.borrow().as_ref().and_then(|m| m.get(fn_name).cloned()))
+}
+
+/// The locals each function moves (SPEC «Memoria»): the root of every moved place, per fn name.
+/// `elaborate_drops` releases an owned local only when it is not in this set. Not every move is
+/// flow-sensitive yet: a local moved on one path counts as moved on all of them.
+pub fn moved_locals(prog: &Program, infer: &InferOutput) -> HashMap<String, HashSet<String>> {
+    let structs = collect_structs(prog);
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for item in &prog.items {
+        let Item::Fn(f) = item else { continue };
+        let entries = infer
+            .expr_types_by_fn
+            .iter()
+            .find(|(fd, _)| fd.name == f.name && fd.span == f.span)
+            .or_else(|| infer.expr_types_by_fn.iter().find(|(fd, _)| fd.name == f.name))
+            .map(|(_, e)| e.as_slice())
+            .unwrap_or(&[]);
+        let (_, roots) = check_fn_with_moves_policy(f, entries, &structs, true);
+        out.entry(f.name.clone()).or_default().extend(roots);
+    }
+    out
+}
+
 fn check_fn(f: &FnDef, entries: &[ExprTypeEntry], structs: &HashMap<String, StructDef>) -> Vec<Diagnostic> {
+    check_fn_with_moves_policy(f, entries, structs, false).0
+}
+
+/// `publish_moves`: for the drops pass a local of unknown type counts as owned, so a move of it
+/// is recorded (a missed move would be a double release; a recorded one is only a leak).
+fn check_fn_with_moves_policy(
+    f: &FnDef,
+    entries: &[ExprTypeEntry],
+    structs: &HashMap<String, StructDef>,
+    publish_moves: bool,
+) -> (Vec<Diagnostic>, HashSet<String>) {
     let mut types = HashMap::new();
     for e in entries {
         types.insert((e.span_start, e.span_end), e.ty.clone());
     }
     let mut cx = Cx {
+        publish_moves,
         types,
         structs: structs.clone(),
         scopes: vec![HashMap::new()],
@@ -117,7 +169,23 @@ fn check_fn(f: &FnDef, entries: &[ExprTypeEntry], structs: &HashMap<String, Stru
     cx.scopes.truncate(1);
     cx.walk_block(&f.body, true);
     cx.finish();
-    cx.diags
+    let roots = cx
+        .moves
+        .iter()
+        .filter(|m| !m.mutation)
+        .map(|m| m.place.split('.').next().unwrap_or("").to_string())
+        .collect();
+    (cx.diags, roots)
+}
+
+/// A struct or variant constructor (`P(a, b)`, `Some(x)`): its arguments move into the value.
+/// Names of another module are qualified (`mod__P`): the last segment decides.
+fn is_ctor_name(n: &str, structs: &HashMap<String, StructDef>) -> bool {
+    if structs.contains_key(n) {
+        return true;
+    }
+    let last = n.rsplit("__").next().unwrap_or(n);
+    last.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
 fn is_ref(ty: &Type) -> bool {
@@ -158,6 +226,9 @@ impl Cx {
     }
 
     fn copy_ty(&self, ty: &Type) -> bool {
+        if self.publish_moves && matches!(ty, Type::Named { name, .. } if name == "Unknown") {
+            return false;
+        }
         is_copy(ty, &self.structs)
     }
 
@@ -322,7 +393,7 @@ impl Cx {
                     self.walk_expr(value, Use::Move, limit);
                 }
                 if let Some(place) = place_of(target) {
-                    self.moves.push(MoveOf { place, span: *span });
+                    self.moves.push(MoveOf { place, span: *span, mutation: true });
                 } else {
                     self.walk_expr(target, Use::Read, limit);
                 }
@@ -370,8 +441,7 @@ impl Cx {
                         if !self.copy_ty(&b.ty) {
                             self.moves.push(MoveOf {
                                 place: name.clone(),
-                                span: *span,
-                            });
+                                span: *span, mutation: false });
                         }
                     }
                 }
@@ -380,7 +450,7 @@ impl Cx {
                 if use_kind == Use::Move {
                     if let Some(place) = place_of(e) {
                         if self.ty_of(e).is_none_or(|t| !self.copy_ty(&t)) {
-                            self.moves.push(MoveOf { place, span: *span });
+                            self.moves.push(MoveOf { place, span: *span, mutation: false });
                         }
                     }
                 }
@@ -413,7 +483,7 @@ impl Cx {
                         self.borrow_one(a, call_end);
                     } else if fname
                         .as_deref()
-                        .is_some_and(|n| crate::ownership::operand_is_moved(n, i, args.len()))
+                        .is_some_and(|n| crate::ownership::operand_is_moved(n, i, args.len()) || is_ctor_name(n, &self.structs))
                     {
                         self.walk_expr(a, Use::Move, call_end);
                     } else {

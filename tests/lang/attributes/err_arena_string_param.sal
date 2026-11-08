@@ -1,6 +1,6 @@
 # error: E_TYPE
 @arena
-fn f(s: String keep) -> Int
+fn f(s: String) -> Int
     0
 
 fn main() -> Int

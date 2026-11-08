@@ -15,7 +15,7 @@ El arranque está en Rust (`src/`, binario `sal`, lib `sal_compiler`). Clang com
 
 ## Orden de pases
 
-`parse` → `expand_interpolation` (`src/interp.rs`) → `infer_program` → `attrs` (`check_layout_structs`, `check_stack_lets`, `check_no_heap_fns`) → `check_effects` → `check_ownership` → `check_devices` → `TypedProgram` → `insert_drops` → `lower_program` → `fuse_module` (fusión de regiones +, si aplica, `finish_module_box_shell_drops`) → LLVM → Clang.
+`parse` → `expand_interpolation` (`src/interp.rs`) → `infer_program` → `attrs` (`check_layout_structs`, `check_stack_lets`, `check_no_heap_fns`) → `check_effects` → `check_borrows` (objetivo; hoy `check_ownership`) → `check_devices` → `TypedProgram` → `elaborate_drops` (objetivo; hoy `insert_drops`) → `lower_program` → `fuse_module` (fusión de regiones +, si aplica, `finish_module_box_shell_drops`) → LLVM → Clang.
 
 Con módulos, `src/compile.rs` resuelve el grafo (`resolve_module_graph`), pasa `check_module_semantics` / `infer_module` por módulo y enlaza un objeto por módulo con el runtime. El destino (`--target linux|soso`, `src/target.rs`) entra en la inferencia: `syscall` fuera de soso/linux es `E_TARGET`.
 
@@ -74,7 +74,7 @@ Operadores columnares: la bajada emite `IrInst::TensorBin` / `TensorUnary` (no `
 
 ## Liberación
 
-El criterio (qué se suelta, la cola de los campos de un struct, la invariante y los huecos) está en [sal-memoria](../sal-memoria/SKILL.md). El pase es `insert_drops`, entre `check_devices`/`TypedProgram` y `lower_program`.
+El criterio (qué se suelta, la cola de los campos de un struct, la invariante y los huecos) está en [sal-memoria](../sal-memoria/SKILL.md). El pase de drops es `elaborate_drops` en el objetivo (subplan 13) y `insert_drops` hoy; va entre `TypedProgram` y `lower_program`. El modelo que manda es el de Rust (SPEC «Memoria»), más `@arena`.
 
 ## Caché
 

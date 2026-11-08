@@ -823,7 +823,8 @@ fn method_with_type_params_is_e_parse() {
 
 #[test]
 fn method_self_mode_parses_and_formats_back() {
-    let src = "struct P\n    x: Int\n\nmethod P.a(self take) -> Int\n    self.x\n\nmethod P.b(self borrow, k: Int) -> Int\n    self.x + k\n\nmethod P.c(k: Int) -> Int\n    self.x + k\n";
+    // SPEC «Memoria»: `self` moves, `&self` borrows; mode words are not syntax.
+    let src = "struct P\n    x: Int\n\nmethod P.a() -> Int\n    self.x\n\nmethod P.b(&self, k: Int) -> Int\n    self.x + k\n\nmethod P.c(k: Int) -> Int\n    self.x + k\n";
     let p = assert_parse(src);
     use sal_compiler::ast::{Item, ParamMode};
     let modes: Vec<(ParamMode, usize)> = p
@@ -834,7 +835,8 @@ fn method_self_mode_parses_and_formats_back() {
             _ => None,
         })
         .collect();
-    assert_eq!(modes, vec![(ParamMode::Take, 0), (ParamMode::Borrow, 1), (ParamMode::Inferred, 1)]);
+    // The parser leaves `self` to the ownership pass (by value moves; `&self` borrows).
+    assert_eq!(modes, vec![(ParamMode::Inferred, 0), (ParamMode::Borrow, 1), (ParamMode::Inferred, 1)]);
     assert_eq!(format_program(&p), src);
 }
 

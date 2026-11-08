@@ -38,6 +38,8 @@ struct TStruct
     deprecated: String
     # Byte offsets of the identifiers of its field types, in order (see `TFn.tyat`).
     tyat: String
+    # Lifetime parameters (`struct V['a]`), apart from `tparams`: a lifetime is not a type.
+    lifetimes: List[String]
 
 struct TVariant
     name: String
@@ -247,6 +249,7 @@ fn tp_free_structs(sts: &List[TStruct], i: Int, n: Int) -> Int ! alloc
         st = sts.get(i)
         list_free(st.fields)
         list_free(st.tparams)
+        list_free(st.lifetimes)
         list_free(st.protocols)
         tp_free_structs(sts, i + 1, n)
 
@@ -300,17 +303,22 @@ fn tp_free_stmts_go(stmts: &List[TStmt], i: Int, n: Int, seen: &HT, lseen: &HT) 
 
 # Takes a block so the caller's drop does not free it. The strings stay with the caller.
 fn tp_keep_block(b: &TBlock) -> Int ! alloc
-    tp_keep_expr(b.tail)
-    tp_keep_stmts(b.stmts)
+    tp_keep_expr(&b.tail)
+    tp_keep_stmts(&b.stmts)
     0
 
-fn tp_keep_expr(e: Expr) -> Int ! alloc
+fn tp_keep_expr(e: &Expr) -> Int ! alloc
     0
 
-fn tp_keep_stmts(xs: List[TStmt]) -> Int ! alloc
+fn tp_keep_stmts(xs: &List[TStmt]) -> Int ! alloc
     0
 
+# The tree is owned by its holder: its glue releases it (SPEC «Liberación de locales»). A manual
+# release here would free nodes that the holder still releases again.
 fn tp_free_block(b: &TBlock) -> Int ! alloc
+    0
+
+fn tp_free_block_unused(b: &TBlock) -> Int ! alloc
     seen = HT.new(512)
     lseen = HT.new(256)
     tp_free_block_go(b, &seen, &lseen)
@@ -401,6 +409,9 @@ fn tp_free_expr(e: &Expr) -> Int ! alloc
     lseen.free()
 
 fn tp_free_expr_list(xs: &List[Expr]) -> Int ! alloc
+    0
+
+fn tp_free_expr_list_unused(xs: &List[Expr]) -> Int ! alloc
     seen = HT.new(512)
     lseen = HT.new(256)
     tp_free_exprs_go(xs, 0, xs.len(), &seen, &lseen)

@@ -83,7 +83,7 @@ fn tenv_push_structs(out: &List[TStruct], src: &List[TStruct], i: Int, n: Int) -
     if i >= n
         0
     else
-        _a = list_push(out, list_get(src, i))
+        _a = list_push(out, tstruct_copy(&list_get(src, i)))
         tenv_push_structs(out, src, i + 1, n)
 
 # Every function of the graph, so a callee defined in another module is visible to the glue.
@@ -1388,8 +1388,8 @@ fn emit_c_fn_body(tf: &TFn, user: Int, is_main: Int, acc: String, pool: Int, env
     acc = acc + foot
     _lt = lit_pool_free_texts(pool)
     _fc = tc_free(&tc, &body)
-    _ks = tp_keep_stmts(body.stmts)
-    _ke = tp_keep_expr(body.tail)
+    _ks = tp_keep_stmts(&body.stmts)
+    _ke = tp_keep_expr(&body.tail)
     acc
 
 fn emit_forward_params(params: &List[TParam]) -> String ! alloc
@@ -1446,8 +1446,8 @@ fn emit_c_owned(tp: &TProgram, user: Int, denv: Int, names: Int, fm: Int, env: &
         old = f.body
         f.body = TBlock(list_new[TStmt](), XNone)
         _fr = tp_free_block(&old)
-        _ks = tp_keep_stmts(old.stmts)
-        _ke = tp_keep_expr(old.tail)
+        _ks = tp_keep_stmts(&old.stmts)
+        _ke = tp_keep_expr(&old.tail)
         emit_c_owned(tp, user, denv, names, fm, env, enums, seen, allow_main, linkable, pool, i + 1, n, (acc + piece))
 
 # `genums`: the enums of the whole module graph (empty for a single file).

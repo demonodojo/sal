@@ -685,7 +685,9 @@ fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> 
     }
     let mut kept_map = ReadOnly::new();
     for f in &fns {
-        ro.insert(f.name.clone(), vec![true; f.params.len()]);
+        // A by-value parameter is owned by the fn (SPEC «Memoria»): the caller gave it up, so it
+        // is never read-only. Only `&T` and inferred borrows leave the caller the release.
+        ro.insert(f.name.clone(), f.params.iter().map(|p| p.mode != ParamMode::Take).collect());
         cons.insert(f.name.clone(), vec![false; f.params.len()]);
         kept_map.insert(f.name.clone(), vec![false; f.params.len()]);
     }
@@ -729,6 +731,7 @@ fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly, cons: &ReadOnly) -> F
         variants: variants.clone(),
         ro: ro.clone(),
         cons: cons.clone(),
+        moved: crate::borrowck::published_moved_locals(&f.name),
         ..Facts::default()
     };
     for p in &f.params {
@@ -932,6 +935,8 @@ pub(crate) fn is_fresh_value(e: &Expr) -> bool {
 fn list_elem_args(type_args: &[TypeArg]) -> bool {
     match type_args {
         [] => true,
+        // A list of lists owns its inner lists: its elements carry `sal_list_free_elem`.
+        [TypeArg::Type(Type::Named { name, args, .. })] if name == "List" && args.len() == 1 => true,
         [TypeArg::Type(Type::Named { name, args, .. })] => {
             args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool" | "String")
         }
@@ -1018,6 +1023,8 @@ struct Facts {
     param_tys: HashMap<String, Type>,
     /// Struct copies (`list_get`) passed to a user fn: only the fields move; the malloc box stays.
     box_shell: HashSet<String>,
+    /// The locals the borrow checker says this fn moves (`None`: no program was checked).
+    moved: Option<HashSet<String>>,
 }
 
 impl Facts {
@@ -1025,6 +1032,7 @@ impl Facts {
         *self.bindings.entry(name.to_string()).or_insert(0) += 1;
         let d = self.loop_depth;
         self.bind_depth.entry(name.to_string()).or_insert(d);
+
     }
 
     fn escapes(&self, name: &str) -> bool {
@@ -1107,7 +1115,9 @@ fn expr(e: &Expr, f: &mut Facts) {
         }
         Expr::Call { func, args, .. } => {
             let borrow = matches!(func.as_ref(), Expr::Ident { name, .. } if borrows_args(name));
-            let hard = matches!(func.as_ref(), Expr::Ident { name, .. } if is_ownable_struct(name));
+            // Constructor arguments are hard moves. Names of another module are qualified (`mod__P`).
+            let hard = matches!(func.as_ref(), Expr::Ident { name, .. }
+                if is_ownable_struct(name) || is_ownable_struct(name.rsplit("__").next().unwrap_or(name)));
             if hard {
                 f.hard_move += 1;
             }
@@ -1398,10 +1408,25 @@ fn block(b: &Block, f: &mut Facts) {
     }
     if let Some(t) = &b.tail {
         let outer = f.cur;
-        f.cur = None;
+        // A plain tail is a statement of its own for the moves it makes (its flag is cleared
+        // before it runs). A tail `if`/`match` keys its moves in its branches instead.
+        let live = f.opaque == 0;
+        f.cur = (live && is_call_tail(t)).then(|| stmt_key(t.span()));
         top(t, ArgMove::TakeFields, f);
         f.cur = outer;
     }
+}
+
+fn is_control_expr(e: &Expr) -> bool {
+    matches!(e, Expr::If { .. } | Expr::Match { .. })
+}
+
+/// A tail that calls a function: the arguments it moves are its own statement's moves.
+fn is_call_tail(e: &Expr) -> bool {
+    // Struct and variant constructors are calls too, but they build a value, not a call that
+    // moves its arguments: their names start with an uppercase letter.
+    matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. }
+        if name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')))
 }
 
 /// `x = x + …`: appends in place, not a new binding.
@@ -1483,6 +1508,22 @@ impl Ctx {
 impl Ctx {
     /// The release function for a droppable local, if `name = init` declares one.
     fn candidate(&self, name: &str, ty: &Option<Type>, init: &Expr) -> Option<(&'static str, bool)> {
+        // `t = s` moves an owned local into `t`: `t` is the new owner of what `s` released (its
+        // flag is cleared by that move, so `s` no longer releases it).
+        if let Expr::Ident { name: src, .. } = init {
+            if let Some((_, k, _)) = self.live.iter().rev().find(|(l, _, _)| l == src) {
+                let ok = !self.params.contains(name)
+                    && self.facts.bindings.get(name) == Some(&1)
+                    && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
+                if !ok {
+                    return None;
+                }
+                if self.facts.moved.as_ref().is_some_and(|m| m.contains(name)) && !self.facts.soft.contains(name) {
+                    return None;
+                }
+                return Some((*k, self.facts.soft.contains(name)));
+            }
+        }
         if let Some(Type::Named { name: n, args, .. }) = ty {
             if n == "any" && !args.is_empty() {
                 let flagged = self.facts.bindings.get(name) == Some(&1)
@@ -1511,7 +1552,14 @@ impl Ctx {
             Some(k) => (k, false),
             None => fresh_kind(init, &self.facts.variants)?,
         };
-        if owned && self.facts.tainted.contains(name) {
+        // SPEC «Memoria»: a moved local is never released at scope end (the new owner has it).
+        // A taint from a non-fresh store only holds while the moves are not known.
+        // A local moved on some path is released only where its liveness flag says it still owns
+        // the value (`soft`, SPEC «Liberación de locales»: the move clears the flag).
+        if self.facts.moved.as_ref().is_some_and(|m| m.contains(name)) && !self.facts.soft.contains(name) {
+            return None;
+        }
+        if owned && self.facts.tainted.contains(name) && self.facts.moved.is_none() {
             return None;
         }
         if let Some(t) = ty {
@@ -2083,9 +2131,48 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         owned_elems: HashMap::new(),
         shell_freed: HashSet::new(),
     };
+    // A by-value `String`/`List`/`Dict` parameter moves into the fn: the fn releases it at
+    // scope end unless it moved it. Without the moved set there is nothing to decide by.
+    let mark = cx.live.len();
+    // A parameter moved on some path is released behind its flag, set on entry (see `soft`).
+    let mut flags: Vec<String> = Vec::new();
+    if let Some(moved) = cx.facts.moved.clone() {
+        for p in &f.params {
+            if p.mode != ParamMode::Take {
+                continue;
+            }
+            let tracked = cx.facts.soft.contains(&p.name);
+            if moved.contains(&p.name) && !tracked {
+                continue;
+            }
+            if let Some(k) = owned_param_release(&p.ty) {
+                cx.live.push((p.name.clone(), k, tracked));
+                if tracked {
+                    flags.push(p.name.clone());
+                }
+            }
+        }
+    }
     let span = f.body.span;
     let body = std::mem::replace(&mut f.body, Block { stmts: vec![], tail: None, span });
-    f.body = xform_block(body, &mut cx);
+    let mut body = xform_block_scope(body, &mut cx, mark);
+    if !flags.is_empty() {
+        let mut init: Vec<Stmt> = flags.iter().map(|n| flag_init(n, span)).collect();
+        init.append(&mut body.stmts);
+        body.stmts = init;
+    }
+    f.body = body;
+}
+
+/// The release of a by-value parameter of this type, if the drops pass owns one.
+fn owned_param_release(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::Named { name, args, .. } if args.is_empty() && name == "String" => Some("free"),
+        Type::Named { name, args, .. } if name == "List" && args.len() == 1 => Some("list_free"),
+        Type::Named { name, args, .. } if name == "Dict" && args.len() == 2 => Some("dict_free"),
+        Type::Named { name, args, .. } if args.is_empty() && is_ownable_enum(name) => Some("enum_free"),
+        _ => None,
+    }
 }
 
 fn free_call(name: &str, release: &str, span: Span) -> Stmt {
@@ -2218,6 +2305,12 @@ fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
 
 fn xform_block(b: Block, cx: &mut Ctx) -> Block {
     let mark = cx.live.len();
+    xform_block_scope(b, cx, mark)
+}
+
+/// `xform_block` with the scope starting at `mark`: a function body also owns the by-value
+/// parameters seeded below it (SPEC «Memoria»: the callee releases what it took).
+fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
     let mut stmts = Vec::new();
     let mut diverged = false;
     for st in b.stmts {
@@ -2315,6 +2408,11 @@ fn xform_block(b: Block, cx: &mut Ctx) -> Block {
                 }
                 diverged = true;
             }
+        }
+    }
+    if let Some(t) = &b.tail {
+        if is_call_tail(t) {
+            clear_moved(cx, stmt_key(t.span()), t.span(), &mut stmts);
         }
     }
     let mut tail = b.tail.map(|t| Box::new(xform_expr(*t, cx)));

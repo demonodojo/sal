@@ -139,12 +139,9 @@ fn strs_vec(xs: &List[String], i: Int, n: Int, out: Int) -> Int ! alloc
 # `a && b` is `if a then (b != 0) else false`; `a || b` is `if a then true else (b != 0)`. The
 # right operand runs only on the branch that needs it, as in the bootstrap (`ir.rs`).
 # The same pointer. `*e` would move a non-Copy value out of the reference.
+# An owned copy of `e` (`clone`): a list that carried an alias released the caller's tree.
 fn fu_alias(e: &Expr) -> Expr ! alloc
-    box = List.new[Expr]()
-    _p = list_push_share(box, e)
-    got = list_get(box, 0)
-    _f = list_free_shell(box)
-    got
+    tc_expr(e)
 
 fn short_circuit(op: &String, left: &Expr, right: &Expr) -> Expr ! alloc
     truth = XBin("ne", fu_alias(right), XInt(0))
@@ -225,7 +222,7 @@ fn tt_field_index(fields: &List[TField], field: &String, i: Int, n: Int) -> Int 
 
 fn lower_field(cx: &Cx, base: &Expr, field: &String) -> Int ! alloc
     b = lower_expr(cx, base)
-    si = tt_struct_find(&cx_structs(cx), &texpr_type(&cx.env, base))
+    si = tt_struct_find(&cx_structs(cx), &ty_deref(&texpr_type(&cx.env, base)))
     if si < 0
         b
     else
@@ -501,6 +498,10 @@ fn lower_list_new(cx: &Cx, txt: &String, d: Int, owned: Int) -> Int ! alloc
     argv = vec_new()
     _b = vec_push(argv, dsc)
     _p = ir_push(cx, ir_call(d, str_as_int(&"sal_list_new_desc"), argv, 1))
+    if owned == 0
+        _s = lower_list_new_drop(cx, txt, d)
+    else
+        _o = 0
     d
 
 # `dict_new[K, V]()` passes both runtime kinds (Int 0, Float 1, Bool 2, String 3).
@@ -1605,14 +1606,14 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
 
 # Hands a block to no one. The IR already holds its own copies; the caller frees the block.
 fn keep_block(b: &TBlock) -> Int ! alloc
-    keep_expr(b.tail)
-    keep_stmts(b.stmts)
+    keep_expr(&b.tail)
+    keep_stmts(&b.stmts)
     0
 
-fn keep_expr(e: Expr) -> Int ! alloc
+fn keep_expr(e: &Expr) -> Int ! alloc
     0
 
-fn keep_stmts(xs: List[TStmt]) -> Int ! alloc
+fn keep_stmts(xs: &List[TStmt]) -> Int ! alloc
     0
 
 fn lower_fn_tail(cx: &Cx, tail: &Expr) -> Int ! alloc
@@ -1760,9 +1761,14 @@ fn struct_glue_emit(structs: &List[TStruct], enums: &List[TEnum], cand: &List[In
         0
     else
         idx = struct_glue_rank(structs, cand, p, 0, n)
-        body = struct_glue_fn(&structs.get(idx), structs, enums)
+        sd = structs.get(idx)
+        body = struct_glue_fn(&sd, structs, enums)
         if body != 0
             _f = vec_push(out, body)
+            if struct_is_boxed_t(&sd) == 1
+                _e = vec_push(out, struct_elem_glue_fn(&sd.name))
+            else
+                _k = 0
         else
             _g = 0
         struct_glue_emit(structs, enums, cand, p + 1, n, out)
@@ -1790,7 +1796,7 @@ fn struct_glue_before(structs: &List[TStruct], cand: &List[Int], idx: Int, j: In
 fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> Int ! alloc
     fns0 = List.new[TFn]()
     params0 = List.new[TParam]()
-    env = TEnv(List.new[String](), List.new[String](), structs.clone(), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
+    env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
     fr = fr_new(&env, enums, map_new(), &params0, &fns0)
     cx = cx_new(0, map_new(), env, enums, &fns0, &List.new[TProtocol]())
     _d = drop_fields(&cx, str_as_int(&"v"), sd, &sd.fields, 0, sd.fields.len(), 0, 3, &fr, &sd.name, &"")
@@ -1808,6 +1814,77 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
         _h = vec_push(out, vec_new())
         ir_own_fn(out)
         out
+
+# A struct of two or more fields is a block on the heap (`struct_is_boxed` in src/ir.rs).
+fn struct_is_boxed_t(sd: &TStruct) -> Int
+    if sd.fields.len() == 1
+        0
+    else
+        1
+
+# `drop.elem.<Struct>(v)`: releases the element's fields, then its block (`struct_elem_glue_fn`
+# in src/ir.rs). A list holds this function for each element that is a boxed struct with glue.
+fn struct_elem_glue_fn(name: &String) -> Int ! alloc
+    insts = vec_new()
+    args = vec_new()
+    _a = vec_push(args, str_as_int(&"v"))
+    _b = vec_push(insts, ir_call(0, str_as_int(&("drop." + name)), args, 0))
+    args2 = vec_new()
+    _c = vec_push(args2, str_as_int(&"v"))
+    _d = vec_push(insts, ir_call(0, str_as_int(&"sal_struct_free_box"), args2, 0))
+    _r = vec_push(insts, ir_ci(str_as_int(&"r"), 0))
+    _t = vec_push(insts, ir_ret(str_as_int(&"r")))
+    out = vec_new()
+    _n = vec_push(out, str_as_int(&("drop.elem." + name)))
+    _p = vec_push(out, vec_new())
+    _q = vec_push(out, insts)
+    _e = vec_push(out, vec_new())
+    _h = vec_push(out, vec_new())
+    ir_own_fn(out)
+    out
+
+# `list_new[T]()` with `T` a list or a struct with glue: `sal_list_set_drop` (`set_drop` in
+# `list_new` in src/ir.rs). `T` = `List[..]` releases each element with `sal_list_free_elem`;
+# `T` a struct releases each element with `drop.<T>` (or `drop.elem.<T>` when boxed).
+fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
+    if find_char(txt, 91, 0, str_len(txt)) >= 0
+        if find_char(txt, 91, 0, str_len(txt)) == 4
+            if str_eq(&str_slice(txt, 0, 4), "List") == 1
+                list_set_drop_call(cx, d, &"sal_list_free_elem")
+            else
+                0
+        else
+            0
+    else
+        structs = cx_structs(cx)
+        t = trim_type_piece(txt)
+        i = struct_index_named(&structs, &t, 0)
+        if i < 0
+            0
+        else
+            sd = structs.get(i)
+            if sd.tparams.len() != 0
+                0
+            elsif struct_glue_fn(&sd, &structs, &cx.enums) == 0
+                0
+            elsif struct_is_boxed_t(&sd) == 1
+                list_set_drop_call(cx, d, &("drop.elem." + t))
+            else
+                list_set_drop_call(cx, d, &("drop." + t))
+
+fn list_set_drop_call(cx: &Cx, d: Int, fname: &String) -> Int ! alloc
+    args = vec_new()
+    _a = vec_push(args, d)
+    _b = vec_push(args, str_as_int(fname))
+    ir_push(cx, ir_call(0, str_as_int(&"sal_list_set_drop"), args, 0))
+
+fn struct_index_named(structs: &List[TStruct], name: &String, i: Int) -> Int ! alloc
+    if i >= structs.len()
+        0 - 1
+    elsif str_eq(&structs.get(i).name, name) == 1
+        i
+    else
+        struct_index_named(structs, name, i + 1)
 
 # Bytewise `a < b` on strings (the order Rust's `sort` uses for `String`).
 fn str_lt(a: &String, b: &String) -> Int ! alloc

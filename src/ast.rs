@@ -446,6 +446,10 @@ pub struct StructDef {
     pub name: String,
     #[serde(default)]
     pub type_params: Vec<String>,
+    /// Lifetime parameters (`struct V['a]`), kept apart from the type parameters: a lifetime is
+    /// not a type argument (SPEC «Memoria»).
+    #[serde(default)]
+    pub lifetimes: Vec<String>,
     /// Protocol names claimed in the header (`struct T impl P, Q`).
     #[serde(default)]
     pub protocols: Vec<ProtocolClaim>,

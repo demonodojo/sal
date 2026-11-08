@@ -309,7 +309,7 @@ fn twice(s: String) -> String ! alloc
 }
 
 #[test]
-fn string_param_only_in_plus_is_borrow() {
+fn string_param_read_by_plus_is_take() {
     let prog = parse(
         r#"
 fn show(s: String) -> String ! alloc
@@ -319,7 +319,8 @@ fn show(s: String) -> String ! alloc
     .unwrap();
     let inferred = infer_param_modes(&prog);
     let Item::Fn(f) = &inferred.items[0] else { panic!("fn") };
-    assert_eq!(f.params[0].mode, ParamMode::Borrow, "s: String borrow");
+    // SPEC «Memoria»: a by-value `String` moves into the fn; `+` only reads its operands.
+    assert_eq!(f.params[0].mode, ParamMode::Take, "s: String moves");
 }
 
 #[test]
@@ -335,7 +336,7 @@ fn go(acc: String, piece: String) -> String ! alloc
     let inferred = infer_param_modes(&prog);
     let Item::Fn(f) = &inferred.items[0] else { panic!("fn") };
     assert_eq!(f.params[0].mode, ParamMode::Take, "acc is appended in place");
-    assert_eq!(f.params[1].mode, ParamMode::Borrow, "piece is only read");
+    assert_eq!(f.params[1].mode, ParamMode::Take, "piece moves in: by-value String");
 }
 
 #[test]
@@ -611,14 +612,14 @@ fn give(s: String) -> Int
     assert_eq!(give.params[0].mode, ParamMode::Take);
     let formatted = format_program(&prog);
     assert!(
-        formatted.contains("s: String take"),
-        "expected take in formatted give, got:\n{formatted}"
+        !formatted.contains("take"),
+        "mode words are not printed (SPEC «Memoria»), got:\n{formatted}"
     );
 }
 
 #[test]
-fn tensor_param_matmul_is_borrow() {
-    // matmul is a borrow_fn: args are not moved (no E_MOVED on reuse).
+fn tensor_param_matmul_is_take() {
+    // A by-value Tensor parameter moves into the fn (SPEC «Memoria»).
     let src = r#"
 fn forward(x: Tensor[F32, 2, 2] on cpu, w: Tensor[F32, 2, 2] on cpu) -> Tensor[F32, 2, 2] on cpu
     matmul(x, w)
@@ -633,17 +634,10 @@ fn forward(x: Tensor[F32, 2, 2] on cpu, w: Tensor[F32, 2, 2] on cpu) -> Tensor[F
             _ => None,
         })
         .expect("forward");
-    assert_eq!(forward.params[0].mode, ParamMode::Borrow);
-    assert_eq!(forward.params[1].mode, ParamMode::Borrow);
+    assert_eq!(forward.params[0].mode, ParamMode::Take);
+    assert_eq!(forward.params[1].mode, ParamMode::Take);
     let formatted = format_program(&prog);
-    assert!(
-        formatted.contains("x: Tensor[F32, 2, 2] on cpu borrow"),
-        "expected borrow on x, got:\n{formatted}"
-    );
-    assert!(
-        formatted.contains("w: Tensor[F32, 2, 2] on cpu borrow"),
-        "expected borrow on w, got:\n{formatted}"
-    );
+    assert!(!formatted.contains("borrow") && !formatted.contains("take"), "{formatted}");
 }
 
 #[test]
@@ -687,8 +681,8 @@ fn add1(n: Int) -> Int
     let f1 = format_program(&parse(src).expect("parse"));
     let f2 = format_program(&parse(&f1).expect("re-parse"));
     assert_eq!(f1, f2, "fmt not idempotent;\nfirst:\n{f1}\nsecond:\n{f2}");
-    assert!(f1.contains("s: String take"));
-    assert!(f1.contains("borrow"));
+    // Mode words are not source syntax (SPEC «Memoria»): the formatter prints none.
+    assert!(!f1.contains("take") && !f1.contains("borrow"), "{f1}");
     assert!(f1.contains("n: Int)"));
 }
 
@@ -1260,5 +1254,54 @@ fn clone_is_a_method_and_tensor_has_none() {
     expect_code(
         "fn main() -> Int\n    m = tensor[[1.0, 2.0], [3.0, 4.0]]\n    m.clone()\n",
         ErrorCode::EType,
+    );
+}
+
+// SPEC «Memoria»: a container that receives a value by `push` owns it. The borrow checker
+// publishes the locals each fn moves, which `elaborate_drops` reads (subplan 13).
+#[test]
+fn moved_locals_publishes_the_value_pushed_into_a_list() {
+    let mut prog = parse(
+        "fn main() -> Int ! alloc\n    xs = List.new[List[Int]]()\n    ys = List.new[Int]()\n    xs.push(ys)\n    xs.len()\n",
+    )
+    .expect("parse");
+    // The pipeline resolves `xs.push(ys)` to `list_push(xs, ys)` before any pass (SPEC «Métodos»).
+    sal_compiler::methods::prepare_program(&mut prog).expect("methods");
+    let infer = infer_program(&prog).expect("infer");
+    let moved = sal_compiler::borrowck::moved_locals(&prog, &infer);
+    let main = moved.get("main").expect("main");
+    assert!(main.contains("ys"), "ys moves into xs: {main:?}");
+    assert!(!main.contains("xs"), "xs is not moved: {main:?}");
+}
+
+// SPEC «Memoria»: `push` moves its value. Reading the moved local afterwards is `E_MOVED`.
+#[test]
+fn value_used_after_push_is_e_moved() {
+    expect_code(
+        "fn main() -> Int ! alloc\n    xs = List.new[String]()\n    s = strdup(d\"ab\")\n    xs.push(s)\n    str_len(s)\n",
+        ErrorCode::EMoved,
+    );
+}
+
+// SPEC «Memoria»: a struct constructor moves its arguments into the value. The borrow checker
+// publishes them, so the drops pass does not release a list the struct already owns.
+#[test]
+fn moved_locals_includes_constructor_arguments() {
+    let mut prog = parse(
+        "struct P\n    xs: List[Int]\n    n: Int\n\nfn mk() -> P ! alloc\n    xs = list_new[Int]()\n    P(xs, 1)\n",
+    )
+    .expect("parse");
+    sal_compiler::methods::prepare_program(&mut prog).expect("methods");
+    let infer = infer_program(&prog).expect("infer");
+    let moved = sal_compiler::borrowck::moved_locals(&prog, &infer);
+    assert!(moved.get("mk").is_some_and(|m| m.contains("xs")), "{moved:?}");
+}
+
+// SPEC «Memoria»: a struct may hold a borrow (`struct V['a]`), and a use of it spells the lifetime
+// (`View['a]` is not a type argument: it is dropped, the reference carries it).
+#[test]
+fn struct_with_borrowed_field_takes_a_lifetime_at_use() {
+    expect_ok(
+        "struct Items\n    xs: List[Int]\n\nstruct View['a]\n    items: &'a List[Int]\n    n: Int\n\nfn view_of['a](it: &'a Items) -> View\n    View(&it.xs, it.xs.len())\n\nfn main() -> Int ! alloc\n    it = Items(list_new[Int]())\n    v = view_of(&it)\n    v.n\n",
     );
 }

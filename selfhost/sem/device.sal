@@ -445,8 +445,11 @@ fn check_fn_devices(f: &TFn) -> Int ! alloc
     c = dc_new()
     _s = dv_seed(&c, &f.params, 0, list_len(&f.params))
     _t = dv_block(&c, &f.body)
+    # The Result keeps the message as a handle: an owned copy, never released (see `str_as_int`).
     r = if dc_failed(&c) == 1
-        result_err_str(&list_get(&c.msg, 0))
+        m = list_get(&c.msg, 0).dup()
+        _h = str_as_int(&m)
+        result_err_str(&m)
     else
         result_ok(0)
     _f = dc_free(&c)

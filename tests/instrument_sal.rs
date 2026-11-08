@@ -154,7 +154,7 @@ fn instrument_strict_freed_locals_are_clean() {
 #[test]
 fn instrument_strict_arena_pages_are_clean() {
     let out = run_strict(
-        "@arena\nfn work(req: String) -> Int ! alloc\n    s = req + \"!\"\n    xs = list_new[Int]()\n    _a = list_push(xs, str_len(s))\n    str_len(s)\n\nfn main() -> Int ! alloc\n    work(\"ab\")\n",
+        "@arena\nfn work(req: &String) -> Int ! alloc\n    s = req.dup() + \"!\"\n    xs = list_new[Int]()\n    _a = list_push(xs, str_len(s))\n    str_len(s)\n\nfn main() -> Int ! alloc\n    work(&\"ab\")\n",
         "arena",
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -262,7 +262,9 @@ fn instrument_strict_list_get_pushed_copies_once() {
 /// Returning a borrowed element copies it. The caller frees that copy once.
 #[test]
 fn instrument_strict_list_get_returned_is_freed_once() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn give(xs: List[P]) -> P ! alloc\n    list_get(xs, 0)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    p = give(xs)\n    p.n\n";
+    // `list_get` lends the element (SPEC «Memoria»): returning it by value is `E_BORROW`, so the
+    // program reads a field of the borrow and the list keeps its element.
+    let src = "struct P\n    name: String\n    n: Int\n\nfn give(xs: List[P]) -> Int ! alloc\n    list_get(xs, 0).n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    give(xs)\n";
     let out = run_strict(src, "struct_ret");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
@@ -273,7 +275,7 @@ fn instrument_strict_list_get_returned_is_freed_once() {
 /// Reading a field of a borrowed struct does not copy it.
 #[test]
 fn instrument_strict_list_get_field_read_is_clean() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn read_n(p: P) -> Int ! alloc\n    p.n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    read_n(o)\n";
+    let src = "struct P\n    name: String\n    n: Int\n\nfn read_n(p: &P) -> Int ! alloc\n    p.n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    read_n(&o)\n";
     let out = run_strict(src, "struct_read");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");

@@ -13,13 +13,25 @@ description: >-
 
 # Memoria
 
+## Modelo (el que manda)
+
+La memoria de sal es la de Rust, con `@arena` como única extensión (SPEC «Memoria»; subplan [13-ownership-rust](../../../docs/subplans/13-ownership-rust.md)):
+
+- Un valor con dueño se **mueve** por defecto. Usarlo después es `E_MOVED`.
+- `&T` y `&mut T` **prestan**, con lifetimes y la elisión de Rust. Un préstamo que se solapa, o una referencia que sobrevive a su referente, es `E_BORROW`.
+- La copia profunda es **`x.clone()`** explícito. No hay copias implícitas, ni modos `borrow`/`take` inferidos.
+- Cada valor se libera al salir de su ámbito con la **glue de su tipo** (`drop.<Tipo>`). Una lista de structs con glue se crea con el glue de su elemento (`sal_list_set_drop`).
+- `@arena` es el único mecanismo añadido: el asignador por región y el descarte de páginas al salir.
+
+Lo que sigue de esta sección, a partir de «Dos sitios», describe el estado del arranque antes de cerrar el subplan 13. Las heurísticas que aparecen ahí (`fresh_kind`, `tainted`, `strings_moved`, `borrow`/`take` inferido) son legado a sustituir, no reglas a extender.
+
 La autoridad es [SPEC.md](../../../SPEC.md) («Liberación de locales»). Resumen operativo en [docs/subplans/03-semantics.md](../../../docs/subplans/03-semantics.md) y [04-ir-runtime.md](../../../docs/subplans/04-ir-runtime.md). Si la SPEC y el código divergen, no cierres una a ojo: avisa y ciérralas en el mismo cambio.
 
 Invariante: una fuga es aceptable; una doble liberación o un uso tras liberar no. Ante la duda, no sueltes.
 
 Dentro de una función `@arena`, el `free` de un puntero interior es un no-op y `sal_arena_leave` descarta las páginas al salir, después de esos `free`. Eso no sustituye la cola de drops fuera de `@arena`: un bloque del `malloc` del sistema se libera de verdad. Un `leave` que no llega (un pánico) puede fugar las páginas; no puede dejar un puntero vivo hacia ellas.
 
-## Dos sitios, los dos compiladores
+## Dos sitios, los dos compiladores (estado actual, legado)
 
 | Qué | Arranque | Selfhost |
 |-----|----------|----------|

@@ -2599,6 +2599,14 @@ void *sal_list_new_desc(const char *desc) {
     return l;
 }
 
+/* Element glue of a list whose elements are lists: releases one inner list (SPEC «Liberación
+ * de locales», `List[List[T]]`). */
+void sal_list_free_elem(int64_t raw) {
+    if (raw >= 4096) {
+        sal_list_free((void *)(uintptr_t)raw);
+    }
+}
+
 /* The list owns its elements and releases each one with `glue` (the `drop.<Tipo>` of T). */
 void sal_list_set_drop(void *vp, void (*glue)(int64_t)) {
     SalList *l = (SalList *)vp;

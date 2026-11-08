@@ -159,24 +159,13 @@ fn format_protocol(p: &ProtocolDef) -> String {
             out.push_str("&self");
         } else {
             out.push_str("self");
-            match m.self_mode {
-                ParamMode::Take => out.push_str(" take"),
-                ParamMode::Borrow => out.push_str(" borrow"),
-                ParamMode::Keep => out.push_str(" keep"),
-                ParamMode::Inferred => {}
-            }
+            // Mode words are not source syntax (SPEC «Memoria»): `self` is `self`.
         }
         for param in &m.params {
             out.push_str(", ");
             out.push_str(&param.name);
             out.push_str(": ");
             out.push_str(&format_type(&param.ty));
-            match param.mode {
-                ParamMode::Borrow => out.push_str(" borrow"),
-                ParamMode::Take => out.push_str(" take"),
-                ParamMode::Keep => out.push_str(" keep"),
-                ParamMode::Inferred => {}
-            }
         }
         out.push_str(") -> ");
         out.push_str(&format_type(&m.ret));
@@ -259,12 +248,6 @@ fn format_fn(f: &FnDef) -> String {
         s.push_str(&p.name);
         s.push_str(": ");
         s.push_str(&format_type(&p.ty));
-        match p.mode {
-            ParamMode::Borrow => s.push_str(" borrow"),
-            ParamMode::Take => s.push_str(" take"),
-            ParamMode::Keep => s.push_str(" keep"),
-            ParamMode::Inferred => {}
-        }
     }
     s.push(')');
     if f.receiver.is_none() || f.method_kind != MethodKind::Init {

@@ -179,6 +179,9 @@ fn compile_file_with_imports(
 
     for m in &graph.order {
         let infer_m = infer_module(m, &graph, opts.toolchain.target)?;
+        // The moves are published per module, right before its lowering: the checks above ran
+        // for every module first, and the last one would otherwise be what this one lowers with.
+        crate::borrowck::publish_moved_locals(&m.program, &infer_m);
         let graph_progs: Vec<&Program> = graph.order.iter().map(|x| &x.program).collect();
         let strings_env = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_m);
         let typed_m = TypedProgram::from_program(m.program.clone(), infer_m.expr_types_by_fn);

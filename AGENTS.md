@@ -15,6 +15,7 @@ Las guías detalladas por área están en `.claude/skills/` (enlace a `.cursor/s
 4. No ampliar la superficie del lenguaje porque un diseño la mencione: lo reservado es `E_PARSE` hasta su fase.
 5. Códigos de error cerrados: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_TARGET` (solo destino), `E_INTERNAL` (solo fallos del compilador). `E_BORROW` es un préstamo que se solapa, una referencia que sobrevive a su referente, o un lifetime elidido sin origen. Avisos, que no son errores ni paran la compilación: `W_DEPRECATED` (uso de un item `@deprecated`). No inventes códigos ni eventos de instrumentación.
 6. La gramática es recursiva por la izquierda (`1 - 2 - 3` = `(1 - 2) - 3`); prefijos y lambda asocian a la derecha.
+7. **Modelo de memoria: el de Rust, más `@arena`.** Un valor con dueño se mueve por defecto; `&T` y `&mut T` prestan (con lifetimes y elisión de Rust); la copia profunda es `x.clone()` explícito; y cada valor se libera al salir de su ámbito con la glue de su tipo (`drop.<Tipo>`). No hay modos `borrow`/`take` inferidos, ni copias implícitas, ni heurísticas de valor «fresco». `@arena` es la única extensión. Si el código o un test dice otra cosa, es una divergencia: se avisa y se cierra (ver [SPEC.md](SPEC.md) «Memoria» y [docs/subplans/13-ownership-rust.md](docs/subplans/13-ownership-rust.md)).
 
 ## Estructura
 
@@ -28,10 +29,11 @@ Las guías detalladas por área están en `.claude/skills/` (enlace a `.cursor/s
 | `corpus/`, `examples/` | Programas de paridad y ejemplos |
 | `tests/` | Tests de Rust; `tests/lang/<área>/*.sal` (conformidad, un subdirectorio por área), `tests/sal/` (tests de `std`) |
 
-Orden de pases: `parse` → `expand_interpolation` → `infer_program` → `attrs` → `check_effects` → `check_ownership` → `check_devices` → `TypedProgram` → `insert_drops` → `lower_program` → `fuse_module` → LLVM → Clang. No saltes un pase ni compruebes en uno posterior lo que ya tiene dueño.
+Orden de pases (objetivo, subplan 13): `parse` → `expand_interpolation` → `infer_program` → `attrs` → `check_effects` → `check_borrows` → `check_devices` → `TypedProgram` → `elaborate_drops` → `lower_program` → `fuse_module` → LLVM → Clang. Hoy el arranque aún ejecuta `check_ownership` e `insert_drops` en esos puestos mientras se cierra el subplan 13; no añadas lógica de memoria nueva a esos pases heredados. No saltes un pase ni compruebes en uno posterior lo que ya tiene dueño.
 
 ## Reglas de cambio
 
+- **Todo cambio de memoria se contrasta con Rust**: antes de implementarlo, la regla correspondiente tiene que existir en la SPEC igual que en Rust (mover, préstamo, lifetime, `clone`, glue). Un test de memoria que describa el modelo viejo se migra en el mismo cambio, con el IR o la salida esperados fijados a mano según la SPEC.
 - **Todo cambio de lenguaje toca, en el mismo cambio**: la SPEC, el subplan del pase, el pase dueño y los tests que ejercitan lo nuevo. Un test que sigue pasando con el código viejo no cuenta.
 - Un diagnóstico nuevo se afirma con su código `E_*` exacto; un programa válido, con el árbol, tipo, IR o ejecución exactos.
 - Si la construcción vive en los dos compiladores, el test del arranque no sustituye al del selfhost. Un pase nuevo de `src/<x>.rs` debería tener su `selfhost/<x>.sal`.

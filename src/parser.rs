@@ -381,7 +381,6 @@ impl Parser {
             let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
             let bare = match &next {
                 Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
-                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow" || m == "keep",
                 _ => false,
             };
             if !bare {
@@ -394,12 +393,7 @@ impl Parser {
             self.bump();
             if let TokenKind::Ident(m) = self.peek().kind.clone() {
                 if m == "take" || m == "borrow" || m == "keep" {
-                    self.bump();
-                    self_mode = match m.as_str() {
-                        "take" => ParamMode::Take,
-                        "keep" => ParamMode::Keep,
-                        _ => ParamMode::Borrow,
-                    };
+                    return Err(Diagnostic::new(ErrorCode::EParse, "`borrow`, `take` y `keep` no son modos (SPEC «Memoria»): el tipo lo dice (`T` mueve, `&T` presta, `&mut T` presta en exclusivo)", self.peek().span));
                 }
             }
             self.skip_soft_layout();
@@ -536,7 +530,8 @@ impl Parser {
                 sp,
             ));
         }
-        let type_params = self.parse_type_params()?;
+        let (lifetimes, type_params): (Vec<String>, Vec<String>) =
+            self.parse_type_params()?.into_iter().partition(|p| p.starts_with('\''));
         let protocols = self.parse_impl_clause()?;
         if !type_params.is_empty() && !protocols.is_empty() {
             return Err(Diagnostic::new(
@@ -566,6 +561,7 @@ impl Parser {
         Ok(StructDef {
             deprecated: None,
             name,
+            lifetimes,
             type_params,
             protocols,
             fields,
@@ -673,7 +669,6 @@ impl Parser {
             let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
             let bare = match &next {
                 Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
-                Some(TokenKind::Ident(m)) => m == "take" || m == "borrow" || m == "keep",
                 _ => false,
             };
             if !bare {
@@ -686,12 +681,7 @@ impl Parser {
             self.bump();
             if let TokenKind::Ident(m) = self.peek().kind.clone() {
                 if m == "take" || m == "borrow" || m == "keep" {
-                    self.bump();
-                    self_mode = match m.as_str() {
-                        "take" => ParamMode::Take,
-                        "keep" => ParamMode::Keep,
-                        _ => ParamMode::Borrow,
-                    };
+                    return Err(Diagnostic::new(ErrorCode::EParse, "`borrow`, `take` y `keep` no son modos (SPEC «Memoria»): el tipo lo dice (`T` mueve, `&T` presta, `&mut T` presta en exclusivo)", self.peek().span));
                 }
             }
             self.skip_soft_layout();
@@ -754,19 +744,13 @@ impl Parser {
         self.expect(TokenKind::Colon, "expected : in parameter")?;
         let ty = self.parse_type()?;
         self.skip_soft_layout();
+        // SPEC «Memoria»: the type says how a parameter is passed; mode words are not syntax.
+        if let TokenKind::Ident(n) = &self.peek().kind {
+            if n == "borrow" || n == "take" || n == "keep" {
+                return Err(Diagnostic::new(ErrorCode::EParse, "`borrow`, `take` y `keep` no son modos (SPEC «Memoria»): el tipo lo dice (`T` mueve, `&T` presta, `&mut T` presta en exclusivo)", self.peek().span));
+            }
+        }
         let mode = match &self.peek().kind {
-            TokenKind::Ident(n) if n == "borrow" => {
-                self.bump();
-                ParamMode::Borrow
-            }
-            TokenKind::Ident(n) if n == "take" => {
-                self.bump();
-                ParamMode::Take
-            }
-            TokenKind::Ident(n) if n == "keep" => {
-                self.bump();
-                ParamMode::Keep
-            }
             _ => ParamMode::Inferred,
         };
         Ok(Param {
@@ -856,7 +840,11 @@ impl Parser {
                     self.enter_group();
                     self.skip_group_newlines();
                     while !self.at(TokenKind::RBracket) {
-                        args.push(self.parse_type()?);
+                        if self.at(TokenKind::Tick) {
+                            self.parse_lifetime_name()?;
+                        } else {
+                            args.push(self.parse_type()?);
+                        }
                         self.skip_group_newlines();
                         if self.at(TokenKind::Comma) {
                             self.bump();
@@ -880,7 +868,13 @@ impl Parser {
                 self.enter_group();
                 self.skip_group_newlines();
                 while !self.at(TokenKind::RBracket) {
-                    args.push(self.parse_type()?);
+                    // A lifetime argument (`View['a]`) is not a type: it is a property of the
+                    // reference (SPEC «Memoria»), so it is read and dropped here.
+                    if self.at(TokenKind::Tick) {
+                        self.parse_lifetime_name()?;
+                    } else {
+                        args.push(self.parse_type()?);
+                    }
                     self.skip_group_newlines();
                     if self.at(TokenKind::Comma) {
                         self.bump();

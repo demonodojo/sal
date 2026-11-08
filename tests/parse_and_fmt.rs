@@ -33,7 +33,7 @@ fn fmt_idempotent() {
 fn fmt_arena_keep_idempotent() {
     let src = "\
 @arena
-fn handle(cache: Dict[String, String] keep) -> Int ! alloc
+fn handle(cache: &mut Dict[String, String]) -> Int ! alloc
     0
 ";
     let p1 = parse(src).expect("parse");
@@ -42,7 +42,7 @@ fn handle(cache: Dict[String, String] keep) -> Int ! alloc
     let f2 = format_program(&p2);
     assert_eq!(f1, f2);
     assert!(f1.contains("@arena"));
-    assert!(f1.contains("keep"));
+    assert!(f1.contains("&mut Dict[String, String]"));
 }
 
 #[test]

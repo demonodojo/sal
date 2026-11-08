@@ -81,14 +81,26 @@ struct DC
     scalars: List[String]
     copy_ok: List[Int]
 
-fn dr_new(variants: Int, ro: Int, lists: NM, ps: List[TParam], scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
+# An owned copy of the parameter list: the `TFn` it comes from keeps its own.
+fn tparams_copy(xs: &List[TParam]) -> List[TParam] ! alloc
+    tparams_copy_go(xs, 0, xs.len(), List.new[TParam]())
+
+fn tparams_copy_go(xs: &List[TParam], i: Int, n: Int, out: List[TParam]) -> List[TParam] ! alloc
+    if i >= n
+        out
+    else
+        p = xs.get(i)
+        _a = out.push(TParam(p.name.dup(), p.ty.dup(), p.mode))
+        tparams_copy_go(xs, i + 1, n, out)
+
+fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
     cells = list_new[Int]()
     _a = list_push(&cells, 0)
     _b = list_push(&cells, 0)
     _c = list_push(&cells, 0)
     _d = list_push(&cells, 0)
     _e = list_push(&cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, ps, scalars, copy_ok)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok)
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -1623,7 +1635,7 @@ fn dr_seed_params(c: &DC, i: Int, n: Int) -> Int ! alloc
         dr_seed_params(c, i + 1, n)
 
 # Escape facts of a fn body under the read-only assumptions `ro`.
-fn dr_facts(params: List[TParam], body: &TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
+fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
     c = dr_new(variants, ro, lists, params, scalars, copy_ok)
     n = c.ps.len()
     _s = dr_seed_params(&c, 0, n)
@@ -1830,7 +1842,7 @@ fn dr_ro_pass(ro: Int, cons: &List[Int], fns: &List[TFn], variants: Int, scalars
         name = f.name.dup()
         mine = dr_list_dup(scalars, 0, scalars.len(), list_new[String]())
         mine_ok = dr_oks_dup(oks, 0, oks.len(), list_new[Int]())
-        c = dr_facts(f.params, &f.body, variants, ro, nm_new(), mine, mine_ok)
+        c = dr_facts(&f.params, &f.body, variants, ro, nm_new(), mine, mine_ok)
         key = name.to_int()
         flags = map_get(ro, key)
         took = cons.get(i)
@@ -1838,7 +1850,7 @@ fn dr_ro_pass(ro: Int, cons: &List[Int], fns: &List[TFn], variants: Int, scalars
         ch = dr_ro_params(&c, flags, &c.ps, 0, nps)
         tk = dr_cons_params(&c, took, &c.ps, 0, nps)
         dr_free(&c)
-        _pp = dr_pin_params(c.ps)
+        _pp = dr_pin_params(&c.ps)
         any = if ch + tk > 0
             1
         else
@@ -1884,12 +1896,10 @@ fn dr_cons_params(c: &DC, flags: Int, params: &List[TParam], i: Int, n: Int) -> 
 # The same box, handed back. A block tail that is the ident moves it for every later
 # `match` arm; a borrow call does not, and the caller keeps the box.
 # The same pointer, as an owned `Expr`. `*e` would move a non-Copy out of the reference.
+# An owned copy of `e` (SPEC «Memoria»: an explicit `clone`). The list that used to carry an
+# alias released the caller's expression with itself.
 fn dr_alias(e: &Expr) -> Expr ! alloc
-    box = List.new[Expr]()
-    _p = list_push_share(box, e)
-    got = list_get(box, 0)
-    _f = list_free_shell(box)
-    got
+    tc_expr(e)
 
 fn dr_ret(e: &Expr) -> Expr ! alloc
     dr_alias(e)
@@ -1917,26 +1927,26 @@ fn dr_set_arg(args: &List[Expr], i: Int, old: &Expr, neu: Expr) -> Int ! alloc
         _s = list_set(args, i, neu)
         0
 
-# The statement pointer, not a copy of its strings.
+# An owned copy of the statement (`clone`): the block it came from is borrowed and keeps its own.
 fn dr_share_stmt(out: &List[TStmt], st: &TStmt) -> Int ! alloc
-    _p = list_push_share(out, st)
+    _p = list_push(out, tc_stmt(st))
     0
 
-# The vector of a list whose elements now live in the next tree.
+# The block is borrowed: its owner releases it. Nothing to release here.
 fn dr_free_stmts(xs: &List[TStmt]) -> Int ! alloc
-    list_free_shell(xs)
+    0
 
 # Taking the field marks it moved, so the struct glue leaves it alone. The list vector
 # was already released with `list_free_shell`; the expression is still in the returned block.
-fn dr_pin_list(xs: List[TStmt]) -> Int ! alloc
+fn dr_pin_list(xs: &List[TStmt]) -> Int ! alloc
     0
 
-fn dr_pin_expr(e: Expr) -> Int ! alloc
+fn dr_pin_expr(e: &Expr) -> Int ! alloc
     0
 
 # `DC.ps` is the caller's parameter list, not a fresh one. Taking it here keeps the
 # scope-end glue from `list_free`ing the `TFn` that still owns it.
-fn dr_pin_params(xs: List[TParam]) -> Int ! alloc
+fn dr_pin_params(xs: &List[TParam]) -> Int ! alloc
     0
 
 # ---- temporaries ----
@@ -2592,13 +2602,13 @@ fn drops_body(f: &TFn, denv: Int) -> TBlock ! alloc
     _h = list_push(&h.k, 0)
     hoisted = dr_hoist_block(&h, &f.body)
     claimed = dr_claim_fn(f, &hoisted, vec_get(denv, 0), &h.lists, vec_get(denv, 3))
-    c = dr_facts(f.params, &claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
+    c = dr_facts(&f.params, &claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
     res = dr_xform_block(&c, &claimed)
-    _pp = dr_pin_params(c.ps)
-    _ph = dr_pin_list(hoisted.stmts)
-    _pt = dr_pin_expr(hoisted.tail)
-    _pc = dr_pin_list(claimed.stmts)
-    _pe = dr_pin_expr(claimed.tail)
+    _pp = dr_pin_params(&c.ps)
+    _ph = dr_pin_list(&hoisted.stmts)
+    _pt = dr_pin_expr(&hoisted.tail)
+    _pc = dr_pin_list(&claimed.stmts)
+    _pe = dr_pin_expr(&claimed.tail)
     res
 
 fn drops_body_t(f: &TFn, denv: Int) -> TBlock ! alloc

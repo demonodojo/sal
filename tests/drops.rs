@@ -101,12 +101,17 @@ fn local_stored_as_handle_is_not_freed() {
 }
 
 #[test]
-fn local_passed_to_escaping_user_function_is_not_freed() {
-    let ir = ir_of(
+fn local_moved_into_another_local_is_released_once() {
+    // `eat` takes `s` by value and moves it into `t`: `t` is the owner from then on (SPEC
+    // «Memoria»), and the flag of `s` is cleared, so the String is released exactly once.
+    // `main` moved `s` into `eat` and only holds a guarded release.
+    let ir = ir_full(
         "user_call",
         "fn eat(s: String) -> Int ! alloc\n    t = s\n    str_len(t)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    eat(s)\n",
     );
-    assert_eq!(frees(&ir), 0, "{ir}");
+    // `t` owns the String now: released once, unguarded. `s`'s release is behind its flag, cleared.
+    assert_eq!(releases_in(&ir, "eat", "sal_free"), (1, 1), "{ir}");
+    assert_eq!(releases_in(&ir, "main", "sal_free"), (0, 1), "{ir}");
 }
 
 #[test]
@@ -274,12 +279,15 @@ fn enum_box_local_matched_in_place_is_freed() {
 
 #[test]
 fn enum_box_returned_is_not_freed_but_read_only_arg_is() {
-    let ir = ir_of(
+    let ir = ir_full(
         "enum_escape",
         "enum Shape\n    Dot\n    Rect(Int, Int)\n\nfn g(s: Shape) -> Int\n    0\n\nfn f() -> Int ! alloc\n    s = Rect(3, 4)\n    g(s)\n\nfn h() -> Shape ! alloc\n    s = Rect(1, 2)\n    s\n",
     );
-    // `f` keeps `s` (g only reads it); `h` returns its box.
-    assert_eq!(ir.matches("sal_enum_free").count(), 1, "{ir}");
+    // `g` takes the box and releases it; `f` moved it, so its release is behind a flag that the
+    // move cleared; `h` returns its box and releases nothing.
+    assert_eq!(releases_in(&ir, "g", "sal_enum_free"), (1, 0), "{ir}");
+    assert_eq!(releases_in(&ir, "f", "sal_enum_free"), (0, 1), "{ir}");
+    assert_eq!(releases_in(&ir, "h", "sal_enum_free"), (0, 0), "{ir}");
 }
 
 #[test]
@@ -305,11 +313,13 @@ fn string_list_of_fresh_values_is_freed() {
 
 #[test]
 fn string_passed_to_read_only_user_fn_is_freed() {
-    let ir = ir_of(
+    let ir = ir_full(
         "ro_param",
         "fn size(s: String) -> Int\n    str_len(s)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    size(s)\n",
     );
-    assert_eq!(frees(&ir), 1, "{ir}");
+    // `size` takes the String by value and releases it; `main` moved it (guarded release only).
+    assert_eq!(releases_in(&ir, "size", "sal_free"), (1, 0), "{ir}");
+    assert_eq!(releases_in(&ir, "main", "sal_free"), (0, 1), "{ir}");
 }
 
 #[test]
@@ -325,20 +335,27 @@ fn string_passed_to_escaping_user_fn_is_not_freed() {
 
 #[test]
 fn read_only_flows_through_a_chain_of_calls() {
-    let ir = ir_of(
+    let ir = ir_full(
         "ro_chain",
         "fn inner(s: String) -> Int\n    str_len(s)\n\nfn outer(s: String) -> Int\n    inner(s)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    outer(s)\n",
     );
-    assert_eq!(frees(&ir), 1, "{ir}");
+    // Each by-value parameter is released once, by the fn that took it; callers only hold guarded
+    // releases of what they moved.
+    assert_eq!(releases_in(&ir, "inner", "sal_free"), (1, 0), "{ir}");
+    assert_eq!(releases_in(&ir, "outer", "sal_free"), (0, 1), "{ir}");
+    assert_eq!(releases_in(&ir, "main", "sal_free"), (0, 1), "{ir}");
 }
 
 #[test]
 fn recursion_keeps_read_only_optimistic() {
-    let ir = ir_of(
+    let ir = ir_full(
         "ro_rec",
         "fn count(s: String, n: Int) -> Int\n    if n == 0\n        str_len(s)\n    else\n        count(s, n - 1)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    count(s, 3)\n",
     );
-    assert_eq!(frees(&ir), 1, "{ir}");
+    // `count` takes `s`: its recursive branch moves it (flag cleared), and the read branch keeps
+    // it, releasing it through the flag at scope end. `main` moved `s` and holds a guarded release.
+    assert_eq!(releases_in(&ir, "count", "sal_free"), (0, 1), "{ir}");
+    assert_eq!(releases_in(&ir, "main", "sal_free"), (0, 1), "{ir}");
 }
 
 #[test]
@@ -372,7 +389,10 @@ fn list_of_flat_structs_is_freed_when_every_element_is_a_fresh_constructor() {
         "list_flat_borrowed",
         "struct F\n    name: String\n    k: Int\n\nfn main() -> Int ! alloc\n    s = int_to_str(1)\n    xs = list_new[F]()\n    _a = list_push(xs, F(s, 2))\n    list_len(xs)\n",
     );
-    assert!(!kept.contains("sal_list_free"), "{kept}");
+    // `F(s, 2)` moves `s` into the struct, and the struct into the list: the list releases it,
+    // and `main` never frees `s` itself (SPEC «Memoria»: a moved value has one owner).
+    assert!(kept.contains("sal_list_free"), "{kept}");
+    assert_eq!(kept.matches("func: \"sal_free\"").count(), 0, "{kept}");
 }
 
 #[test]
@@ -492,8 +512,9 @@ fn list_get_struct_passed_to_fn_frees_box_shell_not_full_struct() {
         !ir.contains("func: \"sal_desc_copy\""),
         "a borrow of list_get is not copied:\n{ir}"
     );
+    // The list owns its element: its block is freed by the list's glue, never by these fns.
     assert!(
-        !ir.contains("func: \"sal_struct_free_box\""),
+        !strip_glue(&ir).contains("func: \"sal_struct_free_box\""),
         "a borrowed element is not a box this function frees:\n{ir}"
     );
     assert!(
@@ -530,9 +551,10 @@ fn bootstrap_module_ir_frees_list_get_struct_box() {
         !ir.contains("func: \"sal_desc_copy\""),
         "module pipeline must not copy a borrowed list_get:\n{ir}"
     );
+    // The list owns its element: its block goes with the list's glue, not with this function.
     assert!(
-        !ir.contains("func: \"sal_struct_free_box\""),
-        "module pipeline must not free the list's element:\n{ir}"
+        !strip_glue(&ir).contains("func: \"sal_struct_free_box\""),
+        "module pipeline must not free the list's element in user code:\n{ir}"
     );
 }
 
@@ -786,4 +808,126 @@ fn ir_expanded(name: &str, src: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+// A list of structs with glue is released element by element through `drop.<S>` (the block
+// holds that glue, `sal_list_set_drop`): an instrumented run reports no leak and no double free.
+#[test]
+fn list_of_glue_structs_is_released_once_and_clean() {
+    let dir = std::env::temp_dir().join(format!("sal-list-glue-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("tree.sal");
+    std::fs::write(
+        &src,
+        "struct Leaf\n    name: String\n    xs: List[Int]\n\nstruct Tree\n    leaves: List[Leaf]\n    tag: String\n\nfn main() -> Int ! alloc\n    leaves = List.new[Leaf]()\n    leaves.push(Leaf(\"a\" + \"b\", List.new[Int]()))\n    t = Tree(leaves, \"t\" + \"u\")\n    t.leaves.len() + t.tag.len()\n",
+    )
+    .unwrap();
+    let bin = dir.join("tree_instr");
+    let build = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["build", "--instrument", "-o"])
+        .arg(&bin)
+        .arg(&src)
+        .output()
+        .expect("sal build");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&bin).output().expect("run");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(3), "{stderr}");
+    assert!(!stderr.contains("LEAK") && !stderr.contains("DOUBLE_FREE"), "{stderr}");
+}
+
+// SPEC «Liberación de locales»: a `List` whose elements are lists releases each inner list
+// through the element glue `sal_list_free_elem`, set when the outer list is built.
+#[test]
+fn list_of_lists_sets_inner_list_glue_and_is_clean() {
+    let ir = ir_full(
+        "list_of_lists",
+        "fn main() -> Int ! alloc\n    xs = List.new[List[Int]]()\n    ys = List.new[Int]()\n    ys.push(3)\n    xs.push(ys)\n    xs.len()\n",
+    );
+    assert!(ir.contains("func: \"sal_list_set_drop\", args: [\"t"), "{ir}");
+    assert!(ir.contains("\"sal_list_free_elem\""), "{ir}");
+    let dir = std::env::temp_dir().join(format!("sal-list-of-lists-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("lol.sal");
+    std::fs::write(&src, "fn main() -> Int ! alloc\n    xs = List.new[List[Int]]()\n    ys = List.new[Int]()\n    ys.push(3)\n    xs.push(ys)\n    xs.len()\n").unwrap();
+    let bin = dir.join("lol_instr");
+    let build = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["build", "--instrument", "-o"])
+        .arg(&bin)
+        .arg(&src)
+        .output()
+        .expect("sal build");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&bin).output().expect("run");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{stderr}");
+    assert!(!stderr.contains("LEAK") && !stderr.contains("DOUBLE_FREE"), "{stderr}");
+}
+
+/// The releases of `free` in `fn name`, as (unguarded, behind a liveness flag). A guarded
+/// release sits inside the `then_body` of its flag test (SPEC «Liberación de locales»).
+fn releases_in(ir: &str, name: &str, free: &str) -> (usize, usize) {
+    let body = fn_ir(ir, name);
+    let mut unguarded = 0;
+    let mut guarded = 0;
+    for line in body.lines().filter(|l| l.contains(&format!("func: \"{free}\""))) {
+        if line.contains("then_body") || line.starts_with("If") {
+            guarded += 1;
+        } else {
+            unguarded += 1;
+        }
+    }
+    (unguarded, guarded)
+}
+
+// SPEC «Memoria»: `t = s` moves the String into `t`, which releases it once. An instrumented run
+// reports no leak and no double free.
+#[test]
+fn moved_into_another_local_is_released_once_at_runtime() {
+    let dir = std::env::temp_dir().join(format!("sal-transfer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("transfer.sal");
+    std::fs::write(
+        &src,
+        "fn eat(s: String) -> Int ! alloc\n    t = s\n    str_len(t)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    eat(s)\n",
+    )
+    .unwrap();
+    let bin = dir.join("transfer_instr");
+    let build = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["build", "--instrument", "-o"])
+        .arg(&bin)
+        .arg(&src)
+        .output()
+        .expect("sal build");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&bin).output().expect("run");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(5), "{stderr}");
+    assert!(!stderr.contains("LEAK") && !stderr.contains("DOUBLE_FREE"), "{stderr}");
+}
+
+// SPEC «Liberación de locales»: a by-value parameter moved after an early `return` is released on
+// that return (its flag is still set), and never again by the move. Instrumented: no leak.
+#[test]
+fn early_return_before_move_releases_the_by_value_param() {
+    let dir = std::env::temp_dir().join(format!("sal-early-return-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("early.sal");
+    std::fs::write(
+        &src,
+        "fn eat(s: String) -> Int ! alloc\n    str_len(s)\n\nfn f(s: String, n: Int) -> Int ! alloc\n    if n == 0\n        return 0\n    eat(s)\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    f(s, 0)\n",
+    )
+    .unwrap();
+    let bin = dir.join("early_instr");
+    let build = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["build", "--instrument", "-o"])
+        .arg(&bin)
+        .arg(&src)
+        .output()
+        .expect("sal build");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&bin).output().expect("run");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{stderr}");
+    assert!(!stderr.contains("LEAK") && !stderr.contains("DOUBLE_FREE"), "{stderr}");
 }

@@ -370,11 +370,14 @@ fn ir_drop(name: Int) -> Int ! alloc
     inst
 
 # A string the instruction keeps. Small integers (opcodes, lengths, tags) stay as they are.
+# The IR keeps its own copy of the text: the copy is bound to a local that `str_as_int` hands
+# to the IR (escapes), so no release frees it. A temporary here would be freed at the statement.
 fn ir_text(p: Int) -> Int ! alloc
     if p < 4096
         p
     else
-        str_as_int(&strdup(str_from_int(p)))
+        copy = strdup(str_from_int(p))
+        str_as_int(&copy)
 
 fn ir_set_text(h: Int, i: Int) -> Int ! alloc
     if i >= vec_len(h)

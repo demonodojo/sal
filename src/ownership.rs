@@ -180,6 +180,7 @@ pub fn check_ownership(prog: &Program, infer: &crate::infer::InferOutput) -> Dia
         }
     }
     crate::borrowck::check_borrows(prog, infer)?;
+    crate::borrowck::publish_moved_locals(prog, infer);
     check_arena_params(&modded, infer)
 }
 
@@ -259,17 +260,15 @@ fn infer_fn_modes(f: &mut FnDef, structs: &HashMap<String, StructDef>) {
         if is_copy_type_ext(&p.ty, structs) {
             continue;
         }
-        if taken.contains(&p.name) {
-            p.mode = ParamMode::Take;
-        } else if used.contains(&p.name) {
-            p.mode = ParamMode::Borrow;
-        } else if f.arena {
-            // Unused unique inside @arena stays with the caller.
-            p.mode = ParamMode::Borrow;
-        } else {
-            // Unused unique: ownership is taken and the value is dropped.
-            p.mode = ParamMode::Take;
+        // SPEC «Memoria»: a reference is never owned by the callee: `&T` and `&mut T` borrow.
+        // Inside `@arena`, `&mut List` / `&mut Dict` is the writable container parameter (`keep`).
+        if let Type::Ref { mutable, inner, .. } = &p.ty {
+            let container = matches!(inner.as_ref(), Type::Named { name, .. } if name == "List" || name == "Dict");
+            p.mode = if f.arena && *mutable && container { ParamMode::Keep } else { ParamMode::Borrow };
+            continue;
         }
+        // A by-value parameter moves (no inferred `borrow`): the caller gives the value up.
+        p.mode = ParamMode::Take;
     }
 }
 
@@ -865,7 +864,6 @@ fn is_borrow_fn(name: &str) -> bool {
             | "enum_owns"
             | "enum_box_id"
             | "bytes_free"
-            | "list_push"
             | "list_get"
             | "list_set"
             | "list_pop"
@@ -1295,7 +1293,11 @@ fn check_arena_params(prog: &Program, infer: &crate::infer::InferOutput) -> Diag
                     p.span,
                 )]);
             }
-            if p.mode == ParamMode::Keep && !is_list_or_dict(&p.ty) {
+            let container_ty = match &p.ty {
+                Type::Ref { inner, .. } => inner.as_ref(),
+                t => t,
+            };
+            if p.mode == ParamMode::Keep && !is_list_or_dict(container_ty) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
                     format!("keep parameter `{}` must be a List or Dict", p.name),

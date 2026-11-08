@@ -234,7 +234,7 @@ impl StringEnv {
     }
 }
 
-fn struct_name_from_init(init: &Expr, env: &StringEnv) -> Option<String> {
+pub(crate) fn struct_name_from_init(init: &Expr, env: &StringEnv) -> Option<String> {
     match init {
         Expr::Call { func, args, .. } => {
             if let Expr::Ident { name, .. } = func.as_ref() {

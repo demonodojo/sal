@@ -258,7 +258,7 @@ fn check_lifetime_elision(f: &FnDef) -> DiagResult<()> {
 pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<InferOutput> {
     for item in &prog.items {
         if let Item::Struct(s) = item {
-            let declared = declared_lifetimes(&s.type_params);
+            let declared = declared_lifetimes(&s.lifetimes);
             for field in &s.fields {
                 lifetime_in_type(&field.ty, &declared, false)?;
             }
@@ -2896,6 +2896,7 @@ pub fn frame_as_struct(f: &FrameDef) -> StructDef {
         })
         .collect();
     StructDef {
+        lifetimes: Vec::new(),
         deprecated: None,
         name: f.name.clone(),
         type_params: f.type_params.clone(),
