@@ -300,6 +300,18 @@ fn tp_free_stmts_go(stmts: List[TStmt], i: Int, n: Int, seen: HT, lseen: HT) -> 
         stmts.set(i, TStmt(st.kind, nm, XNone, ty, st.is_let, XNone, st.frozen, st.stack, st.id))
         tp_free_stmts_go(stmts, i + 1, n, seen, lseen)
 
+# Takes a block so the caller's drop does not free it. The strings stay with the caller.
+fn tp_keep_block(b: TBlock take) -> Int ! alloc
+    tp_keep_expr(b.tail)
+    tp_keep_stmts(b.stmts)
+    0
+
+fn tp_keep_expr(e: Expr take) -> Int ! alloc
+    0
+
+fn tp_keep_stmts(xs: List[TStmt] take) -> Int ! alloc
+    0
+
 fn tp_free_block(b: TBlock) -> Int ! alloc
     seen = HT.new(512)
     lseen = HT.new(256)

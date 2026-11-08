@@ -1435,12 +1435,20 @@ fn emit_c_one_ir_fn(tf: TFn, irf: IrFn, user: Int, linkable: Int, allow_main: In
     _x = ti_free_fn_parts(irf)
     text
 
-fn emit_c_fns(tfns: List[TFn], i: Int, n: Int, user: Int, acc: String, allow_main: Int, linkable: Int, pool: Int, irmod: Int, env: TEnv, enums: List[TEnum]) -> String ! alloc
+# One function at a time. The IR copies the strings it keeps, then C is emitted
+# (tensor C reads that IR), then the body is freed before the next function.
+fn emit_c_owned(tp: TProgram, user: Int, denv: Int, names: Int, fm: Int, env: TEnv, enums: List[TEnum], seen: List[TFn], allow_main: Int, linkable: Int, pool: Int, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        piece = emit_c_one_fn(list_get(tfns, i), vec_get(irmod, i), user, linkable, allow_main, pool, env, enums)
-        emit_c_fns(tfns, i + 1, n, user, acc + piece, allow_main, linkable, pool, irmod, env, enums)
+        f = list_get(tp.fns, i)
+        f.body = drops_body(f, denv)
+        irf = lower_fn(f, names, fm, env, enums, denv, tp.fns, tp.protocols, seen)
+        piece = emit_c_one_fn(f, irf, user, linkable, allow_main, pool, env, enums)
+        old = f.body
+        f.body = TBlock(list_new[TStmt](), XNone)
+        _fr = tp_free_block(old)
+        emit_c_owned(tp, user, denv, names, fm, env, enums, seen, allow_main, linkable, pool, i + 1, n, acc + piece)
 
 # `genums`: the enums of the whole module graph (empty for a single file).
 fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main: Int, linkable: Int, genums: List[TEnum], env: TEnv borrow, seen: List[TFn]) -> String ! alloc
@@ -1456,8 +1464,12 @@ fn emit_c_from_ast_module(tp: TProgram, callables: Int, externs: Int, allow_main
     acc = emit_forward_decls(tp.fns, 0, list_len(tp.fns), acc, allow_main, linkable)
     acc = acc + "\n"
     acc = emit_any_vtables_module(tp, acc)
-    irmod = lower_program_typed(tp, callables, env, enums, seen)
-    body = emit_c_fns(tp.fns, 0, list_len(tp.fns), callables, "", allow_main, linkable, pool, irmod, env, enums)
+    names = collect_fn_names_t(tp.fns, 0, list_len(tp.fns), vec_new())
+    names = merge_callable_names(callables, names)
+    fm = map_new()
+    _i = fill_fn_map(fm, names, 0, vec_len(names))
+    denv = vec_get(pool, 8)
+    body = emit_c_owned(tp, callables, denv, names, fm, env, enums, seen, allow_main, linkable, pool, 0, list_len(tp.fns), "")
     _fe = list_free(enums)
     lits = lit_pool_globals(pool)
     if str_len(lits) > 0

@@ -1525,8 +1525,8 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(dst, vec_get(src, i))
         copy_insts(src, dst, i + 1, n)
 
-# The IR keeps identifier and literal texts by handle until `ti_fn`. `drops_body` moved
-# this body once; freeing it would reuse those texts while the instruction vec still points at them.
+# `drops_body` moved this body once. `ir_own_fn` copies every string the instructions keep,
+# so the caller can `tp_free_block` after the C for this function is emitted.
 fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TEnum] borrow, denv: Int, prog_fns: List[TFn] borrow, prog_protocols: List[TProtocol] borrow, seen: List[TFn]) -> Int ! alloc
     env = tenv_clone(env_tpl)
     _t = tenv_truncate(env, 0)
@@ -1560,9 +1560,10 @@ fn lower_fn(f: TFn, fn_names: Int, fm: Int, env_tpl: TEnv borrow, enums: List[TE
     _h = vec_push(out, cx_literals(cx))
     _z = cx_free(cx)
     keep_block(f.body)
+    ir_own_fn(out)
     out
 
-# Hands a block to no one. The IR aliases its strings, and releasing the block would free them.
+# Hands a block to no one. The IR already holds its own copies; the caller frees the block.
 fn keep_block(b: TBlock take) -> Int ! alloc
     keep_expr(b.tail)
     keep_stmts(b.stmts)

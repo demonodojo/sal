@@ -370,6 +370,230 @@ fn ir_drop(name: Int) -> Int ! alloc
     _b = vec_push(inst, name)
     inst
 
+# A string the instruction keeps. Small integers (opcodes, lengths, tags) stay as they are.
+fn ir_text(p: Int) -> Int ! alloc
+    if p < 4096
+        p
+    else
+        str_as_int(strdup(str_from_int(p)))
+
+fn ir_set_text(h: Int, i: Int) -> Int ! alloc
+    if i >= vec_len(h)
+        0
+    else
+        _s = vec_set(h, i, ir_text(vec_get(h, i)))
+        0
+
+fn ir_own_strvec(hs: Int) -> Int ! alloc
+    if hs == 0
+        0
+    else
+        ir_own_strvec_go(hs, 0, vec_len(hs))
+
+fn ir_own_strvec_go(hs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _s = ir_set_text(hs, i)
+        ir_own_strvec_go(hs, i + 1, n)
+
+fn ir_own_rows(hs: Int, nslots: Int) -> Int ! alloc
+    if hs == 0
+        0
+    else
+        ir_own_rows_go(hs, nslots, 0, vec_len(hs))
+
+fn ir_own_rows_go(hs: Int, nslots: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        row = vec_get(hs, i)
+        _a = ir_own_row_slots(row, 0, nslots)
+        ir_own_rows_go(hs, nslots, i + 1, n)
+
+fn ir_own_row_slots(row: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _s = ir_set_text(row, i)
+        ir_own_row_slots(row, i + 1, n)
+
+# Switch arms are `[tag, body, value]`: the tag stays, the body is instructions, the value is text.
+fn ir_own_arms(hs: Int) -> Int ! alloc
+    if hs == 0
+        0
+    else
+        ir_own_arms_go(hs, 0, vec_len(hs))
+
+fn ir_own_arms_go(hs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = vec_get(hs, i)
+        _b = ir_own_insts(vec_get(a, 1))
+        _v = ir_set_text(a, 2)
+        ir_own_arms_go(hs, i + 1, n)
+
+fn ir_own_ops(hs: Int) -> Int ! alloc
+    if hs == 0
+        0
+    else
+        ir_own_ops_go(hs, 0, vec_len(hs))
+
+fn ir_own_ops_go(hs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        op = vec_get(hs, i)
+        _a = ir_own_row_slots(op, 1, vec_len(op))
+        ir_own_ops_go(hs, i + 1, n)
+
+fn ir_own_insts(hs: Int) -> Int ! alloc
+    if hs == 0
+        0
+    else
+        ir_own_insts_go(hs, 0, vec_len(hs))
+
+fn ir_own_insts_go(hs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = ir_own_inst(vec_get(hs, i))
+        ir_own_insts_go(hs, i + 1, n)
+
+# Copies the text slots `ti_inst` reads. Integer slots (tags, lengths, elem codes) stay.
+fn ir_own_inst(h: Int) -> Int ! alloc
+    if h == 0
+        0
+    else
+        ir_own_inst_go(h, vec_get(h, 0))
+
+fn ir_own_inst_go(h: Int, k: Int) -> Int ! alloc
+    if k == II_CI()
+        ir_set_text(h, 1)
+    elsif k == II_CS()
+        _a = ir_set_text(h, 1)
+        ir_set_text(h, 2)
+    elsif k == II_BIN()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        _c = ir_set_text(h, 3)
+        ir_set_text(h, 4)
+    elsif k == II_CF()
+        _a = ir_set_text(h, 1)
+        ir_set_text(h, 3)
+    elsif k == II_TBIN()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        _c = ir_set_text(h, 4)
+        _d = ir_set_text(h, 5)
+        _e = ir_set_text(h, 6)
+        ir_set_text(h, 7)
+    elsif k == II_TUN()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        _c = ir_set_text(h, 4)
+        _d = ir_set_text(h, 5)
+        ir_set_text(h, 6)
+    elsif k == II_CALL()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        ir_own_strvec(vec_get(h, 3))
+    elsif k == II_PLACE()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        ir_set_text(h, 3)
+    elsif k == II_RET()
+        ir_set_text(h, 1)
+    elsif k == II_DROP()
+        ir_set_text(h, 1)
+    elsif k == II_IF()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        _c = ir_own_insts(vec_get(h, 3))
+        _d = ir_own_insts(vec_get(h, 4))
+        _e = ir_set_text(h, 5)
+        _f = ir_set_text(h, 6)
+        ir_own_rows(vec_get(h, 7), 3)
+    elsif k == II_WHILE()
+        _a = ir_own_insts(vec_get(h, 1))
+        _b = ir_set_text(h, 2)
+        _c = ir_own_insts(vec_get(h, 3))
+        ir_own_rows(vec_get(h, 4), 3)
+    elsif k == II_AGG()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        ir_own_strvec(vec_get(h, 3))
+    elsif k == II_EXTRACT()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        ir_set_text(h, 3)
+    elsif k == II_REBIND()
+        _a = ir_set_text(h, 1)
+        ir_set_text(h, 2)
+    elsif k == II_EMAKE()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        ir_own_strvec(vec_get(h, 4))
+    elsif k == II_EFIELD()
+        _a = ir_set_text(h, 1)
+        ir_set_text(h, 2)
+    elsif k == II_SWITCH()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        _c = ir_own_arms(vec_get(h, 3))
+        _d = ir_own_insts(vec_get(h, 4))
+        ir_set_text(h, 5)
+    elsif k == II_ANYBOX()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        ir_set_text(h, 3)
+    elsif k == II_ANYCALL()
+        _a = ir_set_text(h, 1)
+        _b = ir_set_text(h, 2)
+        ir_own_strvec(vec_get(h, 4))
+    else
+        0
+
+fn ir_own_regions(hs: Int) -> Int ! alloc
+    if hs == 0
+        0
+    else
+        ir_own_regions_go(hs, 0, vec_len(hs))
+
+fn ir_own_regions_go(hs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        r = vec_get(hs, i)
+        _p = ir_set_text(r, 0)
+        _o = ir_own_ops(vec_get(r, 1))
+        _s = ir_set_text(r, 6)
+        ir_own_regions_go(hs, i + 1, n)
+
+fn ir_own_lits(hs: Int) -> Int ! alloc
+    if hs == 0
+        0
+    else
+        ir_own_lits_go(hs, 0, vec_len(hs))
+
+fn ir_own_lits_go(hs: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        lit = vec_get(hs, i)
+        _n = ir_set_text(lit, 0)
+        _d = ir_own_strvec(vec_get(lit, 1))
+        ir_own_lits_go(hs, i + 1, n)
+
+# `[name, dim params, insts, regions, literals]`. Each text slot becomes a copy.
+fn ir_own_fn(f: Int) -> Int ! alloc
+    _n = ir_set_text(f, 0)
+    _d = ir_own_strvec(vec_get(f, 1))
+    _i = ir_own_insts(vec_get(f, 2))
+    _r = ir_own_regions(vec_get(f, 3))
+    ir_own_lits(vec_get(f, 4))
+
 fn ir_push(cx: Cx, inst: Int) -> Int ! alloc
     _p = vec_push(cx_insts(cx), inst)
     0
