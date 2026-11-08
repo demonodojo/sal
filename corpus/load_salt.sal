@@ -2,7 +2,7 @@
 # Sintaxis del plan `load[F32, 4, 4]("w.salt")` no parsea (enteros no son tipos).
 # Forma aceptada: type args tipados Tensor[…] on cpu.
 
-fn forward(x: Tensor[F32, ?, 4] on p, w: Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
+fn forward(x: &Tensor[F32, ?, 4] on p, w: &Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
     on p
         relu(matmul(x, w))
 

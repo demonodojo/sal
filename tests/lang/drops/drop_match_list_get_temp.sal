@@ -5,9 +5,9 @@ enum Tok
 
 fn main() -> Int ! alloc
     xs = list_new[Tok]()
-    _a = list_push(xs, Word(int_to_str(3), 4))
-    _b = list_push(xs, End)
-    n = match list_get(xs, 0)
+    _a = list_push(&xs, Word(int_to_str(3), 4))
+    _b = list_push(&xs, End)
+    n = match list_get(&xs, 0)
         Word(s, c) => str_len(s) + c
         End => 0
-    n + list_len(xs)
+    n + list_len(&xs)

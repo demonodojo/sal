@@ -5,7 +5,7 @@ import util
 fn CODE_ELSIF() -> String ! alloc
     d"Style/Elsif"
 
-fn skip_to_indent(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn skip_to_indent(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
     elsif lex.kind(i) == TK_INDENT()
@@ -13,7 +13,7 @@ fn skip_to_indent(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         skip_to_indent(lex, n, i + 1)
 
-fn consume_suite(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn consume_suite(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
     elsif lex.kind(i) != TK_INDENT()
@@ -21,7 +21,7 @@ fn consume_suite(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         consume_suite_go(lex, n, i, 0)
 
-fn consume_suite_go(lex: Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
+fn consume_suite_go(lex: &Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
     if i >= n
         i
     else
@@ -37,7 +37,7 @@ fn consume_suite_go(lex: Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
         else
             consume_suite_go(lex, n, i + 1, depth)
 
-fn consume_elsif_list(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn consume_elsif_list(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
     elsif lex.kind(i) == TK_ELSIF()
@@ -47,7 +47,7 @@ fn consume_elsif_list(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         i
 
-fn consume_if(lex: Lex, n: Int, if_i: Int) -> Int ! alloc
+fn consume_if(lex: &Lex, n: Int, if_i: Int) -> Int ! alloc
     j = skip_to_indent(lex, n, if_i + 1)
     j2 = consume_suite(lex, n, j)
     j3 = consume_elsif_list(lex, n, j2)
@@ -59,7 +59,7 @@ fn consume_if(lex: Lex, n: Int, if_i: Int) -> Int ! alloc
     else
         j3
 
-fn only_nl_between(lex: Lex, n: Int, a: Int, b: Int) -> Int ! alloc
+fn only_nl_between(lex: &Lex, n: Int, a: Int, b: Int) -> Int ! alloc
     if a >= b
         1
     else
@@ -74,7 +74,7 @@ fn only_nl_between(lex: Lex, n: Int, a: Int, b: Int) -> Int ! alloc
         else
             0
 
-fn find_first_nl(s: String, i: Int, n: Int) -> Int ! alloc
+fn find_first_nl(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
     elsif s.char(i) == 10
@@ -82,7 +82,7 @@ fn find_first_nl(s: String, i: Int, n: Int) -> Int ! alloc
     else
         find_first_nl(s, i + 1, n)
 
-fn drop_first_line(s: String) -> String ! alloc
+fn drop_first_line(s: &String) -> String ! alloc
     n = s.len()
     nl = find_first_nl(s, 0, n)
     if nl >= n
@@ -90,7 +90,7 @@ fn drop_first_line(s: String) -> String ! alloc
     else
         s.slice(nl + 1, n)
 
-fn unindent_line(s: String, spaces: Int) -> String ! alloc
+fn unindent_line(s: &String, spaces: Int) -> String ! alloc
     n = s.len()
     if n < spaces
         s
@@ -101,7 +101,7 @@ fn unindent_line(s: String, spaces: Int) -> String ! alloc
         else
             s
 
-fn count_spaces_match(s: String, i: Int, left: Int, ok: Int) -> Int ! alloc
+fn count_spaces_match(s: &String, i: Int, left: Int, ok: Int) -> Int ! alloc
     if ok == 0
         0
     elsif left == 0
@@ -111,23 +111,23 @@ fn count_spaces_match(s: String, i: Int, left: Int, ok: Int) -> Int ! alloc
     else
         0
 
-fn unindent_text(s: String, spaces: Int) -> String ! alloc
+fn unindent_text(s: &String, spaces: Int) -> String ! alloc
     unindent_go(s, 0, s.len(), spaces, d"")
 
-fn unindent_go(s: String, i: Int, n: Int, spaces: Int, acc: String) -> String ! alloc
+fn unindent_go(s: &String, i: Int, n: Int, spaces: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         nl = find_first_nl(s, i, n)
         if nl >= n
-            acc + unindent_line(s.slice(i, n), spaces)
+            acc + unindent_line(&s.slice(i, n), spaces)
         else
             body = s.slice(i, nl)
-            body2 = unindent_line(body, spaces)
+            body2 = unindent_line(&body, spaces)
             acc2 = acc + body2 + "\n"
             unindent_go(s, nl + 1, n, spaces, acc2)
 
-fn trim_nl_suffix(lex: Lex, j: Int) -> Int ! alloc
+fn trim_nl_suffix(lex: &Lex, j: Int) -> Int ! alloc
     if j <= 0
         0
     elsif lex.kind(j - 1) == TK_NL()
@@ -135,7 +135,7 @@ fn trim_nl_suffix(lex: Lex, j: Int) -> Int ! alloc
     else
         j
 
-fn cond_text_from_if(src: String, lex: Lex, n: Int, if_i: Int) -> String ! alloc
+fn cond_text_from_if(src: &String, lex: &Lex, n: Int, if_i: Int) -> String ! alloc
     j = skip_to_indent(lex, n, if_i + 1)
     j2 = trim_nl_suffix(lex, j)
     if j2 <= if_i + 1
@@ -145,7 +145,7 @@ fn cond_text_from_if(src: String, lex: Lex, n: Int, if_i: Int) -> String ! alloc
         end = lex.start(j2)
         src.slice(start, end)
 
-fn find_line_start(src: String, i: Int) -> Int ! alloc
+fn find_line_start(src: &String, i: Int) -> Int ! alloc
     if i < 0
         0
     elsif src.char(i) == 10
@@ -153,34 +153,34 @@ fn find_line_start(src: String, i: Int) -> Int ! alloc
     else
         find_line_start(src, i - 1)
 
-fn line_leading(src: String, pos: Int) -> String ! alloc
+fn line_leading(src: &String, pos: Int) -> String ! alloc
     ls = find_line_start(src, pos - 1)
     src.slice(ls, pos)
 
-fn slice_has_comment(src: String, start: Int, end: Int) -> Int ! alloc
+fn slice_has_comment(src: &String, start: Int, end: Int) -> Int ! alloc
     piece = src.slice(start, end)
     if piece.contains(d"#") == 1
         1
     else
         0
 
-fn build_elsif_fix(src: String, lex: Lex, else_i: Int, if_i: Int, if_end: Int) -> String ! alloc
+fn build_elsif_fix(src: &String, lex: &Lex, else_i: Int, if_i: Int, if_end: Int) -> String ! alloc
     else_start = lex.start(else_i)
     if_start = lex.start(if_i)
     if_end_byte = lex.end(if_end - 1)
     cond = cond_text_from_if(src, lex, lex.len(), if_i)
     inner = src.slice(if_start, if_end_byte)
-    rest = drop_first_line(inner)
-    body = unindent_text(rest, 4)
+    rest = drop_first_line(&inner)
+    body = unindent_text(&rest, 4)
     lead = line_leading(src, else_start)
     head = lead + "elsif " + cond + "\n"
     head + body
 
-fn cop_elsif(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_elsif(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     n = lex.len()
     cop_elsif_go(src, lex, offs, 0, n)
 
-fn cop_elsif_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_elsif_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif lex.kind(i) == TK_ELSE()

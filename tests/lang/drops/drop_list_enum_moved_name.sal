@@ -7,9 +7,9 @@ enum Tok
 fn fill() -> Int ! alloc
     xs = list_new[Tok]()
     e = Num(5)
-    _a = list_push(xs, e)
-    _b = list_push(xs, Word(int_to_str(7), 1))
-    list_len(xs)
+    _a = list_push(&xs, e)
+    _b = list_push(&xs, Word(int_to_str(7), 1))
+    list_len(&xs)
 
 fn main() -> Int ! alloc
     fill()

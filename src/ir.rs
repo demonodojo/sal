@@ -800,7 +800,7 @@ fn export_tag(e: &Expr, strings: &StringEnv) -> Option<(i64, String)> {
     let ty = strings.expr_type(e)?;
     let (name, args) = match ty {
         Type::Named { name, args, .. } | Type::Qualified { name, args, .. } => (name.as_str(), args),
-        Type::Tensor { .. } | Type::Fn { .. } => return None,
+        Type::Tensor { .. } | Type::Fn { .. } | Type::Ref { .. } => return None,
     };
     let _ = args;
     match name {
@@ -900,7 +900,7 @@ fn lower_fn(
         env.insert(p.name.clone(), p.name.clone());
         if let Type::Tensor {
             elem, dims, place, ..
-        } = &p.ty
+        } = peel_ref_ty(&p.ty)
         {
             let concrete = dims.iter().map(|_| None).collect();
             for (i, d) in dims.iter().enumerate() {
@@ -2037,7 +2037,7 @@ fn lower_stmt(
             );
             register_let_tensor(name, ty.as_ref(), init, &v, strings, tensors);
             env.insert(name.clone(), v);
-            if let Some(Type::Tensor { dims, .. }) = ty.as_ref() {
+            if let Some(Type::Tensor { dims, .. }) = ty.as_ref().map(peel_ref_ty) {
                 for (i, d) in dims.iter().enumerate() {
                     if matches!(d, Dim::Dynamic) {
                         let dname = format!("{name}_d{i}");
@@ -2355,7 +2355,7 @@ fn call_fn_tensor_ret<'a>(
 fn tensor_info_from_type(ty: &Type) -> Option<TensorInfo> {
     let Type::Tensor {
         elem, dims, place, ..
-    } = ty
+    } = peel_ref_ty(ty)
     else {
         return None;
     };
@@ -2779,6 +2779,18 @@ fn matmul_runtime_name(tensors: &HashMap<String, TensorInfo>, lhs: &str) -> Stri
 
 fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     // List ops always hit the runtime; prelude bodies are signatures only.
+    if fname == "list_clone" {
+        return "sal_list_clone_val".into();
+    }
+    if fname == "dict_clone" {
+        return "sal_dict_clone_val".into();
+    }
+    if fname == "bytes_clone" {
+        return "sal_bytes_clone_val".into();
+    }
+    if fname == "enum_copy" {
+        return "sal_enum_copy".into();
+    }
     if matches!(
         fname,
         "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
@@ -3191,6 +3203,10 @@ fn lower_expr(
         }
         Expr::Unary { op, expr, .. } => {
             let inner = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, host_literals, strings);
+            if matches!(op, UnOp::Ref | UnOp::RefMut | UnOp::Deref) {
+                // A reference to a heap value, including a tensor, is the same pointer.
+                return inner;
+            }
             *counter += 1;
             let dest = format!("t{counter}");
             if let Some(info) = tensor_info_for_ssa(&inner, env, tensors) {
@@ -3199,6 +3215,7 @@ fn lower_expr(
                 let op_s = match op {
                     UnOp::Neg => "neg",
                     UnOp::Not => "not",
+                    UnOp::Ref | UnOp::RefMut | UnOp::Deref => unreachable!("ref is not a tensor op"),
                 };
                 instructions.push(IrInst::TensorUnary {
                     dest: dest.clone(),
@@ -3224,6 +3241,7 @@ fn lower_expr(
             let op_s = match op {
                 UnOp::Neg => "neg",
                 UnOp::Not => "not",
+                UnOp::Ref | UnOp::RefMut | UnOp::Deref => unreachable!("handled above"),
             };
             let op_s = if matches!(op, UnOp::Neg) && strings.expr_is_float(expr) {
                 "fneg"
@@ -3438,6 +3456,32 @@ fn lower_expr(
                     dest: Some(dest.clone()),
                     func: format!("sal_{fname}"),
                     args: call_args,
+                });
+                return dest;
+            }
+            if fname == "clone_copy" && arg_names.len() == 1 {
+                return arg_names.into_iter().next().unwrap_or(dest);
+            }
+            if fname == "struct_clone" && arg_names.len() == 1 {
+                let desc = strings
+                    .expr_type(&args[0])
+                    .and_then(|t| match t {
+                        Type::Named { name, .. } | Type::Qualified { name, .. } => {
+                            struct_desc(name, &strings.structs, &strings.enums)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "i".into());
+                *counter += 1;
+                let ds = format!("t{counter}");
+                instructions.push(IrInst::ConstString {
+                    dest: ds.clone(),
+                    value: desc,
+                });
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_desc_copy".into(),
+                    args: vec![ds, arg_names[0].clone()],
                 });
                 return dest;
             }
@@ -4200,6 +4244,20 @@ fn find_variant_in_enums<'a>(
     None
 }
 
+fn skip_ref_expr(e: &Expr) -> &Expr {
+    match e {
+        Expr::Unary { op: UnOp::Ref | UnOp::RefMut | UnOp::Deref, expr, .. } => skip_ref_expr(expr),
+        other => other,
+    }
+}
+
+fn peel_ref_ty(ty: &Type) -> &Type {
+    match ty {
+        Type::Ref { inner, .. } => peel_ref_ty(inner),
+        other => other,
+    }
+}
+
 fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
     match base {
         Expr::Ident { name, .. } => strings.struct_types.get(name).cloned(),
@@ -4222,7 +4280,7 @@ fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
             // `list_get(xs, i).f`: the element type of `xs`. (A field shares its base's span,
             // so the call's own recorded type is shadowed by the field's.)
             Expr::Ident { name, .. } if name == "list_get" || name == "list_pop" => {
-                match args.first().and_then(|a| strings.expr_type(a)) {
+                match args.first().map(skip_ref_expr).and_then(|a| strings.expr_type(a)).map(peel_ref_ty) {
                     Some(crate::ast::Type::Named { name: l, args: targs, .. }) if l == "List" => {
                         match targs.first() {
                             Some(crate::ast::Type::Named { name, args, .. })
@@ -4239,6 +4297,9 @@ fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
             Expr::Ident { name, .. } => strings.fn_struct_rets.get(name).cloned(),
             _ => None,
         },
+        Expr::Unary { op: UnOp::Ref | UnOp::RefMut | UnOp::Deref, expr, .. } => {
+            struct_name_of_base(expr, strings)
+        }
         _ => None,
     }
 }

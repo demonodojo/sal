@@ -1,11 +1,11 @@
 # Deprecated `str_index_*` helpers live here so `strutil.sal` can use `String.index_of` without shadowing the builtin.
 
 @deprecated("use hay.index_of(needle)")
-fn str_index_of(hay: String, needle: String) -> Int ! alloc
+fn str_index_of(hay: &String, needle: &String) -> Int ! alloc
     str_index_from(hay, needle, 0)
 
 @deprecated("use hay.index_from(needle, start)")
-fn str_index_from(hay: String, needle: String, start: Int) -> Int ! alloc
+fn str_index_from(hay: &String, needle: &String, start: Int) -> Int ! alloc
     hlen = hay.len()
     nlen = needle.len()
     if nlen <= 0

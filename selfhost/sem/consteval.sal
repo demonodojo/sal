@@ -23,7 +23,7 @@ fn ce_ok(v: CVal) -> Ev ! alloc
 fn ce_bad(msg: String) -> Ev ! alloc
     Ev(0, ce_none(), msg)
 
-fn ce_ty(v: CVal) -> String ! alloc
+fn ce_ty(v: &CVal) -> String ! alloc
     match v.kind
         1 => "Bool"
         2 => "Float"
@@ -33,45 +33,45 @@ fn ce_ty(v: CVal) -> String ! alloc
             
             # Own constants of `cs`, looked up in `env` (already evaluated) and appended to `out`.
             # "" when it succeeds.
-fn ce_eval(cs: List[TConst] borrow, env: List[CVal] borrow, out: List[CVal] borrow) -> String ! alloc
+fn ce_eval(cs: &List[TConst], env: &List[CVal], out: &List[CVal]) -> String ! alloc
     dup = ce_dup_name(cs, 0, cs.len())
     if dup.len() > 0
         dup
     else
         work = List.new[CVal]()
         base = env.len()
-        ce_copy(env, 0, base, work)
-        err = ce_resolve(cs, work)
+        ce_copy(env, 0, base, &work)
+        err = ce_resolve(cs, &work)
         if err.len() == 0
-            _a = ce_copy(work, base, work.len(), out)
+            _a = ce_copy(&work, base, work.len(), out)
             0
         list_free(work)
         err
 
-fn ce_eval_all(progs: List[TProgram] borrow, out: List[CVal] borrow) -> String ! alloc
+fn ce_eval_all(progs: &List[TProgram], out: &List[CVal]) -> String ! alloc
     ce_eval_all_go(progs, 0, progs.len(), out)
 
-fn ce_eval_all_go(progs: List[TProgram] borrow, i: Int, n: Int, out: List[CVal] borrow) -> String ! alloc
+fn ce_eval_all_go(progs: &List[TProgram], i: Int, n: Int, out: &List[CVal]) -> String ! alloc
     if i >= n
         ""
     else
-        err = ce_eval(progs.get(i).consts, out, out)
+        err = ce_eval(&progs.get(i).consts, out, out)
         if err.len() > 0
             err
         else
             ce_eval_all_go(progs, i + 1, n, out)
 
-fn ce_dup_name(cs: List[TConst] borrow, i: Int, n: Int) -> String ! alloc
+fn ce_dup_name(cs: &List[TConst], i: Int, n: Int) -> String ! alloc
     if i >= n
         ""
     else
         name = cs.get(i).name
-        if ce_named(cs, name, i + 1, n) == 1
+        if ce_named(cs, &name, i + 1, n) == 1
             "name `" + name + "` already defined"
         else
             ce_dup_name(cs, i + 1, n)
 
-fn ce_named(cs: List[TConst] borrow, name: String, i: Int, n: Int) -> Int ! alloc
+fn ce_named(cs: &List[TConst], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif cs.get(i).name.eq(name) == 1
@@ -79,7 +79,7 @@ fn ce_named(cs: List[TConst] borrow, name: String, i: Int, n: Int) -> Int ! allo
     else
         ce_named(cs, name, i + 1, n)
 
-fn ce_copy(src: List[CVal] borrow, i: Int, n: Int, out: List[CVal] borrow) -> Int ! alloc
+fn ce_copy(src: &List[CVal], i: Int, n: Int, out: &List[CVal]) -> Int ! alloc
     if i >= n
         0
     else
@@ -87,25 +87,25 @@ fn ce_copy(src: List[CVal] borrow, i: Int, n: Int, out: List[CVal] borrow) -> In
         out.push(CVal(v.name.dup(), v.kind, v.ival, v.text.dup()))
         ce_copy(src, i + 1, n, out)
 
-fn ce_resolve(cs: List[TConst] borrow, work: List[CVal] borrow) -> String ! alloc
+fn ce_resolve(cs: &List[TConst], work: &List[CVal]) -> String ! alloc
     pending = List.new[Int]()
-    ce_pending(cs, 0, cs.len(), pending)
-    ce_passes(cs, pending, work, pending.len())
+    ce_pending(cs, 0, cs.len(), &pending)
+    ce_passes(cs, &pending, work, pending.len())
 
-fn ce_pending(cs: List[TConst] borrow, i: Int, n: Int, out: List[Int] borrow) -> Int ! alloc
+fn ce_pending(cs: &List[TConst], i: Int, n: Int, out: &List[Int]) -> Int ! alloc
     if i >= n
         0
     else
         out.push(i)
         ce_pending(cs, i + 1, n, out)
 
-fn ce_passes(cs: List[TConst] borrow, pending: List[Int] borrow, work: List[CVal] borrow, left: Int) -> String ! alloc
+fn ce_passes(cs: &List[TConst], pending: &List[Int], work: &List[CVal], left: Int) -> String ! alloc
     if left == 0
         list_free(pending)
         ""
     else
         nxt = List.new[Int]()
-        step = ce_one_pass(cs, pending, 0, pending.len(), work, nxt)
+        step = ce_one_pass(cs, pending, 0, pending.len(), work, &nxt)
         if step.len() > 0
             _a = list_free(pending)
             _b = list_free(nxt)
@@ -117,23 +117,23 @@ fn ce_passes(cs: List[TConst] borrow, pending: List[Int] borrow, work: List[CVal
             "constant cycle involving `" + c.name + "`"
         else
             _a = list_free(pending)
-            ce_passes(cs, nxt, work, nxt.len())
+            ce_passes(cs, &nxt, work, nxt.len())
 
-fn ce_one_pass(cs: List[TConst] borrow, pending: List[Int] borrow, i: Int, n: Int, work: List[CVal] borrow, nxt: List[Int] borrow) -> String ! alloc
+fn ce_one_pass(cs: &List[TConst], pending: &List[Int], i: Int, n: Int, work: &List[CVal], nxt: &List[Int]) -> String ! alloc
     if i >= n
         ""
     else
         c = cs.get(pending.get(i))
-        if ce_waiting(c.expr, cs, work) == 1
+        if ce_waiting(&c.expr, cs, work) == 1
             _p = nxt.push(pending.get(i))
             ce_one_pass(cs, pending, i + 1, n, work, nxt)
         else
-            ev = ce_expr(c.expr, work)
+            ev = ce_expr(&c.expr, work)
             if ev.ok == 0
                 ev.err
             elsif c.ty.len() > 0
-                if c.ty.eq(ce_ty(ev.val)) == 0
-                    "constant `" + c.name + "` has type " + ce_ty(ev.val) + ", annotation is " + c.ty
+                if c.ty.eq(ce_ty(&ev.val)) == 0
+                    "constant `" + c.name + "` has type " + ce_ty(&ev.val) + ", annotation is " + c.ty
                 else
                     _p = work.push(CVal(c.name.dup(), ev.val.kind, ev.val.ival, ev.val.text.dup()))
                     ce_one_pass(cs, pending, i + 1, n, work, nxt)
@@ -141,14 +141,14 @@ fn ce_one_pass(cs: List[TConst] borrow, pending: List[Int] borrow, i: Int, n: In
                 _p = work.push(CVal(c.name.dup(), ev.val.kind, ev.val.ival, ev.val.text.dup()))
                 ce_one_pass(cs, pending, i + 1, n, work, nxt)
 
-fn ce_waiting(e: Expr, cs: List[TConst] borrow, work: List[CVal] borrow) -> Int ! alloc
+fn ce_waiting(e: &Expr, cs: &List[TConst], work: &List[CVal]) -> Int ! alloc
     match e
-        XIdent(s) => ce_waiting_ident(s, cs, work)
-        XBin(op, l, r) => ce_waiting_bin(l, r, cs, work)
-        XUnary(op, inner) => ce_waiting(inner, cs, work)
+        XIdent(s) => ce_waiting_ident(&s, cs, work)
+        XBin(op, l, r) => ce_waiting_bin(&l, &r, cs, work)
+        XUnary(op, inner) => ce_waiting(&inner, cs, work)
         _ => 0
 
-fn ce_waiting_ident(s: String, cs: List[TConst] borrow, work: List[CVal] borrow) -> Int ! alloc
+fn ce_waiting_ident(s: &String, cs: &List[TConst], work: &List[CVal]) -> Int ! alloc
     if ce_named(cs, s, 0, cs.len()) == 0
         0
     elsif ce_find(work, s) >= 0
@@ -156,16 +156,16 @@ fn ce_waiting_ident(s: String, cs: List[TConst] borrow, work: List[CVal] borrow)
     else
         1
 
-fn ce_waiting_bin(l: Expr, r: Expr, cs: List[TConst] borrow, work: List[CVal] borrow) -> Int ! alloc
+fn ce_waiting_bin(l: &Expr, r: &Expr, cs: &List[TConst], work: &List[CVal]) -> Int ! alloc
     if ce_waiting(l, cs, work) == 1
         1
     else
         ce_waiting(r, cs, work)
 
-fn ce_find(xs: List[CVal] borrow, name: String) -> Int ! alloc
+fn ce_find(xs: &List[CVal], name: &String) -> Int ! alloc
     ce_find_go(xs, name, xs.len() - 1)
 
-fn ce_find_go(xs: List[CVal] borrow, name: String, i: Int) -> Int ! alloc
+fn ce_find_go(xs: &List[CVal], name: &String, i: Int) -> Int ! alloc
     if i < 0
         -1
     elsif xs.get(i).name.eq(name) == 1
@@ -173,18 +173,18 @@ fn ce_find_go(xs: List[CVal] borrow, name: String, i: Int) -> Int ! alloc
     else
         ce_find_go(xs, name, i - 1)
 
-fn ce_expr(e: Expr, work: List[CVal] borrow) -> Ev ! alloc
+fn ce_expr(e: &Expr, work: &List[CVal]) -> Ev ! alloc
     match e
         XInt(n) => ce_ok(CVal("", 0, n, ""))
         XBool(n) => ce_ok(CVal("", 1, n, ""))
         XFloat(bits, txt) => ce_ok(CVal("", 2, bits, txt.dup()))
         XStr(s) => ce_ok(CVal("", 3, 0, s.dup()))
-        XIdent(s) => ce_ident(s, work)
-        XUnary(op, inner) => ce_unary(op, inner, work)
-        XBin(op, l, r) => ce_bin(op, l, r, work)
+        XIdent(s) => ce_ident(&s, work)
+        XUnary(op, inner) => ce_unary(&op, &inner, work)
+        XBin(op, l, r) => ce_bin(&op, &l, &r, work)
         _ => ce_bad("not a constant expression")
 
-fn ce_ident(name: String, work: List[CVal] borrow) -> Ev ! alloc
+fn ce_ident(name: &String, work: &List[CVal]) -> Ev ! alloc
     i = ce_find(work, name)
     if i < 0
         ce_bad("not a constant expression")
@@ -192,12 +192,12 @@ fn ce_ident(name: String, work: List[CVal] borrow) -> Ev ! alloc
         v = work.get(i)
         ce_ok(CVal("", v.kind, v.ival, v.text.dup()))
 
-fn ce_unary(op: String, inner: Expr, work: List[CVal] borrow) -> Ev ! alloc
+fn ce_unary(op: &String, inner: &Expr, work: &List[CVal]) -> Ev ! alloc
     ev = ce_expr(inner, work)
     if ev.ok == 0
         ev
     elsif op.eq("neg") == 1
-        ce_neg(ev.val)
+        ce_neg(&ev.val)
     elsif op.eq("not") == 1
         if ev.val.kind == 1
             ce_ok(CVal("", 1, 1 - ev.val.ival, ""))
@@ -206,15 +206,15 @@ fn ce_unary(op: String, inner: Expr, work: List[CVal] borrow) -> Ev ! alloc
     else
         ce_bad("not a constant expression")
 
-fn ce_neg(v: CVal) -> Ev ! alloc
+fn ce_neg(v: &CVal) -> Ev ! alloc
     match v.kind
         0 => ce_ok(CVal("", 0, 0 - v.ival, ""))
         2 =>
-            txt = ce_neg_text(v.text)
-            ce_ok(CVal("", 2, str_to_f64_bits(txt), txt))
+            txt = ce_neg_text(&v.text)
+            ce_ok(CVal("", 2, str_to_f64_bits(&txt), txt))
         _ => ce_bad("not a constant expression")
 
-fn ce_neg_text(txt: String) -> String ! alloc
+fn ce_neg_text(txt: &String) -> String ! alloc
     if txt.len() == 0
         txt
     elsif txt.char(0) == 45
@@ -222,7 +222,7 @@ fn ce_neg_text(txt: String) -> String ! alloc
     else
         "-" + txt
 
-fn ce_bin(op: String, l: Expr, r: Expr, work: List[CVal] borrow) -> Ev ! alloc
+fn ce_bin(op: &String, l: &Expr, r: &Expr, work: &List[CVal]) -> Ev ! alloc
     if op.eq("and") == 1
         ce_and(l, r, work)
     elsif op.eq("or") == 1
@@ -236,9 +236,9 @@ fn ce_bin(op: String, l: Expr, r: Expr, work: List[CVal] borrow) -> Ev ! alloc
             if rv.ok == 0
                 rv
             else
-                ce_bin_vals(op, lv.val, rv.val)
+                ce_bin_vals(op, &lv.val, &rv.val)
 
-fn ce_truth(v: CVal) -> Int ! alloc
+fn ce_truth(v: &CVal) -> Int ! alloc
     if v.kind == 1
         v.ival
     elsif v.kind == 0
@@ -249,12 +249,12 @@ fn ce_truth(v: CVal) -> Int ! alloc
     else
         -1
 
-fn ce_and(l: Expr, r: Expr, work: List[CVal] borrow) -> Ev ! alloc
+fn ce_and(l: &Expr, r: &Expr, work: &List[CVal]) -> Ev ! alloc
     lv = ce_expr(l, work)
     if lv.ok == 0
         lv
     else
-        t = ce_truth(lv.val)
+        t = ce_truth(&lv.val)
         if t < 0
             ce_bad("not a constant expression")
         elsif t == 0
@@ -264,18 +264,18 @@ fn ce_and(l: Expr, r: Expr, work: List[CVal] borrow) -> Ev ! alloc
             if rv.ok == 0
                 rv
             else
-                rt = ce_truth(rv.val)
+                rt = ce_truth(&rv.val)
                 if rt < 0
                     ce_bad("not a constant expression")
                 else
                     ce_ok(CVal("", 1, rt, ""))
 
-fn ce_or(l: Expr, r: Expr, work: List[CVal] borrow) -> Ev ! alloc
+fn ce_or(l: &Expr, r: &Expr, work: &List[CVal]) -> Ev ! alloc
     lv = ce_expr(l, work)
     if lv.ok == 0
         lv
     else
-        t = ce_truth(lv.val)
+        t = ce_truth(&lv.val)
         if t < 0
             ce_bad("not a constant expression")
         elsif t == 1
@@ -285,13 +285,13 @@ fn ce_or(l: Expr, r: Expr, work: List[CVal] borrow) -> Ev ! alloc
             if rv.ok == 0
                 rv
             else
-                rt = ce_truth(rv.val)
+                rt = ce_truth(&rv.val)
                 if rt < 0
                     ce_bad("not a constant expression")
                 else
                     ce_ok(CVal("", 1, rt, ""))
 
-fn ce_bin_vals(op: String, l: CVal, r: CVal) -> Ev ! alloc
+fn ce_bin_vals(op: &String, l: &CVal, r: &CVal) -> Ev ! alloc
     match op
         "add" => ce_add(l, r)
         "sub" => ce_iop(l, r, 0)
@@ -306,7 +306,7 @@ fn ce_bin_vals(op: String, l: CVal, r: CVal) -> Ev ! alloc
         "ge" => ce_cmp(l, r, 5)
         _ => ce_bad("not a constant expression")
 
-fn ce_add(l: CVal, r: CVal) -> Ev ! alloc
+fn ce_add(l: &CVal, r: &CVal) -> Ev ! alloc
     if l.kind == 0
         if r.kind == 0
             ce_ok(CVal("", 0, l.ival + r.ival, ""))
@@ -320,7 +320,7 @@ fn ce_add(l: CVal, r: CVal) -> Ev ! alloc
     else
         ce_bad("not a constant expression")
 
-fn ce_iop(l: CVal, r: CVal, which: Int) -> Ev ! alloc
+fn ce_iop(l: &CVal, r: &CVal, which: Int) -> Ev ! alloc
     if l.kind == 0 && r.kind == 0
         if which == 0
             ce_ok(CVal("", 0, l.ival - r.ival, ""))
@@ -329,7 +329,7 @@ fn ce_iop(l: CVal, r: CVal, which: Int) -> Ev ! alloc
     else
         ce_bad("not a constant expression")
 
-fn ce_div(l: CVal, r: CVal, which: Int) -> Ev ! alloc
+fn ce_div(l: &CVal, r: &CVal, which: Int) -> Ev ! alloc
     if l.kind == 0 && r.kind == 0
         if r.ival == 0
             ce_bad("division by zero")
@@ -340,7 +340,7 @@ fn ce_div(l: CVal, r: CVal, which: Int) -> Ev ! alloc
     else
         ce_bad("not a constant expression")
 
-fn ce_cmp(l: CVal, r: CVal, which: Int) -> Ev ! alloc
+fn ce_cmp(l: &CVal, r: &CVal, which: Int) -> Ev ! alloc
     if l.kind == 0 && r.kind == 0
         ce_ok(CVal("", 0, ce_cmp_bit(l.ival, r.ival, which), ""))
     else
@@ -377,21 +377,21 @@ fn ce_cmp_bit(a: Int, b: Int, which: Int) -> Int ! alloc
     else
         0
 
-fn ce_has(xs: List[CVal] borrow, name: String) -> Int ! alloc
+fn ce_has(xs: &List[CVal], name: &String) -> Int ! alloc
     if ce_find(xs, name) >= 0
         1
     else
         0
 
-fn ce_type_of(xs: List[CVal] borrow, name: String) -> String ! alloc
+fn ce_type_of(xs: &List[CVal], name: &String) -> String ! alloc
     i = ce_find(xs, name)
     if i < 0
         ""
     else
-        ce_ty(xs.get(i))
+        ce_ty(&xs.get(i))
 
 # Replace a use that is not shadowed by a local with the literal it names.
-fn ce_fold_fns(fns: List[TFn] borrow, i: Int, n: Int, vals: List[CVal] borrow) -> Int ! alloc
+fn ce_fold_fns(fns: &List[TFn], i: Int, n: Int, vals: &List[CVal]) -> Int ! alloc
     if vals.len() == 0
         0
     elsif i >= n
@@ -399,31 +399,31 @@ fn ce_fold_fns(fns: List[TFn] borrow, i: Int, n: Int, vals: List[CVal] borrow) -
     else
         f = fns.get(i)
         bound = List.new[String]()
-        ce_bind_params(f.params, 0, f.params.len(), bound)
-        body = ce_fold_block(f.body, vals, bound)
+        ce_bind_params(&f.params, 0, f.params.len(), &bound)
+        body = ce_fold_block(&f.body, vals, &bound)
         fns.set(i, TFn(f.name, f.params, body, f.ret, f.no_heap, f.arena, f.fx, f.tparams, f.recv, f.mkind, f.deprecated, f.tyat))
         _f = list_free(bound)
         ce_fold_fns(fns, i + 1, n, vals)
 
-fn ce_fold_progs(progs: List[TProgram] borrow, i: Int, n: Int, vals: List[CVal] borrow) -> Int ! alloc
+fn ce_fold_progs(progs: &List[TProgram], i: Int, n: Int, vals: &List[CVal]) -> Int ! alloc
     if i >= n
         0
     else
         tp = progs.get(i)
-        ce_fold_fns(tp.fns, 0, tp.fns.len(), vals)
+        ce_fold_fns(&tp.fns, 0, tp.fns.len(), vals)
         ce_fold_progs(progs, i + 1, n, vals)
 
-fn ce_bind_params(ps: List[TParam] borrow, i: Int, n: Int, bound: List[String] borrow) -> Int ! alloc
+fn ce_bind_params(ps: &List[TParam], i: Int, n: Int, bound: &List[String]) -> Int ! alloc
     if i >= n
         0
     else
         bound.push(ps.get(i).name)
         ce_bind_params(ps, i + 1, n, bound)
 
-fn ce_bound(bound: List[String] borrow, name: String) -> Int ! alloc
+fn ce_bound(bound: &List[String], name: &String) -> Int ! alloc
     ce_bound_go(bound, name, 0, bound.len())
 
-fn ce_bound_go(bound: List[String] borrow, name: String, i: Int, n: Int) -> Int ! alloc
+fn ce_bound_go(bound: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif bound.get(i).eq(name) == 1
@@ -431,63 +431,63 @@ fn ce_bound_go(bound: List[String] borrow, name: String, i: Int, n: Int) -> Int 
     else
         ce_bound_go(bound, name, i + 1, n)
 
-fn ce_fold_block(b: TBlock, vals: List[CVal] borrow, bound: List[String] borrow) -> TBlock ! alloc
+fn ce_fold_block(b: &TBlock, vals: &List[CVal], bound: &List[String]) -> TBlock ! alloc
     out = List.new[TStmt]()
-    ce_fold_stmts(b.stmts, 0, b.stmts.len(), vals, bound, out)
-    TBlock(out, ce_fold_expr(b.tail, vals, bound))
+    ce_fold_stmts(&b.stmts, 0, b.stmts.len(), vals, bound, &out)
+    TBlock(out, ce_fold_expr(&b.tail, vals, bound))
 
-fn ce_fold_stmts(xs: List[TStmt] borrow, i: Int, n: Int, vals: List[CVal] borrow, bound: List[String] borrow, out: List[TStmt] borrow) -> Int ! alloc
+fn ce_fold_stmts(xs: &List[TStmt], i: Int, n: Int, vals: &List[CVal], bound: &List[String], out: &List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
         st = xs.get(i)
         if st.kind == 1 && st.is_let == 1
-            _p = out.push(TStmt(st.kind, st.name, ce_fold_expr(st.expr, vals, bound), st.ty, st.is_let, st.target, st.frozen, st.stack, st.id))
+            _p = out.push(TStmt(st.kind, st.name, ce_fold_expr(&st.expr, vals, bound), st.ty, st.is_let, st.target, st.frozen, st.stack, st.id))
             bound.push(st.name)
             ce_fold_stmts(xs, i + 1, n, vals, bound, out)
         else
-            _p = out.push(TStmt(st.kind, st.name, ce_fold_expr(st.expr, vals, bound), st.ty, st.is_let, ce_fold_expr(st.target, vals, bound), st.frozen, st.stack, st.id))
+            _p = out.push(TStmt(st.kind, st.name, ce_fold_expr(&st.expr, vals, bound), st.ty, st.is_let, ce_fold_expr(&st.target, vals, bound), st.frozen, st.stack, st.id))
             ce_fold_stmts(xs, i + 1, n, vals, bound, out)
 
-fn ce_fold_expr(e: Expr, vals: List[CVal] borrow, bound: List[String] borrow) -> Expr ! alloc
+fn ce_fold_expr(e: &Expr, vals: &List[CVal], bound: &List[String]) -> Expr ! alloc
     match e
-        XIdent(s) => ce_fold_ident(s, vals, bound, e)
-        XBin(op, l, r) => XBin(op, ce_fold_expr(l, vals, bound), ce_fold_expr(r, vals, bound))
-        XUnary(op, inner) => XUnary(op, ce_fold_expr(inner, vals, bound))
-        XCall(nm, args, targs, xp) => XCall(nm, ce_fold_exprs(args, vals, bound), targs, xp)
-        XTo(place, inner) => XTo(place, ce_fold_expr(inner, vals, bound))
-        XField(base, fld) => XField(ce_fold_expr(base, vals, bound), fld)
-        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(ce_fold_expr(cond, vals, bound), ce_fold_block(then_b, vals, bound), ce_fold_block(else_b, vals, bound), has_else, elsifs)
-        XWhile(cond, body) => XWhile(ce_fold_expr(cond, vals, bound), ce_fold_block(body, vals, bound))
-        XTry(inner) => XTry(ce_fold_expr(inner, vals, bound))
-        XLambda(nm, body) => ce_fold_lambda(nm, body, vals, bound)
+        XIdent(s) => ce_fold_ident(&s, vals, bound, e)
+        XBin(op, l, r) => XBin(op, ce_fold_expr(&l, vals, bound), ce_fold_expr(&r, vals, bound))
+        XUnary(op, inner) => XUnary(op, ce_fold_expr(&inner, vals, bound))
+        XCall(nm, args, targs, xp) => XCall(nm, ce_fold_exprs(&args, vals, bound), targs, xp)
+        XTo(place, inner) => XTo(place, ce_fold_expr(&inner, vals, bound))
+        XField(base, fld) => XField(ce_fold_expr(&base, vals, bound), fld)
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(ce_fold_expr(&cond, vals, bound), ce_fold_block(&then_b, vals, bound), ce_fold_block(&else_b, vals, bound), has_else, elsifs)
+        XWhile(cond, body) => XWhile(ce_fold_expr(&cond, vals, bound), ce_fold_block(&body, vals, bound))
+        XTry(inner) => XTry(ce_fold_expr(&inner, vals, bound))
+        XLambda(nm, body) => ce_fold_lambda(&nm, &body, vals, bound)
         _ => e
 
-fn ce_fold_exprs(xs: List[Expr] borrow, vals: List[CVal] borrow, bound: List[String] borrow) -> List[Expr] ! alloc
+fn ce_fold_exprs(xs: &List[Expr], vals: &List[CVal], bound: &List[String]) -> List[Expr] ! alloc
     out = List.new[Expr]()
-    ce_fold_exprs_go(xs, 0, xs.len(), vals, bound, out)
+    ce_fold_exprs_go(xs, 0, xs.len(), vals, bound, &out)
     out
 
-fn ce_fold_exprs_go(xs: List[Expr] borrow, i: Int, n: Int, vals: List[CVal] borrow, bound: List[String] borrow, out: List[Expr] borrow) -> Int ! alloc
+fn ce_fold_exprs_go(xs: &List[Expr], i: Int, n: Int, vals: &List[CVal], bound: &List[String], out: &List[Expr]) -> Int ! alloc
     if i >= n
         0
     else
-        out.push(ce_fold_expr(xs.get(i), vals, bound))
+        out.push(ce_fold_expr(&xs.get(i), vals, bound))
         ce_fold_exprs_go(xs, i + 1, n, vals, bound, out)
 
-fn ce_fold_lambda(nm: String, body: Expr, vals: List[CVal] borrow, bound: List[String] borrow) -> Expr ! alloc
+fn ce_fold_lambda(nm: &String, body: &Expr, vals: &List[CVal], bound: &List[String]) -> Expr ! alloc
     bound.push(nm.dup())
     XLambda(nm, ce_fold_expr(body, vals, bound))
 
-fn ce_fold_ident(name: String, vals: List[CVal] borrow, bound: List[String] borrow, e: Expr) -> Expr ! alloc
+fn ce_fold_ident(name: &String, vals: &List[CVal], bound: &List[String], e: &Expr) -> Expr ! alloc
     if ce_bound(bound, name) == 1
         e
     elsif ce_find(vals, name) < 0
         e
     else
-        ce_literal(vals.get(ce_find(vals, name)))
+        ce_literal(&vals.get(ce_find(vals, name)))
 
-fn ce_literal(v: CVal) -> Expr ! alloc
+fn ce_literal(v: &CVal) -> Expr ! alloc
     match v.kind
         1 => XBool(v.ival)
         2 => XFloat(v.ival, v.text.dup())

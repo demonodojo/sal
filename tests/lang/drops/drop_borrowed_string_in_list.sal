@@ -3,7 +3,7 @@
 fn f(s: String) -> Int ! alloc
     names = List.new[String]()
     names.push(s)
-    list_len(names)
+    list_len(&names)
 
 fn main() -> Int ! alloc
     s = int_to_str(12345)

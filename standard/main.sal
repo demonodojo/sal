@@ -25,28 +25,28 @@ struct FixArgs
     hi: Int
     bad: Int
 
-fn run_lex(src: String) -> Lex ! alloc
+fn run_lex(src: &String) -> Lex ! alloc
     lex(src)
 
-fn run_all_cops(src: String) -> CopsResult ! alloc
+fn run_all_cops(src: &String) -> CopsResult ! alloc
     lx = run_lex(src)
     offs = List.new[Off]()
     if lx.status != LEX_OK()
         CopsResult(lx.status, offs)
     else
-        cop_dupstring(src, lx, offs)
-        cop_elsif(src, lx, offs)
-        cop_matchif(src, lx, offs)
-        cop_and(src, lx, offs)
-        cop_stringplus(src, lx, offs)
-        cop_plusliteral(src, lx, offs)
-        cop_unusedbinding(src, lx, offs)
-        cop_method(src, lx, offs)
-        cop_stdapi(src, lx, offs)
-        cop_constfn(src, lx, offs)
+        cop_dupstring(src, &lx, &offs)
+        cop_elsif(src, &lx, &offs)
+        cop_matchif(src, &lx, &offs)
+        cop_and(src, &lx, &offs)
+        cop_stringplus(src, &lx, &offs)
+        cop_plusliteral(src, &lx, &offs)
+        cop_unusedbinding(src, &lx, &offs)
+        cop_method(src, &lx, &offs)
+        cop_stdapi(src, &lx, &offs)
+        cop_constfn(src, &lx, &offs)
         CopsResult(LEX_OK(), offs)
 
-fn byte_line_col(src: String, pos: Int, i: Int, line: Int, col: Int) -> LineCol ! alloc
+fn byte_line_col(src: &String, pos: Int, i: Int, line: Int, col: Int) -> LineCol ! alloc
     if i >= pos
         LineCol(line, col)
     else
@@ -56,20 +56,20 @@ fn byte_line_col(src: String, pos: Int, i: Int, line: Int, col: Int) -> LineCol 
         else
             byte_line_col(src, pos, i + 1, line, col + 1)
 
-fn format_off(path: String, src: String, o: Off) -> String ! alloc
+fn format_off(path: &String, src: &String, o: &Off) -> String ! alloc
     start = o.start
     lc = byte_line_col(src, start, 0, 1, 1)
     path + ":" + lc.line.to_str() + ":" + lc.col.to_str() + ": " + o.code + ": " + o.msg
 
-fn json_escape(s: String) -> String ! alloc
+fn json_escape(s: &String) -> String ! alloc
     json_escape_go(s, 0, s.len(), d"")
 
-fn json_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
+fn json_escape_go(s: &String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         piece = json_escape_byte(s.char(i))
-        json_escape_go(s, i + 1, n, acc + piece)
+        json_escape_go(s, i + 1, n, (acc + piece))
 
 fn json_escape_byte(c: Int) -> String ! alloc
     if c == 34
@@ -98,47 +98,47 @@ fn json_u(c: Int) -> String ! alloc
     lo = c - hi * 16
     "\\u00" + hex_digit(hi) + hex_digit(lo)
 
-fn json_fix(o: Off) -> String ! alloc
+fn json_fix(o: &Off) -> String ! alloc
     if o.has_fix() == 0
         d"null"
     else
-        "\"" + json_escape(o.fix) + "\""
+        "\"" + json_escape(&o.fix) + "\""
 
-fn format_off_json(src: String, o: Off) -> String ! alloc
+fn format_off_json(src: &String, o: &Off) -> String ! alloc
     start = o.start
     endb = o.end
     lc = byte_line_col(src, start, 0, 1, 1)
-    "{\"code\":\"" + json_escape(o.code) + "\",\"message\":\"" + json_escape(o.msg) + "\",\"span\":{\"start\":" + start.to_str() + ",\"end\":" + endb.to_str() + ",\"line\":" + lc.line.to_str() + ",\"col\":" + lc.col.to_str() + "},\"fix\":" + json_fix(o) + "}"
+    "{\"code\":\"" + json_escape(&o.code) + "\",\"message\":\"" + json_escape(&o.msg) + "\",\"span\":{\"start\":" + start.to_str() + ",\"end\":" + endb.to_str() + ",\"line\":" + lc.line.to_str() + ",\"col\":" + lc.col.to_str() + "},\"fix\":" + json_fix(o) + "}"
 
-fn print_offs_json(src: String, offs: List[Off]) -> Int ! io, alloc
+fn print_offs_json(src: &String, offs: &List[Off]) -> Int ! io, alloc
     print_offs_json_go(src, offs, 0, offs.len())
 
-fn print_offs_json_go(src: String, offs: List[Off], i: Int, n: Int) -> Int ! io, alloc
+fn print_offs_json_go(src: &String, offs: &List[Off], i: Int, n: Int) -> Int ! io, alloc
     if i >= n
         0
     else
         o = offs.get(i)
-        line = format_off_json(src, o)
+        line = format_off_json(src, &o)
         eprint_str(line + "\n")
         print_offs_json_go(src, offs, i + 1, n)
 
-fn print_offs(path: String, src: String, offs: List[Off]) -> Int ! io, alloc
+fn print_offs(path: &String, src: &String, offs: &List[Off]) -> Int ! io, alloc
     print_offs_go(path, src, offs, 0, offs.len())
 
-fn print_offs_go(path: String, src: String, offs: List[Off], i: Int, n: Int) -> Int ! io, alloc
+fn print_offs_go(path: &String, src: &String, offs: &List[Off], i: Int, n: Int) -> Int ! io, alloc
     if i >= n
         0
     else
         o = offs.get(i)
-        line = format_off(path, src, o)
+        line = format_off(path, src, &o)
         eprint_str(line + "\n")
         print_offs_go(path, src, offs, i + 1, n)
 
-fn fix_to_point(src: String, pass: Int, max_pass: Int) -> String ! alloc
+fn fix_to_point(src: &String, pass: Int, max_pass: Int) -> String ! alloc
     ranged = fix_to_point_span(src, pass, max_pass, 0, 0, 0)
     ranged.text
 
-fn fix_to_point_span(src: String, pass: Int, max_pass: Int, lo: Int, hi: Int, limited: Int) -> RangedText ! alloc
+fn fix_to_point_span(src: &String, pass: Int, max_pass: Int, lo: Int, hi: Int, limited: Int) -> RangedText ! alloc
     if pass >= max_pass
         RangedText(src, lo, hi)
     else
@@ -146,22 +146,22 @@ fn fix_to_point_span(src: String, pass: Int, max_pass: Int, lo: Int, hi: Int, li
         if pack.status != LEX_OK()
             RangedText(src, lo, hi)
         elsif limited == 0
-            next = apply_all_fixes(src, pack.offs)
+            next = apply_all_fixes(src, &pack.offs)
             if src.eq(next) == 1
                 RangedText(src, lo, hi)
             else
-                fix_to_point_span(next, pass + 1, max_pass, lo, hi, 0)
+                fix_to_point_span(&next, pass + 1, max_pass, lo, hi, 0)
         else
-            ranged = apply_ranged_fixes(src, pack.offs, lo, hi)
+            ranged = apply_ranged_fixes(src, &pack.offs, lo, hi)
             lo2 = ranged.lo
             hi2 = ranged.hi
             next = ranged.text
             if src.eq(next) == 1
                 RangedText(next, lo2, hi2)
             else
-                fix_to_point_span(next, pass + 1, max_pass, lo2, hi2, 1)
+                fix_to_point_span(&next, pass + 1, max_pass, lo2, hi2, 1)
 
-fn run_check(path: String, src: String, as_json: Int) -> Int ! io, alloc
+fn run_check(path: &String, src: &String, as_json: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
     if pack.status != LEX_OK()
         eprint_str(d"lex error\n")
@@ -171,10 +171,10 @@ fn run_check(path: String, src: String, as_json: Int) -> Int ! io, alloc
         if n == 0
             0
         elsif as_json == 1
-            print_offs_json(src, pack.offs)
+            print_offs_json(src, &pack.offs)
             1
         else
-            print_offs(path, src, pack.offs)
+            print_offs(path, src, &pack.offs)
             1
 
 fn wants_json() -> Int ! alloc
@@ -185,10 +185,10 @@ fn wants_json() -> Int ! alloc
     else
         0
 
-fn parse_nonneg(s: String) -> Int ! alloc
+fn parse_nonneg(s: &String) -> Int ! alloc
     parse_nonneg_go(s, 0, s.len(), 0, 0)
 
-fn parse_nonneg_go(s: String, i: Int, n: Int, acc: Int, ok: Int) -> Int ! alloc
+fn parse_nonneg_go(s: &String, i: Int, n: Int, acc: Int, ok: Int) -> Int ! alloc
     if i >= n
         if ok == 1
             acc
@@ -208,18 +208,18 @@ fn parse_fix_args() -> FixArgs ! alloc
     if flag.eq("") == 1
         FixArgs(0, 0, 0, 0)
     else
-        parse_fix_args_flag(flag)
+        parse_fix_args_flag(&flag)
 
-fn parse_fix_args_flag(flag: String) -> FixArgs ! alloc
+fn parse_fix_args_flag(flag: &String) -> FixArgs ! alloc
     if flag.eq("--start") == 1
         parse_fix_range()
     else
         FixArgs(0, 0, 0, 1)
 
 fn parse_fix_range() -> FixArgs ! alloc
-    lo = parse_nonneg(argv(4))
+    lo = parse_nonneg(&argv(4))
     endf = argv(5)
-    hi = parse_nonneg(argv(6))
+    hi = parse_nonneg(&argv(6))
     extra = argv(7)
     if extra.eq("") == 0
         FixArgs(0, 0, 0, 1)
@@ -240,7 +240,7 @@ fn clamp_max(x: Int, n: Int) -> Int
     else
         x
 
-fn fixed_source(src: String, args: FixArgs) -> String ! alloc
+fn fixed_source(src: &String, args: FixArgs) -> String ! alloc
     if args.limited == 0
         fix_to_point(src, 0, 16)
     else
@@ -250,7 +250,7 @@ fn fixed_source(src: String, args: FixArgs) -> String ! alloc
         ranged = fix_to_point_span(src, 0, 16, lo, hi, 1)
         ranged.text
 
-fn report_fixed(path: String, src: String) -> Int ! io, alloc
+fn report_fixed(path: &String, src: &String) -> Int ! io, alloc
     pack = run_all_cops(src)
     if pack.status != LEX_OK()
         2
@@ -259,10 +259,10 @@ fn report_fixed(path: String, src: String) -> Int ! io, alloc
         if n == 0
             0
         else
-            print_offs(path, src, pack.offs)
+            print_offs(path, src, &pack.offs)
             1
 
-fn run_fix(path: String, src: String) -> Int ! io, alloc
+fn run_fix(path: &String, src: &String) -> Int ! io, alloc
     args = parse_fix_args()
     if args.bad == 1
         eprint_str(d"usage: fix FILE [--start N --end M]\n")
@@ -270,7 +270,7 @@ fn run_fix(path: String, src: String) -> Int ! io, alloc
     else
         run_fix_checked(path, src, args)
 
-fn run_fix_checked(path: String, src: String, args: FixArgs) -> Int ! io, alloc
+fn run_fix_checked(path: &String, src: &String, args: FixArgs) -> Int ! io, alloc
     pack = run_all_cops(src)
     if pack.status != LEX_OK()
         eprint_str(d"lex error\n")
@@ -278,18 +278,18 @@ fn run_fix_checked(path: String, src: String, args: FixArgs) -> Int ! io, alloc
     else
         fixed = fixed_source(src, args)
         write_file(path, fixed)
-        report_fixed(path, fixed)
+        report_fixed(path, &fixed)
 
 fn main() -> Int ! io, alloc
     cmd = argv(1)
     path = argv(2)
     src = read_file(path)
     if cmd.eq("check") == 1
-        run_check(path, src, wants_json())
+        run_check(&path, &src, wants_json())
     else
-        main_fix_or_usage(cmd, path, src)
+        main_fix_or_usage(&cmd, &path, &src)
 
-fn main_fix_or_usage(cmd: String, path: String, src: String) -> Int ! io, alloc
+fn main_fix_or_usage(cmd: &String, path: &String, src: &String) -> Int ! io, alloc
     if cmd.eq("fix") == 1
         run_fix(path, src)
     else

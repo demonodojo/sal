@@ -3,13 +3,13 @@ fn ty_trim(t: Int) -> String ! alloc
     if t == 0
         "Unknown"
     else
-        ty_trim_go(str_from_int(t))
+        ty_trim_go(&str_from_int(t))
 
-fn ty_trim_go(s: String) -> String ! alloc
+fn ty_trim_go(s: &String) -> String ! alloc
     n = s.len()
     if n > 0
         if s.char(n - 1) == 32
-            ty_trim_go(s.slice(0, n - 1))
+            ty_trim_go(&s.slice(0, n - 1))
         else
             s
     else
@@ -17,7 +17,7 @@ fn ty_trim_go(s: String) -> String ! alloc
 
 # ---- tensor shapes ----
 # `Tensor[F32, 2, 3] on cpu` -> parts ["F32", "2", "3"] (string handles).
-fn tt_open(s: String, i: Int, n: Int) -> Int ! alloc
+fn tt_open(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
     elsif s.char(i) == 91
@@ -25,13 +25,13 @@ fn tt_open(s: String, i: Int, n: Int) -> Int ! alloc
     else
         tt_open(s, i + 1, n)
 
-fn tt_trim_left(s: String) -> String ! alloc
+fn tt_trim_left(s: &String) -> String ! alloc
     if s.len() > 0 && s.char(0) == 32
-        tt_trim_left(s.slice(1, s.len()))
+        tt_trim_left(&s.slice(1, s.len()))
     else
         s
 
-fn tt_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int ! alloc
+fn tt_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
@@ -40,13 +40,13 @@ fn tt_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int !
             tt_parts(s, i + 1, n, from, depth + 1, out)
         elsif ch == 93
             if depth == 0
-                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
+                _p = vec_push(out, ty_trim_go(&tt_trim_left(&s.slice(from, i))).to_int())
                 out
             else
                 tt_parts(s, i + 1, n, from, depth - 1, out)
         elsif ch == 44
             if depth == 0
-                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
+                _p = vec_push(out, ty_trim_go(&tt_trim_left(&s.slice(from, i))).to_int())
                 tt_parts(s, i + 1, n, i + 1, depth, out)
             else
                 tt_parts(s, i + 1, n, from, depth, out)
@@ -55,14 +55,14 @@ fn tt_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int !
 
 fn tt_split(t: Int) -> Int ! alloc
     s = ty_trim(t)
-    o = tt_open(s, 0, s.len())
-    tt_parts(s, o, s.len(), o, 0, vec_new())
+    o = tt_open(&s, 0, s.len())
+    tt_parts(&s, o, s.len(), o, 0, vec_new())
 
 fn tt_place(t: Int) -> String ! alloc
     s = ty_trim(t)
-    tt_place_go(s, s.len() - 1, s.len())
+    tt_place_go(&s, s.len() - 1, s.len())
 
-fn tt_place_go(s: String, i: Int, n: Int) -> String ! alloc
+fn tt_place_go(s: &String, i: Int, n: Int) -> String ! alloc
     if i < 0
         "cpu"
     elsif s.char(i) == 32
@@ -88,13 +88,13 @@ fn tt_join_dims(parts: Int, lo: Int, hi: Int, acc: String) -> String ! alloc
     if lo >= hi
         acc
     else
-        tt_join_dims(parts, lo + 1, hi, acc + ", " + str_from_int(vec_get(parts, lo)))
+        tt_join_dims(parts, lo + 1, hi, (acc + ", " + str_from_int(vec_get(parts, lo))))
 
 # Text `Tensor[F32, 2, 3] on cpu` of the `a @ b` result, or 0 when a shape is not literal.
 fn tt_dim_val(d: Int) -> Int ! alloc
-    tt_dim_go(str_from_int(d), 0, str_from_int(d).len(), 0)
+    tt_dim_go(&str_from_int(d), 0, str_from_int(d).len(), 0)
 
-fn tt_dim_go(s: String, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn tt_dim_go(s: &String, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
@@ -114,13 +114,13 @@ fn tt_matmul_text(ta: Int, tb: Int) -> Int ! alloc
 
 # ---- typed forms: type texts as `String`, shape parts as `List[String]` ----
 # "" stands for an absent type and trims to "Unknown".
-fn ts_trim(s: String) -> String ! alloc
+fn ts_trim(s: &String) -> String ! alloc
     if s.len() == 0
         "Unknown"
     else
         ty_trim_go(s)
 
-fn ts_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: List[String]) -> Int ! alloc
+fn ts_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: &List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -129,13 +129,13 @@ fn ts_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: List[String])
             ts_parts(s, i + 1, n, from, depth + 1, out)
         elsif ch == 93
             if depth == 0
-                _p = out.push(ty_trim_go(tt_trim_left(s.slice(from, i))).dup())
+                _p = out.push(ty_trim_go(&tt_trim_left(&s.slice(from, i))).dup())
                 0
             else
                 ts_parts(s, i + 1, n, from, depth - 1, out)
         elsif ch == 44
             if depth == 0
-                _p = out.push(ty_trim_go(tt_trim_left(s.slice(from, i))).dup())
+                _p = out.push(ty_trim_go(&tt_trim_left(&s.slice(from, i))).dup())
                 ts_parts(s, i + 1, n, i + 1, depth, out)
             else
                 ts_parts(s, i + 1, n, from, depth, out)
@@ -143,18 +143,18 @@ fn ts_parts(s: String, i: Int, n: Int, from: Int, depth: Int, out: List[String])
             ts_parts(s, i + 1, n, from, depth, out)
 
 # `Tensor[F32, 2, 3] on cpu` -> ["F32", "2", "3"].
-fn ts_split(t: String) -> List[String] ! alloc
+fn ts_split(t: &String) -> List[String] ! alloc
     s = ts_trim(t)
-    o = tt_open(s, 0, s.len())
+    o = tt_open(&s, 0, s.len())
     out = List.new[String]()
-    ts_parts(s, o, s.len(), o, 0, out)
+    ts_parts(&s, o, s.len(), o, 0, &out)
     out
 
-fn ts_place(t: String) -> String ! alloc
+fn ts_place(t: &String) -> String ! alloc
     s = ts_trim(t)
-    tt_place_go(s, s.len() - 1, s.len())
+    tt_place_go(&s, s.len() - 1, s.len())
 
-fn ts_static(d: String) -> Int ! alloc
+fn ts_static(d: &String) -> Int ! alloc
     if d.len() == 0
         0
     elsif d.char(0) >= 48
@@ -165,11 +165,11 @@ fn ts_static(d: String) -> Int ! alloc
     else
         0
 
-fn ts_dim(d: String) -> Int ! alloc
+fn ts_dim(d: &String) -> Int ! alloc
     tt_dim_go(d, 0, d.len(), 0)
 
-fn ts_join(parts: List[String], lo: Int, hi: Int, acc: String) -> String ! alloc
+fn ts_join(parts: &List[String], lo: Int, hi: Int, acc: String) -> String ! alloc
     if lo >= hi
         acc
     else
-        ts_join(parts, lo + 1, hi, acc + ", " + parts.get(lo))
+        ts_join(parts, lo + 1, hi, (acc + ", " + parts.get(lo)))

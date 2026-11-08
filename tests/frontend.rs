@@ -3,6 +3,7 @@
 
 use sal_compiler::ast::{
     BinOp, Dim, Effect, Expr, Item, Pattern, Place, Stmt, StringPart, TensorElem, Type, TypeArg,
+    UnOp,
 };
 use sal_compiler::fmt::format_program;
 use sal_compiler::parser::parse;
@@ -22,7 +23,7 @@ fn assert_fmt_idempotent(src: &str) {
 #[test]
 fn module_const_parses_without_annotation() {
     let p = assert_parse("MAX = 1 + 2\nNAME: String = \"sal\"\n");
-    assert_eq!(p.schema_version, 5);
+    assert_eq!(p.schema_version, 6);
     let Item::Const(a) = &p.items[0] else { panic!("expected const") };
     assert_eq!(a.name, "MAX");
     assert!(a.ty.is_none());
@@ -30,7 +31,7 @@ fn module_const_parses_without_annotation() {
     assert_eq!(b.name, "NAME");
     assert!(matches!(&b.ty, Some(Type::Named { name, .. }) if name == "String"));
     let j = serde_json::to_string(&p).unwrap();
-    assert!(j.contains("\"schema_version\":5") || j.contains("\"schema_version\": 5"));
+    assert!(j.contains("\"schema_version\":6") || j.contains("\"schema_version\": 6"));
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }
@@ -57,7 +58,7 @@ fn examples_parse() {
         let src = std::fs::read_to_string(format!("examples/{name}.sal")).unwrap();
         let p = assert_parse(&src);
         assert!(!p.items.is_empty(), "{name} has no items");
-        assert_eq!(p.schema_version, 5);
+        assert_eq!(p.schema_version, 6);
     }
 }
 
@@ -330,9 +331,9 @@ fn id[T](x: T) -> T
 fn ast_json_roundtrip_with_schema() {
     let src = std::fs::read_to_string("examples/gpu_roundtrip.sal").unwrap();
     let p = assert_parse(&src);
-    assert_eq!(p.schema_version, 5);
+    assert_eq!(p.schema_version, 6);
     let j = serde_json::to_string(&p).unwrap();
-    assert!(j.contains("\"schema_version\":5") || j.contains("\"schema_version\": 5"));
+    assert!(j.contains("\"schema_version\":6") || j.contains("\"schema_version\": 6"));
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }
@@ -949,4 +950,47 @@ fn main() -> Int ! alloc
     assert_eq!(s.protocols.len(), 1);
     assert_eq!(s.protocols[0].name, "Show");
     assert_fmt_idempotent(src);
+}
+
+#[test]
+fn ref_types_borrows_and_deref_parse_and_fmt() {
+    let src = "\
+struct Point
+    x: Int
+
+fn look['a](s: &'a String) -> &'a String
+    s
+
+method Point.borrow(&mut self) -> Int
+    self.x
+
+fn main() -> Int
+    let x = 1
+    let r = &mut x
+    *r
+";
+    let p = assert_parse(src);
+    let Item::Fn(look) = p.items.iter().find(|i| matches!(i, Item::Fn(f) if f.name == "look")).unwrap() else {
+        panic!("look")
+    };
+    assert!(matches!(&look.params[0].ty, Type::Ref { mutable: false, lifetime: Some(lt), .. } if lt == "a"));
+    assert!(matches!(&look.ret, Type::Ref { lifetime: Some(lt), .. } if lt == "a"));
+    assert!(look.type_params.iter().any(|t| t == "'a"));
+    let Item::Fn(method) = p.items.iter().find(|i| matches!(i, Item::Fn(f) if f.name == "borrow")).unwrap() else {
+        panic!("method")
+    };
+    assert_eq!(method.self_ref, 2);
+    let Item::Fn(main) = p.items.iter().find(|i| matches!(i, Item::Fn(f) if f.name == "main")).unwrap() else {
+        panic!("main")
+    };
+    assert!(matches!(
+        main.body.stmts.last(),
+        Some(Stmt::Let { init: Expr::Unary { op: UnOp::RefMut, .. }, .. })
+    ));
+    assert!(matches!(main.body.tail.as_deref(), Some(Expr::Unary { op: UnOp::Deref, .. })));
+    assert_fmt_idempotent(src);
+    let formatted = format_program(&p);
+    assert!(formatted.contains("&'a String"), "{formatted}");
+    assert!(formatted.contains("&mut self"), "{formatted}");
+    assert!(formatted.contains("&mut x"), "{formatted}");
 }

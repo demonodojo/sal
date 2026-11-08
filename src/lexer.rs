@@ -63,6 +63,8 @@ pub enum TokenKind {
     Ge,
     Percent,
     Amp,
+    /// `'` of a lifetime `'a`. The name is the following `IDENT`.
+    Tick,
     Pipe,
     Caret,
     Shl,
@@ -261,6 +263,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             b'/' => TokenKind::Slash,
             b'%' => TokenKind::Percent,
             b'&' => TokenKind::Amp,
+            b'\'' => TokenKind::Tick,
             b'|' => TokenKind::Pipe,
             b'^' => TokenKind::Caret,
             b'<' => TokenKind::Lt,

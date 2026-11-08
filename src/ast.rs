@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
 
-pub const AST_SCHEMA_VERSION: u32 = 5;
+pub const AST_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Program {
@@ -93,6 +93,9 @@ pub struct FnDef {
     /// `method T.m(self take, …)`: the mode written for the implicit `self`.
     #[serde(default)]
     pub self_mode: ParamMode,
+    /// `0` by value, `1` for `&self`, `2` for `&mut self`.
+    #[serde(default)]
+    pub self_ref: u8,
     #[serde(default)]
     pub method_kind: MethodKind,
     #[serde(default)]
@@ -170,6 +173,13 @@ pub enum Type {
         params: Vec<Type>,
         ret: Box<Type>,
         effects: Vec<Effect>,
+        span: Span,
+    },
+    /// `&T` or `&mut T`. `lifetime` is `Some("a")` for `&'a T`, `None` before elision.
+    Ref {
+        mutable: bool,
+        lifetime: Option<String>,
+        inner: Box<Type>,
         span: Span,
     },
 }
@@ -384,6 +394,12 @@ pub enum BinOp {
 pub enum UnOp {
     Neg,
     Not,
+    /// `&expr`
+    Ref,
+    /// `&mut expr`
+    RefMut,
+    /// `*expr`
+    Deref,
 }
 
 /// Una rama `elsif cond` seguida de su suite.
@@ -491,6 +507,9 @@ pub struct ProtocolMethod {
     pub ret: Type,
     pub effects: Vec<Effect>,
     pub self_mode: ParamMode,
+    /// `0` by value, `1` for `&self`, `2` for `&mut self`.
+    #[serde(default)]
+    pub self_ref: u8,
     pub span: Span,
 }
 
@@ -524,7 +543,8 @@ impl Type {
             Type::Named { span, .. }
             | Type::Qualified { span, .. }
             | Type::Tensor { span, .. }
-            | Type::Fn { span, .. } => *span,
+            | Type::Fn { span, .. }
+            | Type::Ref { span, .. } => *span,
         }
     }
 }

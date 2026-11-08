@@ -77,7 +77,7 @@ Asignación: una línea `expr "=" expr` solo es `Stmt::Assign` si la izquierda e
 - `TypeArg::Type(Type)`
 - `TypeArg::Dim(Dim)` para `INT` y `?`
 
-`load[F32, 4, 4]("w.salt")` guarda `F32` como tipo y `4`, `4` como dimensiones. El JSON lo dice en `schema_version`. Una constante de módulo es `Item::Const`: `schema_version` 5.
+`load[F32, 4, 4]("w.salt")` guarda `F32` como tipo y `4`, `4` como dimensiones. El JSON lo dice en `schema_version`. Una constante de módulo es `Item::Const`: `schema_version` 6.
 
 Un `@` o la palabra `parallel` en el arranque es `E_PARSE`.
 

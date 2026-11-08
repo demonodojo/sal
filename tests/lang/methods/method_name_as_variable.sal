@@ -5,7 +5,7 @@ fn pick(method: Int) -> Int
 struct Q
     v: Int
 
-method Q.get() -> Int
+method Q.get(&self) -> Int
     self.v
 
 fn main() -> Int

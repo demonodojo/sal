@@ -5,18 +5,18 @@ import "../front/lexer.sal"
 import "../ast/tshape.sal"
 import "../ast/tast.sal"
 
-fn str_replace_chr(s: String, ch: Int, rep: String) -> String ! alloc
+fn str_replace_chr(s: &String, ch: Int, rep: &String) -> String ! alloc
     str_replace_chr_go(s, 0, str_len(s), ch, rep, "")
 
-fn str_replace_chr_go(s: String, i: Int, n: Int, ch: Int, rep: String, acc: String) -> String ! alloc
+fn str_replace_chr_go(s: &String, i: Int, n: Int, ch: Int, rep: &String, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         c = str_char(s, i)
         if c == ch
-            str_replace_chr_go(s, i + 1, n, ch, rep, acc + rep)
+            str_replace_chr_go(s, i + 1, n, ch, rep, (acc + rep))
         else
-            str_replace_chr_go(s, i + 1, n, ch, rep, acc + char_to_str(c))
+            str_replace_chr_go(s, i + 1, n, ch, rep, (acc + char_to_str(c)))
 
 fn implicit_qualifier(import_path: String) -> String ! alloc
     base = import_path
@@ -27,17 +27,17 @@ fn implicit_qualifier(import_path: String) -> String ! alloc
             base = base
     else
         base = base
-    seg = basename_path(base)
+    seg = basename_path(&base)
     if str_len(seg) == 0
         ""
     else
         seg
 
-fn modid_from_path(path: String, proot: String) -> String ! alloc
+fn modid_from_path(path: &String, proot: &String) -> String ! alloc
     pl = str_len(proot)
     n = str_len(path)
     rel = modid_rel_path(path, proot, n, pl)
-    s = str_replace_chr(rel, 47, "__")
+    s = str_replace_chr(&rel, 47, &"__")
     if str_len(s) >= 4
         if str_eq(str_slice(s, str_len(s) - 4, str_len(s)), ".sal") == 1
             s = str_slice(s, 0, str_len(s) - 4)
@@ -45,13 +45,13 @@ fn modid_from_path(path: String, proot: String) -> String ! alloc
             s = s
     else
         s = s
-    s2 = str_replace_chr(s, 46, "_")
+    s2 = str_replace_chr(&s, 46, &"_")
     if str_len(s2) == 0
         "root"
     else
         s2
 
-fn modid_rel_path(path: String, proot: String, n: Int, pl: Int) -> String ! alloc
+fn modid_rel_path(path: &String, proot: &String, n: Int, pl: Int) -> String ! alloc
     if pl == 0
         path
     elsif n <= pl + 1
@@ -63,36 +63,36 @@ fn modid_rel_path(path: String, proot: String, n: Int, pl: Int) -> String ! allo
     else
         str_slice(path, pl + 1, n)
 
-fn link_name(modid: String, name: String, clashing: Int) -> String ! alloc
+fn link_name(modid: &String, name: &String, clashing: Int) -> String ! alloc
     if clashing == 1
         modid + "__" + name
     else
         name
 
-fn name_clash_count(order: Graph, n: Int, name: Int) -> Int ! alloc
+fn name_clash_count(order: &Graph, n: Int, name: Int) -> Int ! alloc
     name_clash_count_go(order, 0, n, name, 0)
 
-fn name_clash_count_go(order: Graph, i: Int, n: Int, name: Int, acc: Int) -> Int ! alloc
+fn name_clash_count_go(order: &Graph, i: Int, n: Int, name: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
-        if module_defines(list_get(order.progs, i), str_from_int(name)) == 1
+        if module_defines(&list_get(&order.progs, i), &str_from_int(name)) == 1
             name_clash_count_go(order, i + 1, n, name, acc + 1)
         else
             name_clash_count_go(order, i + 1, n, name, acc)
 
 # 1 when the module defines a fn or a struct called `name`.
-fn module_defines(tp: TProgram, name: String) -> Int ! alloc
-    if tt_fn_index(tp.fns, name, 0) >= 0
+fn module_defines(tp: &TProgram, name: &String) -> Int ! alloc
+    if tt_fn_index(&tp.fns, name, 0) >= 0
         1
-    elsif tt_struct_find(tp.structs, name) >= 0
+    elsif tt_struct_find(&tp.structs, name) >= 0
         1
-    elsif const_defined(tp.consts, name, 0, list_len(tp.consts)) == 1
+    elsif const_defined(&tp.consts, name, 0, list_len(&tp.consts)) == 1
         1
     else
         0
 
-fn const_defined(cs: List[TConst], name: String, i: Int, n: Int) -> Int ! alloc
+fn const_defined(cs: &List[TConst], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif str_eq(list_get(cs, i).name, name) == 1
@@ -100,59 +100,59 @@ fn const_defined(cs: List[TConst], name: String, i: Int, n: Int) -> Int ! alloc
     else
         const_defined(cs, name, i + 1, n)
 
-fn name_is_clashing(order: Graph, n: Int, name: Int) -> Int ! alloc
+fn name_is_clashing(order: &Graph, n: Int, name: Int) -> Int ! alloc
     if name_clash_count(order, n, name) > 1
         1
     else
         0
 
-fn graph_has_any_clash(order: Graph, n: Int) -> Int ! alloc
+fn graph_has_any_clash(order: &Graph, n: Int) -> Int ! alloc
     graph_has_any_clash_go(order, 0, n)
 
-fn graph_has_any_clash_go(order: Graph, i: Int, n: Int) -> Int ! alloc
+fn graph_has_any_clash_go(order: &Graph, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        tp = list_get(order.progs, i)
-        if fn_list_has_clash(order, n, tp.fns, 0, list_len(tp.fns)) == 1
+        tp = list_get(&order.progs, i)
+        if fn_list_has_clash(order, n, &tp.fns, 0, list_len(&tp.fns)) == 1
             1
-        elsif struct_list_has_clash(order, n, tp.structs, 0, list_len(tp.structs)) == 1
+        elsif struct_list_has_clash(order, n, &tp.structs, 0, list_len(&tp.structs)) == 1
             1
-        elsif const_list_has_clash(order, n, tp.consts, 0, list_len(tp.consts)) == 1
+        elsif const_list_has_clash(order, n, &tp.consts, 0, list_len(&tp.consts)) == 1
             1
         else
             graph_has_any_clash_go(order, i + 1, n)
 
-fn const_list_has_clash(order: Graph, n: Int, cs: List[TConst], i: Int, cn: Int) -> Int ! alloc
+fn const_list_has_clash(order: &Graph, n: Int, cs: &List[TConst], i: Int, cn: Int) -> Int ! alloc
     if i >= cn
         0
-    elsif name_is_clashing(order, n, str_as_int(list_get(cs, i).name)) == 1
+    elsif name_is_clashing(order, n, str_as_int(&list_get(cs, i).name)) == 1
         1
     else
         const_list_has_clash(order, n, cs, i + 1, cn)
 
-fn fn_list_has_clash(order: Graph, n: Int, fns: List[TFn], i: Int, fn_n: Int) -> Int ! alloc
+fn fn_list_has_clash(order: &Graph, n: Int, fns: &List[TFn], i: Int, fn_n: Int) -> Int ! alloc
     if i >= fn_n
         0
-    elsif name_is_clashing(order, n, str_as_int(list_get(fns, i).name)) == 1
+    elsif name_is_clashing(order, n, str_as_int(&list_get(fns, i).name)) == 1
         1
     else
         fn_list_has_clash(order, n, fns, i + 1, fn_n)
 
-fn struct_list_has_clash(order: Graph, n: Int, sts: List[TStruct], i: Int, sn: Int) -> Int ! alloc
+fn struct_list_has_clash(order: &Graph, n: Int, sts: &List[TStruct], i: Int, sn: Int) -> Int ! alloc
     if i >= sn
         0
-    elsif name_is_clashing(order, n, str_as_int(list_get(sts, i).name)) == 1
+    elsif name_is_clashing(order, n, str_as_int(&list_get(sts, i).name)) == 1
         1
     else
         struct_list_has_clash(order, n, sts, i + 1, sn)
 
 # Any import: bare and qualified calls are checked against what each module can see
 # (`needs_qualify` in src/qualify.rs). An alias is one kind of import.
-fn graph_has_import(order: Graph, n: Int) -> Int ! alloc
+fn graph_has_import(order: &Graph, n: Int) -> Int ! alloc
     graph_has_import_go(order, 0, n)
 
-fn graph_has_import_go(order: Graph, i: Int, n: Int) -> Int ! alloc
+fn graph_has_import_go(order: &Graph, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif order.progs.get(i).imports.len() > 0
@@ -160,7 +160,7 @@ fn graph_has_import_go(order: Graph, i: Int, n: Int) -> Int ! alloc
     else
         graph_has_import_go(order, i + 1, n)
 
-fn needs_qualify(order: Graph, n: Int) -> Int ! alloc
+fn needs_qualify(order: &Graph, n: Int) -> Int ! alloc
     if graph_has_import(order, n) == 1
         1
     else
@@ -174,68 +174,68 @@ fn links_push(links: Int, dep_key: Int, export_name: Int, link: Int) -> Int ! al
     _p = vec_push(links, row)
     links
 
-fn build_export_links(order: Graph, n: Int, proot: String) -> Int ! alloc
+fn build_export_links(order: &Graph, n: Int, proot: &String) -> Int ! alloc
     links = vec_new()
     build_export_links_go(order, 0, n, proot, links)
 
-fn build_export_links_go(order: Graph, i: Int, n: Int, proot: String, links: Int) -> Int ! alloc
+fn build_export_links_go(order: &Graph, i: Int, n: Int, proot: &String, links: Int) -> Int ! alloc
     if i >= n
         links
     else
-        key = str_as_int(mod_key_at(order, i))
+        key = str_as_int(&mod_key_at(order, i))
         path = mod_path_at(order, i)
-        modid = modid_from_path(path, proot)
-        tp = list_get(order.progs, i)
-        links2 = push_fn_links_go(order, n, key, modid, tp.fns, 0, list_len(tp.fns), links)
-        links3 = push_struct_links_go(order, n, key, modid, tp.structs, 0, list_len(tp.structs), links2)
-        links4 = push_const_links_go(order, n, key, modid, tp.consts, 0, list_len(tp.consts), links3)
-        links5 = push_variant_links_go(key, tp.enums, 0, list_len(tp.enums), links4)
+        modid = modid_from_path(&path, proot)
+        tp = list_get(&order.progs, i)
+        links2 = push_fn_links_go(order, n, key, &modid, &tp.fns, 0, list_len(&tp.fns), links)
+        links3 = push_struct_links_go(order, n, key, &modid, &tp.structs, 0, list_len(&tp.structs), links2)
+        links4 = push_const_links_go(order, n, key, &modid, &tp.consts, 0, list_len(&tp.consts), links3)
+        links5 = push_variant_links_go(key, &tp.enums, 0, list_len(&tp.enums), links4)
         build_export_links_go(order, i + 1, n, proot, links5)
 
-fn push_const_links_go(order: Graph, n: Int, key: Int, modid: String, cs: List[TConst], i: Int, cn: Int, links: Int) -> Int ! alloc
+fn push_const_links_go(order: &Graph, n: Int, key: Int, modid: &String, cs: &List[TConst], i: Int, cn: Int, links: Int) -> Int ! alloc
     if i >= cn
         links
     else
-        nm = str_as_int(list_get(cs, i).name)
+        nm = str_as_int(&list_get(cs, i).name)
         clash = name_is_clashing(order, n, nm)
-        lk = str_as_int(link_name(modid, str_from_int(nm), clash))
+        lk = str_as_int(&link_name(modid, &str_from_int(nm), clash))
         links2 = links_push(links, key, nm, lk)
         push_const_links_go(order, n, key, modid, cs, i + 1, cn, links2)
 
 # `alias.Variante` names a variant of the module (SPEC: enums are not exports). Variants keep their
 # names in the selfhost, so the link is the name itself.
-fn push_variant_links_go(key: Int, enums: List[TEnum], i: Int, en: Int, links: Int) -> Int ! alloc
+fn push_variant_links_go(key: Int, enums: &List[TEnum], i: Int, en: Int, links: Int) -> Int ! alloc
     if i >= en
         links
     else
-        links2 = push_one_enum_variants(key, list_get(enums, i).variants, 0, list_len(list_get(enums, i).variants), links)
+        links2 = push_one_enum_variants(key, &list_get(enums, i).variants, 0, list_len(&list_get(enums, i).variants), links)
         push_variant_links_go(key, enums, i + 1, en, links2)
 
-fn push_one_enum_variants(key: Int, vs: List[TVariant], j: Int, vn: Int, links: Int) -> Int ! alloc
+fn push_one_enum_variants(key: Int, vs: &List[TVariant], j: Int, vn: Int, links: Int) -> Int ! alloc
     if j >= vn
         links
     else
-        nm = str_as_int(list_get(vs, j).name)
+        nm = str_as_int(&list_get(vs, j).name)
         links2 = links_push(links, key, nm, nm)
         push_one_enum_variants(key, vs, j + 1, vn, links2)
 
-fn push_fn_links_go(order: Graph, n: Int, key: Int, modid: String, fns: List[TFn], i: Int, fn_n: Int, links: Int) -> Int ! alloc
+fn push_fn_links_go(order: &Graph, n: Int, key: Int, modid: &String, fns: &List[TFn], i: Int, fn_n: Int, links: Int) -> Int ! alloc
     if i >= fn_n
         links
     else
-        nm = str_as_int(list_get(fns, i).name)
+        nm = str_as_int(&list_get(fns, i).name)
         clash = name_is_clashing(order, n, nm)
-        lk = str_as_int(link_name(modid, str_from_int(nm), clash))
+        lk = str_as_int(&link_name(modid, &str_from_int(nm), clash))
         links2 = links_push(links, key, nm, lk)
         push_fn_links_go(order, n, key, modid, fns, i + 1, fn_n, links2)
 
-fn push_struct_links_go(order: Graph, n: Int, key: Int, modid: String, sts: List[TStruct], i: Int, sn: Int, links: Int) -> Int ! alloc
+fn push_struct_links_go(order: &Graph, n: Int, key: Int, modid: &String, sts: &List[TStruct], i: Int, sn: Int, links: Int) -> Int ! alloc
     if i >= sn
         links
     else
-        nm = str_as_int(list_get(sts, i).name)
+        nm = str_as_int(&list_get(sts, i).name)
         clash = name_is_clashing(order, n, nm)
-        lk = str_as_int(link_name(modid, str_from_int(nm), clash))
+        lk = str_as_int(&link_name(modid, &str_from_int(nm), clash))
         links2 = links_push(links, key, nm, lk)
         push_struct_links_go(order, n, key, modid, sts, i + 1, sn, links2)
 
@@ -282,73 +282,73 @@ fn qualifier_dep_in_go(quals: Int, i: Int, n: Int, qual: Int) -> Int ! alloc
         else
             qualifier_dep_in_go(quals, i + 1, n, qual)
 
-fn local_fn_name(tp: TProgram, name: String) -> Int ! alloc
-    if tt_fn_index(tp.fns, name, 0) >= 0
+fn local_fn_name(tp: &TProgram, name: &String) -> Int ! alloc
+    if tt_fn_index(&tp.fns, name, 0) >= 0
         1
     else
         0
 
-fn local_struct_name(tp: TProgram, name: String) -> Int ! alloc
-    if tt_struct_find(tp.structs, name) >= 0
+fn local_struct_name(tp: &TProgram, name: &String) -> Int ! alloc
+    if tt_struct_find(&tp.structs, name) >= 0
         1
     else
         0
 
-fn module_qualifiers(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
+fn module_qualifiers(order: &Graph, mi: Int, proot: &String) -> Int ! io, alloc
     explicit = vec_new()
     implicit = vec_new()
-    tp = list_get(order.progs, mi)
+    tp = list_get(&order.progs, mi)
     mpath = mod_path_at(order, mi)
-    module_qualifiers_go(tp, 0, list_len(tp.imports), mpath, proot, explicit, implicit)
+    module_qualifiers_go(&tp, 0, list_len(&tp.imports), &mpath, proot, explicit, implicit)
 
-fn module_qualifiers_go(tp: TProgram, i: Int, n: Int, mpath: String, proot: String, explicit: Int, implicit: Int) -> Int ! io, alloc
+fn module_qualifiers_go(tp: &TProgram, i: Int, n: Int, mpath: &String, proot: &String, explicit: Int, implicit: Int) -> Int ! io, alloc
     if i >= n
         ctx = vec_new()
         _a = vec_push(ctx, explicit)
         _b = vec_push(ctx, implicit)
         result_ok(ctx)
     else
-        imp = list_get(tp.imports, i)
-        alias = list_get(tp.aliases, i)
-        dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
+        imp = list_get(&tp.imports, i)
+        alias = list_get(&tp.aliases, i)
+        dep_path = resolve_import_path_with_manifest(&imp, mpath, proot)
         if str_len(dep_path) == 0
             module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, implicit)
         else
-            dep_key = str_as_int(path_key(dep_path))
+            dep_key = str_as_int(&path_key(&dep_path))
             if str_len(alias) != 0
-                if local_fn_name(tp, alias) == 1
-                    result_err_str("import alias conflicts with a local item")
-                elsif local_struct_name(tp, alias) == 1
-                    result_err_str("import alias conflicts with a local item")
-                elsif qualifier_dep_in(explicit, str_as_int(alias)) != 0
-                    result_err_str("duplicate import alias")
+                if local_fn_name(tp, &alias) == 1
+                    result_err_str(&"import alias conflicts with a local item")
+                elsif local_struct_name(tp, &alias) == 1
+                    result_err_str(&"import alias conflicts with a local item")
+                elsif qualifier_dep_in(explicit, str_as_int(&alias)) != 0
+                    result_err_str(&"duplicate import alias")
                 else
-                    ex2 = quals_push(explicit, str_as_int(strdup(alias)), dep_key)
+                    ex2 = quals_push(explicit, str_as_int(&strdup(alias)), dep_key)
                     module_qualifiers_go(tp, i + 1, n, mpath, proot, ex2, implicit)
             else
                 iq = implicit_qualifier(imp)
                 if str_len(iq) == 0
                     module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, implicit)
                 else
-                    iqh = str_as_int(iq)
-                    if local_fn_name(tp, iq) == 1
+                    iqh = str_as_int(&iq)
+                    if local_fn_name(tp, &iq) == 1
                         module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, implicit)
-                    elsif local_struct_name(tp, iq) == 1
+                    elsif local_struct_name(tp, &iq) == 1
                         module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, implicit)
                     elsif qualifier_dep_in(implicit, iqh) != 0
-                        result_err_str("ambiguous implicit qualifier")
+                        result_err_str(&"ambiguous implicit qualifier")
                     else
                         im2 = quals_push(implicit, iqh, dep_key)
                         module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, im2)
 
-fn split_qual_member(name: String) -> Int ! alloc
+fn split_qual_member(name: &String) -> Int ! alloc
     dot = find_char(name, 46, 0, str_len(name))
     if dot < 0
         0
     else
         pair = vec_new()
-        _a = vec_push(pair, str_as_int(str_slice(name, 0, dot)))
-        _b = vec_push(pair, str_as_int(str_slice(name, dot + 1, str_len(name))))
+        _a = vec_push(pair, str_as_int(&str_slice(name, 0, dot)))
+        _b = vec_push(pair, str_as_int(&str_slice(name, dot + 1, str_len(name))))
         pair
 
 fn resolve_qualified_item(ctx: Int, links: Int, qual: Int, member: Int) -> Int ! alloc
@@ -364,10 +364,10 @@ fn qualify_type_handle(ty: Int, ctx: Int, links: Int) -> Int ! alloc
     if ty == 0
         0
     else
-        s = ts_trim(str_from_int(ty))
-        pair = split_qual_member(s)
+        s = ts_trim(&str_from_int(ty))
+        pair = split_qual_member(&s)
         if pair == 0
-            renamed = map_get(vec_get(ctx, 2), str_as_int(ty_trim_go(s)))
+            renamed = map_get(vec_get(ctx, 2), str_as_int(&ty_trim_go(&s)))
             if renamed != 0
                 renamed
             else
@@ -384,11 +384,11 @@ fn qualify_type_handle(ty: Int, ctx: Int, links: Int) -> Int ! alloc
 # The body is qualified in place. A node stays in its box. A name is replaced only when the
 # link map renames it, and `M.campo` becomes an identifier. The same nodes the copy used to
 # leave untouched (`lambda`, unary, `try`, a tensor) are still not walked.
-fn qx_ident_link(ctx: Int, links: Int, qual: String, member: String) -> Int ! alloc
+fn qx_ident_link(ctx: Int, links: Int, qual: &String, member: &String) -> Int ! alloc
     resolve_qualified_item(ctx, links, str_as_int(qual), str_as_int(member))
 
 # 1 when `neu` is a different box. Two unit tags both report id 0.
-fn qx_moved(old: Expr, neu: Expr) -> Int ! alloc
+fn qx_moved(old: &Expr, neu: &Expr) -> Int ! alloc
     ob = enum_box_id(old)
     nb = enum_box_id(neu)
     if ob == nb
@@ -396,20 +396,20 @@ fn qx_moved(old: Expr, neu: Expr) -> Int ! alloc
     else
         1
 
-fn qx_same(e: Expr borrow) -> Expr ! alloc
+fn qx_same(e: &Expr) -> Expr ! alloc
     e
 
-fn qx_field(e: Expr borrow, base: Expr, fld: String, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_field(e: &Expr, base: &Expr, fld: &String, ctx: Int, links: Int) -> Expr ! alloc
     match base
-        XIdent(qual) => qx_field_ident(e, base, qual, fld, ctx, links)
+        XIdent(qual) => qx_field_ident(e, base, &qual, fld, ctx, links)
         _ =>
             nb = qx(base, ctx, links)
-            if qx_moved(base, nb) == 1
+            if qx_moved(base, &nb) == 1
                 _s = enum_set(e, 0, nb)
             qx_same(e)
 
 # `M.campo` linked to an export becomes an identifier. The old field box is only a shell.
-fn qx_field_ident(e: Expr borrow, base: Expr, qual: String, fld: String, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_field_ident(e: &Expr, base: &Expr, qual: &String, fld: &String, ctx: Int, links: Int) -> Expr ! alloc
     lk = qx_ident_link(ctx, links, qual, fld)
     if lk != 0
         _q = free(qual)
@@ -421,7 +421,7 @@ fn qx_field_ident(e: Expr borrow, base: Expr, qual: String, fld: String, ctx: In
         qx_same(e)
 
 # The string to store as the callee. The same pointer when the name does not change.
-fn qx_call_name(nm: String borrow, ctx: Int, links: Int) -> String ! alloc
+fn qx_call_name(nm: &String, ctx: Int, links: Int) -> String ! alloc
     pair = split_qual_member(nm)
     if pair == 0
         renamed = map_get(vec_get(ctx, 2), str_as_int(nm))
@@ -433,7 +433,7 @@ fn qx_call_name(nm: String borrow, ctx: Int, links: Int) -> String ! alloc
         lk = resolve_qualified_item(ctx, links, vec_get(pair, 0), vec_get(pair, 1))
         if lk == 0
             # `T.f(..)` on a local type renamed by a clash (`T` -> `mod__T`): the qualifier follows.
-            renamed = map_get(vec_get(ctx, 2), str_as_int(str_from_int(vec_get(pair, 0))))
+            renamed = map_get(vec_get(ctx, 2), str_as_int(&str_from_int(vec_get(pair, 0))))
             if renamed != 0
                 strdup(str_from_int(renamed) + "." + str_from_int(vec_get(pair, 1)))
             else
@@ -441,23 +441,23 @@ fn qx_call_name(nm: String borrow, ctx: Int, links: Int) -> String ! alloc
         else
             strdup(str_from_int(lk))
 
-fn qx_args(xs: List[Expr], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_args(xs: &List[Expr], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
         cur = list_get(xs, i)
-        neu = qx(cur, ctx, links)
-        if qx_moved(cur, neu) == 1
+        neu = qx(&cur, ctx, links)
+        if qx_moved(&cur, &neu) == 1
             _s = list_set(xs, i, neu)
         qx_args(xs, i + 1, n, ctx, links)
 
 # A renamed callee is a new call: the constructor takes the string. The argument list and the
 # type arguments stay the ones this call already had. An unchanged name keeps the box.
-fn qx_call(e: Expr borrow, nm: String borrow, args: List[Expr], targs: String, xp: Int, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_call(e: &Expr, nm: &String, args: &List[Expr], targs: &String, xp: Int, ctx: Int, links: Int) -> Expr ! alloc
     pos = qx_call_pos(nm, xp, ctx)
     _a = qx_args(args, 0, list_len(args), ctx, links)
     neu = qx_call_name(nm, ctx, links)
-    if str_as_int(neu) != str_as_int(nm)
+    if str_as_int(&neu) != str_as_int(nm)
         built = XCall(neu, args, targs, pos)
         _e = enum_free_shell(e)
         built
@@ -469,7 +469,7 @@ fn qx_call(e: Expr borrow, nm: String borrow, args: List[Expr], targs: String, x
 
 # A call through a module qualifier is placed at its qualifier (the start of `alias.f`), as the
 # bootstrap reports it; the position of any other call is kept.
-fn qx_call_pos(nm: String, xp: Int, ctx: Int) -> Int ! alloc
+fn qx_call_pos(nm: &String, xp: Int, ctx: Int) -> Int ! alloc
     pair = split_qual_member(nm)
     if pair == 0
         xp
@@ -480,52 +480,52 @@ fn qx_call_pos(nm: String, xp: Int, ctx: Int) -> Int ! alloc
     else
         xp - str_len(nm)
 
-fn qx_elsifs(xs: List[TElsif], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_elsifs(xs: &List[TElsif], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
         a = list_get(xs, i)
-        _c = qx_bind(a, ctx, links)
+        _c = qx_bind(&a, ctx, links)
         qx_elsifs(xs, i + 1, n, ctx, links)
 
 # The condition stays in its box unless it was `M.campo`. The body is the same block.
-fn qx_bind(a: TElsif, ctx: Int, links: Int) -> Int ! alloc
-    neu = qx(a.cond, ctx, links)
-    if qx_moved(a.cond, neu) == 1
+fn qx_bind(a: &TElsif, ctx: Int, links: Int) -> Int ! alloc
+    neu = qx(&a.cond, ctx, links)
+    if qx_moved(&a.cond, &neu) == 1
         a.cond = neu
-    a.body = qx_block(a.body, ctx, links)
+    a.body = qx_block(&a.body, ctx, links)
     0
 
-fn qx_expr_slot(e: Expr borrow, i: Int, child: Expr, ctx: Int, links: Int) -> Int ! alloc
+fn qx_expr_slot(e: &Expr, i: Int, child: &Expr, ctx: Int, links: Int) -> Int ! alloc
     neu = qx(child, ctx, links)
-    if qx_moved(child, neu) == 1
+    if qx_moved(child, &neu) == 1
         _s = enum_set(e, i, neu)
         0
     else
         0
 
-fn qx(e: Expr borrow, ctx: Int, links: Int) -> Expr ! alloc
+fn qx(e: &Expr, ctx: Int, links: Int) -> Expr ! alloc
     match e
-        XField(base, fld) => qx_field(e, base, fld, ctx, links)
-        XCall(nm, args, targs, xp) => qx_call(e, nm, args, targs, xp, ctx, links)
-        XBin(_, l, r) => qx_bin(e, l, r, ctx, links)
-        XIf(cond, then_b, else_b, has_else, elsifs) => qx_if(e, cond, then_b, else_b, has_else, elsifs, ctx, links)
-        XWhile(cond, body) => qx_while(e, cond, body, ctx, links)
-        XTo(_, inner) => qx_one(e, 1, inner, ctx, links)
-        XOn(_, body, _, _) => qx_on(e, body, ctx, links)
-        XMatch(scrut, arms) => qx_match(e, scrut, arms, ctx, links)
+        XField(base, fld) => qx_field(e, &base, &fld, ctx, links)
+        XCall(nm, args, targs, xp) => qx_call(e, &nm, &args, &targs, xp, ctx, links)
+        XBin(_, l, r) => qx_bin(e, &l, &r, ctx, links)
+        XIf(cond, then_b, else_b, has_else, elsifs) => qx_if(e, &cond, &then_b, &else_b, has_else, &elsifs, ctx, links)
+        XWhile(cond, body) => qx_while(e, &cond, &body, ctx, links)
+        XTo(_, inner) => qx_one(e, 1, &inner, ctx, links)
+        XOn(_, body, _, _) => qx_on(e, &body, ctx, links)
+        XMatch(scrut, arms) => qx_match(e, &scrut, &arms, ctx, links)
         _ => qx_same(e)
 
-fn qx_bin(e: Expr borrow, l: Expr, r: Expr, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_bin(e: &Expr, l: &Expr, r: &Expr, ctx: Int, links: Int) -> Expr ! alloc
     _l = qx_expr_slot(e, 1, l, ctx, links)
     _r = qx_expr_slot(e, 2, r, ctx, links)
     qx_same(e)
 
-fn qx_one(e: Expr borrow, i: Int, child: Expr, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_one(e: &Expr, i: Int, child: &Expr, ctx: Int, links: Int) -> Expr ! alloc
     _c = qx_expr_slot(e, i, child, ctx, links)
     qx_same(e)
 
-fn qx_if(e: Expr borrow, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif], ctx: Int, links: Int) -> Expr ! alloc
+fn qx_if(e: &Expr, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], ctx: Int, links: Int) -> Expr ! alloc
     _c = qx_expr_slot(e, 0, cond, ctx, links)
     _t = enum_set(e, 1, qx_block(then_b, ctx, links))
     if has_else == 1
@@ -533,84 +533,84 @@ fn qx_if(e: Expr borrow, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: I
     _a = qx_elsifs(elsifs, 0, list_len(elsifs), ctx, links)
     qx_same(e)
 
-fn qx_while(e: Expr borrow, cond: Expr, body: TBlock, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_while(e: &Expr, cond: &Expr, body: &TBlock, ctx: Int, links: Int) -> Expr ! alloc
     _c = qx_expr_slot(e, 0, cond, ctx, links)
     _b = enum_set(e, 1, qx_block(body, ctx, links))
     qx_same(e)
 
-fn qx_on(e: Expr borrow, body: TBlock, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_on(e: &Expr, body: &TBlock, ctx: Int, links: Int) -> Expr ! alloc
     _b = enum_set(e, 1, qx_block(body, ctx, links))
     qx_same(e)
 
-fn qx_match(e: Expr borrow, scrut: Expr, arms: List[TArm], ctx: Int, links: Int) -> Expr ! alloc
+fn qx_match(e: &Expr, scrut: &Expr, arms: &List[TArm], ctx: Int, links: Int) -> Expr ! alloc
     _s = qx_expr_slot(e, 0, scrut, ctx, links)
     _a = qx_arms(arms, 0, list_len(arms), ctx, links)
     qx_same(e)
 
-fn qx_arms(xs: List[TArm], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_arms(xs: &List[TArm], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
         a = list_get(xs, i)
-        _p = qx_pat(a.pat, ctx, links)
-        neu = qx(a.body, ctx, links)
-        if qx_moved(a.body, neu) == 1
+        _p = qx_pat(&a.pat, ctx, links)
+        neu = qx(&a.body, ctx, links)
+        if qx_moved(&a.body, &neu) == 1
             a.body = neu
-        a.suite = qx_block(a.suite, ctx, links)
+        a.suite = qx_block(&a.suite, ctx, links)
         qx_arms(xs, i + 1, n, ctx, links)
 
 # Variant patterns of an arm. `alias.V` needs an alias whose module has `V`; a bare `V` must be a
 # variant of this module or of a module that is not reached only through an alias (SPEC, Módulos).
 # The errors go to the list in `ctx[3]`. The pattern box stays.
-fn qx_pat(p: TPat borrow, ctx: Int, links: Int) -> Int ! alloc
+fn qx_pat(p: &TPat, ctx: Int, links: Int) -> Int ! alloc
     if p.kind == 3
         _c = qx_variant_check(p, ctx, links)
-    qx_pat_list(p.args, 0, list_len(p.args), ctx, links)
+    qx_pat_list(&p.args, 0, list_len(&p.args), ctx, links)
 
-fn qx_pat_list(xs: List[TPat], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_pat_list(xs: &List[TPat], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = qx_pat(list_get(xs, i), ctx, links)
+        _a = qx_pat(&list_get(xs, i), ctx, links)
         qx_pat_list(xs, i + 1, n, ctx, links)
 
-fn qx_variant_check(p: TPat, ctx: Int, links: Int) -> Int ! alloc
+fn qx_variant_check(p: &TPat, ctx: Int, links: Int) -> Int ! alloc
     if str_len(p.qual) > 0
-        dep = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(strdup(p.qual)))
+        dep = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(&strdup(p.qual)))
         if dep == 0
-            qx_err(ctx, "unknown qualifier `" + p.qual + "`")
-        elsif export_link_lookup(links, dep, str_as_int(strdup(p.name))) == 0
-            qx_err(ctx, "no variant `" + p.name + "` in that module")
+            qx_err(ctx, &("unknown qualifier `" + p.qual + "`"))
+        elsif export_link_lookup(links, dep, str_as_int(&strdup(p.name))) == 0
+            qx_err(ctx, &("no variant `" + p.name + "` in that module"))
         else
             0
-    elsif vec_has_name(vec_get(ctx, 4), p.name, 0, vec_len(vec_get(ctx, 4))) == 1
+    elsif vec_has_name(vec_get(ctx, 4), &p.name, 0, vec_len(vec_get(ctx, 4))) == 1
         0
-    elsif alias_only_variant(vec_get(ctx, 5), links, p.name, 0, vec_len(vec_get(ctx, 5))) == 1
-        if alias_only_variant(vec_get(ctx, 6), links, p.name, 0, vec_len(vec_get(ctx, 6))) == 1
+    elsif alias_only_variant(vec_get(ctx, 5), links, &p.name, 0, vec_len(vec_get(ctx, 5))) == 1
+        if alias_only_variant(vec_get(ctx, 6), links, &p.name, 0, vec_len(vec_get(ctx, 6))) == 1
             0
         else
-            qx_err(ctx, "variant `" + p.name + "` is only reachable through its import alias")
+            qx_err(ctx, &("variant `" + p.name + "` is only reachable through its import alias"))
     else
         0
 
 # The modules a module sees flat (imports without `as`, transitively; SPEC, Módulos), as keys in
 # `seen`. Their variants are in scope unqualified.
-fn flat_keys(order: Graph, mi: Int, proot: String, seen: Int) -> Int ! io, alloc
-    tp = list_get(order.progs, mi)
+fn flat_keys(order: &Graph, mi: Int, proot: &String, seen: Int) -> Int ! io, alloc
+    tp = list_get(&order.progs, mi)
     ctx = result_unwrap(module_qualifiers(order, mi, proot))
-    flat_keys_go(order, proot, tp, ctx, 0, list_len(tp.imports), seen)
+    flat_keys_go(order, proot, &tp, ctx, 0, list_len(&tp.imports), seen)
 
-fn flat_keys_go(order: Graph, proot: String, tp: TProgram, ctx: Int, i: Int, n: Int, seen: Int) -> Int ! io, alloc
+fn flat_keys_go(order: &Graph, proot: &String, tp: &TProgram, ctx: Int, i: Int, n: Int, seen: Int) -> Int ! io, alloc
     if i >= n
         0
-    elsif str_len(list_get(tp.aliases, i)) != 0
+    elsif str_len(list_get(&tp.aliases, i)) != 0
         flat_keys_go(order, proot, tp, ctx, i + 1, n, seen)
     else
-        _a = flat_add_import(order, proot, ctx, implicit_qualifier(list_get(tp.imports, i)), seen)
+        _a = flat_add_import(order, proot, ctx, &implicit_qualifier(list_get(&tp.imports, i)), seen)
         flat_keys_go(order, proot, tp, ctx, i + 1, n, seen)
 
 # The module a plain import names is flat; so are the modules it imports flat.
-fn flat_add_import(order: Graph, proot: String, ctx: Int, qual: String, seen: Int) -> Int ! io, alloc
+fn flat_add_import(order: &Graph, proot: &String, ctx: Int, qual: &String, seen: Int) -> Int ! io, alloc
     k = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(qual))
     if k == 0
         0
@@ -618,7 +618,7 @@ fn flat_add_import(order: Graph, proot: String, ctx: Int, qual: String, seen: In
         0
     else
         _p = vec_push(seen, k)
-        j = graph_find_by_key(order, str_from_int(k), 0, list_len(order.mods))
+        j = graph_find_by_key(order, &str_from_int(k), 0, list_len(&order.mods))
         if j >= 0
             flat_keys(order, j, proot, seen)
         else
@@ -632,10 +632,10 @@ fn vec_has_key(v: Int, k: Int, i: Int, n: Int) -> Int ! alloc
     else
         vec_has_key(v, k, i + 1, n)
 
-fn qx_err(ctx: Int, msg: String) -> Int ! alloc
+fn qx_err(ctx: Int, msg: &String) -> Int ! alloc
     vec_push(vec_get(ctx, 3), str_as_int(msg))
 
-fn vec_has_name(v: Int, name: String, i: Int, n: Int) -> Int ! alloc
+fn vec_has_name(v: Int, name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif str_eq(str_from_int(vec_get(v, i)), name) == 1
@@ -643,51 +643,51 @@ fn vec_has_name(v: Int, name: String, i: Int, n: Int) -> Int ! alloc
     else
         vec_has_name(v, name, i + 1, n)
 
-fn alias_only_variant(deps: Int, links: Int, name: String, i: Int, n: Int) -> Int ! alloc
+fn alias_only_variant(deps: Int, links: Int, name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif export_link_lookup(links, vec_get(deps, i), str_as_int(strdup(name))) != 0
+    elsif export_link_lookup(links, vec_get(deps, i), str_as_int(&strdup(name))) != 0
         1
     else
         alias_only_variant(deps, links, name, i + 1, n)
 
-fn own_variant_names(enums: List[TEnum], i: Int, n: Int, out: Int) -> Int ! alloc
+fn own_variant_names(enums: &List[TEnum], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         0
     else
-        own_one_enum(list_get(enums, i).variants, 0, list_len(list_get(enums, i).variants), out)
+        own_one_enum(&list_get(enums, i).variants, 0, list_len(&list_get(enums, i).variants), out)
         own_variant_names(enums, i + 1, n, out)
 
-fn own_one_enum(vs: List[TVariant], j: Int, n: Int, out: Int) -> Int ! alloc
+fn own_one_enum(vs: &List[TVariant], j: Int, n: Int, out: Int) -> Int ! alloc
     if j >= n
         0
     else
-        _a = vec_push(out, str_as_int(strdup(list_get(vs, j).name)))
+        _a = vec_push(out, str_as_int(&strdup(list_get(vs, j).name)))
         own_one_enum(vs, j + 1, n, out)
 
-fn qx_stmt(st: TStmt, ctx: Int, links: Int) -> Int ! alloc
-    neu = qx(st.expr, ctx, links)
-    if qx_moved(st.expr, neu) == 1
+fn qx_stmt(st: &TStmt, ctx: Int, links: Int) -> Int ! alloc
+    neu = qx(&st.expr, ctx, links)
+    if qx_moved(&st.expr, &neu) == 1
         st.expr = neu
     0
 
-fn qx_stmts(xs: List[TStmt], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_stmts(xs: &List[TStmt], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = qx_stmt(list_get(xs, i), ctx, links)
+        _a = qx_stmt(&list_get(xs, i), ctx, links)
         qx_stmts(xs, i + 1, n, ctx, links)
 
-fn qx_block(b: TBlock, ctx: Int, links: Int) -> TBlock ! alloc
-    _a = qx_stmts(b.stmts, 0, list_len(b.stmts), ctx, links)
-    neu = qx(b.tail, ctx, links)
-    if qx_moved(b.tail, neu) == 1
+fn qx_block(b: &TBlock, ctx: Int, links: Int) -> TBlock ! alloc
+    _a = qx_stmts(&b.stmts, 0, list_len(&b.stmts), ctx, links)
+    neu = qx(&b.tail, ctx, links)
+    if qx_moved(&b.tail, &neu) == 1
         TBlock(b.stmts, neu)
     else
         TBlock(b.stmts, b.tail)
 
 # A type string changes only when the handle says so. The same pointer stays otherwise.
-fn qx_apply_ty(cur: String, ctx: Int, links: Int) -> String ! alloc
+fn qx_apply_ty(cur: &String, ctx: Int, links: Int) -> String ! alloc
     if str_len(cur) == 0
         cur
     else
@@ -698,154 +698,154 @@ fn qx_apply_ty(cur: String, ctx: Int, links: Int) -> String ! alloc
             _f = free(cur)
             strdup(str_from_int(neu))
 
-fn qx_params(ps: List[TParam], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_params(ps: &List[TParam], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
         pm = list_get(ps, i)
-        pm.ty = qx_apply_ty(pm.ty, ctx, links)
+        pm.ty = qx_apply_ty(&pm.ty, ctx, links)
         qx_params(ps, i + 1, n, ctx, links)
 
 # The rename map keeps the original name as its key, so the previous text is left in place.
-fn qx_new_name(cur: String borrow, r: Int) -> String ! alloc
+fn qx_new_name(cur: &String, r: Int) -> String ! alloc
     lk = map_get(r, str_as_int(cur))
     if lk == 0
         ""
     else
         strdup(str_from_int(lk))
 
-fn qx_fns(fns: List[TFn], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_fns(fns: &List[TFn], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(fns, i)
-        _p = qx_params(f.params, 0, list_len(f.params), ctx, links)
-        f.body = qx_block(f.body, ctx, links)
-        f.ret = qx_apply_ty(f.ret, ctx, links)
+        _p = qx_params(&f.params, 0, list_len(&f.params), ctx, links)
+        f.body = qx_block(&f.body, ctx, links)
+        f.ret = qx_apply_ty(&f.ret, ctx, links)
         qx_fns(fns, i + 1, n, ctx, links)
 
-fn qx_rename_fns(fns: List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc
+fn qx_rename_fns(fns: &List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(fns, i)
-        neu = qx_new_name(f.name, r)
+        neu = qx_new_name(&f.name, r)
         if str_len(neu) != 0
             f.name = neu
         qx_rename_fns(fns, i + 1, n, r)
 
-fn qx_consts(cs: List[TConst], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_consts(cs: &List[TConst], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
         c = list_get(cs, i)
-        neu = qx(c.expr, ctx, links)
-        if qx_moved(c.expr, neu) == 1
+        neu = qx(&c.expr, ctx, links)
+        if qx_moved(&c.expr, &neu) == 1
             c.expr = neu
         qx_consts(cs, i + 1, n, ctx, links)
 
-fn qx_rename_consts(cs: List[TConst], i: Int, n: Int, r: Int) -> Int ! alloc
+fn qx_rename_consts(cs: &List[TConst], i: Int, n: Int, r: Int) -> Int ! alloc
     if i >= n
         0
     else
         c = list_get(cs, i)
-        neu = qx_new_name(c.name, r)
+        neu = qx_new_name(&c.name, r)
         if str_len(neu) != 0
             c.name = neu
         qx_rename_consts(cs, i + 1, n, r)
 
-fn qx_rename_structs(sts: List[TStruct], i: Int, n: Int, r: Int) -> Int ! alloc
+fn qx_rename_structs(sts: &List[TStruct], i: Int, n: Int, r: Int) -> Int ! alloc
     if i >= n
         0
     else
         s = list_get(sts, i)
-        neu = qx_new_name(s.name, r)
+        neu = qx_new_name(&s.name, r)
         if str_len(neu) != 0
             s.name = neu
         qx_rename_structs(sts, i + 1, n, r)
 
 # Qualifies module `mi` where it already sits. Bodies are rewritten before names, so the
 # rename map's keys stay alive for the lookups.
-fn qualify_typed(order: Graph, mi: Int, ctx: Int, links: Int, r: Int) -> Int ! alloc
-    tp = list_get(order.progs, mi)
-    _a = qx_fns(tp.fns, 0, list_len(tp.fns), ctx, links)
-    _k = qx_consts(tp.consts, 0, list_len(tp.consts), ctx, links)
-    _f = qx_rename_fns(tp.fns, 0, list_len(tp.fns), r)
-    _s = qx_rename_structs(tp.structs, 0, list_len(tp.structs), r)
-    _c = qx_rename_consts(tp.consts, 0, list_len(tp.consts), r)
+fn qualify_typed(order: &Graph, mi: Int, ctx: Int, links: Int, r: Int) -> Int ! alloc
+    tp = list_get(&order.progs, mi)
+    _a = qx_fns(&tp.fns, 0, list_len(&tp.fns), ctx, links)
+    _k = qx_consts(&tp.consts, 0, list_len(&tp.consts), ctx, links)
+    _f = qx_rename_fns(&tp.fns, 0, list_len(&tp.fns), r)
+    _s = qx_rename_structs(&tp.structs, 0, list_len(&tp.structs), r)
+    _c = qx_rename_consts(&tp.consts, 0, list_len(&tp.consts), r)
     0
 
 fn flat_export_name_seen(seen: Int, name: Int) -> Int ! alloc
     vec_has_str(seen, name, 0, vec_len(seen))
 
-fn check_flat_import_clashes(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
-    tp = list_get(order.progs, mi)
+fn check_flat_import_clashes(order: &Graph, mi: Int, proot: &String) -> Int ! io, alloc
+    tp = list_get(&order.progs, mi)
     mpath = mod_path_at(order, mi)
     seen = vec_new()
-    check_flat_go(tp, 0, list_len(tp.imports), mpath, proot, order, seen)
+    check_flat_go(&tp, 0, list_len(&tp.imports), &mpath, proot, order, seen)
 
-fn check_flat_go(tp: TProgram, i: Int, n: Int, mpath: String, proot: String, order: Graph, seen: Int) -> Int ! io, alloc
+fn check_flat_go(tp: &TProgram, i: Int, n: Int, mpath: &String, proot: &String, order: &Graph, seen: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
-        if str_len(list_get(tp.aliases, i)) != 0
+        if str_len(list_get(&tp.aliases, i)) != 0
             check_flat_go(tp, i + 1, n, mpath, proot, order, seen)
         else
-            dep_path = resolve_import_path_with_manifest(list_get(tp.imports, i), mpath, proot)
+            dep_path = resolve_import_path_with_manifest(&list_get(&tp.imports, i), mpath, proot)
             if str_len(dep_path) == 0
                 check_flat_go(tp, i + 1, n, mpath, proot, order, seen)
             else
-                dep_m = graph_find_by_key(order, path_key(dep_path), 0, list_len(order.mods))
+                dep_m = graph_find_by_key(order, &path_key(&dep_path), 0, list_len(&order.mods))
                 if dep_m < 0
                     check_flat_go(tp, i + 1, n, mpath, proot, order, seen)
                 else
-                    step = check_flat_dep_exports(list_get(order.progs, dep_m), seen)
+                    step = check_flat_dep_exports(&list_get(&order.progs, dep_m), seen)
                     if result_is_err(step) == 1
                         step
                     else
                         seen2 = result_unwrap(step)
                         check_flat_go(tp, i + 1, n, mpath, proot, order, seen2)
 
-fn check_flat_dep_exports(tp: TProgram, seen: Int) -> Int ! alloc
-    seen2 = merge_const_names_seen(tp.consts, 0, list_len(tp.consts), merge_struct_names_seen(tp.structs, 0, list_len(tp.structs), merge_fn_names_seen(tp.fns, 0, list_len(tp.fns), seen)))
+fn check_flat_dep_exports(tp: &TProgram, seen: Int) -> Int ! alloc
+    seen2 = merge_const_names_seen(&tp.consts, 0, list_len(&tp.consts), merge_struct_names_seen(&tp.structs, 0, list_len(&tp.structs), merge_fn_names_seen(&tp.fns, 0, list_len(&tp.fns), seen)))
     if seen2 == 0
-        result_err_str("name defined in more than one imported module")
+        result_err_str(&"name defined in more than one imported module")
     else
         result_ok(seen2)
 
-fn merge_fn_names_seen(fns: List[TFn], i: Int, n: Int, seen: Int) -> Int ! alloc
+fn merge_fn_names_seen(fns: &List[TFn], i: Int, n: Int, seen: Int) -> Int ! alloc
     if seen == 0
         0
     elsif i >= n
         seen
     else
-        nm = str_as_int(list_get(fns, i).name)
+        nm = str_as_int(&list_get(fns, i).name)
         if flat_export_name_seen(seen, nm) == 1
             0
         else
             _p = vec_push(seen, nm)
             merge_fn_names_seen(fns, i + 1, n, seen)
 
-fn merge_const_names_seen(cs: List[TConst], i: Int, n: Int, seen: Int) -> Int ! alloc
+fn merge_const_names_seen(cs: &List[TConst], i: Int, n: Int, seen: Int) -> Int ! alloc
     if seen == 0
         0
     elsif i >= n
         seen
     else
-        nm = str_as_int(list_get(cs, i).name)
+        nm = str_as_int(&list_get(cs, i).name)
         if flat_export_name_seen(seen, nm) == 1
             0
         else
             _p = vec_push(seen, nm)
             merge_const_names_seen(cs, i + 1, n, seen)
 
-fn merge_struct_names_seen(sts: List[TStruct], i: Int, n: Int, seen: Int) -> Int ! alloc
+fn merge_struct_names_seen(sts: &List[TStruct], i: Int, n: Int, seen: Int) -> Int ! alloc
     if seen == 0
         0
     elsif i >= n
         seen
     else
-        nm = str_as_int(list_get(sts, i).name)
+        nm = str_as_int(&list_get(sts, i).name)
         if flat_export_name_seen(seen, nm) == 1
             0
         else
@@ -853,48 +853,48 @@ fn merge_struct_names_seen(sts: List[TStruct], i: Int, n: Int, seen: Int) -> Int
             merge_struct_names_seen(sts, i + 1, n, seen)
 
 # Names defined in more than one module, judged before anything is renamed.
-fn build_clash_map(order: Graph, n: Int) -> Int ! alloc
+fn build_clash_map(order: &Graph, n: Int) -> Int ! alloc
     clash = map_new()
     _a = clash_map_modules(order, 0, n, n, clash)
     clash
 
-fn clash_map_modules(order: Graph, i: Int, n: Int, total: Int, clash: Int) -> Int ! alloc
+fn clash_map_modules(order: &Graph, i: Int, n: Int, total: Int, clash: Int) -> Int ! alloc
     if i >= n
         0
     else
-        tp = list_get(order.progs, i)
-        _f = clash_map_fns(order, total, tp.fns, 0, list_len(tp.fns), clash)
-        _s = clash_map_structs(order, total, tp.structs, 0, list_len(tp.structs), clash)
-        _c = clash_map_consts(order, total, tp.consts, 0, list_len(tp.consts), clash)
+        tp = list_get(&order.progs, i)
+        _f = clash_map_fns(order, total, &tp.fns, 0, list_len(&tp.fns), clash)
+        _s = clash_map_structs(order, total, &tp.structs, 0, list_len(&tp.structs), clash)
+        _c = clash_map_consts(order, total, &tp.consts, 0, list_len(&tp.consts), clash)
         clash_map_modules(order, i + 1, n, total, clash)
 
-fn clash_map_consts(order: Graph, total: Int, cs: List[TConst], i: Int, n: Int, clash: Int) -> Int ! alloc
+fn clash_map_consts(order: &Graph, total: Int, cs: &List[TConst], i: Int, n: Int, clash: Int) -> Int ! alloc
     if i >= n
         0
     else
-        nm = str_as_int(list_get(cs, i).name)
+        nm = str_as_int(&list_get(cs, i).name)
         if name_is_clashing(order, total, nm) == 1
             _p = map_put(clash, nm, 1)
             clash_map_consts(order, total, cs, i + 1, n, clash)
         else
             clash_map_consts(order, total, cs, i + 1, n, clash)
 
-fn clash_map_fns(order: Graph, total: Int, fns: List[TFn], i: Int, n: Int, clash: Int) -> Int ! alloc
+fn clash_map_fns(order: &Graph, total: Int, fns: &List[TFn], i: Int, n: Int, clash: Int) -> Int ! alloc
     if i >= n
         0
     else
-        nm = str_as_int(list_get(fns, i).name)
+        nm = str_as_int(&list_get(fns, i).name)
         if name_is_clashing(order, total, nm) == 1
             _p = map_put(clash, nm, 1)
             clash_map_fns(order, total, fns, i + 1, n, clash)
         else
             clash_map_fns(order, total, fns, i + 1, n, clash)
 
-fn clash_map_structs(order: Graph, total: Int, sts: List[TStruct], i: Int, n: Int, clash: Int) -> Int ! alloc
+fn clash_map_structs(order: &Graph, total: Int, sts: &List[TStruct], i: Int, n: Int, clash: Int) -> Int ! alloc
     if i >= n
         0
     else
-        nm = str_as_int(list_get(sts, i).name)
+        nm = str_as_int(&list_get(sts, i).name)
         if name_is_clashing(order, total, nm) == 1
             _p = map_put(clash, nm, 1)
             clash_map_structs(order, total, sts, i + 1, n, clash)
@@ -902,106 +902,106 @@ fn clash_map_structs(order: Graph, total: Int, sts: List[TStruct], i: Int, n: In
             clash_map_structs(order, total, sts, i + 1, n, clash)
 
 # name -> link name for the clashing definitions of one module.
-fn local_renames(tp: TProgram, clash: Int, modid: String) -> Int ! alloc
+fn local_renames(tp: &TProgram, clash: Int, modid: &String) -> Int ! alloc
     r = map_new()
-    _a = local_renames_fns(tp.fns, 0, list_len(tp.fns), clash, modid, r)
-    _b = local_renames_structs(tp.structs, 0, list_len(tp.structs), clash, modid, r)
-    _k = local_renames_consts(tp.consts, 0, list_len(tp.consts), clash, modid, r)
-    _c = local_renames_methods(tp.fns, 0, list_len(tp.fns), r)
+    _a = local_renames_fns(&tp.fns, 0, list_len(&tp.fns), clash, modid, r)
+    _b = local_renames_structs(&tp.structs, 0, list_len(&tp.structs), clash, modid, r)
+    _k = local_renames_consts(&tp.consts, 0, list_len(&tp.consts), clash, modid, r)
+    _c = local_renames_methods(&tp.fns, 0, list_len(&tp.fns), r)
     r
 
-fn local_renames_consts(cs: List[TConst], i: Int, n: Int, clash: Int, modid: String, r: Int) -> Int ! alloc
+fn local_renames_consts(cs: &List[TConst], i: Int, n: Int, clash: Int, modid: &String, r: Int) -> Int ! alloc
     if i >= n
         0
     else
         nm = list_get(cs, i).name
-        if map_get(clash, str_as_int(nm)) == 1
-            _p = map_put(r, str_as_int(nm), str_as_int(link_name(modid, nm, 1)))
+        if map_get(clash, str_as_int(&nm)) == 1
+            _p = map_put(r, str_as_int(&nm), str_as_int(&link_name(modid, &nm, 1)))
             local_renames_consts(cs, i + 1, n, clash, modid, r)
         else
             local_renames_consts(cs, i + 1, n, clash, modid, r)
 
 # A method or static of a renamed type follows its type: `T__m` -> `mod__T__m`.
-fn local_renames_methods(fns: List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc
+fn local_renames_methods(fns: &List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(fns, i)
-        rv = map_get(r, str_as_int(f.recv))
+        rv = map_get(r, str_as_int(&f.recv))
         if str_len(f.recv) > 0
             if rv != 0
-                _p = map_put(r, str_as_int(f.name), str_as_int(str_from_int(rv) + "__" + str_slice(f.name, str_len(f.recv) + 2, str_len(f.name))))
+                _p = map_put(r, str_as_int(&f.name), str_as_int(&(str_from_int(rv) + "__" + str_slice(f.name, str_len(f.recv) + 2, str_len(f.name)))))
                 local_renames_methods(fns, i + 1, n, r)
             else
                 local_renames_methods(fns, i + 1, n, r)
         else
             local_renames_methods(fns, i + 1, n, r)
 
-fn local_renames_fns(fns: List[TFn], i: Int, n: Int, clash: Int, modid: String, r: Int) -> Int ! alloc
+fn local_renames_fns(fns: &List[TFn], i: Int, n: Int, clash: Int, modid: &String, r: Int) -> Int ! alloc
     if i >= n
         0
     else
-        nm = str_as_int(list_get(fns, i).name)
+        nm = str_as_int(&list_get(fns, i).name)
         if map_get(clash, nm) != 0
-            _p = map_put(r, nm, str_as_int(link_name(modid, str_from_int(nm), 1)))
+            _p = map_put(r, nm, str_as_int(&link_name(modid, &str_from_int(nm), 1)))
             local_renames_fns(fns, i + 1, n, clash, modid, r)
         else
             local_renames_fns(fns, i + 1, n, clash, modid, r)
 
-fn local_renames_structs(sts: List[TStruct], i: Int, n: Int, clash: Int, modid: String, r: Int) -> Int ! alloc
+fn local_renames_structs(sts: &List[TStruct], i: Int, n: Int, clash: Int, modid: &String, r: Int) -> Int ! alloc
     if i >= n
         0
     else
-        nm = str_as_int(list_get(sts, i).name)
+        nm = str_as_int(&list_get(sts, i).name)
         if map_get(clash, nm) != 0
-            _p = map_put(r, nm, str_as_int(link_name(modid, str_from_int(nm), 1)))
+            _p = map_put(r, nm, str_as_int(&link_name(modid, &str_from_int(nm), 1)))
             local_renames_structs(sts, i + 1, n, clash, modid, r)
         else
             local_renames_structs(sts, i + 1, n, clash, modid, r)
 
-fn qualify_one_module(order: Graph, mi: Int, proot: String, links: Int, clash: Int) -> Int ! io, alloc
+fn qualify_one_module(order: &Graph, mi: Int, proot: &String, links: Int, clash: Int) -> Int ! io, alloc
     ctx_step = module_qualifiers(order, mi, proot)
     if result_is_err(ctx_step) == 1
         ctx_step
     else
         ctx = result_unwrap(ctx_step)
         path = mod_path_at(order, mi)
-        modid = modid_from_path(path, proot)
-        tp = list_get(order.progs, mi)
-        renames = local_renames(tp, clash, modid)
+        modid = modid_from_path(&path, proot)
+        tp = list_get(&order.progs, mi)
+        renames = local_renames(&tp, clash, &modid)
         _c = vec_push(ctx, renames)
         errs = vec_new()
         _e = vec_push(ctx, errs)
         own = vec_new()
-        _o = own_variant_names(tp.enums, 0, list_len(tp.enums), own)
+        _o = own_variant_names(&tp.enums, 0, list_len(&tp.enums), own)
         _w = vec_push(ctx, own)
-        _d = vec_push(ctx, alias_dep_keys(ctx, tp.aliases, 0, list_len(tp.aliases), vec_new()))
+        _d = vec_push(ctx, alias_dep_keys(ctx, &tp.aliases, 0, list_len(&tp.aliases), vec_new()))
         flat = vec_new()
         _fl = flat_keys(order, mi, proot, flat)
         _g = vec_push(ctx, flat)
         _q = qualify_typed(order, mi, ctx, links, renames)
         if vec_len(errs) > 0
-            result_err_str(str_from_int(vec_get(errs, 0)))
+            result_err_str(&str_from_int(vec_get(errs, 0)))
         else
             result_ok(0)
 
 # The keys of the modules imported under an alias of this module.
-fn alias_dep_keys(ctx: Int, aliases: List[String], i: Int, n: Int, out: Int) -> Int ! alloc
+fn alias_dep_keys(ctx: Int, aliases: &List[String], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
         a = list_get(aliases, i)
         if str_len(a) > 0
-            dep = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(strdup(a)))
+            dep = qualifier_dep(vec_get(ctx, 0), vec_get(ctx, 1), str_as_int(&strdup(a)))
             if dep != 0
                 _p = vec_push(out, dep)
         alias_dep_keys(ctx, aliases, i + 1, n, out)
 
-fn qualify_all_modules(order: Graph, n: Int, proot: String, links: Int) -> Int ! io, alloc
+fn qualify_all_modules(order: &Graph, n: Int, proot: &String, links: Int) -> Int ! io, alloc
     clash = build_clash_map(order, n)
     qualify_all_go(order, 0, n, proot, links, clash)
 
-fn qualify_all_go(order: Graph, i: Int, n: Int, proot: String, links: Int, clash: Int) -> Int ! io, alloc
+fn qualify_all_go(order: &Graph, i: Int, n: Int, proot: &String, links: Int, clash: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
@@ -1013,7 +1013,7 @@ fn qualify_all_go(order: Graph, i: Int, n: Int, proot: String, links: Int, clash
 
 # Flat-import clashes are judged on the original names, before any module is
 # renamed (renaming makes the clashing exports distinct).
-fn check_all_flat_clashes(order: Graph, i: Int, n: Int, proot: String) -> Int ! io, alloc
+fn check_all_flat_clashes(order: &Graph, i: Int, n: Int, proot: &String) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
@@ -1023,8 +1023,8 @@ fn check_all_flat_clashes(order: Graph, i: Int, n: Int, proot: String) -> Int ! 
         else
             check_all_flat_clashes(order, i + 1, n, proot)
 
-fn qualify_module_graph(order: Graph, proot: String) -> Int ! io, alloc
-    n = list_len(order.mods)
+fn qualify_module_graph(order: &Graph, proot: &String) -> Int ! io, alloc
+    n = list_len(&order.mods)
     if needs_qualify(order, n) == 0
         result_ok(0)
     else

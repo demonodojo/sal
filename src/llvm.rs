@@ -559,6 +559,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
     s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_box_id(i64)\n");
+    s.push_str("declare i64 @sal_enum_copy(i64)\n");
     s.push_str("declare i64 @sal_enum_field(i64, i64)\n");
     s.push_str("declare i64 @sal_vec_len(ptr)\n");
     s.push_str("declare void @sal_vec_free(ptr)\n");
@@ -585,6 +586,9 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
     s.push_str("declare i64 @sal_desc_copy(ptr, i64)\n");
+    s.push_str("declare i64 @sal_list_clone_val(i64)\n");
+    s.push_str("declare i64 @sal_dict_clone_val(i64)\n");
+    s.push_str("declare i64 @sal_bytes_clone_val(i64)\n");
     s.push_str("declare i64 @sal_clang(ptr, ptr)\n");
     s.push_str("declare ptr @sal_realpath(ptr)\n");
     s.push_str("declare i64 @sal_clang_obj(ptr, ptr)\n");
@@ -3240,6 +3244,12 @@ fn emit_runtime_or_user_call(
             let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = call i64 @sal_enum_box_id(i64 {a})\n"));
+            }
+        }
+        name @ ("sal_list_clone_val" | "sal_dict_clone_val" | "sal_bytes_clone_val" | "sal_enum_copy") => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @{name}(i64 {a})\n"));
             }
         }
         "sal_struct_free" => {

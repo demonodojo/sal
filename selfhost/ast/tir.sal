@@ -79,10 +79,10 @@ fn ti_call_shape(h: Int) -> Int ! alloc
 fn ti_no_insts() -> List[Inst] ! alloc
     List.new[Inst]()
 
-fn ti_insts(hs: Int, out: List[Inst]) -> Int ! alloc
+fn ti_insts(hs: Int, out: &List[Inst]) -> Int ! alloc
     ti_insts_go(hs, 0, vec_len(hs), out)
 
-fn ti_insts_go(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
+fn ti_insts_go(hs: Int, i: Int, n: Int, out: &List[Inst]) -> Int ! alloc
     if i >= n
         0
     else
@@ -91,11 +91,11 @@ fn ti_insts_go(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
 
 fn ti_insts_of(hs: Int) -> List[Inst] ! alloc
     out = List.new[Inst]()
-    ti_insts(hs, out)
+    ti_insts(hs, &out)
     out
 
 # Carried rows `[dest, a, b]`.
-fn ti_carries(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
+fn ti_carries(hs: Int, i: Int, n: Int, out: &List[Inst]) -> Int ! alloc
     if i >= n
         0
     else
@@ -105,11 +105,11 @@ fn ti_carries(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
 
 fn ti_carries_of(hs: Int) -> List[Inst] ! alloc
     out = List.new[Inst]()
-    ti_carries(hs, 0, vec_len(hs), out)
+    ti_carries(hs, 0, vec_len(hs), &out)
     out
 
 # Switch arms `[tag, body, value]`.
-fn ti_arms(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
+fn ti_arms(hs: Int, i: Int, n: Int, out: &List[Inst]) -> Int ! alloc
     if i >= n
         0
     else
@@ -119,7 +119,7 @@ fn ti_arms(hs: Int, i: Int, n: Int, out: List[Inst]) -> Int ! alloc
 
 fn ti_arms_of(hs: Int) -> List[Inst] ! alloc
     out = List.new[Inst]()
-    ti_arms(hs, 0, vec_len(hs), out)
+    ti_arms(hs, 0, vec_len(hs), &out)
     out
 
 fn ti_inst(h: Int) -> Inst ! alloc
@@ -168,7 +168,7 @@ fn ti_inst(h: Int) -> Inst ! alloc
         ti_mk(k, "", "", "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
 
 # ---- regions ----
-fn ti_ops(hs: Int, i: Int, n: Int, out: List[FOp]) -> Int ! alloc
+fn ti_ops(hs: Int, i: Int, n: Int, out: &List[FOp]) -> Int ! alloc
     if i >= n
         0
     else
@@ -176,17 +176,17 @@ fn ti_ops(hs: Int, i: Int, n: Int, out: List[FOp]) -> Int ! alloc
         out.push(FOp(vec_get(o, 0), ti_slot_s(o, 1), ti_slot_s(o, 2), ti_slot_s(o, 3), ti_slot_s(o, 4), ti_slot_s(o, 5), vec_len(o)))
         ti_ops(hs, i + 1, n, out)
 
-fn ti_regions(hs: Int, i: Int, n: Int, out: List[Region]) -> Int ! alloc
+fn ti_regions(hs: Int, i: Int, n: Int, out: &List[Region]) -> Int ! alloc
     if i >= n
         0
     else
         r = vec_get(hs, i)
         ops = List.new[FOp]()
-        ti_ops(vec_get(r, 1), 0, vec_len(vec_get(r, 1)), ops)
+        ti_ops(vec_get(r, 1), 0, vec_len(vec_get(r, 1)), &ops)
         out.push(Region(ti_slot_s(r, 0), vec_get(r, 2), vec_get(r, 3), vec_get(r, 4), vec_get(r, 5), ti_slot_s(r, 6), ops))
         ti_regions(hs, i + 1, n, out)
 
-fn ti_lits(hs: Int, i: Int, n: Int, out: List[Lit]) -> Int ! alloc
+fn ti_lits(hs: Int, i: Int, n: Int, out: &List[Lit]) -> Int ! alloc
     if i >= n
         0
     else
@@ -196,13 +196,13 @@ fn ti_lits(hs: Int, i: Int, n: Int, out: List[Lit]) -> Int ! alloc
 
 fn ti_fn(f: Int) -> IrFn ! alloc
     regions = List.new[Region]()
-    ti_regions(vec_get(f, 3), 0, vec_len(vec_get(f, 3)), regions)
+    ti_regions(vec_get(f, 3), 0, vec_len(vec_get(f, 3)), &regions)
     lits = List.new[Lit]()
     if tt_slot(f, 4) != 0
-        _l = ti_lits(vec_get(f, 4), 0, vec_len(vec_get(f, 4)), lits)
+        _l = ti_lits(vec_get(f, 4), 0, vec_len(vec_get(f, 4)), &lits)
     IrFn(ti_s(vec_get(f, 0)), tt_str_list(vec_get(f, 1)), ti_insts_of(vec_get(f, 2)), regions, lits)
 
-fn ti_fns(m: Int, i: Int, n: Int, out: List[IrFn]) -> Int ! alloc
+fn ti_fns(m: Int, i: Int, n: Int, out: &List[IrFn]) -> Int ! alloc
     if i >= n
         0
     else
@@ -212,26 +212,26 @@ fn ti_fns(m: Int, i: Int, n: Int, out: List[IrFn]) -> Int ! alloc
 # The typed form of an IR module (a vec of function handles).
 fn ti_module(m: Int) -> List[IrFn] ! alloc
     out = List.new[IrFn]()
-    ti_fns(m, 0, vec_len(m), out)
+    ti_fns(m, 0, vec_len(m), &out)
     out
 
 # ---- release ----
-fn ti_free_insts(xs: List[Inst]) -> Int ! alloc
+fn ti_free_insts(xs: &List[Inst]) -> Int ! alloc
     ti_free_each(xs, 0, xs.len())
     list_free(xs)
 
-fn ti_free_each(xs: List[Inst], i: Int, n: Int) -> Int ! alloc
+fn ti_free_each(xs: &List[Inst], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         x = xs.get(i)
         list_free(x.strs)
-        ti_free_insts(x.b1)
-        ti_free_insts(x.b2)
-        ti_free_insts(x.rows)
+        ti_free_insts(&x.b1)
+        ti_free_insts(&x.b2)
+        ti_free_insts(&x.rows)
         ti_free_each(xs, i + 1, n)
 
-fn ti_free_regions(rs: List[Region], i: Int, n: Int) -> Int ! alloc
+fn ti_free_regions(rs: &List[Region], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -239,7 +239,7 @@ fn ti_free_regions(rs: List[Region], i: Int, n: Int) -> Int ! alloc
         list_free(r.ops)
         ti_free_regions(rs, i + 1, n)
 
-fn ti_free_lits(ls: List[Lit], i: Int, n: Int) -> Int ! alloc
+fn ti_free_lits(ls: &List[Lit], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -248,28 +248,28 @@ fn ti_free_lits(ls: List[Lit], i: Int, n: Int) -> Int ! alloc
         ti_free_lits(ls, i + 1, n)
 
 # Releases one function's lists (the function itself is a copy or an element the caller frees).
-fn ti_free_fn_parts(f: IrFn) -> Int ! alloc
+fn ti_free_fn_parts(f: &IrFn) -> Int ! alloc
     list_free(f.dps)
-    ti_free_insts(f.insts)
-    ti_free_regions(f.regions, 0, f.regions.len())
+    ti_free_insts(&f.insts)
+    ti_free_regions(&f.regions, 0, f.regions.len())
     list_free(f.regions)
-    ti_free_lits(f.lits, 0, f.lits.len())
+    ti_free_lits(&f.lits, 0, f.lits.len())
     list_free(f.lits)
 
-fn ti_free_fns(fs: List[IrFn], i: Int, n: Int) -> Int ! alloc
+fn ti_free_fns(fs: &List[IrFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = fs.get(i)
         list_free(f.dps)
-        ti_free_insts(f.insts)
-        ti_free_regions(f.regions, 0, f.regions.len())
+        ti_free_insts(&f.insts)
+        ti_free_regions(&f.regions, 0, f.regions.len())
         list_free(f.regions)
-        ti_free_lits(f.lits, 0, f.lits.len())
+        ti_free_lits(&f.lits, 0, f.lits.len())
         list_free(f.lits)
         ti_free_fns(fs, i + 1, n)
 
-fn ti_free_module(fs: List[IrFn]) -> Int ! alloc
+fn ti_free_module(fs: &List[IrFn]) -> Int ! alloc
     ti_free_fns(fs, 0, fs.len())
     list_free(fs)
 
@@ -287,7 +287,7 @@ fn tt_str(h: Int) -> String ! alloc
     else
         str_from_int(h)
 
-fn tt_strs(hs: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
+fn tt_strs(hs: Int, i: Int, n: Int, out: &List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -296,5 +296,5 @@ fn tt_strs(hs: Int, i: Int, n: Int, out: List[String]) -> Int ! alloc
 
 fn tt_str_list(hs: Int) -> List[String] ! alloc
     out = List.new[String]()
-    tt_strs(hs, 0, vec_len(hs), out)
+    tt_strs(hs, 0, vec_len(hs), &out)
     out

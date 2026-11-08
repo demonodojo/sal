@@ -30,7 +30,7 @@ fn std_is_ws(c: Int) -> Int
     else
         0
 
-fn std_skip_ws(src: String, i: Int, n: Int) -> Int ! alloc
+fn std_skip_ws(src: &String, i: Int, n: Int) -> Int ! alloc
     j = i
     go = 1
     while go == 1
@@ -42,7 +42,7 @@ fn std_skip_ws(src: String, i: Int, n: Int) -> Int ! alloc
             go = 0
     j
 
-fn std_scan_call(src: String, name_end: Int, n: Int) -> StdCall ! alloc
+fn std_scan_call(src: &String, name_end: Int, n: Int) -> StdCall ! alloc
     i = std_skip_ws(src, name_end, n)
     if i >= n
         return std_call_bad()
@@ -81,7 +81,7 @@ fn std_scan_call(src: String, name_end: Int, n: Int) -> StdCall ! alloc
     else
         StdCall(rp, open, first)
 
-fn std_find_comma(src: String, from: Int, rp: Int) -> Int ! alloc
+fn std_find_comma(src: &String, from: Int, rp: Int) -> Int ! alloc
     j = from
     depth = 0
     go = 1
@@ -107,7 +107,7 @@ fn std_find_comma(src: String, from: Int, rp: Int) -> Int ! alloc
                 j = j + 1
     found
 
-fn std_argc(call: StdCall, src: String) -> Int ! alloc
+fn std_argc(call: StdCall, src: &String) -> Int ! alloc
     if call.first < 0
         1
     else
@@ -117,7 +117,7 @@ fn std_argc(call: StdCall, src: String) -> Int ! alloc
         else
             3
 
-fn std_trim_left(src: String, lo: Int, hi: Int) -> Int ! alloc
+fn std_trim_left(src: &String, lo: Int, hi: Int) -> Int ! alloc
     j = lo
     go = 1
     while go == 1
@@ -129,7 +129,7 @@ fn std_trim_left(src: String, lo: Int, hi: Int) -> Int ! alloc
             go = 0
     j
 
-fn std_trim_right(src: String, lo: Int, hi: Int) -> Int ! alloc
+fn std_trim_right(src: &String, lo: Int, hi: Int) -> Int ! alloc
     j = hi
     go = 1
     while go == 1
@@ -141,7 +141,7 @@ fn std_trim_right(src: String, lo: Int, hi: Int) -> Int ! alloc
             go = 0
     j
 
-fn std_trim_slice(src: String, lo: Int, hi: Int) -> String ! alloc
+fn std_trim_slice(src: &String, lo: Int, hi: Int) -> String ! alloc
     if lo >= hi
         d""
     else
@@ -152,13 +152,13 @@ fn std_trim_slice(src: String, lo: Int, hi: Int) -> String ! alloc
         else
             src.slice(a, b)
 
-fn std_arg0(src: String, call: StdCall) -> String ! alloc
+fn std_arg0(src: &String, call: StdCall) -> String ! alloc
     end = call.rparen
     if call.first >= 0
         end = call.first
     std_trim_slice(src, call.open + 1, end)
 
-fn std_arg1(src: String, call: StdCall) -> String ! alloc
+fn std_arg1(src: &String, call: StdCall) -> String ! alloc
     if call.first < 0
         d""
     else
@@ -168,14 +168,14 @@ fn std_arg1(src: String, call: StdCall) -> String ! alloc
         else
             std_trim_slice(src, call.first + 1, c2)
 
-fn std_arg2(src: String, call: StdCall) -> String ! alloc
+fn std_arg2(src: &String, call: StdCall) -> String ! alloc
     c2 = std_find_comma(src, call.first + 1, call.rparen)
     if c2 < 0
         d""
     else
         std_trim_slice(src, c2 + 1, call.rparen)
 
-fn stdapi_fix(name: String, src: String, call: StdCall) -> String ! alloc
+fn stdapi_fix(name: &String, src: &String, call: StdCall) -> String ! alloc
     argc = std_argc(call, src)
     if name.eq("read_fd") == 1
         if argc == 3
@@ -200,7 +200,7 @@ fn stdapi_fix(name: String, src: String, call: StdCall) -> String ! alloc
     else
         d""
 
-fn stdapi_consider(src: String, lex: Lex, i: Int) -> Off ! alloc
+fn stdapi_consider(src: &String, lex: &Lex, i: Int) -> Off ! alloc
     if lex.kind(i) != TK_IDENT()
         return std_off_skip()
     name = lex.text(src, i)
@@ -209,15 +209,15 @@ fn stdapi_consider(src: String, lex: Lex, i: Int) -> Off ! alloc
     call = std_scan_call(src, lex.end(i), src.len())
     if std_call_ok(call) == 0
         return std_off_skip()
-    fix = stdapi_fix(name, src, call)
+    fix = stdapi_fix(&name, src, call)
     if fix.len() == 0
         return std_off_skip()
     off_new(d"Style/StdApi", d"use the std method API instead of " + name, lex.start(i), call.rparen + 1, 1, fix)
 
-fn cop_stdapi(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_stdapi(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     cop_stdapi_go(src, lex, offs, 0, lex.len())
 
-fn cop_stdapi_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_stdapi_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

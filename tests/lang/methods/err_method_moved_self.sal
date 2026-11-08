@@ -2,7 +2,7 @@
 struct N
     name: String
 
-method N.into() -> N
+method N.into(self) -> N
     self
 
 fn main() -> Int ! alloc

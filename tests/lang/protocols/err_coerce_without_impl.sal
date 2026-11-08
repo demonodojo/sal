@@ -8,8 +8,8 @@ struct Point
 method Point.show(self) -> String ! alloc
     self.x.to_str()
 
-fn log(x: any[Show]) -> String ! alloc
+fn log(x: &any[Show]) -> String ! alloc
     x.show()
 
 fn main() -> Int ! alloc
-    log(Point(1)).len()
+    log(&Point(1)).len()

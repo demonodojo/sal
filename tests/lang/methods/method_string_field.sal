@@ -2,7 +2,7 @@
 struct N
     name: String
 
-method N.len() -> Int ! alloc
+method N.len(&self) -> Int ! alloc
     str_len(self.name)
 
 fn main() -> Int ! alloc

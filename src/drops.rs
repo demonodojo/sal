@@ -791,6 +791,15 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "bytes_fill_u32"
             | "bytes_copy"
             | "str_bytes_copy"
+            | "matmul"
+            | "qmatmul"
+            | "attention"
+            | "relu"
+            | "silu"
+            | "rms_norm"
+            | "rope"
+            | "softmax"
+            | "argmax"
     )
 }
 

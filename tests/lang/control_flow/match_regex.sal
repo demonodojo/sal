@@ -1,9 +1,9 @@
 # exit: 12
-fn score(s: String) -> Int
+fn score(s: &String) -> Int
     match s
         "exact" => 10
         r"^b" => 2
         _ => 0
 
 fn main() -> Int
-    score("bye") + score("exact") + score("zzz")
+    score(&"bye") + score(&"exact") + score(&"zzz")

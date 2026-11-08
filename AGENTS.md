@@ -13,7 +13,7 @@ Las guías detalladas por área están en `.claude/skills/` (enlace a `.cursor/s
 2. [docs/subplans/](docs/subplans/) fija archivos, algoritmo y tests de cada pase (el estado del selfhost está en `07-selfhost.md`).
 3. Si SPEC y código divergen, no arregles uno a ojo: avisa al usuario y cierra la divergencia en el mismo cambio.
 4. No ampliar la superficie del lenguaje porque un diseño la mencione: lo reservado es `E_PARSE` hasta su fase.
-5. Códigos de error cerrados: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_TARGET` (solo destino), `E_INTERNAL` (solo fallos del compilador). Avisos, que no son errores ni paran la compilación: `W_DEPRECATED` (uso de un item `@deprecated`). No inventes códigos ni eventos de instrumentación.
+5. Códigos de error cerrados: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_TARGET` (solo destino), `E_INTERNAL` (solo fallos del compilador). `E_BORROW` es un préstamo que se solapa, una referencia que sobrevive a su referente, o un lifetime elidido sin origen. Avisos, que no son errores ni paran la compilación: `W_DEPRECATED` (uso de un item `@deprecated`). No inventes códigos ni eventos de instrumentación.
 6. La gramática es recursiva por la izquierda (`1 - 2 - 3` = `(1 - 2) - 3`); prefijos y lambda asocian a la derecha.
 
 ## Estructura

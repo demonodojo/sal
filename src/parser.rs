@@ -357,7 +357,27 @@ impl Parser {
         self.skip_soft_layout();
         let mut params = Vec::new();
         let mut self_mode = ParamMode::Inferred;
-        if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
+        let mut self_ref = 0u8;
+        if self.at(TokenKind::Amp) {
+            let sp = self.peek().span;
+            self.bump();
+            let mutable = self.eat_mut_ident();
+            if !matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
+                return Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    "expected `self` after `&` in a protocol method",
+                    sp,
+                ));
+            }
+            self.bump();
+            self_ref = if mutable { 2 } else { 1 };
+            self_mode = ParamMode::Borrow;
+            self.skip_soft_layout();
+            if self.at(TokenKind::Comma) {
+                self.bump();
+                self.skip_soft_layout();
+            }
+        } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
             let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
             let bare = match &next {
                 Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
@@ -412,8 +432,23 @@ impl Parser {
             ret,
             effects,
             self_mode,
+            self_ref,
             span: sp,
         })
+    }
+
+    fn eat_mut_ident(&mut self) -> bool {
+        if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "mut") {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_lifetime_name(&mut self) -> Result<String, Diagnostic> {
+        self.expect(TokenKind::Tick, "expected '")?;
+        self.parse_ident()
     }
 
     fn parse_type_params(&mut self) -> Result<Vec<String>, Diagnostic> {
@@ -425,7 +460,11 @@ impl Parser {
         let mut params = Vec::new();
         self.skip_group_newlines();
         while !self.at(TokenKind::RBracket) {
-            params.push(self.parse_ident()?);
+            if self.at(TokenKind::Tick) {
+                params.push(format!("'{}", self.parse_lifetime_name()?));
+            } else {
+                params.push(self.parse_ident()?);
+            }
             self.skip_group_newlines();
             if self.at(TokenKind::Comma) {
                 self.bump();
@@ -610,7 +649,27 @@ impl Parser {
         self.skip_soft_layout();
         let mut params = Vec::new();
         let mut self_mode = ParamMode::Inferred;
-        if method && matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
+        let mut self_ref = 0u8;
+        if method && self.at(TokenKind::Amp) {
+            let sp = self.peek().span;
+            self.bump();
+            let mutable = self.eat_mut_ident();
+            if !matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
+                return Err(Diagnostic::new(
+                    ErrorCode::EParse,
+                    "expected `self` after `&`",
+                    sp,
+                ));
+            }
+            self.bump();
+            self_ref = if mutable { 2 } else { 1 };
+            self_mode = ParamMode::Borrow;
+            self.skip_soft_layout();
+            if self.at(TokenKind::Comma) {
+                self.bump();
+                self.skip_soft_layout();
+            }
+        } else if method && matches!(&self.peek().kind, TokenKind::Ident(n) if n == "self") {
             let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
             let bare = match &next {
                 Some(TokenKind::Comma) | Some(TokenKind::RParen) => true,
@@ -676,6 +735,7 @@ impl Parser {
             name,
             receiver: None,
             self_mode,
+            self_ref,
             method_kind: MethodKind::Method,
             type_params,
             params,
@@ -760,8 +820,28 @@ impl Parser {
         Ok(effects)
     }
 
+    fn parse_ref_type(&mut self, span: Span) -> Result<Type, Diagnostic> {
+        self.expect(TokenKind::Amp, "expected &")?;
+        let lifetime = if self.at(TokenKind::Tick) {
+            Some(self.parse_lifetime_name()?)
+        } else {
+            None
+        };
+        let mutable = self.eat_mut_ident();
+        let inner = self.parse_type()?;
+        Ok(Type::Ref {
+            mutable,
+            lifetime,
+            inner: Box::new(inner),
+            span,
+        })
+    }
+
     fn parse_type(&mut self) -> Result<Type, Diagnostic> {
         let span = self.peek().span;
+        if self.at(TokenKind::Amp) {
+            return self.parse_ref_type(span);
+        }
         if self.at_ident() {
             let name = self.parse_ident()?;
             if name == "Tensor" {
@@ -1317,6 +1397,25 @@ impl Parser {
                     span: sp,
                 })
             }
+            TokenKind::Amp => {
+                let sp = self.bump().span;
+                let mutable = self.eat_mut_ident();
+                let e = self.parse_unary()?;
+                Ok(Expr::Unary {
+                    op: if mutable { UnOp::RefMut } else { UnOp::Ref },
+                    expr: Box::new(e),
+                    span: sp,
+                })
+            }
+            TokenKind::Star => {
+                let sp = self.bump().span;
+                let e = self.parse_unary()?;
+                Ok(Expr::Unary {
+                    op: UnOp::Deref,
+                    expr: Box::new(e),
+                    span: sp,
+                })
+            }
             TokenKind::Bang => {
                 let sp = self.bump().span;
                 let e = self.parse_unary()?;
@@ -1836,7 +1935,15 @@ impl Parser {
 }
 
 fn is_lvalue(e: &Expr) -> bool {
-    matches!(e, Expr::Ident { .. } | Expr::Field { .. })
+    matches!(
+        e,
+        Expr::Ident { .. }
+            | Expr::Field { .. }
+            | Expr::Unary {
+                op: UnOp::Deref,
+                ..
+            }
+    )
 }
 
 fn plain_string_literal_expr(s: String, sp: Span) -> Result<Expr, Diagnostic> {
@@ -1978,6 +2085,7 @@ fn token_eq(a: &TokenKind, b: &TokenKind) -> bool {
         | (Slash, Slash)
         | (Percent, Percent)
         | (Amp, Amp)
+        | (Tick, Tick)
         | (Pipe, Pipe)
         | (Caret, Caret)
         | (Shl, Shl)

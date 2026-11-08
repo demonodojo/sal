@@ -1,5 +1,5 @@
 # error: E_SHAPE
-fn f(a: Tensor[F32, 2, 3] on cpu, b: Tensor[F32, 4, 5] on cpu) -> Int ! alloc
+fn f(a: &Tensor[F32, 2, 3] on cpu, b: &Tensor[F32, 4, 5] on cpu) -> Int ! alloc
     c = a + b
     0
 

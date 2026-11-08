@@ -3,7 +3,7 @@ import "support/assert.sal"
 
 fn main() -> Int ! io, alloc
     parent = Path.new(d"/tmp/a/b").parent()
-    a = assert_str_eq(parent, d"/tmp/a", 1)
+    a = assert_str_eq(&parent, &d"/tmp/a", 1)
     if a != 0
         a
     else

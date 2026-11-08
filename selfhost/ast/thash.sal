@@ -6,7 +6,7 @@ struct HT
     vals: List[String]
     fill: List[Int]
 
-fn ht_fill(xs: List[String], n: Int) -> Int ! alloc
+fn ht_fill(xs: &List[String], n: Int) -> Int ! alloc
     if n == 0
         0
     else
@@ -17,13 +17,13 @@ static HT.new(cap: Int) -> HT ! alloc
     keys = List.new[String]()
     vals = List.new[String]()
     n = cap * 2 + 8
-    ht_fill(keys, n)
-    ht_fill(vals, n)
+    ht_fill(&keys, n)
+    ht_fill(&vals, n)
     fill = List.new[Int]()
     fill.push(0)
     HT(keys, vals, fill)
 
-method HT.home(key: String) -> Int ! alloc
+method HT.home(&self, key: &String) -> Int ! alloc
     x = key.hash(5381)
     y = if x < 0
         0 - x
@@ -33,7 +33,7 @@ method HT.home(key: String) -> Int ! alloc
     y - (y / cap) * cap
 
 # Slot holding `key`, or the empty slot where it would go.
-method HT.probe(key: String, i: Int) -> Int ! alloc
+method HT.probe(&self, key: &String, i: Int) -> Int ! alloc
     k = self.keys.get(i)
     if k.len() == 0
         i
@@ -47,7 +47,7 @@ method HT.probe(key: String, i: Int) -> Int ! alloc
             j
         self.probe(key, next)
 
-method HT.put(key: String, val: String) -> Int ! alloc
+method HT.put(&self, key: &String, val: &String) -> Int ! alloc
     self.grow()
     i = self.probe(key, self.home(key))
     fresh = if self.keys.get(i).len() == 0
@@ -60,22 +60,22 @@ method HT.put(key: String, val: String) -> Int ! alloc
     0
 
 # Doubles the slots and reinserts every entry once the table is half full.
-method HT.grow() -> Int ! alloc
+method HT.grow(&self) -> Int ! alloc
     n = self.keys.len()
     if (self.fill.get(0) + 1) * 2 <= n
         0
     else
         ks = List.new[String]()
         vs = List.new[String]()
-        self.take_all(0, n, ks, vs)
-        ht_fill(self.keys, n)
-        ht_fill(self.vals, n)
+        self.take_all(0, n, &ks, &vs)
+        ht_fill(&self.keys, n)
+        ht_fill(&self.vals, n)
         self.fill.set(0, 0)
-        self.reput(ks, vs, 0, ks.len())
+        self.reput(&ks, &vs, 0, ks.len())
         list_free(ks)
         list_free(vs)
 
-method HT.take_all(i: Int, n: Int, ks: List[String], vs: List[String]) -> Int ! alloc
+method HT.take_all(&self, i: Int, n: Int, ks: &List[String], vs: &List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -87,18 +87,18 @@ method HT.take_all(i: Int, n: Int, ks: List[String], vs: List[String]) -> Int ! 
         self.vals.set(i, "")
         self.take_all(i + 1, n, ks, vs)
 
-method HT.reput(ks: List[String], vs: List[String], i: Int, n: Int) -> Int ! alloc
+method HT.reput(&self, ks: &List[String], vs: &List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        self.put(ks.get(i), vs.get(i))
+        self.put(&ks.get(i), &vs.get(i))
         self.reput(ks, vs, i + 1, n)
 
-method HT.get(key: String) -> String ! alloc
+method HT.get(&self, key: &String) -> String ! alloc
     i = self.probe(key, self.home(key))
     self.vals.get(i)
 
-method HT.free() -> Int ! alloc
+method HT.free(&self) -> Int ! alloc
     list_free(self.keys)
     list_free(self.fill)
     list_free(self.vals)

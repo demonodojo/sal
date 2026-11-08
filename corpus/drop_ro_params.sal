@@ -1,7 +1,7 @@
-fn size(s: String) -> Int
+fn size(s: &String) -> Int
     str_len(s)
 
-fn outer(s: String) -> Int
+fn outer(s: &String) -> Int
     size(s)
 
 fn id(s: String) -> String
@@ -10,6 +10,6 @@ fn id(s: String) -> String
 fn main() -> Int ! alloc
     a = str_slice("hello world", 0, 5)
     b = str_slice("hello world", 0, 3)
-    n = outer(a)
+    n = outer(&a)
     c = id(b)
     n + str_len(c)

@@ -6,6 +6,6 @@ enum Option[T]
 fn main() -> Int ! alloc
     d = dict_new[String, String]()
     d.put("a", "x")
-    match dict_get(d, "a")
+    match dict_get(&d, &"a")
         Some(v) => str_len(v)
         None => 0

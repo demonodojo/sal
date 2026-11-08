@@ -1238,3 +1238,27 @@ fn float_math_table_entries() {
     assert_eq!(builtin_method("Float", "to_str"), Some("f64_bits_to_str"));
     assert_eq!(builtin_method("Int", "sqrt"), None);
 }
+
+#[test]
+fn lifetime_elision_follows_the_three_rules() {
+    expect_ok("fn id(s: &String) -> &String\n    s\n");
+    expect_ok("fn both(a: &String, b: &String) -> Int\n    a.len() + b.len()\n");
+    expect_code(
+        "fn pick(a: &String, b: &String) -> &String\n    a\n",
+        ErrorCode::EBorrow,
+    );
+    expect_code(
+        "fn missing(s: &'a String) -> &'a String\n    s\n",
+        ErrorCode::EType,
+    );
+    expect_ok("fn named['a](s: &'a String) -> &'a String\n    s\n");
+}
+
+#[test]
+fn clone_is_a_method_and_tensor_has_none() {
+    expect_ok("fn main() -> Int ! alloc\n    s = \"ab\"\n    t = s.clone()\n    t.len()\n");
+    expect_code(
+        "fn main() -> Int\n    m = tensor[[1.0, 2.0], [3.0, 4.0]]\n    m.clone()\n",
+        ErrorCode::EType,
+    );
+}

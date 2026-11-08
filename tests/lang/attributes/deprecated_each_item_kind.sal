@@ -12,14 +12,14 @@ enum Col
 struct Box
     v: Int
 
-method Box.get() -> Int
+method Box.get(&self) -> Int
     self.v
 
 @deprecated("use get2")
-method Box.old() -> Int
+method Box.old(&self) -> Int
     self.v + 1
 
-fn score(c: Col) -> Int
+fn score(c: &Col) -> Int
     match c
         Red => 0
         Blue(n) => n
@@ -27,4 +27,4 @@ fn score(c: Col) -> Int
 fn main() -> Int
     p = Pt(2)
     b = Box(3)
-    p.x + b.get() + b.old() + score(Blue(1)) + score(Red) - 1
+    p.x + b.get() + b.old() + score(&Blue(1)) + score(&Red) - 1

@@ -2,7 +2,7 @@
 struct P
     x: Int
 
-method P.add(k: Int) -> Int
+method P.add(&self, k: Int) -> Int
     self.x + k
 
 fn main() -> Int

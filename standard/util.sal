@@ -1,6 +1,6 @@
 import lexer
 
-fn skip_nl(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn skip_nl(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
     elsif lex.kind(i) == TK_NL()

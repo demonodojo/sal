@@ -20,22 +20,22 @@ enum Result[T, E]
 fn list_new() -> List[Int] ! alloc
     list_new()
 
-fn list_push(xs: List[Int], x: Int) -> List[Int]
+fn list_push(xs: &List[Int], x: Int) -> List[Int]
     list_push(xs, x)
 
-fn list_len(xs: List[Int]) -> Int
+fn list_len(xs: &List[Int]) -> Int
     list_len(xs)
 
-fn list_get(xs: List[Int], i: Int) -> Int
+fn list_get(xs: &List[Int], i: Int) -> Int
     list_get(xs, i)
 
 fn dict_new() -> Dict[String, Int] ! alloc
     dict_new()
 
-fn dict_put(d: Dict[String, Int], k: String, v: Int) -> Dict[String, Int]
+fn dict_put(d: &Dict[String, Int], k: &String, v: Int) -> Dict[String, Int]
     dict_put(d, k, v)
 
-fn dict_get(d: Dict[String, Int], k: String) -> Option[Int]
+fn dict_get(d: &Dict[String, Int], k: &String) -> Option[Int]
     dict_get(d, k)
 
 # --- Operaciones de tensor ---
@@ -85,20 +85,20 @@ fn argmax(t: Tensor[F32, ?] on p, axis: Int) -> Int
 # Forma deseada del plan: load[F32, 4, 4]("w.salt") — no parsea (dims no son tipos).
 # Forma aceptada hoy: load[Tensor[F32, 4, 4] on cpu](path)
 
-fn load_weights(path: String) -> Tensor[F32, 4, 4] on cpu ! io, alloc
+fn load_weights(path: &String) -> Tensor[F32, 4, 4] on cpu ! io, alloc
     load[Tensor[F32, 4, 4] on cpu](path)
 
-fn print_line(s: String) -> Int ! io
+fn print_line(s: &String) -> Int ! io
     print(s)
 
 # Opaque i64 string handles in selfhost vectors (zero-cost at runtime).
 fn str_from_int(x: Int) -> String
     str_from_int(x)
 
-fn str_as_int(s: String) -> Int
+fn str_as_int(s: &String) -> Int
     str_as_int(s)
 
-fn str_to_f64_bits(s: String) -> Int
+fn str_to_f64_bits(s: &String) -> Int
     str_to_f64_bits(s)
 
 fn f64_bits_to_str(bits: Int) -> String ! alloc
@@ -107,5 +107,5 @@ fn f64_bits_to_str(bits: Int) -> String ! alloc
 fn now_ns() -> Int
     now_ns()
 
-fn str_bytes(s: String) -> Tensor[I8, ?] on cpu ! alloc
+fn str_bytes(s: &String) -> Tensor[I8, ?] on cpu ! alloc
     str_bytes(s)

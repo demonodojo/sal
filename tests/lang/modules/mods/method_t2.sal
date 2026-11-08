@@ -1,7 +1,7 @@
 struct T
     v: Int
 
-method T.get() -> Int
+method T.get(&self) -> Int
     self.v + 2
 
 fn mk2() -> T

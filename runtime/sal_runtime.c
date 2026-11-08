@@ -2915,6 +2915,18 @@ static void *sal_dict_clone(SalDict *in) {
     return outp;
 }
 
+int64_t sal_list_clone_val(int64_t v) {
+    return (int64_t)(uintptr_t)sal_list_clone((void *)(uintptr_t)v);
+}
+
+int64_t sal_dict_clone_val(int64_t v) {
+    return (int64_t)(uintptr_t)sal_dict_clone((SalDict *)(uintptr_t)v);
+}
+
+int64_t sal_bytes_clone_val(int64_t v) {
+    return (int64_t)(uintptr_t)sal_bytes_clone((void *)(uintptr_t)v);
+}
+
 int64_t sal_arena_export(void *owner, int64_t raw, int64_t tag, const char *desc) {
     if (tag == 0 || !owner) {
         return raw;

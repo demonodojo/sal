@@ -6,25 +6,25 @@ struct Sse
 static Sse.new(block: String) -> Sse
     Sse(block)
 
-method Sse.has_data(self borrow) -> Int ! alloc
+method Sse.has_data(&self) -> Int ! alloc
     if self.block.contains(d"data:") != 0
         1
     else
         0
 
-method Sse.is_done(self borrow) -> Int ! alloc
+method Sse.is_done(&self) -> Int ! alloc
     if self.block.contains(d"[DONE]") != 0
         1
     else
         0
 
-method Sse.payload(self borrow) -> String ! alloc
-    sse_data_payload_go(self.block)
+method Sse.payload(&self) -> String ! alloc
+    sse_data_payload_go(&self.block)
 
-method Sse.tool_index(self borrow) -> Int ! alloc
-    sse_accum_tool_index_go(self.block)
+method Sse.tool_index(&self) -> Int ! alloc
+    sse_accum_tool_index_go(&self.block)
 
-fn sse_data_payload_go(block: String) -> String ! alloc
+fn sse_data_payload_go(block: &String) -> String ! alloc
     idx = block.index_of(d"data:")
     if idx < 0
         d""
@@ -36,7 +36,7 @@ fn sse_data_payload_go(block: String) -> String ! alloc
         else
             block.slice(start, end)
 
-fn sse_data_start(block: String, start: Int) -> Int ! alloc
+fn sse_data_start(block: &String, start: Int) -> Int ! alloc
     if start >= block.len()
         start
     else
@@ -45,7 +45,7 @@ fn sse_data_start(block: String, start: Int) -> Int ! alloc
         else
             start
 
-fn sse_accum_tool_index_go(block: String) -> Int ! alloc
+fn sse_accum_tool_index_go(block: &String) -> Int ! alloc
     idx = block.index_of(d"\"index\":")
     if idx < 0
         -1
@@ -54,17 +54,17 @@ fn sse_accum_tool_index_go(block: String) -> Int ! alloc
         rest.to_int()
 
 @deprecated("use Sse.new(block).has_data()")
-fn sse_has_data(block: String) -> Int ! alloc
+fn sse_has_data(block: &String) -> Int ! alloc
     Sse.new(block).has_data()
 
 @deprecated("use Sse.new(block).is_done()")
-fn sse_is_done(block: String) -> Int ! alloc
+fn sse_is_done(block: &String) -> Int ! alloc
     Sse.new(block).is_done()
 
 @deprecated("use Sse.new(block).payload()")
-fn sse_data_payload(block: String) -> String ! alloc
+fn sse_data_payload(block: &String) -> String ! alloc
     sse_data_payload_go(block)
 
 @deprecated("use Sse.new(block).tool_index()")
-fn sse_accum_tool_index(block: String) -> Int ! alloc
+fn sse_accum_tool_index(block: &String) -> Int ! alloc
     sse_accum_tool_index_go(block)

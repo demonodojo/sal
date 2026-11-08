@@ -4,11 +4,11 @@ enum Expr
     Add(Expr, Expr)
     Mul(Expr, Expr)
 
-fn eval(e: Expr) -> Int ! alloc
+fn eval(e: &Expr) -> Int ! alloc
     match e
         Num(n) => n
-        Add(a, b) => eval(a) + eval(b)
-        Mul(a, b) => eval(a) * eval(b)
+        Add(a, b) => eval(&a) + eval(&b)
+        Mul(a, b) => eval(&a) * eval(&b)
 
 fn main() -> Int ! alloc
-    eval(Add(Num(2), Mul(Num(3), Num(4))))
+    eval(&Add(Num(2), Mul(Num(3), Num(4))))

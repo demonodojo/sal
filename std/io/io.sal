@@ -6,13 +6,13 @@ struct Fd
 static Fd.new(v: Int) -> Fd
     Fd(v)
 
-method Fd.read(self borrow, buf_ptr: Int, len: Int) -> Int ! io
+method Fd.read(&self, buf_ptr: Int, len: Int) -> Int ! io
     syscall(nr_read(), self.v, buf_ptr, len, 0, 0, 0)
 
-method Fd.write(self borrow, buf_ptr: Int, len: Int) -> Int ! io
+method Fd.write(&self, buf_ptr: Int, len: Int) -> Int ! io
     syscall(nr_write(), self.v, buf_ptr, len, 0, 0, 0)
 
-method Fd.write_str(self borrow, s: String) -> Int ! io, alloc
+method Fd.write_str(&self, s: &String) -> Int ! io, alloc
     n = s.len()
     if n <= 0
         0
@@ -21,10 +21,10 @@ method Fd.write_str(self borrow, s: String) -> Int ! io, alloc
         buf.write_str(0, s)
         self.write(buf.ptr(), n)
 
-method Fd.close(self borrow) -> Int ! io
+method Fd.close(&self) -> Int ! io
     syscall(nr_close(), self.v, 0, 0, 0, 0, 0)
 
-method Fd.read_timeout(self borrow, buf_ptr: Int, len: Int, ms: Int) -> Int ! io
+method Fd.read_timeout(&self, buf_ptr: Int, len: Int, ms: Int) -> Int ! io
     syscall(nr_read_timeout(), self.v, buf_ptr, len, ms, 0, 0)
 
 @deprecated("use Fd.new(fd).read(buf_ptr, len)")
@@ -36,7 +36,7 @@ fn write_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
     Fd.new(fd).write(buf_ptr, len)
 
 @deprecated("use Fd.new(fd).write_str(s)")
-fn write_str_fd(fd: Int, s: String) -> Int ! io, alloc
+fn write_str_fd(fd: Int, s: &String) -> Int ! io, alloc
     Fd.new(fd).write_str(s)
 
 @deprecated("use Fd.new(fd).close()")

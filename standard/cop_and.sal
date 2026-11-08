@@ -29,7 +29,7 @@ fn CODE_AND() -> String ! alloc
 fn and_fail() -> AndHit
     AndHit(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
-fn and_skip_to_indent(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn and_skip_to_indent(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
     elsif lex.kind(i) == TK_INDENT()
@@ -37,7 +37,7 @@ fn and_skip_to_indent(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         and_skip_to_indent(lex, n, i + 1)
 
-fn and_consume_suite(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn and_consume_suite(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
     elsif lex.kind(i) != TK_INDENT()
@@ -45,7 +45,7 @@ fn and_consume_suite(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         and_consume_suite_go(lex, n, i, 0)
 
-fn and_consume_suite_go(lex: Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
+fn and_consume_suite_go(lex: &Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
     if i >= n
         i
     else
@@ -61,7 +61,7 @@ fn and_consume_suite_go(lex: Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
         else
             and_consume_suite_go(lex, n, i + 1, depth)
 
-fn and_ends_dedent(lex: Lex, suite_end: Int) -> Int ! alloc
+fn and_ends_dedent(lex: &Lex, suite_end: Int) -> Int ! alloc
     if suite_end <= 0
         0
     elsif lex.kind(suite_end - 1) == TK_DEDENT()
@@ -69,7 +69,7 @@ fn and_ends_dedent(lex: Lex, suite_end: Int) -> Int ! alloc
     else
         0
 
-fn and_no_structural(lex: Lex, i: Int, end: Int) -> Int ! alloc
+fn and_no_structural(lex: &Lex, i: Int, end: Int) -> Int ! alloc
     if i >= end
         1
     else
@@ -89,7 +89,7 @@ fn and_no_structural(lex: Lex, i: Int, end: Int) -> Int ! alloc
         else
             and_no_structural(lex, i + 1, end)
 
-fn and_cond_ok(lex: Lex, if_i: Int, indent_i: Int) -> Int ! alloc
+fn and_cond_ok(lex: &Lex, if_i: Int, indent_i: Int) -> Int ! alloc
     n = lex.len()
     if indent_i <= if_i
         0
@@ -102,7 +102,7 @@ fn and_cond_ok(lex: Lex, if_i: Int, indent_i: Int) -> Int ! alloc
     else
         and_no_structural(lex, if_i + 1, indent_i - 1)
 
-fn and_trim_left(s: String, i: Int, n: Int) -> Int ! alloc
+fn and_trim_left(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
     elsif s.char(i) == 32
@@ -110,7 +110,7 @@ fn and_trim_left(s: String, i: Int, n: Int) -> Int ! alloc
     else
         i
 
-fn and_trim_right(s: String, i: Int, n: Int) -> Int ! alloc
+fn and_trim_right(s: &String, i: Int, n: Int) -> Int ! alloc
     if n <= i
         i
     elsif s.char(n - 1) == 32
@@ -118,18 +118,18 @@ fn and_trim_right(s: String, i: Int, n: Int) -> Int ! alloc
     else
         n
 
-fn and_trim(s: String) -> String ! alloc
+fn and_trim(s: &String) -> String ! alloc
     n = s.len()
     a = and_trim_left(s, 0, n)
     b = and_trim_right(s, a, n)
     s.slice(a, b)
 
-fn and_cond_text(src: String, lex: Lex, if_i: Int, indent_i: Int) -> String ! alloc
+fn and_cond_text(src: &String, lex: &Lex, if_i: Int, indent_i: Int) -> String ! alloc
     nl = indent_i - 1
     raw = src.slice(lex.end(if_i), lex.start(nl))
-    and_trim(raw)
+    and_trim(&raw)
 
-fn and_or_at_top(s: String, i: Int, n: Int, depth: Int, in_str: Int) -> Int ! alloc
+fn and_or_at_top(s: &String, i: Int, n: Int, depth: Int, in_str: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -159,7 +159,7 @@ fn and_or_at_top(s: String, i: Int, n: Int, depth: Int, in_str: Int) -> Int ! al
         else
             and_or_at_top(s, i + 1, n, depth, 0)
 
-fn and_is_or(s: String, i: Int, n: Int) -> Int ! alloc
+fn and_is_or(s: &String, i: Int, n: Int) -> Int ! alloc
     if i + 1 >= n
         0
     elsif s.char(i) != 124
@@ -169,16 +169,16 @@ fn and_is_or(s: String, i: Int, n: Int) -> Int ! alloc
     else
         1
 
-fn and_needs_paren(s: String) -> Int ! alloc
+fn and_needs_paren(s: &String) -> Int ! alloc
     and_or_at_top(s, 0, s.len(), 0, 0)
 
-fn and_wrap(cond: String) -> String ! alloc
+fn and_wrap(cond: &String) -> String ! alloc
     if and_needs_paren(cond) == 1
         "(" + cond + ")"
     else
         cond
 
-fn and_find_nl(s: String, i: Int, n: Int) -> Int ! alloc
+fn and_find_nl(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
     elsif s.char(i) == 10
@@ -186,7 +186,7 @@ fn and_find_nl(s: String, i: Int, n: Int) -> Int ! alloc
     else
         and_find_nl(s, i + 1, n)
 
-fn and_count_spaces(s: String, i: Int, left: Int, ok: Int) -> Int ! alloc
+fn and_count_spaces(s: &String, i: Int, left: Int, ok: Int) -> Int ! alloc
     if ok == 0
         0
     elsif left == 0
@@ -196,7 +196,7 @@ fn and_count_spaces(s: String, i: Int, left: Int, ok: Int) -> Int ! alloc
     else
         0
 
-fn and_unindent_line(s: String, spaces: Int) -> String ! alloc
+fn and_unindent_line(s: &String, spaces: Int) -> String ! alloc
     n = s.len()
     if n < spaces
         s
@@ -207,23 +207,23 @@ fn and_unindent_line(s: String, spaces: Int) -> String ! alloc
         else
             s
 
-fn and_unindent(s: String, spaces: Int) -> String ! alloc
+fn and_unindent(s: &String, spaces: Int) -> String ! alloc
     and_unindent_go(s, 0, s.len(), spaces, d"")
 
-fn and_unindent_go(s: String, i: Int, n: Int, spaces: Int, acc: String) -> String ! alloc
+fn and_unindent_go(s: &String, i: Int, n: Int, spaces: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         nl = and_find_nl(s, i, n)
         if nl >= n
-            acc + and_unindent_line(s.slice(i, n), spaces)
+            acc + and_unindent_line(&s.slice(i, n), spaces)
         else
             body = s.slice(i, nl)
-            body2 = and_unindent_line(body, spaces)
+            body2 = and_unindent_line(&body, spaces)
             acc2 = acc + body2 + "\n"
             and_unindent_go(s, nl + 1, n, spaces, acc2)
 
-fn and_line_start(src: String, i: Int) -> Int ! alloc
+fn and_line_start(src: &String, i: Int) -> Int ! alloc
     if i < 0
         0
     elsif src.char(i) == 10
@@ -231,21 +231,21 @@ fn and_line_start(src: String, i: Int) -> Int ! alloc
     else
         and_line_start(src, i - 1)
 
-fn and_line_leading(src: String, pos: Int) -> String ! alloc
+fn and_line_leading(src: &String, pos: Int) -> String ! alloc
     ls = and_line_start(src, pos - 1)
     src.slice(ls, pos)
 
-fn and_indent_col(lex: Lex, indent_i: Int) -> Int ! alloc
+fn and_indent_col(lex: &Lex, indent_i: Int) -> Int ! alloc
     lex.end(indent_i) - lex.start(indent_i)
 
-fn and_suite_src(src: String, lex: Lex, indent_i: Int, suite_end: Int) -> String ! alloc
+fn and_suite_src(src: &String, lex: &Lex, indent_i: Int, suite_end: Int) -> String ! alloc
     dedent = suite_end - 1
     src.slice(lex.start(indent_i), lex.start(dedent))
 
-fn and_has_body(s: String) -> Int ! alloc
+fn and_has_body(s: &String) -> Int ! alloc
     and_has_body_go(s, 0, s.len())
 
-fn and_has_body_go(s: String, i: Int, n: Int) -> Int ! alloc
+fn and_has_body_go(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -257,7 +257,7 @@ fn and_has_body_go(s: String, i: Int, n: Int) -> Int ! alloc
         else
             1
 
-fn and_ensure_nl(s: String) -> String ! alloc
+fn and_ensure_nl(s: &String) -> String ! alloc
     n = s.len()
     if n == 0
         "\n"
@@ -266,7 +266,7 @@ fn and_ensure_nl(s: String) -> String ! alloc
     else
         s + "\n"
 
-fn and_parse(lex: Lex, n: Int, if_i: Int) -> AndHit ! alloc
+fn and_parse(lex: &Lex, n: Int, if_i: Int) -> AndHit ! alloc
     then_indent = and_skip_to_indent(lex, n, if_i + 1)
     if then_indent >= n
         return and_fail()
@@ -316,7 +316,7 @@ fn and_parse(lex: Lex, n: Int, if_i: Int) -> AndHit ! alloc
         return and_fail()
     AndHit(1, if_i, then_indent, inner, inner_then, inner_then_end, inner_then_end, inner_else_indent, inner_else_end, outer_else_indent, end_i)
 
-fn and_same_else(src: String, lex: Lex, hit: AndHit) -> Int ! alloc
+fn and_same_else(src: &String, lex: &Lex, hit: AndHit) -> Int ! alloc
     d_then = and_indent_col(lex, hit.inner_then) - and_indent_col(lex, hit.then_indent)
     d_else = and_indent_col(lex, hit.inner_else_indent) - and_indent_col(lex, hit.outer_else_indent)
     if d_then <= 0
@@ -324,21 +324,21 @@ fn and_same_else(src: String, lex: Lex, hit: AndHit) -> Int ! alloc
     elsif d_else <= 0
         0
     else
-        inner = and_unindent(and_suite_src(src, lex, hit.inner_else_indent, hit.inner_else_end), d_else)
+        inner = and_unindent(&and_suite_src(src, lex, hit.inner_else_indent, hit.inner_else_end), d_else)
         outer = and_suite_src(src, lex, hit.outer_else_indent, hit.end_i)
-        then_body = and_unindent(and_suite_src(src, lex, hit.inner_then, hit.inner_then_end), d_then)
-        if and_has_body(then_body) == 0
+        then_body = and_unindent(&and_suite_src(src, lex, hit.inner_then, hit.inner_then_end), d_then)
+        if and_has_body(&then_body) == 0
             0
-        elsif and_has_body(outer) == 0
+        elsif and_has_body(&outer) == 0
             0
         else
-            and_trim_trailing_nl(inner).eq(and_trim_trailing_nl(outer))
+            and_trim_trailing_nl(&inner).eq(and_trim_trailing_nl(&outer))
 
 # A blank line after the block stays inside the suite until the next real dedent.
-fn and_trim_trailing_nl(s: String) -> String ! alloc
+fn and_trim_trailing_nl(s: &String) -> String ! alloc
     s.slice(0, and_trim_nl_end(s, s.len()))
 
-fn and_trim_nl_end(s: String, n: Int) -> Int ! alloc
+fn and_trim_nl_end(s: &String, n: Int) -> Int ! alloc
     if n <= 0
         0
     elsif s.char(n - 1) == 10
@@ -346,7 +346,7 @@ fn and_trim_nl_end(s: String, n: Int) -> Int ! alloc
     else
         n
 
-fn and_conds_ok(src: String, lex: Lex, hit: AndHit) -> Int ! alloc
+fn and_conds_ok(src: &String, lex: &Lex, hit: AndHit) -> Int ! alloc
     ca = and_cond_text(src, lex, hit.if_i, hit.then_indent)
     cb = and_cond_text(src, lex, hit.inner_if, hit.inner_then)
     if ca.eq("") == 1
@@ -356,7 +356,7 @@ fn and_conds_ok(src: String, lex: Lex, hit: AndHit) -> Int ! alloc
     else
         1
 
-fn and_comment_blocks(src: String, lex: Lex, hit: AndHit) -> Int ! alloc
+fn and_comment_blocks(src: &String, lex: &Lex, hit: AndHit) -> Int ! alloc
     ca = and_cond_text(src, lex, hit.if_i, hit.then_indent)
     cb = and_cond_text(src, lex, hit.inner_if, hit.inner_then)
     else_line = src.slice(lex.start(hit.inner_else), lex.start(hit.inner_else_indent))
@@ -369,16 +369,16 @@ fn and_comment_blocks(src: String, lex: Lex, hit: AndHit) -> Int ! alloc
     else
         0
 
-fn and_build(src: String, lex: Lex, hit: AndHit) -> String ! alloc
+fn and_build(src: &String, lex: &Lex, hit: AndHit) -> String ! alloc
     lead = and_line_leading(src, lex.start(hit.if_i))
-    ca = and_wrap(and_cond_text(src, lex, hit.if_i, hit.then_indent))
-    cb = and_wrap(and_cond_text(src, lex, hit.inner_if, hit.inner_then))
+    ca = and_wrap(&and_cond_text(src, lex, hit.if_i, hit.then_indent))
+    cb = and_wrap(&and_cond_text(src, lex, hit.inner_if, hit.inner_then))
     delta = and_indent_col(lex, hit.inner_then) - and_indent_col(lex, hit.then_indent)
-    then_body = and_ensure_nl(and_unindent(and_suite_src(src, lex, hit.inner_then, hit.inner_then_end), delta))
+    then_body = and_ensure_nl(&and_unindent(&and_suite_src(src, lex, hit.inner_then, hit.inner_then_end), delta))
     else_body = and_suite_src(src, lex, hit.outer_else_indent, hit.end_i)
     lead + "if " + ca + " && " + cb + "\n" + then_body + lead + "else\n" + else_body
 
-fn and_emit(src: String, lex: Lex, offs: List[Off], hit: AndHit) -> Int ! alloc
+fn and_emit(src: &String, lex: &Lex, offs: &List[Off], hit: AndHit) -> Int ! alloc
     start = and_line_start(src, lex.start(hit.if_i) - 1)
     endb = lex.start(hit.end_i - 1)
     if and_comment_blocks(src, lex, hit) == 1
@@ -393,10 +393,10 @@ fn and_emit(src: String, lex: Lex, offs: List[Off], hit: AndHit) -> Int ! alloc
         offs.push(o)
         0
 
-fn cop_and(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_and(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     cop_and_go(src, lex, offs, 0, lex.len())
 
-fn cop_and_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_and_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif lex.kind(i) == TK_IF()

@@ -8,9 +8,9 @@ struct Point impl Show
 method Point.show(self) -> String ! alloc
     self.x.to_str()
 
-fn log(x: any[Show]) -> String ! alloc
+fn log(x: &any[Show]) -> String ! alloc
     x.show()
 
 fn main() -> Int ! alloc
     p = Point(42)
-    log(p).len()
+    log(&p).len()

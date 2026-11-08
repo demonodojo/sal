@@ -2,5 +2,5 @@ import "std/io/process.sal"
 import "support/assert.sal"
 
 fn main() -> Int ! io, alloc
-    out = spawn_capture_stdout(d"/bin/echo", d"sal-std")
-    assert_contains(out, d"sal-std", 1)
+    out = spawn_capture_stdout(&d"/bin/echo", &d"sal-std")
+    assert_contains(&out, &d"sal-std", 1)

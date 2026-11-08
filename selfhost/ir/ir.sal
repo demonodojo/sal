@@ -85,42 +85,42 @@ struct Cx
     fns: List[TFn]
     protocols: List[TProtocol]
 
-fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: List[TEnum] borrow, fns: List[TFn] borrow, protocols: List[TProtocol] borrow) -> Cx ! alloc
+fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn], protocols: &List[TProtocol]) -> Cx ! alloc
     ctr = list_new[Int]()
-    _a = list_push(ctr, 0)
+    _a = list_push(&ctr, 0)
     insts = list_new[Int]()
-    _b = list_push(insts, vec_new())
+    _b = list_push(&insts, vec_new())
     acc = list_new[Int]()
-    _c = list_push(acc, 0)
+    _c = list_push(&acc, 0)
     vm = map_new()
     _m = variants_fill(vm, enums, 0, list_len(enums))
     Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums, fns, protocols)
 
 # Releases the one-slot lists; `cx.env` is released when `cx` goes out of scope here.
-fn cx_free(cx: Cx) -> Int ! alloc
+fn cx_free(cx: &Cx) -> Int ! alloc
     _a = list_free(cx.ctr)
     _b = list_free(cx.insts)
     list_free(cx.acc)
 
 # Variant name -> `[enum name, variant index, field count, tag]`; the first definition wins.
-fn cx_variants(cx: Cx) -> Int ! alloc
+fn cx_variants(cx: &Cx) -> Int ! alloc
     cx.variants
 
-fn variants_fill(m: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
+fn variants_fill(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         ed = list_get(enums, i)
-        _k = map_put(m, str_as_int("enum:" + ed.name), 1)
-        _a = variants_fill_go(m, str_as_int(ed.name), ed.variants, 0, list_len(ed.variants))
+        _k = map_put(m, str_as_int(&("enum:" + ed).name), 1)
+        _a = variants_fill_go(m, str_as_int(&ed.name), &ed.variants, 0, list_len(&ed.variants))
         variants_fill(m, enums, i + 1, n)
 
-fn variants_fill_go(m: Int, ename: Int, vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
+fn variants_fill_go(m: Int, ename: Int, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         v = list_get(vs, i)
-        nf = list_len(v.fields)
+        nf = list_len(&v.fields)
         tag = if nf == 0
             if i == 0
                 0
@@ -128,7 +128,7 @@ fn variants_fill_go(m: Int, ename: Int, vs: List[TVariant], i: Int, n: Int) -> I
                 i + 1
         else
             i + 1
-        key = str_as_int(v.name)
+        key = str_as_int(&v.name)
         if map_get(m, key) == 0
             rec = vec_new()
             _a = vec_push(rec, ename)
@@ -142,17 +142,17 @@ fn variants_fill_go(m: Int, ename: Int, vs: List[TVariant], i: Int, n: Int) -> I
 
 # Tensor literals `[ssa, element texts]` seen while lowering; the IR text has no
 # instruction for them, the C backend needs the data.
-fn cx_literals(cx: Cx) -> Int ! alloc
+fn cx_literals(cx: &Cx) -> Int ! alloc
     cx.literals
 
-fn cx_structs(cx: Cx) -> List[TStruct] ! alloc
+fn cx_structs(cx: &Cx) -> List[TStruct] ! alloc
     cx.env.structs
 
 # Name of the binding an `x = x + ...` chain accumulates into (0 when none).
-fn cx_acc(cx: Cx) -> Int ! alloc
-    list_get(cx.acc, 0)
+fn cx_acc(cx: &Cx) -> Int ! alloc
+    list_get(&cx.acc, 0)
 
-fn cx_set_acc(cx: Cx, name: Int) -> Int ! alloc
+fn cx_set_acc(cx: &Cx, name: Int) -> Int ! alloc
     _s = list_set(cx.acc, 0, name)
     0
 
@@ -163,39 +163,39 @@ fn fill_fn_map(m: Int, names: Int, i: Int, n: Int) -> Int ! alloc
         _p = map_put(m, vec_get(names, i), 1)
         fill_fn_map(m, names, i + 1, n)
 
-fn cx_bind_map(cx: Cx) -> Int ! alloc
+fn cx_bind_map(cx: &Cx) -> Int ! alloc
     cx.bind_map
 
-fn cx_fn_map(cx: Cx) -> Int ! alloc
+fn cx_fn_map(cx: &Cx) -> Int ! alloc
     cx.fn_map
 
-fn cx_counter(cx: Cx) -> Int ! alloc
-    list_get(cx.ctr, 0)
+fn cx_counter(cx: &Cx) -> Int ! alloc
+    list_get(&cx.ctr, 0)
 
-fn cx_set_counter(cx: Cx, v: Int) -> Int ! alloc
+fn cx_set_counter(cx: &Cx, v: Int) -> Int ! alloc
     _s = list_set(cx.ctr, 0, v)
     0
 
-fn cx_insts(cx: Cx) -> Int ! alloc
-    list_get(cx.insts, 0)
+fn cx_insts(cx: &Cx) -> Int ! alloc
+    list_get(&cx.insts, 0)
 
-fn cx_set_insts(cx: Cx, v: Int) -> Int ! alloc
+fn cx_set_insts(cx: &Cx, v: Int) -> Int ! alloc
     _s = list_set(cx.insts, 0, v)
     0
 
-fn cx_binds(cx: Cx) -> Int ! alloc
+fn cx_binds(cx: &Cx) -> Int ! alloc
     cx.binds
 
-fn cx_fn_names(cx: Cx) -> Int ! alloc
+fn cx_fn_names(cx: &Cx) -> Int ! alloc
     cx.fn_names
 
-fn cx_dim_params(cx: Cx) -> Int ! alloc
+fn cx_dim_params(cx: &Cx) -> Int ! alloc
     cx.dim_params
 
-fn cx_regions(cx: Cx) -> Int ! alloc
+fn cx_regions(cx: &Cx) -> Int ! alloc
     cx.regions
 
-fn fresh(cx: Cx) -> Int ! alloc
+fn fresh(cx: &Cx) -> Int ! alloc
     n = cx_counter(cx) + 1
     _s = cx_set_counter(cx, n)
     pref = char_to_str(116)
@@ -203,7 +203,7 @@ fn fresh(cx: Cx) -> Int ! alloc
     r = pref + ns
     free(pref)
     free(ns)
-    str_as_int(r)
+    str_as_int(&r)
 
 fn ir_ci(dest: Int, v: Int) -> Int ! alloc
     inst = vec_new()
@@ -326,7 +326,7 @@ fn ir_anycall(dest: Int, receiver: Int, slot: Int, args: Int) -> Int ! alloc
     inst
 
 fn ir_call_free(arg: Int) -> Int ! alloc
-    ir_call_named(arg, str_as_int("sal_free"))
+    ir_call_named(arg, str_as_int(&"sal_free"))
 
 # A call of the runtime function `func` (a handle) on `arg`, for a release.
 fn ir_call_named(arg: Int, func: Int) -> Int ! alloc
@@ -375,7 +375,7 @@ fn ir_text(p: Int) -> Int ! alloc
     if p < 4096
         p
     else
-        str_as_int(strdup(str_from_int(p)))
+        str_as_int(&strdup(str_from_int(p)))
 
 fn ir_set_text(h: Int, i: Int) -> Int ! alloc
     if i >= vec_len(h)
@@ -594,7 +594,7 @@ fn ir_own_fn(f: Int) -> Int ! alloc
     _r = ir_own_regions(vec_get(f, 3))
     ir_own_lits(vec_get(f, 4))
 
-fn ir_push(cx: Cx, inst: Int) -> Int ! alloc
+fn ir_push(cx: &Cx, inst: Int) -> Int ! alloc
     _p = vec_push(cx_insts(cx), inst)
     0
 
@@ -607,7 +607,7 @@ fn bind_new(name: Int, ssa: Int) -> Int ! alloc
     _e = vec_push(b, vec_new())
     _f = vec_push(b, vec_new())
     _g = vec_push(b, 4)
-    _h = vec_push(b, str_as_int("cpu"))
+    _h = vec_push(b, str_as_int(&"cpu"))
     b
 
 fn bind_place(b: Int) -> Int ! alloc
@@ -664,17 +664,17 @@ fn cx_find_at(binds: Int, name: Int, i: Int, n: Int) -> Int ! alloc
         else
             cx_find_at(binds, name, i + 1, n)
 
-fn cx_find(cx: Cx, name: Int) -> Int ! alloc
+fn cx_find(cx: &Cx, name: Int) -> Int ! alloc
     map_get(cx_bind_map(cx), name)
 
-fn cx_lookup(cx: Cx, name: Int) -> Int ! alloc
+fn cx_lookup(cx: &Cx, name: Int) -> Int ! alloc
     b = cx_find(cx, name)
     if b == 0
         name
     else
         bind_ssa(b)
 
-fn cx_bind(cx: Cx, name: Int, ssa: Int) -> Int ! alloc
+fn cx_bind(cx: &Cx, name: Int, ssa: Int) -> Int ! alloc
     b = cx_find(cx, name)
     if b == 0
         b = bind_new(name, ssa)
@@ -692,7 +692,7 @@ fn fn_names_has_at(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     else
         fn_names_has_at(names, name, i + 1, n)
 
-fn is_user_fn(cx: Cx, name: Int) -> Int ! alloc
+fn is_user_fn(cx: &Cx, name: Int) -> Int ! alloc
     if map_get(cx_fn_map(cx), name) == 0
         0
     else
@@ -717,32 +717,32 @@ fn is_container_op(fname: Int) -> Int ! alloc
     else
         0
 
-fn runtime_name(cx: Cx, fname: Int) -> Int ! alloc
+fn runtime_name(cx: &Cx, fname: Int) -> Int ! alloc
     if is_container_op(fname) == 1
-        str_as_int("sal_" + str_from_int(fname))
+        str_as_int(&("sal_" + str_from_int(fname)))
     elsif is_user_fn(cx, fname) == 1
         fname
     elsif str_eq(str_from_int(fname), "matmul") == 1
-        str_as_int("sal_matmul_f32")
+        str_as_int(&"sal_matmul_f32")
     else
         pref = "sal_"
-        str_as_int(pref + str_from_int(fname))
+        str_as_int(&(pref + str_from_int(fname)))
 
-fn ir_call_unary(cx: Cx, rname: Int, src: Int) -> Int ! alloc
+fn ir_call_unary(cx: &Cx, rname: Int, src: Int) -> Int ! alloc
     out = fresh(cx)
     argv = vec_new()
     _a = vec_push(argv, src)
     _p = ir_push(cx, ir_call(out, rname, argv, 1))
     out
 
-fn push_const_int(cx: Cx, dest: Int, v: Int) -> Int ! alloc
+fn push_const_int(cx: &Cx, dest: Int, v: Int) -> Int ! alloc
     ir_push(cx, ir_ci(dest, v))
 
-fn str_contains_tensor(ty: String) -> Int ! alloc
+fn str_contains_tensor(ty: &String) -> Int ! alloc
     r = str_contains(ty, "Tensor")
     r
 
-fn parse_tensor_type(ty: String, b: Int) -> Int ! alloc
+fn parse_tensor_type(ty: &String, b: Int) -> Int ! alloc
     _a = bind_set_tensor(b, 0)
     _b = bind_set_ndims(b, 0)
     _c = bind_set_elem(b, 4)
@@ -753,17 +753,17 @@ fn parse_tensor_type(ty: String, b: Int) -> Int ! alloc
         _pl = parse_tensor_place(ty, b)
         parse_tensor_dims(ty, b, 0, 0)
 
-fn parse_tensor_place(ty: String, b: Int) -> Int ! alloc
-    if tensor_ty_on_place(ty, "p") == 1
-        bind_set_place(b, str_as_int("p"))
-    elsif tensor_ty_on_place(ty, "gpu") == 1
-        bind_set_place(b, str_as_int("gpu"))
-    elsif tensor_ty_on_place(ty, "tpu") == 1
-        bind_set_place(b, str_as_int("tpu"))
+fn parse_tensor_place(ty: &String, b: Int) -> Int ! alloc
+    if tensor_ty_on_place(ty, &"p") == 1
+        bind_set_place(b, str_as_int(&"p"))
+    elsif tensor_ty_on_place(ty, &"gpu") == 1
+        bind_set_place(b, str_as_int(&"gpu"))
+    elsif tensor_ty_on_place(ty, &"tpu") == 1
+        bind_set_place(b, str_as_int(&"tpu"))
     else
-        bind_set_place(b, str_as_int("cpu"))
+        bind_set_place(b, str_as_int(&"cpu"))
 
-fn tensor_ty_on_place(ty: String, place: String) -> Int ! alloc
+fn tensor_ty_on_place(ty: &String, place: &String) -> Int ! alloc
     mid = "on "
     needle = mid + place
     free(mid)
@@ -783,7 +783,7 @@ fn clamp_rb(rb: Int, n: Int) -> Int ! alloc
     else
         rb
 
-fn parse_tensor_dims(ty: String, b: Int, i: Int, first: Int) -> Int ! alloc
+fn parse_tensor_dims(ty: &String, b: Int, i: Int, first: Int) -> Int ! alloc
     n = str_len(ty)
     lb = find_char(ty, 91, 0, n)
     if lb < 0
@@ -791,10 +791,10 @@ fn parse_tensor_dims(ty: String, b: Int, i: Int, first: Int) -> Int ! alloc
     else
         rb = clamp_rb(find_char(ty, 93, lb, n), n)
         inner = str_slice(ty, lb + 1, rb)
-        _p = parse_dim_tokens(inner, b, 0, str_len(inner), 1)
+        _p = parse_dim_tokens(&inner, b, 0, str_len(inner), 1)
         0
 
-fn skip_spaces(s: String, i: Int, n: Int) -> Int ! alloc
+fn skip_spaces(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
     else
@@ -806,7 +806,7 @@ fn skip_spaces(s: String, i: Int, n: Int) -> Int ! alloc
         else
             i
 
-fn read_tok_end(s: String, i: Int, n: Int) -> Int ! alloc
+fn read_tok_end(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
     else
@@ -818,7 +818,7 @@ fn read_tok_end(s: String, i: Int, n: Int) -> Int ! alloc
         else
             read_tok_end(s, i + 1, n)
 
-fn parse_dim_tokens(s: String, b: Int, i: Int, n: Int, first: Int) -> Int ! alloc
+fn parse_dim_tokens(s: &String, b: Int, i: Int, n: Int, first: Int) -> Int ! alloc
     i2 = skip_spaces(s, i, n)
     if i2 >= n
         0
@@ -851,7 +851,7 @@ fn parse_dim_tokens(s: String, b: Int, i: Int, n: Int, first: Int) -> Int ! allo
                     _p = vec_push(dims, 0 - 1)
                     _q = vec_push(conc, 0 - 1)
                 elsif is_digit(str_char(tok, 0)) == 1
-                    v = parse_int_digits(tok, 0, str_len(tok), 0)
+                    v = parse_int_digits(&tok, 0, str_len(tok), 0)
                     _p = vec_push(dims, v)
                     _q = vec_push(conc, v)
                 else
@@ -867,7 +867,7 @@ fn axis_idx(ndims: Int, take_row: Int) -> Int ! alloc
     else
         ndims - 1
 
-fn axis_len_from_dim(cx: Cx, tname: Int, dims: Int, conc: Int, idx: Int) -> Int ! alloc
+fn axis_len_from_dim(cx: &Cx, tname: Int, dims: Int, conc: Int, idx: Int) -> Int ! alloc
     if idx < vec_len(dims)
         dv = vec_get(dims, idx)
         if dv >= 0
@@ -879,7 +879,7 @@ fn axis_len_from_dim(cx: Cx, tname: Int, dims: Int, conc: Int, idx: Int) -> Int 
     else
         axis_len_fallback(tname, 0)
 
-fn axis_len_from_conc(cx: Cx, tname: Int, conc: Int, idx: Int) -> Int ! alloc
+fn axis_len_from_conc(cx: &Cx, tname: Int, conc: Int, idx: Int) -> Int ! alloc
     if idx < vec_len(conc)
         cv = vec_get(conc, idx)
         if cv >= 0
@@ -891,7 +891,7 @@ fn axis_len_from_conc(cx: Cx, tname: Int, conc: Int, idx: Int) -> Int ! alloc
     else
         axis_len_dim(tname, idx)
 
-fn axis_len(cx: Cx, tname: Int, take_row: Int) -> Int ! alloc
+fn axis_len(cx: &Cx, tname: Int, take_row: Int) -> Int ! alloc
     b = cx_find(cx, tname)
     if b == 0
         b = bind_for_ssa(cx, tname)
@@ -918,7 +918,7 @@ fn axis_len_dim(tname: Int, idx: Int) -> Int ! alloc
     is_ = int_to_str(idx)
     a = str_from_int(tname) + mid
     r = a + is_
-    str_as_int(r)
+    str_as_int(&r)
 
 fn fused_op_clone(op: Int) -> Int ! alloc
     if op == 0
@@ -960,7 +960,7 @@ fn region_new(place: Int, ops: Int, fused: Int) -> Int ! alloc
     _d = vec_push(r, 0)
     _e = vec_push(r, 0)
     _f = vec_push(r, 0)
-    _g = vec_push(r, str_as_int(""))
+    _g = vec_push(r, str_as_int(&""))
     r
 
 fn dim_at(dims: Int, d: Int) -> Int ! alloc
@@ -981,12 +981,12 @@ fn bind_for_ssa_at(binds: Int, ssa: Int, i: Int, n: Int) -> Int ! alloc
         else
             bind_for_ssa_at(binds, ssa, i + 1, n)
 
-fn bind_for_ssa(cx: Cx, ssa: Int) -> Int ! alloc
+fn bind_for_ssa(cx: &Cx, ssa: Int) -> Int ! alloc
     bind_for_ssa_at(cx_binds(cx), ssa, 0, vec_len(cx_binds(cx)))
 
 # A tensor registered under a key: the variable's own name, or the SSA value it
 # holds when that value is itself a registered key (a param or a pseudo binding).
-fn ident_is_tensor(cx: Cx, name: Int) -> Int ! alloc
+fn ident_is_tensor(cx: &Cx, name: Int) -> Int ! alloc
     b = cx_find(cx, name)
     if b == 0
         0
@@ -1001,7 +1001,7 @@ fn ident_is_tensor(cx: Cx, name: Int) -> Int ! alloc
         else
             ssa_key_is_tensor(cx, bind_ssa(b), 0, vec_len(cx_binds(cx)))
 
-fn ssa_key_is_tensor(cx: Cx, key: Int, i: Int, n: Int) -> Int ! alloc
+fn ssa_key_is_tensor(cx: &Cx, key: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1014,13 +1014,13 @@ fn ssa_key_is_tensor(cx: Cx, key: Int, i: Int, n: Int) -> Int ! alloc
         else
             ssa_key_is_tensor(cx, key, i + 1, n)
 
-fn expr_is_tensor(cx: Cx, e: Expr) -> Int ! alloc
+fn expr_is_tensor(cx: &Cx, e: &Expr) -> Int ! alloc
     match e
-        XIdent(name) => ident_is_tensor(cx, str_as_int(name))
-        XBin(op, l, r) => bin_is_tensor(cx, l, r)
+        XIdent(name) => ident_is_tensor(cx, str_as_int(&name))
+        XBin(op, l, r) => bin_is_tensor(cx, &l, &r)
         _ => 0
 
-fn bin_is_tensor(cx: Cx, l: Expr, r: Expr) -> Int ! alloc
+fn bin_is_tensor(cx: &Cx, l: &Expr, r: &Expr) -> Int ! alloc
     if expr_is_tensor(cx, l) == 1
         1
     else
@@ -1028,7 +1028,7 @@ fn bin_is_tensor(cx: Cx, l: Expr, r: Expr) -> Int ! alloc
 
 # Tensor binding for an SSA value (or a variable name): the first tensor binding
 # holding that value, as the bootstrap's tensor_info_for_ssa.
-fn find_tensor_at(cx: Cx, key: Int, i: Int, n: Int) -> Int ! alloc
+fn find_tensor_at(cx: &Cx, key: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1041,7 +1041,7 @@ fn find_tensor_at(cx: Cx, key: Int, i: Int, n: Int) -> Int ! alloc
         else
             find_tensor_at(cx, key, i + 1, n)
 
-fn find_tensor(cx: Cx, name: Int) -> Int ! alloc
+fn find_tensor(cx: &Cx, name: Int) -> Int ! alloc
     b = find_tensor_at(cx, name, 0, vec_len(cx_binds(cx)))
     if b != 0
         b
@@ -1054,7 +1054,7 @@ fn find_tensor(cx: Cx, name: Int) -> Int ! alloc
         else
             0
 
-fn register_tensor_ssa(cx: Cx, ssa: Int, from: Int) -> Int ! alloc
+fn register_tensor_ssa(cx: &Cx, ssa: Int, from: Int) -> Int ! alloc
     b = bind_new(ssa, ssa)
     _t = bind_set_tensor(b, 1)
     _e = bind_set_elem(b, bind_elem(from))
@@ -1080,7 +1080,7 @@ fn register_tensor_ssa_go(b: Int, dims: Int, conc: Int, i: Int, n: Int) -> Int !
 fn tensor_len_ssa_name(tensor_ssa: Int) -> Int ! alloc
     mid = "_d0"
     a = str_from_int(tensor_ssa) + mid
-    str_as_int(a)
+    str_as_int(&a)
 
 fn conc_product_go(conc: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -1092,7 +1092,7 @@ fn conc_product_go(conc: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         else
             conc_product_go(conc, i + 1, n, acc * cv)
 
-fn tensor_row_len_from_bind(cx: Cx, b: Int) -> Int ! alloc
+fn tensor_row_len_from_bind(cx: &Cx, b: Int) -> Int ! alloc
     conc = bind_concrete(b)
     prod = conc_product_go(conc, 0, vec_len(conc), 1)
     if prod > 0
@@ -1103,12 +1103,12 @@ fn tensor_row_len_from_bind(cx: Cx, b: Int) -> Int ! alloc
         axis_len(cx, bind_name(b), 1)
 
 # The tensor bind of the row-length operand `e`: the identifier's own, else the one holding `ssa`.
-fn row_len_bind(cx: Cx, e: Expr, ssa: Int) -> Int ! alloc
+fn row_len_bind(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
     match e
-        XIdent(name) => row_len_ident_bind(cx, name, ssa)
+        XIdent(name) => row_len_ident_bind(cx, &name, ssa)
         _ => find_tensor(cx, ssa)
 
-fn row_len_ident_bind(cx: Cx, name: String, ssa: Int) -> Int ! alloc
+fn row_len_ident_bind(cx: &Cx, name: &String, ssa: Int) -> Int ! alloc
     b = cx_find(cx, str_as_int(name))
     if b == 0
         find_tensor(cx, ssa)
@@ -1117,17 +1117,17 @@ fn row_len_ident_bind(cx: Cx, name: String, ssa: Int) -> Int ! alloc
     else
         b
 
-fn row_len_const_one(cx: Cx) -> Int ! alloc
+fn row_len_const_one(cx: &Cx) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, 1)
     d
 
-fn tensor_row_len_for_expr(cx: Cx, e: Expr, ssa: Int) -> Int ! alloc
+fn tensor_row_len_for_expr(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
     match e
         XNone => row_len_const_one(cx)
         _ => row_len_for_some(cx, e, ssa)
 
-fn row_len_for_some(cx: Cx, e: Expr, ssa: Int) -> Int ! alloc
+fn row_len_for_some(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
     b = row_len_bind(cx, e, ssa)
     if b == 0
         row_len_unbound(cx, e, ssa)
@@ -1137,53 +1137,53 @@ fn row_len_for_some(cx: Cx, e: Expr, ssa: Int) -> Int ! alloc
         tensor_row_len_from_bind(cx, b)
 
 # No tensor bind: a binary looks at its left operand, anything else is a single row.
-fn row_len_unbound(cx: Cx, e: Expr, ssa: Int) -> Int ! alloc
+fn row_len_unbound(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
     match e
-        XBin(op, l, r) => tensor_row_len_for_expr(cx, l, ssa)
+        XBin(op, l, r) => tensor_row_len_for_expr(cx, &l, ssa)
         _ => row_len_const_one(cx)
 
-fn drop_name_for(inner: Expr) -> Int ! alloc
+fn drop_name_for(inner: &Expr) -> Int ! alloc
     match inner
-        XIdent(name) => str_as_int(name)
-        _ => str_as_int("tmp")
+        XIdent(name) => str_as_int(&name)
+        _ => str_as_int(&"tmp")
 
 # The `else` of an `if` with `elsif` arms: each arm nests as an `if` in the else of the one before.
 # The caller frees the returned block, so it must own its lists and exprs. Returning
 # `else_b` or an arm body would free the AST the rest of lowering still walks.
-fn elsifs_else_block(else_b: TBlock, arms: List[TElsif]) -> TBlock ! alloc
+fn elsifs_else_block(else_b: &TBlock, arms: &List[TElsif]) -> TBlock ! alloc
     n = list_len(arms)
     if n == 0
         tc_block(else_b)
     else
         elsifs_else_go(else_b, arms, n - 1)
 
-fn elsifs_else_go(else_b: TBlock, arms: List[TElsif], i: Int) -> TBlock ! alloc
+fn elsifs_else_go(else_b: &TBlock, arms: &List[TElsif], i: Int) -> TBlock ! alloc
     arm = list_get(arms, i)
-    nested = XIf(tc_expr(arm.cond), tc_block(arm.body), tc_block(else_b), 1, list_new[TElsif]())
+    nested = XIf(tc_expr(&arm.cond), tc_block(&arm.body), tc_block(else_b), 1, list_new[TElsif]())
     blk = TBlock(list_new[TStmt](), nested)
     if i == 0
         blk
     else
-        elsifs_else_go(blk, arms, i - 1)
+        elsifs_else_go(&blk, arms, i - 1)
 
-fn lower_params(cx: Cx, params: List[TParam], i: Int, n: Int) -> Int ! alloc
+fn lower_params(cx: &Cx, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         pm = list_get(params, i)
-        name = str_as_int(pm.name)
+        name = str_as_int(&pm.name)
         b = bind_new(name, name)
-        _p = parse_tensor_type(pm.ty, b)
+        _p = parse_tensor_type(&pm.ty, b)
         if bind_is_tensor(b) == 1
             _d = add_dim_params(cx, b, 0, bind_ndims(b))
         else
             _d = 0
         _q = vec_push(cx_binds(cx), b)
         _m = map_put(cx_bind_map(cx), name, b)
-        _s = tenv_bind(cx.env, pm.name, pm.ty)
+        _s = tenv_bind(&cx.env, &pm.name, &pm.ty)
         lower_params(cx, params, i + 1, n)
 
-fn add_dim_params(cx: Cx, b: Int, d: Int, nd: Int) -> Int ! alloc
+fn add_dim_params(cx: &Cx, b: Int, d: Int, nd: Int) -> Int ! alloc
     if d >= nd
         0
     else
@@ -1195,7 +1195,7 @@ fn add_dim_params(cx: Cx, b: Int, d: Int, nd: Int) -> Int ! alloc
             bn = str_from_int(bind_name(b))
             a = bn + mid
             nm = a + ds
-            _p = vec_push(cx_dim_params(cx), str_as_int(nm))
+            _p = vec_push(cx_dim_params(cx), str_as_int(&nm))
         else
             _p = 0
         add_dim_params(cx, b, d + 1, nd)
@@ -1208,11 +1208,11 @@ fn collect_fn_names(fns: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         _p = vec_push(out, vec_get(f, 0))
         collect_fn_names(fns, i + 1, n, out)
 
-fn collect_fn_names_t(fns: List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
+fn collect_fn_names_t(fns: &List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        _p = vec_push(out, str_as_int(list_get(fns, i).name))
+        _p = vec_push(out, str_as_int(&list_get(fns, i).name))
         collect_fn_names_t(fns, i + 1, n, out)
 
 fn merge_callable_names_go(extra: Int, i: Int, n: Int, names: Int) -> Int ! alloc

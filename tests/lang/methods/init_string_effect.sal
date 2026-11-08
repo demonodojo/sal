@@ -2,12 +2,12 @@
 struct N
     name: String
 
-init N(s: String) ! alloc
+init N(s: &String) ! alloc
     N(s + d"!")
 
-method N.len() -> Int
+method N.len(self) -> Int
     str_len(self.name)
 
 fn main() -> Int ! alloc
-    n = N.new(d"abcd")
+    n = N.new(&d"abcd")
     n.len()

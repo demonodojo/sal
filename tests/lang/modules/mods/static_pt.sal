@@ -8,7 +8,7 @@ init Pt(x: Int)
 static Pt.diag(n: Int) -> Pt
     Pt(n, n)
 
-method Pt.sum() -> Int
+method Pt.sum(&self) -> Int
     self.x + self.y
 
 fn mk() -> Pt

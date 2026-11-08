@@ -2,7 +2,7 @@
 struct C
     n: Int
 
-method C.add(k: Int) -> C
+method C.add(&self, k: Int) -> C
     C(self.n + k)
 
 fn make() -> C

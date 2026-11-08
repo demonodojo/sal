@@ -33,7 +33,7 @@ struct ParsedCall
 fn spec_none() -> Spec ! alloc
     Spec(0, 0, d"", d"", 0)
 
-fn spec_ok(s: Spec) -> Int
+fn spec_ok(s: &Spec) -> Int
     if s.mode == 0
         0
     else
@@ -93,7 +93,7 @@ fn spec_inst(method: String, argc: Int) -> Spec ! alloc
 fn spec_static(ty: String, method: String, tyn: Int, argc: Int) -> Spec ! alloc
     Spec(2, argc, method, ty, tyn)
 
-fn method_of(name: String) -> Spec ! alloc
+fn method_of(name: &String) -> Spec ! alloc
     if name.eq("str_len") == 1
         spec_inst(d"len", 1)
     elsif name.eq("strdup") == 1
@@ -207,7 +207,7 @@ fn method_of(name: String) -> Spec ! alloc
     else
         spec_none()
 
-fn after_comment(src: String, hash_i: Int, n: Int) -> Int ! alloc
+fn after_comment(src: &String, hash_i: Int, n: Int) -> Int ! alloc
     j = src.skip(hash_i + 1, 4, 0)
     if j < n
         if src.char(j) == 10
@@ -217,7 +217,7 @@ fn after_comment(src: String, hash_i: Int, n: Int) -> Int ! alloc
     else
         j
 
-fn string_end(src: String, quote_i: Int, n: Int) -> Int ! alloc
+fn string_end(src: &String, quote_i: Int, n: Int) -> Int ! alloc
     end = src.skip(quote_i + 1, 7, 0)
     if end < n
         if src.char(end) == 34
@@ -227,7 +227,7 @@ fn string_end(src: String, quote_i: Int, n: Int) -> Int ! alloc
     else
         n
 
-fn is_dstring_at(src: String, i: Int, n: Int) -> Int ! alloc
+fn is_dstring_at(src: &String, i: Int, n: Int) -> Int ! alloc
     if i + 1 >= n
         0
     elsif src.char(i) != 100
@@ -242,7 +242,7 @@ fn is_dstring_at(src: String, i: Int, n: Int) -> Int ! alloc
     else
         1
 
-fn skip_ws_cmt(src: String, i: Int, n: Int) -> Int ! alloc
+fn skip_ws_cmt(src: &String, i: Int, n: Int) -> Int ! alloc
     j = i
     go = 1
     while go == 1
@@ -258,7 +258,7 @@ fn skip_ws_cmt(src: String, i: Int, n: Int) -> Int ! alloc
                 go = 0
     j
 
-fn scan_closer(src: String, i: Int, n: Int, open_c: Int, close_c: Int) -> Int ! alloc
+fn scan_closer(src: &String, i: Int, n: Int, open_c: Int, close_c: Int) -> Int ! alloc
     j = i
     depth = 0
     found = 0 - 1
@@ -291,7 +291,7 @@ fn scan_closer(src: String, i: Int, n: Int, open_c: Int, close_c: Int) -> Int ! 
     found
 
 # [end_after, nargs], or 0 when the brackets do not close.
-fn bracket_info(src: String, open_i: Int, n: Int) -> BracketInfo ! alloc
+fn bracket_info(src: &String, open_i: Int, n: Int) -> BracketInfo ! alloc
     j = open_i
     depth = 0
     ncommas = 0
@@ -343,7 +343,7 @@ fn bracket_info(src: String, open_i: Int, n: Int) -> BracketInfo ! alloc
         BracketInfo(1, end_after, arg_count(ncommas, any))
 
 # [rparen, ncommas, first_comma, any], or 0.
-fn scan_args(src: String, open_i: Int, n: Int) -> ScanArgs ! alloc
+fn scan_args(src: &String, open_i: Int, n: Int) -> ScanArgs ! alloc
     j = open_i
     depth_p = 0
     depth_b = 0
@@ -411,7 +411,7 @@ fn scan_args(src: String, open_i: Int, n: Int) -> ScanArgs ! alloc
         ScanArgs(1, rparen, ncommas, first, any)
 
 # [rparen, open, ncommas, first, any, type_lo, type_hi, type_n]
-fn parse_call(src: String, name_end: Int, n: Int) -> ParsedCall ! alloc
+fn parse_call(src: &String, name_end: Int, n: Int) -> ParsedCall ! alloc
     i = skip_ws_cmt(src, name_end, n)
     type_lo = 0 - 1
     type_hi = 0 - 1
@@ -437,7 +437,7 @@ fn parse_call(src: String, name_end: Int, n: Int) -> ParsedCall ! alloc
 fn call_argc(c: ParsedCall) -> Int ! alloc
     arg_count(c.ncommas, c.any)
 
-fn call_matches(spec: Spec, call: ParsedCall) -> Int ! alloc
+fn call_matches(spec: &Spec, call: ParsedCall) -> Int ! alloc
     if spec.mode == 1
         if call.ty_n != 0
             0
@@ -452,7 +452,7 @@ fn call_matches(spec: Spec, call: ParsedCall) -> Int ! alloc
     else
         1
 
-fn plain_end(s: String, i: Int, n: Int) -> Int ! alloc
+fn plain_end(s: &String, i: Int, n: Int) -> Int ! alloc
     j = i
     go = 1
     while go == 1
@@ -470,7 +470,7 @@ fn plain_end(s: String, i: Int, n: Int) -> Int ! alloc
                 j = j + 1
     j
 
-fn strip_comments(s: String) -> String ! alloc
+fn strip_comments(s: &String) -> String ! alloc
     n = s.len()
     acc = d""
     i = 0
@@ -495,7 +495,7 @@ fn strip_comments(s: String) -> String ! alloc
             i = j
     acc
 
-fn trim_left_at(s: String, n: Int) -> Int ! alloc
+fn trim_left_at(s: &String, n: Int) -> Int ! alloc
     a = 0
     go = 1
     while go == 1
@@ -507,7 +507,7 @@ fn trim_left_at(s: String, n: Int) -> Int ! alloc
             go = 0
     a
 
-fn trim_right_at(s: String, n: Int, lo: Int) -> Int ! alloc
+fn trim_right_at(s: &String, n: Int, lo: Int) -> Int ! alloc
     b = n
     go = 1
     while go == 1
@@ -519,7 +519,7 @@ fn trim_right_at(s: String, n: Int, lo: Int) -> Int ! alloc
             go = 0
     b
 
-fn trim_copy(s: String) -> String ! alloc
+fn trim_copy(s: &String) -> String ! alloc
     n = s.len()
     a = trim_left_at(s, n)
     if a >= n
@@ -528,14 +528,14 @@ fn trim_copy(s: String) -> String ! alloc
         b = trim_right_at(s, n, a)
         s.slice(a, b)
 
-fn clean_span(src: String, start: Int, end: Int) -> String ! alloc
+fn clean_span(src: &String, start: Int, end: Int) -> String ! alloc
     if start >= end
         d""
     else
         raw = src.slice(start, end)
-        trim_copy(strip_comments(raw))
+        trim_copy(&strip_comments(&raw))
 
-fn skip_spaces(s: String, i: Int, n: Int) -> Int ! alloc
+fn skip_spaces(s: &String, i: Int, n: Int) -> Int ! alloc
     j = i
     go = 1
     while go == 1
@@ -547,7 +547,7 @@ fn skip_spaces(s: String, i: Int, n: Int) -> Int ! alloc
             go = 0
     j
 
-fn parse_atom(s: String borrow, i: Int, n: Int) -> Int ! alloc
+fn parse_atom(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0 - 1
     else
@@ -582,7 +582,7 @@ fn parse_atom(s: String borrow, i: Int, n: Int) -> Int ! alloc
         else
             0 - 1
 
-fn parse_postfix(s: String borrow, i: Int, n: Int) -> Int ! alloc
+fn parse_postfix(s: &String, i: Int, n: Int) -> Int ! alloc
     j = skip_spaces(s, i, n)
     if j >= n
         j
@@ -621,7 +621,7 @@ fn parse_postfix(s: String borrow, i: Int, n: Int) -> Int ! alloc
         else
             j
 
-fn needs_paren(s: String borrow) -> Int ! alloc
+fn needs_paren(s: &String) -> Int ! alloc
     n = s.len()
     if n == 0
         1
@@ -636,13 +636,13 @@ fn needs_paren(s: String borrow) -> Int ! alloc
             else
                 1
 
-fn wrap_paren(s: String) -> String ! alloc
+fn wrap_paren(s: &String) -> String ! alloc
     "(" + s + ")"
 
-fn join_method(recv: String, method: String, rest: String) -> String ! alloc
+fn join_method(recv: &String, method: &String, rest: &String) -> String ! alloc
     recv + "." + method + "(" + rest + ")"
 
-fn build_inst(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
+fn build_inst(src: &String, spec: &Spec, call: ParsedCall) -> String ! alloc
     open = call.open
     first = call.first
     rp = call.rparen
@@ -656,12 +656,12 @@ fn build_inst(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
         rest = d""
         if first >= 0
             rest = clean_span(src, first + 1, rp)
-        if needs_paren(recv) == 1
-            join_method(wrap_paren(recv), spec.method, rest)
+        if needs_paren(&recv) == 1
+            join_method(&wrap_paren(&recv), &spec.method, &rest)
         else
-            join_method(recv, spec.method, rest)
+            join_method(&recv, &spec.method, &rest)
 
-fn build_static(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
+fn build_static(src: &String, spec: &Spec, call: ParsedCall) -> String ! alloc
     open = call.open
     rp = call.rparen
     inside = clean_span(src, open + 1, rp)
@@ -675,19 +675,19 @@ fn build_static(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
     a = a + inside
     a + ")"
 
-fn build_fix(src: String, spec: Spec, call: ParsedCall) -> String ! alloc
+fn build_fix(src: &String, spec: &Spec, call: ParsedCall) -> String ! alloc
     if spec.mode == 1
         build_inst(src, spec, call)
     else
         build_static(src, spec, call)
 
-fn method_msg(name: String, spec: Spec) -> String ! alloc
+fn method_msg(name: &String, spec: &Spec) -> String ! alloc
     if spec.mode == 2
         "use " + spec.ty + "." + spec.method + " instead of " + name
     else
         "use ." + spec.method + "() instead of " + name
 
-fn preceded_by_dot(src: String, start: Int) -> Int ! alloc
+fn preceded_by_dot(src: &String, start: Int) -> Int ! alloc
     i = start - 1
     go = 1
     dot = 0
@@ -707,7 +707,7 @@ fn preceded_by_dot(src: String, start: Int) -> Int ! alloc
                 go = 0
     dot
 
-fn prev_is_fn(src: String, lex: Lex, i: Int) -> Int ! alloc
+fn prev_is_fn(src: &String, lex: &Lex, i: Int) -> Int ! alloc
     j = i - 1
     go = 1
     while go == 1
@@ -730,7 +730,7 @@ fn prev_is_fn(src: String, lex: Lex, i: Int) -> Int ! alloc
     else
         lex.text(src, j).eq("fn")
 
-fn consider(src: String, lex: Lex, n: Int, i: Int) -> Off ! alloc
+fn consider(src: &String, lex: &Lex, n: Int, i: Int) -> Off ! alloc
     if lex.kind(i) != TK_IDENT()
         return off_skip()
     if preceded_by_dot(src, lex.start(i)) == 1
@@ -738,24 +738,24 @@ fn consider(src: String, lex: Lex, n: Int, i: Int) -> Off ! alloc
     if prev_is_fn(src, lex, i) == 1
         return off_skip()
     name = lex.text(src, i)
-    spec = method_of(name)
-    if spec_ok(spec) == 0
+    spec = method_of(&name)
+    if spec_ok(&spec) == 0
         return off_skip()
     call = parse_call(src, lex.end(i), src.len())
     if call_ok(call) == 0
         return off_skip()
-    if call_matches(spec, call) == 0
+    if call_matches(&spec, call) == 0
         return off_skip()
-    fix = build_fix(src, spec, call)
+    fix = build_fix(src, &spec, call)
     if fix.len() == 0
         return off_skip()
-    msg = method_msg(name, spec)
+    msg = method_msg(&name, &spec)
     off_new(CODE_METHOD(), msg, lex.start(i), call.rparen + 1, 1, fix)
 
-fn cop_method(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_method(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     cop_method_go(src, lex, offs, 0, lex.len())
 
-fn cop_method_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_method_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

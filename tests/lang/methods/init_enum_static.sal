@@ -9,7 +9,7 @@ static Opt.of(n: Int) -> Opt
     else
         Nothing
 
-method Opt.get() -> Int
+method Opt.get(&self) -> Int
     match self
         Nothing => 0
         Just(n) => n

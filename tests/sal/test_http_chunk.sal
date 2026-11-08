@@ -4,10 +4,10 @@ import "support/assert.sal"
 fn main() -> Int ! io, alloc
     raw = d"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
     body = Response(raw).body()
-    a = assert_str_eq(body, d"hello", 1)
+    a = assert_str_eq(&body, &d"hello", 1)
     if a != 0
         a
     else
         chunked = d"5\r\nhello\r\n0\r\n\r\n"
-        dec = http_decode_chunked(chunked)
-        assert_str_eq(dec, d"hello", 2)
+        dec = http_decode_chunked(&chunked)
+        assert_str_eq(&dec, &d"hello", 2)

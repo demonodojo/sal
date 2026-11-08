@@ -18,7 +18,7 @@ struct Tc
     env: TEnv
     enums: List[TEnum]
 
-fn tc_new(pool: Int, env: TEnv borrow, enums: List[TEnum] borrow) -> Tc ! alloc
+fn tc_new(pool: Int, env: &TEnv, enums: &List[TEnum]) -> Tc ! alloc
     ctr = List.new[Int]()
     ctr.push(0)
     acc = List.new[Int]()
@@ -32,9 +32,9 @@ fn tc_new(pool: Int, env: TEnv borrow, enums: List[TEnum] borrow) -> Tc ! alloc
 
 # Releases the emitter lists and the lambda copies. The body stays: the caller frees it
 # once this function's C and IR no longer share its strings.
-fn tc_free(tc: Tc, body: TBlock) -> Int ! alloc
-    _k = list_len(body.stmts)
-    tp_free_expr_list(tc.lam_bodies)
+fn tc_free(tc: &Tc, body: &TBlock) -> Int ! alloc
+    _k = list_len(&body.stmts)
+    tp_free_expr_list(&tc.lam_bodies)
     list_free(tc.ctr)
     list_free(tc.acc)
     list_free(tc.mm_out)
@@ -44,18 +44,18 @@ fn tc_free(tc: Tc, body: TBlock) -> Int ! alloc
     _g = list_free(tc.lam_bodies)
     tp_keep_block(body)
 
-fn tc_lit_pool(tc: Tc) -> Int ! alloc
+fn tc_lit_pool(tc: &Tc) -> Int ! alloc
     tc.pool
 
 # Name of the binding an `x = x + ...` chain accumulates into (0 when none).
-fn tc_acc(tc: Tc) -> Int ! alloc
+fn tc_acc(tc: &Tc) -> Int ! alloc
     tc.acc.get(0)
 
-fn tc_set_acc(tc: Tc, name: Int) -> Int ! alloc
+fn tc_set_acc(tc: &Tc, name: Int) -> Int ! alloc
     _s = tc.acc.set(0, name)
     0
 
-fn tc_lam_find(tc: Tc, name: String, i: Int) -> Int ! alloc
+fn tc_lam_find(tc: &Tc, name: &String, i: Int) -> Int ! alloc
     if i < 0
         0 - 1
     elsif tc.lam_names.get(i).eq(name) == 1
@@ -63,31 +63,31 @@ fn tc_lam_find(tc: Tc, name: String, i: Int) -> Int ! alloc
     else
         tc_lam_find(tc, name, i - 1)
 
-fn tc_lam_add(tc: Tc, name: String, lam: Expr) -> Int ! alloc
+fn tc_lam_add(tc: &Tc, name: &String, lam: &Expr) -> Int ! alloc
     match lam
-        XLambda(param, body) => tc_lam_push(tc, name, param, body)
+        XLambda(param, body) => tc_lam_push(tc, name, &param, &body)
         _ => 0
 
-fn tc_lam_push(tc: Tc, name: String, param: String, body: Expr) -> Int ! alloc
+fn tc_lam_push(tc: &Tc, name: &String, param: &String, body: &Expr) -> Int ! alloc
     tc.lam_names.push(name.dup())
     tc.lam_params.push(param.dup())
     _c = tc.lam_bodies.push(tc_expr(body))
     0
 
-fn seed_string_params(params: List[TParam], i: Int, n: Int, env: TEnv) -> Int ! alloc
+fn seed_string_params(params: &List[TParam], i: Int, n: Int, env: &TEnv) -> Int ! alloc
     if i >= n
         0
     else
         pm = params.get(i)
-        tenv_bind(env, pm.name, pm.ty)
+        tenv_bind(env, &pm.name, &pm.ty)
         seed_string_params(params, i + 1, n, env)
 
-fn tmp_fresh(tc: Tc) -> String ! alloc
+fn tmp_fresh(tc: &Tc) -> String ! alloc
     n = tc.ctr.get(0) + 1
     tc.ctr.set(0, n)
     "__t" + n.to_str()
 
-fn variant_code(tc: Tc, name: Int) -> Int ! alloc
+fn variant_code(tc: &Tc, name: Int) -> Int ! alloc
     map_get(lit_pool_variants(tc_lit_pool(tc)), name)
 
 fn variant_tag(code: Int) -> Int ! alloc

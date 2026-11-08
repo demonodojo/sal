@@ -2,7 +2,7 @@
 struct P
     x: Int
 
-method P.get() -> Int
+method P.get(&self) -> Int
     self.x
 
 fn main() -> Int

@@ -17,7 +17,7 @@ fn copy_into(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         copy_into(src, dst, i + 1, n)
 
 # Register the shape of SSA value `ssa`; dims use -1 for a dynamic axis.
-fn reg_tensor(cx: Cx, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) -> Int ! alloc
+fn reg_tensor(cx: &Cx, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) -> Int ! alloc
     b = bind_new(ssa, ssa)
     _t = bind_set_tensor(b, 1)
     _e = bind_set_elem(b, elem)
@@ -29,7 +29,7 @@ fn reg_tensor(cx: Cx, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) -> 
     0
 
 # Same shape as `src`, for results that keep their operand's type.
-fn reg_like(cx: Cx, ssa: Int, src: Int) -> Int ! alloc
+fn reg_like(cx: &Cx, ssa: Int, src: Int) -> Int ! alloc
     if src == 0
         0
     else
@@ -42,29 +42,29 @@ fn ir_rebind(dest: Int, src: Int) -> Int ! alloc
     _c = vec_push(inst, src)
     inst
 
-fn push_call(cx: Cx, dest: Int, fname: String, args: Int, has_dest: Int) -> Int ! alloc
+fn push_call(cx: &Cx, dest: Int, fname: &String, args: Int, has_dest: Int) -> Int ! alloc
     ir_push(cx, ir_call(dest, str_as_int(fname), args, has_dest))
 
-fn const_dim(cx: Cx, n: Int) -> Int ! alloc
+fn const_dim(cx: &Cx, n: Int) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, n)
     d
 
 fn int_text(n: Int) -> Int ! alloc
-    str_as_int(int_to_str(n))
+    str_as_int(&int_to_str(n))
 
 # ---- matmul ----
-fn matmul_lead_go(cx: Cx, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn matmul_lead_go(cx: &Cx, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
         next = axis_len_from_dim(cx, name, bind_dims(b), bind_concrete(b), i)
         r = fresh(cx)
-        _p = ir_push(cx, ir_bin(r, str_as_int("mul"), acc, next))
+        _p = ir_push(cx, ir_bin(r, str_as_int(&"mul"), acc, next))
         matmul_lead_go(cx, b, name, i + 1, n, r)
 
 # Batch `m`: the product of every leading axis but the last two.
-fn matmul_batch_m(cx: Cx, lhs: Int) -> Int ! alloc
+fn matmul_batch_m(cx: &Cx, lhs: Int) -> Int ! alloc
     b = find_tensor(cx, lhs)
     if b == 0
         const_dim(cx, 1)
@@ -74,7 +74,7 @@ fn matmul_batch_m(cx: Cx, lhs: Int) -> Int ! alloc
         first = axis_len_from_dim(cx, lhs, bind_dims(b), bind_concrete(b), 0)
         matmul_lead_go(cx, b, lhs, 1, bind_ndims(b) - 2, first)
 
-fn matmul_dims(cx: Cx, lhs: Int, rhs: Int) -> Int ! alloc
+fn matmul_dims(cx: &Cx, lhs: Int, rhs: Int) -> Int ! alloc
     out = vec_new()
     _m = vec_push(out, matmul_batch_m(cx, lhs))
     _k = vec_push(out, axis_len(cx, lhs, 0))
@@ -94,7 +94,7 @@ fn matmul_out_conc(lb: Int, rb: Int, n: Int, out: Int) -> Int ! alloc
     else
         0
 
-fn lower_matmul_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_matmul_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     lhs = vec_get(arg_names, 0)
     rhs = vec_get(arg_names, 1)
     mkn = matmul_dims(cx, lhs, rhs)
@@ -113,7 +113,7 @@ fn lower_matmul_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
             fname = fname
     else
         fname = fname
-    _p = push_call(cx, d, fname, args, 1)
+    _p = push_call(cx, d, &fname, args, 1)
     rb = find_tensor(cx, rhs)
     if lb != 0
         if rb != 0
@@ -136,7 +136,7 @@ fn lower_matmul_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     else
         0
 
-fn lower_qmatmul_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_qmatmul_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     a = vec_get(arg_names, 0)
     w = vec_get(arg_names, 1)
     mkn = matmul_dims(cx, a, w)
@@ -148,22 +148,22 @@ fn lower_qmatmul_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     _e = vec_push(args, vec_get(mkn, 0))
     _f = vec_push(args, vec_get(mkn, 1))
     _g = vec_push(args, vec_get(mkn, 2))
-    push_call(cx, d, "sal_qmatmul_f32", args, 1)
+    push_call(cx, d, &"sal_qmatmul_f32", args, 1)
 
 # ---- reshape / transpose / softmax ----
-fn int_arg_push(a: Expr, out: Int) -> Int ! alloc
+fn int_arg_push(a: &Expr, out: Int) -> Int ! alloc
     match a
         XInt(v) => vec_push(out, v)
         _ => 0
 
-fn int_args(args: List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
+fn int_args(args: &List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        _p = int_arg_push(list_get(args, i), out)
+        _p = int_arg_push(&list_get(args, i), out)
         int_args(args, i + 1, n, out)
 
-fn lower_reshape_op(cx: Cx, d: Int, args: List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_reshape_op(cx: &Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
     src = vec_get(arg_names, 0)
     b = find_tensor(cx, src)
     if b != 0
@@ -199,7 +199,7 @@ fn transpose_is_copy(b: Int) -> Int ! alloc
     else
         1
 
-fn lower_transpose_copy(cx: Cx, d: Int, src: Int, b: Int) -> Int ! alloc
+fn lower_transpose_copy(cx: &Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     r = fresh(cx)
     _a = push_const_int(cx, r, tdim(b, 0))
     c = fresh(cx)
@@ -215,9 +215,9 @@ fn lower_transpose_copy(cx: Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     _p = vec_push(args, src)
     _q = vec_push(args, r)
     _w = vec_push(args, c)
-    push_call(cx, d, "sal_transpose_f32", args, 1)
+    push_call(cx, d, &"sal_transpose_f32", args, 1)
 
-fn lower_transpose_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_transpose_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     src = vec_get(arg_names, 0)
     b = find_tensor(cx, src)
     if transpose_is_copy(b) == 1
@@ -225,7 +225,7 @@ fn lower_transpose_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     else
         lower_transpose_view(cx, d, src, b)
 
-fn lower_transpose_view(cx: Cx, d: Int, src: Int, b: Int) -> Int ! alloc
+fn lower_transpose_view(cx: &Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     if b != 0
         dims = vec_copy(bind_dims(b))
         n = vec_len(dims)
@@ -241,23 +241,23 @@ fn lower_transpose_view(cx: Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     ir_push(cx, ir_rebind(d, src))
 
 # softmax(x, axis) with a literal axis; the shape is registered either way.
-fn lower_softmax_axis_op(cx: Cx, d: Int, args: List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_softmax_axis_op(cx: &Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     _r = reg_like(cx, d, b)
-    softmax_axis_call(cx, d, input, b, list_get(args, 1))
+    softmax_axis_call(cx, d, input, b, &list_get(args, 1))
 
-fn softmax_axis_call(cx: Cx, d: Int, input: Int, b: Int, ax: Expr) -> Int ! alloc
+fn softmax_axis_call(cx: &Cx, d: Int, input: Int, b: Int, ax: &Expr) -> Int ! alloc
     match ax
         XInt(v) => softmax_axis_emit(cx, d, input, b, v)
         _ => 0
 
-fn softmax_axis_emit(cx: Cx, d: Int, input: Int, b: Int, axis: Int) -> Int ! alloc
+fn softmax_axis_emit(cx: &Cx, d: Int, input: Int, b: Int, axis: Int) -> Int ! alloc
     argv = vec_new()
     _a = vec_push(argv, input)
     _b = vec_push(argv, int_text(axis))
     shape = tensor_shape2(b, axis)
-    _p = ir_push(cx, ir_call_shaped(d, str_as_int("sal_softmax_axis_f32"), argv, 1, shape))
+    _p = ir_push(cx, ir_call_shaped(d, str_as_int(&"sal_softmax_axis_f32"), argv, 1, shape))
     1
 
 # The shape of a bind as `[rows, cols, axis]`; -1 for what is not a concrete matrix.
@@ -283,34 +283,34 @@ fn conc_at(b: Int, i: Int) -> Int ! alloc
         0 - 1
 
 # `reduce(x, axis)` with a literal axis: the runtime reduces the rows or the columns of the matrix.
-fn lower_reduce_op(cx: Cx, d: Int, args: List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_reduce_op(cx: &Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     argv = vec_new()
     _a = vec_push(argv, input)
     _b = vec_push(argv, vec_get(arg_names, 1))
-    shape = tensor_shape2(b, reduce_axis_of(list_get(args, 1)))
-    _p = ir_push(cx, ir_call_shaped(d, str_as_int("sal_reduce"), argv, 1, shape))
+    shape = tensor_shape2(b, reduce_axis_of(&list_get(args, 1)))
+    _p = ir_push(cx, ir_call_shaped(d, str_as_int(&"sal_reduce"), argv, 1, shape))
     1
 
 # `relu(x)`: the runtime maps the buffer; a shape not known at compile time is a runtime panic.
-fn lower_relu_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_relu_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     argv = vec_new()
     _a = vec_push(argv, input)
     shape = tensor_shape2(b, 0 - 1)
-    _p = ir_push(cx, ir_call_shaped(d, str_as_int("sal_relu"), argv, 1, shape))
+    _p = ir_push(cx, ir_call_shaped(d, str_as_int(&"sal_relu"), argv, 1, shape))
     1
 
-fn reduce_axis_of(ax: Expr) -> Int ! alloc
+fn reduce_axis_of(ax: &Expr) -> Int ! alloc
     match ax
         XInt(v) => v
         _ => 0 - 2
 
 # ---- attention / rope / silu ----
 # An axis as the literal the runtime takes: the extent when known, else `name_d<i>`.
-fn dim_lit_or_name(b: Int, name: Int, idx: Int, fallback: String) -> Int ! alloc
+fn dim_lit_or_name(b: Int, name: Int, idx: Int, fallback: &String) -> Int ! alloc
     if idx >= bind_ndims(b)
         str_as_int(fallback)
     else
@@ -323,27 +323,27 @@ fn dim_lit_or_name(b: Int, name: Int, idx: Int, fallback: String) -> Int ! alloc
         else
             axis_len_dim(name, idx)
 
-fn lower_attention_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_attention_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     q = vec_get(arg_names, 0)
     k = vec_get(arg_names, 1)
     qb = find_tensor(cx, q)
     kb = find_tensor(cx, k)
-    seq = str_as_int("1")
-    heads = str_as_int("1")
-    hd = str_as_int("1")
-    kvh = str_as_int("1")
+    seq = str_as_int(&"1")
+    heads = str_as_int(&"1")
+    hd = str_as_int(&"1")
+    kvh = str_as_int(&"1")
     if qb != 0
         if bind_ndims(qb) >= 3
-            seq = dim_lit_or_name(qb, q, 0, "1")
-            heads = dim_lit_or_name(qb, q, 1, "1")
-            hd = dim_lit_or_name(qb, q, 2, "1")
+            seq = dim_lit_or_name(qb, q, 0, &"1")
+            heads = dim_lit_or_name(qb, q, 1, &"1")
+            hd = dim_lit_or_name(qb, q, 2, &"1")
         else
             seq = seq
     else
         seq = seq
     if kb != 0
         if bind_ndims(kb) >= 2
-            kvh = dim_lit_or_name(kb, k, 1, "1")
+            kvh = dim_lit_or_name(kb, k, 1, &"1")
         else
             kvh = kvh
     else
@@ -357,10 +357,10 @@ fn lower_attention_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     _f = vec_push(args, kvh)
     _g = vec_push(args, hd)
     _h = vec_push(args, vec_get(arg_names, 3))
-    _p = push_call(cx, d, "sal_attention_f32", args, 1)
+    _p = push_call(cx, d, &"sal_attention_f32", args, 1)
     reg_like(cx, d, qb)
 
-fn lower_rope_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_rope_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     seq = 0
@@ -380,14 +380,14 @@ fn lower_rope_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     _b = vec_push(args, seq)
     _c = vec_push(args, dim)
     _e = vec_push(args, vec_get(arg_names, 1))
-    _p = push_call(cx, d, "sal_rope", args, 1)
+    _p = push_call(cx, d, &"sal_rope", args, 1)
     reg_like(cx, d, b)
 
-fn lower_silu_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_silu_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     args = vec_new()
     _a = vec_push(args, input)
-    _p = push_call(cx, d, "sal_silu", args, 1)
+    _p = push_call(cx, d, &"sal_silu", args, 1)
     reg_like(cx, d, find_tensor(cx, input))
 
 # ---- tensor_append ----
@@ -404,7 +404,7 @@ fn dims_elems_or_one(b: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         else
             0 - 1
 
-fn lower_tensor_append_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_tensor_append_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     cache = vec_get(arg_names, 0)
     row = vec_get(arg_names, 1)
     rb = find_tensor(cx, row)
@@ -430,7 +430,7 @@ fn lower_tensor_append_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
         stride = total / rows_add
     else
         stride = total
-    key = str_as_int(str_from_int(cache) + "_d0")
+    key = str_as_int(&(str_from_int(cache) + "_d0"))
     kb = cx_find(cx, key)
     seq = 0
     if kb != 0
@@ -445,21 +445,21 @@ fn lower_tensor_append_op(cx: Cx, d: Int, arg_names: Int) -> Int ! alloc
     if rows_add > 1
         _d = vec_push(args, int_text(rows_add))
         _e = vec_push(args, int_text(stride))
-        _p = push_call(cx, 0, "sal_tensor_write_rows_f32", args, 0)
+        _p = push_call(cx, 0, &"sal_tensor_write_rows_f32", args, 0)
     else
         _e = vec_push(args, int_text(stride))
-        _p = push_call(cx, 0, "sal_tensor_write_row_f32", args, 0)
+        _p = push_call(cx, 0, &"sal_tensor_write_row_f32", args, 0)
     new_seq = fresh(cx)
     ra = const_dim(cx, rows_add)
-    _q = ir_push(cx, ir_bin(new_seq, str_as_int("add"), seq, ra))
-    dkey = str_as_int(str_from_int(d) + "_d0")
+    _q = ir_push(cx, ir_bin(new_seq, str_as_int(&"add"), seq, ra))
+    dkey = str_as_int(&(str_from_int(d) + "_d0"))
     _r = cx_bind(cx, dkey, new_seq)
     _s = cx_bind(cx, key, new_seq)
     reg_like(cx, d, find_tensor(cx, cache))
 
 # ---- dispatch ----
 # Lowers `fname(args)` when it is a shape-aware tensor builtin; returns 1 when handled.
-fn lower_tensor_builtin(cx: Cx, fname: String, args: List[Expr], arg_names: Int, d: Int) -> Int ! alloc
+fn lower_tensor_builtin(cx: &Cx, fname: &String, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
     n = vec_len(arg_names)
     if str_eq(fname, "reshape") == 1
         if n >= 2
@@ -486,7 +486,7 @@ fn lower_tensor_builtin(cx: Cx, fname: String, args: List[Expr], arg_names: Int,
             0
     elsif str_eq(fname, "reduce") == 1
         if n == 2
-            if reduce_axis_of(list_get(args, 1)) == 0 - 2
+            if reduce_axis_of(&list_get(args, 1)) == 0 - 2
                 0
             else
                 lower_reduce_op(cx, d, args, arg_names)

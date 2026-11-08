@@ -11,7 +11,7 @@ struct V
     w: W
     label: String
 
-method W.size() -> Int ! alloc
+method W.size(&self) -> Int ! alloc
     self.p.name.len()
 
 fn round(i: Int) -> Int ! alloc

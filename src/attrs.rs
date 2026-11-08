@@ -37,6 +37,7 @@ fn is_stack_type_rec(
             }
         }
         Type::Tensor { .. } | Type::Fn { .. } => false,
+        Type::Ref { .. } => true,
     }
 }
 

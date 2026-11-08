@@ -6,6 +6,7 @@ use crate::span::Span;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     EMoved,
+    EBorrow,
     EEffect,
     EPlace,
     EShape,
@@ -23,6 +24,7 @@ impl ErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
             ErrorCode::EMoved => "E_MOVED",
+            ErrorCode::EBorrow => "E_BORROW",
             ErrorCode::EEffect => "E_EFFECT",
             ErrorCode::EPlace => "E_PLACE",
             ErrorCode::EShape => "E_SHAPE",

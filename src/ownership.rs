@@ -453,7 +453,28 @@ fn track_expr(
                 Ok(named("Int", *span))
             }
         }
-        Expr::Unary { expr, .. } => track_expr(expr, env, moved, params, taken, used, frozen),
+        Expr::Unary { op, expr, span } => {
+            let ty = track_expr(expr, env, moved, params, taken, used, frozen)?;
+            match op {
+                UnOp::Ref => Ok(Type::Ref {
+                    mutable: false,
+                    lifetime: None,
+                    inner: Box::new(ty),
+                    span: *span,
+                }),
+                UnOp::RefMut => Ok(Type::Ref {
+                    mutable: true,
+                    lifetime: None,
+                    inner: Box::new(ty),
+                    span: *span,
+                }),
+                UnOp::Deref => match ty {
+                    Type::Ref { inner, .. } => Ok(*inner),
+                    other => Ok(other),
+                },
+                UnOp::Neg | UnOp::Not => Ok(ty),
+            }
+        }
         Expr::Block(b) => {
             let mut local = env.clone();
             track_block(b, &mut local, moved, params, taken, used, frozen)?;
@@ -645,6 +666,7 @@ fn is_copy_type(ty: &Type) -> bool {
             matches!(name.as_str(), "Int" | "Float" | "Bool" | "Unit" | "Unknown")
         }
         Type::Tensor { .. } | Type::Fn { .. } => false,
+        Type::Ref { mutable, .. } => !mutable,
     }
 }
 
@@ -674,6 +696,7 @@ fn is_copy_type_ext_rec(
             ok
         }
         Type::Tensor { .. } | Type::Fn { .. } => false,
+        Type::Ref { mutable, .. } => !mutable,
     }
 }
 
@@ -783,7 +806,7 @@ fn type_exportable(
         return false;
     }
     match ty {
-        Type::Tensor { .. } | Type::Fn { .. } => false,
+        Type::Tensor { .. } | Type::Fn { .. } | Type::Ref { .. } => false,
         Type::Named { name, args, .. } | Type::Qualified { name, args, .. } => match name.as_str() {
             "Int" | "Float" | "Bool" | "Unit" | "String" | "List" | "Dict" | "Bytes" => args
                 .iter()
@@ -1192,7 +1215,8 @@ fn ty_with_span(mut ty: Type, span: Span) -> Type {
         Type::Named { span: s, .. }
         | Type::Qualified { span: s, .. }
         | Type::Tensor { span: s, .. }
-        | Type::Fn { span: s, .. } => {
+        | Type::Fn { span: s, .. }
+        | Type::Ref { span: s, .. } => {
             *s = span;
         }
     }

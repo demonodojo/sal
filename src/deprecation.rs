@@ -153,6 +153,7 @@ impl Walk<'_> {
                 self.ty(ret);
             }
             Type::Tensor { .. } => {}
+            Type::Ref { inner, .. } => self.ty(inner),
         }
     }
 

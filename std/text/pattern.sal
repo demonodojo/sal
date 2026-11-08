@@ -1,4 +1,4 @@
-fn grep_literal(hay: String, needle: String) -> Int ! alloc
+fn grep_literal(hay: &String, needle: &String) -> Int ! alloc
     if str_len(needle) <= 0
         1
     else

@@ -7,13 +7,13 @@ fn count(n: Int) -> Int ! alloc
     names = list_new[String]()
     i = 0
     while i < n
-        _a = list_push(names, int_to_str(i))
+        _a = list_push(&names, int_to_str(i))
         i = i + 1
-    total = list_len(names)
+    total = list_len(&names)
     d = dict_new[String, String]()
-    _b = dict_put(d, "a", int_to_str(100))
-    _c = dict_put(d, "a", int_to_str(2000))
-    got = match dict_get(d, "a")
+    _b = dict_put(&d, &"a", int_to_str(100))
+    _c = dict_put(&d, &"a", int_to_str(2000))
+    got = match dict_get(&d, &"a")
         Some(v) => str_len(v)
         None => 0
     popped = list_pop(names)

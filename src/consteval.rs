@@ -163,6 +163,7 @@ fn eval_expr(e: &Expr, env: &HashMap<String, ConstValue>) -> Result<ConstValue, 
                     ConstValue::Bool(b) => Ok(ConstValue::Bool(!b)),
                     _ => Err(not_const(*span)),
                 },
+                UnOp::Ref | UnOp::RefMut | UnOp::Deref => Err(not_const(*span)),
             }
         }
         Expr::Binary { op, left, right, span } => eval_bin(*op, left, right, *span, env),

@@ -1,4 +1,4 @@
-fn jsonc_skip_ws(s: String, i: Int, n: Int) -> Int ! alloc
+fn jsonc_skip_ws(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
     else
@@ -10,7 +10,7 @@ fn jsonc_skip_ws(s: String, i: Int, n: Int) -> Int ! alloc
             13 => jsonc_skip_ws(s, i + 1, n)
             _ => i
 
-fn jsonc_skip_comment(s: String, i: Int, n: Int) -> Int ! alloc
+fn jsonc_skip_comment(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         i
     elsif s.char(i) == 10
@@ -18,7 +18,7 @@ fn jsonc_skip_comment(s: String, i: Int, n: Int) -> Int ! alloc
     else
         jsonc_skip_comment(s, i + 1, n)
 
-fn jsonc_skip(s: String, i: Int) -> Int ! alloc
+fn jsonc_skip(s: &String, i: Int) -> Int ! alloc
     n = s.len()
     j = jsonc_skip_ws(s, i, n)
     if j + 1 >= n

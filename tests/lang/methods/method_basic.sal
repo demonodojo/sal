@@ -3,10 +3,10 @@ struct P
     x: Int
     y: Int
 
-method P.sum() -> Int
+method P.sum(&self) -> Int
     self.x + self.y
 
-method P.scaled(k: Int) -> P
+method P.scaled(&self, k: Int) -> P
     P(self.x * k, self.y * k)
 
 fn main() -> Int

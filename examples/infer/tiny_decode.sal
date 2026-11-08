@@ -2,7 +2,7 @@
 # KV seq length is tracked in one function (`run_benchmark`) so appends chain correctly.
 # Weights: `cargo run --bin som2salt` → target/infer_salt/tiny/
 
-fn decoder_prefill(h: Tensor[F32, 8, 128] on cpu, wq: Tensor[F32, 128, 128] on cpu, wk: Tensor[F32, 128, 128] on cpu, wv: Tensor[F32, 128, 128] on cpu, wo: Tensor[F32, 128, 128] on cpu, w_up: Tensor[F32, 256, 128] on cpu, w_down: Tensor[F32, 128, 256] on cpu) -> Tensor[F32, 8, 128] on cpu
+fn decoder_prefill(h: Tensor[F32, 8, 128] on cpu, wq: &Tensor[F32, 128, 128] on cpu, wk: &Tensor[F32, 128, 128] on cpu, wv: &Tensor[F32, 128, 128] on cpu, wo: &Tensor[F32, 128, 128] on cpu, w_up: Tensor[F32, 256, 128] on cpu, w_down: Tensor[F32, 128, 256] on cpu) -> Tensor[F32, 8, 128] on cpu
     let residual = h
     let q = matmul(residual, wq)
     let k = matmul(residual, wk)
@@ -27,9 +27,9 @@ fn run_benchmark() -> Int ! io, alloc
     let h0 = load[Tensor[F32, 8, 128] on cpu](p + d"bench_input.salt")
     let kc = load[Tensor[F32, ?, 4, 32] on cpu](p + d"kv_cache.salt")
     let vc = load[Tensor[F32, ?, 4, 32] on cpu](p + d"kv_cache.salt")
-    let h1 = decoder_prefill(h0, load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_q.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_k.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_v.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L00_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L00_ffn_down.salt"))
-    let h2 = decoder_prefill(h1, load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_q.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_k.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_v.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L01_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L01_ffn_down.salt"))
-    let h3 = decoder_prefill(h2, load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_q.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_k.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_v.salt"), load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L02_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L02_ffn_down.salt"))
+    let h1 = decoder_prefill(h0, &load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_q.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_k.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_v.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L00_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L00_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L00_ffn_down.salt"))
+    let h2 = decoder_prefill(h1, &load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_q.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_k.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_v.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L01_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L01_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L01_ffn_down.salt"))
+    let h3 = decoder_prefill(h2, &load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_q.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_k.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_v.salt"), &load[Tensor[F32, 128, 128] on cpu](p + d"L02_attn_output.salt"), load[Tensor[F32, 256, 128] on cpu](p + d"L02_ffn_up.salt"), load[Tensor[F32, 128, 256] on cpu](p + d"L02_ffn_down.salt"))
     let wq3 = load[Tensor[F32, 128, 128] on cpu](p + d"L03_attn_q.salt")
     let wk3 = load[Tensor[F32, 128, 128] on cpu](p + d"L03_attn_k.salt")
     let wv3 = load[Tensor[F32, 128, 128] on cpu](p + d"L03_attn_v.salt")

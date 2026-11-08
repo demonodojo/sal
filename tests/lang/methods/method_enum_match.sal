@@ -3,7 +3,7 @@ enum Shape
     Sq(Int)
     Rect(Int, Int)
 
-method Shape.area() -> Int
+method Shape.area(&self) -> Int
     match self
         Sq(a) => a * a
         Rect(w, h) => w * h

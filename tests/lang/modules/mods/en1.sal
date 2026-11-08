@@ -5,7 +5,7 @@ enum Color
 fn pick1() -> Color
     Green(4)
 
-fn val1(c: Color) -> Int
+fn val1(c: &Color) -> Int
     match c
         Red => 1
         Green(n) => n

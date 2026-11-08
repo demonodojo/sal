@@ -4,7 +4,7 @@ struct Pt
 init Pt(x: Int)
     Pt(x)
 
-method Pt.sum() -> Int
+method Pt.sum(&self) -> Int
     self.x + 1
 
 fn mk() -> Pt

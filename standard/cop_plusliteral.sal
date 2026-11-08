@@ -5,7 +5,7 @@ import util
 fn CODE_LITERAL() -> String ! alloc
     d"Style/PlusLiteral"
 
-fn pl_prev_nl(lex: Lex, i: Int) -> Int ! alloc
+fn pl_prev_nl(lex: &Lex, i: Int) -> Int ! alloc
     if i <= 0
         0 - 1
     elsif lex.kind(i - 1) == TK_NL()
@@ -13,7 +13,7 @@ fn pl_prev_nl(lex: Lex, i: Int) -> Int ! alloc
     else
         i - 1
 
-fn pl_next_nl(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn pl_next_nl(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         n
     elsif lex.kind(i) == TK_NL()
@@ -21,7 +21,7 @@ fn pl_next_nl(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         i
 
-fn pl_skip_rparens(lex: Lex, n: Int, j: Int) -> Int ! alloc
+fn pl_skip_rparens(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     if j >= n
         j
     elsif lex.kind(j) == TK_RPAREN()
@@ -29,7 +29,7 @@ fn pl_skip_rparens(lex: Lex, n: Int, j: Int) -> Int ! alloc
     else
         j
 
-fn plus_after_dstring(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn plus_after_dstring(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     j = pl_next_nl(lex, n, i + 1)
     j = pl_skip_rparens(lex, n, j)
     if j >= n
@@ -39,7 +39,7 @@ fn plus_after_dstring(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         0
 
-fn pl_plus_before_go(lex: Lex, j: Int) -> Int ! alloc
+fn pl_plus_before_go(lex: &Lex, j: Int) -> Int ! alloc
     if j < 0
         0
     else
@@ -52,11 +52,11 @@ fn pl_plus_before_go(lex: Lex, j: Int) -> Int ! alloc
         else
             0
 
-fn plus_before_dstring(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn plus_before_dstring(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     j = pl_prev_nl(lex, i)
     pl_plus_before_go(lex, j)
 
-fn dstring_in_plus(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn dstring_in_plus(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if lex.kind(i) != TK_DSTRING()
         0
     elsif plus_after_dstring(lex, n, i) == 1
@@ -64,11 +64,11 @@ fn dstring_in_plus(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         plus_before_dstring(lex, n, i)
 
-fn cop_plusliteral(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_plusliteral(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     n = lex.len()
     cop_pluslit_go(src, lex, offs, 0, n)
 
-fn cop_pluslit_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_pluslit_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif dstring_in_plus(lex, n, i) == 1

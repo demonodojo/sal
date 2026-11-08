@@ -5,11 +5,11 @@ import util
 fn CODE_DUP() -> String ! alloc
     d"Style/DupString"
 
-fn cop_dupstring(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_dupstring(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     n = lex.len()
     cop_dup_go(src, lex, offs, 0, n)
 
-fn cop_dup_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_dup_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif lex.kind(i) == TK_IDENT()

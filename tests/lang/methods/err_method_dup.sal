@@ -2,10 +2,10 @@
 struct P
     x: Int
 
-method P.get() -> Int
+method P.get(&self) -> Int
     self.x
 
-method P.get() -> Int
+method P.get(&self) -> Int
     0
 
 fn main() -> Int

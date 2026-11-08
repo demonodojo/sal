@@ -3,10 +3,10 @@ enum Shape
     Circle(Int)
     Square(Int)
 
-fn area(s: Shape) -> Int
+fn area(s: &Shape) -> Int
     match s
         Circle(r) => r * r * 3
         Square(a) => a * a
 
 fn main() -> Int
-    area(Circle(2)) + area(Square(3))
+    area(&Circle(2)) + area(&Square(3))

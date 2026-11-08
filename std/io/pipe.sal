@@ -12,16 +12,16 @@ static Pipe.create() -> Pipe ! io
 static Pipe.from_packed(packed: Int) -> Pipe
     Pipe(pipe_read_fd_go(packed), pipe_write_fd_go(packed))
 
-method Pipe.read_fd(self borrow) -> Int
+method Pipe.read_fd(&self) -> Int
     self.read
 
-method Pipe.write_fd(self borrow) -> Int
+method Pipe.write_fd(&self) -> Int
     self.write
 
-method Pipe.close_read(self borrow) -> Int ! io
+method Pipe.close_read(&self) -> Int ! io
     Fd.new(self.read).close()
 
-method Pipe.close_write(self borrow) -> Int ! io
+method Pipe.close_write(&self) -> Int ! io
     Fd.new(self.write).close()
 
 fn pipe_create_go() -> Int ! io

@@ -5,11 +5,11 @@ import util
 fn CODE_UNUSED() -> String ! alloc
     d"Style/UnusedBinding"
 
-fn cop_unusedbinding(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_unusedbinding(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     n = lex.len()
     cop_unused_go(src, lex, offs, 0, n)
 
-fn cop_unused_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_unused_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif ub_offense_at(src, lex, n, i) == 1
@@ -23,7 +23,7 @@ fn cop_unused_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int 
     else
         cop_unused_go(src, lex, offs, i + 1, n)
 
-fn ub_name_start(src: String, pos: Int) -> Int ! alloc
+fn ub_name_start(src: &String, pos: Int) -> Int ! alloc
     if pos > 0
         if src.char(pos - 1) == 95
             pos - 1
@@ -32,7 +32,7 @@ fn ub_name_start(src: String, pos: Int) -> Int ! alloc
     else
         pos
 
-fn ub_offense_at(src: String, lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn ub_offense_at(src: &String, lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if lex.kind(i) != TK_IDENT()
         0
     elsif ub_stmt_start(lex, i) == 0
@@ -48,7 +48,7 @@ fn ub_offense_at(src: String, lex: Lex, n: Int, i: Int) -> Int ! alloc
         else
             ub_call_stmt_unused(src, lex, n, i, p)
 
-fn ub_rhs_lparen(lex: Lex, n: Int, j: Int) -> Int ! alloc
+fn ub_rhs_lparen(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     if j >= n
         0 - 1
     elsif lex.kind(j) != TK_IDENT()
@@ -60,7 +60,7 @@ fn ub_rhs_lparen(lex: Lex, n: Int, j: Int) -> Int ! alloc
     else
         ub_rhs_lparen(lex, n, j + 1)
 
-fn ub_call_stmt_unused(src: String, lex: Lex, n: Int, i: Int, p: Int) -> Int ! alloc
+fn ub_call_stmt_unused(src: &String, lex: &Lex, n: Int, i: Int, p: Int) -> Int ! alloc
     close = ub_matching_rparen(lex, n, p, 0)
     if close < 0
         0
@@ -70,12 +70,12 @@ fn ub_call_stmt_unused(src: String, lex: Lex, n: Int, i: Int, p: Int) -> Int ! a
         name = lex.text(src, i)
         lo = ub_item_start(src, lex, i)
         hi = ub_item_end(src, lex, n, i + 1)
-        if ub_reads(src, lex, lo, hi, i, name) == 1
+        if ub_reads(src, lex, lo, hi, i, &name) == 1
             0
         else
             1
 
-fn ub_matching_rparen(lex: Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
+fn ub_matching_rparen(lex: &Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
     if j >= n
         0 - 1
     else
@@ -90,7 +90,7 @@ fn ub_matching_rparen(lex: Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
         else
             ub_matching_rparen(lex, n, j + 1, depth)
 
-fn ub_last_in_block(lex: Lex, n: Int, j: Int) -> Int ! alloc
+fn ub_last_in_block(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     k = skip_nl(lex, n, j)
     if k >= n
         1
@@ -99,7 +99,7 @@ fn ub_last_in_block(lex: Lex, n: Int, j: Int) -> Int ! alloc
     else
         0
 
-fn ub_stmt_start(lex: Lex, i: Int) -> Int ! alloc
+fn ub_stmt_start(lex: &Lex, i: Int) -> Int ! alloc
     if i == 0
         1
     else
@@ -113,7 +113,7 @@ fn ub_stmt_start(lex: Lex, i: Int) -> Int ! alloc
         else
             0
 
-fn ub_is_item_kw(src: String, lex: Lex, i: Int) -> Int ! alloc
+fn ub_is_item_kw(src: &String, lex: &Lex, i: Int) -> Int ! alloc
     if lex.kind(i) != TK_IDENT()
         0
     else
@@ -123,7 +123,7 @@ fn ub_is_item_kw(src: String, lex: Lex, i: Int) -> Int ! alloc
         else
             ub_line_start(src, lex.start(i))
 
-fn ub_line_start(src: String, pos: Int) -> Int ! alloc
+fn ub_line_start(src: &String, pos: Int) -> Int ! alloc
     if pos == 0
         1
     elsif src.char(pos - 1) == 10
@@ -131,7 +131,7 @@ fn ub_line_start(src: String, pos: Int) -> Int ! alloc
     else
         0
 
-fn ub_item_start(src: String, lex: Lex, i: Int) -> Int ! alloc
+fn ub_item_start(src: &String, lex: &Lex, i: Int) -> Int ! alloc
     if i <= 0
         0
     elsif ub_is_item_kw(src, lex, i) == 1
@@ -139,7 +139,7 @@ fn ub_item_start(src: String, lex: Lex, i: Int) -> Int ! alloc
     else
         ub_item_start(src, lex, i - 1)
 
-fn ub_item_end(src: String, lex: Lex, n: Int, j: Int) -> Int ! alloc
+fn ub_item_end(src: &String, lex: &Lex, n: Int, j: Int) -> Int ! alloc
     if j >= n
         n
     elsif ub_is_item_kw(src, lex, j) == 1
@@ -147,7 +147,7 @@ fn ub_item_end(src: String, lex: Lex, n: Int, j: Int) -> Int ! alloc
     else
         ub_item_end(src, lex, n, j + 1)
 
-fn ub_reads(src: String, lex: Lex, lo: Int, hi: Int, skip: Int, name: String) -> Int ! alloc
+fn ub_reads(src: &String, lex: &Lex, lo: Int, hi: Int, skip: Int, name: &String) -> Int ! alloc
     if lo >= hi
         0
     elsif lo == skip
@@ -164,7 +164,7 @@ fn ub_reads(src: String, lex: Lex, lo: Int, hi: Int, skip: Int, name: String) ->
         else
             ub_reads(src, lex, lo + 1, hi, skip, name)
 
-fn ub_reads_fstr(src: String, lex: Lex, lo: Int, hi: Int, skip: Int, name: String) -> Int ! alloc
+fn ub_reads_fstr(src: &String, lex: &Lex, lo: Int, hi: Int, skip: Int, name: &String) -> Int ! alloc
     needle = d"#{" + name + d"}"
     if lex.text(src, lo).contains(needle) == 1
         1

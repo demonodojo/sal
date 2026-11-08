@@ -4,7 +4,7 @@ fn assert_fail(code: Int) -> Int ! io, alloc
     _w = Fd.new(2).write_str(d"assert_fail\n")
     code
 
-fn assert_str_eq(got: String, want: String, code: Int) -> Int ! io, alloc
+fn assert_str_eq(got: &String, want: &String, code: Int) -> Int ! io, alloc
     if got.eq(want) != 0
         0
     else
@@ -22,7 +22,7 @@ fn assert_zero(got: Int, code: Int) -> Int ! io, alloc
     else
         assert_fail(code)
 
-fn assert_contains(hay: String, needle: String, code: Int) -> Int ! io, alloc
+fn assert_contains(hay: &String, needle: &String, code: Int) -> Int ! io, alloc
     if hay.contains(needle) != 0
         0
     else

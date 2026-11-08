@@ -12,7 +12,7 @@ import "../ast/tast.sal"
 import infer
 import "../ast/thash.sal"
 
-fn mr_fail(errs: List[String], msg: String) -> Int ! alloc
+fn mr_fail(errs: &List[String], msg: &String) -> Int ! alloc
     if errs.len() == 0
         _a = errs.push(msg)
         0
@@ -20,7 +20,7 @@ fn mr_fail(errs: List[String], msg: String) -> Int ! alloc
         0
 
 # ---- definitions ----
-fn methods_enum_ok(enums: List[TEnum], name: String, i: Int, n: Int) -> Int ! alloc
+fn methods_enum_ok(enums: &List[TEnum], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif enums.get(i).name.eq(name) == 1
@@ -31,11 +31,11 @@ fn methods_enum_ok(enums: List[TEnum], name: String, i: Int, n: Int) -> Int ! al
     else
         methods_enum_ok(enums, name, i + 1, n)
 
-fn methods_struct_ok(sts: List[TStruct], name: String, i: Int, n: Int) -> Int ! alloc
+fn methods_struct_ok(sts: &List[TStruct], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif str_eq(list_get(sts, i).name, name) == 1
-        if list_len(list_get(sts, i).tparams) == 0
+        if list_len(&list_get(sts, i).tparams) == 0
             1
         else
             0
@@ -43,7 +43,7 @@ fn methods_struct_ok(sts: List[TStruct], name: String, i: Int, n: Int) -> Int ! 
         methods_struct_ok(sts, name, i + 1, n)
 
 # Is there another function called `name`, apart from the one at `at`?
-fn methods_dup(fns: List[TFn], name: String, at: Int, i: Int, n: Int) -> Int ! alloc
+fn methods_dup(fns: &List[TFn], name: &String, at: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif i == at
@@ -53,132 +53,132 @@ fn methods_dup(fns: List[TFn], name: String, at: Int, i: Int, n: Int) -> Int ! a
     else
         methods_dup(fns, name, at, i + 1, n)
 
-fn methods_check_defs(tp: TProgram, errs: List[String]) -> Int ! alloc
-    methods_check_go(tp, 0, list_len(tp.fns), errs)
+fn methods_check_defs(tp: &TProgram, errs: &List[String]) -> Int ! alloc
+    methods_check_go(tp, 0, list_len(&tp.fns), errs)
 
-fn methods_check_go(tp: TProgram, i: Int, n: Int, errs: List[String]) -> Int ! alloc
+fn methods_check_go(tp: &TProgram, i: Int, n: Int, errs: &List[String]) -> Int ! alloc
     if i >= n
         0
     elsif list_len(errs) > 0
         0
     else
-        _c = methods_check_fn(tp, list_get(tp.fns, i), i, errs)
+        _c = methods_check_fn(tp, &list_get(&tp.fns, i), i, errs)
         methods_check_go(tp, i + 1, n, errs)
 
-fn methods_check_fn(tp: TProgram, f: TFn, at: Int, errs: List[String]) -> Int ! alloc
+fn methods_check_fn(tp: &TProgram, f: &TFn, at: Int, errs: &List[String]) -> Int ! alloc
     if f.mkind == 0
         0
     else
         part = str_slice(f.name, str_len(f.recv) + 2, str_len(f.name))
-        if methods_struct_ok(tp.structs, f.recv, 0, list_len(tp.structs)) + methods_enum_ok(tp.enums, f.recv, 0, list_len(tp.enums)) == 0
-            mr_fail(errs, "method receiver `" + f.recv + "` must be a non-generic struct, enum or frame defined in this module")
+        if methods_struct_ok(&tp.structs, &f.recv, 0, list_len(&tp.structs)) + methods_enum_ok(&tp.enums, &f.recv, 0, list_len(&tp.enums)) == 0
+            mr_fail(errs, &("method receiver `" + f.recv + "` must be a non-generic struct, enum or frame defined in this module"))
         elsif str_contains(f.recv, "__") + str_contains(part, "__") > 0
-            mr_fail(errs, "`__` is reserved: method `" + f.recv + "." + part + "`")
-        elsif methods_dup(tp.fns, f.name, at, 0, list_len(tp.fns)) == 1
-            mr_fail(errs, "method `" + f.recv + "." + part + "` is already defined")
+            mr_fail(errs, &("`__` is reserved: method `" + f.recv + "." + part + "`"))
+        elsif methods_dup(&tp.fns, &f.name, at, 0, list_len(&tp.fns)) == 1
+            mr_fail(errs, &("method `" + f.recv + "." + part + "` is already defined"))
         else
             0
 
 # ---- calls ----
 # `ndots` sizes the table of resolutions (the number of dotted calls and methods the parser saw).
-fn prepare_methods(tp: TProgram, ndots: Int, errs: List[String]) -> TProgram ! alloc
-    _d = methods_check_defs(tp, errs)
+fn prepare_methods(tp: TProgram, ndots: Int, errs: &List[String]) -> TProgram ! alloc
+    _d = methods_check_defs(&tp, errs)
     if list_len(errs) > 0
         tp
     else
-        methods_resolve(tp, ic_build(tp, ndots, 1))
+        methods_resolve(tp, &ic_build(&tp, ndots, 1))
 
-fn methods_resolve(tp: TProgram, c: IC) -> TProgram ! alloc
-    _r = infer_program_go(c, 0, list_len(tp.fns))
-    _a = mr_fns(tp.fns, 0, list_len(tp.fns), c.res)
+fn methods_resolve(tp: TProgram, c: &IC) -> TProgram ! alloc
+    _r = infer_program_go(c, 0, list_len(&tp.fns))
+    _a = mr_fns(&tp.fns, 0, list_len(&tp.fns), &c.res)
     _f = ic_free(c)
     tp
 
 # Rewrites dotted calls in the bodies that already exist. A second tree would share their strings,
 # so the old one could not be freed.
-fn mr_fns(xs: List[TFn], i: Int, n: Int, res: HT) -> Int ! alloc
+fn mr_fns(xs: &List[TFn], i: Int, n: Int, res: &HT) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(xs, i)
-        _b = mr_block(f.body, res)
+        _b = mr_block(&f.body, res)
         mr_fns(xs, i + 1, n, res)
 
-fn mr_block(b: TBlock, res: HT) -> Int ! alloc
-    _s = mr_stmts(b.stmts, 0, list_len(b.stmts), res)
-    mr_expr(b.tail, res)
+fn mr_block(b: &TBlock, res: &HT) -> Int ! alloc
+    _s = mr_stmts(&b.stmts, 0, list_len(&b.stmts), res)
+    mr_expr(&b.tail, res)
 
-fn mr_stmts(xs: List[TStmt], i: Int, n: Int, res: HT) -> Int ! alloc
+fn mr_stmts(xs: &List[TStmt], i: Int, n: Int, res: &HT) -> Int ! alloc
     if i >= n
         0
     else
         st = list_get(xs, i)
-        _e = mr_expr(st.expr, res)
-        _t = mr_expr(st.target, res)
+        _e = mr_expr(&st.expr, res)
+        _t = mr_expr(&st.target, res)
         mr_stmts(xs, i + 1, n, res)
 
-fn mr_elsifs(xs: List[TElsif], i: Int, n: Int, res: HT) -> Int ! alloc
+fn mr_elsifs(xs: &List[TElsif], i: Int, n: Int, res: &HT) -> Int ! alloc
     if i >= n
         0
     else
         a = list_get(xs, i)
-        _c = mr_expr(a.cond, res)
-        _b = mr_block(a.body, res)
+        _c = mr_expr(&a.cond, res)
+        _b = mr_block(&a.body, res)
         mr_elsifs(xs, i + 1, n, res)
 
-fn mr_arms(xs: List[TArm], i: Int, n: Int, res: HT) -> Int ! alloc
+fn mr_arms(xs: &List[TArm], i: Int, n: Int, res: &HT) -> Int ! alloc
     if i >= n
         0
     else
         a = list_get(xs, i)
-        _b = mr_expr(a.body, res)
+        _b = mr_expr(&a.body, res)
         if a.has_suite == 1
-            _s = mr_block(a.suite, res)
+            _s = mr_block(&a.suite, res)
         mr_arms(xs, i + 1, n, res)
 
-fn mr_args(xs: List[Expr], i: Int, n: Int, res: HT) -> Int ! alloc
+fn mr_args(xs: &List[Expr], i: Int, n: Int, res: &HT) -> Int ! alloc
     if i >= n
         0
     else
-        _e = mr_expr(list_get(xs, i), res)
+        _e = mr_expr(&list_get(xs, i), res)
         mr_args(xs, i + 1, n, res)
 
-fn mr_expr(e: Expr, res: HT) -> Int ! alloc
+fn mr_expr(e: &Expr, res: &HT) -> Int ! alloc
     match e
-        XCall(name, args, targs, _) => mr_call_in(e, name, args, targs, res)
-        XBin(_, l, r) => mr_pair(l, r, res)
-        XTo(_, inner) => mr_expr(inner, res)
-        XOn(_, body, _, _) => mr_block(body, res)
-        XIf(cond, then_b, else_b, has_else, elsifs) => mr_if(cond, then_b, else_b, has_else, elsifs, res)
-        XWhile(cond, body) => mr_while(cond, body, res)
-        XField(base, _) => mr_expr(base, res)
-        XLambda(_, body) => mr_expr(body, res)
-        XUnary(_, inner) => mr_expr(inner, res)
-        XTry(inner) => mr_expr(inner, res)
-        XMatch(scrut, arms) => mr_match(scrut, arms, res)
+        XCall(name, args, targs, _) => mr_call_in(e, &name, &args, &targs, res)
+        XBin(_, l, r) => mr_pair(&l, &r, res)
+        XTo(_, inner) => mr_expr(&inner, res)
+        XOn(_, body, _, _) => mr_block(&body, res)
+        XIf(cond, then_b, else_b, has_else, elsifs) => mr_if(&cond, &then_b, &else_b, has_else, &elsifs, res)
+        XWhile(cond, body) => mr_while(&cond, &body, res)
+        XField(base, _) => mr_expr(&base, res)
+        XLambda(_, body) => mr_expr(&body, res)
+        XUnary(_, inner) => mr_expr(&inner, res)
+        XTry(inner) => mr_expr(&inner, res)
+        XMatch(scrut, arms) => mr_match(&scrut, &arms, res)
         _ => 0
 
-fn mr_pair(l: Expr, r: Expr, res: HT) -> Int ! alloc
+fn mr_pair(l: &Expr, r: &Expr, res: &HT) -> Int ! alloc
     _l = mr_expr(l, res)
     mr_expr(r, res)
 
-fn mr_while(cond: Expr, body: TBlock, res: HT) -> Int ! alloc
+fn mr_while(cond: &Expr, body: &TBlock, res: &HT) -> Int ! alloc
     _c = mr_expr(cond, res)
     mr_block(body, res)
 
-fn mr_if(cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: List[TElsif], res: HT) -> Int ! alloc
+fn mr_if(cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], res: &HT) -> Int ! alloc
     _c = mr_expr(cond, res)
     _t = mr_block(then_b, res)
     if has_else == 1
         _e = mr_block(else_b, res)
     mr_elsifs(elsifs, 0, list_len(elsifs), res)
 
-fn mr_match(scrut: Expr, arms: List[TArm], res: HT) -> Int ! alloc
+fn mr_match(scrut: &Expr, arms: &List[TArm], res: &HT) -> Int ! alloc
     _s = mr_expr(scrut, res)
     mr_arms(arms, 0, list_len(arms), res)
 
 # A changed string replaces the slot. The previous text is released; the same pointer stays.
-fn mr_set_str(e: Expr, i: Int, old: String, neu: String) -> Int ! alloc
+fn mr_set_str(e: &Expr, i: Int, old: &String, neu: &String) -> Int ! alloc
     if str_as_int(old) == str_as_int(neu)
         0
     else
@@ -188,7 +188,7 @@ fn mr_set_str(e: Expr, i: Int, old: String, neu: String) -> Int ! alloc
 
 # `args` are already rewritten. The resolution is `kind` + target: `i` the receiver is already the first
 # argument (`.name`), `l` it is the local before the dot (`q.name`), `s` a static call.
-fn mr_call_in(e: Expr, name: String, args: List[Expr], targs: String, res: HT) -> Int ! alloc
+fn mr_call_in(e: &Expr, name: &String, args: &List[Expr], targs: &String, res: &HT) -> Int ! alloc
     _a = mr_args(args, 0, list_len(args), res)
     id = mth_id(targs)
     if str_len(id) == 0
@@ -196,11 +196,11 @@ fn mr_call_in(e: Expr, name: String, args: List[Expr], targs: String, res: HT) -
     else
         val = res.get(id)
         if str_len(val) == 0
-            mr_set_str(e, 2, targs, mth_targs(targs))
+            mr_set_str(e, 2, targs, &mth_targs(targs))
         else
-            mr_apply(e, name, args, targs, mth_targs(targs), str_char(val, 0), str_slice(val, 1, str_len(val)))
+            mr_apply(e, name, args, targs, &mth_targs(targs), str_char(val, 0), &str_slice(val, 1, str_len(val)))
 
-fn mr_apply(e: Expr, name: String, args: List[Expr], old_ta: String, ta: String, kind: Int, target: String) -> Int ! alloc
+fn mr_apply(e: &Expr, name: &String, args: &List[Expr], old_ta: &String, ta: &String, kind: Int, target: &String) -> Int ! alloc
     _t = mr_set_str(e, 2, old_ta, ta)
     if kind == 112
         0
@@ -210,16 +210,16 @@ fn mr_apply(e: Expr, name: String, args: List[Expr], old_ta: String, ta: String,
         mr_set_str(e, 0, name, target)
 
 # `q.name(args)` on a local `q`: the call takes `q` first. The old argument vector is only a shell.
-fn mr_prepend_local(e: Expr, name: String, args: List[Expr], target: String) -> Int ! alloc
+fn mr_prepend_local(e: &Expr, name: &String, args: &List[Expr], target: &String) -> Int ! alloc
     recv = str_slice(name, 0, mth_dot(name, 0, str_len(name)))
     nargs = list_new[Expr]()
-    _a = list_push(nargs, XIdent(recv))
-    _b = mr_share_args(nargs, args, 0, list_len(args))
+    _a = list_push(&nargs, XIdent(recv))
+    _b = mr_share_args(&nargs, args, 0, list_len(args))
     _c = list_free_shell(args)
     _d = enum_set(e, 1, nargs)
     mr_set_str(e, 0, name, target)
 
-fn mr_share_args(out: List[Expr], xs: List[Expr], i: Int, n: Int) -> Int ! alloc
+fn mr_share_args(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

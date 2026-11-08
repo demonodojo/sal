@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::consteval::ConstValue;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
 use crate::span::Span;
-use crate::string_expr::is_string_type;
+use crate::string_expr::is_string_type as is_string_type_raw;
 use crate::typed::ExprTypeEntry;
 
 pub struct InferOutput {
@@ -122,7 +122,148 @@ pub fn register_fn(types: &mut TypeEnv, f: &FnDef) {
     }
 }
 
+fn declared_lifetimes(params: &[String]) -> HashSet<String> {
+    params
+        .iter()
+        .filter_map(|p| p.strip_prefix('\'').map(|s| s.to_string()))
+        .collect()
+}
+
+fn lifetime_in_type(ty: &Type, declared: &HashSet<String>, allow_elision: bool) -> DiagResult<()> {
+    match ty {
+        Type::Ref { lifetime, inner, span, .. } => {
+            if let Some(lt) = lifetime {
+                if !declared.contains(lt) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("unknown lifetime `'{lt}`"),
+                        *span,
+                    )]);
+                }
+            } else if !allow_elision {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "a lifetime in a struct field must be written explicitly",
+                    *span,
+                )]);
+            }
+            lifetime_in_type(inner, declared, allow_elision)
+        }
+        Type::Named { args, .. } | Type::Qualified { args, .. } => {
+            for a in args {
+                lifetime_in_type(a, declared, allow_elision)?;
+            }
+            Ok(())
+        }
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                lifetime_in_type(p, declared, allow_elision)?;
+            }
+            lifetime_in_type(ret, declared, allow_elision)
+        }
+        Type::Tensor { .. } => Ok(()),
+    }
+}
+
+/// Input lifetimes of a signature, and the lifetime of `&self` / `&mut self` when there is one.
+fn input_lifetimes(f: &FnDef) -> (Vec<String>, Option<String>) {
+    let mut inputs = Vec::new();
+    let mut self_lt = None;
+    let mut n = 0u32;
+    for (i, p) in f.params.iter().enumerate() {
+        collect_input_lts(&p.ty, i == 0 && p.name == "self", &mut inputs, &mut self_lt, &mut n);
+    }
+    (inputs, self_lt)
+}
+
+fn collect_input_lts(
+    ty: &Type,
+    is_self: bool,
+    inputs: &mut Vec<String>,
+    self_lt: &mut Option<String>,
+    n: &mut u32,
+) {
+    match ty {
+        Type::Ref { lifetime, inner, .. } => {
+            let name = lifetime.clone().unwrap_or_else(|| {
+                let fresh = format!("e{n}");
+                *n += 1;
+                fresh
+            });
+            if is_self && self_lt.is_none() {
+                *self_lt = Some(name.clone());
+            }
+            if !inputs.contains(&name) {
+                inputs.push(name);
+            }
+            collect_input_lts(inner, false, inputs, self_lt, n);
+        }
+        Type::Named { args, .. } | Type::Qualified { args, .. } => {
+            for a in args {
+                collect_input_lts(a, false, inputs, self_lt, n);
+            }
+        }
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                collect_input_lts(p, false, inputs, self_lt, n);
+            }
+            collect_input_lts(ret, false, inputs, self_lt, n);
+        }
+        Type::Tensor { .. } => {}
+    }
+}
+
+fn output_elision_ok(ty: &Type, inputs: &[String], self_lt: &Option<String>) -> DiagResult<()> {
+    match ty {
+        Type::Ref { lifetime, inner, span, .. } => {
+            if lifetime.is_none() {
+                let ok = self_lt.is_some() || inputs.len() == 1;
+                if !ok {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EBorrow,
+                        "elided lifetime in the return type has no source",
+                        *span,
+                    )
+                    .with_hint("write the lifetime, or give the function a single input lifetime")]);
+                }
+            }
+            output_elision_ok(inner, inputs, self_lt)
+        }
+        Type::Named { args, .. } | Type::Qualified { args, .. } => {
+            for a in args {
+                output_elision_ok(a, inputs, self_lt)?;
+            }
+            Ok(())
+        }
+        Type::Fn { params, ret, .. } => {
+            for p in params {
+                output_elision_ok(p, inputs, self_lt)?;
+            }
+            output_elision_ok(ret, inputs, self_lt)
+        }
+        Type::Tensor { .. } => Ok(()),
+    }
+}
+
+fn check_lifetime_elision(f: &FnDef) -> DiagResult<()> {
+    let declared = declared_lifetimes(&f.type_params);
+    for p in &f.params {
+        lifetime_in_type(&p.ty, &declared, true)?;
+    }
+    lifetime_in_type(&f.ret, &declared, true)?;
+    let (inputs, self_lt) = input_lifetimes(f);
+    output_elision_ok(&f.ret, &inputs, &self_lt)
+}
+
 pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<InferOutput> {
+    for item in &prog.items {
+        if let Item::Struct(s) = item {
+            let declared = declared_lifetimes(&s.type_params);
+            for field in &s.fields {
+                lifetime_in_type(&field.ty, &declared, false)?;
+            }
+        }
+    }
     types.protocol_calls.borrow_mut().clear();
     types.any_coercions.borrow_mut().clear();
     let mut out = Vec::new();
@@ -190,6 +331,7 @@ pub fn fn_signature(f: &FnDef) -> (Vec<Type>, Type) {
 }
 
 fn infer_fn(f: &FnDef, types: &TypeEnv) -> DiagResult<Vec<ExprTypeEntry>> {
+    check_lifetime_elision(f)?;
     let mut env: HashMap<String, Type> = HashMap::new();
     let (ptys, ret) = fn_signature(f);
     for (p, ty) in f.params.iter().zip(ptys) {
@@ -309,6 +451,18 @@ fn check_type_well_formed(ty: &Type, types: &TypeEnv) -> DiagResult<()> {
             Ok(())
         }
         Type::Tensor { dims: _, .. } => Ok(()),
+        Type::Ref { inner, lifetime, span, .. } => {
+            if let Some(name) = lifetime {
+                if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EType,
+                        format!("invalid lifetime `'{name}`"),
+                        *span,
+                    )]);
+                }
+            }
+            check_type_well_formed(inner, types)
+        }
         Type::Fn {
             params, ret, ..
         } => {
@@ -715,6 +869,10 @@ Expr::Int { .. } => Type::Named {
             }
         }
         Expr::Unary { op, expr, span } => {
+            if matches!(op, UnOp::Ref | UnOp::RefMut | UnOp::Deref) {
+                let inner = check_expr(expr, env, ctx, types, entries)?;
+                return Ok(infer_ref_unary(*op, inner, *span));
+            }
             let inner = check_expr(expr, env, ctx, types, entries)?;
             if let Some((dims, elem, place)) = tensor_dims(&inner) {
                 match op {
@@ -737,6 +895,7 @@ Expr::Int { .. } => Type::Named {
                             *span,
                         )]);
                     }
+                    UnOp::Ref | UnOp::RefMut | UnOp::Deref => unreachable!("ref unary handled above"),
                 }
             } else {
                 inner
@@ -846,7 +1005,7 @@ Expr::Int { .. } => Type::Named {
         }
         Expr::Field { base, field, span } => {
             let base_ty = check_expr(base, env, ctx, types, entries)?;
-            resolve_field(&base_ty, field, types, *span)?
+            resolve_field(peel_refs(&base_ty), field, types, *span)?
         }
         Expr::Match {
             scrutinee,
@@ -1017,6 +1176,7 @@ enum MatchScrutKind {
 }
 
 fn match_scrut_kind(ty: &Type, types: &TypeEnv) -> MatchScrutKind {
+    let ty = peel_refs(ty);
     let Type::Named { name, .. } = ty else {
         return MatchScrutKind::Other;
     };
@@ -1129,6 +1289,7 @@ fn bind_pattern(
     types: &TypeEnv,
     env: &mut HashMap<String, Type>,
 ) -> DiagResult<()> {
+    let scrut_ty = peel_refs(scrut_ty);
     match pat {
         Pattern::Wild(_)
         | Pattern::Int(_, _)
@@ -1269,6 +1430,17 @@ pub fn subst_type_params(ty: &Type, params: &[String], args: &[Type], span: Span
             effects: effects.clone(),
             span,
         },
+        Type::Ref {
+            mutable,
+            lifetime,
+            inner,
+            ..
+        } => Type::Ref {
+            mutable: *mutable,
+            lifetime: lifetime.clone(),
+            inner: Box::new(subst_type_params(inner, params, args, span)),
+            span,
+        },
     }
 }
 
@@ -1277,7 +1449,8 @@ fn ty_with_span(mut ty: Type, span: Span) -> Type {
         Type::Named { span: s, .. }
         | Type::Qualified { span: s, .. }
         | Type::Tensor { span: s, .. }
-        | Type::Fn { span: s, .. } => {
+        | Type::Fn { span: s, .. }
+        | Type::Ref { span: s, .. } => {
             *s = span;
         }
     }
@@ -1444,6 +1617,8 @@ fn try_register_any_coercion(
     ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
 ) -> DiagResult<bool> {
+    let pt = peel_refs(pt);
+    let aty = peel_refs(aty);
     let Type::Named { name, args, .. } = pt else {
         return Ok(false);
     };
@@ -1618,7 +1793,8 @@ fn infer_method_call(
     if !type_args.is_empty() {
         return err(format!("method `{field}` takes no type arguments"), span);
     }
-    let bty = check_expr(base, env, ctx, types, entries)?;
+    let bty_full = check_expr(base, env, ctx, types, entries)?;
+    let bty = peel_refs(&bty_full).clone();
     if let Type::Named { name, args: any_args, .. } = &bty {
         if name == "any" && any_args.len() == 1 {
             return infer_any_method_call(
@@ -1629,6 +1805,9 @@ fn infer_method_call(
     // A method of a built-in type is the builtin applied to the receiver. The
     // receiver is bound once to a synthetic name, so a chain of calls is
     // inferred in linear time.
+    if field == "clone" {
+        return infer_clone_method(&bty, base, env, ctx, types, entries, span);
+    }
     if let Type::Named { name, .. } = &bty {
         if let Some(builtin) = crate::methods::builtin_method(name, field) {
             let recv = "__recv".to_string();
@@ -1844,7 +2023,7 @@ fn infer_call(
                 )]);
             }
             let arg = check_expr(&args[0], env, ctx, types, entries)?;
-            if !matches!(arg, Type::Named { name, .. } if name == "String") {
+            if !is_string_type(&arg) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
                     "str_bytes expects String",
@@ -2024,6 +2203,16 @@ fn infer_call(
                 args: vec![],
                 span,
             })
+        }
+        "list_clone" | "dict_clone" | "bytes_clone" | "enum_copy" | "struct_clone" | "clone_copy" => {
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "clone takes the receiver",
+                    span,
+                )]);
+            }
+            check_expr(&args[0], env, ctx, types, entries)
         }
         "list_new" => {
             for a in args {
@@ -2397,17 +2586,19 @@ fn infer_call(
                     )]);
                 }
                 let mut arg_tys: Vec<Type> = Vec::new();
-                for (a, pt) in args.iter().zip(params.iter()) {
+                for (i, (a, pt)) in args.iter().zip(params.iter()).enumerate() {
                     let aty = check_expr(a, env, ctx, types, entries)?;
                     arg_tys.push(aty.clone());
                     if let Err(d) =
                         types_compatible_or_any_coerce(&aty, pt, a.span(), ctx, types)
                     {
-                        return Err(vec![Diagnostic::new(
-                            d.code,
-                            d.message,
-                            d.span,
-                        )]);
+                        if !receiver_autoref(types, name, i, &aty) {
+                            return Err(vec![Diagnostic::new(
+                                d.code,
+                                d.message,
+                                d.span,
+                            )]);
+                        }
                     }
                 }
                 if let Some(i) = types.generic_ret.get(name) {
@@ -2561,7 +2752,7 @@ fn infer_map_like(
     for a in args.iter().skip(2) {
         check_expr(a, env, ctx, types, entries)?;
     }
-    Ok(tensor_ty)
+    Ok(peel_refs(&tensor_ty).clone())
 }
 
 fn tensor_elem_scalar(ty: &Type, span: Span) -> Type {
@@ -2849,7 +3040,7 @@ fn infer_unary_tensor(
     for a in args.iter().skip(1) {
         check_expr(a, env, ctx, types, entries)?;
     }
-    Ok(t)
+    Ok(peel_refs(&t).clone())
 }
 
 fn infer_softmax(
@@ -3072,7 +3263,7 @@ fn infer_rms_norm(
             args[1].span(),
         )]);
     }
-    Ok(t)
+    Ok(peel_refs(&t).clone())
 }
 
 fn infer_attention(
@@ -3413,7 +3604,7 @@ fn tensor_broadcast_shapes(a: &[Dim], b: &[Dim]) -> Option<Vec<Dim>> {
 }
 
 fn tensor_dims(t: &Type) -> Option<(Vec<Dim>, TensorElem, Place)> {
-    match t {
+    match peel_refs(t) {
         Type::Tensor {
             elem,
             dims,
@@ -3445,15 +3636,15 @@ fn is_numeric(t: &Type) -> bool {
 }
 
 fn is_bool_type(t: &Type) -> bool {
-    matches!(t, Type::Named { name, .. } if name == "Bool")
+    matches!(peel_refs(t), Type::Named { name, .. } if name == "Bool")
 }
 
 fn is_int_type(t: &Type) -> bool {
-    matches!(t, Type::Named { name, .. } if name == "Int")
+    matches!(peel_refs(t), Type::Named { name, .. } if name == "Int")
 }
 
 fn is_bytes_type(t: &Type) -> bool {
-    matches!(t, Type::Named { name, .. } if name == "Bytes")
+    matches!(peel_refs(t), Type::Named { name, .. } if name == "Bytes")
 }
 
 /// Puntero crudo (`Int` desde `bytes_ptr`) o valor `Bytes` del runtime Sal.
@@ -3496,7 +3687,43 @@ fn check_condition(cond: &Expr, ty: &Type) -> DiagResult<()> {
     Ok(())
 }
 
+/// `x.m()` where `m` takes `&self`: the receiver `x` is passed as `&x`.
+fn receiver_autoref(types: &TypeEnv, name: &str, index: usize, aty: &Type) -> bool {
+    if index != 0 {
+        return false;
+    }
+    let Some(def) = types.fn_defs.get(name) else {
+        return false;
+    };
+    let Some(param) = def.params.first() else {
+        return false;
+    };
+    if param.name != "self" {
+        return false;
+    }
+    let Type::Ref { inner, .. } = &param.ty else {
+        return false;
+    };
+    types_compatible(aty, inner)
+}
+
+/// A dict stores the key pointer. `&String` and `String` are that same pointer.
+fn dict_key_ok(actual: &Type, expected: &Type) -> bool {
+    types_compatible(actual, expected) || types_compatible(peel_one_ref(actual), expected)
+}
+
+fn peel_one_ref(t: &Type) -> &Type {
+    match t {
+        Type::Ref { inner, .. } => inner,
+        other => other,
+    }
+}
+
 fn types_compatible(a: &Type, b: &Type) -> bool {
+    types_compatible_core(a, b)
+}
+
+fn types_compatible_core(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Tensor { .. }, Type::Tensor { .. }) => true,
         (
@@ -3524,6 +3751,18 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
                 .zip(ab.iter())
                 .all(|(x, y)| types_compatible(x, y))
         }
+        (
+            Type::Ref {
+                mutable: m1,
+                inner: i1,
+                ..
+            },
+            Type::Ref {
+                mutable: m2,
+                inner: i2,
+                ..
+            },
+        ) => m1 == m2 && types_compatible(i1, i2),
         _ => type_name(a) == type_name(b) || type_name(a) == "Unknown" || type_name(b) == "Unknown",
     }
 }
@@ -3537,7 +3776,7 @@ fn list_type(elem: Type, span: Span) -> Type {
 }
 
 fn list_elem(ty: &Type) -> Option<Type> {
-    match ty {
+    match peel_refs(ty) {
         Type::Named { name, args, span } if name == "List" => {
             if args.len() == 1 {
                 Some(args[0].clone())
@@ -3554,7 +3793,7 @@ fn list_elem(ty: &Type) -> Option<Type> {
 }
 
 fn dict_kv(ty: &Type) -> Option<(Type, Type)> {
-    match ty {
+    match peel_refs(ty) {
         Type::Named { name, args, span } if name == "Dict" && args.len() == 2 => {
             Some((args[0].clone(), args[1].clone()))
         }
@@ -3576,7 +3815,7 @@ fn dict_kv(ty: &Type) -> Option<(Type, Type)> {
 
 fn is_dict_key_type(ty: &Type) -> bool {
     matches!(
-        ty,
+        peel_refs(ty),
         Type::Named { name, .. } if name == "Int" || name == "String"
     )
 }
@@ -3627,7 +3866,7 @@ fn infer_list_push(
             )]);
         }
     }
-    Ok(xs_ty)
+    Ok(peel_refs(&xs_ty).clone())
 }
 
 fn infer_list_get(
@@ -3688,7 +3927,7 @@ fn infer_list_set(
             args[2].span(),
         )]);
     }
-    Ok(xs_ty)
+    Ok(peel_refs(&xs_ty).clone())
 }
 
 /// `list_pop(xs)`: removes the last element and moves it to the caller.
@@ -3731,7 +3970,7 @@ fn infer_dict_has(
         vec![Diagnostic::new(ErrorCode::EType, "dict_has expects a Dict", span)]
     })?;
     let kt = check_expr(&args[1], env, ctx, types, entries)?;
-    if !types_compatible(&kt, &kty) {
+    if !dict_key_ok(&kt, &kty) {
         return Err(vec![Diagnostic::new(
             ErrorCode::EType,
             "dict key type mismatch",
@@ -3772,7 +4011,7 @@ fn infer_dict_extra(
         "dict_values" => Ok(list_type(vty, span)),
         _ => {
             let kt = check_expr(&args[1], env, ctx, types, entries)?;
-            if !types_compatible(&kt, &kty) {
+            if !dict_key_ok(&kt, &kty) {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
                     "dict key type mismatch",
@@ -3863,7 +4102,7 @@ fn infer_dict_put(
     })?;
     if let Some(key) = args.get(1) {
         let kt = check_expr(key, env, ctx, types, entries)?;
-        if !types_compatible(&kt, &kty) {
+        if !dict_key_ok(&kt, &kty) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
                 "dict key type mismatch",
@@ -3881,7 +4120,7 @@ fn infer_dict_put(
             )]);
         }
     }
-    Ok(dty)
+    Ok(peel_refs(&dty).clone())
 }
 
 fn infer_dict_get(
@@ -3925,7 +4164,7 @@ fn infer_dict_get(
     })?;
     if let Some(key) = args.get(1) {
         let kt = check_expr(key, env, ctx, types, entries)?;
-        if !types_compatible(&kt, &kty) {
+        if !dict_key_ok(&kt, &kty) {
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
                 "dict key type mismatch",
@@ -3936,10 +4175,91 @@ fn infer_dict_get(
     Ok(option_type(vty, span))
 }
 
+fn infer_clone_method(
+    ty: &Type,
+    base: &Expr,
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let err = |msg: String| Err(vec![Diagnostic::new(ErrorCode::EType, msg, span)]);
+    if matches!(ty, Type::Tensor { .. }) {
+        return err("`Tensor` has no `clone`: move it or copy it with `to`".into());
+    }
+    if matches!(ty, Type::Ref { .. } | Type::Fn { .. }) {
+        return err("cannot clone a reference".into());
+    }
+    let builtin = match ty {
+        Type::Named { name, .. } | Type::Qualified { name, .. } => match name.as_str() {
+            "String" => "strdup",
+            "List" => "list_clone",
+            "Dict" => "dict_clone",
+            "Bytes" => "bytes_clone",
+            "Int" | "Float" | "Bool" | "Unit" => "clone_copy",
+            other if types.enums.contains_key(other) => "enum_copy",
+            _ => "struct_clone",
+        },
+        _ => "struct_clone",
+    };
+    let recv = "__recv".to_string();
+    let mut env2 = env.clone();
+    env2.insert(recv.clone(), ty.clone());
+    let call_args = vec![Expr::Ident { name: recv, span: base.span() }];
+    let callee = Expr::Ident { name: builtin.to_string(), span };
+    let out = infer_call(&callee, &[], &call_args, &env2, ctx, types, entries, span)?;
+    types
+        .method_calls
+        .borrow_mut()
+        .insert((span.start, span.end), (builtin.to_string(), false));
+    Ok(out)
+}
+
+fn is_string_type(t: &Type) -> bool {
+    is_string_type_raw(peel_refs(t))
+}
+
+fn peel_refs(ty: &Type) -> &Type {
+    match ty {
+        Type::Ref { inner, .. } => peel_refs(inner),
+        other => other,
+    }
+}
+
+fn infer_ref_unary(op: UnOp, inner: Type, span: Span) -> Type {
+    match op {
+        UnOp::Ref => Type::Ref {
+            mutable: false,
+            lifetime: None,
+            inner: Box::new(inner),
+            span,
+        },
+        UnOp::RefMut => Type::Ref {
+            mutable: true,
+            lifetime: None,
+            inner: Box::new(inner),
+            span,
+        },
+        UnOp::Deref => match inner {
+            Type::Ref { inner, .. } => *inner,
+            other => other,
+        },
+        UnOp::Neg | UnOp::Not => inner,
+    }
+}
+
 pub fn type_name(t: &Type) -> String {
     match t {
         Type::Named { name, .. } | Type::Qualified { name, .. } => name.clone(),
         Type::Tensor { elem, .. } => format!("Tensor[{elem:?}]"),
         Type::Fn { .. } => "fn".into(),
+        Type::Ref { mutable, inner, .. } => {
+            if *mutable {
+                format!("&mut {}", type_name(inner))
+            } else {
+                format!("&{}", type_name(inner))
+            }
+        }
     }
 }

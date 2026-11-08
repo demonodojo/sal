@@ -24,7 +24,7 @@ fn main() -> Int ! io, alloc
     cur = Path.cwd()
     err = fail_if(cur.len() < 4, err)
     err = fail_if(Path.new(d"/").is_dir() == 0, err)
-    out = spawn_capture_stdout(d"/bin/echo", d"sal-io")
+    out = spawn_capture_stdout(&d"/bin/echo", &d"sal-io")
     err = fail_if(out.len() < 5, err)
     srv = tcp_listen(38447)
     if srv >= 0

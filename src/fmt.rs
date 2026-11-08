@@ -153,12 +153,18 @@ fn format_protocol(p: &ProtocolDef) -> String {
         out.push_str("    method ");
         out.push_str(&m.name);
         out.push('(');
-        out.push_str("self");
-        match m.self_mode {
-            ParamMode::Take => out.push_str(" take"),
-            ParamMode::Borrow => out.push_str(" borrow"),
-            ParamMode::Keep => out.push_str(" keep"),
-            ParamMode::Inferred => {}
+        if m.self_ref == 2 {
+            out.push_str("&mut self");
+        } else if m.self_ref == 1 {
+            out.push_str("&self");
+        } else {
+            out.push_str("self");
+            match m.self_mode {
+                ParamMode::Take => out.push_str(" take"),
+                ParamMode::Borrow => out.push_str(" borrow"),
+                ParamMode::Keep => out.push_str(" keep"),
+                ParamMode::Inferred => {}
+            }
         }
         for param in &m.params {
             out.push_str(", ");
@@ -235,7 +241,10 @@ fn format_fn(f: &FnDef) -> String {
     }
     s.push('(');
     let mut wrote = false;
-    if f.receiver.is_some() && f.self_mode != ParamMode::Inferred {
+    if f.receiver.is_some() && f.self_ref != 0 {
+        s.push_str(if f.self_ref == 2 { "&mut self" } else { "&self" });
+        wrote = true;
+    } else if f.receiver.is_some() && f.self_mode != ParamMode::Inferred {
         s.push_str(match f.self_mode {
             ParamMode::Take => "self take",
             ParamMode::Keep => "self keep",
@@ -540,6 +549,9 @@ fn format_unop(op: &UnOp) -> &'static str {
     match op {
         UnOp::Neg => "-",
         UnOp::Not => "!",
+        UnOp::Ref => "&",
+        UnOp::RefMut => "&mut ",
+        UnOp::Deref => "*",
     }
 }
 
@@ -598,6 +610,24 @@ fn format_type(t: &Type) -> String {
                 dims_s,
                 format_place(place)
             )
+        }
+        Type::Ref {
+            mutable,
+            lifetime,
+            inner,
+            ..
+        } => {
+            let mut s = "&".to_string();
+            if let Some(lt) = lifetime {
+                s.push('\'');
+                s.push_str(lt);
+                s.push(' ');
+            }
+            if *mutable {
+                s.push_str("mut ");
+            }
+            s.push_str(&format_type(inner));
+            s
         }
         Type::Fn {
             params,

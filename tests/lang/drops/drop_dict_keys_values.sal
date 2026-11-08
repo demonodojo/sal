@@ -1,5 +1,5 @@
 # exit: 17
-fn count(d: Dict[String, String]) -> Int ! alloc
+fn count(d: &Dict[String, String]) -> Int ! alloc
     ks = d.keys()
     vs = d.values()
     ks.len() + vs.len()
@@ -11,6 +11,6 @@ fn main() -> Int ! alloc
     i = 0
     total = 0
     while i < 4
-        total = total + count(d)
+        total = total + count(&d)
         i = i + 1
     total + 1

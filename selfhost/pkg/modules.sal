@@ -9,20 +9,20 @@ import "../ast/tast.sal"
 
 # ---- Modules ----
 fn project_root() -> String ! io, alloc
-    r = getenv("SAL_PROJECT_ROOT")
+    r = getenv(&"SAL_PROJECT_ROOT")
     if str_len(r) == 0
         "."
     else
         r
 
-fn parent_dir(path: String) -> String ! alloc
+fn parent_dir(path: &String) -> String ! alloc
     n = str_len(path)
     if n == 0
         "."
     else
         parent_dir_go(path, n - 1)
 
-fn parent_dir_go(path: String, i: Int) -> String ! alloc
+fn parent_dir_go(path: &String, i: Int) -> String ! alloc
     if i < 0
         "."
     elsif str_char(path, i) == 47
@@ -33,7 +33,7 @@ fn parent_dir_go(path: String, i: Int) -> String ! alloc
     else
         parent_dir_go(path, i - 1)
 
-fn path_join(base: String, rel: String) -> String ! alloc
+fn path_join(base: &String, rel: &String) -> String ! alloc
     if str_len(base) == 0
         rel
     elsif str_char(base, str_len(base) - 1) == 47
@@ -41,7 +41,7 @@ fn path_join(base: String, rel: String) -> String ! alloc
     else
         base + "/" + rel
 
-fn ends_with_sal(s: String) -> Int ! alloc
+fn ends_with_sal(s: &String) -> Int ! alloc
     n = str_len(s)
     if n < 4
         0
@@ -52,7 +52,7 @@ fn ends_with_sal(s: String) -> Int ! alloc
         else
             0
 
-fn try_candidate(base: String, imp: String) -> String ! io, alloc
+fn try_candidate(base: &String, imp: &String) -> String ! io, alloc
     p1 = path_join(base, imp)
     if path_readable(p1) == 1
         p1
@@ -61,7 +61,7 @@ fn try_candidate(base: String, imp: String) -> String ! io, alloc
         ""
     else
         imp2 = imp + ".sal"
-        p2 = path_join(base, imp2)
+        p2 = path_join(base, &imp2)
         if path_readable(p2) == 1
             free(p1)
             p2
@@ -70,7 +70,7 @@ fn try_candidate(base: String, imp: String) -> String ! io, alloc
             free(p2)
             ""
 
-fn dep_line_in_deps(line: String, in_deps: Int) -> Int ! alloc
+fn dep_line_in_deps(line: &String, in_deps: Int) -> Int ! alloc
     if str_contains(line, "[dependencies]") == 1
         1
     elsif str_contains(line, "[") == 1
@@ -78,14 +78,14 @@ fn dep_line_in_deps(line: String, in_deps: Int) -> Int ! alloc
     else
         in_deps
 
-fn dep_line_key(line: String) -> String ! alloc
+fn dep_line_key(line: &String) -> String ! alloc
     eq = find_char(line, 61, 0, str_len(line))
     if eq <= 0
         ""
     else
         str_slice(line, 0, eq)
 
-fn dep_bases_push(out: Int, name: String, path: String) -> Int ! alloc
+fn dep_bases_push(out: Int, name: &String, path: &String) -> Int ! alloc
     _a = vec_push(out, str_as_int(name))
     _b = vec_push(out, str_as_int(path))
     out
@@ -93,7 +93,7 @@ fn dep_bases_push(out: Int, name: String, path: String) -> Int ! alloc
 fn dep_bases_count(bases: Int) -> Int ! alloc
     vec_len(bases) / 2
 
-fn dep_line_push_path(line: String, in_deps: Int, proot: String, out: Int) -> Int ! alloc
+fn dep_line_push_path(line: &String, in_deps: Int, proot: &String, out: Int) -> Int ! alloc
     if in_deps == 0
         out
     else
@@ -101,9 +101,9 @@ fn dep_line_push_path(line: String, in_deps: Int, proot: String, out: Int) -> In
         if str_contains(line, needle) == 0
             out
         else
-            dep_extract_path(line, proot, dep_line_key(line), out)
+            dep_extract_path(line, proot, &dep_line_key(line), out)
 
-fn read_until_quote(line: String, i: Int, n: Int, acc: String) -> String ! alloc
+fn read_until_quote(line: &String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -114,9 +114,9 @@ fn read_until_quote(line: String, i: Int, n: Int, acc: String) -> String ! alloc
             acc2 = acc + char_to_str(c)
             read_until_quote(line, i + 1, n, acc2)
 
-fn dep_extract_path(line: String, proot: String, name: String, out: Int) -> Int ! alloc
+fn dep_extract_path(line: &String, proot: &String, name: &String, out: Int) -> Int ! alloc
     needle = "path = \""
-    pos = find_substr(line, needle, 0)
+    pos = find_substr(line, &needle, 0)
     if pos < 0
         out
     else
@@ -125,10 +125,10 @@ fn dep_extract_path(line: String, proot: String, name: String, out: Int) -> Int 
         if str_len(rel) == 0
             out
         else
-            base = path_join(proot, rel)
-            dep_bases_push(out, name, base)
+            base = path_join(proot, &rel)
+            dep_bases_push(out, name, &base)
 
-fn substr_eq_at(hay: String, hi: Int, needle: String, ni: Int, rem: Int) -> Int ! alloc
+fn substr_eq_at(hay: &String, hi: Int, needle: &String, ni: Int, rem: Int) -> Int ! alloc
     if rem <= 0
         1
     elsif str_char(hay, hi) != str_char(needle, ni)
@@ -136,7 +136,7 @@ fn substr_eq_at(hay: String, hi: Int, needle: String, ni: Int, rem: Int) -> Int 
     else
         substr_eq_at(hay, hi + 1, needle, ni + 1, rem - 1)
 
-fn find_substr(hay: String, needle: String, i: Int) -> Int ! alloc
+fn find_substr(hay: &String, needle: &String, i: Int) -> Int ! alloc
     nh = str_len(needle)
     n = str_len(hay)
     if nh == 0
@@ -148,17 +148,17 @@ fn find_substr(hay: String, needle: String, i: Int) -> Int ! alloc
     else
         find_substr(hay, needle, i + 1)
 
-fn dep_bases_scan(raw: String, i: Int, n: Int, in_deps: Int, proot: String, out: Int) -> Int ! alloc
+fn dep_bases_scan(raw: &String, i: Int, n: Int, in_deps: Int, proot: &String, out: Int) -> Int ! alloc
     if i >= n
         out
     else
         j = find_nl(raw, i, n)
         line = str_slice(raw, i, j)
-        nd = dep_line_in_deps(line, in_deps)
-        out2 = dep_line_push_path(line, nd, proot, out)
+        nd = dep_line_in_deps(&line, in_deps)
+        out2 = dep_line_push_path(&line, nd, proot, out)
         dep_bases_scan(raw, j + 1, n, nd, proot, out2)
 
-fn find_nl(s: String, i: Int, n: Int) -> Int ! alloc
+fn find_nl(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
     elsif str_char(s, i) == 10
@@ -167,23 +167,23 @@ fn find_nl(s: String, i: Int, n: Int) -> Int ! alloc
         find_nl(s, i + 1, n)
 
 fn packages_cache_root() -> String ! io, alloc
-    p = getenv("SAL_PACKAGES")
+    p = getenv(&"SAL_PACKAGES")
     if str_len(p) > 0
         p
     else
-        h = getenv("HOME")
-        path_join(path_join(h, ".sal"), "packages")
+        h = getenv(&"HOME")
+        path_join(&path_join(&h, &".sal"), &"packages")
 
-fn line_value_quoted(line: String, key: String) -> String ! alloc
+fn line_value_quoted(line: &String, key: &String) -> String ! alloc
     needle = key + " = \""
-    pos = find_substr(line, needle, 0)
+    pos = find_substr(line, &needle, 0)
     if pos < 0
         ""
     else
         start = pos + str_len(needle)
         read_until_quote(line, start, str_len(line), "")
 
-fn lock_bases_scan(raw: String, i: Int, n: Int, in_pkg: Int, cur_name: String, cur_ver: String, out: Int) -> Int ! io, alloc
+fn lock_bases_scan(raw: &String, i: Int, n: Int, in_pkg: Int, cur_name: String, cur_ver: String, out: Int) -> Int ! io, alloc
     if i >= n
         out
     else
@@ -197,27 +197,27 @@ fn lock_bases_scan(raw: String, i: Int, n: Int, in_pkg: Int, cur_name: String, c
             name2 = ""
             ver2 = ""
         elsif in2 == 1
-            nv = line_value_quoted(line, "name")
+            nv = line_value_quoted(&line, &"name")
             if str_len(nv) > 0
                 name2 = nv
-            vv = line_value_quoted(line, "version")
+            vv = line_value_quoted(&line, &"version")
             if str_len(vv) > 0
                 ver2 = vv
         out3 = out
         if in2 == 1
             if str_len(name2) > 0
                 if str_len(ver2) > 0
-                    if str_len(line_value_quoted(line, "version")) > 0
-                        dir = path_join(packages_cache_root(), name2 + "-" + ver2)
+                    if str_len(line_value_quoted(&line, &"version")) > 0
+                        dir = path_join(&packages_cache_root(), &(name2 + "-" + ver2))
                         if path_readable(dir) == 1
-                            out3 = dep_bases_push(out, name2, dir)
+                            out3 = dep_bases_push(out, &name2, &dir)
         lock_bases_scan(raw, j + 1, n, in2, name2, ver2, out3)
 
-fn lock_dependency_bases(proot: String) -> Int ! io, alloc
-    lockp = path_join(proot, "Sal.lock")
+fn lock_dependency_bases(proot: &String) -> Int ! io, alloc
+    lockp = path_join(proot, &"Sal.lock")
     raw = read_file(lockp)
     out = vec_new()
-    lock_bases_scan(raw, 0, str_len(raw), 0, "", "", out)
+    lock_bases_scan(&raw, 0, str_len(raw), 0, "", "", out)
 
 fn merge_dep_bases(into: Int, from: Int) -> Int ! alloc
     n = vec_len(from)
@@ -230,17 +230,17 @@ fn merge_dep_bases_go(into: Int, from: Int, i: Int, n: Int) -> Int ! alloc
         _p = vec_push(into, vec_get(from, i))
         merge_dep_bases_go(into, from, i + 1, n)
 
-fn dependency_search_bases(proot: String) -> Int ! io, alloc
-    manifest = path_join(proot, "Sal.toml")
+fn dependency_search_bases(proot: &String) -> Int ! io, alloc
+    manifest = path_join(proot, &"Sal.toml")
     raw = read_file(manifest)
     out = vec_new()
-    dep_bases_scan(raw, 0, str_len(raw), 0, proot, out)
+    dep_bases_scan(&raw, 0, str_len(raw), 0, proot, out)
     lock_out = lock_dependency_bases(proot)
     merge_dep_bases(out, lock_out)
 
-fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: String) -> String ! io, alloc
+fn resolve_import_path_with_manifest(imp: &String, source_file: &String, proot: &String) -> String ! io, alloc
     dir = parent_dir(source_file)
-    hit = try_candidate(dir, imp)
+    hit = try_candidate(&dir, imp)
     if str_len(hit) > 0
         hit
     else
@@ -250,8 +250,8 @@ fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: St
             hit2
         else
             free(hit2)
-            mods = path_join(proot, "sal_modules")
-            hit3 = try_candidate(mods, imp)
+            mods = path_join(proot, &"sal_modules")
+            hit3 = try_candidate(&mods, imp)
             if str_len(hit3) > 0
                 hit3
             else
@@ -259,31 +259,31 @@ fn resolve_import_path_with_manifest(imp: String, source_file: String, proot: St
                 bases = dependency_search_bases(proot)
                 resolve_import_path_deps(imp, proot, bases, 0, dep_bases_count(bases))
 
-fn resolve_import_path_deps(imp: String, proot: String, bases: Int, i: Int, n: Int) -> String ! io, alloc
+fn resolve_import_path_deps(imp: &String, proot: &String, bases: Int, i: Int, n: Int) -> String ! io, alloc
     if i >= n
         ""
     else
         dname = str_from_int(vec_get(bases, i * 2))
         base = str_from_int(vec_get(bases, i * 2 + 1))
-        hit = try_candidate(base, imp)
+        hit = try_candidate(&base, imp)
         if str_len(hit) > 0
             hit
         else
             free(hit)
-            hit3 = resolve_import_path_dep_split(imp, base, dname)
+            hit3 = resolve_import_path_dep_split(imp, &base, &dname)
             if str_len(hit3) > 0
                 hit3
             else
                 resolve_import_path_deps(imp, proot, bases, i + 1, n)
 
-fn basename_path(p: String) -> String ! alloc
+fn basename_path(p: &String) -> String ! alloc
     n = str_len(p)
     if n == 0
         ""
     else
         basename_go(p, n - 1)
 
-fn basename_go(p: String, i: Int) -> String ! alloc
+fn basename_go(p: &String, i: Int) -> String ! alloc
     if i < 0
         p
     elsif str_char(p, i) == 47
@@ -291,7 +291,7 @@ fn basename_go(p: String, i: Int) -> String ! alloc
     else
         basename_go(p, i - 1)
 
-fn resolve_import_path_dep_split(imp: String, base: String, dep_name: String) -> String ! io, alloc
+fn resolve_import_path_dep_split(imp: &String, base: &String, dep_name: &String) -> String ! io, alloc
     slash = find_char(imp, 47, 0, str_len(imp))
     if slash < 0
         ""
@@ -300,13 +300,13 @@ fn resolve_import_path_dep_split(imp: String, base: String, dep_name: String) ->
         rest = str_slice(imp, slash + 1, str_len(imp))
         bname = basename_path(base)
         if str_eq(bname, dep) == 1
-            try_candidate(base, rest)
+            try_candidate(base, &rest)
         elsif str_eq(dep_name, dep) == 1
-            try_candidate(base, rest)
+            try_candidate(base, &rest)
         else
             ""
 
-fn path_key(p: String) -> String ! io, alloc
+fn path_key(p: &String) -> String ! io, alloc
     realpath(p)
 
 # A module of the graph: its identity. The typed program of module `i` is `progs[i]` (a `Mod`
@@ -325,12 +325,12 @@ fn graph_new() -> Graph ! alloc
     Graph(list_new[Mod](), list_new[TProgram]())
 
 # The graph is a `Graph` in dependency order (the root last); a module is named by its index.
-fn mod_path_at(order: Graph, i: Int) -> String ! alloc
-    m = list_get(order.mods, i)
+fn mod_path_at(order: &Graph, i: Int) -> String ! alloc
+    m = list_get(&order.mods, i)
     strdup(m.path)
 
-fn mod_key_at(order: Graph, i: Int) -> String ! alloc
-    m = list_get(order.mods, i)
+fn mod_key_at(order: &Graph, i: Int) -> String ! alloc
+    m = list_get(&order.mods, i)
     strdup(m.key)
 
 fn vec_has_str(v: Int, s: Int, i: Int, n: Int) -> Int ! alloc
@@ -359,73 +359,73 @@ fn stack_set_at(stack: Int, sp: Int, key: Int) -> Int ! alloc
         _p = vec_set(stack, sp, key)
         0
 
-fn load_imports_of(tp: TProgram, source_file: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
-    load_imports_of_go(tp.imports, 0, list_len(tp.imports), source_file, proot, order, visited, stack, sp)
+fn load_imports_of(tp: &TProgram, source_file: &String, proot: &String, order: &Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+    load_imports_of_go(&tp.imports, 0, list_len(&tp.imports), source_file, proot, order, visited, stack, sp)
 
-fn load_imports_of_go(imps: List[String], i: Int, n: Int, source_file: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_imports_of_go(imps: &List[String], i: Int, n: Int, source_file: &String, proot: &String, order: &Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
         imp = list_get(imps, i)
-        dep = resolve_import_path_with_manifest(imp, source_file, proot)
+        dep = resolve_import_path_with_manifest(&imp, source_file, proot)
         if str_len(dep) == 0
-            result_err_str("import not found: " + imp)
+            result_err_str(&("import not found: " + imp))
         else
-            step = load_module_recursive(dep, proot, order, visited, stack, sp)
+            step = load_module_recursive(&dep, proot, order, visited, stack, sp)
             if result_is_err(step) == 1
                 step
             else
                 load_imports_of_go(imps, i + 1, n, source_file, proot, order, visited, stack, sp)
 
-fn load_module_recursive(path: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_module_recursive(path: &String, proot: &String, order: &Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     key = path_key(path)
-    if stack_has_key(stack, sp, str_as_int(key), 0) == 1
-        result_err_str("import cycle")
-    elsif vec_has_str(visited, str_as_int(key), 0, vec_len(visited)) == 1
+    if stack_has_key(stack, sp, str_as_int(&key), 0) == 1
+        result_err_str(&"import cycle")
+    elsif vec_has_str(visited, str_as_int(&key), 0, vec_len(visited)) == 1
         result_ok(0)
     elsif path_readable(path) == 0
-        result_err_str("import not found: " + path)
+        result_err_str(&("import not found: " + path))
     else
         src = read_file(path)
-        pre = preprocess(src)
+        pre = preprocess(&src)
         errs = list_new[String]()
         nd = list_new[Int]()
-        tp = parse_program_deferred(pre, errs, nd)
-        msg = errs_take(errs)
+        tp = parse_program_deferred(&pre, &errs, &nd)
+        msg = errs_take(&errs)
         if str_len(msg) > 0
-            result_err_str(msg)
+            result_err_str(&msg)
         else
-            load_parsed_module(tp, list_get(nd, 0), key, path, proot, order, visited, stack, sp)
+            load_parsed_module(tp, list_get(&nd, 0), &key, path, proot, order, visited, stack, sp)
 
 # Loads the imports of the parsed module `tp`, then adds it to the graph after them.
-fn load_parsed_module(tp: TProgram, ndots: Int, key: String, path: String, proot: String, order: Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
+fn load_parsed_module(tp: TProgram, ndots: Int, key: &String, path: &String, proot: &String, order: &Graph, visited: Int, stack: Int, sp: Int) -> Int ! io, alloc
     _ps = stack_set_at(stack, sp, str_as_int(key))
-    step = load_imports_of(tp, path, proot, order, visited, stack, sp + 1)
+    step = load_imports_of(&tp, path, proot, order, visited, stack, sp + 1)
     if result_is_err(step) == 1
         step
     else
         _v = vec_push(visited, str_as_int(key))
-        _o = list_push(order.mods, Mod(strdup(key), strdup(path), ndots))
-        _t = list_push(order.progs, tp)
+        _o = list_push(&order.mods, Mod(strdup(key), strdup(path), ndots))
+        _t = list_push(&order.progs, tp)
         result_ok(0)
 
 # Loads the module graph of `root_path` into `order`; the result carries no payload.
-fn resolve_module_graph(root_path: String, proot: String, order: Graph) -> Int ! io, alloc
+fn resolve_module_graph(root_path: &String, proot: &String, order: &Graph) -> Int ! io, alloc
     visited = vec_new()
     stack = vec_new()
     step = load_module_recursive(root_path, proot, order, visited, stack, 0)
     if result_is_err(step) == 1
         step
-    elsif list_len(order.mods) == 0
-        result_err_str("empty module graph")
+    elsif list_len(&order.mods) == 0
+        result_err_str(&"empty module graph")
     else
         result_ok(0)
 
-fn graph_root_key(order: Graph) -> String ! alloc
-    mod_key_at(order, list_len(order.mods) - 1)
+fn graph_root_key(order: &Graph) -> String ! alloc
+    mod_key_at(order, list_len(&order.mods) - 1)
 
 # Index of the module with this key, or -1.
-fn graph_find_by_key(order: Graph, key: String, i: Int, n: Int) -> Int ! alloc
+fn graph_find_by_key(order: &Graph, key: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0 - 1
     elsif str_eq(mod_key_at(order, i), key) == 1
@@ -433,18 +433,18 @@ fn graph_find_by_key(order: Graph, key: String, i: Int, n: Int) -> Int ! alloc
     else
         graph_find_by_key(order, key, i + 1, n)
 
-fn append_fn_names_from_prog(tp: TProgram, out: Int) -> Int ! alloc
-    append_fn_names_from_fns(tp.fns, 0, list_len(tp.fns), out)
+fn append_fn_names_from_prog(tp: &TProgram, out: Int) -> Int ! alloc
+    append_fn_names_from_fns(&tp.fns, 0, list_len(&tp.fns), out)
 
-fn append_fn_names_from_fns(fns: List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
+fn append_fn_names_from_fns(fns: &List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        _p = vec_push(out, str_as_int(list_get(fns, i).name))
+        _p = vec_push(out, str_as_int(&list_get(fns, i).name))
         append_fn_names_from_fns(fns, i + 1, n, out)
 
-fn exports_names_for_module(order: Graph, mi: Int) -> Int ! alloc
-    append_fn_names_from_prog(list_get(order.progs, mi), vec_new())
+fn exports_names_for_module(order: &Graph, mi: Int) -> Int ! alloc
+    append_fn_names_from_prog(&list_get(&order.progs, mi), vec_new())
 
 fn names_vec_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
     vec_has_str(names, name, i, n)
@@ -455,18 +455,18 @@ fn merge_exports_names(dst: Int, src: Int, i: Int, n: Int) -> Int ! alloc
     else
         nm = vec_get(src, i)
         if names_vec_has(dst, nm, 0, vec_len(dst)) == 1
-            result_err_str("name `" + str_from_int(nm) + "` defined in more than one imported module")
+            result_err_str(&("name `" + str_from_int(nm) + "` defined in more than one imported module"))
         else
             _p = vec_push(dst, nm)
             merge_exports_names(dst, src, i + 1, n)
 
-fn walk_imports_collect(order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
-    walk_imports_collect_go(list_get(order.progs, mi).imports, 0, list_len(list_get(order.progs, mi).imports), order, mi, proot, visited, out)
+fn walk_imports_collect(order: &Graph, mi: Int, proot: &String, visited: Int, out: Int) -> Int ! io, alloc
+    walk_imports_collect_go(&list_get(&order.progs, mi).imports, 0, list_len(&list_get(&order.progs, mi).imports), order, mi, proot, visited, out)
 
-fn walk_flat_imports_collect(order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
-    walk_flat_imports_collect_go(list_get(order.progs, mi).imports, list_get(order.progs, mi).aliases, 0, list_len(list_get(order.progs, mi).imports), order, mi, proot, visited, out)
+fn walk_flat_imports_collect(order: &Graph, mi: Int, proot: &String, visited: Int, out: Int) -> Int ! io, alloc
+    walk_flat_imports_collect_go(&list_get(&order.progs, mi).imports, &list_get(&order.progs, mi).aliases, 0, list_len(&list_get(&order.progs, mi).imports), order, mi, proot, visited, out)
 
-fn walk_flat_imports_collect_go(imps: List[String], aliases: List[String], i: Int, n: Int, order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+fn walk_flat_imports_collect_go(imps: &List[String], aliases: &List[String], i: Int, n: Int, order: &Graph, mi: Int, proot: &String, visited: Int, out: Int) -> Int ! io, alloc
     if i >= n
         result_ok(out)
     else
@@ -475,16 +475,16 @@ fn walk_flat_imports_collect_go(imps: List[String], aliases: List[String], i: In
         else
             imp = list_get(imps, i)
             mpath = mod_path_at(order, mi)
-            dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
+            dep_path = resolve_import_path_with_manifest(&imp, &mpath, proot)
             if str_len(dep_path) == 0
-                result_err_str("import not found: " + imp)
+                result_err_str(&("import not found: " + imp))
             else
-                key = path_key(dep_path)
-                if vec_has_str(visited, str_as_int(key), 0, vec_len(visited)) == 1
+                key = path_key(&dep_path)
+                if vec_has_str(visited, str_as_int(&key), 0, vec_len(visited)) == 1
                     walk_flat_imports_collect_go(imps, aliases, i + 1, n, order, mi, proot, visited, out)
                 else
-                    _v = vec_push(visited, str_as_int(key))
-                    dep_m = graph_find_by_key(order, key, 0, list_len(order.mods))
+                    _v = vec_push(visited, str_as_int(&key))
+                    dep_m = graph_find_by_key(order, &key, 0, list_len(&order.mods))
                     if dep_m < 0
                         walk_flat_imports_collect_go(imps, aliases, i + 1, n, order, mi, proot, visited, out)
                     else
@@ -496,27 +496,27 @@ fn walk_flat_imports_collect_go(imps: List[String], aliases: List[String], i: In
                             _p = vec_push(out2, dep_m)
                             walk_flat_imports_collect_go(imps, aliases, i + 1, n, order, mi, proot, visited, out2)
 
-fn flat_transitive_import_modules(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
+fn flat_transitive_import_modules(order: &Graph, mi: Int, proot: &String) -> Int ! io, alloc
     visited = vec_new()
     out = vec_new()
     walk_flat_imports_collect(order, mi, proot, visited, out)
 
-fn walk_imports_collect_go(imps: List[String], i: Int, n: Int, order: Graph, mi: Int, proot: String, visited: Int, out: Int) -> Int ! io, alloc
+fn walk_imports_collect_go(imps: &List[String], i: Int, n: Int, order: &Graph, mi: Int, proot: &String, visited: Int, out: Int) -> Int ! io, alloc
     if i >= n
         result_ok(out)
     else
         imp = list_get(imps, i)
         mpath = mod_path_at(order, mi)
-        dep_path = resolve_import_path_with_manifest(imp, mpath, proot)
+        dep_path = resolve_import_path_with_manifest(&imp, &mpath, proot)
         if str_len(dep_path) == 0
-            result_err_str("import not found: " + imp)
+            result_err_str(&("import not found: " + imp))
         else
-            key = path_key(dep_path)
-            if vec_has_str(visited, str_as_int(key), 0, vec_len(visited)) == 1
+            key = path_key(&dep_path)
+            if vec_has_str(visited, str_as_int(&key), 0, vec_len(visited)) == 1
                 walk_imports_collect_go(imps, i + 1, n, order, mi, proot, visited, out)
             else
-                _v = vec_push(visited, str_as_int(key))
-                dep_m = graph_find_by_key(order, key, 0, list_len(order.mods))
+                _v = vec_push(visited, str_as_int(&key))
+                dep_m = graph_find_by_key(order, &key, 0, list_len(&order.mods))
                 if dep_m < 0
                     walk_imports_collect_go(imps, i + 1, n, order, mi, proot, visited, out)
                 else
@@ -528,12 +528,12 @@ fn walk_imports_collect_go(imps: List[String], i: Int, n: Int, order: Graph, mi:
                         _p = vec_push(out2, dep_m)
                         walk_imports_collect_go(imps, i + 1, n, order, mi, proot, visited, out2)
 
-fn transitive_import_modules(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
+fn transitive_import_modules(order: &Graph, mi: Int, proot: &String) -> Int ! io, alloc
     visited = vec_new()
     out = vec_new()
     walk_imports_collect(order, mi, proot, visited, out)
 
-fn check_module_names(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
+fn check_module_names(order: &Graph, mi: Int, proot: &String) -> Int ! io, alloc
     step = flat_transitive_import_modules(order, mi, proot)
     if result_is_err(step) == 1
         step
@@ -545,9 +545,9 @@ fn check_module_names(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
             env_step
         else
             env2 = result_unwrap(env_step)
-            check_local_names(list_get(order.progs, mi).fns, env2)
+            check_local_names(&list_get(&order.progs, mi).fns, env2)
 
-fn merge_deps_exports(order: Graph, env: Int, deps: Int, i: Int, n: Int) -> Int ! alloc
+fn merge_deps_exports(order: &Graph, env: Int, deps: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(env)
     else
@@ -559,21 +559,21 @@ fn merge_deps_exports(order: Graph, env: Int, deps: Int, i: Int, n: Int) -> Int 
             env2 = result_unwrap(step)
             merge_deps_exports(order, env2, deps, i + 1, n)
 
-fn check_local_names(fns: List[TFn], env: Int) -> Int ! alloc
+fn check_local_names(fns: &List[TFn], env: Int) -> Int ! alloc
     check_local_names_go(fns, 0, list_len(fns), env)
 
-fn check_local_names_go(fns: List[TFn], i: Int, n: Int, env: Int) -> Int ! alloc
+fn check_local_names_go(fns: &List[TFn], i: Int, n: Int, env: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
         nm = list_get(fns, i).name
-        if names_vec_has(env, str_as_int(nm), 0, vec_len(env)) == 1
-            result_err_str("name `" + nm + "` already defined in an imported module")
+        if names_vec_has(env, str_as_int(&nm), 0, vec_len(env)) == 1
+            result_err_str(&("name `" + nm + "` already defined in an imported module"))
         else
-            _p = vec_push(env, str_as_int(strdup(nm)))
+            _p = vec_push(env, str_as_int(&strdup(nm)))
             check_local_names_go(fns, i + 1, n, env)
 
-fn callable_fn_names(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
+fn callable_fn_names(order: &Graph, mi: Int, proot: &String) -> Int ! io, alloc
     step = transitive_import_modules(order, mi, proot)
     if result_is_err(step) == 1
         step
@@ -581,25 +581,25 @@ fn callable_fn_names(order: Graph, mi: Int, proot: String) -> Int ! io, alloc
         deps = result_unwrap(step)
         out = vec_new()
         out = callable_deps_names(order, deps, 0, vec_len(deps), out)
-        out = append_fn_names_from_prog(list_get(order.progs, mi), out)
+        out = append_fn_names_from_prog(&list_get(&order.progs, mi), out)
         result_ok(out)
 
-fn callable_deps_names(order: Graph, deps: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn callable_deps_names(order: &Graph, deps: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        out2 = append_fn_names_from_prog(list_get(order.progs, vec_get(deps, i)), out)
+        out2 = append_fn_names_from_prog(&list_get(&order.progs, vec_get(deps, i)), out)
         callable_deps_names(order, deps, i + 1, n, out2)
 
 # Parameter count of the fn `name` in module `mi` of the graph, -1 when it has none.
-fn graph_fn_arity(order: Graph, mi: Int, name: String) -> Int ! alloc
-    i = tt_fn_index(list_get(order.progs, mi).fns, name, 0)
+fn graph_fn_arity(order: &Graph, mi: Int, name: &String) -> Int ! alloc
+    i = tt_fn_index(&list_get(&order.progs, mi).fns, name, 0)
     if i < 0
         0 - 1
     else
-        list_len(list_get(list_get(order.progs, mi).fns, i).params)
+        list_len(&list_get(&list_get(&order.progs, mi).fns, i).params)
 
-fn tt_fn_index(fns: List[TFn], name: String, i: Int) -> Int ! alloc
+fn tt_fn_index(fns: &List[TFn], name: &String, i: Int) -> Int ! alloc
     if i >= list_len(fns)
         0 - 1
     elsif str_eq(list_get(fns, i).name, name) == 1
@@ -607,7 +607,7 @@ fn tt_fn_index(fns: List[TFn], name: String, i: Int) -> Int ! alloc
     else
         tt_fn_index(fns, name, i + 1)
 
-fn graph_fn_arity_any(order: Graph, name: String, i: Int, n: Int) -> Int ! alloc
+fn graph_fn_arity_any(order: &Graph, name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0 - 1
     else
@@ -617,18 +617,18 @@ fn graph_fn_arity_any(order: Graph, name: String, i: Int, n: Int) -> Int ! alloc
         else
             k
 
-fn extern_fn_arity(order: Graph, mi: Int, callables: Int) -> Int ! alloc
+fn extern_fn_arity(order: &Graph, mi: Int, callables: Int) -> Int ! alloc
     extern_fn_arity_go(callables, 0, vec_len(callables), mi, order, vec_new())
 
-fn extern_fn_arity_go(callables: Int, i: Int, n: Int, mi: Int, order: Graph, out: Int) -> Int ! alloc
+fn extern_fn_arity_go(callables: Int, i: Int, n: Int, mi: Int, order: &Graph, out: Int) -> Int ! alloc
     if i >= n
         out
     else
         nm = vec_get(callables, i)
-        if graph_fn_arity(order, mi, str_from_int(nm)) >= 0
+        if graph_fn_arity(order, mi, &str_from_int(nm)) >= 0
             extern_fn_arity_go(callables, i + 1, n, mi, order, out)
         else
-            k = graph_fn_arity_any(order, str_from_int(nm), 0, list_len(order.mods))
+            k = graph_fn_arity_any(order, &str_from_int(nm), 0, list_len(&order.mods))
             if k < 0
                 extern_fn_arity_go(callables, i + 1, n, mi, order, out)
             else
@@ -638,10 +638,10 @@ fn extern_fn_arity_go(callables: Int, i: Int, n: Int, mi: Int, order: Graph, out
                 _p = vec_push(out, pair)
                 extern_fn_arity_go(callables, i + 1, n, mi, order, out)
 
-fn check_all_modules(order: Graph, proot: String) -> Int ! io, alloc
-    check_all_modules_order(order, 0, list_len(order.mods), proot)
+fn check_all_modules(order: &Graph, proot: &String) -> Int ! io, alloc
+    check_all_modules_order(order, 0, list_len(&order.mods), proot)
 
-fn check_all_modules_order(order: Graph, i: Int, n: Int, proot: String) -> Int ! io, alloc
+fn check_all_modules_order(order: &Graph, i: Int, n: Int, proot: &String) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
@@ -649,26 +649,26 @@ fn check_all_modules_order(order: Graph, i: Int, n: Int, proot: String) -> Int !
         if result_is_err(step) == 1
             step
         else
-            fx = check_program_in(list_get(order.progs, i), order.progs)
+            fx = check_program_in(&list_get(&order.progs, i), &order.progs)
             if result_is_err(fx) == 1
                 fx
             else
                 check_all_modules_order(order, i + 1, n, proot)
 
-fn check_all_effects(order: Graph, i: Int, n: Int) -> Int ! alloc
+fn check_all_effects(order: &Graph, i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        fx = check_program_in(list_get(order.progs, i), order.progs)
+        fx = check_program_in(&list_get(&order.progs, i), &order.progs)
         if result_is_err(fx) == 1
             fx
         else
             check_all_effects(order, i + 1, n)
 
-fn graph_source_digest(order: Graph) -> String ! io, alloc
-    graph_source_digest_go(order, 0, list_len(order.mods), "")
+fn graph_source_digest(order: &Graph) -> String ! io, alloc
+    graph_source_digest_go(order, 0, list_len(&order.mods), "")
 
-fn graph_source_digest_go(order: Graph, i: Int, n: Int, acc: String) -> String ! io, alloc
+fn graph_source_digest_go(order: &Graph, i: Int, n: Int, acc: String) -> String ! io, alloc
     if i >= n
         acc
     else
@@ -683,13 +683,13 @@ fn graph_source_digest_go(order: Graph, i: Int, n: Int, acc: String) -> String !
 # A module graph resolves its dotted calls after every module is parsed: a receiver may be a type
 # imported from another module. Each module is inferred against the items of all modules (the union
 # below, whose function names are the ones the caller sees) and only its own functions are rewritten.
-fn methods_resolve_graph(order: Graph) -> Int ! io, alloc
-    if graph_any_dots(order.mods, 0, list_len(order.mods)) == 0
+fn methods_resolve_graph(order: &Graph) -> Int ! io, alloc
+    if graph_any_dots(&order.mods, 0, list_len(&order.mods)) == 0
         0
     else
         u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum](), list_new[TProtocol](), list_new[TConst]())
-        _u = union_progs(order.progs, 0, list_len(order.progs), u)
-        _m = methods_resolve_modules(order, u, 0, list_len(order.progs))
+        _u = union_progs(&order.progs, 0, list_len(&order.progs), &u)
+        _m = methods_resolve_modules(order, &u, 0, list_len(&order.progs))
         _a = list_free(u.fns)
         _b = list_free(u.imports)
         _c = list_free(u.structs)
@@ -699,7 +699,7 @@ fn methods_resolve_graph(order: Graph) -> Int ! io, alloc
         _g = list_free(u.consts)
         _m
 
-fn graph_any_dots(mods: List[Mod], i: Int, n: Int) -> Int ! alloc
+fn graph_any_dots(mods: &List[Mod], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif list_get(mods, i).ndots > 0
@@ -707,66 +707,66 @@ fn graph_any_dots(mods: List[Mod], i: Int, n: Int) -> Int ! alloc
     else
         graph_any_dots(mods, i + 1, n)
 
-fn methods_resolve_modules(order: Graph, u: TProgram, i: Int, n: Int) -> Int ! io, alloc
+fn methods_resolve_modules(order: &Graph, u: &TProgram, i: Int, n: Int) -> Int ! io, alloc
     if i >= n
         0
     else
         _r = methods_resolve_one(order, u, i)
         methods_resolve_modules(order, u, i + 1, n)
 
-fn methods_resolve_one(order: Graph, u: TProgram, i: Int) -> Int ! io, alloc
-    nd = list_get(order.mods, i).ndots
+fn methods_resolve_one(order: &Graph, u: &TProgram, i: Int) -> Int ! io, alloc
+    nd = list_get(&order.mods, i).ndots
     if nd == 0
         0
     else
-        tp = list_get(order.progs, i)
-        start = fns_before(order.progs, i, 0, 0)
-        c = ic_build(TProgram(u.fns, u.imports, u.structs, tp.aliases, u.enums, tp.protocols, tp.consts), nd, 1)
-        _r = infer_program_go(c, start, start + list_len(tp.fns))
-        _m = mr_fns(tp.fns, 0, list_len(tp.fns), c.res)
-        _f = ic_free(c)
+        tp = list_get(&order.progs, i)
+        start = fns_before(&order.progs, i, 0, 0)
+        c = ic_build(&TProgram(u.fns, u.imports, u.structs, tp.aliases, u.enums, tp.protocols, tp.consts), nd, 1)
+        _r = infer_program_go(&c, start, start + list_len(&tp.fns))
+        _m = mr_fns(&tp.fns, 0, list_len(&tp.fns), &c.res)
+        _f = ic_free(&c)
         0
 
 # Number of functions of the modules before `i` (their order in the union).
-fn fns_before(progs: List[TProgram], i: Int, k: Int, acc: Int) -> Int ! alloc
+fn fns_before(progs: &List[TProgram], i: Int, k: Int, acc: Int) -> Int ! alloc
     if k >= i
         acc
     else
-        fns_before(progs, i, k + 1, acc + list_len(list_get(progs, k).fns))
+        fns_before(progs, i, k + 1, acc + list_len(&list_get(progs, k).fns))
 
-fn union_progs(progs: List[TProgram], k: Int, n: Int, u: TProgram) -> Int ! alloc
+fn union_progs(progs: &List[TProgram], k: Int, n: Int, u: &TProgram) -> Int ! alloc
     if k >= n
         0
     else
         tp = list_get(progs, k)
-        _a = union_fns(u.fns, tp.fns, 0, list_len(tp.fns))
-        _b = union_strs(u.imports, tp.imports, 0, list_len(tp.imports))
-        _c = union_structs(u.structs, tp.structs, 0, list_len(tp.structs))
-        _d = union_enums(u.enums, tp.enums, 0, list_len(tp.enums))
+        _a = union_fns(&u.fns, &tp.fns, 0, list_len(&tp.fns))
+        _b = union_strs(&u.imports, &tp.imports, 0, list_len(&tp.imports))
+        _c = union_structs(&u.structs, &tp.structs, 0, list_len(&tp.structs))
+        _d = union_enums(&u.enums, &tp.enums, 0, list_len(&tp.enums))
         union_progs(progs, k + 1, n, u)
 
-fn union_fns(dst: List[TFn], src: List[TFn], i: Int, n: Int) -> Int ! alloc
+fn union_fns(dst: &List[TFn], src: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = list_push(dst, list_get(src, i))
         union_fns(dst, src, i + 1, n)
 
-fn union_strs(dst: List[String], src: List[String], i: Int, n: Int) -> Int ! alloc
+fn union_strs(dst: &List[String], src: &List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = list_push(dst, list_get(src, i))
         union_strs(dst, src, i + 1, n)
 
-fn union_structs(dst: List[TStruct], src: List[TStruct], i: Int, n: Int) -> Int ! alloc
+fn union_structs(dst: &List[TStruct], src: &List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = list_push(dst, list_get(src, i))
         union_structs(dst, src, i + 1, n)
 
-fn union_enums(dst: List[TEnum], src: List[TEnum], i: Int, n: Int) -> Int ! alloc
+fn union_enums(dst: &List[TEnum], src: &List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

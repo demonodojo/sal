@@ -19,22 +19,22 @@ fn callees_new() -> Callees ! alloc
 
 fn fx_new(callees: Callees) -> Fx ! alloc
     flags = list_new[Int]()
-    _a = fx_zeros(flags, 6)
+    _a = fx_zeros(&flags, 6)
     Fx(flags, callees)
 
-fn fx_zeros(flags: List[Int], n: Int) -> Int ! alloc
+fn fx_zeros(flags: &List[Int], n: Int) -> Int ! alloc
     if n == 0
         0
     else
         _a = list_push(flags, 0)
         fx_zeros(flags, n - 1)
 
-fn fx_mark(used: Fx, i: Int) -> Int ! alloc
+fn fx_mark(used: &Fx, i: Int) -> Int ! alloc
     _a = list_set(used.flags, i, 1)
     0
 
-fn fx_used(used: Fx, i: Int) -> Int ! alloc
-    list_get(used.flags, i)
+fn fx_used(used: &Fx, i: Int) -> Int ! alloc
+    list_get(&used.flags, i)
 
 fn fx_bit(mask: Int, i: Int) -> Int ! alloc
     if i == 0
@@ -49,18 +49,18 @@ fn fx_bit(mask: Int, i: Int) -> Int ! alloc
         (mask / 16) & 1
 
 # Declared effect flags as a bit mask.
-fn fx_mask(flags: List[Int]) -> Int ! alloc
+fn fx_mask(flags: &List[Int]) -> Int ! alloc
     list_get(flags, 0) + list_get(flags, 1) * 2 + list_get(flags, 2) * 4 + list_get(flags, 3) * 8 + list_get(flags, 4) * 16
 
 # A call to a user fn performs the effects that fn declares.
-fn fx_call_user(name: String, used: Fx) -> Int ! alloc
-    i = tt_index_of(used.callees.names, name, 0, list_len(used.callees.names))
+fn fx_call_user(name: &String, used: &Fx) -> Int ! alloc
+    i = tt_index_of(&used.callees.names, name, 0, list_len(&used.callees.names))
     if i >= 0
-        fx_merge(used, list_get(used.callees.masks, i), 0)
+        fx_merge(used, list_get(&used.callees.masks, i), 0)
     else
         0
 
-fn fx_merge(used: Fx, declared: Int, i: Int) -> Int ! alloc
+fn fx_merge(used: &Fx, declared: Int, i: Int) -> Int ! alloc
     if i >= 5
         0
     else
@@ -70,7 +70,7 @@ fn fx_merge(used: Fx, declared: Int, i: Int) -> Int ! alloc
         else
             fx_merge(used, declared, i + 1)
 
-fn fx_call(name: String, used: Fx) -> Int ! alloc
+fn fx_call(name: &String, used: &Fx) -> Int ! alloc
     _u = fx_call_user(name, used)
     if str_eq(name, "load") == 1
         _a = fx_mark(used, 0)
@@ -92,7 +92,7 @@ fn fx_call(name: String, used: Fx) -> Int ! alloc
     else
         0
 
-fn fx_call_is_io(name: String) -> Int ! alloc
+fn fx_call_is_io(name: &String) -> Int ! alloc
     if str_eq(name, "write_file") == 1
         1
     elsif str_eq(name, "write_png") == 1
@@ -124,12 +124,22 @@ fn fx_call_is_io(name: String) -> Int ! alloc
     else
         0
 
-fn fx_call_is_alloc(name: String) -> Int ! alloc
+fn fx_call_is_alloc(name: &String) -> Int ! alloc
     if str_eq(name, "str_concat") == 1
         1
     elsif str_eq(name, "str_append") == 1
         1
     elsif str_eq(name, "strdup") == 1
+        1
+    elsif str_eq(name, "list_clone") == 1
+        1
+    elsif str_eq(name, "dict_clone") == 1
+        1
+    elsif str_eq(name, "bytes_clone") == 1
+        1
+    elsif str_eq(name, "enum_copy") == 1
+        1
+    elsif str_eq(name, "struct_clone") == 1
         1
     elsif str_eq(name, "select_str") == 1
         1
@@ -168,7 +178,7 @@ fn fx_call_is_alloc(name: String) -> Int ! alloc
     else
         0
 
-fn fx_place(place: String, used: Fx) -> Int ! alloc
+fn fx_place(place: &String, used: &Fx) -> Int ! alloc
     if str_eq(place, "gpu") == 1
         fx_mark(used, 3)
     elsif str_eq(place, "tpu") == 1
@@ -176,27 +186,27 @@ fn fx_place(place: String, used: Fx) -> Int ! alloc
     else
         0
 
-fn fx_scan_args(args: List[Expr], i: Int, n: Int, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_args(args: &List[Expr], i: Int, n: Int, used: &Fx, env: &TEnv) -> Int ! alloc
     if i >= n
         0
     else
-        _a = fx_scan_expr(list_get(args, i), used, env)
+        _a = fx_scan_expr(&list_get(args, i), used, env)
         fx_scan_args(args, i + 1, n, used, env)
 
-fn fx_scan_elsifs(arms: List[TElsif], i: Int, n: Int, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_elsifs(arms: &List[TElsif], i: Int, n: Int, used: &Fx, env: &TEnv) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
-        _a = fx_scan_expr(arm.cond, used, env)
-        _b = fx_scan_block(arm.body, used, env)
+        _a = fx_scan_expr(&arm.cond, used, env)
+        _b = fx_scan_block(&arm.body, used, env)
         fx_scan_elsifs(arms, i + 1, n, used, env)
 
-fn fx_scan_call(name: String, args: List[Expr], used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_call(name: &String, args: &List[Expr], used: &Fx, env: &TEnv) -> Int ! alloc
     _a = fx_call(name, used)
     fx_scan_args(args, 0, list_len(args), used, env)
 
-fn fx_scan_binary(op: String, l: Expr, r: Expr, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_binary(op: &String, l: &Expr, r: &Expr, used: &Fx, env: &TEnv) -> Int ! alloc
     _a = fx_scan_expr(l, used, env)
     _b = fx_scan_expr(r, used, env)
     if tt_add_is_string(env, op, l) == 1
@@ -204,43 +214,43 @@ fn fx_scan_binary(op: String, l: Expr, r: Expr, used: Fx, env: TEnv) -> Int ! al
     else
         0
 
-fn fx_scan_while(cond: Expr, body: TBlock, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_while(cond: &Expr, body: &TBlock, used: &Fx, env: &TEnv) -> Int ! alloc
     _a = fx_scan_expr(cond, used, env)
     fx_scan_block(body, used, env)
 
-fn fx_scan_if(cond: Expr, then_b: TBlock, else_b: TBlock, elsifs: List[TElsif], used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_if(cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], used: &Fx, env: &TEnv) -> Int ! alloc
     _a = fx_scan_expr(cond, used, env)
     _b = fx_scan_block(then_b, used, env)
     _c = fx_scan_elsifs(elsifs, 0, list_len(elsifs), used, env)
     fx_scan_block(else_b, used, env)
 
-fn fx_scan_on(place: String, body: TBlock, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_on(place: &String, body: &TBlock, used: &Fx, env: &TEnv) -> Int ! alloc
     _a = fx_place(place, used)
     fx_scan_block(body, used, env)
 
-fn fx_scan_to(place: String, inner: Expr, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_to(place: &String, inner: &Expr, used: &Fx, env: &TEnv) -> Int ! alloc
     _a = fx_place(place, used)
     fx_scan_expr(inner, used, env)
 
-fn fx_scan_expr(e: Expr, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_expr(e: &Expr, used: &Fx, env: &TEnv) -> Int ! alloc
     match e
-        XCall(name, args, targs, xp) => fx_scan_call(name, args, used, env)
-        XTo(place, inner) => fx_scan_to(place, inner, used, env)
-        XOn(place, body, is_kern, has_index) => fx_scan_on(place, body, used, env)
-        XBin(op, l, r) => fx_scan_binary(op, l, r, used, env)
+        XCall(name, args, targs, xp) => fx_scan_call(&name, &args, used, env)
+        XTo(place, inner) => fx_scan_to(&place, &inner, used, env)
+        XOn(place, body, is_kern, has_index) => fx_scan_on(&place, &body, used, env)
+        XBin(op, l, r) => fx_scan_binary(&op, &l, &r, used, env)
         XTensor(nr, nc, data) => fx_mark(used, 1)
-        XField(base, field) => fx_scan_expr(base, used, env)
-        XWhile(cond, body) => fx_scan_while(cond, body, used, env)
-        XIf(cond, then_b, else_b, has_else, elsifs) => fx_scan_if(cond, then_b, else_b, elsifs, used, env)
+        XField(base, field) => fx_scan_expr(&base, used, env)
+        XWhile(cond, body) => fx_scan_while(&cond, &body, used, env)
+        XIf(cond, then_b, else_b, has_else, elsifs) => fx_scan_if(&cond, &then_b, &else_b, &elsifs, used, env)
         _ => 0
 
 # An `@stack let` must not allocate while evaluating its initializer; the
 # violation is recorded in slot 5 of the flags.
-fn fx_stack_check(st: TStmt, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_stack_check(st: &TStmt, used: &Fx, env: &TEnv) -> Int ! alloc
     if st.stack == 1
         before = fx_used(used, 1)
         _z = list_set(used.flags, 1, 0)
-        _s = fx_scan_expr(st.expr, used, env)
+        _s = fx_scan_expr(&st.expr, used, env)
         allocs = fx_used(used, 1)
         _r = list_set(used.flags, 1, before)
         if allocs == 1
@@ -251,24 +261,24 @@ fn fx_stack_check(st: TStmt, used: Fx, env: TEnv) -> Int ! alloc
         0
 
 # Statements: kind 0 = expression, 1 = binding, 2 = return.
-fn fx_scan_stmts(stmts: List[TStmt], i: Int, n: Int, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_stmts(stmts: &List[TStmt], i: Int, n: Int, used: &Fx, env: &TEnv) -> Int ! alloc
     if i >= n
         0
     else
         st = list_get(stmts, i)
-        _a = fx_scan_expr(st.expr, used, env)
-        _k = fx_stack_check(st, used, env)
+        _a = fx_scan_expr(&st.expr, used, env)
+        _k = fx_stack_check(&st, used, env)
         if st.kind == 1
-            _b = tenv_bind(env, st.name, texpr_type(env, st.expr))
+            _b = tenv_bind(env, &st.name, &texpr_type(env, &st.expr))
         else
             _b = 0
         fx_scan_stmts(stmts, i + 1, n, used, env)
 
 # A block's bindings go out of scope with it.
-fn fx_scan_block(b: TBlock, used: Fx, env: TEnv) -> Int ! alloc
+fn fx_scan_block(b: &TBlock, used: &Fx, env: &TEnv) -> Int ! alloc
     mark = tenv_len(env)
-    _a = fx_scan_stmts(b.stmts, 0, list_len(b.stmts), used, env)
-    _b = fx_scan_expr(b.tail, used, env)
+    _a = fx_scan_stmts(&b.stmts, 0, list_len(&b.stmts), used, env)
+    _b = fx_scan_expr(&b.tail, used, env)
     tenv_truncate(env, mark)
 
 fn fx_effect_name(i: Int) -> String ! alloc
@@ -283,7 +293,7 @@ fn fx_effect_name(i: Int) -> String ! alloc
     else
         "tpu"
 
-fn fx_first_missing(used: Fx, declared: List[Int], i: Int) -> Int ! alloc
+fn fx_first_missing(used: &Fx, declared: &List[Int], i: Int) -> Int ! alloc
     if i >= 5
         0 - 1
     elsif fx_used(used, i) == 1
@@ -294,86 +304,86 @@ fn fx_first_missing(used: Fx, declared: List[Int], i: Int) -> Int ! alloc
     else
         fx_first_missing(used, declared, i + 1)
 
-fn fx_seed_params(params: List[TParam], i: Int, n: Int, env: TEnv) -> Int ! alloc
+fn fx_seed_params(params: &List[TParam], i: Int, n: Int, env: &TEnv) -> Int ! alloc
     if i >= n
         0
     else
         pm = list_get(params, i)
-        _b = tenv_bind(env, pm.name, pm.ty)
+        _b = tenv_bind(env, &pm.name, &pm.ty)
         fx_seed_params(params, i + 1, n, env)
 
-fn fx_reset(used: Fx, i: Int) -> Int ! alloc
+fn fx_reset(used: &Fx, i: Int) -> Int ! alloc
     if i >= 6
         0
     else
         _a = list_set(used.flags, i, 0)
         fx_reset(used, i + 1)
 
-fn check_fn_effects(f: TFn, env: TEnv, used: Fx) -> Int ! alloc
+fn check_fn_effects(f: &TFn, env: &TEnv, used: &Fx) -> Int ! alloc
     _z0 = fx_reset(used, 0)
-    _s = fx_seed_params(f.params, 0, list_len(f.params), env)
-    _b = fx_scan_block(f.body, used, env)
+    _s = fx_seed_params(&f.params, 0, list_len(&f.params), env)
+    _b = fx_scan_block(&f.body, used, env)
     _r = tenv_truncate(env, 0)
-    miss = fx_first_missing(used, f.fx, 0)
+    miss = fx_first_missing(used, &f.fx, 0)
     stack_bad = fx_used(used, 5)
     if stack_bad == 1
-        result_err_str("@stack let cannot hold a heap value")
+        result_err_str(&"@stack let cannot hold a heap value")
     elsif miss < 0
         result_ok(0)
     else
         nm = fx_effect_name(miss)
-        result_err_str("function `" + f.name + "` uses effect `" + nm + "` but signature does not declare it\nhint: add `! " + nm + "` to the signature")
+        result_err_str(&("function `" + f.name + "` uses effect `" + nm + "` but signature does not declare it\nhint: add `! " + nm + "` to the signature"))
 
-fn check_effects_go(tp: TProgram, i: Int, n: Int, env: TEnv, used: Fx) -> Int ! alloc
+fn check_effects_go(tp: &TProgram, i: Int, n: Int, env: &TEnv, used: &Fx) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
-        r = check_fn_effects(list_get(tp.fns, i), env, used)
+        r = check_fn_effects(&list_get(&tp.fns, i), env, used)
         if result_is_err(r) == 1
             r
         else
             check_effects_go(tp, i + 1, n, env, used)
 
 # name -> declared effects of the fns of `tp`; the first definition of a name wins.
-fn callees_add(m: Callees, name: String, mask: Int) -> Int ! alloc
-    if tt_index_of(m.names, name, 0, list_len(m.names)) >= 0
+fn callees_add(m: &Callees, name: &String, mask: Int) -> Int ! alloc
+    if tt_index_of(&m.names, name, 0, list_len(&m.names)) >= 0
         0
     else
-        _a = list_push(m.names, strdup(name))
-        _b = list_push(m.masks, mask)
+        _a = list_push(&m.names, strdup(name))
+        _b = list_push(&m.masks, mask)
         0
 
-fn fx_callees_typed(m: Callees, fns: List[TFn], i: Int, n: Int) -> Int ! alloc
+fn fx_callees_typed(m: &Callees, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(fns, i)
-        _p = callees_add(m, f.name, fx_mask(f.fx))
+        _p = callees_add(m, &f.name, fx_mask(&f.fx))
         fx_callees_typed(m, fns, i + 1, n)
 
-fn fx_callees_progs(m: Callees, progs: List[TProgram], i: Int, n: Int) -> Int ! alloc
+fn fx_callees_progs(m: &Callees, progs: &List[TProgram], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = fx_callees_typed(m, list_get(progs, i).fns, 0, list_len(list_get(progs, i).fns))
+        _a = fx_callees_typed(m, &list_get(progs, i).fns, 0, list_len(&list_get(progs, i).fns))
         fx_callees_progs(m, progs, i + 1, n)
 
 # Ok(0), or Err(message) for the first fn using an undeclared effect.
-fn check_effects(tp: TProgram) -> Int ! alloc
+fn check_effects(tp: &TProgram) -> Int ! alloc
     none = list_new[TProgram]()
-    r = check_effects_with(tp, none)
+    r = check_effects_with(tp, &none)
     _f = list_free(none)
     r
 
 # Same, counting the fns of `progs` (every module of the graph; empty for none).
-fn check_effects_with(tp: TProgram, progs: List[TProgram]) -> Int ! alloc
+fn check_effects_with(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
     env = tenv_new(tp)
     callees = callees_new()
-    _a = fx_callees_typed(callees, tp.fns, 0, list_len(tp.fns))
-    _b = fx_callees_progs(callees, progs, 0, list_len(progs))
+    _a = fx_callees_typed(&callees, &tp.fns, 0, list_len(&tp.fns))
+    _b = fx_callees_progs(&callees, progs, 0, list_len(progs))
     used = fx_new(callees)
-    r = check_effects_go(tp, 0, list_len(tp.fns), env, used)
-    _f = tenv_free(env)
+    r = check_effects_go(tp, 0, list_len(&tp.fns), &env, &used)
+    _f = tenv_free(&env)
     _g = list_free(used.flags)
     _h = list_free(used.callees.names)
     _i = list_free(used.callees.masks)

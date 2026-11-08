@@ -54,13 +54,13 @@ Además de `fn` e `import`:
 
 ## Códigos
 
-Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`.
+Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`.
 
 Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`.
 
 ## Atributos en el arranque
 
-`@frozen` y `@stack` delante de `let`; `@no_heap` delante de `fn`; `@arena` delante de `fn`, `method`, `static` e `init`; `@layout(c)` delante de `struct`. Cualquier otro `@…` es `E_PARSE`. Las violaciones semánticas de un atributo admitido son `E_TYPE`. `@arena` exige retorno de stack y parámetros de solo lectura, con la excepción `keep` (`List` o `Dict`): la escritura copia al asignador del contenedor. Junto con `@no_heap` es `E_TYPE`. `@deprecated("texto")` delante de `fn`, `method`, `struct` o `enum` no es error: cada uso emite `W_DEPRECATED` (aviso en stderr, la compilación sigue). Lo implementa `src/deprecation.rs` sobre el grafo cualificado (`compile.rs` lo imprime); sin cadena es `E_PARSE`. El selfhost aún no lo parsea (`tests/lang/attributes/deprecated_fn_still_runs.sal` lleva `selfhost-xfail`).
+`@frozen` y `@stack` delante de `let`; `@no_heap` delante de `fn`; `@arena` delante de `fn`, `method`, `static` e `init`; `@layout(c)` delante de `struct`. Cualquier otro `@…` es `E_PARSE`. Las violaciones semánticas de un atributo admitido son `E_TYPE`. `@arena` exige retorno de stack, sin referencias, y parámetros `Copy` o `&T`, con la excepción `&mut List` / `&mut Dict`: la escritura copia al asignador del contenedor. Junto con `@no_heap` es `E_TYPE`. `borrow`, `take` y `keep` son `E_PARSE`. `@deprecated("texto")` delante de `fn`, `method`, `struct` o `enum` no es error: cada uso emite `W_DEPRECATED` (aviso en stderr, la compilación sigue). Lo implementa `src/deprecation.rs` sobre el grafo cualificado (`compile.rs` lo imprime); sin cadena es `E_PARSE`. El selfhost aún no lo parsea (`tests/lang/attributes/deprecated_fn_still_runs.sal` lleva `selfhost-xfail`).
 
 ## Fuera de arranque
 

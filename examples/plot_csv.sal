@@ -41,7 +41,7 @@ fn set_cell(st: Int, v: Int) -> Int ! alloc
 fn bump(st: Int) -> Int ! alloc
     vec_set(st, 0, vec_get(st, 0) + 1)
 
-fn chars_of(text: String) -> Int ! alloc
+fn chars_of(text: &String) -> Int ! alloc
     cs = vec_new()
     st = vec_new()
     _p = vec_push(st, 0)
@@ -141,7 +141,7 @@ fn take_number(cs: Int, st: Int) -> Int ! alloc
     else
         v
 
-fn parse_ys(text: String) -> Int ! alloc
+fn parse_ys(text: &String) -> Int ! alloc
     cs = chars_of(text)
     ys = vec_new()
     st = vec_new()
@@ -317,7 +317,7 @@ fn bounds(ys: Int) -> Int ! alloc
         0
     b
 
-fn plot(path: String, ys: Int) -> Int ! io, alloc
+fn plot(path: &String, ys: Int) -> Int ! io, alloc
     n = vec_len(ys)
     b = bounds(ys)
     lo = vec_get(b, 0)
@@ -340,9 +340,9 @@ fn plot(path: String, ys: Int) -> Int ! io, alloc
         0
     write_png(path, w, h, buf)
 
-fn go(src: String, dst: String) -> Int ! io, alloc
+fn go(src: &String, dst: &String) -> Int ! io, alloc
     text = read_file(src)
-    ys = parse_ys(text)
+    ys = parse_ys(&text)
     n = vec_len(ys)
     if n < 2
         _e = eprint_str(strdup("csv needs at least two numbers\n"))
@@ -367,4 +367,4 @@ fn main() -> Int ! io, alloc
             _e = eprint_str(strdup("usage: plot_csv <in.csv> <out.png>\n"))
             1
         else
-            go(src, dst)
+            go(&src, &dst)

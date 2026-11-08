@@ -1,4 +1,4 @@
 import "../../selfhost/ast/tshape.sal"
 
 fn main() -> Int ! alloc
-    ts_trim(" Tensor[F32, 4] ").len()
+    ts_trim(&" Tensor[F32, 4] ").len()

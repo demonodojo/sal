@@ -11,6 +11,6 @@ fn handle(cache: Dict[String, String] keep) -> Int ! alloc
 fn main() -> Int ! alloc
     cache = dict_new[String, String]()
     _b = handle(cache)
-    match dict_get(cache, "k")
+    match dict_get(&cache, &"k")
         Some(s) => str_len(s)
         None => 0

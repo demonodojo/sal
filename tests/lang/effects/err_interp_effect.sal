@@ -1,5 +1,5 @@
 # error: E_EFFECT
-fn f(n: String) -> Int
+fn f(n: &String) -> Int
     s = f"v=#{n}"
     0
 

@@ -2,7 +2,7 @@
 
 La gramática de este documento es la definición del lenguaje. Es recursiva por la izquierda en las listas, en los operadores binarios y en los postfijos. Esa recursión es la asociatividad: la derivación izquierda de `1 - 2 - 3` es `(1 - 2) - 3`, la de `a.b.c` es `(a.b).c` y la de `f(x)(y)` es `(f(x))(y)`.
 
-Los prefijos (`try`, `-`, `!`, `to`) y la lambda son recursivos por la derecha. `x => y => z` es `x => (y => z)` y `- - x` es `- (- x)`. Una reescritura recursiva por la derecha de los operadores no es esta gramática: cambiaría el árbol.
+Los prefijos (`try`, `-`, `!`, `to`, `&`, `&mut`, `*`) y la lambda son recursivos por la derecha. `x => y => z` es `x => (y => z)` y `- - x` es `- (- x)`. Una reescritura recursiva por la derecha de los operadores no es esta gramática: cambiaría el árbol.
 
 El lexer parte el fuente en terminales e inserta `NEWLINE`, `INDENT` y `DEDENT`. La sangría son espacios; un tabulador es `E_PARSE`. Una línea en blanco no abre un bloque. Entre líneas el parser acepta uno o más `NEWLINE`. Los comentarios `#` desaparecen en el lexer y no tienen producción.
 
@@ -78,8 +78,12 @@ type_list    → type_list "," type
 
 fn_def       → "fn" IDENT type_params "(" param_list ")" "->" type effect_clause suite
 method_def   → "method" IDENT "." IDENT "(" method_params ")" "->" type effect_clause suite
-method_params → "self" param_mode "," param_list
-              | "self" param_mode
+method_params → "&" "mut" "self" "," param_list
+              | "&" "self" "," param_list
+              | "&" "mut" "self"
+              | "&" "self"
+              | "self" "," param_list
+              | "self"
               | param_list
 static_def   → "static" IDENT "." IDENT "(" param_list ")" "->" type effect_clause suite
 init_def     → "init" IDENT "(" param_list ")" effect_clause suite
@@ -87,16 +91,14 @@ const_def    → IDENT (":" type | ε) "=" expr
 suite        → NEWLINE INDENT block DEDENT
 type_params  → "[" type_param_list "]"
              | ε
-type_param_list → type_param_list "," IDENT
-                | IDENT
+type_param_list → type_param_list "," type_param
+                | type_param
+type_param   → "'" IDENT
+             | IDENT
 param_list   → param_list "," param
              | param
              | ε
-param        → IDENT ":" type param_mode
-param_mode   → "borrow"
-             | "take"
-             | "keep"
-             | ε
+param        → IDENT ":" type
 effect_clause → "!" effect_list
               | ε
 effect_list  → effect_list "," effect
@@ -117,7 +119,7 @@ line         → attr_list "let" IDENT (":" type | ε) "=" expr
              | expr ("=" expr | ε)
 ```
 
-Si hay `=`, la izquierda tiene que ser un lvalue: `IDENT`, o un postfijo que solo sea una cadena de campos. Si no lo es, `E_PARSE`. La última línea que es una expresión sin `=` es el valor del bloque en los caminos que no terminan con `return`. Sin esa línea el bloque vale `Unit`; si la función no devuelve `Unit`, el error es `E_TYPE`.
+Si hay `=`, la izquierda tiene que ser un lvalue: `IDENT`, un postfijo que solo sea una cadena de campos, o un prefijo `*` (escribir a través de una referencia). Si no lo es, `E_PARSE`. La última línea que es una expresión sin `=` es el valor del bloque en los caminos que no terminan con `return`. Sin esa línea el bloque vale `Unit`; si la función no devuelve `Unit`, el error es `E_TYPE`.
 
 `return expr` termina la función con `expr`; el tipo de `expr` tiene que ser el de la función o `E_TYPE`. `return` sin expresión solo si la función devuelve `Unit`. Vale en el cuerpo de la función y, anidado, en `if`, `elsif`, `else`, `while` y `match`. Dentro de `on` o de una lambda es `E_TYPE`. Tras un `return` que siempre se alcanza en el mismo bloque (otra sentencia o la cola) es `E_TYPE`. Un `while` no garantiza el retorno; un `if` sin `else` tampoco. Una rama que retorna no aporta valor al `if`/`match`; el tipo es el de las ramas que sí producen valor. Si todas las ramas retornan, la expresión diverge.
 
@@ -160,6 +162,9 @@ mul          → mul "*" unary
 unary        → "-" unary
              | "!" unary
              | "to" place unary
+             | "&" "mut" unary
+             | "&" unary
+             | "*" unary
              | postfix
 postfix      → postfix "(" arg_list ")"
              | postfix "[" type_arg_list "]" "(" arg_list ")"
@@ -233,8 +238,14 @@ Un `match` sobre un escalar distinto de enum elige el **primer** brazo cuyo patr
 ### Tipos
 
 ```text
-type         → tensor_type
+type         → ref_type
+             | tensor_type
              | named_type
+ref_type     → "&" lifetime "mut" type
+             | "&" lifetime type
+             | "&" "mut" type
+             | "&" type
+lifetime     → "'" IDENT
 tensor_type  → "Tensor" "[" tensor_elem dims "]" "on" place
 tensor_elem  → "F32" | "F16" | "BF16" | "I8"
 dims         → dims "," dim
@@ -248,6 +259,8 @@ place        → "cpu" | "gpu" | "tpu" | IDENT
 ```
 
 `Tensor` seguido de `[` es `tensor_type`. Un elemento fuera de `tensor_elem` (por ejemplo `Float`) es `E_TENSOR_ELEM`.
+
+`&T` es una referencia compartida y `&mut T` una referencia exclusiva. El lifetime `'a` va entre `&` y `mut` (`&'a mut T`) o entre `&` y el tipo (`&'a T`). `'a` es el terminal `'` seguido de un `IDENT`. En una firma de función un lifetime que no se escribe se elide (ver «Memoria»). En un campo de `struct` el lifetime es explícito y tiene que ser un parámetro de tipo del struct; si no, `E_TYPE`. `borrow`, `take` y `keep` no son modos: verlos tras un tipo es `E_PARSE`.
 
 ### Cadenas
 
@@ -285,7 +298,7 @@ El arranque admite seis atributos, cada uno en un solo sitio. Pueden ir en líne
 | `@frozen` | `let` | El binding no se reasigna |
 | `@stack` | `let` | El tipo es de stack y construirlo no asigna |
 | `@no_heap` | `fn` | La función no asigna, no recibe ni devuelve un tipo de heap y no tiene `let` de heap |
-| `@arena` | `fn`, `method`, `static`, `init` | El retorno es de stack. Los parámetros solo se leen, salvo un `keep` (`List` o `Dict`): lo que se guarda ahí se copia al asignador de ese contenedor. Junto con `@no_heap` es `E_TYPE`. Sigue haciendo falta `! alloc` si el cuerpo asigna |
+| `@arena` | `fn`, `method`, `static`, `init` | El retorno es de stack y no es una referencia. Los parámetros son `Copy` o `&T`, salvo un `&mut List` o `&mut Dict`: lo que se guarda ahí se copia al asignador de ese contenedor. Junto con `@no_heap` es `E_TYPE`. Sigue haciendo falta `! alloc` si el cuerpo asigna |
 | `@layout(c)` | `struct` | Los campos son solo `Int`, `Float` o `Bool`; `@layout(otro)` es `E_PARSE` |
 | `@deprecated("texto")` | `fn`, `method`, `struct`, `enum`, constante | No es error: cada uso del item emite el aviso `W_DEPRECATED` con el texto y la compilación sigue. El argumento es una cadena; sin ella es `E_PARSE` |
 
@@ -333,7 +346,7 @@ Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos
 
 ### Métodos
 
-`method Tipo.nombre(params) -> R ! efectos` define una función `Tipo__nombre` cuyo primer parámetro es `self: Tipo`, implícito. `method` es contextual: solo es palabra clave al inicio de un item (`method` sigue valiendo como nombre de parámetro o variable). `self` no es palabra clave: es el identificador del primer parámetro, y un `self` en otro sitio es un nombre normal. El modo de `self` sale del cuerpo, como el de cualquier parámetro, salvo que se escriba: `method T.m(self take, k: Int)` o `self borrow` (`self` sin tipo; `self: T` es `E_PARSE`). Los atributos de `fn` valen delante de `method`, `static` e `init` (`@no_heap`, `@arena`). `self keep` sigue la regla de `keep`: solo en `@arena` y solo si el receptor es `List` o `Dict`.
+`method Tipo.nombre(params) -> R ! efectos` define una función `Tipo__nombre` cuyo primer parámetro es `self: Tipo`, implícito. `method` es contextual: solo es palabra clave al inicio de un item (`method` sigue valiendo como nombre de parámetro o variable). `self` no es palabra clave: es el identificador del primer parámetro, y un `self` en otro sitio es un nombre normal. El receptor se escribe `self` (por valor: mueve), `&self` o `&mut self` (`self` sin tipo; `self: T` es `E_PARSE`). Los atributos de `fn` valen delante de `method`, `static` e `init` (`@no_heap`, `@arena`).
 
 `expr.nombre(args)` es una llamada de método cuando `expr` no es un calificador de módulo. El compilador la resuelve por el tipo inferido de `expr` (un tipo nominal `T`) y la baja a `T__nombre(expr, args)`; no hay dispatch dinámico. `self` es un valor como cualquier `struct`: `self.x = v` escribe ese valor, y un método que «muta» devuelve el valor nuevo.
 
@@ -398,36 +411,31 @@ Ruta inexistente, choque de nombre entre importados aplanados o con items locale
 
 ## Memoria
 
-- Stack por defecto; heap para `String`, `List`, tensores. Un `struct` de varios campos va en registros (ver «Un `struct` se construye…»).
-- Move por defecto; copy solo tipos triviales.
-- Préstamo solo en argumento de llamada. En `p.m(…)`, `p` es el primer argumento: se presta o se mueve según el modo de `self`.
-- Un valor con dueño (`String`, `List`, `Dict`, enum, tensor, struct con algún campo que no sea Copy) se mueve al ligarlo a otro nombre, devolverlo, enviarlo con `to`, pasarlo a un parámetro `take`, guardarlo con `list_push`/`list_set`/`dict_put` (el valor, no el contenedor) o usarlo como argumento de un constructor de struct o de variante. Usarlo después es `E_MOVED`. El modo de cada parámetro sale del cuerpo y es interprocedural: una función que pasa su parámetro a una posición `take` de otra también lo toma. Los tipos que decide el pase salen de la inferencia (el resultado de una llamada, un campo o un `match` ya no se trata como Copy). El valor de cola de una rama de `if` no se mueve por sí mismo. El constructor de un `frame` no mueve sus columnas. Leer por valor un campo que no es Copy (`n = p.name`) mueve ese campo: `p.name` y `p` entero pasan a `E_MOVED`, pero los demás campos siguen usables, y `p.name = v` lo repone (solo con `p` local como base directa). Un local que se mueve solo en algunas ramas se suelta al final detrás de una bandera de drop (`__live_x`) que se baja justo después de la sentencia que lo mueve; si se mueve en un bucle más interno que su declaración, o en una cola de bloque, `match` o `on`, no se suelta (fuga, nunca doble liberación). Un `String` fresco que se pasa directo a un builtin que solo lo lee (`str_len`, `str_eq`, `str_slice`, `print_str`…) es un temporal: se liga a un local anterior a la sentencia y se suelta al final del ámbito. Una `List[S]` local de un struct plano (de 2 a 20 campos `Int`, `Float`, `Bool` o `String`) se suelta, con sus elementos, cuando todo lo que se le guarda es un constructor `S(…)` cuyos `String` son frescos; `list_get` sobre ella presta el elemento y `list_set` suelta el elemento viejo. La copia profunda de ese préstamo ocurre al tomar posesión.
+- Stack por defecto; heap para `String`, `List`, `Dict`, `Bytes`, cajas de enum y de struct, y tensores. Un `struct` de varios campos va en registros salvo que se preste: `&p` materializa el valor.
+- Move por defecto. `Copy`: `Int`, `Float`, `Bool`, `Unit` y un struct cuyos campos lo son. `&T` compartida es `Copy`. `&mut T` no lo es.
+- `&T` presta y `&mut T` presta en exclusivo. Pueden vivir en un local, en un campo (`struct V['a]`) y en un retorno. No hay un modo `borrow`/`take`: el tipo lo dice. `borrow`, `take` y `keep` tras un tipo son `E_PARSE`.
+- Elisión de lifetimes en una firma, con las tres reglas: cada lifetime elidido de entrada es distinto; si hay exactamente uno, el retorno elidido usa ese; si el receptor es `&self` o `&mut self`, el retorno elidido usa el de `self`. Si el retorno elide un lifetime y ninguna regla aplica, `E_BORROW`. En un campo el lifetime es explícito.
+- Un valor con dueño (`String`, `List`, `Dict`, `Bytes`, enum, tensor, struct con algún campo que no sea Copy) se mueve al ligarlo a otro nombre, devolverlo, enviarlo con `to`, pasarlo donde se espera ese tipo por valor, guardarlo con `push`/`set`/`put` o usarlo como argumento de un constructor. Usarlo después es `E_MOVED`. Pasar `&x` no lo mueve. Leer un campo o llamar un método pela referencias. El receptor de un método se autoreferencia (`p.m()` con `&self`); un argumento de función, no. El constructor de un `frame` no mueve sus columnas.
+- Leer por valor un campo que no es Copy (`n = p.name`) mueve ese campo: `p` entero pasa a `E_MOVED`, los demás campos siguen usables, y `p.name = v` lo repone (solo con `p` local como base directa). Un lugar que se mueve solo en algunas ramas se suelta detrás de una bandera `__live`. Mover en un `while` un valor que sigue vivo en el arco de vuelta es `E_MOVED`.
+- Un préstamo dura hasta el último uso de la referencia que lo guarda. `&mut` no se solapa con ningún otro préstamo del mismo lugar; dos `&` sí pueden. Mutar o mover un lugar prestado es `E_BORROW`. Una referencia no sobrevive a su referente: devolver `&` de un local, o guardarla en un sitio que vive más, es `E_BORROW`. `*r` de un `Copy` copia; sacar un no-`Copy` de una referencia es `E_BORROW`. La copia profunda es `x.clone()` (efecto `alloc`); sin ella no hay copia. `Tensor.clone` es `E_TYPE`.
+- `xs.get(i)` es `&T`, `xs.get_mut(i)` es `&mut T`, `xs.pop()` mueve. `push`, `set` y `put` toman `&mut` del contenedor, mueven el valor y devuelven `Unit`. Un `Dict` posee sus claves `String`. Un contenedor posee siempre sus elementos.
+- En `p.m(…)`, `p` es el primer argumento: `&self`, `&mut self` o `self`.
 - Atributos admitidos: `@frozen`, `@stack`, `@no_heap`, `@arena`, `@layout(c)` (ver Atributos). `@resource` y el resto, reservados.
-- `keep`, al lado de `borrow` y `take`, solo es válido en un parámetro `List` o `Dict` de una función `@arena`. En otra función, o sobre otro tipo, es `E_TYPE`. Es la única escritura permitida sobre un parámetro de `@arena`. Pasarlo a otro `keep` está permitido; pasarlo a una posición `take` o mutadora que no sea `keep` es `E_TYPE`.
-- Un `struct` se mueve. Asignar un campo escribe ese valor: si es un elemento de lista, la lista ve el cambio. Una función que solo lee o recompone campos no cambia el hecho de que los hijos siguen siendo de quien ya los posee.
+- Un `struct` se mueve. Asignar un campo escribe ese valor: si es un elemento de lista, la lista ve el cambio. Los hijos siguen siendo de quien posee el struct, salvo que ese campo se mueva.
 
 ### Funciones `@arena`
 
-Durante la llamada, el heap del host (`String`, `List`, `Dict`, `Bytes`, cajas de enum y de struct) sale de páginas de 64 KiB de una región por hilo. Una `@arena` anidada o recursiva apila otra región; un llamado sin `@arena` usa la región que haya activa. Al salir se descartan todas las páginas de esa región, después de los `free` que inserta el compilador: un `free` de un puntero interior es un no-op. El retorno es de stack (`Int`, `Float`, `Bool`, `Unit` o un struct cuyos campos lo son). Devolver heap es `E_TYPE`. Un parámetro que no es `keep` solo se lee: mutarlo, o pasarlo a una posición que muta o que es `take`, es `E_TYPE`. Los locales de heap sí se crean y se mutan: mueren con las páginas.
+Durante la llamada, el heap del host (`String`, `List`, `Dict`, `Bytes`, cajas de enum y de struct) sale de páginas de 64 KiB de una región por hilo. Una `@arena` anidada o recursiva apila otra región; un llamado sin `@arena` usa la región que haya activa. Al salir se ejecuta la liberación de los locales y después se descartan las páginas: un `free` de un puntero interior es un no-op. El retorno es de stack (`Int`, `Float`, `Bool`, `Unit` o un struct cuyos campos lo son) y no es una referencia. Devolver heap o una referencia es `E_TYPE`.
 
-Lo que se guarda en un `keep` (`put`, `push`, `set`, también a través de un alias) se copia en profundidad al asignador que ya posee ese contenedor: la región en cuya página cae su puntero, o el `malloc` del sistema si no cae en ninguna. La copia de la región se abandona y muere con las páginas. El crecimiento del propio contenedor reserva en ese mismo asignador. Leer la caché con `dict_get` copia hacia la región actual y esa copia muere con la llamada. `list_get` presta; la copia es la del destino que toma posesión (`put`, `push` o `set` sobre un `keep`, que ya copian). La copia cubre `String`, `List`, `Dict`, `Bytes`, enum y struct describible; un `Tensor` o un struct sin copia es `E_TYPE`. gpu y tpu no entran en las páginas: su `free` sigue siendo el de su lugar. Un pánico puede no ejecutar el descarte: la fuga de esas páginas es aceptable; un uso tras liberar no. `sal_region_begin` / `sal_region_end` (la región fusionada de tensores) es otro mecanismo y no cambia.
+Un parámetro es `Copy` o `&T`. La única escritura permitida sobre un parámetro es un `&mut List` o `&mut Dict`: lo que se guarda ahí (`put`, `push`, `set`) se copia en profundidad al asignador que ya posee ese contenedor (la región en cuya página cae su puntero, o el `malloc` del sistema). La copia de la región se abandona y muere con las páginas. El crecimiento del contenedor reserva en ese mismo asignador. `get` presta. La copia cubre `String`, `List`, `Dict`, `Bytes`, enum y struct describible; un `Tensor` es `E_TYPE`. gpu y tpu no entran en las páginas: su `free` sigue siendo el de su lugar. Un pánico puede no ejecutar el descarte: la fuga de esas páginas es aceptable; un uso tras liberar no. `sal_region_begin` / `sal_region_end` (la región fusionada de tensores) es otro mecanismo y no cambia.
 
 ### Liberación de locales
 
-El runtime usa `malloc`/`free`: lo que se libera vuelve al sistema. El compilador inserta la liberación (`free`, `list_free`, `dict_free`, `enum_free`, `bytes_free`, `tensor_free`, `struct_free` o, cuando una copia struct en caja ya cedió todos sus campos, solo el bloque heap con `struct_free_box`) al salir de ámbito para un local que cumple todo esto:
+El runtime usa `malloc`/`free`: lo que se libera vuelve al sistema. Cada tipo con dueño tiene una función de liberación (`drop.<Tipo>`): `String` llama a `sal_free`; `Bytes` a `sal_bytes_free` (una vista solo suelta la cabecera); un tensor a `sal_tensor_free` o, en una región fusionada, a `sal_place_free`; `List[T]` y `Dict[K, V]` recorren sus elementos con la liberación de `T` (y las claves `String`) y luego sueltan el bloque; un struct suelta sus campos en orden de declaración; un enum hace `switch` por tag; `&T`, `&mut T` y un `Copy` no sueltan nada.
 
-- se liga una sola vez (`let` o primera asignación, sin anotación de tipo salvo `String`) a un valor fresco. `String`: literal, `int_to_str`, `char_to_str`, `str_slice`, `strdup`, `read_file`, `str_concat`, o una cadena de `+` con algún operando `String` explícito. `List`: `list_new[T]()` con `T` `Int`, `Float`, `Bool` o `String` (una lista de `String` es dueña de sus elementos y `list_free` los suelta). `dict_keys(d)` y `dict_values(d)` también son listas frescas: se sueltan igual (con sus `String`) si no escapan. `Dict`: `dict_new[K, V]()` con `K` `Int` o `String` y `V` `Int`, `Float`, `Bool`, `String`, un enum sin parámetros de tipo o un `struct` de dos o más campos describible (misma regla que el descriptor de listas: suelta valores `String`, cajas de enum y bloques de struct que el dict posee; las claves `String` se prestan). Enum: una variante con campos (`Rect(3, 4)`); la caja guarda en su cabecera qué campos posee (un `String` fresco o la caja fresca de otro enum con campos) y `enum_free` los suelta; un campo que es un nombre o el resultado de una función de usuario no se posee y se deja. `enum_owns(v, i)` devuelve 1 cuando la caja de `v` posee su campo `i` (y `enum_free` lo suelta), de modo que quien libere a mano los demás campos no libere dos veces. `Bytes`: `bytes_new(n)`; `bytes_view` y `bytes_view_mem` reservan solo la cabecera del bloque (vista sobre otro `Bytes` o memoria ajena: `bytes_free` no libera el `data` del padre). `dict_get` devuelve un `Option[V]` fresco: la caja de `Some` se suelta con `enum_free` si no escapa (el `String` dentro lleva bit de dueño cuando `V` es `String`; valores enum o struct se copian en profundidad). Un literal `tensor[[…]]` en un programa escalar es un buffer en el heap del lugar: `tensor_free` si no escapa (en funciones con región fusionada, `to` y la bajada emiten `Drop` sobre el origen y el runtime usa `sal_place_free`).
-- no escapa: solo lo leen builtins que prestan (`str_len`, `str_eq`, `str_char`, `str_contains`, `str_skip`, `str_hash`, `str_slice`, `str_concat`, `str_to_f64_bits`, `print_str`, `eprint_str`, `write_file`, `mkdir_p`, `path_readable`, `getenv`, `map_get`, `read_file`, `list_len`, `list_get`, `list_pop`, `dict_has`, `enum_owns`, `enum_box_id`, `bytes_len`, `bytes_get_*`, `bytes_set_*`, `bytes_fill*`, `bytes_copy`, `str_bytes_copy`), el operador `+` y, para un enum, un `match` cuyos patrones son variantes (un patrón que liga el valor entero lo hace escapar). `enum_box_id(v)` devuelve la dirección de la caja de un enum con campos como `Int`, o `0` en una variante unitaria (solo lectura, como `enum_owns`). `list_box_id(xs)` devuelve la dirección del bloque de la lista como `Int`, o `0` si no hay lista (solo lectura). `dict_get` presta el diccionario pero el `Option` devuelto es un valor nuevo: quien lo liga es dueño de la caja salvo que escape. `list_push`, `list_set` y `dict_put` prestan el contenedor solo como sentencia (o ligado a un nombre que empieza por `_`), porque devuelven un alias. Pasarlo a una función de usuario cuyo parámetro lo deja escapar (lo devuelve, lo guarda, lo liga a otro nombre o lo pasa a un parámetro que escapa), a `str_as_int`, a `vec_push`/`map_put`, ligarlo a otro nombre, devolverlo o ponerlo en cola de bloque lo hace escapar y no se libera. Un argumento movido a un constructor de `struct` deja de contarse entre los locales pendientes de liberar en ese ámbito.
+El compilador inserta esa llamada al salir del ámbito, antes de cada `return` (el valor se calcula antes) y al reasignar un local, en orden inverso de declaración, para cada valor con dueño que en ese camino está inicializado y no se ha movido. Si está movido solo en algunas ramas, la llamada va detrás de la bandera `__live`. Un temporal con dueño se suelta al final de la sentencia cuando el destino no se lo quedó. Un `free` escrito a mano consume el valor: no se suelta otra vez.
 
-El `free` va al final del bloque que declara el local y antes de cada `return` dentro de su ámbito, en orden inverso de declaración. Un valor de cola o de `return` se calcula antes de liberar. Una lista de `String`, un `Dict` con valores `String` o un campo `List[String]`, `List[P]` (con `P` struct describible, misma regla de dueño que en listas) o `Dict[…, String]` dentro de un `struct` solo se libera si todo lo que se guarda en él es un valor fresco (literal, `int_to_str`, `str_slice`, `+`…); guardar un nombre o el resultado de una función de usuario lo deja sin liberar, para no soltar dos veces un valor ajeno. Un `match x` libera la caja de `x` solo si ningún nombre ligado por sus patrones a un campo que pueda tener dueño escapa (un campo `Int`, `Float` o `Bool` no cuenta). Un `match dict_get(…)` descartado como sentencia suelta la caja del resultado en esa sentencia. En `a + b`, un operando izquierdo que es una llamada de cadena fresca (`int_to_str(n) + "x"`) también se suelta tras copiarlo. Un parámetro de usuario es de solo lectura si su función no lo deja escapar, y se calcula como punto fijo sobre todo el programa (empieza optimista, así que la recursión no lo estropea): pasar un local a esa posición no lo hace escapar y lo libera quien lo declara.
-
-Un `struct` local (o un parámetro `take`) libera al final de la función, en la cola de campos, lo que se le movió: campos `String`, cajas enum, `Bytes`, `List[T]` con `T` escalar Copy, `Dict[K, V]` con valores escalares Copy, `List[String]` y `List[P]` describible (cuando la lista es dueña de sus elementos), `Dict` cuyos valores son `String` cuando solo recibieron valores frescos, y de forma recursiva los `struct` anidados. Un `struct` pasado a un parámetro de usuario que lo deja escapar (no es de solo lectura, p. ej. lo guarda en un constructor de otro módulo o lo devuelve como cola de una rama) cuenta como movido para la cola del llamador aunque el modo inferido del parámetro sea préstamo: la cola no suelta sus campos. Si un campo `String` o enum sale del struct por valor (`return n.name`, argumento que lo conserva), la cola deja de soltar **ese** campo y sigue con el resto (el nuevo dueño lo libera si no escapa). Si sale un campo contenedor entero (`List`, `Dict` o `Bytes`, p. ej. `return b.xs`), la cola deja de soltar contenedores en ese local. Si se lee un `struct` anidado entero (`q = w.p`), deja de liberar los anidados. Es una fuga posible, nunca una doble liberación. Un local que no cumple la regla no se libera (la memoria no vuelve, pero nunca hay uso tras liberar).
-
-Una lista de enums es dueña de sus cajas solo si todo lo que se le guarda es una llamada a un constructor de variante (`V(…)`) o una variante sin campos (`V`): entonces `list_free` suelta cada caja, `list_set` suelta la anterior, `list_get` presta la caja y `list_pop` saca el elemento de la lista. El local de un `list_pop` que no escapa (o el selector de un `match`, que el compilador liga antes a un nombre) se suelta al final del ámbito. El local de un `list_get` no se suelta: sigue siendo de la lista. Lo mismo vale para una lista de `String` dueña. Una lista de enums con cualquier otro valor guardado (un nombre, el resultado de una función) no es dueña: `list_free` solo libera el vector y `list_get` devuelve el mismo valor. Un `list_free` escrito a mano sobre una lista que no es dueña no suelta sus elementos. Un valor fresco que una sentencia descarta (`xs.pop()`, `int_to_str(n)`) se liga a un temporal y se suelta en esa misma sentencia: el `pop` de una lista dueña es fresco. Un `xs.get(i)` descartado es un préstamo y no se suelta. Una función de usuario cuyo retorno es `String` y entrega siempre un valor fresco (cada `return` y la cola son un builtin fresco, un local ligado una vez a uno, un `if`/`match` cuya **cada** rama lo es, o un campo `String` de un parámetro `take`) devuelve un `String` que el llamante posee y se suelta como un builtin fresco. Un `while` en el nivel superior del cuerpo de esa función la excluye de ese conjunto. Una lista de structs (planos o anidados, con campos `String`, enum o struct) es dueña de sus bloques si todo lo que se le guarda es un constructor del struct con campos frescos. `list_get` presta el bloque (el mismo puntero). `list_pop` mueve el bloque al llamador y el struct local que lo recibe libera con la cola lo que no se movió antes. Un struct con un solo campo transparente o tipos no describibles en listas sigue sin descriptor de elemento. Cuando un préstamo de `list_get` pasa a tener dueño, el compilador inserta una copia profunda (`desc_copy`): nuevo bloque, `String` duplicados y enums copiados. Esa copia es la que posee el destino.
-
-Un local ligado al préstamo (`o = list_get(xs, i)`) no se libera. Pasarlo a un parámetro `borrow` o leer un campo sigue prestando. Pasarlo a `list_push`, `list_set`, `dict_put`, a un constructor de struct o de variante, a un parámetro `take` o devolverlo inserta la copia; el destino la posee y se libera una vez (el contenedor al soltarse, el llamador si se devuelve, o `struct_free_box` de la caja cuando una llamada escalarizada ya se llevó los campos). Un local ligado a `list_pop` sigue siendo una caja propia: `list_push`, `list_set`, `dict_put` o un constructor absorben el bloque; una función de usuario que reparte el struct en campos deja la caja vacía y el compilador suelta solo el bloque (`struct_free_box`). Si el `list_pop` solo se presta, la caja entra en la cola (`struct_free`). Si el local puede moverse solo en algunas ramas, la liberación va detrás de la bandera `__live`. El análisis recorre sentencias y la cola del bloque.
-
-Siguen sin liberarse automáticamente: los campos de una caja de enum que no son valores frescos; el `list_pop` de una lista que no es dueña; los `String` que viajan como asas `Int` (`str_as_int`, `vec_push`, `map_put`); dos nombres sobre la misma copia (`z = k`) donde soltar uno sería doble liberación.
+Los `String` que viajan como asas `Int` (`str_as_int`, `vec_push`, `map_put`) quedan fuera de este modelo: no se sueltan. Un programa que termina sin pánico no fuga; un pánico puede fugar.
 
 ### `String`
 
@@ -507,7 +515,9 @@ Little-endian: magic `SALT`, versión u16, elem u8, rank u8, dims u64[], payload
 
 ## Errores de compilación
 
-`E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_PARSE`, `E_TYPE`, `E_TARGET`.
+`E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_PARSE`, `E_TYPE`, `E_TARGET`.
+
+`E_BORROW`: un préstamo que se solapa con una mutación o con otro préstamo exclusivo, una referencia que vive más que su referente, un lifetime elidido que no tiene origen, o sacar un valor no `Copy` de una referencia. `E_MOVED` sigue siendo usar un valor después de moverlo.
 
 `E_TARGET`: la construcción no existe en el destino de compilación (`--target`), p. ej. `syscall` fuera de `soso` y `linux`. `E_INTERNAL` es un fallo del compilador, no de un programa.
 

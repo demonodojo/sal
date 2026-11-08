@@ -1,7 +1,7 @@
-fn glob_match(name: String, pat: String) -> Int ! alloc
+fn glob_match(name: &String, pat: &String) -> Int ! alloc
     glob_match_go(name, pat, 0, 0)
 
-fn glob_match_go(name: String, pat: String, ni: Int, pi: Int) -> Int ! alloc
+fn glob_match_go(name: &String, pat: &String, ni: Int, pi: Int) -> Int ! alloc
     nn = str_len(name)
     pn = str_len(pat)
     if pi >= pn
@@ -22,7 +22,7 @@ fn glob_match_go(name: String, pat: String, ni: Int, pi: Int) -> Int ! alloc
                 else
                     0
 
-fn glob_star(name: String, pat: String, ni: Int, pi: Int, nn: Int, pn: Int) -> Int ! alloc
+fn glob_star(name: &String, pat: &String, ni: Int, pi: Int, nn: Int, pn: Int) -> Int ! alloc
     if glob_match_go(name, pat, ni, pi) == 1
         1
     else

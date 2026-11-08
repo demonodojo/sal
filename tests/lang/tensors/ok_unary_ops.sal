@@ -1,5 +1,5 @@
 # exit: 0
-fn f(a: Tensor[F32, 2, 3] on cpu) -> Int ! alloc
+fn f(a: &Tensor[F32, 2, 3] on cpu) -> Int ! alloc
     b = silu(a)
     0
 

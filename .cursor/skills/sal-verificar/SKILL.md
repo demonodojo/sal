@@ -38,7 +38,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 
 Atajo: `scripts/test-area.sh <área>` ejecuta la fila correspondiente de esta tabla (`frontend`, `semantics`, `drops`, `ir`, `kernels`, `llvm`, `instrument`, `toolchain`, `lang`, `builtins`, `target`, `std`, `standard`, `selfhost`); sin argumento lista las áreas. Las áreas `standard` y `selfhost` van en serie (`--test-threads=1`).
 
-Si el test nuevo afirma un diagnóstico, el código tiene que ser el de la lista cerrada (`E_PARSE`, `E_TYPE`, `E_MOVED`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`; `E_TARGET` solo para destino).
+Si el test nuevo afirma un diagnóstico, el código tiene que ser el de la lista cerrada (`E_PARSE`, `E_TYPE`, `E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`; `E_TARGET` solo para destino).
 
 `cargo test` completo compila y ejecuta muchos programas y puede tardar; `selfhost_ir` compila el selfhost varias veces. Para un cambio acotado, ejecuta primero el test del pase y deja la suite entera para el cierre o el release.
 

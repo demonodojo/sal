@@ -9,23 +9,23 @@ struct Wait
 static Wait.from_raw(v: Int) -> Wait
     Wait(v)
 
-method Wait.exit_code(self borrow) -> Int
+method Wait.exit_code(&self) -> Int
     self.v & 255
 
-method Wait.pid(self borrow) -> Int
+method Wait.pid(&self) -> Int
     self.v >> 8
 
-fn spawn_string_buf(s: String) -> Bytes ! alloc
+fn spawn_string_buf(s: &String) -> Bytes ! alloc
     buf = Bytes.new(s.len() + 1)
     buf.write_str(0, s)
     buf
 
-fn spawn_argv_slot_ptr(tab: Bytes, i: Int, buf: Bytes, len: Int) -> Int ! alloc
+fn spawn_argv_slot_ptr(tab: &Bytes, i: Int, buf: &Bytes, len: Int) -> Int ! alloc
     tab.set_i64(i * 16, buf.ptr())
     tab.set_i64(i * 16 + 8, len)
     0
 
-fn spawn_io_argv(path: String, argv_count: Int, argv_tab: Bytes, stdin: Int, stdout: Int, stderr: Int, cwd: String, log_fd: Int) -> Int ! io, alloc
+fn spawn_io_argv(path: &String, argv_count: Int, argv_tab: &Bytes, stdin: Int, stdout: Int, stderr: Int, cwd: &String, log_fd: Int) -> Int ! io, alloc
     pbuf = spawn_string_buf(path)
     plen = path.len()
     opts = Bytes.new(spawnio_size())
@@ -44,38 +44,38 @@ fn spawn_io_argv(path: String, argv_count: Int, argv_tab: Bytes, stdin: Int, std
         opts.set_i64(spawnio_off_cwd_len(), cl)
     syscall(nr_spawn_io(), opts.ptr(), 0, 0, 0, 0, 0)
 
-fn spawn_io_full(path: String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
+fn spawn_io_full(path: &String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
     pbuf = spawn_string_buf(path)
     plen = path.len()
     tab = Bytes.new(16)
-    spawn_argv_slot_ptr(tab, 0, pbuf, plen)
-    spawn_io_argv(path, 1, tab, stdin, stdout, stderr, d"", log_fd)
+    spawn_argv_slot_ptr(&tab, 0, &pbuf, plen)
+    spawn_io_argv(path, 1, &tab, stdin, stdout, stderr, &d"", log_fd)
 
-fn spawn_io_5(path: String, a1: String, a2: String, a3: String, a4: String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
+fn spawn_io_5(path: &String, a1: &String, a2: &String, a3: &String, a4: &String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
     pbuf = spawn_string_buf(path)
     b1 = spawn_string_buf(a1)
     b2 = spawn_string_buf(a2)
     b3 = spawn_string_buf(a3)
     b4 = spawn_string_buf(a4)
     tab = Bytes.new(80)
-    spawn_argv_slot_ptr(tab, 0, pbuf, path.len())
-    _1 = spawn_argv_slot_ptr(tab, 1, b1, a1.len())
-    _2 = spawn_argv_slot_ptr(tab, 2, b2, a2.len())
-    _3 = spawn_argv_slot_ptr(tab, 3, b3, a3.len())
-    _4 = spawn_argv_slot_ptr(tab, 4, b4, a4.len())
-    spawn_io_argv(path, 5, tab, stdin, stdout, stderr, d"", log_fd)
+    spawn_argv_slot_ptr(&tab, 0, &pbuf, path.len())
+    _1 = spawn_argv_slot_ptr(&tab, 1, &b1, a1.len())
+    _2 = spawn_argv_slot_ptr(&tab, 2, &b2, a2.len())
+    _3 = spawn_argv_slot_ptr(&tab, 3, &b3, a3.len())
+    _4 = spawn_argv_slot_ptr(&tab, 4, &b4, a4.len())
+    spawn_io_argv(path, 5, &tab, stdin, stdout, stderr, &d"", log_fd)
 
-fn spawn_io_4(path: String, a1: String, a2: String, a3: String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
+fn spawn_io_4(path: &String, a1: &String, a2: &String, a3: &String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
     pbuf = spawn_string_buf(path)
     b1 = spawn_string_buf(a1)
     b2 = spawn_string_buf(a2)
     b3 = spawn_string_buf(a3)
     tab = Bytes.new(64)
-    spawn_argv_slot_ptr(tab, 0, pbuf, path.len())
-    _1 = spawn_argv_slot_ptr(tab, 1, b1, a1.len())
-    _2 = spawn_argv_slot_ptr(tab, 2, b2, a2.len())
-    _3 = spawn_argv_slot_ptr(tab, 3, b3, a3.len())
-    spawn_io_argv(path, 4, tab, stdin, stdout, stderr, d"", log_fd)
+    spawn_argv_slot_ptr(&tab, 0, &pbuf, path.len())
+    _1 = spawn_argv_slot_ptr(&tab, 1, &b1, a1.len())
+    _2 = spawn_argv_slot_ptr(&tab, 2, &b2, a2.len())
+    _3 = spawn_argv_slot_ptr(&tab, 3, &b3, a3.len())
+    spawn_io_argv(path, 4, &tab, stdin, stdout, stderr, &d"", log_fd)
 
 fn wait_pid(pid: Int) -> Int ! io
     syscall(nr_wait(), pid, 0, 0, 0, 0, 0)
@@ -85,13 +85,13 @@ fn kill_pid(pid: Int, sig: Int) -> Int ! io
 
 fn read_fd_all_go(fd: Int, max: Int) -> String ! io, alloc
     buf = Bytes.new(max)
-    n = read_fd_all_fill(fd, max, buf, 0)
+    n = read_fd_all_fill(fd, max, &buf, 0)
     if n <= 0
         d""
     else
         Bytes.view_mem(buf.ptr(), n).to_str()
 
-fn read_fd_all_fill(fd: Int, max: Int, buf: Bytes, pos: Int) -> Int ! io
+fn read_fd_all_fill(fd: Int, max: Int, buf: &Bytes, pos: Int) -> Int ! io
     if pos >= max
         pos
     else
@@ -101,16 +101,16 @@ fn read_fd_all_fill(fd: Int, max: Int, buf: Bytes, pos: Int) -> Int ! io
         else
             read_fd_all_fill(fd, max, buf, pos + chunk)
 
-fn spawn_capture_stdout(path: String, arg: String) -> String ! io, alloc
+fn spawn_capture_stdout(path: &String, arg: &String) -> String ! io, alloc
     pp = Pipe.create()
     rd = pp.read_fd()
     wr = pp.write_fd()
     pbuf = spawn_string_buf(path)
     abuf = spawn_string_buf(arg)
     tab = Bytes.new(32)
-    spawn_argv_slot_ptr(tab, 0, pbuf, path.len())
-    spawn_argv_slot_ptr(tab, 1, abuf, arg.len())
-    pid = spawn_io_argv(path, 2, tab, spawn_fd_closed(), wr, spawn_fd_closed(), d"", 0)
+    spawn_argv_slot_ptr(&tab, 0, &pbuf, path.len())
+    spawn_argv_slot_ptr(&tab, 1, &abuf, arg.len())
+    pid = spawn_io_argv(path, 2, &tab, spawn_fd_closed(), wr, spawn_fd_closed(), &d"", 0)
     Fd.new(wr).close()
     if pid < 0
         Fd.new(rd).close()

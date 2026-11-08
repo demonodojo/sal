@@ -1,6 +1,6 @@
 # error: E_TYPE
 @arena
-fn f(xs: List[Int]) -> Int ! alloc
+fn f(xs: &List[Int]) -> Int ! alloc
     _a = xs.push(1)
     0
 

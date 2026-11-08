@@ -535,6 +535,7 @@ fn rename_type_refs(ty: &mut Type, renames: &HashMap<String, String>) {
             rename_type_refs(ret, renames);
         }
         Type::Tensor { .. } => {}
+        Type::Ref { inner, .. } => rename_type_refs(inner, renames),
     }
 }
 
@@ -854,6 +855,7 @@ fn qualify_type(ty: &mut Type, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnosti
             qualify_type(ret, ctx)?;
         }
         Type::Tensor { .. } => {}
+        Type::Ref { inner, .. } => qualify_type(inner, ctx)?,
     }
     Ok(())
 }

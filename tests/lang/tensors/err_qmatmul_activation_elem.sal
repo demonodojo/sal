@@ -1,5 +1,5 @@
 # error: E_TENSOR_ELEM
-fn f(a: Tensor[I8, 2, 4] on cpu, w: Tensor[I8, 4, 8] on cpu, s: Tensor[F32, 4, 1] on cpu) -> Int ! alloc
+fn f(a: &Tensor[I8, 2, 4] on cpu, w: &Tensor[I8, 4, 8] on cpu, s: &Tensor[F32, 4, 1] on cpu) -> Int ! alloc
     c = qmatmul(a, w, s, 32)
     0
 

@@ -1,7 +1,7 @@
 # exit: 4
-fn len2(s: String) -> Int ! alloc
+fn len2(s: &String) -> Int ! alloc
     str_len(s)
 
 fn main() -> Int ! alloc
     s = d"ab"
-    len2(s) + len2(s)
+    len2(&s) + len2(&s)

@@ -1,7 +1,7 @@
 import "fs.sal"
 
 @deprecated("use Path.new(path).chdir()")
-fn chdir_path(path: String) -> Int ! io, alloc
+fn chdir_path(path: &String) -> Int ! io, alloc
     chdir_go(path)
 
 @deprecated("use Path.cwd()")
@@ -9,9 +9,9 @@ fn getcwd_str() -> String ! io, alloc
     getcwd_go()
 
 @deprecated("use Path.new(\"\").find_up(name)")
-fn find_up(name: String) -> String ! io, alloc
+fn find_up(name: &String) -> String ! io, alloc
     find_up_go(name, 0)
 
 @deprecated("use Path.new(path) with stat_is_file_go or Path helpers")
-fn stat_is_file(path: String) -> Int ! io, alloc
+fn stat_is_file(path: &String) -> Int ! io, alloc
     stat_is_file_go(path)

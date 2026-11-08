@@ -14,10 +14,10 @@ static JsonNode.str(s: String) -> JsonNode ! alloc
 static JsonNode.num(v: Int) -> JsonNode ! alloc
     JsonNode(json_kind_num(), d"", v, -1, -1)
 
-method JsonNode.serialize_str(self borrow) -> String ! alloc
-    json_quote_char() + json_esc_content(self.str) + json_quote_char()
+method JsonNode.serialize_str(&self) -> String ! alloc
+    json_quote_char() + json_esc_content(&self.str) + json_quote_char()
 
-method JsonNode.serialize_num(self borrow) -> String ! alloc
+method JsonNode.serialize_num(&self) -> String ! alloc
     str_from_int(self.num)
 
 fn json_kind_null() -> Int
@@ -29,19 +29,19 @@ fn json_kind_str() -> Int
 fn json_kind_num() -> Int
     2
 
-fn json_canonical_flat(s: String) -> String ! alloc
-    a = extract_quoted_after(s, d"\"a\":\"")
-    b = extract_quoted_after(s, d"\"b\":\"")
+fn json_canonical_flat(s: &String) -> String ! alloc
+    a = extract_quoted_after(s, &d"\"a\":\"")
+    b = extract_quoted_after(s, &d"\"b\":\"")
     if a.len() > 0
         json_lbrace() + JsonNode.str(d"a").serialize_str() + d":" + JsonNode.str(a).serialize_str() + d"," + JsonNode.str(d"b").serialize_str() + d":" + JsonNode.str(b).serialize_str() + json_rbrace()
     else
-        n = extract_quoted_after(s, d"\"n\":")
+        n = extract_quoted_after(s, &d"\"n\":")
         if n.len() <= 0
             n = d"0"
         json_lbrace() + JsonNode.str(d"n").serialize_str() + d":" + n + json_rbrace()
 
 @deprecated("use JsonNode.str(s)")
-fn json_node_str(s: String) -> JsonNode ! alloc
+fn json_node_str(s: &String) -> JsonNode ! alloc
     JsonNode.str(s)
 
 @deprecated("use JsonNode.num(v)")
@@ -49,7 +49,7 @@ fn json_node_num(v: Int) -> JsonNode ! alloc
     JsonNode.num(v)
 
 @deprecated("use JsonNode.str(s).serialize_str()")
-fn json_serialize_str(s: String) -> String ! alloc
+fn json_serialize_str(s: &String) -> String ! alloc
     JsonNode.str(s).serialize_str()
 
 @deprecated("use JsonNode.num(v).serialize_num()")

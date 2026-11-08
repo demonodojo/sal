@@ -4,10 +4,10 @@ enum E
     B
     C
 
-fn f(e: E) -> Int
+fn f(e: &E) -> Int
     match e
         A(n) => n
         _ => 4
 
 fn main() -> Int
-    f(A(5)) + f(C) - 0
+    f(&A(5)) + f(&C) - 0

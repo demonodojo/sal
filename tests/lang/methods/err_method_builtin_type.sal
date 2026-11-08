@@ -1,5 +1,5 @@
 # error: E_TYPE
-method Int.double() -> Int
+method Int.double(&self) -> Int
     self * 2
 
 fn main() -> Int

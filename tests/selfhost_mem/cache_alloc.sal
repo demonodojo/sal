@@ -1,4 +1,4 @@
 import "../../selfhost/pkg/cache.sal"
 
 fn main() -> Int ! io, alloc
-    source_hash("fn main() -> Int\n    1\n").len()
+    source_hash(&"fn main() -> Int\n    1\n").len()

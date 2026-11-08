@@ -3,15 +3,15 @@ enum K
     One(Int)
     Two(Int)
 
-fn flip(k: K) -> K
+fn flip(k: &K) -> K
     match k
         One(n) => Two(n)
         Two(n) => One(n)
 
-fn val(k: K) -> Int
+fn val(k: &K) -> Int
     match k
         One(n) => n
         Two(n) => n * 2
 
 fn main() -> Int
-    val(flip(One(4)))
+    val(&flip(&One(4)))

@@ -34,7 +34,7 @@ struct ChainFix
     end: Int
     fix: String
 
-fn is_str_fun(name: String) -> Int ! alloc
+fn is_str_fun(name: &String) -> Int ! alloc
     if name.eq("str_concat") == 1
         1
     elsif name.eq("str_append") == 1
@@ -42,7 +42,7 @@ fn is_str_fun(name: String) -> Int ! alloc
     else
         0
 
-fn prev_non_nl(lex: Lex, i: Int) -> Int ! alloc
+fn prev_non_nl(lex: &Lex, i: Int) -> Int ! alloc
     if i <= 0
         0 - 1
     elsif lex.kind(i - 1) == TK_NL()
@@ -50,7 +50,7 @@ fn prev_non_nl(lex: Lex, i: Int) -> Int ! alloc
     else
         i - 1
 
-fn next_non_nl(lex: Lex, n: Int, i: Int) -> Int ! alloc
+fn next_non_nl(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         n
     elsif lex.kind(i) == TK_NL()
@@ -58,10 +58,10 @@ fn next_non_nl(lex: Lex, n: Int, i: Int) -> Int ! alloc
     else
         i
 
-fn join_plus(parts: List[String]) -> String ! alloc
+fn join_plus(parts: &List[String]) -> String ! alloc
     join_plus_go(parts, 0, parts.len(), d"")
 
-fn join_plus_go(parts: List[String], i: Int, n: Int, acc: String) -> String ! alloc
+fn join_plus_go(parts: &List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -69,9 +69,9 @@ fn join_plus_go(parts: List[String], i: Int, n: Int, acc: String) -> String ! al
         if i == 0
             join_plus_go(parts, i + 1, n, piece)
         else
-            join_plus_go(parts, i + 1, n, acc + " + " + piece)
+            join_plus_go(parts, i + 1, n, (acc + " + " + piece))
 
-fn scan_paren(lex: Lex, n: Int, i: Int, depth: Int, ci: Int) -> ScanR ! alloc
+fn scan_paren(lex: &Lex, n: Int, i: Int, depth: Int, ci: Int) -> ScanR ! alloc
     if i >= n
         ScanR(0, 0, 0)
     else
@@ -92,7 +92,7 @@ fn scan_paren(lex: Lex, n: Int, i: Int, depth: Int, ci: Int) -> ScanR ! alloc
         else
             scan_paren(lex, n, i + 1, depth, ci)
 
-fn parse_two_args(lex: Lex, n: Int, lp: Int) -> TwoArgs ! alloc
+fn parse_two_args(lex: &Lex, n: Int, lp: Int) -> TwoArgs ! alloc
     i = next_non_nl(lex, n, lp + 1)
     if i >= n
         TwoArgs(0, 0, 0, 0, 0, 0)
@@ -111,14 +111,14 @@ fn parse_two_args(lex: Lex, n: Int, lp: Int) -> TwoArgs ! alloc
             ce = lex.end(st.rp)
             TwoArgs(1, ce, a1s, a1e, a2s, a2e)
 
-fn parse_call_at(src: String, lex: Lex, n: Int, i: Int) -> StrCall ! alloc
+fn parse_call_at(src: &String, lex: &Lex, n: Int, i: Int) -> StrCall ! alloc
     if i >= n
         StrCall(0, 0, 0, 0, 0, 0, 0, 0)
     elsif lex.kind(i) != TK_IDENT()
         StrCall(0, 0, 0, 0, 0, 0, 0, 0)
     else
         name = lex.text(src, i)
-        fk = is_str_fun(name)
+        fk = is_str_fun(&name)
         if fk == 0
             StrCall(0, 0, 0, 0, 0, 0, 0, 0)
         else
@@ -134,15 +134,15 @@ fn parse_call_at(src: String, lex: Lex, n: Int, i: Int) -> StrCall ! alloc
                 else
                     StrCall(1, lex.start(i), parsed.ce, parsed.a1s, parsed.a1e, parsed.a2s, parsed.a2e, fk)
 
-fn build_call_fix(src: String, call: StrCall) -> String ! alloc
+fn build_call_fix(src: &String, call: StrCall) -> String ! alloc
     a = src.slice(call.a1s, call.a1e)
     b = src.slice(call.a2s, call.a2e)
     parts = List.new[String]()
     parts.push(a)
     parts.push(b)
-    join_plus(parts)
+    join_plus(&parts)
 
-fn try_assign_chain(src: String, lex: Lex, n: Int, i: Int) -> ChainFix ! alloc
+fn try_assign_chain(src: &String, lex: &Lex, n: Int, i: Int) -> ChainFix ! alloc
     if i >= n
         ChainFix(0, 0, 0, d"")
     elsif lex.kind(i) != TK_IDENT()
@@ -167,12 +167,12 @@ fn try_assign_chain(src: String, lex: Lex, n: Int, i: Int) -> ChainFix ! alloc
                 parts.push(b)
                 end_i = call.end
                 ti = tok_index_at_or_after(lex, n, end_i, 0)
-                end_i = chain_append_lines(src, lex, n, ti, var, parts, end_i)
-                rhs = join_plus(parts)
+                end_i = chain_append_lines(src, lex, n, ti, &var, &parts, end_i)
+                rhs = join_plus(&parts)
                 fix = var + " = " + rhs
                 ChainFix(1, lex.start(i), end_i, fix)
 
-fn tok_index_at_or_after(lex: Lex, n: Int, byte_pos: Int, i: Int) -> Int ! alloc
+fn tok_index_at_or_after(lex: &Lex, n: Int, byte_pos: Int, i: Int) -> Int ! alloc
     if i >= n
         n
     elsif lex.start(i) >= byte_pos
@@ -180,7 +180,7 @@ fn tok_index_at_or_after(lex: Lex, n: Int, byte_pos: Int, i: Int) -> Int ! alloc
     else
         tok_index_at_or_after(lex, n, byte_pos, i + 1)
 
-fn chain_append_lines(src: String, lex: Lex, n: Int, i: Int, var: String, parts: List[String], end_byte: Int) -> Int ! alloc
+fn chain_append_lines(src: &String, lex: &Lex, n: Int, i: Int, var: &String, parts: &List[String], end_byte: Int) -> Int ! alloc
     i2 = skip_nl(lex, n, i)
     if i2 >= n
         end_byte
@@ -216,12 +216,12 @@ fn chain_append_lines(src: String, lex: Lex, n: Int, i: Int, var: String, parts:
                         ti = tok_index_at_or_after(lex, n, end2, 0)
                         chain_append_lines(src, lex, n, ti, var, parts, end2)
 
-fn cop_stringplus(src: String, lex: Lex, offs: List[Off]) -> Int ! alloc
+fn cop_stringplus(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
     n = lex.len()
     cop_plus_assign_go(src, lex, offs, 0, n)
     cop_plus_call_go(src, lex, offs, 0, n)
 
-fn cop_plus_assign_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_plus_assign_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -235,10 +235,10 @@ fn cop_plus_assign_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) ->
         else
             cop_plus_assign_go(src, lex, offs, i + 1, n)
 
-fn inside_any_off(offs: List[Off], start: Int, end: Int) -> Int ! alloc
+fn inside_any_off(offs: &List[Off], start: Int, end: Int) -> Int ! alloc
     inside_off_go(offs, 0, offs.len(), start, end)
 
-fn inside_off_go(offs: List[Off], i: Int, n: Int, start: Int, end: Int) -> Int ! alloc
+fn inside_off_go(offs: &List[Off], i: Int, n: Int, start: Int, end: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -253,7 +253,7 @@ fn inside_off_go(offs: List[Off], i: Int, n: Int, start: Int, end: Int) -> Int !
         else
             inside_off_go(offs, i + 1, n, start, end)
 
-fn cop_plus_call_go(src: String, lex: Lex, offs: List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_plus_call_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

@@ -10,7 +10,7 @@ fn result_ok(v: Int) -> Int ! alloc
     _b = vec_push(r, v)
     r
 
-fn result_ok_str(v: String) -> Int ! alloc
+fn result_ok_str(v: &String) -> Int ! alloc
     result_ok(str_as_int(v))
 
 fn result_err(e: Int) -> Int ! alloc
@@ -19,7 +19,7 @@ fn result_err(e: Int) -> Int ! alloc
     _b = vec_push(r, e)
     r
 
-fn result_err_str(e: String) -> Int ! alloc
+fn result_err_str(e: &String) -> Int ! alloc
     result_err(str_as_int(e))
 
 fn result_is_err(r: Int) -> Int ! alloc

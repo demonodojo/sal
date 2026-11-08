@@ -7,13 +7,13 @@ fn total(n: Int) -> Int ! alloc
     xs = list_new[F]()
     i = 0
     while i < n
-        _a = list_push(xs, F(int_to_str(i), i, 1.5))
+        _a = list_push(&xs, F(int_to_str(i), i, 1.5))
         i = i + 1
-    f = list_get(xs, 2)
-    g = list_get(xs, 2)
+    f = list_get(&xs, 2)
+    g = list_get(&xs, 2)
     _b = list_set(xs, 0, F("zz", 40, 2.0))
-    h = list_get(xs, 0)
-    f.k + g.k + h.k + str_len(h.name) + list_len(xs)
+    h = list_get(&xs, 0)
+    f.k + g.k + h.k + str_len(h.name) + list_len(&xs)
 
 fn main() -> Int ! alloc
     total(5)

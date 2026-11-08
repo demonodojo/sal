@@ -2,7 +2,7 @@ struct Pt
     x: Int
     y: Int
 
-method Pt.sum() -> Int
+method Pt.sum(&self) -> Int
     self.x + self.y
 
 fn origin() -> Pt

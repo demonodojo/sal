@@ -9,17 +9,17 @@ struct P
 
 fn main() -> Int ! alloc
     names = dict_new[String, String]()
-    _a = dict_put(names, "k", "abc")
-    _b = dict_put(names, "k", "defg")
+    _a = dict_put(&names, &"k", "abc")
+    _b = dict_put(&names, &"k", "defg")
     ps = dict_new[String, P]()
-    _c = dict_put(ps, "p", P(3, 4))
-    n = match dict_get(names, "k")
+    _c = dict_put(&ps, &"p", P(3, 4))
+    n = match dict_get(&names, &"k")
         Some(s) => str_len(s)
         None => 0
-    m = match dict_get(names, "zz")
+    m = match dict_get(&names, &"zz")
         Some(s) => 100
         None => 1
-    p = match dict_get(ps, "p")
+    p = match dict_get(&ps, &"p")
         Some(q) => q.x * q.y
         None => 0
     has = if dict_has(ps, "p")

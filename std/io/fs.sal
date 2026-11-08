@@ -7,34 +7,34 @@ struct Path
 static Path.new(s: String) -> Path
     Path(s)
 
-method Path.open_read(self borrow) -> Int ! io, alloc
-    open_read_go(self.s)
+method Path.open_read(&self) -> Int ! io, alloc
+    open_read_go(&self.s)
 
-method Path.write(self borrow, data: String) -> Int ! io, alloc
-    write_file_go(self.s, data)
+method Path.write(&self, data: &String) -> Int ! io, alloc
+    write_file_go(&self.s, data)
 
-method Path.size(self borrow) -> Int ! io, alloc
-    stat_file_size_go(self.s)
+method Path.size(&self) -> Int ! io, alloc
+    stat_file_size_go(&self.s)
 
-method Path.mtime(self borrow) -> Int ! io, alloc
-    stat_mtime_go(self.s)
+method Path.mtime(&self) -> Int ! io, alloc
+    stat_mtime_go(&self.s)
 
-method Path.is_dir(self borrow) -> Int ! io, alloc
-    is_dir_go(self.s)
+method Path.is_dir(&self) -> Int ! io, alloc
+    is_dir_go(&self.s)
 
-method Path.mkdir(self borrow) -> Int ! io, alloc
-    mkdir_path_go(self.s)
+method Path.mkdir(&self) -> Int ! io, alloc
+    mkdir_path_go(&self.s)
 
-method Path.mkdir_p(self borrow) -> Int ! io, alloc
-    mkdir_p_go(self.s)
+method Path.mkdir_p(&self) -> Int ! io, alloc
+    mkdir_p_go(&self.s)
 
-method Path.parent(self borrow) -> String ! alloc
-    path_parent_go(self.s)
+method Path.parent(&self) -> String ! alloc
+    path_parent_go(&self.s)
 
-method Path.chdir(self borrow) -> Int ! io, alloc
-    chdir_go(self.s)
+method Path.chdir(&self) -> Int ! io, alloc
+    chdir_go(&self.s)
 
-method Path.find_up(self borrow, name: String) -> String ! io, alloc
+method Path.find_up(&self, name: &String) -> String ! io, alloc
     find_up_go(name, 0)
 
 static Path.cwd() -> String ! io, alloc
@@ -55,16 +55,16 @@ fn unlink_path_ptr(path_ptr: Int, path_len: Int) -> Int ! io
 fn rename_path_ptr(old_ptr: Int, old_len: Int, new_ptr: Int, new_len: Int) -> Int ! io
     syscall(nr_rename(), old_ptr, old_len, new_ptr, new_len, 0, 0)
 
-fn path_to_buf(path: String) -> Bytes ! alloc
+fn path_to_buf(path: &String) -> Bytes ! alloc
     buf = Bytes.new(path.len() + 1)
     buf.write_str(0, path)
     buf
 
-fn open_read_go(path: String) -> Int ! io, alloc
+fn open_read_go(path: &String) -> Int ! io, alloc
     b = path_to_buf(path)
     open_read_path_ptr(b.ptr(), path.len())
 
-fn write_file_go(path: String, data: String) -> Int ! io, alloc
+fn write_file_go(path: &String, data: &String) -> Int ! io, alloc
     b = path_to_buf(path)
     fd = open_flags(b.ptr(), path.len(), o_WRONLY() + o_CREAT() + o_TRUNC())
     if fd < 0
@@ -74,7 +74,7 @@ fn write_file_go(path: String, data: String) -> Int ! io, alloc
         Fd.new(fd).close()
         n
 
-fn stat_file_size_go(path: String) -> Int ! io, alloc
+fn stat_file_size_go(path: &String) -> Int ! io, alloc
     st = Bytes.new(stat_size())
     b = path_to_buf(path)
     rc = stat_path_ptr(b.ptr(), path.len(), st.ptr(), stat_size())
@@ -83,7 +83,7 @@ fn stat_file_size_go(path: String) -> Int ! io, alloc
     else
         st.get_i64(stat_off_size())
 
-fn stat_mtime_go(path: String) -> Int ! io, alloc
+fn stat_mtime_go(path: &String) -> Int ! io, alloc
     st = Bytes.new(stat_size())
     b = path_to_buf(path)
     rc = stat_path_ptr(b.ptr(), path.len(), st.ptr(), stat_size())
@@ -92,7 +92,7 @@ fn stat_mtime_go(path: String) -> Int ! io, alloc
     else
         st.get_i64(stat_off_mtime())
 
-fn is_dir_go(path: String) -> Int ! io, alloc
+fn is_dir_go(path: &String) -> Int ! io, alloc
     st = Bytes.new(stat_size())
     b = path_to_buf(path)
     rc = stat_path_ptr(b.ptr(), path.len(), st.ptr(), stat_size())
@@ -105,14 +105,14 @@ fn is_dir_go(path: String) -> Int ! io, alloc
         else
             0
 
-fn mkdir_path_go(path: String) -> Int ! io, alloc
+fn mkdir_path_go(path: &String) -> Int ! io, alloc
     b = path_to_buf(path)
     mkdir_path_ptr(b.ptr(), path.len())
 
-fn mkdir_p_go(path: String) -> Int ! io, alloc
+fn mkdir_p_go(path: &String) -> Int ! io, alloc
     mkdir_p_i(path, 1)
 
-fn mkdir_p_i(path: String, i: Int) -> Int ! io, alloc
+fn mkdir_p_i(path: &String, i: Int) -> Int ! io, alloc
     n = path.len()
     if i > n
         mkdir_path_go(path)
@@ -121,15 +121,15 @@ fn mkdir_p_i(path: String, i: Int) -> Int ! io, alloc
         if seg.eq(d"/") == 1
             pref = path.slice(0, i)
             if pref.len() > 1
-                _m = mkdir_path_go(pref)
+                _m = mkdir_path_go(&pref)
             mkdir_p_i(path, i + 1)
         else
             mkdir_p_i(path, i + 1)
 
-fn path_parent_go(path: String) -> String ! alloc
+fn path_parent_go(path: &String) -> String ! alloc
     path_parent_i(path, path.len() - 1)
 
-fn path_parent_i(path: String, i: Int) -> String ! alloc
+fn path_parent_i(path: &String, i: Int) -> String ! alloc
     if i <= 0
         d""
     else
@@ -140,48 +140,48 @@ fn path_parent_i(path: String, i: Int) -> String ! alloc
             path_parent_i(path, i - 1)
 
 @deprecated("use Path.new(path).open_read()")
-fn open_read(path: String) -> Int ! io, alloc
+fn open_read(path: &String) -> Int ! io, alloc
     open_read_go(path)
 
 @deprecated("use Path.new(path).write(data)")
-fn write_file_path(path: String, data: String) -> Int ! io, alloc
+fn write_file_path(path: &String, data: &String) -> Int ! io, alloc
     write_file_go(path, data)
 
 @deprecated("use Path.new(path).size()")
-fn stat_file_size(path: String) -> Int ! io, alloc
+fn stat_file_size(path: &String) -> Int ! io, alloc
     stat_file_size_go(path)
 
 @deprecated("use Path.new(path).mtime()")
-fn stat_mtime(path: String) -> Int ! io, alloc
+fn stat_mtime(path: &String) -> Int ! io, alloc
     stat_mtime_go(path)
 
 @deprecated("use Path.new(path).is_dir()")
-fn is_dir(path: String) -> Int ! io, alloc
+fn is_dir(path: &String) -> Int ! io, alloc
     is_dir_go(path)
 
 @deprecated("use Path.new(path).mkdir()")
-fn mkdir_path(path: String) -> Int ! io, alloc
+fn mkdir_path(path: &String) -> Int ! io, alloc
     mkdir_path_go(path)
 
 @deprecated("use Path.new(path).mkdir_p()")
-fn mkdir_p(path: String) -> Int ! io, alloc
+fn mkdir_p(path: &String) -> Int ! io, alloc
     mkdir_p_go(path)
 
 @deprecated("use Path.new(path).parent()")
-fn path_parent(path: String) -> String ! alloc
+fn path_parent(path: &String) -> String ! alloc
     path_parent_go(path)
 
-fn chdir_go(path: String) -> Int ! io, alloc
+fn chdir_go(path: &String) -> Int ! io, alloc
     b = path_to_buf(path)
     syscall(nr_chdir(), b.ptr(), path.len(), 0, 0, 0, 0)
 
-fn getcwd_buf(buf: Bytes, cap: Int) -> Int ! io
+fn getcwd_buf(buf: &Bytes, cap: Int) -> Int ! io
     syscall(nr_getcwd(), buf.ptr(), cap, 0, 0, 0, 0)
 
-fn cstr_len(buf: Bytes, cap: Int) -> Int
+fn cstr_len(buf: &Bytes, cap: Int) -> Int
     cstr_len_go(buf, 0, cap)
 
-fn cstr_len_go(buf: Bytes, i: Int, cap: Int) -> Int
+fn cstr_len_go(buf: &Bytes, i: Int, cap: Int) -> Int
     if i >= cap
         cap
     else
@@ -192,34 +192,34 @@ fn cstr_len_go(buf: Bytes, i: Int, cap: Int) -> Int
 
 fn getcwd_go() -> String ! io, alloc
     buf = Bytes.new(4096)
-    rc = getcwd_buf(buf, 4096)
+    rc = getcwd_buf(&buf, 4096)
     if rc < 0
         d""
     else
-        n = cstr_len(buf, 4096)
+        n = cstr_len(&buf, 4096)
         bytes_view(buf, 0, n).to_str()
 
-fn find_up_go(name: String, depth: Int) -> String ! io, alloc
+fn find_up_go(name: &String, depth: Int) -> String ! io, alloc
     if depth > 64
         d""
     else
         here = getcwd_go()
-        cand = path_join_file(here, name)
-        if stat_is_file_go(cand) == 1
+        cand = path_join_file(&here, name)
+        if stat_is_file_go(&cand) == 1
             cand
         else
-            if chdir_go(d"..") < 0
+            if chdir_go(&d"..") < 0
                 d""
             else
                 find_up_go(name, depth + 1)
 
-fn path_join_file(dir: String, name: String) -> String ! alloc
+fn path_join_file(dir: &String, name: &String) -> String ! alloc
     if dir.eq(d"/") == 1
         d"/" + name
     else
         dir + d"/" + name
 
-fn stat_is_file_go(path: String) -> Int ! io, alloc
+fn stat_is_file_go(path: &String) -> Int ! io, alloc
     st = Bytes.new(stat_size())
     b = path_to_buf(path)
     rc = stat_path_ptr(b.ptr(), path.len(), st.ptr(), stat_size())

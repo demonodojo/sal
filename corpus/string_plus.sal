@@ -6,20 +6,20 @@
 struct Path
     raw: String
 
-fn join(s: String, n: String, m: String) -> String ! alloc
+fn join(s: &String, n: &String, m: &String) -> String ! alloc
     s + n + m
 
 fn tag(x: Int) -> String ! alloc
     str_from_int(x) + "a"
 
-fn show(p: Path) -> String ! alloc
+fn show(p: &Path) -> String ! alloc
     p.raw + "/x"
 
-fn fill(acc: String, piece: String) -> String ! alloc
+fn fill(acc: String, piece: &String) -> String ! alloc
     acc = acc + piece + ","
     acc
 
-fn count(s: String, n: Int) -> String ! alloc
+fn count(s: &String, n: Int) -> String ! alloc
     s + int_to_str(n)
 
 fn main() -> Int ! alloc

@@ -1,9 +1,9 @@
 # exit: 14
-fn tag(s: String) -> Int
+fn tag(s: &String) -> Int
     match s
         "a" => 1
         "b" => 2
         x => 10 + s.len()
 
 fn main() -> Int
-    tag("a") + tag("b") + tag("c")
+    tag(&"a") + tag(&"b") + tag(&"c")

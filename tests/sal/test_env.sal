@@ -4,7 +4,7 @@ import "support/assert.sal"
 # getenv must return the variable's real text (it once returned NULs) and must
 # not shadow libc's getenv, which the linux host runtime calls itself.
 fn main() -> Int ! io, alloc
-    p = getenv(d"PATH")
+    p = getenv(&d"PATH")
     a = assert_ne(p.len(), 0, 1)
     if a != 0
         a
@@ -13,4 +13,4 @@ fn main() -> Int ! io, alloc
         if b != 0
             b
         else
-            assert_zero(getenv(d"SAL_SURELY_UNSET_VAR").len(), 3)
+            assert_zero(getenv(&d"SAL_SURELY_UNSET_VAR").len(), 3)

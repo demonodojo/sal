@@ -36,10 +36,10 @@ fn emit_c_bytes_set(args: Int, width: Int) -> String ! alloc
     w = int_to_str(width)
     "({ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; int64_t __x = " + arg_at(args, 2) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); __builtin_memcpy((char *)__b[0] + __i, &__x, " + w + "); (int64_t)0; })"
 
-fn mangled(name: String) -> String ! alloc
+fn mangled(name: &String) -> String ! alloc
     "fn_" + name
 
-fn c_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
+fn c_escape_go(s: &String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -75,7 +75,7 @@ fn c_escape_go(s: String, i: Int, n: Int, acc: String) -> String ! alloc
 fn c_octal(c: Int) -> String ! alloc
     "\\" + int_to_str(c / 64) + int_to_str((c / 8) % 8) + int_to_str(c % 8)
 
-fn c_escape_str(s: String) -> String ! alloc
+fn c_escape_str(s: &String) -> String ! alloc
     acc = "\""
     if str_len(s) == 0
         acc + "\""
@@ -83,7 +83,7 @@ fn c_escape_str(s: String) -> String ! alloc
         acc2 = c_escape_go(s, 0, str_len(s), acc)
         acc2 + "\""
 
-fn c_string_init(s: String) -> String ! alloc
+fn c_string_init(s: &String) -> String ! alloc
     if str_len(s) == 0
         "\"\""
     else
@@ -93,7 +93,7 @@ fn c_string_init(s: String) -> String ! alloc
 
 fn lit_pool_new() -> Int ! alloc
     v = vec_new()
-    _a = vec_push(v, str_as_int(""))
+    _a = vec_push(v, str_as_int(&""))
     _b = vec_push(v, vec_new())
     _c = vec_push(v, vec_new())
     _d = vec_push(v, 0)
@@ -117,20 +117,20 @@ fn lit_pool_variant_fields(pool: Int) -> Int ! alloc
 
 # Registers every variant of `enums` (an entry per name: its code in `m`, `[enum index, variant
 # index]` in `ft`); a later definition of a name replaces an earlier one.
-fn variants_register(m: Int, ft: Int, enums: List[TEnum], i: Int, n: Int) -> Int ! alloc
+fn variants_register(m: Int, ft: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         ed = list_get(enums, i)
-        _a = variants_register_go(m, ft, i, ed.variants, 0, list_len(ed.variants))
+        _a = variants_register_go(m, ft, i, &ed.variants, 0, list_len(&ed.variants))
         variants_register(m, ft, enums, i + 1, n)
 
-fn variants_register_go(m: Int, ft: Int, ei: Int, vs: List[TVariant], i: Int, n: Int) -> Int ! alloc
+fn variants_register_go(m: Int, ft: Int, ei: Int, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         v = list_get(vs, i)
-        nullary = if list_len(v.fields) == 0
+        nullary = if list_len(&v.fields) == 0
             1
         else
             0
@@ -141,7 +141,7 @@ fn variants_register_go(m: Int, ft: Int, ei: Int, vs: List[TVariant], i: Int, n:
                 i + 1
         else
             i + 1
-        key = str_as_int(v.name)
+        key = str_as_int(&v.name)
         _p = map_put(m, key, (tag + 1) * 2 + nullary)
         entry = vec_new()
         _q1 = vec_push(entry, ei)
@@ -160,7 +160,7 @@ fn lit_pool_find(s: Int, texts: Int, i: Int, n: Int) -> Int ! alloc
     else
         lit_pool_find(s, texts, i + 1, n)
 
-fn sal_lit_decl_n(s: String, name: String, n: Int) -> String ! alloc
+fn sal_lit_decl_n(s: &String, name: &String, n: Int) -> String ! alloc
     init = select_str(str_len(s) == 0, "\"\"", c_string_init(s))
     arr = n + 1
     acc = "static const struct { int64_t cap; int64_t len; char b["
@@ -173,7 +173,7 @@ fn sal_lit_decl_n(s: String, name: String, n: Int) -> String ! alloc
     acc = acc + init
     acc + " };\n"
 
-fn sal_lit_decl(s: String, name: String) -> String ! alloc
+fn sal_lit_decl(s: &String, name: &String) -> String ! alloc
     if str_len(s) == 0
         sal_lit_decl_n(s, name, 0)
     else
@@ -188,11 +188,11 @@ fn ensure_sal_lit(s: Int, pool: Int) -> String ! alloc
     else
         nid = vec_get(pool, 3) + 1
         _u = vec_set(pool, 3, nid)
-        decl = sal_lit_decl(str_from_int(s), "sal_lit_" + int_to_str(nid))
+        decl = sal_lit_decl(&str_from_int(s), &("sal_lit_" + int_to_str(nid)))
         gacc = lit_pool_globals(pool)
-        _g = vec_set(pool, 0, str_as_int(gacc + decl))
-        _t = vec_push(texts, str_as_int(strdup(str_from_int(s))))
-        _sy = vec_push(vec_get(pool, 2), str_as_int("sal_lit_" + int_to_str(nid)))
+        _g = vec_set(pool, 0, str_as_int(&(gacc + decl)))
+        _t = vec_push(texts, str_as_int(&strdup(str_from_int(s))))
+        _sy = vec_push(vec_get(pool, 2), str_as_int(&("sal_lit_" + int_to_str(nid))))
         cast = "((int64_t)(uintptr_t)" + "sal_lit_" + int_to_str(nid)
         cast + ".b)"
 
@@ -228,7 +228,7 @@ fn lit_pool_free_texts(pool: Int) -> Int ! alloc
     vec_set(pool, 2, vec_new())
     0
 
-fn cmap_op(op: String) -> String ! alloc
+fn cmap_op(op: &String) -> String ! alloc
     if str_eq(op, "add") == 1
         "+"
     elsif str_eq(op, "sub") == 1
@@ -265,7 +265,7 @@ fn cmap_op(op: String) -> String ! alloc
         "+"
 
 # Code understood by `sal_fop` in the C prelude (`op` without the `f` prefix).
-fn float_op_code(op: String) -> Int ! alloc
+fn float_op_code(op: &String) -> Int ! alloc
     if str_eq(op, "add") == 1
         0
     elsif str_eq(op, "sub") == 1
@@ -308,7 +308,7 @@ fn pad_args(v: Int, n: Int) -> Int ! alloc
     if vec_len(v) >= n
         0
     else
-        _p = vec_push(v, str_as_int("0"))
+        _p = vec_push(v, str_as_int(&"0"))
         pad_args(v, n)
 
 fn emit_params_comma(i: Int) -> String ! alloc
@@ -317,7 +317,7 @@ fn emit_params_comma(i: Int) -> String ! alloc
     else
         ""
 
-fn emit_params_c(params: List[TParam], i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_params_c(params: &List[TParam], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
@@ -345,7 +345,7 @@ fn emit_extern_params(n: Int, i: Int, acc: String) -> String ! alloc
 fn emit_extern_decl(pair: Int) -> String ! alloc
     name = vec_get(pair, 0)
     nparams = vec_get(pair, 1)
-    m = mangled(str_from_int(name))
+    m = mangled(&str_from_int(name))
     acc = "extern int64_t " + m + "("
     if nparams == 0
         acc = acc + "void"
@@ -361,18 +361,18 @@ fn emit_extern_decls(externs: Int, i: Int, n: Int, acc: String) -> String ! allo
         acc = acc + piece
         emit_extern_decls(externs, i + 1, n, acc)
 
-fn emit_c_fn_header(f: TFn, linkable: Int, allow_main: Int) -> String ! alloc
+fn emit_c_fn_header(f: &TFn, linkable: Int, allow_main: Int) -> String ! alloc
     if allow_main == 0
         if str_eq(f.name, "main") == 1
             ""
         else
-            emit_c_fn_header_body(f.name, f.params, linkable)
+            emit_c_fn_header_body(&f.name, &f.params, linkable)
     elsif str_eq(f.name, "main") == 1
         "int main(int argc, char **argv) {\n  sal_runtime_init((int64_t)argc, (const char **)argv);\n"
     else
-        emit_c_fn_header_body(f.name, f.params, linkable)
+        emit_c_fn_header_body(&f.name, &f.params, linkable)
 
-fn emit_c_fn_header_body(name: String, params: List[TParam], linkable: Int) -> String ! alloc
+fn emit_c_fn_header_body(name: &String, params: &List[TParam], linkable: Int) -> String ! alloc
     m = mangled(name)
     pref = select_str(linkable, "int64_t ", "static int64_t ")
     acc = pref + m
@@ -380,11 +380,11 @@ fn emit_c_fn_header_body(name: String, params: List[TParam], linkable: Int) -> S
     acc = emit_params_c(params, 0, list_len(params), acc)
     acc + ") {\n"
 
-fn tparam_names(params: List[TParam], i: Int, n: Int, out: Int) -> Int ! alloc
+fn tparam_names(params: &List[TParam], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        _p = vec_push(out, str_as_int(list_get(params, i).name))
+        _p = vec_push(out, str_as_int(&list_get(params, i).name))
         tparam_names(params, i + 1, n, out)
 
 fn append_stmt_strings(acc: String, stmts: Int, i: Int, n: Int) -> String ! alloc

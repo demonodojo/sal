@@ -2,12 +2,12 @@ import "std/text/pattern.sal"
 import "support/assert.sal"
 
 fn main() -> Int ! io, alloc
-    a = assert_ne(grep_literal(d"hello world", d"world"), 0, 1)
+    a = assert_ne(grep_literal(&d"hello world", &d"world"), 0, 1)
     if a != 0
         a
     else
-        b = assert_zero(grep_literal(d"hello", d"xyz"), 2)
+        b = assert_zero(grep_literal(&d"hello", &d"xyz"), 2)
         if b != 0
             b
         else
-            assert_ne(grep_literal(d"x", d""), 0, 3)
+            assert_ne(grep_literal(&d"x", &d""), 0, 3)

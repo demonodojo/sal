@@ -1,14 +1,14 @@
 # exit: 5
 # A written `borrow` wins over inference: `skip` never reads `s` (inferred it would take it),
 # so the caller may keep using `s`; `take` after the type is a mode, not part of the type.
-fn skip(s: String borrow, k: Int) -> Int ! alloc
+fn skip(s: &String, k: Int) -> Int ! alloc
     k
 
-fn eat(s: String take) -> Int ! alloc
+fn eat(s: &String) -> Int ! alloc
     str_len(s)
 
 fn main() -> Int ! alloc
     s = strdup(d"abc")
-    a = skip(s, 2)
+    a = skip(&s, 2)
     b = str_len(s)
     a + b

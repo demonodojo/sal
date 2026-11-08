@@ -1,5 +1,5 @@
 # error: E_TYPE
-fn f(q: Tensor[F32, 4, 2, 8] on cpu, k: Tensor[F32, 4, 2, 8] on cpu, v: Tensor[F32, 4, 2, 8] on cpu) -> Int ! alloc
+fn f(q: &Tensor[F32, 4, 2, 8] on cpu, k: &Tensor[F32, 4, 2, 8] on cpu, v: &Tensor[F32, 4, 2, 8] on cpu) -> Int ! alloc
     c = attention(q, k, v)
     0
 

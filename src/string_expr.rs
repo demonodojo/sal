@@ -39,6 +39,13 @@ pub struct StringEnv {
     pub consts: HashMap<String, crate::consteval::ConstValue>,
 }
 
+fn peel_ref_type(ty: &Type) -> &Type {
+    match ty {
+        Type::Ref { inner, .. } => peel_ref_type(inner),
+        other => other,
+    }
+}
+
 impl StringEnv {
     /// Struct defs and struct-returning fns from every module in a linked graph.
     pub fn from_module_graph(progs: &[&Program]) -> Self {
@@ -59,13 +66,14 @@ impl StringEnv {
                     protocols.insert(p.name.clone(), p.clone());
                 }
                 if let Item::Fn(f) = item {
-                    if let Type::Named { name, args, .. } = &f.ret {
+                    let ret = peel_ref_type(&f.ret);
+                    if let Type::Named { name, args, .. } = ret {
                         if args.is_empty() && structs.contains_key(name) {
                             fn_struct_rets.insert(f.name.clone(), name.clone());
                         }
                     }
-                    if matches!(f.ret, Type::Tensor { .. }) {
-                        fn_tensor_rets.insert(f.name.clone(), f.ret.clone());
+                    if let Type::Tensor { .. } = ret {
+                        fn_tensor_rets.insert(f.name.clone(), ret.clone());
                     }
                 }
             }
@@ -164,16 +172,22 @@ impl StringEnv {
             if let Some(sn) = self.struct_types.get(src).cloned() {
                 self.struct_types.insert(name.to_string(), sn);
             }
-        } else if let Some(Type::Named { name: sn, args, .. }) = self.expr_type(init).cloned() {
+        } else if let Some(ty) = self.expr_type(init).map(peel_ref_type).cloned() {
             // e.g. the result of a generic call instantiated with a struct
-            if args.is_empty() && self.structs.contains_key(&sn) {
-                self.struct_types.insert(name.to_string(), sn);
+            if let Type::Named { name: sn, args, .. } = ty {
+                if args.is_empty() && self.structs.contains_key(&sn) {
+                    self.struct_types.insert(name.to_string(), sn);
+                }
             }
         }
     }
 
     pub fn note_struct_binding(&mut self, name: &str, ty: &Type) {
-        if let Type::Named { name: sn, args, .. } = ty {
+        let mut ty = ty;
+        while let Type::Ref { inner, .. } = ty {
+            ty = inner;
+        }
+        if let Type::Named { name: sn, args, .. } | Type::Qualified { name: sn, args, .. } = ty {
             if args.is_empty() && self.structs.contains_key(sn) {
                 self.struct_types.insert(name.to_string(), sn.clone());
             }
@@ -287,5 +301,9 @@ pub fn add_right_is_fresh_temp(right: &Expr, env: &StringEnv) -> bool {
 }
 
 pub fn is_string_type(t: &Type) -> bool {
+    let mut t = t;
+    while let Type::Ref { inner, .. } = t {
+        t = inner;
+    }
     matches!(t, Type::Named { name, .. } if name == "String")
 }

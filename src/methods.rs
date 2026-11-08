@@ -34,6 +34,13 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("String", "index_of") => "str_index_of",
         ("String", "index_from") => "str_index_from",
         ("String", "dup") => "strdup",
+        ("String", "clone") => "strdup",
+        ("List", "clone") => "list_clone",
+        ("Dict", "clone") => "dict_clone",
+        ("Bytes", "clone") => "bytes_clone",
+        ("Int", "clone") => "clone_copy",
+        ("Float", "clone") => "clone_copy",
+        ("Bool", "clone") => "clone_copy",
         ("List", "len") => "list_len",
         ("List", "push") => "list_push",
         ("List", "get") => "list_get",
@@ -182,11 +189,27 @@ pub fn desugar_method_defs(prog: &mut Program) -> DiagResult<()> {
             return err(format!("method `{recv}.{}` is already defined", f.name), f.span);
         }
         if f.method_kind == MethodKind::Method {
+            let named = Type::Named { name: recv, args: vec![], span: f.span };
+            let ty = match f.self_ref {
+                1 => Type::Ref {
+                    mutable: false,
+                    lifetime: None,
+                    inner: Box::new(named),
+                    span: f.span,
+                },
+                2 => Type::Ref {
+                    mutable: true,
+                    lifetime: None,
+                    inner: Box::new(named),
+                    span: f.span,
+                },
+                _ => named,
+            };
             f.params.insert(
                 0,
                 Param {
                     name: "self".into(),
-                    ty: Type::Named { name: recv, args: vec![], span: f.span },
+                    ty,
                     mode: f.self_mode,
                     span: f.span,
                 },

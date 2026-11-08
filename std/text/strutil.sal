@@ -28,31 +28,31 @@ fn json_esc_byte(c: Int) -> String ! alloc
                 else
                     String.from_char(c)
 
-fn json_esc_fill(s: String, i: Int, n: Int, buf: Bytes, pos: Int) -> Int ! alloc
+fn json_esc_fill(s: &String, i: Int, n: Int, buf: &Bytes, pos: Int) -> Int ! alloc
     if i >= n
         pos
     else
         piece = json_esc_byte(s.char(i))
-        p2 = json_esc_write(buf, pos, piece, 0, piece.len())
+        p2 = json_esc_write(buf, pos, &piece, 0, piece.len())
         json_esc_fill(s, i + 1, n, buf, p2)
 
-fn json_esc_write(buf: Bytes, pos: Int, piece: String, i: Int, n: Int) -> Int ! alloc
+fn json_esc_write(buf: &Bytes, pos: Int, piece: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         pos
     else
         buf.set_u8(pos, piece.char(i))
         json_esc_write(buf, pos + 1, piece, i + 1, n)
 
-fn json_esc_content(s: String) -> String ! alloc
+fn json_esc_content(s: &String) -> String ! alloc
     n = s.len()
     if n <= 0
         d""
     else
         buf = Bytes.new(n * 6 + 1)
-        end = json_esc_fill(s, 0, n, buf, 0)
+        end = json_esc_fill(s, 0, n, &buf, 0)
         Bytes.view_mem(buf.ptr(), end).to_str()
 
-fn quote_end(body: String, end: Int, n: Int) -> Int ! alloc
+fn quote_end(body: &String, end: Int, n: Int) -> Int ! alloc
     if end >= n
         end
     elsif body.char(end) == 34
@@ -62,7 +62,7 @@ fn quote_end(body: String, end: Int, n: Int) -> Int ! alloc
     else
         quote_end(body, end + 1, n)
 
-fn extract_quoted_after(body: String, marker: String) -> String ! alloc
+fn extract_quoted_after(body: &String, marker: &String) -> String ! alloc
     idx = body.index_of(marker)
     if idx < 0
         d""

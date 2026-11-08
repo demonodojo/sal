@@ -2,17 +2,17 @@ struct B
     xs: List[Int]
     n: Int
 
-fn tp_free_shallow(b: B) -> Int ! alloc
+fn tp_free_shallow(b: &B) -> Int ! alloc
     list_free(b.xs)
     0
 
-fn tp_free_block(b: B) -> Int ! alloc
+fn tp_free_block(b: &B) -> Int ! alloc
     tp_free_shallow(b)
 
-fn emit_ir_cached(b: B) -> Int ! alloc
+fn emit_ir_cached(b: &B) -> Int ! alloc
     tp_free_shallow(b)
 
-fn emit_ir_single_file(b: B) -> Int ! alloc
+fn emit_ir_single_file(b: &B) -> Int ! alloc
     emit_ir_cached(b)
     tp_free_block(b)
 
@@ -23,4 +23,4 @@ fn mk() -> B ! alloc
 
 fn main() -> Int ! alloc
     t = mk()
-    emit_ir_single_file(t)
+    emit_ir_single_file(&t)

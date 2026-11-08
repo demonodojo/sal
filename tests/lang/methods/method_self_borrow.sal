@@ -3,7 +3,7 @@ struct N
     name: String
     k: Int
 
-method N.size(self borrow, extra: Int) -> Int
+method N.size(&self, extra: Int) -> Int
     str_len(self.name) + extra
 
 fn main() -> Int ! alloc
