@@ -4332,6 +4332,14 @@ fn type_named_is(name: &str, ty: Option<&Type>) -> bool {
     matches!(ty, Some(Type::Named { name: n, .. }) if n == name)
 }
 
+/// `match` on `&E` / `&mut E` sees the enum. `&` of a heap enum is the box itself.
+fn peel_match_ty(ty: Option<Type>) -> Option<Type> {
+    match ty {
+        Some(Type::Ref { inner, .. }) => peel_match_ty(Some(*inner)),
+        other => other,
+    }
+}
+
 fn match_scrut_uses_enum_switch(scrut_ty: Option<&Type>, strings: &StringEnv) -> bool {
     matches!(
         scrut_ty,
@@ -4381,6 +4389,7 @@ fn lower_match_chain(
     host_literals: &mut Vec<IrHostLiteral>,
     strings: &mut StringEnv,
 ) -> String {
+    let scrut_ty = peel_match_ty(scrut_ty);
     if arms.is_empty() {
         *counter += 1;
         return format!("t{counter}");

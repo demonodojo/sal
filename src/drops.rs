@@ -39,6 +39,9 @@ thread_local! {
     static VARIANT_CTORS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns whose `String` result is always fresh: the caller owns it (see `owned_return_fns`).
     static OWNED_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// Locals passed to `list_push_share`: the list borrows the element, so a later
+    /// `list_get` is the same pointer and the list must not be released with `list_free`.
+    static SHARED_LISTS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
 fn collect_enum_types(enums: &HashMap<String, EnumDef>) {
@@ -1119,6 +1122,25 @@ fn expr(e: &Expr, f: &mut Facts) {
                 Expr::Ident { name, .. } => name.as_str(),
                 _ => "",
             };
+            if callee == "list_push_share" {
+                if let Some(Expr::Ident { name: xs, .. }) = args.first() {
+                    f.tainted.insert(xs.clone());
+                }
+            }
+            // `str_as_int(&s)` stores the string as a handle. The local must not be
+            // released: the handle is what later reads it.
+            if callee == "str_as_int" {
+                for a in args {
+                    let mut cur = a;
+                    while let Expr::Unary { expr, .. } = cur {
+                        cur = expr;
+                    }
+                    if let Expr::Ident { name, .. } = cur {
+                        f.escaped.insert(name.clone());
+                        f.soft.remove(name);
+                    }
+                }
+            }
             for (i, a) in args.iter().enumerate() {
                 let reads = ro.as_ref().and_then(|r| r.get(i)).copied().unwrap_or(false);
                 let user_fn = f.cons.contains_key(callee);
@@ -1718,6 +1740,11 @@ fn borrow_of(e: &Expr, borrows: &HashMap<String, Borr>) -> Option<Borr> {
                 return None;
             };
             if name == "list_get" {
+                if let Some(Expr::Ident { name: xs, .. }) = args.first() {
+                    if SHARED_LISTS.with(|s| s.borrow().contains(xs)) {
+                        return None;
+                    }
+                }
                 return desc_of_type(&type_at(e)?);
             }
             if ctor_is_alias(name, args, borrows) {
@@ -1956,7 +1983,91 @@ fn claim_block(b: &mut Block, own_tail: bool, borrows: &mut HashMap<String, Borr
     }
 }
 
+fn shared_list_names(f: &FnDef) -> HashSet<String> {
+    let mut out = HashSet::new();
+    collect_shared_block(&f.body, &mut out);
+    out
+}
+
+fn collect_shared_block(b: &Block, out: &mut HashSet<String>) {
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { init, .. } => collect_shared_expr(init, out),
+            Stmt::Expr(e) => collect_shared_expr(e, out),
+            Stmt::Assign { target, value, .. } => {
+                collect_shared_expr(target, out);
+                collect_shared_expr(value, out);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    collect_shared_expr(v, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_shared_expr(cond, out);
+                collect_shared_block(body, out);
+            }
+            Stmt::Break { .. } => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        collect_shared_expr(t, out);
+    }
+}
+
+fn collect_shared_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Call { func, args, .. } => {
+            if let (Expr::Ident { name, .. }, Some(Expr::Ident { name: xs, .. })) = (func.as_ref(), args.first()) {
+                if name == "list_push_share" {
+                    out.insert(xs.clone());
+                }
+            }
+            collect_shared_expr(func, out);
+            for a in args {
+                collect_shared_expr(a, out);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_shared_expr(body, out),
+        Expr::Binary { left, right, .. } => {
+            collect_shared_expr(left, out);
+            collect_shared_expr(right, out);
+        }
+        Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } | Expr::Field { base: expr, .. } => {
+            collect_shared_expr(expr, out);
+        }
+        Expr::Block(b) => collect_shared_block(b, out),
+        Expr::On { body, .. } => collect_shared_block(body, out),
+        Expr::TensorLit { rows, .. } => {
+            for row in rows {
+                for c in row {
+                    collect_shared_expr(c, out);
+                }
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_shared_expr(scrutinee, out);
+            for a in arms {
+                collect_shared_expr(&a.body, out);
+            }
+        }
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            collect_shared_expr(cond, out);
+            collect_shared_block(then_block, out);
+            for a in elsifs {
+                collect_shared_expr(&a.cond, out);
+                collect_shared_block(&a.body, out);
+            }
+            if let Some(b) = else_block {
+                collect_shared_block(b, out);
+            }
+        }
+    }
+}
+
 fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
+    SHARED_LISTS.with(|s| *s.borrow_mut() = shared_list_names(f));
     let mut borrows = HashMap::new();
     claim_block(&mut f.body, true, &mut borrows, variants);
     let mut facts = fn_facts(f, variants, ro, &ReadOnly::new());

@@ -1,0 +1,15 @@
+# exit: 1
+# selfhost-xfail: el stage1 aborta en lower_params al bajar un match sobre una referencia
+enum E
+    No
+    Yes
+
+fn f(e: &E) -> Int
+    match e
+        No => 0
+        _ => 1
+
+fn main() -> Int
+    a = No
+    b = Yes
+    f(&a) + f(&b)

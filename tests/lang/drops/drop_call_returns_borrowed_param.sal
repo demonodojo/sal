@@ -10,7 +10,7 @@ fn elsifs_else_block(else_b: &B, n: Int) -> &B ! alloc
     if n == 0
         else_b
     else
-        &B(List.new[Int](), n)
+        else_b
 
 fn lower_if(else_b0: &B, n: Int) -> Int ! alloc
     r = elsifs_else_block(else_b0, n)

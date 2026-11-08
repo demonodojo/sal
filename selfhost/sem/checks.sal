@@ -11,9 +11,7 @@ import consteval
 # Ok(0), or Err(message) for the first violation in `prog`.
 fn check_program(tp: &TProgram) -> Int ! alloc
     none = List.new[TProgram]()
-    r = check_program_in(tp, &none)
-    list_free(none)
-    r
+    check_program_in(tp, &none)
 
 # `progs`: every program of the module graph (empty when single-file).
 fn check_program_in(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc

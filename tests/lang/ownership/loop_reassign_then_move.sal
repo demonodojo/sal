@@ -1,0 +1,9 @@
+# exit: 2
+fn main() -> Int
+    i = 0
+    s = "a"
+    while i < 2
+        s = "b"
+        t = s
+        i = i + 1
+    i

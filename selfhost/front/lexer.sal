@@ -536,24 +536,24 @@ fn lex_tok(src: &String, i: Int, n: Int, out: &Toks, st: &List[Int]) -> Int ! al
         lex_tok_rest(src, i, n, out, st, c)
 
 fn lex_tok_rest(src: &String, i: Int, n: Int, out: &Toks, st: &List[Int], c: Int) -> Int ! alloc
-    match c
-        40 =>
-            _p = tok_push(out, TK_LPAREN(), &"", 0)
-            _g = group_enter(st)
-            lex_go(src, i + 1, n, out, st, 0)
-        41 =>
-            _p = tok_push(out, TK_RPAREN(), &"", 0)
-            _g = group_leave(st)
-            lex_go(src, i + 1, n, out, st, 0)
-        91 =>
-            _p = tok_push(out, TK_LBRACK(), &"", 0)
-            _g = group_enter(st)
-            lex_go(src, i + 1, n, out, st, 0)
-        93 =>
-            _p = tok_push(out, TK_RBRACK(), &"", 0)
-            _g = group_leave(st)
-            lex_go(src, i + 1, n, out, st, 0)
-        _ => lex_tok_rest2(src, i, n, out, st, c)
+    if c == 40
+        _p = tok_push(out, TK_LPAREN(), &"", 0)
+        _g = group_enter(st)
+        lex_go(src, i + 1, n, out, st, 0)
+    elsif c == 41
+        _p = tok_push(out, TK_RPAREN(), &"", 0)
+        _g = group_leave(st)
+        lex_go(src, i + 1, n, out, st, 0)
+    elsif c == 91
+        _p = tok_push(out, TK_LBRACK(), &"", 0)
+        _g = group_enter(st)
+        lex_go(src, i + 1, n, out, st, 0)
+    elsif c == 93
+        _p = tok_push(out, TK_RBRACK(), &"", 0)
+        _g = group_leave(st)
+        lex_go(src, i + 1, n, out, st, 0)
+    else
+        lex_tok_rest2(src, i, n, out, st, c)
 
 fn lex_tok_rest2(src: &String, i: Int, n: Int, out: &Toks, st: &List[Int], c: Int) -> Int ! alloc
     if c == 44

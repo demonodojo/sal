@@ -88,16 +88,16 @@ fn tenv_push_structs(out: &List[TStruct], src: &List[TStruct], i: Int, n: Int) -
 
 # Every function of the graph, so a callee defined in another module is visible to the glue.
 fn graph_fns(order: &Graph) -> List[TFn] ! alloc
-    graph_fns_go(&order.progs, 0, order.progs.len(), &List.new[TFn]())
+    graph_fns_go(&order.progs, 0, order.progs.len(), List.new[TFn]())
 
-fn graph_fns_go(progs: &List[TProgram], i: Int, n: Int, out: &List[TFn]) -> List[TFn] ! alloc
+fn graph_fns_go(progs: &List[TProgram], i: Int, n: Int, out: List[TFn]) -> List[TFn] ! alloc
     if i >= n
         out
     else
         tp = progs.get(i)
-        graph_fns_go(progs, i + 1, n, &graph_fns_add(out, &tp.fns, 0, tp.fns.len()))
+        graph_fns_go(progs, i + 1, n, graph_fns_add(out, &tp.fns, 0, tp.fns.len()))
 
-fn graph_fns_add(out: &List[TFn], fns: &List[TFn], i: Int, n: Int) -> List[TFn] ! alloc
+fn graph_fns_add(out: List[TFn], fns: &List[TFn], i: Int, n: Int) -> List[TFn] ! alloc
     if i >= n
         out
     else
@@ -228,11 +228,9 @@ fn emit_ir_for_file(source_path: String, src: &String) -> Int ! io, alloc
 fn emit_ir(src: &String) -> Int ! io, alloc
     emit_ir_for_file("", src)
 
-# Copy emitted text; release program metadata. Parsed fn bodies are not freed (alias struct/protocol names).
+# Copy emitted text. The caller's `TProgram` is released when that local goes out of scope.
 fn emit_keep_text(tp: &TProgram, text: &String) -> String ! alloc
-    kept = strdup(text)
-    _p = tp_free_shallow(tp)
-    kept
+    strdup(text)
 
 # The C text of `tp`, or the error of the first semantic check it fails (an effect its
 # signature does not declare, a moved value...).
@@ -268,7 +266,7 @@ fn emit_c_for_file(source_path: &String, src: &String, out_path: &String) -> Int
 # The file a warning names: the source path, or "<input>" for text read from stdin.
 fn warning_label(source_path: &String) -> String ! alloc
     if str_len(source_path) > 0
-        source_path
+        source_path.dup()
     else
         "<input>"
 
@@ -325,7 +323,7 @@ fn vtable_c_symbol(sym: &String) -> String ! alloc
     pl = str_len(pre)
     if str_len(sym) >= pl
         if str_eq(str_slice(sym, 0, pl), pre) == 1
-            sym
+            sym.dup()
         else
             mangled(sym)
     else
@@ -605,11 +603,11 @@ fn emit_c_ident(name: &String, tc: &Tc) -> String ! alloc
             if code % 2 == 1
                 int_to_str(variant_tag(code)) + "LL"
             else
-                name
+                name.dup()
         else
-            name
+            name.dup()
     else
-        name
+        name.dup()
 
 fn emit_c_args(args: &List[Expr], i: Int, n: Int, user: Int, stmts: Int, tc: &Tc, out: Int) -> Int ! alloc
     if i >= n
@@ -680,7 +678,7 @@ fn type_dim_token_end(s: &String, i: Int, n: Int) -> Int ! alloc
 # Name of the frame struct `where` filters, "" when it is not one.
 fn emit_c_where_struct(ty: &String, env: &TEnv) -> String ! alloc
     if tt_struct_find(&env.structs, ty) >= 0
-        ty
+        ty.dup()
     else
         ""
 
@@ -698,7 +696,7 @@ fn where_frame_of(frame_e: &Expr, env: &TEnv) -> String ! alloc
 
 fn where_frame_call(frame_e: &Expr, callee: &String, env: &TEnv) -> String ! alloc
     if tt_struct_find(&env.structs, callee) >= 0
-        callee
+        callee.dup()
     else
         emit_c_where_struct(&texpr_type(env, frame_e), env)
 
@@ -729,7 +727,7 @@ fn emit_c_where_fields(fields: &List[TField], i: Int, n: Int, frame_v: Int, mask
         if str_eq(last_out, "0") == 1
             "0"
         else
-            last_out
+            last_out.dup()
     else
         fty_s = list_get(fields, i).ty
         out = tmp_fresh(tc)
@@ -1053,9 +1051,9 @@ fn emit_c_matmul(args_e: &List[Expr], arg_parts: Int, stmts: Int, tc: &Tc) -> St
 fn emit_c_matmul_exit(tc: &Tc, is_main: Int, val: &String) -> String ! alloc
     q = list_get(&tc.mm_out, 0)
     if q == 0
-        val
+        val.dup()
     elsif is_main == 0
-        val
+        val.dup()
     else
         out = str_from_int(q)
         cnt = int_to_str(list_get(&tc.mm_n, 0))
@@ -1239,7 +1237,7 @@ fn variant_field_type(tc: &Tc, vname: &String, i: Int, sty: &String) -> String !
         v = list_get(&ed.variants, vec_get(entry, 1))
         if i < list_len(&v.fields)
             fty = list_get(&v.fields, i)
-            pi = type_param_index(&ed.tparams, &trim_spaces(&fty), 0)
+            pi = type_param_index(&ed.tparams, &trim_spaces(fty.dup()), 0)
             if pi < 0
                 strdup(fty)
             elsif str_len(sty) == 0
@@ -1392,6 +1390,8 @@ fn emit_c_fn_body(tf: &TFn, user: Int, is_main: Int, acc: String, pool: Int, env
     acc = acc + foot
     _lt = lit_pool_free_texts(pool)
     _fc = tc_free(&tc, &body)
+    _ks = tp_keep_stmts(body.stmts)
+    _ke = tp_keep_expr(body.tail)
     acc
 
 fn emit_forward_params(params: &List[TParam]) -> String ! alloc
@@ -1448,6 +1448,8 @@ fn emit_c_owned(tp: &TProgram, user: Int, denv: Int, names: Int, fm: Int, env: &
         old = f.body
         f.body = TBlock(list_new[TStmt](), XNone)
         _fr = tp_free_block(&old)
+        _ks = tp_keep_stmts(old.stmts)
+        _ke = tp_keep_expr(old.tail)
         emit_c_owned(tp, user, denv, names, fm, env, enums, seen, allow_main, linkable, pool, i + 1, n, (acc + piece))
 
 # `genums`: the enums of the whole module graph (empty for a single file).
@@ -1497,9 +1499,7 @@ fn emit_c_from_ast(tp: &TProgram) -> String ! alloc
     _f = ce_prepare_one(tp)
     user = collect_fn_names_t(&tp.fns, 0, list_len(&tp.fns), vec_new())
     env = tenv_new(tp)
-    text = emit_c_from_ast_module(tp, user, vec_new(), 1, 0, &list_new[TEnum](), &env, &tp.fns)
-    _a = tenv_free(&env)
-    text
+    emit_c_from_ast_module(tp, user, vec_new(), 1, 0, &list_new[TEnum](), &env, &tp.fns)
 
 fn call_link_objs(obj_list: &String, out_path: &String) -> Int ! io, alloc
     link_objs(obj_list, out_path)
@@ -1511,7 +1511,7 @@ fn obj_list_prefix(obj_list: &String) -> String ! alloc
     if str_len(obj_list) > 0
         obj_list + " "
     else
-        obj_list
+        obj_list.dup()
 
 fn emit_c_compile_graph_go(graph: &Graph, i: Int, n: Int, root_key: &String, proot: &String, out_path: &String, obj_list: &String, genums: &List[TEnum], env: &TEnv, seen: &List[TFn]) -> Int ! io, alloc
     if i >= n

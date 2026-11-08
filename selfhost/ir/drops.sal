@@ -90,27 +90,9 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: List[TParam], scalars: List[Str
     _e = list_push(&cells, 0)
     DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, ps, scalars, copy_ok)
 
+# The local `DC` is dropped at the end of its scope, which releases these lists.
+# Freeing them here as well is a double free.
 fn dr_free(c: &DC) -> Int ! alloc
-    _l = nm_free(&c.lists)
-    _k = nm_free(&c.copy_desc)
-    _a = nm_free(&c.esc)
-    _t = nm_free(&c.took)
-    _b = nm_free(&c.defs)
-    _c = nm_free(&c.params)
-    _d = nm_free(&c.kinds)
-    _e = nm_free(&c.tainted)
-    _f = nm_free(&c.soft)
-    _f2 = nm_free(&c.box_shell)
-    _g = nm_free(&c.born)
-    _g2 = nm_free(&c.owned_enums)
-    _h = list_free(c.live)
-    _i = list_free(c.site_ids)
-    _j = list_free(c.site_names)
-    _k = list_free(c.m_scrut)
-    _l = list_free(c.m_bound)
-    _m = list_free(c.cells)
-    _s = list_free(c.scalars)
-    _o = list_free(c.copy_ok)
     0
 
 fn dr_cell(c: &DC, i: Int) -> Int ! alloc
@@ -191,7 +173,7 @@ fn dr_tm(t: &String, name: &String) -> Int ! alloc
     if str_len(t) == 0
         0
     else
-        str_eq(trim_spaces(t), name)
+        str_eq(trim_spaces(t.dup()), name)
 
 
 # ---- shapes of an expression ----
@@ -317,15 +299,15 @@ fn dx_dict_args(targs: &String) -> Int ! alloc
         comma = dx_find_comma(targs, 0)
         if comma < 0
             0
-        elsif dx_key_ok(&trim_spaces(&str_slice(targs, 0, comma))) == 1
-            dx_val_ok(&trim_spaces(&str_slice(targs, comma + 1, str_len(targs))))
+        elsif dx_key_ok(&trim_spaces(str_slice(targs, 0, comma))) == 1
+            dx_val_ok(&trim_spaces(str_slice(targs, comma + 1, str_len(targs))))
         else
             0
 
 # `dict_new[K, String]()`: the dict owns its values.
 fn dx_dict_owns(targs: &String) -> Int ! alloc
     comma = dx_find_comma(targs, 0)
-    dr_tm(&trim_spaces(&str_slice(targs, comma + 1, str_len(targs))), &"String")
+    dr_tm(&trim_spaces(str_slice(targs, comma + 1, str_len(targs))), &"String")
 
 # `list_new[String]()`: the list owns its elements.
 fn dx_list_owns(targs: &String) -> Int ! alloc
@@ -350,7 +332,7 @@ fn dr_transfers_box(c: &DC, name: &String) -> Int ! alloc
 fn dx_list_flat(c: &DC, targs: &String) -> Int ! alloc
     if str_len(targs) == 0
         0
-    elsif dr_flat_rec(c, &trim_spaces(targs)) == 0
+    elsif dr_flat_rec(c, &trim_spaces(targs.dup())) == 0
         0
     else
         1
@@ -415,7 +397,7 @@ fn owned_fns_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         f = list_get(fns, i)
         _o = if ty_is_string(&f.ret) == 1
             if owned_fn_body(&f) == 1
-                map_put(m, str_as_int(&("ownfn:" + f).name), 1)
+                map_put(m, str_as_int(&("ownfn:" + f.name)), 1)
             else
                 0
         else
@@ -616,20 +598,20 @@ fn dr_is_accumulate(name: &String, value: &Expr) -> Int ! alloc
 
 fn dr_accumulates(name: &String, op: &String, l: Expr) -> Int ! alloc
     if str_eq(op, "add") == 1
-        str_eq(dx_leftmost(l), name)
+        str_eq(dx_leftmost(&l), name)
     else
         0
 
 # Identifier at the left end of a `+` chain, "" when it is not one.
-fn dx_leftmost(e: Expr) -> String ! alloc
+fn dx_leftmost(e: &Expr) -> String ! alloc
     match e
         XBin(op, l, r) => dx_leftmost_bin(&op, l, e)
         XIdent(s) => s
         _ => ""
 
-fn dx_leftmost_bin(op: &String, l: Expr, e: Expr) -> String ! alloc
+fn dx_leftmost_bin(op: &String, l: Expr, e: &Expr) -> String ! alloc
     if str_eq(op, "add") == 1
-        dx_leftmost(l)
+        dx_leftmost(&l)
     else
         ""
 
@@ -676,7 +658,7 @@ fn dr_copy_param_field(c: &DC, name: &String, field: &String) -> Int ! alloc
     if ty.len() == 0
         0
     else
-        key = (trim_spaces(&ty) + "." + field).dup()
+        key = (trim_spaces(ty) + "." + field).dup()
         dr_copy_scan(&c.scalars, &c.copy_ok, &key, 0, c.scalars.len())
 
 fn dr_copy_scan(keys: &List[String], oks: &List[Int], key: &String, i: Int, n: Int) -> Int ! alloc
@@ -842,7 +824,7 @@ fn dr_propagate_once(c: &DC, i: Int, n: Int, changed: Int) -> Int ! alloc
         scrut = c.m_scrut.get(i)
         if nm_get(&c.esc, &scrut) == 0
             if dr_any_escaped(c, &c.m_bound.get(i), 0, 0) == 1
-                c.take(scrut)
+                c.take(&scrut)
                 dr_escape(c, &scrut)
                 dr_propagate_once(c, i + 1, n, changed + 1)
             else
@@ -1026,7 +1008,7 @@ fn dx_unit_variant(c: &DC, name: &String) -> Int ! alloc
 
 # `list_new[E]()` of an enum type: the list owns the boxes stored in it.
 fn dx_list_enum(c: &DC, targs: &String) -> Int ! alloc
-    t = trim_spaces(targs)
+    t = trim_spaces(targs.dup())
     if str_len(t) == 0
         0
     elsif map_get(c.variants, str_as_int(&("enum:" + t))) != 0
@@ -1060,23 +1042,23 @@ fn dx_elem_release_call(c: &DC, name: &String, args: &List[Expr]) -> Int ! alloc
 # An enum list the pass releases (kind 6) is built as `list_new_owned[E]()`: the lowering
 # stores the element descriptor `E` and the list frees its boxes. Other enum lists keep
 # `list_new` (their elements are borrowed). Remembers the owned locals (`dx_list_get_enum`).
-fn dr_own_enum_list(c: &DC, name: &String, cand: Int, e: &Expr) -> Expr ! alloc
+fn dr_own_enum_list(c: &DC, name: &String, cand: Int, e: Expr) -> Expr ! alloc
     match e
-        XCall(fname, args, targs, xp) => dr_own_call(c, name, cand, &fname, &args, &targs, xp, e)
+        XCall(fname, args, targs, xp) => dr_own_call(c, name, cand, &fname, args, targs, xp, e)
         _ => e
 
-fn dr_own_call(c: &DC, name: &String, cand: Int, fname: &String, args: &List[Expr], targs: &String, xp: Int, e: &Expr) -> Expr ! alloc
+fn dr_own_call(c: &DC, name: &String, cand: Int, fname: &String, args: List[Expr], targs: String, xp: Int, e: Expr) -> Expr ! alloc
     if cand != 6
         e
     elsif str_eq(fname, "list_new") == 0
         e
-    elsif dx_list_enum(c, targs) == 1
+    elsif dx_list_enum(c, &targs) == 1
         _n = nm_put(&c.owned_enums, name, 5)
         XCall("list_new_owned", args, targs, xp)
-    elsif dx_list_flat(c, targs) == 1
+    elsif dx_list_flat(c, &targs) == 1
         nm_put(&c.owned_enums, name, 8)
         XCall("list_new_owned", args, targs, xp)
-    elsif dx_list_string(targs) == 1
+    elsif dx_list_string(&targs) == 1
         _s = nm_put(&c.owned_enums, name, 1)
         XCall("list_new_owned", args, targs, xp)
     else
@@ -1084,7 +1066,7 @@ fn dr_own_call(c: &DC, name: &String, cand: Int, fname: &String, args: &List[Exp
 
 # `list_new[String]()`: the list owns its strings.
 fn dx_list_string(targs: &String) -> Int ! alloc
-    str_eq(trim_spaces(targs), "String")
+    str_eq(trim_spaces(targs.dup()), "String")
 
 
 # `list_push(xs, v)` as a statement (or bound to a `_name`) discards the
@@ -1136,7 +1118,7 @@ fn dr_owned_param(c: &DC, e: &Expr) -> Int ! alloc
         _ => 0
 
 fn dr_owned_param_ty(c: &DC, ty: &String) -> Int ! alloc
-    t = trim_spaces(ty)
+    t = trim_spaces(ty.dup())
     if t.eq("String") == 1
         1
     elsif map_get(c.variants, ("struct:" + t).to_int()) != 0
@@ -1319,7 +1301,7 @@ fn dr_candidate_go2(c: &DC, name: &String, kind: Int) -> Int ! alloc
 fn dr_empty_block() -> TBlock ! alloc
     TBlock(list_new[TStmt](), XNone)
 
-fn dr_plain(e: &Expr) -> TStmt ! alloc
+fn dr_plain(e: Expr) -> TStmt ! alloc
     TStmt(0, "", e, "", 0, XNone, 0, 0, 0)
 
 fn dr_free_fn(kind: Int) -> String ! alloc
@@ -1350,7 +1332,7 @@ fn dr_free_stmt(c: &DC, name: &String) -> TStmt ! alloc
         _d = list_push(&args, XStr(strdup(str_from_int(nm_get(&c.copy_desc, name)))))
     else
         _e = 0
-    dr_plain(&XCall(strdup(dr_free_fn(k)), args, "", 0))
+    dr_plain(XCall(strdup(dr_free_fn(k)), args, "", 0))
 
 # The release of a live local, guarded by its flag when a statement may have moved it.
 fn dr_release_stmt(c: &DC, name: &String) -> TStmt ! alloc
@@ -1377,13 +1359,13 @@ fn dr_release_stmt(c: &DC, name: &String) -> TStmt ! alloc
                 0
         else
             0
-        dr_plain(&XIf(cond, TBlock(stmts, XNone), else_b, has_else, list_new[TElsif]()))
+        dr_plain(XIf(cond, TBlock(stmts, XNone), else_b, has_else, list_new[TElsif]()))
 
 fn dr_box_shell_else(name: &String) -> TBlock ! alloc
     stmts = list_new[TStmt]()
     args = list_new[Expr]()
     _a = list_push(&args, XIdent(strdup(name)))
-    _b = list_push(&stmts, dr_plain(&XCall("struct_free_box", args, "", 0)))
+    _b = list_push(&stmts, dr_plain(XCall("struct_free_box", args, "", 0)))
     TBlock(stmts, XNone)
 
 fn dr_flag_init(name: &String) -> TStmt ! alloc
@@ -1443,7 +1425,7 @@ fn dr_xform_expr(c: &DC, e: &Expr) -> Expr ! alloc
             nb = dr_xform_block(c, &body)
             _b = enum_set(e, 1, nb)
             dr_ret(e)
-        _ => e
+        _ => dr_alias(e)
 
 fn dr_xform_if(c: &DC, e: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Expr ! alloc
     tb = dr_xform_block(c, then_b)
@@ -1521,11 +1503,11 @@ fn dr_discard_free(name: &String, k: Int, sd: Int) -> TStmt ! alloc
         _d = list_push(&args, XStr(strdup(str_from_int(sd))))
     else
         _e = 0
-    dr_plain(&XCall(strdup(dr_free_fn(k)), args, "", 0))
+    dr_plain(XCall(strdup(dr_free_fn(k)), args, "", 0))
 
 fn dr_xform_bind(c: &DC, st: &TStmt, out: &List[TStmt]) -> Int ! alloc
     cand = dr_bind_candidate(c, st)
-    init = dr_own_enum_list(c, &st.name, cand, &st.expr)
+    init = dr_own_enum_list(c, &st.name, cand, st.expr)
     ne = dr_xform_expr(c, &init)
     if dr_moved(&st.expr, &ne) == 1
         st.expr = ne
@@ -1556,19 +1538,19 @@ fn dr_xform_return(c: &DC, st: &TStmt, out: &List[TStmt]) -> Int ! alloc
         _p = list_push(out, tc_stmt(st))
         0
     else
-        rv = dr_return_value(c, &st.expr, out)
+        rv = dr_return_value(c, st.expr, out)
         _m = dr_clear_moved(c, st.id, out)
         _f = dr_push_frees(c, out, 0, list_len(&c.live) - 1)
         _r = list_push(out, TStmt(2, "", rv, "", 0, XNone, 0, 0, 0))
         0
 
 # Binds a returned value ahead of the releases; the expression to return.
-fn dr_return_value(c: &DC, v: &Expr, out: &List[TStmt]) -> Expr ! alloc
+fn dr_return_value(c: &DC, v: Expr, out: &List[TStmt]) -> Expr ! alloc
     match v
         XNone => XNone
         _ => dr_return_tmp(c, v, out)
 
-fn dr_return_tmp(c: &DC, v: &Expr, out: &List[TStmt]) -> Expr ! alloc
+fn dr_return_tmp(c: &DC, v: Expr, out: &List[TStmt]) -> Expr ! alloc
     tmp = dr_next_tmp(c)
     _l = list_push(out, TStmt(1, strdup(tmp), v, "", 1, XNone, 0, 0, 0))
     XIdent(tmp)
@@ -1588,7 +1570,7 @@ fn dr_xform_block(c: &DC, b: &TBlock) -> TBlock ! alloc
         tail = dr_xform_expr(c, &b.tail)
         _f = dr_free_stmts(&b.stmts)
         if list_len(&c.live) > mark
-            t2 = dr_finish_block(c, &out, &tail, mark)
+            t2 = dr_finish_block(c, &out, tail, mark)
             _t = dr_truncate(c, mark)
             TBlock(out, t2)
         else
@@ -1596,12 +1578,12 @@ fn dr_xform_block(c: &DC, b: &TBlock) -> TBlock ! alloc
             TBlock(out, tail)
 
 # Appends the releases of this block's own locals; returns the new tail.
-fn dr_finish_block(c: &DC, out: &List[TStmt], tail: &Expr, mark: Int) -> Expr ! alloc
+fn dr_finish_block(c: &DC, out: &List[TStmt], tail: Expr, mark: Int) -> Expr ! alloc
     last = list_len(&c.live) - 1
-    if dx_is_none(tail) == 1
+    if dx_is_none(&tail) == 1
         _f = dr_push_frees(c, out, mark, last)
         XNone
-    elsif dx_is_while(tail) == 1
+    elsif dx_is_while(&tail) == 1
         _w = list_push(out, dr_plain(tail))
         _f = dr_push_frees(c, out, mark, last)
         XNone
@@ -1642,7 +1624,7 @@ fn dr_facts(params: List[TParam], body: &TBlock, variants: Int, ro: Int, lists: 
     n = c.ps.len()
     _s = dr_seed_params(&c, 0, n)
     _w = dr_block(&c, body)
-    _t = c.take_tail(body.tail)
+    _t = c.take_tail(&body.tail)
     _p = dr_propagate(&c)
     c
 
@@ -1696,7 +1678,7 @@ fn dr_scalar_sfields(m: &List[String], oks: &List[Int], sname: &String, fields: 
                 0
         else
             dr_ty_scalar(&ty)
-        key = (trim_spaces(sname) + "." + f.name).dup()
+        key = (trim_spaces(sname.dup()) + "." + f.name).dup()
         _p = m.push(key)
         _q = oks.push(ok)
         dr_scalar_sfields(m, oks, sname, fields, i + 1, n)
@@ -1779,9 +1761,9 @@ fn dr_took_map(m: Int, fns: &List[TFn], cons: &List[Int], i: Int, n: Int) -> Int
         dr_took_map(m, fns, cons, i + 1, n)
 
 fn dr_cons_list(fns: &List[TFn]) -> List[Int] ! alloc
-    dr_cons_fill(&list_new[Int](), fns, 0, fns.len())
+    dr_cons_fill(list_new[Int](), fns, 0, fns.len())
 
-fn dr_cons_fill(out: &List[Int], fns: &List[TFn], i: Int, n: Int) -> List[Int] ! alloc
+fn dr_cons_fill(out: List[Int], fns: &List[TFn], i: Int, n: Int) -> List[Int] ! alloc
     if i >= n
         out
     else
@@ -1815,14 +1797,14 @@ fn dr_ro_ones(flags: Int, n: Int) -> Int ! alloc
         _a = vec_push(flags, 1)
         dr_ro_ones(flags, n - 1)
 
-fn dr_oks_dup(src: &List[Int], i: Int, n: Int, dst: &List[Int]) -> List[Int] ! alloc
+fn dr_oks_dup(src: &List[Int], i: Int, n: Int, dst: List[Int]) -> List[Int] ! alloc
     if i >= n
         dst
     else
         _p = dst.push(src.get(i))
         dr_oks_dup(src, i + 1, n, dst)
 
-fn dr_list_dup(src: &List[String], i: Int, n: Int, dst: &List[String]) -> List[String] ! alloc
+fn dr_list_dup(src: &List[String], i: Int, n: Int, dst: List[String]) -> List[String] ! alloc
     if i >= n
         dst
     else
@@ -1842,8 +1824,8 @@ fn dr_ro_pass(ro: Int, cons: &List[Int], fns: &List[TFn], variants: Int, scalars
     else
         f = fns.get(i)
         name = f.name.dup()
-        mine = dr_list_dup(scalars, 0, scalars.len(), &list_new[String]())
-        mine_ok = dr_oks_dup(oks, 0, oks.len(), &list_new[Int]())
+        mine = dr_list_dup(scalars, 0, scalars.len(), list_new[String]())
+        mine_ok = dr_oks_dup(oks, 0, oks.len(), list_new[Int]())
         c = dr_facts(f.params, &f.body, variants, ro, nm_new(), mine, mine_ok)
         key = name.to_int()
         flags = map_get(ro, key)
@@ -1896,8 +1878,16 @@ fn dr_cons_params(c: &DC, flags: Int, params: &List[TParam], i: Int, n: Int) -> 
 
 # The same box, handed back. A block tail that is the ident moves it for every later
 # `match` arm; a borrow call does not, and the caller keeps the box.
+# The same pointer, as an owned `Expr`. `*e` would move a non-Copy out of the reference.
+fn dr_alias(e: &Expr) -> Expr ! alloc
+    box = List.new[Expr]()
+    _p = list_push_share(box, e)
+    got = list_get(box, 0)
+    _f = list_free_shell(box)
+    got
+
 fn dr_ret(e: &Expr) -> Expr ! alloc
-    e
+    dr_alias(e)
 
 # 1 when `neu` is a different box. Two unit tags both report id 0.
 fn dr_moved(old: &Expr, neu: &Expr) -> Int ! alloc
@@ -1930,6 +1920,14 @@ fn dr_share_stmt(out: &List[TStmt], st: &TStmt) -> Int ! alloc
 # The vector of a list whose elements now live in the next tree.
 fn dr_free_stmts(xs: &List[TStmt]) -> Int ! alloc
     list_free_shell(xs)
+
+# Taking the field marks it moved, so the struct glue leaves it alone. The list vector
+# was already released with `list_free_shell`; the expression is still in the returned block.
+fn dr_pin_list(xs: List[TStmt]) -> Int ! alloc
+    0
+
+fn dr_pin_expr(e: Expr) -> Int ! alloc
+    0
 
 # ---- temporaries ----
 # A fresh string passed to a builtin that only reads it is bound to a local ahead of the
@@ -1977,7 +1975,7 @@ fn dr_hoist_expr(h: &HC, e: &Expr, out: &List[TStmt]) -> Expr ! alloc
         XWhile(cond, body) => dr_hoist_while(h, e, &body)
         XMatch(scrut, arms) => dr_hoist_match(h, e, &scrut, &arms, out)
         XField(base, field) => dr_hoist_field(h, e, &base, &field, out)
-        _ => e
+        _ => dr_alias(e)
 
 # `match list_get(xs, i) { … }`: the element read is bound to a local first (`Hoist` in src/drops.rs).
 fn dr_hoist_match(h: &HC, e: &Expr, scrut: &Expr, arms: &List[TArm], out: &List[TStmt]) -> Expr ! alloc
@@ -2012,7 +2010,7 @@ fn dr_hoist_field(h: &HC, e: &Expr, base: &Expr, field: &String, out: &List[TStm
     nb = dr_hoist_expr(h, base, out)
     if dr_elem_list_known(h, &nb) == 0
         _s = dr_set_expr(e, 0, base, &nb)
-        e
+        dr_alias(e)
     else
         k = list_get(&h.k, 0) + 1
         _s = list_set(h.k, 0, k)
@@ -2027,7 +2025,7 @@ fn dr_elem_list_known(h: &HC, e: &Expr) -> Int ! alloc
         _ => 0
 
 fn dr_elem_list_call(h: &HC, name: &String, args: &List[Expr]) -> Int ! alloc
-    if dr_is_elem_read(&XCall(name, args, "", 0)) == 0
+    if dr_is_elem_read(&XCall(name.dup(), args.clone(), "", 0)) == 0
         0
     elsif list_len(args) == 0
         0
@@ -2457,7 +2455,7 @@ fn dr_claim_walk(e: &Expr, own: Int, variants: Int, elems: &NM, borrows: &NM, li
             nb = dr_claim_expr(&body, 1, variants, elems, borrows, lists, sns, took)
             _a = dr_set_expr(e, 1, &body, &nb)
             dr_ret(e)
-        _ => e
+        _ => dr_alias(e)
 
 fn dr_claim_args_in(args: &List[Expr], i: Int, n: Int, callee: &String, variants: Int, elems: &NM, borrows: &NM, lists: &NM, sns: &NM, took: Int) -> Int ! alloc
     if i >= n
@@ -2586,8 +2584,10 @@ fn drops_body(f: &TFn, denv: Int) -> TBlock ! alloc
     claimed = dr_claim_fn(f, &hoisted, vec_get(denv, 0), &h.lists, vec_get(denv, 3))
     c = dr_facts(f.params, &claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
     res = dr_xform_block(&c, &claimed)
-    _a = dr_free(&c)
-    _g = list_free(h.k)
+    _ph = dr_pin_list(hoisted.stmts)
+    _pt = dr_pin_expr(hoisted.tail)
+    _pc = dr_pin_list(claimed.stmts)
+    _pe = dr_pin_expr(claimed.tail)
     res
 
 fn drops_body_t(f: &TFn, denv: Int) -> TBlock ! alloc
@@ -2714,9 +2714,9 @@ fn trim_type_piece(t: &String) -> String ! alloc
         if str_char(t, n - 1) == 32
             trim_type_piece(&str_slice(t, 0, n - 1))
         else
-            t
+            t.dup()
     else
-        t
+        t.dup()
 
 fn dr_field_owned_t(fty: &String) -> Int ! alloc
     t = trim_type_piece(fty)

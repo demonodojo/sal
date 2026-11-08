@@ -136,12 +136,20 @@ fn strs_vec(xs: &List[String], i: Int, n: Int, out: Int) -> Int ! alloc
 
 # `a && b` is `if a then (b != 0) else false`; `a || b` is `if a then true else (b != 0)`. The
 # right operand runs only on the branch that needs it, as in the bootstrap (`ir.rs`).
+# The same pointer. `*e` would move a non-Copy value out of the reference.
+fn fu_alias(e: &Expr) -> Expr ! alloc
+    box = List.new[Expr]()
+    _p = list_push_share(box, e)
+    got = list_get(box, 0)
+    _f = list_free_shell(box)
+    got
+
 fn short_circuit(op: &String, left: &Expr, right: &Expr) -> Expr ! alloc
-    truth = XBin("ne", right, XInt(0))
+    truth = XBin("ne", fu_alias(right), XInt(0))
     if str_eq(op, "and") == 1
-        XIf(left, TBlock(list_new[TStmt](), truth), TBlock(list_new[TStmt](), XBool(0)), 1, list_new[TElsif]())
+        XIf(fu_alias(left), TBlock(list_new[TStmt](), truth), TBlock(list_new[TStmt](), XBool(0)), 1, list_new[TElsif]())
     else
-        XIf(left, TBlock(list_new[TStmt](), XBool(1)), TBlock(list_new[TStmt](), truth), 1, list_new[TElsif]())
+        XIf(fu_alias(left), TBlock(list_new[TStmt](), XBool(1)), TBlock(list_new[TStmt](), truth), 1, list_new[TElsif]())
 
 fn lower_binary(cx: &Cx, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
     if str_eq(op, "and") + str_eq(op, "or") > 0
@@ -467,7 +475,7 @@ fn lower_call(cx: &Cx, name: &String, args: &List[Expr], targs: &String) -> Int 
     if dot >= 0
         recv = str_slice(name, 0, dot)
         fld = str_slice(name, dot + 1, str_len(name))
-        rty = trim_spaces(&tenv_type(&cx.env, &recv))
+        rty = trim_spaces(tenv_type(&cx.env, &recv))
         proto = ty_any_protocol(&rty)
         if str_len(proto) > 0
             lower_protocol_call(cx, &recv, &fld, args, &proto)
@@ -1727,7 +1735,7 @@ fn modes_fill_t(m: Int, table: &HT, cons: &List[Int], fns: &List[TFn], i: Int, n
     else
         f = fns.get(i)
         ms = vec_new()
-        owned = table.get(f.name)
+        owned = table.get(&f.name)
         _k = modes_vec(ms, &owned, 0, f.params.len())
         nk = f.name.dup()
         map_put(m, nk.to_int(), ms)
@@ -1947,11 +1955,11 @@ fn ret_desc_keys(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         0
     else
         f = list_get(fns, i)
-        h = map_get(m, str_as_int(&("desc:" + trim_spaces(&f.ret))))
+        h = map_get(m, str_as_int(&("desc:" + trim_spaces(f.ret))))
         if h == 0
             ret_desc_keys(m, fns, i + 1, n)
         else
-            _p = map_put(m, str_as_int(&("rd:" + f).name), h)
+            _p = map_put(m, str_as_int(&("rd:" + f.name)), h)
             ret_desc_keys(m, fns, i + 1, n)
 
 # `enum:Name` for every enum of the module graph.
@@ -1972,8 +1980,8 @@ fn flat_map_structs_t(m: Int, sts: &List[TStruct], enums: &List[TEnum], i: Int, 
         if str_len(desc_struct_text(sts, enums, &sd.name, 0)) > 0
             flags = vec_new()
             _f = field_classes_t(flags, enums, &sd.fields, 0, list_len(&sd.fields))
-            _p = map_put(m, str_as_int(&("struct:" + sd).name), flags)
-            _d = map_put(m, str_as_int(&("desc:" + sd).name), str_as_int(&desc_struct_text(sts, enums, &sd.name, 0)))
+            _p = map_put(m, str_as_int(&("struct:" + sd.name)), flags)
+            _d = map_put(m, str_as_int(&("desc:" + sd.name)), str_as_int(&desc_struct_text(sts, enums, &sd.name, 0)))
             _fd = field_desc_keys(m, sts, enums, &sd.name, &sd.fields, 0, list_len(&sd.fields))
             flat_map_structs_t(m, sts, enums, i + 1, n)
         else
@@ -1992,11 +2000,11 @@ fn field_desc_one(m: Int, structs: &List[TStruct], enums: &List[TEnum], sname: &
     if str_eq(d, "i") + str_eq(d, "?") + str_eq(d, "") > 0
         0
     else
-        _p = map_put(m, str_as_int(&("fd:" + sname + "." + f).name), str_as_int(d))
+        _p = map_put(m, str_as_int(&("fd:" + sname + "." + f.name)), str_as_int(d))
         ty = trim_type_piece(&f.ty)
         sd = desc_struct_text(structs, enums, &ty, 0)
         if str_len(sd) > 0
-            map_put(m, str_as_int(&("fs:" + sname + "." + f).name), str_as_int(&ty))
+            map_put(m, str_as_int(&("fs:" + sname + "." + f.name)), str_as_int(&ty))
         else
             0
 
@@ -2012,7 +2020,7 @@ fn variant_map_enums_t(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! all
         0
     else
         ed = list_get(enums, i)
-        _k = map_put(m, str_as_int(&("enum:" + ed).name), 1)
+        _k = map_put(m, str_as_int(&("enum:" + ed.name)), 1)
         _a = variant_map_go_t(m, &ed.variants, 0, list_len(&ed.variants))
         variant_map_enums_t(m, enums, i + 1, n)
 

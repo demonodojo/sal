@@ -142,7 +142,7 @@ fn drop_field_fn(structs: &List[TStruct], enums: &List[TEnum], ty: &String, g: I
     elsif str_eq(base, "Bytes") == 1
         "sal_bytes_free"
     elsif str_eq(base, "List") == 1
-        elem = trim_spaces(&tt_arg(&t, 0))
+        elem = trim_spaces(tt_arg(&t, 0))
         if flat_value_text(&elem) == 1
             "sal_list_free"
         elsif str_eq(elem, "String") == 1
@@ -199,8 +199,8 @@ fn flat_value_text(t: &String) -> Int ! alloc
 
 # `Dict[K, V]` with K Int or String and V a Copy scalar.
 fn dict_flat_text(t: &String) -> Int ! alloc
-    k = trim_spaces(&tt_arg(t, 0))
-    v = trim_spaces(&tt_arg(t, 1))
+    k = trim_spaces(tt_arg(t, 0))
+    v = trim_spaces(tt_arg(t, 1))
     if str_eq(k, "Int") + str_eq(k, "String") == 0
         0
     else
@@ -208,8 +208,8 @@ fn dict_flat_text(t: &String) -> Int ! alloc
 
 # `Dict[K, String]` with K Int or String.
 fn dict_string_value_text(t: &String) -> Int ! alloc
-    k = trim_spaces(&tt_arg(t, 0))
-    v = trim_spaces(&tt_arg(t, 1))
+    k = trim_spaces(tt_arg(t, 0))
+    v = trim_spaces(tt_arg(t, 1))
     if str_eq(k, "Int") + str_eq(k, "String") == 0
         0
     elsif str_eq(v, "String") == 1

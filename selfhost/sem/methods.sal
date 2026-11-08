@@ -14,7 +14,7 @@ import "../ast/thash.sal"
 
 fn mr_fail(errs: &List[String], msg: &String) -> Int ! alloc
     if errs.len() == 0
-        _a = errs.push(msg)
+        _a = errs.push(msg.dup())
         0
     else
         0
@@ -190,15 +190,15 @@ fn mr_set_str(e: &Expr, i: Int, old: &String, neu: &String) -> Int ! alloc
 # argument (`.name`), `l` it is the local before the dot (`q.name`), `s` a static call.
 fn mr_call_in(e: &Expr, name: &String, args: &List[Expr], targs: &String, res: &HT) -> Int ! alloc
     _a = mr_args(args, 0, list_len(args), res)
-    id = mth_id(targs)
+    id = mth_id(targs.dup())
     if str_len(id) == 0
         0
     else
-        val = res.get(id)
+        val = res.get(&id)
         if str_len(val) == 0
-            mr_set_str(e, 2, targs, &mth_targs(targs))
+            mr_set_str(e, 2, targs, &mth_targs(targs.dup()))
         else
-            mr_apply(e, name, args, targs, &mth_targs(targs), str_char(val, 0), &str_slice(val, 1, str_len(val)))
+            mr_apply(e, name, args, targs, &mth_targs(targs.dup()), str_char(val, 0), &str_slice(val, 1, str_len(val)))
 
 fn mr_apply(e: &Expr, name: &String, args: &List[Expr], old_ta: &String, ta: &String, kind: Int, target: &String) -> Int ! alloc
     _t = mr_set_str(e, 2, old_ta, ta)

@@ -57,7 +57,7 @@ fn nth_type_arg_go(s: &String, want: Int, pos: Int, start: Int, k: Int) -> Int !
     n = s.len()
     if pos >= n
         if k == want
-            trim_spaces(&s.slice(start, n)).to_int()
+            trim_spaces(s.slice(start, n)).to_int()
         else
             0
     else
@@ -66,7 +66,7 @@ fn nth_type_arg_go(s: &String, want: Int, pos: Int, start: Int, k: Int) -> Int !
             nth_type_arg_go(s, want, ty_skip_brackets(s, pos + 1, 1), start, k)
         elsif c == 44
             if k == want
-                trim_spaces(&s.slice(start, pos)).to_int()
+                trim_spaces(s.slice(start, pos)).to_int()
             else
                 nth_type_arg_go(s, want, pos + 1, pos + 1, k + 1)
         else
@@ -84,9 +84,9 @@ fn ty_find_open(t: &String, i: Int) -> Int ! alloc
 fn ty_base(t: &String) -> String ! alloc
     open = ty_find_open(t, 0)
     if open < 0
-        trim_spaces(t)
+        trim_spaces(t.dup())
     else
-        trim_spaces(&t.slice(0, open))
+        trim_spaces(t.slice(0, open))
 
 # Position after the `]` that closes the bracket opened before `pos` (depth 1).
 fn ty_skip_brackets(s: &String, pos: Int, depth: Int) -> Int ! alloc
@@ -104,13 +104,13 @@ fn ty_skip_brackets(s: &String, pos: Int, depth: Int) -> Int ! alloc
         else
             ty_skip_brackets(s, pos + 1, depth)
 
-fn trim_spaces(s: &String) -> String ! alloc
+fn trim_spaces(s: String) -> String ! alloc
     n = s.len()
     if n > 0
         if s.char(0) == 32
-            trim_spaces(&s.slice(1, n))
+            trim_spaces(s.slice(1, n))
         elsif s.char(n - 1) == 32
-            trim_spaces(&s.slice(0, n - 1))
+            trim_spaces(s.slice(0, n - 1))
         else
             s
     else
@@ -121,7 +121,7 @@ fn ty_type_arg(t: &String, i: Int) -> String ! alloc
     if h == 0
         ""
     else
-        trim_spaces(&str_from_int(h))
+        trim_spaces(str_from_int(h))
 
 # Protocol name inside `any[P]`, or "" when `t` is not `any[…]`.
 fn ty_any_protocol(t: &String) -> String ! alloc

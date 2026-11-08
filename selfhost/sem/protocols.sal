@@ -70,7 +70,7 @@ fn fn_sig_index(fns: &List[TFn], mangled: &String, i: Int, n: Int) -> Int ! allo
         fn_sig_index(fns, mangled, i + 1, n)
 
 fn types_equal_text(a: &String, b: &String) -> Int ! alloc
-    str_eq(trim_spaces(a), trim_spaces(b))
+    str_eq(trim_spaces(a.dup()), trim_spaces(b.dup()))
 
 fn method_matches_proto(tp: &TProgram, type_name: &String, pm: &TProtocolMethod, errs: &List[String]) -> Int ! alloc
     mangled = type_name + "__" + pm.name

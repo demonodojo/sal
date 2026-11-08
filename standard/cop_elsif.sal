@@ -90,12 +90,12 @@ fn drop_first_line(s: &String) -> String ! alloc
     else
         s.slice(nl + 1, n)
 
-fn unindent_line(s: &String, spaces: Int) -> String ! alloc
+fn unindent_line(s: String, spaces: Int) -> String ! alloc
     n = s.len()
     if n < spaces
         s
     else
-        ok = count_spaces_match(s, 0, spaces, 1)
+        ok = count_spaces_match(&s, 0, spaces, 1)
         if ok == 1
             s.slice(spaces, n)
         else
@@ -120,10 +120,10 @@ fn unindent_go(s: &String, i: Int, n: Int, spaces: Int, acc: String) -> String !
     else
         nl = find_first_nl(s, i, n)
         if nl >= n
-            acc + unindent_line(&s.slice(i, n), spaces)
+            acc + unindent_line(s.slice(i, n), spaces)
         else
             body = s.slice(i, nl)
-            body2 = unindent_line(&body, spaces)
+            body2 = unindent_line(body, spaces)
             acc2 = acc + body2 + "\n"
             unindent_go(s, nl + 1, n, spaces, acc2)
 

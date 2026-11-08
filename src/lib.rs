@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod attrs;
+pub mod borrowck;
 pub mod compile;
 pub mod consteval;
 pub mod deprecation;

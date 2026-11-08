@@ -66,10 +66,11 @@ fn apply_all_fixes(src: String, offs: &List[Off]) -> String ! alloc
     if idxs.len() == 0
         src
     else
-        ordered = sort_idxs(offs, &idxs, 0)
+        ordered = sort_idxs(offs, idxs, 0)
         chosen = greedy_take(offs, &ordered)
-        right = sort_idxs(offs, &chosen, 1)
-        apply_right(&src, offs, &right, 0, right.len())
+        right = sort_idxs(offs, chosen, 1)
+        nright = right.len()
+        apply_right(src, offs, &right, 0, nright)
 
 fn fix_indices(offs: &List[Off]) -> List[Int] ! alloc
     v = List.new[Int]()
@@ -84,17 +85,18 @@ fn fix_indices_go(offs: &List[Off], v: List[Int], i: Int, n: Int) -> List[Int] !
     else
         fix_indices_go(offs, v, i + 1, n)
 
-fn sort_idxs(offs: &List[Off], idxs: &List[Int], mode: Int) -> List[Int] ! alloc
-    sort_idxs_go(offs, idxs, mode, 1, idxs.len())
+fn sort_idxs(offs: &List[Off], idxs: List[Int], mode: Int) -> List[Int] ! alloc
+    n = idxs.len()
+    sort_idxs_go(offs, idxs, mode, 1, n)
 
-fn sort_idxs_go(offs: &List[Off], idxs: &List[Int], mode: Int, i: Int, n: Int) -> List[Int] ! alloc
+fn sort_idxs_go(offs: &List[Off], idxs: List[Int], mode: Int, i: Int, n: Int) -> List[Int] ! alloc
     if i >= n
         idxs
     else
-        bubble_idx(offs, idxs, mode, i)
-        sort_idxs_go(offs, idxs, mode, i + 1, n)
+        idxs2 = bubble_idx(offs, idxs, mode, i)
+        sort_idxs_go(offs, idxs2, mode, i + 1, n)
 
-fn bubble_idx(offs: &List[Off], idxs: &List[Int], mode: Int, i: Int) -> List[Int] ! alloc
+fn bubble_idx(offs: &List[Off], idxs: List[Int], mode: Int, i: Int) -> List[Int] ! alloc
     if i == 0
         idxs
     else
@@ -130,11 +132,12 @@ fn greedy_take(offs: &List[Off], sorted: &List[Int]) -> List[Int] ! alloc
     out = List.new[Int]()
     st = List.new[Int]()
     st.push(0 - 1)
-    greedy_take_go(offs, sorted, &out, &st, 0, sorted.len())
+    _a = greedy_take_go(offs, sorted, &out, &st, 0, sorted.len())
+    out
 
-fn greedy_take_go(offs: &List[Off], sorted: &List[Int], out: &List[Int], st: &List[Int], i: Int, n: Int) -> List[Int] ! alloc
+fn greedy_take_go(offs: &List[Off], sorted: &List[Int], out: &List[Int], st: &List[Int], i: Int, n: Int) -> Int ! alloc
     if i >= n
-        out
+        0
     else
         ix = sorted.get(i)
         o = offs.get(ix)
@@ -146,13 +149,13 @@ fn greedy_take_go(offs: &List[Off], sorted: &List[Int], out: &List[Int], st: &Li
         else
             greedy_take_go(offs, sorted, out, st, i + 1, n)
 
-fn apply_right(src: &String, offs: &List[Off], idxs: &List[Int], i: Int, n: Int) -> String ! alloc
+fn apply_right(src: String, offs: &List[Off], idxs: &List[Int], i: Int, n: Int) -> String ! alloc
     if i >= n
         src
     else
         o = offs.get(idxs.get(i))
-        next = patch_one(src, o.start, o.end, &o.fix)
-        apply_right(&next, offs, idxs, i + 1, n)
+        next = patch_one(&src, o.start, o.end, &o.fix)
+        apply_right(next, offs, idxs, i + 1, n)
 
 # Apply fixes whose span overlaps [lo, hi). The returned span is that range after the edits.
 fn apply_ranged_fixes(src: String, offs: &List[Off], lo: Int, hi: Int) -> RangedText ! alloc
@@ -160,19 +163,21 @@ fn apply_ranged_fixes(src: String, offs: &List[Off], lo: Int, hi: Int) -> Ranged
     if idxs.len() == 0
         RangedText(src, lo, hi)
     else
-        ordered = sort_idxs(offs, &idxs, 0)
+        ordered = sort_idxs(offs, idxs, 0)
         chosen = greedy_take(offs, &ordered)
-        right = sort_idxs(offs, &chosen, 1)
-        text = apply_right(&src, offs, &right, 0, right.len())
+        right = sort_idxs(offs, chosen.clone(), 1)
+        nright = right.len()
+        text = apply_right(src, offs, &right, 0, nright)
         RangedText(text, map_edge(offs, &chosen, lo, 0), map_edge(offs, &chosen, hi, 1))
 
 fn fix_indices_in_range(offs: &List[Off], lo: Int, hi: Int) -> List[Int] ! alloc
     v = List.new[Int]()
-    fix_indices_in_range_go(offs, &v, lo, hi, 0, offs.len())
+    _a = fix_indices_in_range_go(offs, &v, lo, hi, 0, offs.len())
+    v
 
-fn fix_indices_in_range_go(offs: &List[Off], v: &List[Int], lo: Int, hi: Int, i: Int, n: Int) -> List[Int] ! alloc
+fn fix_indices_in_range_go(offs: &List[Off], v: &List[Int], lo: Int, hi: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
-        v
+        0
     else
         o = offs.get(i)
         if o.has_fix() == 0

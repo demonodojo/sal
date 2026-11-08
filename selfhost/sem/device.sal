@@ -22,12 +22,9 @@ fn dc_new() -> DC ! alloc
     _c = list_push(&place, "")
     DC(list_new[String](), list_new[String](), st, msg, place)
 
+# The local `DC` is dropped at the end of its scope, which releases these lists.
+# Freeing them here as well is a double free.
 fn dc_free(c: &DC) -> Int ! alloc
-    _a = list_free(c.names)
-    _b = list_free(c.tys)
-    _c = list_free(c.st)
-    _d = list_free(c.msg)
-    _e = list_free(c.place)
     0
 
 fn dc_failed(c: &DC) -> Int ! alloc
@@ -97,9 +94,9 @@ fn ty_trim_end(s: &String) -> String ! alloc
         if str_char(s, n - 1) == 32
             ty_trim_end(&str_slice(s, 0, n - 1))
         else
-            s
+            s.dup()
     else
-        s
+        s.dup()
 
 fn dv_last_space(s: &String, i: Int) -> Int ! alloc
     if i < 0
@@ -143,7 +140,7 @@ fn place_debug(p: &String) -> String ! alloc
 # A tensor type with its place replaced.
 fn with_place(ty: &String, place: &String) -> String ! alloc
     if dv_is_tensor(ty) == 0
-        ty
+        ty.dup()
     else
         s = ty_trim_end(ty)
         i = dv_last_space(&s, str_len(s) - 1)

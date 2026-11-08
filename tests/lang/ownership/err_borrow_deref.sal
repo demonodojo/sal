@@ -1,0 +1,6 @@
+# error: E_BORROW
+# selfhost-xfail: el selfhost todavía no ejecuta check_borrows
+fn main() -> String
+    s = "hi"
+    r = &s
+    *r

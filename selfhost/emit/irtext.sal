@@ -159,7 +159,7 @@ fn trim_nl(piece: &String) -> String ! alloc
     if ln > 0 && piece.char(ln - 1) == 10
         piece.slice(0, ln - 1)
     else
-        piece
+        piece.dup()
 
 fn emit_if_body(body: &List[Inst], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n

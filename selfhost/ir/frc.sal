@@ -43,14 +43,14 @@ struct FRC
     fns: List[TFn]
 
 fn fr_new(env: &TEnv, enums: &List[TEnum], md: Int, params: &List[TParam], fns: &List[TFn]) -> FRC ! alloc
-    FRC(env.structs, enums, env.names, env.tys, md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fns)
+    FRC(env.structs.clone(), enums.clone(), env.names.clone(), env.tys.clone(), md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fns.clone())
 
 # Names of parameters whose mode is not take. Each name is dup'd, so freeing this list does not
 # free the function the caller still owns.
 static FRC.borrowed_params(params: &List[TParam]) -> List[String] ! alloc
-    FRC.borrowed_params_go(params, 0, params.len(), &List.new[String]())
+    FRC.borrowed_params_go(params, 0, params.len(), List.new[String]())
 
-static FRC.borrowed_params_go(params: &List[TParam], i: Int, n: Int, out: &List[String]) -> List[String] ! alloc
+static FRC.borrowed_params_go(params: &List[TParam], i: Int, n: Int, out: List[String]) -> List[String] ! alloc
     if i >= n
         out
     else
@@ -149,15 +149,15 @@ fn fr_returned_go(fns: &List[TFn], fname: &String, i: Int, n: Int) -> List[Int] 
     else
         f = fns.get(i)
         if f.name.eq(fname) == 1
-            fr_returned_idx(&f.params, &f.body, 0, f.params.len(), &List.new[Int]())
+            fr_returned_idx(&f.params, &f.body, 0, f.params.len(), List.new[Int]())
         else
             fr_returned_go(fns, fname, i + 1, n)
 
-fn fr_returned_idx(params: &List[TParam], body: &TBlock, i: Int, n: Int, out: &List[Int]) -> List[Int] ! alloc
+fn fr_returned_idx(params: &List[TParam], body: &TBlock, i: Int, n: Int, out: List[Int]) -> List[Int] ! alloc
     if i >= n
         out
     else
-        fr_returned_push(out, body, &params.get(i).name, i)
+        fr_returned_push(&out, body, &params.get(i).name, i)
         fr_returned_idx(params, body, i + 1, n, out)
 
 fn fr_returned_push(out: &List[Int], body: &TBlock, name: &String, i: Int) -> Int ! alloc
@@ -406,7 +406,7 @@ fn fr_note(c: &FRC, e: &Expr, moving: Int) -> Int ! alloc
     if str_len(root) == 0
         0
     else
-        si = tt_struct_find(&c.structs, &c.type_of(root))
+        si = tt_struct_find(&c.structs, &c.type_of(&root))
         if si < 0
             0
         else
@@ -626,7 +626,7 @@ fn fr_stmts(c: &FRC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
         if k == 0
             _a = fr_ex(c, &st.expr, 0)
         elsif k == 1
-            _al = c.alias(st.name, st.expr)
+            _al = c.alias(&st.name, &st.expr)
             _a = fr_ex(c, &st.expr, 1)
         elsif k == 2
             _a = fr_ex(c, &st.expr, 1)

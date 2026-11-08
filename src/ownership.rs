@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
@@ -11,21 +11,51 @@ use crate::typed::ExprTypeEntry;
 /// expression, each user fn's parameter modes, and the names that build a value
 /// (struct and enum constructors), whose arguments move into it.
 #[derive(Default)]
+struct Sig {
+    tparams: Vec<String>,
+    params: Vec<Type>,
+}
+
+#[derive(Default)]
 struct Typed {
     types: HashMap<(u32, u32), Type>,
     modes: HashMap<String, Vec<ParamMode>>,
+    sigs: HashMap<String, Sig>,
     ctors: HashSet<String>,
     structs: HashMap<String, StructDef>,
 }
 
 thread_local! {
     static TYPED: RefCell<Typed> = RefCell::new(Typed::default());
+    /// Set while checking moves. Inference of `borrow`/`take` (still used by
+    /// `sal fmt`) keeps the old rule.
+    static STRICT_MOVES: Cell<bool> = const { Cell::new(false) };
+}
+
+struct StrictMoves;
+
+impl StrictMoves {
+    fn enter() -> Self {
+        STRICT_MOVES.with(|c| c.set(true));
+        StrictMoves
+    }
+}
+
+impl Drop for StrictMoves {
+    fn drop(&mut self) {
+        STRICT_MOVES.with(|c| c.set(false));
+    }
+}
+
+fn strict_moves() -> bool {
+    STRICT_MOVES.with(|c| c.get())
 }
 
 fn load_program(prog: &Program) {
     TYPED.with(|t| {
         let mut t = t.borrow_mut();
         t.modes.clear();
+        t.sigs.clear();
         t.ctors.clear();
         t.types.clear();
         t.structs = collect_structs(prog);
@@ -33,6 +63,13 @@ fn load_program(prog: &Program) {
             match item {
                 Item::Fn(f) => {
                     t.modes.insert(f.name.clone(), f.params.iter().map(|p| p.mode).collect());
+                    t.sigs.insert(
+                        f.name.clone(),
+                        Sig {
+                            tparams: f.type_params.clone(),
+                            params: f.params.iter().map(|p| p.ty.clone()).collect(),
+                        },
+                    );
                 }
                 Item::Struct(sd) => {
                     t.ctors.insert(sd.name.clone());
@@ -71,19 +108,64 @@ fn typed_or(e: &Expr, guess: Type) -> Type {
 }
 
 fn call_moves_arg(name: &str, i: usize, nargs: usize) -> bool {
+    if i >= nargs {
+        return false;
+    }
     match name {
-        "list_push" => i == 1,
-        "list_set" | "dict_put" => i == 2,
-        _ => TYPED.with(|t| {
-            let t = t.borrow();
-            t.ctors.contains(name)
-                || t.modes.get(name).is_some_and(|m| m.get(i) == Some(&ParamMode::Take))
-        }) && i < nargs,
+        "list_push" => return i == 1,
+        "list_set" | "dict_put" => return i == 2,
+        _ => {}
+    }
+    TYPED.with(|t| {
+        let t = t.borrow();
+        if t.ctors.contains(name) {
+            return true;
+        }
+        // A by-value non-Copy parameter moves. `&T` and `&mut T` do not.
+        // A bare type parameter stays on the inferred mode: it may be `Int`.
+        if strict_moves() {
+            // `keep` is still the arena mode: the caller retains the container.
+            if t.modes.get(name).and_then(|m| m.get(i)) == Some(&ParamMode::Keep) {
+                return false;
+            }
+            if let Some(sig) = t.sigs.get(name) {
+                if let Some(ty) = sig.params.get(i) {
+                    if !matches!(ty, Type::Ref { .. }) && !is_copy_type_ext(ty, &t.structs) {
+                        let type_param = match ty {
+                            Type::Named { name: n, .. } | Type::Qualified { name: n, .. } => {
+                                sig.tparams.iter().any(|p| p == n)
+                            }
+                            _ => false,
+                        };
+                        if !type_param {
+                            return true;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+            }
+        }
+        t.modes.get(name).is_some_and(|m| m.get(i) == Some(&ParamMode::Take))
+    })
+}
+
+/// Whether argument `i` of `name` takes the value (the borrow checker uses this
+/// so a move under a live loan is `E_BORROW`). Borrowing builtins and unknown
+/// callees do not.
+pub(crate) fn operand_is_moved(name: &str, i: usize, nargs: usize) -> bool {
+    if is_borrow_fn(name) {
+        false
+    } else if is_move_fn(name) {
+        true
+    } else {
+        call_moves_arg(name, i, nargs)
     }
 }
 
 pub fn check_ownership(prog: &Program, infer: &crate::infer::InferOutput) -> DiagResult<()> {
     let modded = infer_param_modes(prog);
+    let _strict = StrictMoves::enter();
     load_program(&modded);
     for item in &modded.items {
         if let Item::Fn(f) = item {
@@ -97,6 +179,7 @@ pub fn check_ownership(prog: &Program, infer: &crate::infer::InferOutput) -> Dia
             check_fn_moves(f)?;
         }
     }
+    crate::borrowck::check_borrows(prog, infer)?;
     check_arena_params(&modded, infer)
 }
 
@@ -238,7 +321,7 @@ fn track_block(
     if let Some(t) = &b.tail {
         let ty = track_expr(t, env, moved, params, taken, used, frozen)?;
         // Tail value escapes the block (function result or block expr) → move unique.
-        consume_if_unique(t, &ty, moved, params, taken);
+        consume_if_unique(t, &ty, env, moved, params, taken);
     }
     Ok(false)
 }
@@ -262,7 +345,7 @@ fn track_stmt(
             ..
         } => {
             let ity = track_expr(init, env, moved, params, taken, used, frozen)?;
-            consume_if_unique(init, &ity, moved, params, taken);
+            consume_if_unique(init, &ity, env, moved, params, taken);
             let bound = ty.clone().unwrap_or(ity);
             env.insert(name.clone(), bound);
             revive(moved, name);
@@ -286,13 +369,13 @@ fn track_stmt(
                 }
             }
             let vty = track_expr(value, env, moved, params, taken, used, frozen)?;
-            consume_if_unique(value, &vty, moved, params, taken);
+            consume_if_unique(value, &vty, env, moved, params, taken);
             if let Expr::Ident { name, .. } = target {
                 // `x = x + ...` appends in place: the old `x` is moved into the result.
                 if is_string_type(&vty) && matches!(value, Expr::Binary { op: BinOp::Add, .. }) {
                     if let Expr::Ident { name: leaf, .. } = add_chain_leftmost(value) {
                         if leaf == name {
-                            consume_if_unique(add_chain_leftmost(value), &vty, moved, params, taken);
+                            consume_if_unique(add_chain_leftmost(value), &vty, env, moved, params, taken);
                         }
                     }
                 }
@@ -320,7 +403,7 @@ fn track_stmt(
         Stmt::Return { value, .. } => {
             if let Some(v) = value {
                 let ty = track_expr(v, env, moved, params, taken, used, frozen)?;
-                consume_if_unique(v, &ty, moved, params, taken);
+                consume_if_unique(v, &ty, env, moved, params, taken);
             }
             Ok(true)
         }
@@ -337,6 +420,13 @@ fn track_stmt(
                 frozen,
             )?;
             if !body_div {
+                if strict_moves() {
+                    // The value is still live on the back edge. The next iteration
+                    // moves it again: that use is `E_MOVED`.
+                    let mut again = body_moved.clone();
+                    track_expr(cond, env, &mut again, params, taken, used, frozen)?;
+                    track_block(body, env, &mut again, params, taken, used, frozen)?;
+                }
                 *moved = body_moved;
             }
             Ok(false)
@@ -406,12 +496,12 @@ fn track_expr(
             if let Expr::Ident { name, .. } = func.as_ref() {
                 if is_move_fn(name) {
                     for (a, ty) in args.iter().zip(arg_tys.iter()) {
-                        consume_if_unique(a, ty, moved, params, taken);
+                        consume_if_unique(a, ty, env, moved, params, taken);
                     }
                 } else if (0..args.len()).any(|i| call_moves_arg(name, i, args.len())) {
                     for (i, (a, ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
                         if call_moves_arg(name, i, args.len()) {
-                            consume_if_unique(a, ty, moved, params, taken);
+                            consume_if_unique(a, ty, env, moved, params, taken);
                         }
                     }
                 } else if !is_borrow_fn(name) {
@@ -487,7 +577,7 @@ fn track_expr(
         }
         Expr::To { expr, span, .. } => {
             let ty = track_expr(expr, env, moved, params, taken, used, frozen)?;
-            consume_if_unique(expr, &ty, moved, params, taken);
+            consume_if_unique(expr, &ty, env, moved, params, taken);
             Ok(ty_with_span(ty, *span))
         }
         Expr::TensorLit { rows, span, .. } => {
@@ -521,11 +611,27 @@ fn track_expr(
             scrutinee, arms, span, ..
         } => {
             track_expr(scrutinee, env, moved, params, taken, used, frozen)?;
+            // Arms are alternatives: a move in one does not move the value in another.
+            let branch_base = moved.clone();
+            let mut merged = branch_base.clone();
             for arm in arms {
                 let mut local = env.clone();
                 bind_pattern_names(&arm.pattern, &mut local);
-                track_expr(&arm.body, &local, moved, params, taken, used, frozen)?;
+                let mut br_moved = branch_base.clone();
+                let diverged = match &arm.body {
+                    Expr::Block(b) => {
+                        track_block(b, &mut local, &mut br_moved, params, taken, used, frozen)?
+                    }
+                    other => {
+                        track_expr(other, &local, &mut br_moved, params, taken, used, frozen)?;
+                        false
+                    }
+                };
+                if !diverged {
+                    merged.extend(br_moved);
+                }
             }
+            *moved = merged;
             Ok(typed_or(e, named("Unknown", *span)))
         }
         Expr::If {
@@ -628,6 +734,7 @@ fn moved_err(name: &str, span: Span) -> Vec<Diagnostic> {
 fn consume_if_unique(
     e: &Expr,
     ty: &Type,
+    env: &HashMap<String, Type>,
     moved: &mut HashSet<String>,
     params: &HashSet<String>,
     taken: &mut HashSet<String>,
@@ -642,8 +749,13 @@ fn consume_if_unique(
         }
     }
     // Partial move: `p.f` of a non-Copy field leaves `p` without that field.
+    // A field of a reference is still a copy of the handle: moving a non-Copy
+    // out of `&T` is a later `E_BORROW`, and the walkers pass that handle on.
     if let Expr::Field { base, field, .. } = e {
         if let Expr::Ident { name, .. } = base.as_ref() {
+            if matches!(env.get(name), Some(Type::Ref { .. })) {
+                return;
+            }
             moved.insert(format!("{name}.{field}"));
             if params.contains(name) {
                 taken.insert(name.clone());

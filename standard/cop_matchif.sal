@@ -71,7 +71,7 @@ fn cond_text(src: &String, lex: &Lex, n: Int, kw_i: Int) -> String ! alloc
         start = lex.end(kw_i)
         end = lex.start(j)
         raw = src.slice(start, end)
-        mi_trim(&mi_strip_trailing_nl(&raw))
+        mi_trim(&mi_strip_trailing_nl(raw))
 
 fn mi_find_line_start(src: &String, i: Int) -> Int ! alloc
     if i < 0
@@ -455,12 +455,12 @@ fn mi_find_first_nl(s: &String, i: Int, n: Int) -> Int ! alloc
     else
         mi_find_first_nl(s, i + 1, n)
 
-fn mi_unindent_line(s: &String, spaces: Int) -> String ! alloc
+fn mi_unindent_line(s: String, spaces: Int) -> String ! alloc
     n = s.len()
     if n < spaces
         s
     else
-        ok = mi_count_spaces_match(s, 0, spaces, 1)
+        ok = mi_count_spaces_match(&s, 0, spaces, 1)
         if ok == 1
             s.slice(spaces, n)
         else
@@ -485,10 +485,10 @@ fn mi_unindent_go(s: &String, i: Int, n: Int, spaces: Int, acc: String) -> Strin
     else
         nl = mi_find_first_nl(s, i, n)
         if nl >= n
-            acc + mi_unindent_line(&s.slice(i, n), spaces)
+            acc + mi_unindent_line(s.slice(i, n), spaces)
         else
             body = s.slice(i, nl)
-            body2 = mi_unindent_line(&body, spaces)
+            body2 = mi_unindent_line(body, spaces)
             acc2 = acc + body2 + "\n"
             mi_unindent_go(s, nl + 1, n, spaces, acc2)
 
@@ -502,14 +502,14 @@ fn suite_body(src: &String, lex: &Lex, indent_i: Int, suite_end: Int) -> String 
         col = mi_min_line_indent_raw(&raw)
         if col == 0
             col = 4
-        mi_strip_trailing_blank_lines(&mi_unindent_text(&raw, col))
+        mi_strip_trailing_blank_lines(mi_unindent_text(&raw, col))
 
-fn mi_strip_trailing_nl(s: &String) -> String ! alloc
+fn mi_strip_trailing_nl(s: String) -> String ! alloc
     n = s.len()
     if n == 0
         s
     elsif s.char(n - 1) == 10
-        mi_strip_trailing_nl(&s.slice(0, n - 1))
+        mi_strip_trailing_nl(s.slice(0, n - 1))
     else
         s
 
@@ -521,7 +521,7 @@ fn mi_rfind_nl(s: &String, i: Int) -> Int ! alloc
     else
         mi_rfind_nl(s, i - 1)
 
-fn mi_strip_trailing_blank_lines(s: &String) -> String ! alloc
+fn mi_strip_trailing_blank_lines(s: String) -> String ! alloc
     b = mi_strip_trailing_nl(s)
     n = b.len()
     if n == 0
@@ -533,12 +533,12 @@ fn mi_strip_trailing_blank_lines(s: &String) -> String ! alloc
         else
             line = b.slice(nl + 1, n)
             if mi_trim(&line).len() == 0
-                mi_strip_trailing_blank_lines(&b.slice(0, nl))
+                mi_strip_trailing_blank_lines(b.slice(0, nl))
             else
                 b
 
 fn body_is_block(b: &String) -> Int ! alloc
-    t = mi_trim(&mi_strip_trailing_nl(b))
+    t = mi_trim(&mi_strip_trailing_nl(b.dup()))
     if t.contains(d" = ") == 1
         1
     elsif t.contains(d"\n") == 1
@@ -593,7 +593,7 @@ fn suite_has_return_or_if_go(src: &String, lex: &Lex, i: Int, end: Int) -> Int !
 fn mi_arm_new(pat: String, body: String) -> MiArm ! alloc
     MiArm(pat, body, body_is_block(&body))
 
-fn mi_push_arm(arms: &List[MiArm], arm: &MiArm) -> Int ! alloc
+fn mi_push_arm(arms: &List[MiArm], arm: MiArm) -> Int ! alloc
     _p = arms.push(arm)
     0
 
@@ -679,7 +679,7 @@ fn mi_try_if_go(src: &String, lex: &Lex, if_i: Int, n: Int, ind: Int) -> MiPack 
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
     arms = List.new[MiArm]()
-    _a0 = mi_push_arm(&arms, &mi_arm_new(p0, b0))
+    _a0 = mi_push_arm(&arms, mi_arm_new(p0, b0))
     return mi_collect_elsifs(src, lex, n, if_i, fam, s0, lead, start, arms, j)
 
 fn mi_collect_elsifs(src: &String, lex: &Lex, n: Int, if_i: Int, fam: Int, scrut: String, lead: String, start: Int, arms: List[MiArm], i: Int) -> MiPack ! alloc
@@ -700,7 +700,7 @@ fn mi_collect_elsifs(src: &String, lex: &Lex, n: Int, if_i: Int, fam: Int, scrut
         return mi_fail()
     if suite_has_return_or_if(src, lex, ind, suite_end) == 1
         return mi_fail()
-    _a = mi_push_arm(&arms, &mi_arm_new(p, b))
+    _a = mi_push_arm(&arms, mi_arm_new(p, b))
     j = skip_nl(lex, n, suite_end)
     if j >= n
         return mi_fail()
@@ -723,7 +723,7 @@ fn mi_finish_else(src: &String, lex: &Lex, n: Int, if_i: Int, scrut: String, arm
         return mi_fail()
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
-    _a = mi_push_arm(&arms, &mi_arm_new(d"_", b))
+    _a = mi_push_arm(&arms, mi_arm_new(d"_", b))
     if_end = mi_consume_if(lex, n, if_i)
     return MiPack(1, start, lex.end(if_end - 1), scrut, lead, arms)
 
@@ -766,7 +766,7 @@ fn build_match_go(pack: &MiPack, i: Int, n: Int, acc: String, arm_lead: &String)
             body = indent_block(&arm.body, &(pack.lead + arm_lead + d"    "))
             build_match_go(pack, i + 1, n, (head + body), arm_lead)
         else
-            expr = mi_trim(&mi_strip_trailing_nl(&arm.body))
+            expr = mi_trim(&mi_strip_trailing_nl(arm.body.dup()))
             line = acc + pack.lead + arm_lead + pat + d" => " + expr + d"\n"
             build_match_go(pack, i + 1, n, line, arm_lead)
 

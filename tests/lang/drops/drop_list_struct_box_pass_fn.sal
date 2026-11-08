@@ -3,7 +3,7 @@ struct P
     name: String
     n: Int
 
-fn read_n(p: P) -> Int ! alloc
+fn read_n(p: &P) -> Int ! alloc
     p.n
 
 fn main() -> Int ! alloc
@@ -13,4 +13,4 @@ fn main() -> Int ! alloc
         xs.push(P(i.to_str(), i))
         i = i + 1
     o = xs.get(2)
-    read_n(o) + o.name.len() + xs.len()
+    read_n(&o) + o.name.len() + xs.len()

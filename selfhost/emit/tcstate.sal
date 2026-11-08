@@ -28,21 +28,15 @@ fn tc_new(pool: Int, env: &TEnv, enums: &List[TEnum]) -> Tc ! alloc
     mm_n = List.new[Int]()
     mm_n.push(0)
     tenv_truncate(env, 0)
-    Tc(ctr, acc, mm_out, mm_n, List.new[String](), List.new[String](), List.new[Expr](), pool, env, enums)
+    Tc(ctr, acc, mm_out, mm_n, List.new[String](), List.new[String](), List.new[Expr](), pool, tenv_clone(env), enums.clone())
 
-# Releases the emitter lists and the lambda copies. The body stays: the caller frees it
-# once this function's C and IR no longer share its strings.
+# The local `Tc` is dropped with its scope, which releases these lists. Freeing them
+# here as well is a double free. Lambda boxes are released first; the list header stays
+# for that drop. The body stays with the caller.
 fn tc_free(tc: &Tc, body: &TBlock) -> Int ! alloc
     _k = list_len(&body.stmts)
     tp_free_expr_list(&tc.lam_bodies)
-    list_free(tc.ctr)
-    list_free(tc.acc)
-    list_free(tc.mm_out)
-    list_free(tc.mm_n)
-    list_free(tc.lam_names)
-    list_free(tc.lam_params)
-    _g = list_free(tc.lam_bodies)
-    tp_keep_block(body)
+    0
 
 fn tc_lit_pool(tc: &Tc) -> Int ! alloc
     tc.pool

@@ -691,7 +691,7 @@ fn emit_recv_call(src: &String, lex: &Lex, offs: &List[Off], name: &String, i: I
     elsif gap_is_dot(src, lex.end(p), lex.start(i)) == 0
         0
     else
-        o = off_new(CODE_CONST(), "call the module constant " + name, lex.start(p), lex.end(rp), 1, name)
+        o = off_new(CODE_CONST(), "call the module constant " + name, lex.start(p), lex.end(rp), 1, name.dup())
         offs.push(o)
         0
 

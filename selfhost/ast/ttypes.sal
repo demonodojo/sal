@@ -22,7 +22,7 @@ fn tt_is_string(ty: &String) -> Int ! alloc
         ty.eq("String ")
 
 fn tt_is_float(ty: &String) -> Int ! alloc
-    trim_spaces(ty).eq("Float")
+    trim_spaces(ty.dup()).eq("Float")
 
 # `ty` names `name`; the parser leaves one trailing space after an identifier ("Path ").
 fn tt_matches(ty: &String, name: &String) -> Int ! alloc
@@ -65,7 +65,7 @@ fn tt_list_elem(t: &String) -> String ! alloc
         open = ty_find_open(t, 0)
         if open < 0
             ""
-        elsif trim_spaces(&t.slice(0, open)).eq("List") == 1
+        elsif trim_spaces(t.slice(0, open)).eq("List") == 1
             tt_arg(t, 0)
         else
             ""
@@ -282,11 +282,11 @@ fn tt_call_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) ->
     elsif name.eq("int_to_float") == 1
         "Float"
     elsif name.eq("load") == 1
-        targs
+        targs.dup()
     elsif name.eq("matmul") == 1
         tt_matmul(env, args)
     elsif tt_struct_find(&env.structs, name) >= 0
-        name
+        name.dup()
     elsif name.eq("list_new") + name.eq("list_new_owned") == 1
         if targs.len() == 0
             ""

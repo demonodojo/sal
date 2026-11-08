@@ -35,7 +35,7 @@ fn parent_dir_go(path: &String, i: Int) -> String ! alloc
 
 fn path_join(base: &String, rel: &String) -> String ! alloc
     if str_len(base) == 0
-        rel
+        rel.dup()
     elsif str_char(base, str_len(base) - 1) == 47
         base + rel
     else
@@ -285,7 +285,7 @@ fn basename_path(p: &String) -> String ! alloc
 
 fn basename_go(p: &String, i: Int) -> String ! alloc
     if i < 0
-        p
+        p.dup()
     elsif str_char(p, i) == 47
         str_slice(p, i + 1, str_len(p))
     else

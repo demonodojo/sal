@@ -579,12 +579,12 @@ fn prelude_parses() {
 fn lambda_string_handle_stays_usable() {
     expect_ok(
         r#"
-fn consume(s: String) -> Int
+fn consume(s: &String) -> Int
     str_len(s)
 
 fn main() -> String
     s = "hi"
-    f = x => consume(s)
+    f = x => consume(&s)
     s
 "#,
     );

@@ -3,13 +3,13 @@ fn ty_trim(t: Int) -> String ! alloc
     if t == 0
         "Unknown"
     else
-        ty_trim_go(&str_from_int(t))
+        ty_trim_go(str_from_int(t))
 
-fn ty_trim_go(s: &String) -> String ! alloc
+fn ty_trim_go(s: String) -> String ! alloc
     n = s.len()
     if n > 0
         if s.char(n - 1) == 32
-            ty_trim_go(&s.slice(0, n - 1))
+            ty_trim_go(s.slice(0, n - 1))
         else
             s
     else
@@ -25,9 +25,9 @@ fn tt_open(s: &String, i: Int, n: Int) -> Int ! alloc
     else
         tt_open(s, i + 1, n)
 
-fn tt_trim_left(s: &String) -> String ! alloc
+fn tt_trim_left(s: String) -> String ! alloc
     if s.len() > 0 && s.char(0) == 32
-        tt_trim_left(&s.slice(1, s.len()))
+        tt_trim_left(s.slice(1, s.len()))
     else
         s
 
@@ -40,13 +40,13 @@ fn tt_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int 
             tt_parts(s, i + 1, n, from, depth + 1, out)
         elsif ch == 93
             if depth == 0
-                _p = vec_push(out, ty_trim_go(&tt_trim_left(&s.slice(from, i))).to_int())
+                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
                 out
             else
                 tt_parts(s, i + 1, n, from, depth - 1, out)
         elsif ch == 44
             if depth == 0
-                _p = vec_push(out, ty_trim_go(&tt_trim_left(&s.slice(from, i))).to_int())
+                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
                 tt_parts(s, i + 1, n, i + 1, depth, out)
             else
                 tt_parts(s, i + 1, n, from, depth, out)
@@ -118,7 +118,7 @@ fn ts_trim(s: &String) -> String ! alloc
     if s.len() == 0
         "Unknown"
     else
-        ty_trim_go(s)
+        ty_trim_go(s.dup())
 
 fn ts_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: &List[String]) -> Int ! alloc
     if i >= n
@@ -129,13 +129,13 @@ fn ts_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: &List[String
             ts_parts(s, i + 1, n, from, depth + 1, out)
         elsif ch == 93
             if depth == 0
-                _p = out.push(ty_trim_go(&tt_trim_left(&s.slice(from, i))).dup())
+                _p = out.push(ty_trim_go(tt_trim_left(s.slice(from, i))).dup())
                 0
             else
                 ts_parts(s, i + 1, n, from, depth - 1, out)
         elsif ch == 44
             if depth == 0
-                _p = out.push(ty_trim_go(&tt_trim_left(&s.slice(from, i))).dup())
+                _p = out.push(ty_trim_go(tt_trim_left(s.slice(from, i))).dup())
                 ts_parts(s, i + 1, n, i + 1, depth, out)
             else
                 ts_parts(s, i + 1, n, from, depth, out)

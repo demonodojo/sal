@@ -2212,7 +2212,8 @@ fn infer_call(
                     span,
                 )]);
             }
-            check_expr(&args[0], env, ctx, types, entries)
+            let ty = check_expr(&args[0], env, ctx, types, entries)?;
+            Ok(peel_refs(&ty).clone())
         }
         "list_new" => {
             for a in args {

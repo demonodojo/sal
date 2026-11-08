@@ -371,9 +371,7 @@ fn fx_callees_progs(m: &Callees, progs: &List[TProgram], i: Int, n: Int) -> Int 
 # Ok(0), or Err(message) for the first fn using an undeclared effect.
 fn check_effects(tp: &TProgram) -> Int ! alloc
     none = list_new[TProgram]()
-    r = check_effects_with(tp, &none)
-    _f = list_free(none)
-    r
+    check_effects_with(tp, &none)
 
 # Same, counting the fns of `progs` (every module of the graph; empty for none).
 fn check_effects_with(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
@@ -382,9 +380,5 @@ fn check_effects_with(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
     _a = fx_callees_typed(&callees, &tp.fns, 0, list_len(&tp.fns))
     _b = fx_callees_progs(&callees, progs, 0, list_len(progs))
     used = fx_new(callees)
-    r = check_effects_go(tp, 0, list_len(&tp.fns), &env, &used)
-    _f = tenv_free(&env)
-    _g = list_free(used.flags)
-    _h = list_free(used.callees.names)
-    _i = list_free(used.callees.masks)
-    r
+    # `env` and `used` are dropped with this frame. Freeing their lists here is a double free.
+    check_effects_go(tp, 0, list_len(&tp.fns), &env, &used)

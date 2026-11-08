@@ -241,14 +241,14 @@ fn infer_sigs_go(h: &HT, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = h.put(list_get(fns, i).name, int_to_str(i + 1))
+        _a = h.put(&list_get(fns, i).name, &int_to_str(i + 1))
         infer_sigs_go(h, fns, i + 1, n)
 
 fn infer_names_fns(m: &HT, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = m.put(list_get(fns, i).name, "1")
+        _p = m.put(&list_get(fns, i).name, &"1")
         infer_names_fns(m, fns, i + 1, n)
 
 # Variants as bare names and with their arity, and the enums as type names. `vtab` maps the variant
@@ -259,7 +259,7 @@ fn infer_names_enums(names: &HT, arity: &HT, vtab: &HT, tnames: &HT, enums: &Lis
     else
         e = list_get(enums, i)
         _a = infer_names_variants(names, arity, vtab, &e.variants, 0, list_len(&e.variants), i, list_len(&e.tparams))
-        _b = tnames.put(e.name, int_to_str(1 + list_len(&e.tparams)))
+        _b = tnames.put(&e.name, &int_to_str(1 + list_len(&e.tparams)))
         infer_names_enums(names, arity, vtab, tnames, enums, i + 1, n)
 
 fn infer_names_variants(names: &HT, arity: &HT, vtab: &HT, vs: &List[TVariant], i: Int, n: Int, ei: Int, generic: Int) -> Int ! alloc
@@ -267,8 +267,8 @@ fn infer_names_variants(names: &HT, arity: &HT, vtab: &HT, vs: &List[TVariant], 
         0
     else
         v = list_get(vs, i)
-        _p = names.put(v.name, "1")
-        _q = arity.put(v.name, int_to_str(1 + list_len(&v.fields)))
+        _p = names.put(&v.name, &"1")
+        _q = arity.put(&v.name, &int_to_str(1 + list_len(&v.fields)))
         _r = infer_vtab_put(vtab, &v.name, ei, i, generic)
         infer_names_variants(names, arity, vtab, vs, i + 1, n, ei, generic)
 
@@ -276,8 +276,8 @@ fn infer_vtab_put(vtab: &HT, name: &String, ei: Int, vi: Int, generic: Int) -> I
     if generic > 0
         0
     else
-        _a = vtab.put(name, int_to_str(ei + 1))
-        vtab.put(name + "#", int_to_str(vi + 1))
+        _a = vtab.put(name, &int_to_str(ei + 1))
+        vtab.put(&(name + "#"), &int_to_str(vi + 1))
 
 # The enum a variant of a non-generic enum builds ("Unknown" for any other).
 fn infer_variant_ty(c: &IC, name: &String) -> String ! alloc
@@ -307,21 +307,59 @@ fn infer_type_names_structs(m: &HT, v: &List[TStruct], i: Int, n: Int) -> Int ! 
         0
     else
         s = list_get(v, i)
-        _p = m.put(s.name, int_to_str(1 + list_len(&s.tparams)))
+        _p = m.put(&s.name, &int_to_str(1 + list_len(&s.tparams)))
         infer_type_names_structs(m, v, i + 1, n)
 
-# Base identifier of a type text: `List[Int]` -> `List`.
-fn infer_type_base(s: &String, i: Int, n: Int) -> String ! alloc
+# Base identifier of a type text: `List[Int]` -> `List`, `&E` and `&mut E` -> `E`.
+fn infer_type_base(s: String, i: Int, n: Int) -> String ! alloc
+    start = infer_skip_ref_prefix(&s, i, n)
+    infer_type_base_go(&s, start, start, n)
+
+fn infer_type_base_go(s: &String, start: Int, i: Int, n: Int) -> String ! alloc
     if i >= n
-        s
+        s.slice(start, n)
     else
-        ch = str_char(s, i)
+        ch = s.char(i)
         if ch == 91
-            str_slice(s, 0, i)
+            s.slice(start, i)
         elsif ch == 32
-            str_slice(s, 0, i)
+            s.slice(start, i)
         else
-            infer_type_base(s, i + 1, n)
+            infer_type_base_go(s, start, i + 1, n)
+
+# Past a leading `&` / `&mut` / `&'a` / `&'a mut`, repeated for `&&T`.
+fn infer_skip_ref_prefix(s: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif s.char(i) != 38
+        i
+    else
+        infer_skip_ref_prefix(s, infer_skip_mut(s, infer_skip_lifetime(s, i + 1, n), n), n)
+
+fn infer_skip_lifetime(s: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif s.char(i) != 39
+        i
+    else
+        infer_skip_word(s, i + 1, n)
+
+fn infer_skip_word(s: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif s.char(i) == 32
+        i + 1
+    else
+        infer_skip_word(s, i + 1, n)
+
+fn infer_skip_mut(s: &String, i: Int, n: Int) -> Int ! alloc
+    if i + 4 <= n
+        if str_eq(str_slice(s, i, i + 4), "mut ") == 1
+            i + 4
+        else
+            i
+    else
+        i
 
 fn infer_builtin_type(b: &String) -> Int ! alloc
     if str_eq(b, "Int") == 1
@@ -358,7 +396,7 @@ fn infer_check_known(c: &IC, t: &String) -> Int ! alloc
         0
     else
         txt = ts_trim(t)
-        base = infer_type_base(&txt, 0, str_len(txt))
+        base = infer_type_base(txt.dup(), 0, txt.len())
         if str_len(base) <= 1
             0
         elsif str_contains(base, ".") == 1
@@ -484,20 +522,20 @@ fn mth_dot(t: &String, i: Int, n: Int) -> Int ! alloc
         mth_dot(t, i + 1, n)
 
 # The type arguments of a stamped `targs`.
-fn mth_targs(t: &String) -> String ! alloc
-    p = mth_at(t, 0, str_len(t))
+fn mth_targs(t: String) -> String ! alloc
+    p = mth_at(&t, 0, t.len())
     if p < 0
         t
     else
-        str_slice(t, 0, p)
+        t.slice(0, p)
 
 # The stamp ("" when none).
-fn mth_id(t: &String) -> String ! alloc
-    p = mth_at(t, 0, str_len(t))
+fn mth_id(t: String) -> String ! alloc
+    p = mth_at(&t, 0, t.len())
     if p < 0
         ""
     else
-        str_slice(t, p + 1, str_len(t))
+        t.slice(p + 1, t.len())
 
 fn infer_record(c: &IC, id: &String, val: &String) -> Int ! alloc
     if c.rec == 0
@@ -517,8 +555,8 @@ fn infer_call_t(c: &IC, name: &String, args: &List[Expr], targs: &String) -> Str
 fn infer_dotted(c: &IC, name: &String, p: Int, args: &List[Expr], targs: &String) -> String ! alloc
     q = str_slice(name, 0, p)
     fld = str_slice(name, p + 1, str_len(name))
-    id = mth_id(targs)
-    ta = mth_targs(targs)
+    id = mth_id(targs.dup())
+    ta = mth_targs(targs.dup())
     if p == 0
         infer_instance(c, &fld, args, &ta, &id, &"i")
     elsif infer_is_alias(&c.aliases, &q, 0) == 1
@@ -607,7 +645,7 @@ fn infer_instance(c: &IC, fld: &String, args: &List[Expr], ta: &String, id: &Str
     elsif ty_is(&rty, &"Unknown") == 1
         infer_unresolved(c, args)
     else
-        infer_instance_on(c, &rty, &infer_type_base(&ts_trim(&rty), 0, str_len(ts_trim(&rty))), fld, args, id, kind)
+        infer_instance_on(c, &rty, &infer_type_base(ts_trim(&rty), 0, ts_trim(&rty).len()), fld, args, id, kind)
 
 # The receiver's type is not known here: type the rest of the arguments and leave the call as it is.
 fn infer_unresolved(c: &IC, args: &List[Expr]) -> String ! alloc
@@ -1022,14 +1060,14 @@ fn infer_t_list_op(c: &IC, name: &String, tys: &List[String], xs: &String, elem:
         "Int"
     elsif str_eq(name, "list_push") == 1
         _a = infer_t_elem_ok(c, tys, 1, elem)
-        xs
+        xs.dup()
     elsif str_eq(name, "list_set") == 1
         _a = infer_t_elem_ok(c, tys, 2, elem)
-        xs
+        xs.dup()
     elsif str_len(elem) == 0
         "Unknown"
     else
-        elem
+        elem.dup()
 
 fn infer_t_elem_ok(c: &IC, tys: &List[String], i: Int, elem: &String) -> Int ! alloc
     if str_len(elem) == 0
@@ -1074,7 +1112,7 @@ fn infer_t_dict_op(c: &IC, name: &String, tys: &List[String], d: &String, k: &St
     elsif str_eq(name, "dict_put") == 1
         _a = infer_t_key_ok(c, tys, k)
         _b = infer_t_dict_val_ok(c, tys, v)
-        d
+        d.dup()
     else
         _a = infer_t_key_ok(c, tys, k)
         "Bool"
@@ -1119,7 +1157,7 @@ fn infer_user_call(c: &IC, name: &String, f: &TFn, args: &List[Expr], tys: &List
         if str_len(f.ret) == 0
             "Unknown"
         else
-            f.ret
+            f.ret.dup()
 
 # Builtins typed here take priority over the older cases below.
 fn infer_builtin_call(c: &IC, name: &String, args: &List[Expr], tys: &List[String], targs: &String) -> String ! alloc
@@ -1166,14 +1204,14 @@ fn infer_struct_call(c: &IC, name: &String, sd: &TStruct, args: &List[Expr], tys
     if sd.is_frame == 0
         if list_len(args) != list_len(&sd.fields)
             _f = ic_fail(c, &("struct `" + name + "` expects " + int_to_str(list_len(&sd.fields)) + " field(s), found " + int_to_str(list_len(args))))
-            name
+            name.dup()
         elsif list_len(&sd.tparams) == 0
             _f = infer_struct_fields(c, sd, tys, 0, list_len(tys))
-            name
+            name.dup()
         else
-            name
+            name.dup()
     else
-        name
+        name.dup()
 
 fn infer_variant_call(c: &IC, name: &String, args: &List[Expr]) -> String ! alloc
     want = ic_get(&c.arity, name) - 1
@@ -1457,9 +1495,9 @@ fn infer_tensor_binary(c: &IC, op: &String, lt: &String, rt: &String) -> String 
     else
         _f = 0
     if ty_is_tensor(lt) == 1
-        lt
+        lt.dup()
     else
-        rt
+        rt.dup()
 
 fn infer_tensor_pair(c: &IC, lt: &String, rt: &String) -> Int ! alloc
     if infer_same_elem(lt, rt) == 0
@@ -1522,7 +1560,7 @@ fn infer_volume(p: &List[String], i: Int, n: Int, acc: Int) -> Int ! alloc
 # `head, d1, d2, ...` for integer-literal dims, "" when one is not a literal.
 fn infer_lit_dims(args: &List[Expr], i: Int, n: Int, head: &String) -> String ! alloc
     if i >= n
-        head
+        head.dup()
     else
         a = list_get(args, i)
         if lit_is_int(&a) == 0
@@ -1692,9 +1730,9 @@ fn infer_add(c: &IC, lt: &String, rt: &String) -> String ! alloc
     elsif ty_is(rt, &"String") == 1
         if ty_is_scalar(lt) == 1
             _f = ic_fail(c, &"string concatenation requires a String on the left")
-            lt
+            lt.dup()
         else
-            lt
+            lt.dup()
     else
         infer_numeric(c, lt, rt)
 
@@ -1745,12 +1783,12 @@ fn infer_scalar_left_unsupported(op: &String) -> Int ! alloc
 fn infer_numeric(c: &IC, lt: &String, rt: &String) -> String ! alloc
     if ty_numeric(lt) == 0
         _f = ic_fail(c, &"numeric operation requires Int or Float")
-        lt
+        lt.dup()
     elsif ty_numeric(rt) == 0
         _f = ic_fail(c, &"numeric operation requires Int or Float")
-        lt
+        lt.dup()
     else
-        lt
+        lt.dup()
 
 fn infer_is_bitop(op: &String) -> Int ! alloc
     if str_eq(op, "mod") == 1
@@ -1907,13 +1945,13 @@ fn infer_try(c: &IC, inner: &Expr) -> String ! alloc
             _f = ic_fail(c, &("`try` needs a Result or Option, found " + ty_msg(&t)))
             "Unknown"
     else
-        tb = infer_type_base(&ts_trim(&t), 0, str_len(ts_trim(&t)))
+        tb = infer_type_base(ts_trim(&t), 0, ts_trim(&t).len())
         rt = ic_ret(c)
         if str_len(rt) == 0
             "Unknown"
         elsif str_eq(tb, "Result") + str_eq(tb, "Option") == 0
             "Unknown"
-        elsif str_eq(infer_type_base(&ts_trim(&rt), 0, str_len(ts_trim(&rt))), tb) == 0
+        elsif str_eq(infer_type_base(ts_trim(&rt), 0, ts_trim(&rt).len()), tb) == 0
             _f = ic_fail(c, &("`try` on " + tb + " needs the function to return " + tb))
             "Unknown"
         else
@@ -1939,15 +1977,15 @@ fn infer_if_join(c: &IC, tb: &String, eb: &String) -> String ! alloc
         if infer_diverged(eb) == 1
             "Unit"
         else
-            eb
+            eb.dup()
     elsif infer_diverged(eb) == 1
-        tb
+        tb.dup()
     else
         if ty_compat(tb, eb) == 0
             _f = ic_fail(c, &("expected " + ty_msg(tb) + ", found " + ty_msg(eb)))
-            tb
+            tb.dup()
         else
-            tb
+            tb.dup()
 
 fn infer_expr(c: &IC, e: &Expr) -> String ! alloc
     match e

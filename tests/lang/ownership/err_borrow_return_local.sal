@@ -1,0 +1,9 @@
+# error: E_BORROW
+# selfhost-xfail: el selfhost todavía no ejecuta check_borrows
+fn f(n: &Int) -> &String
+    s = "hi"
+    &s
+
+fn main() -> Int
+    n = 1
+    f(&n).len()

@@ -94,13 +94,12 @@ fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn
     _c = list_push(&acc, 0)
     vm = map_new()
     _m = variants_fill(vm, enums, 0, list_len(enums))
-    Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums, fns, protocols)
+    Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums.clone(), fns.clone(), protocols.clone())
 
-# Releases the one-slot lists; `cx.env` is released when `cx` goes out of scope here.
+# `cx` is dropped at the end of its scope, which releases these lists.
+# Freeing them here as well is a double free.
 fn cx_free(cx: &Cx) -> Int ! alloc
-    _a = list_free(cx.ctr)
-    _b = list_free(cx.insts)
-    list_free(cx.acc)
+    0
 
 # Variant name -> `[enum name, variant index, field count, tag]`; the first definition wins.
 fn cx_variants(cx: &Cx) -> Int ! alloc
@@ -111,7 +110,7 @@ fn variants_fill(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
         0
     else
         ed = list_get(enums, i)
-        _k = map_put(m, str_as_int(&("enum:" + ed).name), 1)
+        _k = map_put(m, str_as_int(&("enum:" + ed.name)), 1)
         _a = variants_fill_go(m, str_as_int(&ed.name), &ed.variants, 0, list_len(&ed.variants))
         variants_fill(m, enums, i + 1, n)
 

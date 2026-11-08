@@ -172,8 +172,8 @@ fn and_is_or(s: &String, i: Int, n: Int) -> Int ! alloc
 fn and_needs_paren(s: &String) -> Int ! alloc
     and_or_at_top(s, 0, s.len(), 0, 0)
 
-fn and_wrap(cond: &String) -> String ! alloc
-    if and_needs_paren(cond) == 1
+fn and_wrap(cond: String) -> String ! alloc
+    if and_needs_paren(&cond) == 1
         "(" + cond + ")"
     else
         cond
@@ -196,12 +196,12 @@ fn and_count_spaces(s: &String, i: Int, left: Int, ok: Int) -> Int ! alloc
     else
         0
 
-fn and_unindent_line(s: &String, spaces: Int) -> String ! alloc
+fn and_unindent_line(s: String, spaces: Int) -> String ! alloc
     n = s.len()
     if n < spaces
         s
     else
-        ok = and_count_spaces(s, 0, spaces, 1)
+        ok = and_count_spaces(&s, 0, spaces, 1)
         if ok == 1
             s.slice(spaces, n)
         else
@@ -216,10 +216,10 @@ fn and_unindent_go(s: &String, i: Int, n: Int, spaces: Int, acc: String) -> Stri
     else
         nl = and_find_nl(s, i, n)
         if nl >= n
-            acc + and_unindent_line(&s.slice(i, n), spaces)
+            acc + and_unindent_line(s.slice(i, n), spaces)
         else
             body = s.slice(i, nl)
-            body2 = and_unindent_line(&body, spaces)
+            body2 = and_unindent_line(body, spaces)
             acc2 = acc + body2 + "\n"
             and_unindent_go(s, nl + 1, n, spaces, acc2)
 
@@ -257,7 +257,7 @@ fn and_has_body_go(s: &String, i: Int, n: Int) -> Int ! alloc
         else
             1
 
-fn and_ensure_nl(s: &String) -> String ! alloc
+fn and_ensure_nl(s: String) -> String ! alloc
     n = s.len()
     if n == 0
         "\n"
@@ -371,10 +371,10 @@ fn and_comment_blocks(src: &String, lex: &Lex, hit: AndHit) -> Int ! alloc
 
 fn and_build(src: &String, lex: &Lex, hit: AndHit) -> String ! alloc
     lead = and_line_leading(src, lex.start(hit.if_i))
-    ca = and_wrap(&and_cond_text(src, lex, hit.if_i, hit.then_indent))
-    cb = and_wrap(&and_cond_text(src, lex, hit.inner_if, hit.inner_then))
+    ca = and_wrap(and_cond_text(src, lex, hit.if_i, hit.then_indent))
+    cb = and_wrap(and_cond_text(src, lex, hit.inner_if, hit.inner_then))
     delta = and_indent_col(lex, hit.inner_then) - and_indent_col(lex, hit.then_indent)
-    then_body = and_ensure_nl(&and_unindent(&and_suite_src(src, lex, hit.inner_then, hit.inner_then_end), delta))
+    then_body = and_ensure_nl(and_unindent(&and_suite_src(src, lex, hit.inner_then, hit.inner_then_end), delta))
     else_body = and_suite_src(src, lex, hit.outer_else_indent, hit.end_i)
     lead + "if " + ca + " && " + cb + "\n" + then_body + lead + "else\n" + else_body
 

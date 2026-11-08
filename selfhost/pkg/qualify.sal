@@ -53,13 +53,13 @@ fn modid_from_path(path: &String, proot: &String) -> String ! alloc
 
 fn modid_rel_path(path: &String, proot: &String, n: Int, pl: Int) -> String ! alloc
     if pl == 0
-        path
+        path.dup()
     elsif n <= pl + 1
-        path
+        path.dup()
     elsif substr_eq_at(path, 0, proot, 0, pl) == 0
-        path
+        path.dup()
     elsif str_char(path, pl) != 47
-        path
+        path.dup()
     else
         str_slice(path, pl + 1, n)
 
@@ -67,7 +67,7 @@ fn link_name(modid: &String, name: &String, clashing: Int) -> String ! alloc
     if clashing == 1
         modid + "__" + name
     else
-        name
+        name.dup()
 
 fn name_clash_count(order: &Graph, n: Int, name: Int) -> Int ! alloc
     name_clash_count_go(order, 0, n, name, 0)
@@ -367,7 +367,7 @@ fn qualify_type_handle(ty: Int, ctx: Int, links: Int) -> Int ! alloc
         s = ts_trim(&str_from_int(ty))
         pair = split_qual_member(&s)
         if pair == 0
-            renamed = map_get(vec_get(ctx, 2), str_as_int(&ty_trim_go(&s)))
+            renamed = map_get(vec_get(ctx, 2), str_as_int(&ty_trim_go(s)))
             if renamed != 0
                 renamed
             else
@@ -396,8 +396,27 @@ fn qx_moved(old: &Expr, neu: &Expr) -> Int ! alloc
     else
         1
 
+# The same pointer. `*e` would move a non-Copy value out of the reference.
 fn qx_same(e: &Expr) -> Expr ! alloc
-    e
+    box = List.new[Expr]()
+    _p = list_push_share(box, e)
+    got = list_get(box, 0)
+    _f = list_free_shell(box)
+    got
+
+fn qx_share_list(xs: &List[Expr]) -> List[Expr] ! alloc
+    box = List.new[List[Expr]]()
+    _p = list_push_share(box, xs)
+    got = list_get(box, 0)
+    _f = list_free_shell(box)
+    got
+
+fn qx_share_str(s: &String) -> String ! alloc
+    box = List.new[String]()
+    _p = list_push_share(box, s)
+    got = list_get(box, 0)
+    _f = list_free_shell(box)
+    got
 
 fn qx_field(e: &Expr, base: &Expr, fld: &String, ctx: Int, links: Int) -> Expr ! alloc
     match base
@@ -428,7 +447,7 @@ fn qx_call_name(nm: &String, ctx: Int, links: Int) -> String ! alloc
         if renamed != 0
             strdup(str_from_int(renamed))
         else
-            nm
+            nm.dup()
     else
         lk = resolve_qualified_item(ctx, links, vec_get(pair, 0), vec_get(pair, 1))
         if lk == 0
@@ -437,7 +456,7 @@ fn qx_call_name(nm: &String, ctx: Int, links: Int) -> String ! alloc
             if renamed != 0
                 strdup(str_from_int(renamed) + "." + str_from_int(vec_get(pair, 1)))
             else
-                nm
+                nm.dup()
         else
             strdup(str_from_int(lk))
 
@@ -458,7 +477,7 @@ fn qx_call(e: &Expr, nm: &String, args: &List[Expr], targs: &String, xp: Int, ct
     _a = qx_args(args, 0, list_len(args), ctx, links)
     neu = qx_call_name(nm, ctx, links)
     if str_as_int(&neu) != str_as_int(nm)
-        built = XCall(neu, args, targs, pos)
+        built = XCall(neu, qx_share_list(args), qx_share_str(targs), pos)
         _e = enum_free_shell(e)
         built
     elsif pos != xp
@@ -689,11 +708,11 @@ fn qx_block(b: &TBlock, ctx: Int, links: Int) -> TBlock ! alloc
 # A type string changes only when the handle says so. The same pointer stays otherwise.
 fn qx_apply_ty(cur: &String, ctx: Int, links: Int) -> String ! alloc
     if str_len(cur) == 0
-        cur
+        cur.dup()
     else
         neu = qualify_type_handle(str_as_int(cur), ctx, links)
         if neu == 0 || neu == str_as_int(cur)
-            cur
+            cur.dup()
         else
             _f = free(cur)
             strdup(str_from_int(neu))

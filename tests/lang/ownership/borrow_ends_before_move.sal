@@ -1,0 +1,7 @@
+# exit: 2
+fn main() -> Int
+    s = "hi"
+    r = &s
+    n = r.len()
+    t = s
+    n

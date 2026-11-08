@@ -287,17 +287,15 @@ fn tp_empty_block() -> TBlock ! alloc
 fn tp_pat_cleared() -> TPat ! alloc
     TPat(0, 0, "", "", List.new[TPat]())
 
-# Dup `name`/`ty` before freeing `expr` when they can alias `XIdent`/`XStr` substrings (e.g. `let x = x + 1`).
+# Frees the expressions. The statement shell stays: replacing it would `list_set` an owned
+# `List[TStmt]`, which releases the expression a second time.
 fn tp_free_stmts_go(stmts: &List[TStmt], i: Int, n: Int, seen: &HT, lseen: &HT) -> Int ! alloc
     if i >= n
         0
     else
         st = stmts.get(i)
-        nm = st.name.dup()
-        ty = st.ty.dup()
         tp_free_expr_go(&st.expr, seen, lseen)
         tp_free_expr_go(&st.target, seen, lseen)
-        stmts.set(i, TStmt(st.kind, nm, XNone, ty, st.is_let, XNone, st.frozen, st.stack, st.id))
         tp_free_stmts_go(stmts, i + 1, n, seen, lseen)
 
 # Takes a block so the caller's drop does not free it. The strings stay with the caller.
@@ -345,7 +343,8 @@ fn tp_free_block_go(b: &TBlock, seen: &HT, lseen: &HT) -> Int ! alloc
         tp_free_expr_go(&b.tail, seen, lseen)
     else
         tp_free_stmts_go(&b.stmts, 0, b.stmts.len(), seen, lseen)
-        list_free(b.stmts)
+        # The statements were released above. `list_free` would release their strings again.
+        _sh = list_free_shell(b.stmts)
         tp_free_expr_go(&b.tail, seen, lseen)
 
 fn tp_free_exprs_go(xs: &List[Expr], i: Int, n: Int, seen: &HT, lseen: &HT) -> Int ! alloc

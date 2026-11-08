@@ -1,0 +1,7 @@
+# error: E_BORROW
+# selfhost-xfail: el selfhost todavía no ejecuta check_borrows
+fn main() -> Int
+    s = "hi"
+    r = &s
+    t = &mut s
+    r.len()
