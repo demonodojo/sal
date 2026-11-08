@@ -1693,7 +1693,6 @@ fn try_lower_tensor_bin_go(cx: &Cx, op: &String, tensor_ssa: Int, other_ssa: Int
 fn lower_program_with_callables(tp: &TProgram, extra: Int) -> Int ! alloc
     env = tenv_new(tp)
     ir = lower_program_typed(tp, extra, &env, &tp.enums, &tp.fns)
-    _a = tenv_free(&env)
     ir
 
 # `seen` is every function of the module graph. The struct glue reads it to tell when a call
@@ -1706,7 +1705,126 @@ fn lower_program_typed(tp: &TProgram, extra: Int, env_tpl: &TEnv, em: &List[TEnu
     out = vec_new()
     denv = drop_env_t(tp, &env_tpl.structs, em, seen)
     lower_fns(&tp.fns, names, fm, env_tpl, em, denv, &tp.fns, &tp.protocols, seen, 0, list_len(&tp.fns), out)
+    _g = struct_glue_all(&env_tpl.structs, out)
     out
+
+# Per-type glue (`struct_glue_fns` in src/ir.rs): one `drop.<Struct>` per non-generic struct of
+# this module with a `String` or `List` field, after the user fns, in name order. It releases those fields
+# in declaration order. The text is the bootstrap's, so the two IRs stay identical.
+fn struct_glue_all(structs: &List[TStruct], out: Int) -> Int ! alloc
+    cand = struct_glue_candidates(structs, 0, structs.len(), List.new[Int]())
+    struct_glue_emit(structs, &cand, 0, cand.len(), out)
+
+# The structs that need glue: non-generic, with a `String` or `List` field.
+fn struct_glue_candidates(structs: &List[TStruct], i: Int, n: Int, acc: List[Int]) -> List[Int] ! alloc
+    if i >= n
+        acc
+    else
+        st = structs.get(i)
+        if st.tparams.len() == 0 && struct_glue_has_heap(&st.fields, 0, st.fields.len()) == 1
+            _p = acc.push(i)
+        else
+            _q = 0
+        struct_glue_candidates(structs, i + 1, n, acc)
+
+# Emits in name order: the p-th struct is the one with exactly p candidates before it.
+fn struct_glue_emit(structs: &List[TStruct], cand: &List[Int], p: Int, n: Int, out: Int) -> Int ! alloc
+    if p >= n
+        0
+    else
+        idx = struct_glue_rank(structs, cand, p, 0, n)
+        st = structs.get(idx)
+        _f = vec_push(out, struct_glue_fn(&st.name, &st.fields))
+        struct_glue_emit(structs, cand, p + 1, n, out)
+
+fn struct_glue_rank(structs: &List[TStruct], cand: &List[Int], p: Int, k: Int, n: Int) -> Int ! alloc
+    if k >= n
+        0 - 1
+    elsif struct_glue_before(structs, cand, cand.get(k), 0, n) == p
+        cand.get(k)
+    else
+        struct_glue_rank(structs, cand, p, k + 1, n)
+
+# How many candidates have a name below the one at `idx`.
+fn struct_glue_before(structs: &List[TStruct], cand: &List[Int], idx: Int, j: Int, n: Int) -> Int ! alloc
+    if j >= n
+        0
+    elsif str_lt(&structs.get(cand.get(j)).name, &structs.get(idx).name) == 1
+        1 + struct_glue_before(structs, cand, idx, j + 1, n)
+    else
+        struct_glue_before(structs, cand, idx, j + 1, n)
+
+fn struct_glue_has_heap(fields: &List[TField], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif struct_glue_callee(&fields.get(i).ty).len() > 0
+        1
+    else
+        struct_glue_has_heap(fields, i + 1, n)
+
+# The runtime release of a field, or "" when the glue leaves it alone.
+fn struct_glue_callee(ty: &String) -> String ! alloc
+    t = trim_spaces(ty.dup())
+    if t.eq("String") == 1
+        "sal_free"
+    elsif t.len() > 5 && t.char(0) == 76
+        # The selfhost writes `List[T]` as `List [T]`; both spellings are the same type.
+        if t.char(4) == 91 || (t.char(4) == 32 && t.char(5) == 91)
+            "sal_list_free"
+        else
+            ""
+    else
+        ""
+
+# `drop.<Struct>(v)`: the fields `String`/`List` are extracted from `v` and released, then 0.
+fn struct_glue_fn(sname: &String, fields: &List[TField]) -> Int ! alloc
+    insts = vec_new()
+    _a = struct_glue_insts(sname, fields, 0, fields.len(), insts)
+    _b = vec_push(insts, ir_ci(str_as_int(&"r"), 0))
+    _c = vec_push(insts, ir_ret(str_as_int(&"r")))
+    out = vec_new()
+    _d = vec_push(out, str_as_int(&("drop." + sname)))
+    _e = vec_push(out, vec_new())
+    _f = vec_push(out, insts)
+    _g = vec_push(out, vec_new())
+    _h = vec_push(out, vec_new())
+    out
+
+fn struct_glue_insts(sname: &String, fields: &List[TField], i: Int, n: Int, insts: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        callee = struct_glue_callee(&fields.get(i).ty)
+        if callee.len() > 0
+            d = "f" + i.to_str()
+            _x = vec_push(insts, ir_extract(str_as_int(&d), str_as_int(&"v"), str_as_int(sname), i))
+            _y = vec_push(insts, ir_call_named(str_as_int(&d), str_as_int(&callee)))
+            struct_glue_insts(sname, fields, i + 1, n, insts)
+        else
+            struct_glue_insts(sname, fields, i + 1, n, insts)
+
+# Bytewise `a < b` on strings (the order Rust's `sort` uses for `String`).
+fn str_lt(a: &String, b: &String) -> Int ! alloc
+    str_lt_at(a, b, 0, min_int(a.len(), b.len()))
+
+fn str_lt_at(a: &String, b: &String, k: Int, n: Int) -> Int ! alloc
+    if k >= n
+        if a.len() < b.len()
+            1
+        else
+            0
+    elsif a.char(k) == b.char(k)
+        str_lt_at(a, b, k + 1, n)
+    elsif a.char(k) < b.char(k)
+        1
+    else
+        0
+
+fn min_int(a: Int, b: Int) -> Int
+    if a < b
+        a
+    else
+        b
 
 # `[variants, modes, read-only params]`: the variant table, per fn name the effective mode of
 # each parameter (0 copy, 1 borrow, 2 take), and the read-only flags.

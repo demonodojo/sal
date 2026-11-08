@@ -147,9 +147,7 @@ fn emit_ir_from_graph(order: &Graph, source_path: String) -> Int ! alloc
     seen = graph_fns(order)
     text = emit_ir_from_prog_with_types(&root_prog, extra, &genums, &env, &seen)
     _h = list_free(genums)
-    _f = tenv_free(&env)
-    _g = list_free(env.structs)
-    result_ok_str(&text)
+    result_ok_str(text)
 
 fn emit_ir_from_path(source_path: String) -> Int ! io, alloc
     proot = project_root()
@@ -179,7 +177,7 @@ fn emit_ir_cached(tp: &TProgram, pre: &String) -> Int ! io, alloc
     cached = read_file(irpath)
     if str_len(cached) > 0
         _w = write_file(metapath, "hit=1\n")
-        result_ok_str(&cached)
+        result_ok_str(cached)
     else
         checked = check_program(tp)
         if result_is_err(checked) == 1
@@ -189,7 +187,7 @@ fn emit_ir_cached(tp: &TProgram, pre: &String) -> Int ! io, alloc
             kept = emit_keep_text(tp, &ir0)
             _w0 = write_file(irpath, kept)
             _w1 = write_file(metapath, "hit=0\n")
-            result_ok_str(&kept)
+            result_ok_str(kept)
 
 fn emit_ir_imported_file(source_path: String, src: &String) -> Int ! io, alloc
     dir = cache_dir()
@@ -205,7 +203,7 @@ fn emit_ir_imported_file(source_path: String, src: &String) -> Int ! io, alloc
         cached = read_file(irpath)
         if str_len(cached) > 0
             _w = write_file(metapath, "hit=1\n")
-            result_ok_str(&cached)
+            result_ok_str(cached)
         else
             ir1 = emit_ir_from_graph(&order, source_path)
             if result_is_err(ir1) == 1
@@ -214,7 +212,7 @@ fn emit_ir_imported_file(source_path: String, src: &String) -> Int ! io, alloc
                 body = str_from_int(result_unwrap(ir1))
                 _w2 = write_file(irpath, body)
                 _w3 = write_file(metapath, "hit=0\n")
-                result_ok_str(&body)
+                result_ok_str(body)
 
 fn emit_ir_for_file(source_path: String, src: &String) -> Int ! io, alloc
     if str_len(source_path) > 0
@@ -241,7 +239,7 @@ fn emit_c_checked(tp: &TProgram) -> Int ! alloc
     else
         text = emit_c_from_ast(tp)
         kept = emit_keep_text(tp, &text)
-        result_ok_str(&kept)
+        result_ok_str(kept)
 
 fn emit_c_from_prog_result(src: &String) -> Int ! alloc
     pre = preprocess(src)
@@ -288,14 +286,14 @@ fn emit_c_parsed_file(tp: &TProgram, source_path: &String, out_path: &String) ->
     elsif str_len(source_path) == 0
         text = emit_c_from_ast(tp)
         kept = emit_keep_text(tp, &text)
-        result_ok_str(&kept)
+        result_ok_str(kept)
     elsif list_len(&tp.imports) == 0
         ccode = emit_c_from_ast(tp)
         kept = emit_keep_text(tp, &ccode)
         cpath = tmp_path("out.c")
         _w = write_file(cpath, kept)
         if clang(cpath, out_path) == 0
-            result_ok_str(&"")
+            result_ok_str("")
         else
             result_err_str(&"clang failed")
     else
@@ -1517,7 +1515,7 @@ fn emit_c_compile_graph_go(graph: &Graph, i: Int, n: Int, root_key: &String, pro
     if i >= n
         lrc = call_link_objs(obj_list, out_path)
         if lrc == 0
-            result_ok_str(&"")
+            result_ok_str("")
         else
             result_err_str(&"link failed")
     else
@@ -1547,8 +1545,6 @@ fn emit_c_compile_graph(order: &Graph, root_key: &String, out_path: &String, pro
     seen = graph_fns(order)
     r = emit_c_compile_graph_go(order, 0, list_len(&order.mods), root_key, proot, out_path, &"", &genums, &env, &seen)
     _h = list_free(genums)
-    _f = tenv_free(&env)
-    _g = list_free(env.structs)
     r
 
 fn emit_c(src: &String) -> Int ! alloc

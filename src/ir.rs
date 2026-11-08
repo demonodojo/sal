@@ -275,6 +275,61 @@ fn assign_accumulates_string(target: &str, value: &Expr, strings: &StringEnv) ->
         && matches!(add_chain_leftmost(value), Expr::Ident { name, .. } if name == target)
 }
 
+/// The per-type glue of each non-generic struct with heap fields (SPEC «Liberación de
+/// locales»): `drop.<Struct>` releases its `String` and `List` fields in declaration order.
+/// Nested structs, enums and `Dict`/`Bytes` fields are not released here yet.
+fn struct_glue_fns(strings: &StringEnv, own: &HashSet<&str>) -> Vec<IrFunction> {
+    let mut names: Vec<&String> = strings.structs.keys().filter(|n| own.contains(n.as_str())).collect();
+    names.sort();
+    let mut out = Vec::new();
+    for name in names {
+        let sd = &strings.structs[name];
+        if !sd.type_params.is_empty() {
+            continue;
+        }
+        let mut ins = Vec::new();
+        for (i, field) in sd.fields.iter().enumerate() {
+            let Type::Named { name: fname, args, .. } = &field.ty else {
+                continue;
+            };
+            let callee = match (fname.as_str(), args.as_slice()) {
+                ("String", []) => "sal_free",
+                ("List", [_]) => "sal_list_free",
+                _ => continue,
+            };
+            let dest = format!("f{i}");
+            ins.push(IrInst::Extract {
+                dest: dest.clone(),
+                base: "v".into(),
+                struct_name: name.clone(),
+                field_index: i as u32,
+            });
+            ins.push(IrInst::Call {
+                dest: None,
+                func: callee.into(),
+                args: vec![dest],
+            });
+        }
+        if ins.is_empty() {
+            continue;
+        }
+        ins.push(IrInst::ConstInt {
+            dest: "r".into(),
+            value: 0,
+        });
+        ins.push(IrInst::Return { value: "r".into() });
+        out.push(IrFunction {
+            name: format!("drop.{name}"),
+            params: vec!["v".into()],
+            instructions: ins,
+            regions: Vec::new(),
+            dim_params: Vec::new(),
+            host_literals: Vec::new(),
+        });
+    }
+    out
+}
+
 pub fn lower_program_with_callables_env(
     prog: &Program,
     callable_fns: &HashMap<String, ()>,
@@ -325,6 +380,16 @@ pub fn lower_program_with_callables_env(
             functions.push(lower_fn(f, &fn_names, &strings, &param_modes, &caller_modes));
         }
     }
+    // Only the module's own structs: another module defines (and links) the glue of its own.
+    let own: HashSet<&str> = prog
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Struct(sd) => Some(sd.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    functions.extend(struct_glue_fns(&strings, &own));
     IrModule {
         functions,
         any_vtables: collect_any_vtables(prog),

@@ -2384,6 +2384,9 @@ typedef struct {
     const char *desc;
     int desc_owned;
     int owned;
+    /* Element glue (SPEC «Liberación de locales»): set by sal_list_set_drop, it releases
+     * one element. NULL keeps the descriptor path (desc_free). */
+    void (*elem_drop)(int64_t);
     SalVec vec;
 } SalList;
 
@@ -2589,10 +2592,21 @@ void *sal_list_new_desc(const char *desc) {
     l->owned = d[0] == '+';
     l->desc = l->owned ? d + 1 : d;
     l->desc_owned = 0;
+    l->elem_drop = NULL;
     l->vec.data = NULL;
     l->vec.len = 0;
     l->vec.cap = 0;
     return l;
+}
+
+/* The list owns its elements and releases each one with `glue` (the `drop.<Tipo>` of T). */
+void sal_list_set_drop(void *vp, void (*glue)(int64_t)) {
+    SalList *l = (SalList *)vp;
+    if (!l) {
+        return;
+    }
+    l->owned = 1;
+    l->elem_drop = glue;
 }
 
 /* A list built from a legacy packed kind (dict keys and values, select). */
@@ -2619,7 +2633,11 @@ void sal_list_free(void *vp) {
     }
     if (l->owned) {
         for (size_t i = 0; i < l->vec.len; i++) {
-            desc_free(l->desc, l->vec.data[i]);
+            if (l->elem_drop) {
+                l->elem_drop(l->vec.data[i]);
+            } else {
+                desc_free(l->desc, l->vec.data[i]);
+            }
         }
     }
     if (l->desc_owned) {

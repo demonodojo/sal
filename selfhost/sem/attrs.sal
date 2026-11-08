@@ -324,5 +324,4 @@ fn check_attrs(tp: &TProgram) -> Int ! alloc
     else
         env = tenv_new(tp)
         out = at_check_fns(tp, 0, tp.fns.len(), &env)
-        tenv_free(&env)
         out

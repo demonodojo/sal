@@ -23,7 +23,28 @@ fn fns_in_graph(
     out
 }
 
+/// The IR of a program without its per-type glue (`fn drop.<Struct>`), so the counts
+/// below stay about the releases the program's own code makes. `ir_full` keeps the glue.
 fn ir_of(name: &str, src: &str) -> String {
+    strip_glue(&ir_full(name, src))
+}
+
+fn strip_glue(ir: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in ir.lines() {
+        if line.starts_with("fn ") {
+            skipping = line.starts_with("fn drop.");
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn ir_full(name: &str, src: &str) -> String {
     let dir = std::env::temp_dir().join(format!("sal-drops-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.sal"));
@@ -601,6 +622,10 @@ fn struct_glue_frees_string_list_when_only_fresh_values() {
 }
 
 fn ir_of_file(rel: &str) -> String {
+    strip_glue(&ir_file_full(rel))
+}
+
+fn ir_file_full(rel: &str) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_sal"))
         .args(["emit", "ir"])
         .arg(root().join(rel))
@@ -661,4 +686,62 @@ fn struct_glue_releases_branch_returned_struct_once() {
     assert!(main.contains("func: \"pick\""), "{ir}");
     assert_eq!(main.matches("sal_list_free").count(), 1, "{main}");
     assert_eq!(main.matches("sal_enum_free").count(), 1, "{main}");
+}
+
+// Per-type glue (SPEC «Liberación de locales»): `List[T]` releases each element with the
+// glue of `T`, then the block, and a struct releases its fields in declaration order.
+// `Leaf` has a list of Int, so it is only freed through its own glue `drop.Leaf`.
+#[test]
+fn glue_per_type_frees_list_of_struct_with_list_field() {
+    let ir = ir_full(
+        "glue_tree",
+        "struct Leaf\n    name: String\n    xs: List[Int]\n\nstruct Tree\n    leaves: List[Leaf]\n    tag: String\n\nfn main() -> Int ! alloc\n    leaves = List.new[Leaf]()\n    t = Tree(leaves, \"a\")\n    t.tag.len()\n",
+    );
+    let leaf = fn_ir(&ir, "drop.Leaf");
+    assert!(leaf.contains("func: \"sal_free\""), "{ir}");
+    assert!(leaf.contains("func: \"sal_list_free\""), "{leaf}");
+    let tree = fn_ir(&ir, "drop.Tree");
+    assert!(tree.contains("func: \"sal_list_free\""), "{tree}");
+    let main = fn_ir(&ir, "main");
+    // `leaves` moved into `t`: main releases `t` once through its glue and never the list itself.
+    assert_eq!(main.matches("func: \"drop.Tree\"").count(), 1, "{main}");
+    assert!(!main.contains("func: \"sal_list_free\""), "{main}");
+    assert!(ir.contains("\"drop.Leaf\""), "the list block must hold the element glue:\n{ir}");
+}
+
+// The runtime hook of the per-type glue: `sal_list_set_drop` makes `sal_list_free` release
+// each element with the given glue (SPEC «Liberación de locales»).
+#[test]
+fn list_set_drop_releases_each_element_with_element_glue() {
+    let dir = std::env::temp_dir().join(format!("sal-list-drop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("list_set_drop");
+    let cc = Command::new("cc")
+        .args(["-std=c11", "-o"])
+        .arg(&bin)
+        .arg(root().join("tests/runtime_drop/list_set_drop.c"))
+        .arg(root().join("runtime/sal_runtime.c"))
+        .args(["-I"])
+        .arg(root().join("runtime"))
+        .args(["-lm", "-lpthread"])
+        .output()
+        .expect("cc");
+    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    let run = Command::new(&bin).output().expect("run list_set_drop");
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stdout));
+}
+
+// Step 2 of the per-type glue: every struct with heap fields gets a `drop.<Struct>` function
+// that releases those fields in declaration order (SPEC «Liberación de locales»).
+#[test]
+fn struct_glue_fn_releases_heap_fields_in_declaration_order() {
+    let ir = ir_full(
+        "glue_fn_order",
+        "struct Leaf\n    name: String\n    n: Int\n    xs: List[Int]\n\nfn main() -> Int\n    0\n",
+    );
+    let leaf = fn_ir(&ir, "drop.Leaf");
+    let free = leaf.find("func: \"sal_free\"").expect(&ir);
+    let list = leaf.find("func: \"sal_list_free\"").expect(&ir);
+    assert!(free < list, "fields in declaration order:\n{leaf}");
+    assert!(!leaf.contains("func: \"sal_enum_free\""), "{leaf}");
 }
