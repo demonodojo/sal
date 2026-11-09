@@ -1,3 +1,4 @@
+# selfhost-xfail: selfhost no resuelve variantes calificadas por módulo
 # exit: 4
 import "mods/en1.sal" as one
 

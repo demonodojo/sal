@@ -2,31 +2,28 @@ fn glob_match(name: &String, pat: &String) -> Int ! alloc
     glob_match_go(name, pat, 0, 0)
 
 fn glob_match_go(name: &String, pat: &String, ni: Int, pi: Int) -> Int ! alloc
-    nn = str_len(name)
-    pn = str_len(pat)
+    nn = name.len()
+    pn = pat.len()
     if pi >= pn
         if ni >= nn
             1
         else
             0
     else
-        pc = str_char(pat, pi)
+        pc = pat.char(pi)
         if pc == 42
             glob_star(name, pat, ni, pi + 1, nn, pn)
+        elsif ni >= nn
+            0
+        elsif name.char(ni) == pc
+            glob_match_go(name, pat, ni + 1, pi + 1)
         else
-            if ni >= nn
-                0
-            else
-                if str_char(name, ni) == pc
-                    glob_match_go(name, pat, ni + 1, pi + 1)
-                else
-                    0
+            0
 
 fn glob_star(name: &String, pat: &String, ni: Int, pi: Int, nn: Int, pn: Int) -> Int ! alloc
     if glob_match_go(name, pat, ni, pi) == 1
         1
+    elsif ni >= nn
+        0
     else
-        if ni >= nn
-            0
-        else
-            glob_star(name, pat, ni + 1, pi, nn, pn)
+        glob_star(name, pat, ni + 1, pi, nn, pn)

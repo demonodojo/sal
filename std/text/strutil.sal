@@ -14,19 +14,12 @@ fn json_rbracket() -> String ! alloc
     String.from_char(93)
 
 fn json_esc_byte(c: Int) -> String ! alloc
-    if c == 34
-        String.from_char(92) + String.from_char(34)
-    else
-        if c == 92
-            String.from_char(92) + String.from_char(92)
-        else
-            if c == 10
-                String.from_char(92) + String.from_char(110)
-            else
-                if c == 13
-                    String.from_char(92) + String.from_char(114)
-                else
-                    String.from_char(c)
+    match c
+        34 => String.from_char(92) + String.from_char(34)
+        92 => String.from_char(92) + String.from_char(92)
+        10 => String.from_char(92) + String.from_char(110)
+        13 => String.from_char(92) + String.from_char(114)
+        _ => String.from_char(c)
 
 fn json_esc_fill(s: &String, i: Int, n: Int, buf: &Bytes, pos: Int) -> Int ! alloc
     if i >= n

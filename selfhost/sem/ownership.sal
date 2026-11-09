@@ -881,6 +881,8 @@ fn check_ownership(tp: &TProgram) -> Int ! alloc
 
 # The mode of parameter `pm` once the body has been tracked in `c` (as `infer_fn_modes` in Rust).
 # A reference parameter (`&T`, `&mut T`) is never taken: passing it does not move the caller's value.
+# Any other parameter of a type that is not `Copy` takes its argument (a move, as in Rust), whether
+# the callee reads it or not; in an `@arena` fn parameters are read-only.
 fn own_param_mode(c: &OC, pm: &TParam, arena: Int) -> Int ! alloc
     if pm.mode != 0
         pm.mode
@@ -888,10 +890,6 @@ fn own_param_mode(c: &OC, pm: &TParam, arena: Int) -> Int ! alloc
         0
     elsif own_is_copy_ext(&pm.ty, &c.env.structs, 0) == 1
         0
-    elsif own_has(&c.taken, &pm.name, 0, list_len(&c.taken)) == 1
-        2
-    elsif own_has(&c.used, &pm.name, 0, list_len(&c.used)) == 1
-        1
     elsif arena == 1
         1
     else

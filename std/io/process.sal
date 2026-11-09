@@ -28,21 +28,21 @@ fn spawn_argv_slot_ptr(tab: &Bytes, i: Int, buf: &Bytes, len: Int) -> Int ! allo
 fn spawn_io_argv(path: &String, argv_count: Int, argv_tab: &Bytes, stdin: Int, stdout: Int, stderr: Int, cwd: &String, log_fd: Int) -> Int ! io, alloc
     pbuf = spawn_string_buf(path)
     plen = path.len()
-    opts = Bytes.new(spawnio_size())
-    opts.set_i64(spawnio_off_path_ptr(), pbuf.ptr())
-    opts.set_i64(spawnio_off_path_len(), plen)
-    opts.set_i64(spawnio_off_stdin(), stdin)
-    opts.set_i64(spawnio_off_stdout(), stdout)
-    opts.set_i64(spawnio_off_stderr(), stderr)
-    opts.set_i64(spawnio_off_argv_ptr(), argv_tab.ptr())
-    opts.set_i64(spawnio_off_argv_count(), argv_count)
-    opts.set_i64(spawnio_off_log_fd(), log_fd)
+    opts = Bytes.new(SPAWNIO_SIZE)
+    opts.set_i64(SPAWNIO_OFF_PATH_PTR, pbuf.ptr())
+    opts.set_i64(SPAWNIO_OFF_PATH_LEN, plen)
+    opts.set_i64(SPAWNIO_OFF_STDIN, stdin)
+    opts.set_i64(SPAWNIO_OFF_STDOUT, stdout)
+    opts.set_i64(SPAWNIO_OFF_STDERR, stderr)
+    opts.set_i64(SPAWNIO_OFF_ARGV_PTR, argv_tab.ptr())
+    opts.set_i64(SPAWNIO_OFF_ARGV_COUNT, argv_count)
+    opts.set_i64(SPAWNIO_OFF_LOG_FD, log_fd)
     cl = cwd.len()
     if cl > 0
         cbuf = spawn_string_buf(cwd)
-        opts.set_i64(spawnio_off_cwd_ptr(), cbuf.ptr())
-        opts.set_i64(spawnio_off_cwd_len(), cl)
-    syscall(nr_spawn_io(), opts.ptr(), 0, 0, 0, 0, 0)
+        opts.set_i64(SPAWNIO_OFF_CWD_PTR, cbuf.ptr())
+        opts.set_i64(SPAWNIO_OFF_CWD_LEN, cl)
+    syscall(NR_SPAWN_IO, opts.ptr(), 0, 0, 0, 0, 0)
 
 fn spawn_io_full(path: &String, stdin: Int, stdout: Int, stderr: Int, log_fd: Int) -> Int ! io, alloc
     pbuf = spawn_string_buf(path)
@@ -78,10 +78,10 @@ fn spawn_io_4(path: &String, a1: &String, a2: &String, a3: &String, stdin: Int, 
     spawn_io_argv(path, 4, &tab, stdin, stdout, stderr, &d"", log_fd)
 
 fn wait_pid(pid: Int) -> Int ! io
-    syscall(nr_wait(), pid, 0, 0, 0, 0, 0)
+    syscall(NR_WAIT, pid, 0, 0, 0, 0, 0)
 
 fn kill_pid(pid: Int, sig: Int) -> Int ! io
-    syscall(nr_kill(), pid, sig, 0, 0, 0, 0)
+    syscall(NR_KILL, pid, sig, 0, 0, 0, 0)
 
 fn read_fd_all_go(fd: Int, max: Int) -> String ! io, alloc
     buf = Bytes.new(max)
@@ -110,7 +110,7 @@ fn spawn_capture_stdout(path: &String, arg: &String) -> String ! io, alloc
     tab = Bytes.new(32)
     spawn_argv_slot_ptr(&tab, 0, &pbuf, path.len())
     spawn_argv_slot_ptr(&tab, 1, &abuf, arg.len())
-    pid = spawn_io_argv(path, 2, &tab, spawn_fd_closed(), wr, spawn_fd_closed(), &d"", 0)
+    pid = spawn_io_argv(path, 2, &tab, SPAWN_FD_CLOSED, wr, SPAWN_FD_CLOSED, &d"", 0)
     Fd.new(wr).close()
     if pid < 0
         Fd.new(rd).close()

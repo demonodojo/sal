@@ -1,0 +1,11 @@
+struct StrPath
+    raw: String
+
+method StrPath.ir_path(&self, key: &String) -> String ! alloc
+    self.raw + "/" + key + ".ir"
+
+method StrPath.meta_path(&self, key: &String) -> String ! alloc
+    self.raw + "/" + key + ".meta"
+
+method StrPath.mkdir(&self) -> Int ! io, alloc
+    mkdir_p(&self.raw)

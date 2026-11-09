@@ -14,12 +14,12 @@ Objetivo: mismo contrato syscall en **soso** (guest) y en **`sal build --target 
 
 | Nº | Nombre soso | Uso OpenCode | `std/io/abi.sal` | `runtime/soso/linux_host_syscall.c` | Wrappers Sal |
 |----|-------------|--------------|------------------|-------------------------------------|--------------|
-| 21 | `PIPE` | tuberías explícitas antes de `spawn_io` | [ ] `nr_pipe()` | [ ] devolver par de fds al guest | [ ] `std/io/pipe.sal` (nuevo) |
+| 21 | `PIPE` | tuberías explícitas antes de `spawn_io` | [ ] `NR_PIPE` | [ ] devolver par de fds al guest | [ ] `std/io/pipe.sal` (nuevo) |
 | 23 | `CHDIR` | `--dir`, búsqueda hacia arriba | [ ] | [ ] | [ ] `std/io/cwd.sal` (nuevo) o `fs.sal` |
 | 24 | `GETCWD` | `--dir`, rutas relativas | [ ] | [ ] | [ ] mismo módulo cwd |
 | 72 | `CLOCK_GETTIME` (`CLOCK_REALTIME`) | `<env>`, `time.start`/`end`, timestamps ISO | [ ] + `clock_id` | [ ] | [ ] `std/io/time.sal` → `clock_realtime_*` |
 | 78 | `GETRANDOM` | prefijos `ses_` / `msg_` / `prt_` | [ ] | [ ] | [ ] `std/io/util.sal` o `rand.sal` |
-| 11 | `WAIT` | códigos de salida hijos | ok `nr_wait()` | ok `(pid<<8)\|exit` | [ ] helpers `wait_exit_code`, `wait_pid_status` en `process.sal` |
+| 11 | `WAIT` | códigos de salida hijos | ok `NR_WAIT` | ok `(pid<<8)\|exit` | [ ] helpers `wait_exit_code`, `wait_pid_status` en `process.sal` |
 | 22 | `SPAWN_IO` | bash, git, subprocesos | ok | **parcial** (ver nota) | [ ] `spawn_argv`, cwd, fds no heredados |
 | 6 | `STAT` | glob, mtime, tamaño, dirs | ok | ok (`SosoStat`) | [ ] `stat_size`, `stat_mtime`, `is_dir`, `mkdir_p` en `fs.sal` |
 | 29 + 40 | `TCP_CONNECT`, `DNS_RESOLVE` | baseURL LAN | ok | ok | [ ] `tcp_connect_host`, parse `http://host:port` en `net.sal` |
@@ -34,18 +34,18 @@ Checklist shim + API:
 
 - [ ] Definir contrato soso (kernel/SDK): ¿fds de lectura en campos extra de `SpawnIo`, segunda syscall, o siempre `PIPE` + pasar fd al spawn?
 - [ ] Implementar el mismo contrato en `linux_host_syscall.c` (sin perder fds legibles en el padre).
-- [ ] Exponer en `abi.sal` offsets faltantes de `SpawnIo` (`spawnio_off_cwd_*`, `spawnio_off_envp_*` ya existen en C, tamaño 112).
+- [ ] Exponer en `abi.sal` offsets faltantes de `SpawnIo` (`SPAWNIO_OFF_CWD_*`, `SPAWNIO_OFF_ENVP_*` ya existen en C, tamaño 112).
 - [ ] `process.sal`: `spawn_capture(path, argv…)` → `{ pid, stdout_fd, stderr_fd }` o lectura a `String` con límite configurable.
 
 Constantes sugeridas para spawn fds (documentar en `abi.sal` si no están):
 
-- [ ] `spawn_fd_inherit()`, `spawn_fd_null()` (valores `SOSO_FD_*` del SDK).
+- [ ] `SPAWN_FD_INHERIT`, `SPAWN_FD_NULL` (valores `SOSO_FD_*` del SDK).
 
 ### Ficheros a tocar (T84)
 
 | Fichero | Tareas |
 |---------|--------|
-| `std/io/abi.sal` | Números 21, 23, 24, 72, 78; offsets stat/dirent/spawnio; `clock_realtime()` id |
+| `std/io/abi.sal` | Números 21, 23, 24, 72, 78; offsets stat/dirent/spawnio; `CLOCK_REALTIME` id |
 | `runtime/soso/linux_host_syscall.c` | Casos syscall nuevos; arreglo spawn+pipes; paridad con soso-abi |
 | `runtime/sal_runtime.c` | Solo si hace falta puente host (p. ej. `exec_capture` documentado para `--target linux`) |
 | `std/io/time.sal` | `clock_gettime` real + helpers ms/nanos desde epoch |

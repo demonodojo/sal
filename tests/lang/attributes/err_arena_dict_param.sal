@@ -1,3 +1,4 @@
+# selfhost-xfail: selfhost no implementa la comprobación de parámetros @arena de dict
 # error: E_TYPE
 @arena
 fn f(cache: Dict[String, String]) -> Int

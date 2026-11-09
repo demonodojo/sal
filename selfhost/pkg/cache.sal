@@ -1,4 +1,4 @@
-import handles
+import str_path
 
 fn source_hash(src: &String) -> String ! io, alloc
     h = src.hash(5381)
@@ -16,15 +16,6 @@ fn cache_dir() -> StrPath ! io, alloc
         StrPath("target/selfhost-cache")
     else
         StrPath(e)
-
-fn cache_ir_path_raw(dir: &StrPath, key: &String) -> String ! alloc
-    dir.raw + "/" + key + ".ir"
-
-fn cache_meta_path_raw(dir: &StrPath, key: &String) -> String ! alloc
-    dir.raw + "/" + key + ".meta"
-
-fn cache_mkdir(dir: &StrPath) -> Int ! io, alloc
-    mkdir_p(&dir.raw)
 
 fn cache_key_for_graph_path(src: &String, source_path: &String) -> String ! io, alloc
     base = source_hash(src)

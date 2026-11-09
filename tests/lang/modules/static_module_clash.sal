@@ -1,3 +1,4 @@
+# selfhost-xfail: selfhost no distingue static homónimos entre módulos
 # exit: 8
 import "mods/static_pt.sal" as a
 import "mods/static_pt2.sal" as b

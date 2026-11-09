@@ -1,0 +1,18 @@
+# A local lambda `f = x => body`: calls of `f` inline `body` with `x` bound to the argument
+# (`strings.lambdas` in src/ir.rs).
+import "../ast/tast.sal"
+
+struct Lam
+    name: String
+    param: String
+    body: Expr
+
+# Index of the lambda bound to `name`, or -1. The last binding wins, as a later `f = …` replaces it.
+static Lam.find(lams: &List[Lam], name: &String) -> Int ! alloc
+    i = lams.len() - 1
+    found = 0 - 1
+    while i >= 0 && found < 0
+        if lams.get(i).name.eq(name) == 1
+            found = i
+        i = i - 1
+    found

@@ -1,3 +1,4 @@
+# selfhost-xfail: selfhost trata el parámetro @arena como solo lectura (falta el modo mutable de check_arena)
 # exit: 2
 enum Option[T]
     None

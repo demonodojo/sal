@@ -73,6 +73,8 @@ fn ic_free(c: &IC) -> Int ! alloc
     _h = c.res.free()
     _v = c.vtab.free()
     _cv = list_free(c.cvals)
+    _fx = list_free(c.cur_fx)
+    _sh = list_free(c.structs)
     c.arity.free()
 
 fn ic_count_variants(enums: &List[TEnum], i: Int, n: Int, acc: Int) -> Int ! alloc
@@ -958,7 +960,7 @@ fn infer_typed_builtin(c: &IC, name: &String, tys: &List[String], targs: &String
         infer_t_list(c, name, tys)
     elsif infer_t_is_dict(name) == 1
         infer_t_dict(c, name, tys)
-    elsif str_eq(name, "bytes_new") == 1
+    elsif str_eq(name, "bytes_new") + str_eq(name, "bytes_view") + str_eq(name, "bytes_view_mem") > 0
         "Bytes"
     elsif infer_t_is_int(name) == 1
         "Int"

@@ -204,7 +204,12 @@ pub fn collect_host_tensors(prog: &Program) -> HashMap<String, HostTensor> {
 
 fn collect_param_shapes(f: &FnDef, out: &mut HashMap<String, HostTensor>) {
     for p in &f.params {
-        if let Type::Tensor { dims, .. } = &p.ty {
+        // A `&Tensor[..]` / `&mut Tensor[..]` parameter has the shape of the tensor it borrows.
+        let mut pty = &p.ty;
+        while let Type::Ref { inner, .. } = pty {
+            pty = inner;
+        }
+        if let Type::Tensor { dims, .. } = pty {
             let mk = |rows: u64, cols: u64| HostTensor {
                 owner_fn: f.name.clone(),
                 ir_name: p.name.clone(),

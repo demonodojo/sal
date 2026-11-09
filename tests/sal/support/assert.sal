@@ -1,7 +1,7 @@
 import "std/io/io.sal"
 
 fn assert_fail(code: Int) -> Int ! io, alloc
-    _w = Fd.new(2).write_str(d"assert_fail\n")
+    _w = Fd.new(2).write_str(&d"assert_fail\n")
     code
 
 fn assert_str_eq(got: &String, want: &String, code: Int) -> Int ! io, alloc

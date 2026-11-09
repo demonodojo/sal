@@ -108,7 +108,6 @@ fn leaf_selfhost_modules_report_known_leaks() {
     let sal = env!("CARGO_BIN_EXE_sal");
     let known: &[(&str, &[&str])] = &[
         ("cache_alloc.sal", &["strdup"]),
-        ("handles_alloc.sal", &[]),
         ("lexer_alloc.sal", &["strdup"]),
         ("result_alloc.sal", &["vec_new"]),
         ("thash_alloc.sal", &["strdup"]),

@@ -412,7 +412,7 @@ fn ce_bind_params(ps: &List[TParam], i: Int, n: Int, bound: &List[String]) -> In
     if i >= n
         0
     else
-        bound.push(ps.get(i).name)
+        bound.push(ps.get(i).name.dup())
         ce_bind_params(ps, i + 1, n, bound)
 
 fn ce_bound(bound: &List[String], name: &String) -> Int ! alloc
@@ -438,7 +438,7 @@ fn ce_fold_stmts(xs: &List[TStmt], i: Int, n: Int, vals: &List[CVal], bound: &Li
         st = xs.get(i)
         if st.kind == 1 && st.is_let == 1
             _p = out.push(TStmt(st.kind, st.name, ce_fold_expr(st.expr, vals, bound), st.ty, st.is_let, st.target, st.frozen, st.stack, st.id))
-            bound.push(st.name)
+            bound.push(st.name.dup())
             ce_fold_stmts(xs, i + 1, n, vals, bound, out)
         else
             _p = out.push(TStmt(st.kind, st.name, ce_fold_expr(st.expr, vals, bound), st.ty, st.is_let, ce_fold_expr(st.target, vals, bound), st.frozen, st.stack, st.id))

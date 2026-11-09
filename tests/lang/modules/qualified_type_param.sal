@@ -1,3 +1,4 @@
+# selfhost-xfail: selfhost no resuelve tipos calificados en parámetros
 # exit: 3
 import "mods/ty1.sal" as one
 

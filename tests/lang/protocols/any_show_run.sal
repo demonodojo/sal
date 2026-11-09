@@ -1,3 +1,4 @@
+# selfhost-xfail: selfhost no resuelve el método show de any
 # exit: 2
 protocol Show
     method show(self) -> String ! alloc

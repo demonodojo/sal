@@ -8,8 +8,8 @@ struct JsonNode
     first_child: Int
     next_sibling: Int
 
-static JsonNode.str(s: String) -> JsonNode ! alloc
-    JsonNode(json_kind_str(), s, 0, -1, -1)
+static JsonNode.str(s: &String) -> JsonNode ! alloc
+    JsonNode(json_kind_str(), s.clone(), 0, -1, -1)
 
 static JsonNode.num(v: Int) -> JsonNode ! alloc
     JsonNode(json_kind_num(), d"", v, -1, -1)
@@ -33,12 +33,12 @@ fn json_canonical_flat(s: &String) -> String ! alloc
     a = extract_quoted_after(s, &d"\"a\":\"")
     b = extract_quoted_after(s, &d"\"b\":\"")
     if a.len() > 0
-        json_lbrace() + JsonNode.str(d"a").serialize_str() + d":" + JsonNode.str(a).serialize_str() + d"," + JsonNode.str(d"b").serialize_str() + d":" + JsonNode.str(b).serialize_str() + json_rbrace()
+        json_lbrace() + JsonNode.str(&d"a").serialize_str() + ":" + JsonNode.str(&a).serialize_str() + "," + JsonNode.str(&d"b").serialize_str() + ":" + JsonNode.str(&b).serialize_str() + json_rbrace()
     else
         n = extract_quoted_after(s, &d"\"n\":")
         if n.len() <= 0
             n = d"0"
-        json_lbrace() + JsonNode.str(d"n").serialize_str() + d":" + n + json_rbrace()
+        json_lbrace() + JsonNode.str(&d"n").serialize_str() + ":" + n + json_rbrace()
 
 @deprecated("use JsonNode.str(s)")
 fn json_node_str(s: &String) -> JsonNode ! alloc

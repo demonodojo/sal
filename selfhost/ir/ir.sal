@@ -3,6 +3,7 @@
 import "../front/lexer.sal"
 import "../ast/tast.sal"
 import "../ast/ttypes.sal"
+import lam
 
 fn II_CI() -> Int
     0
@@ -64,6 +65,9 @@ fn II_ANYBOX() -> Int
 fn II_ANYCALL() -> Int
     19
 
+fn II_ETAG() -> Int
+    20
+
 # ---- Lower / IR ----
 # Lowering state of one function. The counter, the instruction list and the accumulator name live in
 # one-slot lists so a callee can update them; the rest are handle vecs/maps (the IR stays in handles).
@@ -84,6 +88,7 @@ struct Cx
     enums: List[TEnum]
     fns: List[TFn]
     protocols: List[TProtocol]
+    lams: List[Lam]
 
 fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn], protocols: &List[TProtocol]) -> Cx ! alloc
     ctr = list_new[Int]()
@@ -94,7 +99,7 @@ fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn
     _c = list_push(&acc, 0)
     vm = map_new()
     _m = variants_fill(vm, enums, 0, list_len(enums))
-    Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums.clone(), fns.clone(), protocols.clone())
+    Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam]())
 
 # `cx` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -293,6 +298,14 @@ fn ir_efield(dest: Int, value: Int, idx: Int) -> Int ! alloc
     _b = vec_push(inst, dest)
     _c = vec_push(inst, value)
     _d = vec_push(inst, idx)
+    inst
+
+# `EnumTag`: the low tag byte of an enum value.
+fn ir_etag(dest: Int, value: Int) -> Int ! alloc
+    inst = vec_new()
+    _a = vec_push(inst, II_ETAG())
+    _b = vec_push(inst, dest)
+    _c = vec_push(inst, value)
     inst
 
 # `arms` are `[tag, body, value]`.
@@ -538,6 +551,9 @@ fn ir_own_inst_go(h: Int, k: Int) -> Int ! alloc
         _b = ir_set_text(h, 2)
         ir_own_strvec(vec_get(h, 4))
     elsif k == II_EFIELD()
+        _a = ir_set_text(h, 1)
+        ir_set_text(h, 2)
+    elsif k == II_ETAG()
         _a = ir_set_text(h, 1)
         ir_set_text(h, 2)
     elsif k == II_SWITCH()

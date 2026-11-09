@@ -1,16 +1,16 @@
-import "selfhost/thash.sal"
+import "selfhost/ast/thash.sal"
 
 # 2000 keys into a table that starts at 4 slots: it has to grow, and every key has to come back.
 fn main() -> Int ! alloc
     h = HT.new(4)
     i = 0
     while i < 2000
-        h.put(i.to_str(), (i + 1).to_str())
+        h.put(&i.to_str(), &(i + 1).to_str())
         i = i + 1
     bad = 0
     i = 0
     while i < 2000
-        if h.get(i.to_str()).eq((i + 1).to_str()) == 0
+        if h.get(&i.to_str()).eq((i + 1).to_str()) == 0
             bad = bad + 1
         i = i + 1
     h.free()

@@ -13,6 +13,50 @@ fn scalar_kind_text(txt: &String, i: Int, j: Int) -> Int ! alloc
         "String" => 3
         _ => 0
 
+# Runtime kind of the value type of `dict_new[K, V]()` (`dict_val_kind` in src/ir.rs): a String 3, a
+# non-generic enum 5, a non-generic struct of two or more fields `4 | n << 4` plus one bit per String
+# field from bit 12; anything else 0.
+fn dict_val_kind_text(structs: &List[TStruct], enums: &List[TEnum], txt: &String, i: Int, j: Int) -> Int ! alloc
+    t = trim_type_piece(&str_slice(txt, i, j))
+    if t.eq("String") == 1
+        3
+    elsif dvk_enum_plain(enums, &t, 0) == 1
+        5
+    else
+        si = dvk_struct_index(structs, &t, 0)
+        if si < 0
+            0
+        else
+            sd = structs.get(si)
+            if sd.tparams.len() > 0 || sd.fields.len() < 2
+                0
+            else
+                dvk_struct_bits(&sd.fields, 0, 4 + 16 * sd.fields.len())
+
+fn dvk_enum_plain(enums: &List[TEnum], name: &String, i: Int) -> Int ! alloc
+    if i >= enums.len()
+        0
+    elsif enums.get(i).name.eq(name) == 1 && enums.get(i).tparams.len() == 0
+        1
+    else
+        dvk_enum_plain(enums, name, i + 1)
+
+fn dvk_struct_index(structs: &List[TStruct], name: &String, i: Int) -> Int ! alloc
+    if i >= structs.len()
+        0 - 1
+    elsif structs.get(i).name.eq(name) == 1
+        i
+    else
+        dvk_struct_index(structs, name, i + 1)
+
+fn dvk_struct_bits(fields: &List[TField], i: Int, acc: Int) -> Int ! alloc
+    if i >= fields.len()
+        acc
+    elsif trim_type_piece(&fields.get(i).ty).eq("String") == 1
+        dvk_struct_bits(fields, i + 1, acc + shift_left_one(12 + i))
+    else
+        dvk_struct_bits(fields, i + 1, acc)
+
 fn shift_left_one(i: Int) -> Int ! alloc
     if i == 0
         1

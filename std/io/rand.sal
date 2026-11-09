@@ -1,7 +1,7 @@
 import "abi.sal"
 
 fn getrandom_buf(buf: &Bytes, len: Int) -> Int ! io
-    syscall(nr_getrandom(), bytes_ptr(buf), len, 0, 0, 0, 0)
+    syscall(NR_GETRANDOM, bytes_ptr(buf), len, 0, 0, 0, 0)
 
 fn getrandom_u64() -> Int ! io, alloc
     b = bytes_new(8)

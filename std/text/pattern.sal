@@ -1,8 +1,5 @@
 fn grep_literal(hay: &String, needle: &String) -> Int ! alloc
-    if str_len(needle) <= 0
+    if needle.len() <= 0 || hay.contains(needle) != 0
         1
     else
-        if str_contains(hay, needle) != 0
-            1
-        else
-            0
+        0

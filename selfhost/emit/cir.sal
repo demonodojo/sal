@@ -3,6 +3,7 @@ import "../ast/tast.sal"
 import "../ast/tir.sal"
 import cenv
 import "../ir/tensorops.sal"
+import "../pkg/qualify.sal"
 
 # ---- IR -> C (functions that touch tensors) ----
 # Context: [pool, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main]
@@ -19,10 +20,12 @@ fn cc_new(pool: Int, user: Int, is_main: Int) -> Int ! alloc
     vec_push(c, 0)
     vec_push(c, 0)
     vec_push(c, is_main)
+    vec_push(c, map_new())
     c
 
 fn cc_line(cc: Int, s: &String) -> Int ! alloc
-    vec_push(vec_get(cc, 6), s.to_int())
+    kept = s.dup()
+    vec_push(vec_get(cc, 6), str_as_int(&kept))
 
 fn cc_uid(cc: Int) -> Int ! alloc
     n = vec_get(cc, 9) + 1
@@ -78,13 +81,17 @@ fn cir_const(cc: Int, a: Int) -> Int ! alloc
         map_get(vec_get(cc, 3), a)
 
 fn cir_decl(cc: Int, name: &String) -> Int ! alloc
-    cc_line(cc, &("  extern int64_t R_" + name + "() __asm__(\"" + name + "\");\n"))
+    cc_line(cc, &("  extern int64_t R_" + cir_cname(name) + "() __asm__(\"" + name + "\");\n"))
+
+# A C identifier for a symbol name (`drop.Parser` -> `drop_Parser`).
+fn cir_cname(name: &String) -> String ! alloc
+    str_replace_chr(name, 46, &"_")
 
 # Calls the runtime function `name` (symbol aliased to R_<name> so it never
 # clashes with the prototypes in the prelude).
 fn cir_rt(cc: Int, name: &String, ops: Int) -> String ! alloc
     cir_decl(cc, name)
-    acc = "R_" + name + "("
+    acc = "R_" + cir_cname(name) + "("
     join_commas(ops, 0, vec_len(ops), acc) + ")"
 
 fn cir_set(cc: Int, dest: Int, rhs: &String) -> Int ! alloc
@@ -266,6 +273,10 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: &String, args: Int, ops: Int) -> In
         0
     elsif cir_is_stub(fname) == 1
         cir_set(cc, dest, &"0")
+    elsif fname.eq("sal_tensor_free") == 1
+        # A tensor handle points past the 16-byte header `sal_tn_alloc` puts before the data.
+        h = cir_arg(ops, 0)
+        cir_set(cc, dest, &("(" + h + " ? " + cir_rtc(cc, &"sal_tensor_free", &("(" + h + ") - 16")) + " : 0)"))
     elsif fname.eq("sal_print") == 1
         cir_print(cc, dest, args, ops)
     elsif fname.eq("sal_syscall") == 1
@@ -305,13 +316,16 @@ fn cir_pad7(ops: Int) -> Int ! alloc
     pad_args(v, 7)
     v
 
-# `print` of a value known to be a String prints text, otherwise the integer.
+# `print` as the bootstrap's backend: a literal or a known integer constant prints the integer,
+# any other value is a String.
 fn cir_print(cc: Int, dest: Int, args: Int, ops: Int) -> Int ! alloc
     if vec_len(args) > 0
-        if map_get(vec_get(cc, 5), vec_get(args, 0)) == 1
-            cir_set(cc, dest, &("(int64_t)" + cir_rt(cc, &"sal_print_str", ops)))
-        else
+        a = vec_get(args, 0)
+        s = str_from_int(a)
+        if cir_is_num(&s) == 1 || map_get(vec_get(cc, 11), a) == 1
             cir_set(cc, dest, &("(int64_t)" + cir_rt(cc, &"sal_print_i64", ops)))
+        else
+            cir_set(cc, dest, &("(int64_t)" + cir_rt(cc, &"sal_print_str", ops)))
     else
         cir_set(cc, dest, &"0")
 
@@ -384,8 +398,8 @@ fn cir_tbin(cc: Int, inst: &Inst) -> Int ! alloc
 
 # The scalar operand is a double; it goes through a typed prototype.
 fn cir_rt_dbl(cc: Int, name: &String, ops: Int) -> String ! alloc
-    cc_line(cc, &("  extern void R_" + name + "(int, void *, void *, void *, int64_t, int, double) __asm__(\"" + name + "\");\n"))
-    "R_" + name + "((int)" + arg_at(ops, 0) + ", (void *)(uintptr_t)" + arg_at(ops, 1) + ", (void *)(uintptr_t)" + arg_at(ops, 2) + ", (void *)(uintptr_t)" + arg_at(ops, 3) + ", " + arg_at(ops, 4) + ", " + arg_at(ops, 5) + ", " + arg_at(ops, 6) + ")"
+    cc_line(cc, &("  extern void R_" + cir_cname(name) + "(int, void *, void *, void *, int64_t, int, double) __asm__(\"" + name + "\");\n"))
+    "R_" + cir_cname(name) + "((int)" + arg_at(ops, 0) + ", (void *)(uintptr_t)" + arg_at(ops, 1) + ", (void *)(uintptr_t)" + arg_at(ops, 2) + ", (void *)(uintptr_t)" + arg_at(ops, 3) + ", " + arg_at(ops, 4) + ", " + arg_at(ops, 5) + ", " + arg_at(ops, 6) + ")"
 
 fn cir_float_text(cc: Int, a: Int) -> String ! alloc
     t = map_get(vec_get(cc, 4), a)
@@ -436,13 +450,14 @@ fn cir_inst(cc: Int, inst: &Inst) -> Int ! alloc
     dest = ih(&inst.dest)
     if k == II_CI()
         _m = map_put(vec_get(cc, 3), dest, inst.n1)
+        _k = map_put(vec_get(cc, 11), dest, 1)
         cir_set(cc, dest, &inst.n1.to_str())
     elsif k == II_CS()
         _m = map_put(vec_get(cc, 5), dest, 1)
         cir_set(cc, dest, &ensure_sal_lit(inst.s1.dup().to_int(), vec_get(cc, 0)))
     elsif k == II_CF()
         _m = map_put(vec_get(cc, 4), dest, inst.s1.dup().to_int())
-        cir_set(cc, dest, &"0")
+        cir_set(cc, dest, &("(int64_t)" + inst.n1.to_str() + "LL"))
     elsif k == II_BIN()
         cir_binary(cc, dest, &inst.s1, &cir_op(cc, ih(&inst.s2)), &cir_op(cc, ih(&inst.s3)))
     elsif k == II_CALL()
@@ -467,6 +482,14 @@ fn cir_inst(cc: Int, inst: &Inst) -> Int ! alloc
         cir_agg(cc, inst)
     elsif k == II_EXTRACT()
         cir_set(cc, dest, &("((int64_t *)(uintptr_t)(" + cir_op(cc, ih(&inst.s1)) + "))[" + inst.n1.to_str() + "]"))
+    elsif k == II_EMAKE()
+        cir_emake(cc, dest, inst)
+    elsif k == II_EFIELD()
+        cir_set(cc, dest, &cir_rtc(cc, &"sal_enum_field", &(cir_op(cc, ih(&inst.s1)) + ", " + inst.n1.to_str())))
+    elsif k == II_ETAG()
+        cir_set(cc, dest, &cir_rtc(cc, &"sal_enum_tag", &cir_op(cc, ih(&inst.s1))))
+    elsif k == II_SWITCH()
+        cir_switch(cc, dest, inst)
     elsif k == II_ANYBOX()
         cir_anybox(cc, dest, inst)
     elsif k == II_ANYCALL()
@@ -538,8 +561,10 @@ fn cir_carry_assign(cc: Int, carried: &List[Inst], i: Int, which: Int) -> Int ! 
     n = carried.len()
     while idx < n
         c = carried.get(idx)
-        src = select_str(which == 1, c.s1, c.s2)
-        cir_set(cc, ih(&c.dest), &cir_op(cc, ih(&src)))
+        if which == 1
+            cir_set(cc, ih(&c.dest), &cir_op(cc, ih(&c.s1)))
+        else
+            cir_set(cc, ih(&c.dest), &cir_op(cc, ih(&c.s2)))
         idx = idx + 1
     0
 
@@ -561,6 +586,57 @@ fn cir_add_local(cc: Int, name: Int) -> Int ! alloc
     else
         vec_push(vec_get(cc, 2), name)
 
+# A call to the runtime function `name` with the already rendered argument text.
+fn cir_rtc(cc: Int, name: &String, args: &String) -> String ! alloc
+    cir_decl(cc, name)
+    "(int64_t)R_" + cir_cname(name) + "(" + args + ")"
+
+# `EnumMake`: a payload-less first variant is 0, any other payload-less one its index + 1; a
+# variant with a payload is a block `[tag, fields…]` (`sal_enum_new`), the tag carrying the owned
+# mask in its high bits.
+fn cir_emake(cc: Int, dest: Int, inst: &Inst) -> Int ! alloc
+    n = inst.strs.len()
+    base = if n == 0 && inst.n1 == 0
+        0
+    else
+        inst.n1 + 1
+    tag = base + inst.n2 * 256
+    if n == 0
+        cir_set(cc, dest, &tag.to_str())
+    else
+        cir_set(cc, dest, &cir_rtc(cc, &"sal_enum_new", &(tag.to_str() + ", " + n.to_str())))
+        cir_emake_fields(cc, dest, inst, 0, n)
+
+fn cir_emake_fields(cc: Int, dest: Int, inst: &Inst, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        args = str_from_int(dest) + ", " + i.to_str() + ", " + cir_op(cc, ih(&inst.strs.get(i)))
+        cc_line(cc, &("  " + cir_rtc(cc, &"sal_enum_set", &args) + ";\n"))
+        cir_emake_fields(cc, dest, inst, i + 1, n)
+
+# `Switch`: the arms are `case <tag>:` blocks over `sal_enum_tag(scrut)`; the default is the
+# `_` arm. Each branch leaves its value in `dest`.
+fn cir_switch(cc: Int, dest: Int, inst: &Inst) -> Int ! alloc
+    tagc = cir_rtc(cc, &"sal_enum_tag", &cir_op(cc, ih(&inst.s1)))
+    cc_line(cc, &("  switch (" + tagc + ") {\n"))
+    cir_switch_arms(cc, dest, &inst.rows, 0, inst.rows.len())
+    cc_line(cc, &"  default: {\n")
+    cir_insts(cc, &inst.b1, 0, inst.b1.len())
+    cir_if_assign(cc, dest, ih(&inst.s2))
+    cc_line(cc, &"  break;\n  }\n  }\n")
+
+fn cir_switch_arms(cc: Int, dest: Int, arms: &List[Inst], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = arms.get(i)
+        cc_line(cc, &("  case " + arm.n1.to_str() + ": {\n"))
+        cir_insts(cc, &arm.b1, 0, arm.b1.len())
+        cir_if_assign(cc, dest, ih(&arm.s1))
+        cc_line(cc, &"  break;\n  }\n")
+        cir_switch_arms(cc, dest, arms, i + 1, n)
+
 fn cir_collect(cc: Int, insts: &List[Inst]) -> Int ! alloc
     idx = 0
     n = insts.len()
@@ -576,6 +652,10 @@ fn cir_collect(cc: Int, insts: &List[Inst]) -> Int ! alloc
             cir_collect(cc, &inst.b1)
             cir_collect(cc, &inst.b2)
             _g = cir_collect_carried(cc, &inst.rows)
+        elsif k == II_SWITCH()
+            cir_add_local(cc, ih(&inst.dest))
+            cir_collect(cc, &inst.b1)
+            cir_collect_arms(cc, &inst.rows, 0, inst.rows.len())
         elsif k == II_RET()
             _h = 0
         elsif k == II_DROP()
@@ -587,6 +667,13 @@ fn cir_collect(cc: Int, insts: &List[Inst]) -> Int ! alloc
             _j = cir_add_local(cc, ih(&inst.dest))
         idx = idx + 1
     0
+
+fn cir_collect_arms(cc: Int, arms: &List[Inst], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _c = cir_collect(cc, &arms.get(i).b1)
+        cir_collect_arms(cc, arms, i + 1, n)
 
 fn cir_collect_carried(cc: Int, carried: &List[Inst]) -> Int ! alloc
     idx = 0
@@ -628,6 +715,25 @@ fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: 
         acc = append_stmt_strings(acc, lines, 0, vec_len(lines))
         acc + "  return 0;\n}\n\n"
 
+# A glue function (`drop.<Struct>`, `drop.elem.<Struct>`) as C: one `v` parameter, symbol
+# `drop.<...>` set by an asm label (the name is not a C identifier).
+fn cir_glue(irf: &IrFn, user: Int, pool: Int) -> String ! alloc
+    c = "G_" + cir_cname(&irf.name)
+    pnames = vec_new()
+    _p = vec_push(pnames, str_as_int(&"v"))
+    cc = cc_new(pool, user, 0)
+    cir_seed_params(cc, pnames, 0, 1)
+    cir_collect(cc, &irf.insts)
+    cir_collect_lits(cc, &irf.lits)
+    cir_literals(cc, &irf.lits, 0, irf.lits.len())
+    cir_insts(cc, &irf.insts, 0, irf.insts.len())
+    proto = "int64_t " + c + "(int64_t v) __asm__(\"" + irf.name + "\");\n"
+    header = proto + "int64_t " + c + "(int64_t v) {\n"
+    acc = cir_decl_locals(cc, pnames, header)
+    lines = vec_get(cc, 6)
+    acc = append_stmt_strings(acc, lines, 0, vec_len(lines))
+    acc + "  return 0;\n}\n\n"
+
 fn select_main(f: &TFn, allow_main: Int) -> Int ! alloc
     if allow_main == 1
         f.name.eq("main")
@@ -643,10 +749,7 @@ fn cir_seed_params(cc: Int, pnames: Int, i: Int, n: Int) -> Int ! alloc
 
 # Scalar IR with `any` boxing or dispatch uses the same C backend as tensors.
 fn cir_use_ir_path(insts: &List[Inst]) -> Int ! alloc
-    if cir_is_tensor_fn(insts) == 1
-        1
-    else
-        cir_has_any_insts(insts, 0, insts.len())
+    1
 
 fn cir_has_any_insts(insts: &List[Inst], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -752,7 +855,11 @@ fn cir_is_stub(f: &String) -> Int ! alloc
 
             # Integer ops are C operators; `f`-prefixed ops (Float) go through `sal_fop`.
 fn cir_binary(cc: Int, dest: Int, op: &String, l: &String, r: &String) -> Int ! alloc
-    if op.char(0) == 102
+    if op.eq("neg") == 1
+        cir_set(cc, dest, &("(0 - " + l + ")"))
+    elsif op.eq("not") == 1
+        cir_set(cc, dest, &cir_rtc(cc, &"sal_not", l))
+    elsif op.char(0) == 102
         cir_set(cc, dest, &("sal_fop(" + float_op_code(&op.slice(1, op.len())).to_str() + ", " + l + ", " + r + ")"))
     else
         cir_set(cc, dest, &("(" + l + " " + cmap_op(op) + " " + r + ")"))

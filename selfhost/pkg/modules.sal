@@ -86,8 +86,10 @@ fn dep_line_key(line: &String) -> String ! alloc
         str_slice(line, 0, eq)
 
 fn dep_bases_push(out: Int, name: &String, path: &String) -> Int ! alloc
-    _a = vec_push(out, str_as_int(name))
-    _b = vec_push(out, str_as_int(path))
+    a = name.dup()
+    _a = vec_push(out, str_as_int(&a))
+    b = path.dup()
+    _b = vec_push(out, str_as_int(&b))
     out
 
 fn dep_bases_count(bases: Int) -> Int ! alloc

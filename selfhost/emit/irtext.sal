@@ -76,6 +76,7 @@ fn emit_inst(inst: &Inst) -> String ! alloc
         17 => emit_tun(inst)
         18 => emit_anybox(inst)
         19 => emit_anycall(inst)
+        20 => emit_etag(inst)
         _ => ""
 
 fn emit_ci(inst: &Inst) -> String ! alloc
@@ -223,6 +224,9 @@ fn emit_emake(inst: &Inst) -> String ! alloc
 
 fn emit_efield(inst: &Inst) -> String ! alloc
     "  EnumField { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + inst.s1 + ir_q() + ", index: " + inst.n1.to_str() + " }\n"
+
+fn emit_etag(inst: &Inst) -> String ! alloc
+    "  EnumTag { dest: " + ir_q() + inst.dest + ir_q() + ", value: " + ir_q() + inst.s1 + ir_q() + " }\n"
 
 fn emit_switch(inst: &Inst) -> String ! alloc
     acc = "  Switch { scrut: " + ir_q() + inst.s1 + ir_q() + ", arms: ["

@@ -92,6 +92,8 @@ fn lower_expr(cx: &Cx, e: &Expr) -> Int ! alloc
         XFloat(bits, txt) => lower_float(cx, bits, &txt)
         XStr(s) => lower_str_lit(cx, &s)
         XIdent(name) => lower_ident(cx, str_own(&name))
+        XLambda(param, body) => fresh(cx)
+        XTry(inner) => lower_try(cx, &inner)
         XMatch(scrut, arms) => lower_match(cx, &scrut, &arms)
         XBin(op, l, r) => lower_binary(cx, &op, &l, &r)
         XTensor(nr, nc, data) => lower_tensor_lit(cx, &data)
@@ -515,6 +517,8 @@ fn lower_container_new(cx: &Cx, name: &String, txt: &String, d: Int, nkinds: Int
     else
         k1 = scalar_kind_text(txt, 0, comma)
         k2 = scalar_kind_text(txt, comma + 1, str_len(txt))
+        if str_eq(name, "dict_new") == 1
+            k2 = dict_val_kind_text(&cx_structs(cx), &cx.enums, txt, comma + 1, str_len(txt))
     argv = vec_new()
     k1d = fresh(cx)
     _a = push_const_int(cx, k1d, k1)
@@ -529,10 +533,82 @@ fn lower_call_runtime(cx: &Cx, name: &String, args: &List[Expr], targs: &String)
     out = vec_new()
     arg_names = lower_args(cx, args, 0, list_len(args), out)
     src = map_lambda_source(cx, name, args, arg_names)
+    li = Lam.find(&cx.lams, name)
     if src != 0
         lower_map_lambda(cx, src, vec_get(arg_names, 0), &list_get(args, 1))
+    elsif li >= 0 && vec_len(arg_names) > 0
+        lower_lambda_call(cx, li, vec_get(arg_names, 0))
     else
         lower_call_runtime_go(cx, name, targs, args, arg_names)
+
+# `f(a)` with `f = x => body`: the body is lowered with `x` bound to the argument.
+fn lower_lambda_call(cx: &Cx, li: Int, arg: Int) -> Int ! alloc
+    lam = cx.lams.get(li)
+    param = str_own(&lam.param)
+    prev = cx_find(cx, param)
+    b = bind_new(param, arg)
+    _m = map_put(cx_bind_map(cx), param, b)
+    r = lower_expr(cx, &lam.body)
+    _u = map_put(cx_bind_map(cx), param, prev)
+    r
+
+# `try e`: when `e` is the failing variant (`Err` / `None`) of its enum the function returns it,
+# otherwise the value is the payload (`Expr::Try` in src/ir.rs).
+fn lower_try(cx: &Cx, inner: &Expr) -> Int ! alloc
+    v = lower_expr(cx, inner)
+    tag = try_fail_tag(cx, &texpr_type(&cx.env, inner))
+    if tag < 0
+        v
+    else
+        low = fresh(cx)
+        _a = ir_push(cx, ir_etag(low, v))
+        tagc = fresh(cx)
+        _b = ir_push(cx, ir_ci(tagc, tag))
+        cond = fresh(cx)
+        _c = ir_push(cx, ir_bin(cond, str_as_int(&"eq"), low, tagc))
+        join = fresh(cx)
+        then_body = vec_new()
+        _d = vec_push(then_body, ir_ret(v))
+        inst = vec_new()
+        _e = vec_push(inst, II_IF())
+        _f = vec_push(inst, join)
+        _g = vec_push(inst, cond)
+        _h = vec_push(inst, then_body)
+        _i = vec_push(inst, vec_new())
+        _j = vec_push(inst, v)
+        _k = vec_push(inst, v)
+        _l = vec_push(inst, vec_new())
+        _p = ir_push(cx, inst)
+        payload = fresh(cx)
+        _q = ir_push(cx, ir_efield(payload, v, 0))
+        payload
+
+# The tag of the `Err` / `None` variant of the enum named by `ty`, or -1.
+fn try_fail_tag(cx: &Cx, ty: &String) -> Int ! alloc
+    head = ty.slice(0, type_head_end(ty, 0, ty.len()))
+    t = try_variant_tag(cx, &head, &"Err")
+    if t >= 0
+        t
+    else
+        try_variant_tag(cx, &head, &"None")
+
+# End of the name at the front of a type text (`Result [Int ,Int ]` -> 6).
+fn type_head_end(ty: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        n
+    elsif ty.char(i) == 91 || ty.char(i) == 32
+        i
+    else
+        type_head_end(ty, i + 1, n)
+
+fn try_variant_tag(cx: &Cx, head: &String, variant: &String) -> Int ! alloc
+    rec = variant_rec(cx, str_own(variant))
+    if rec == 0
+        0 - 1
+    elsif str_eq(vec_get(rec, 0), head) == 1
+        vec_get(rec, 3)
+    else
+        0 - 1
 
 fn expr_is_lambda(e: &Expr) -> Int ! alloc
     match e
@@ -756,12 +832,115 @@ fn nested_call_kind(cx: &Cx, name: &String, inner: &List[Expr]) -> Int ! alloc
 # `match` over an enum: a `Switch` on the tag. Only variant, bare and `_` patterns lower.
 fn lower_match(cx: &Cx, scrut_e: &Expr, arms: &List[TArm]) -> Int ! alloc
     scrut = lower_expr(cx, scrut_e)
+    mark = tenv_len(&cx.env)
+    _ty = tenv_bind(&cx.env, &"match:ty", &texpr_type(&cx.env, scrut_e))
+    r = lower_match_arms(cx, scrut, arms)
+    _tr = tenv_truncate(&cx.env, mark)
+    r
+
+fn lower_match_arms(cx: &Cx, scrut: Int, arms: &List[TArm]) -> Int ! alloc
     if list_len(arms) == 0
         fresh(cx)
     elsif match_switchable(arms, 0, list_len(arms)) == 0
-        fresh(cx)
+        lower_match_chain(cx, scrut, arms, 0)
+    elsif arms_assign_outer(cx, arms, 0) == 1
+        lower_match_chain(cx, scrut, arms, 0)
     else
-        lower_match_switch(cx, scrut, arms)
+        lower_match_switch(cx, scrut, arms, 0)
+
+# `match` with integer, string, regex or binding patterns: a chain of `If`s (`lower_match_chain_into`
+# in src/ir.rs). The last arm has no else branch.
+fn lower_match_chain(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int ! alloc
+    arm = arms.get(i)
+    pat = arm.pat
+    cond = match_arm_cond(cx, scrut, &pat)
+    saved = cx_insts(cx)
+    binds = cx_binds(cx)
+    n0 = vec_len(binds)
+    base_snap = snap_binds(binds, 0, n0, vec_new())
+    slen = tenv_len(&cx.env)
+    _a = cx_set_insts(cx, vec_new())
+    if pat.kind == 1
+        _bd = cx_bind(cx, str_own(&pat.name), scrut)
+    else
+        _bd = 0
+    then_val = if arm.has_suite == 1
+        lower_block_value(cx, &arm.suite)
+    else
+        lower_expr(cx, &arm.body)
+    then_body = cx_insts(cx)
+    then_snap = snap_binds(binds, 0, n0, vec_new())
+    _k1 = kill_new_binds(cx, n0)
+    _r1 = restore_binds(binds, base_snap, 0, n0)
+    _rs = tenv_truncate(&cx.env, slen)
+    _b = cx_set_insts(cx, vec_new())
+    else_val = if i + 1 >= arms.len()
+        str_as_int(&"0")
+    elsif match_tail_switch(arms, i + 1) == 1 && arms_assign_outer(cx, arms, i + 1) == 0
+        lower_match_switch(cx, scrut, arms, i + 1)
+    else
+        lower_match_chain(cx, scrut, arms, i + 1)
+    else_body = cx_insts(cx)
+    else_snap = snap_binds(binds, 0, n0, vec_new())
+    _k2 = kill_new_binds(cx, n0)
+    _r2 = restore_binds(binds, base_snap, 0, n0)
+    _rs2 = tenv_truncate(&cx.env, slen)
+    _c = cx_set_insts(cx, saved)
+    d = fresh(cx)
+    order = sorted_live_binds(cx, n0)
+    carried = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, vec_new())
+    inst = vec_new()
+    _d = vec_push(inst, II_IF())
+    _e = vec_push(inst, d)
+    _f = vec_push(inst, cond)
+    _g = vec_push(inst, then_body)
+    _h = vec_push(inst, else_body)
+    _i = vec_push(inst, then_val)
+    _j = vec_push(inst, else_val)
+    _l = vec_push(inst, carried)
+    _p = ir_push(cx, inst)
+    d
+
+# Whether the arms from `i` lower as a `Switch` (a catch-all tail after integer patterns); a
+# `String` scrutinee (some arm is a string or regex) keeps the chain.
+fn match_tail_switch(arms: &List[TArm], i: Int) -> Int ! alloc
+    if match_has_text_pat(arms, 0, arms.len()) == 1
+        0
+    else
+        match_switchable(arms, i, arms.len())
+
+fn match_has_text_pat(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif arms.get(i).pat.kind == 4 || arms.get(i).pat.kind == 5
+        1
+    else
+        match_has_text_pat(arms, i + 1, n)
+
+# The condition of one arm over `scrut`: `_` and a binding are always true.
+fn match_arm_cond(cx: &Cx, scrut: Int, pat: &TPat) -> Int ! alloc
+    k = pat.kind
+    if k == 2
+        d = fresh(cx)
+        _p = ir_push(cx, ir_bin(d, str_as_int(&"eq"), scrut, str_own(&pat.ival.to_str())))
+        d
+    elsif k == 4 || k == 5
+        rhs = fresh(cx)
+        _c = ir_push(cx, ir_cs(rhs, str_own(&pat.name)))
+        d = fresh(cx)
+        args = vec_new()
+        _a1 = vec_push(args, scrut)
+        _a2 = vec_push(args, rhs)
+        fname = if k == 4
+            "sal_str_eq"
+        else
+            "sal_regex_match"
+        _p = ir_push(cx, ir_call(d, str_own(&fname), args, 1))
+        d
+    else
+        d = fresh(cx)
+        _p = ir_push(cx, ir_ci(d, 1))
+        d
 
 fn match_switchable(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -775,7 +954,7 @@ fn match_switchable(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
     else
         match_switchable(arms, i + 1, n)
 
-fn lower_match_switch(cx: &Cx, scrut: Int, arms: &List[TArm]) -> Int ! alloc
+fn lower_match_switch(cx: &Cx, scrut: Int, arms: &List[TArm], start: Int) -> Int ! alloc
     saved = cx_insts(cx)
     binds = cx_binds(cx)
     n0 = vec_len(binds)
@@ -785,7 +964,7 @@ fn lower_match_switch(cx: &Cx, scrut: Int, arms: &List[TArm]) -> Int ! alloc
     dflt = vec_new()
     _a = vec_push(dflt, vec_new())
     _b = vec_push(dflt, str_as_int(&"0"))
-    _c = lower_switch_arms(cx, scrut, arms, 0, list_len(arms), n0, base_snap, slen, sw, dflt)
+    _c = lower_switch_arms(cx, scrut, arms, start, list_len(arms), n0, base_snap, slen, sw, dflt)
     _d = cx_set_insts(cx, saved)
     d = fresh(cx)
     _p = ir_push(cx, ir_switch(d, scrut, sw, vec_get(dflt, 0), vec_get(dflt, 1)))
@@ -800,7 +979,7 @@ fn lower_switch_arms(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int, n0:
         k = pat.kind
         _i = cx_set_insts(cx, vec_new())
         tag = switch_pattern_tag(cx, &pat)
-        _p = bind_variant_payloads(cx, scrut, &pat.args, 0, list_len(&pat.args), k)
+        _p = bind_variant_payloads(cx, scrut, &pat.name, &pat.args, 0, list_len(&pat.args), k)
         val = if arm.has_suite == 1
             lower_block_value(cx, &arm.suite)
         else
@@ -852,7 +1031,7 @@ fn name_variant_tag(name: Int) -> Int ! alloc
         1
 
 # One `EnumField` per bound payload name of a variant pattern.
-fn bind_variant_payloads(cx: &Cx, scrut: Int, args: &List[TPat], i: Int, n: Int, k: Int) -> Int ! alloc
+fn bind_variant_payloads(cx: &Cx, scrut: Int, vname: &String, args: &List[TPat], i: Int, n: Int, k: Int) -> Int ! alloc
     if k != 3
         0
     elsif i >= n
@@ -863,9 +1042,55 @@ fn bind_variant_payloads(cx: &Cx, scrut: Int, args: &List[TPat], i: Int, n: Int,
             d = fresh(cx)
             _p = ir_push(cx, ir_efield(d, scrut, i))
             _b = cx_bind(cx, str_own(&a.name), d)
-            bind_variant_payloads(cx, scrut, args, i + 1, n, k)
+            _t = tenv_bind(&cx.env, &a.name, &fuse_variant_field_type(cx, vname, i))
+            bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
         else
-            bind_variant_payloads(cx, scrut, args, i + 1, n, k)
+            bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
+
+# The declared type of field `i` of the variant `vname` ("" when unknown): a payload bound by a
+# pattern has that type, so `p.x` reads a field of it.
+fn fuse_variant_field_type(cx: &Cx, vname: &String, i: Int) -> String ! alloc
+    rec = variant_rec(cx, str_own(vname))
+    if rec == 0
+        ""
+    else
+        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
+        if en < 0
+            ""
+        else
+            ft = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
+            j = tparam_index(&cx.enums.get(en).tparams, &ft, 0)
+            if j < 0
+                ft
+            else
+                trim_spaces(tt_arg(&tenv_type(&cx.env, &"match:ty"), j))
+
+fn tparam_index(ps: &List[String], name: &String, i: Int) -> Int ! alloc
+    if i >= ps.len()
+        0 - 1
+    elsif ps.get(i).eq(name) == 1
+        i
+    else
+        tparam_index(ps, name, i + 1)
+
+fn enum_named(enums: &List[TEnum], name: Int, i: Int) -> Int ! alloc
+    if i >= enums.len()
+        0 - 1
+    elsif str_eq(name, enums.get(i).name) == 1
+        i
+    else
+        enum_named(enums, name, i + 1)
+
+fn variant_field_text(vs: &List[TVariant], vname: &String, i: Int, j: Int) -> String ! alloc
+    if j >= vs.len()
+        ""
+    elsif vs.get(j).name.eq(vname) == 1
+        if i < vs.get(j).fields.len()
+            vs.get(j).fields.get(i).dup()
+        else
+            ""
+    else
+        variant_field_text(vs, vname, i, j + 1)
 
 fn lower_if(cx: &Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs: &List[TElsif]) -> Int ! alloc
     c = lower_expr(cx, cond)
@@ -1079,7 +1304,36 @@ fn assigned_expr(e: &Expr, names: Int) -> Int ! alloc
         XUnary(op, inner) => assigned_expr(&inner, names)
         XTo(place, inner) => assigned_expr(&inner, names)
         XTry(inner) => assigned_expr(&inner, names)
+        XMatch(sc, arms) =>
+            _m = assigned_expr(&sc, names)
+            assigned_match_arms(&arms, 0, list_len(&arms), names)
         _ => 0
+
+fn assigned_match_arms(arms: &List[TArm], i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _a = assigned_expr(&arm.body, names)
+        _b = if arm.has_suite == 1
+            assigned_block(&arm.suite, names)
+        else
+            0
+        assigned_match_arms(arms, i + 1, n, names)
+
+# `arms_assign_outer` of src/ir.rs: some arm from `start` assigns a name the scope already binds.
+fn arms_assign_outer(cx: &Cx, arms: &List[TArm], start: Int) -> Int ! alloc
+    names = vec_new()
+    _a = assigned_match_arms(arms, start, list_len(arms), names)
+    assigned_any_bound(cx, names, 0, vec_len(names))
+
+fn assigned_any_bound(cx: &Cx, names: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif cx_find(cx, vec_get(names, i)) != 0
+        1
+    else
+        assigned_any_bound(cx, names, i + 1, n)
 
 # Assigned names that are bound at the loop head, ordered by name.
 fn while_carried_names(cx: &Cx, assigned: Int, i: Int, n: Int, out: Int) -> Int ! alloc
@@ -1296,12 +1550,23 @@ fn lower_stmt_assign(cx: &Cx, st: &TStmt) -> Int ! alloc
         _sa = cx_set_acc(cx, name)
     else
         _sa = cx_set_acc(cx, 0)
+    _lm = note_lambda(cx, &st.name, &st.expr)
     v = lower_expr(cx, &st.expr)
     _za = cx_set_acc(cx, 0)
     _b = cx_bind(cx, name, v)
     _ns = tenv_bind(&cx.env, &st.name, &texpr_type(&cx.env, &st.expr))
     _bx = mark_box_place(cx, &st.name, &st.expr)
     lower_assign_shape(cx, name, st)
+
+# `f = x => body`: later calls of `f` inline the body.
+fn note_lambda(cx: &Cx, name: &String, value: &Expr) -> Int ! alloc
+    match value
+        XLambda(param, body) => lambda_push(cx, name, &param, &body)
+        _ => 0
+
+fn lambda_push(cx: &Cx, name: &String, param: &String, body: &Expr) -> Int ! alloc
+    _p = cx.lams.push(Lam(name.dup(), param.dup(), tc_expr(body)))
+    0
 
 # A local bound to `list_get` aliases the element's block: a field store writes that block.
 fn mark_box_place(cx: &Cx, name: &String, value: &Expr) -> Int ! alloc

@@ -2,15 +2,15 @@ import "abi.sal"
 import "util.sal"
 
 fn tcp_listen(port: Int) -> Int ! io
-    syscall(nr_tcp_listen(), port, 0, 0, 0, 0, 0)
+    syscall(NR_TCP_LISTEN, port, 0, 0, 0, 0, 0)
 
 fn tcp_accept(fd: Int, ms: Int) -> Int ! io
-    syscall(nr_tcp_accept(), fd, ms, 0, 0, 0, 0)
+    syscall(NR_TCP_ACCEPT, fd, ms, 0, 0, 0, 0)
 
 fn sockaddr_loopback(port: Int) -> Int ! alloc
-    sa = Bytes.new(sockaddr_size())
+    sa = Bytes.new(SOCKADDR_SIZE)
     sap = sa.ptr()
-    b = Bytes.view_mem(sap, sockaddr_size())
+    b = Bytes.view_mem(sap, SOCKADDR_SIZE)
     b.set_u8(0, 127)
     b.set_u8(1, 0)
     b.set_u8(2, 0)
@@ -23,10 +23,10 @@ fn sockaddr_loopback(port: Int) -> Int ! alloc
 
 fn tcp_connect_loopback(port: Int, timeout_ms: Int) -> Int ! io, alloc
     sa = sockaddr_loopback(port)
-    syscall(nr_tcp_connect(), sa, timeout_ms, 0, 0, 0, 0)
+    syscall(NR_TCP_CONNECT, sa, timeout_ms, 0, 0, 0, 0)
 
 fn dns_resolve_ptr(host_ptr: Int, host_len: Int, out_ptr: Int) -> Int ! io
-    syscall(nr_dns_resolve(), host_ptr, host_len, out_ptr, 0, 0, 0)
+    syscall(NR_DNS_RESOLVE, host_ptr, host_len, out_ptr, 0, 0, 0)
 
 fn dns_resolve_host(host: &String) -> Int ! io, alloc
     b = Bytes.new(4)
@@ -46,9 +46,9 @@ fn ip4_from_bytes(b: &Bytes) -> Int ! alloc
     a0 + (a1 << 8) + (a2 << 16) + (a3 << 24)
 
 fn sockaddr_from_ip4(ip4: Int, port: Int) -> Int ! alloc
-    sa = Bytes.new(sockaddr_size())
+    sa = Bytes.new(SOCKADDR_SIZE)
     sap = sa.ptr()
-    v = Bytes.view_mem(sap, sockaddr_size())
+    v = Bytes.view_mem(sap, SOCKADDR_SIZE)
     v.set_u8(0, u32_b0(ip4))
     v.set_u8(1, u32_b1(ip4))
     v.set_u8(2, u32_b2(ip4))
@@ -61,7 +61,7 @@ fn sockaddr_from_ip4(ip4: Int, port: Int) -> Int ! alloc
 
 fn tcp_connect_ip4(ip4: Int, port: Int, timeout_ms: Int) -> Int ! io, alloc
     sa = sockaddr_from_ip4(ip4, port)
-    syscall(nr_tcp_connect(), sa, timeout_ms, 0, 0, 0, 0)
+    syscall(NR_TCP_CONNECT, sa, timeout_ms, 0, 0, 0, 0)
 
 fn tcp_connect_host(host: &String, port: Int, timeout_ms: Int) -> Int ! io, alloc
     ip4 = dns_resolve_host(host)

@@ -1003,7 +1003,7 @@ const PARITY_FILES: &[&str] = &[
     "selfhost/ir/frc.sal",
     "selfhost/ir/fuse.sal",
     "selfhost/ir/fused.sal",
-    "selfhost/pkg/handles.sal",
+    "selfhost/pkg/str_path.sal",
     "selfhost/sem/infer.sal",
     "selfhost/ir/ir.sal",
     "selfhost/emit/irtext.sal",
@@ -1077,7 +1077,9 @@ fn selfhost_ir_matches_bootstrap_on_parity_files() {
 /// (source, moved?) pairs; the bootstrap `sal check` must agree with the selfhost.
 const OWNERSHIP_CASES: &[(&str, bool)] = &[
     ("fn eat(s: String) -> Int\n    0\n\nfn main() -> Int\n    s = \"a\"\n    n = eat(s)\n    n + str_len(s)\n", true),
-    ("fn eat(s: String) -> Int\n    str_len(s)\n\nfn main() -> Int\n    s = \"a\"\n    n = eat(s)\n    n + str_len(s)\n", false),
+    // A by-value argument moves even when the callee only reads it (SPEC «Memoria»).
+    ("fn eat(s: String) -> Int\n    str_len(&s)\n\nfn main() -> Int\n    s = \"a\"\n    n = eat(s)\n    n + str_len(&s)\n", true),
+    ("fn eat(s: &String) -> Int\n    str_len(s)\n\nfn main() -> Int\n    s = \"a\"\n    n = eat(&s)\n    n + str_len(&s)\n", false),
     ("fn eat(s: String) -> Int\n    0\n\nfn fwd(s: String) -> Int\n    eat(s)\n\nfn main() -> Int\n    s = \"a\"\n    n = fwd(s)\n    n + str_len(s)\n", true),
     ("fn main() -> Int ! alloc\n    xs = list_new[String]()\n    s = int_to_str(7)\n    _a = list_push(xs, s)\n    str_len(s)\n", true),
     ("struct Tag\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    s = int_to_str(7)\n    t = Tag(s, 1)\n    str_len(s)\n", true),

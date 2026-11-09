@@ -170,10 +170,10 @@ fn emit_ir_single_file(src: &String) -> Int ! io, alloc
 
 fn emit_ir_cached(tp: &TProgram, pre: &String) -> Int ! io, alloc
     dir = cache_dir()
-    _m = cache_mkdir(&dir)
+    _m = dir.mkdir()
     key = source_hash(pre)
-    irpath = cache_ir_path_raw(&dir, &key)
-    metapath = cache_meta_path_raw(&dir, &key)
+    irpath = dir.ir_path(&key)
+    metapath = dir.meta_path(&key)
     cached = read_file(irpath)
     if str_len(cached) > 0
         _w = write_file(metapath, "hit=1\n")
@@ -191,15 +191,15 @@ fn emit_ir_cached(tp: &TProgram, pre: &String) -> Int ! io, alloc
 
 fn emit_ir_imported_file(source_path: String, src: &String) -> Int ! io, alloc
     dir = cache_dir()
-    _m = cache_mkdir(&dir)
+    _m = dir.mkdir()
     order = graph_new()
     g = resolve_module_graph_qualified(&source_path, &project_root(), &order)
     if result_is_err(g) == 1
         g
     else
         key = cache_key_for_graph_path(src, &source_path)
-        irpath = cache_ir_path_raw(&dir, &key)
-        metapath = cache_meta_path_raw(&dir, &key)
+        irpath = dir.ir_path(&key)
+        metapath = dir.meta_path(&key)
         cached = read_file(irpath)
         if str_len(cached) > 0
             _w = write_file(metapath, "hit=1\n")
@@ -1460,6 +1460,21 @@ fn emit_c_owned(tp: &TProgram, user: Int, denv: Int, names: Int, fm: Int, env: &
         _ke = tp_keep_expr(&old.tail)
         emit_c_owned(tp, user, denv, names, fm, env, enums, seen, allow_main, linkable, pool, i + 1, n, (acc + piece))
 
+# The per-type glue of the module's structs, emitted after the user fns.
+fn emit_c_glue(tp: &TProgram, enums: &List[TEnum], user: Int, pool: Int, i: Int, acc: String) -> String ! alloc
+    out = vec_new()
+    _g = struct_glue_all(&tp.structs, enums, out)
+    emit_c_glue_go(out, user, pool, 0, acc)
+
+fn emit_c_glue_go(out: Int, user: Int, pool: Int, i: Int, acc: String) -> String ! alloc
+    if i >= vec_len(out)
+        acc
+    else
+        irf = ti_fn(vec_get(out, i))
+        piece = cir_glue(&irf, user, pool)
+        _x = ti_free_fn_parts(&irf)
+        emit_c_glue_go(out, user, pool, i + 1, (acc + piece))
+
 # `genums`: the enums of the whole module graph (empty for a single file).
 fn emit_c_from_ast_module(tp: &TProgram, callables: Int, externs: Int, allow_main: Int, linkable: Int, genums: &List[TEnum], env: &TEnv, seen: &List[TFn]) -> String ! alloc
     pool = lit_pool_new()
@@ -1480,6 +1495,7 @@ fn emit_c_from_ast_module(tp: &TProgram, callables: Int, externs: Int, allow_mai
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     denv = vec_get(pool, 8)
     body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, seen, allow_main, linkable, pool, 0, list_len(&tp.fns), "")
+    body = emit_c_glue(tp, &enums, callables, pool, 0, body)
     _fe = list_free_shell(enums)
     lits = lit_pool_globals(pool)
     if str_len(lits) > 0

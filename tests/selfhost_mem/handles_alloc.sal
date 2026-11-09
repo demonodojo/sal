@@ -1,4 +1,0 @@
-import "../../selfhost/pkg/handles.sal"
-
-fn main() -> Int
-    __handles_types()

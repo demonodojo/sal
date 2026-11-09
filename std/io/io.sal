@@ -7,10 +7,10 @@ static Fd.new(v: Int) -> Fd
     Fd(v)
 
 method Fd.read(&self, buf_ptr: Int, len: Int) -> Int ! io
-    syscall(nr_read(), self.v, buf_ptr, len, 0, 0, 0)
+    syscall(NR_READ, self.v, buf_ptr, len, 0, 0, 0)
 
 method Fd.write(&self, buf_ptr: Int, len: Int) -> Int ! io
-    syscall(nr_write(), self.v, buf_ptr, len, 0, 0, 0)
+    syscall(NR_WRITE, self.v, buf_ptr, len, 0, 0, 0)
 
 method Fd.write_str(&self, s: &String) -> Int ! io, alloc
     n = s.len()
@@ -22,10 +22,10 @@ method Fd.write_str(&self, s: &String) -> Int ! io, alloc
         self.write(buf.ptr(), n)
 
 method Fd.close(&self) -> Int ! io
-    syscall(nr_close(), self.v, 0, 0, 0, 0, 0)
+    syscall(NR_CLOSE, self.v, 0, 0, 0, 0, 0)
 
 method Fd.read_timeout(&self, buf_ptr: Int, len: Int, ms: Int) -> Int ! io
-    syscall(nr_read_timeout(), self.v, buf_ptr, len, ms, 0, 0)
+    syscall(NR_READ_TIMEOUT, self.v, buf_ptr, len, ms, 0, 0)
 
 @deprecated("use Fd.new(fd).read(buf_ptr, len)")
 fn read_fd(fd: Int, buf_ptr: Int, len: Int) -> Int ! io
@@ -48,7 +48,7 @@ fn read_timeout_fd(fd: Int, buf_ptr: Int, len: Int, ms: Int) -> Int ! io
     Fd.new(fd).read_timeout(buf_ptr, len, ms)
 
 fn open_flags(path_ptr: Int, path_len: Int, flags: Int) -> Int ! io
-    syscall(nr_open(), path_ptr, path_len, flags, 0, 0, 0)
+    syscall(NR_OPEN, path_ptr, path_len, flags, 0, 0, 0)
 
 fn open_read_path_ptr(path_ptr: Int, path_len: Int) -> Int ! io
-    open_flags(path_ptr, path_len, o_RDONLY())
+    open_flags(path_ptr, path_len, O_RDONLY)

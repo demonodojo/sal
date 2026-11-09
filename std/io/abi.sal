@@ -1,185 +1,123 @@
-fn nr_read() -> Int
-    1
+NR_READ = 1
 
-fn nr_write() -> Int
-    2
+NR_WRITE = 2
 
-fn nr_open() -> Int
-    3
+NR_OPEN = 3
 
-fn nr_close() -> Int
-    4
+NR_CLOSE = 4
 
-fn nr_stat() -> Int
-    6
+NR_STAT = 6
 
-fn nr_getdents() -> Int
-    7
+NR_GETDENTS = 7
 
-fn nr_mkdir() -> Int
-    8
+NR_MKDIR = 8
 
-fn nr_unlink() -> Int
-    9
+NR_UNLINK = 9
 
-fn nr_wait() -> Int
-    11
+NR_WAIT = 11
 
-fn nr_pipe() -> Int
-    21
+NR_PIPE = 21
 
-fn nr_spawn_io() -> Int
-    22
+NR_SPAWN_IO = 22
 
-fn nr_chdir() -> Int
-    23
+NR_CHDIR = 23
 
-fn nr_getcwd() -> Int
-    24
+NR_GETCWD = 24
 
-fn nr_sleep_ms() -> Int
-    13
+NR_SLEEP_MS = 13
 
-fn nr_uptime_ms() -> Int
-    28
+NR_UPTIME_MS = 28
 
-fn nr_tcp_connect() -> Int
-    29
+NR_TCP_CONNECT = 29
 
-fn nr_tcp_listen() -> Int
-    30
+NR_TCP_LISTEN = 30
 
-fn nr_tcp_accept() -> Int
-    31
+NR_TCP_ACCEPT = 31
 
-fn nr_read_timeout() -> Int
-    32
+NR_READ_TIMEOUT = 32
 
-fn nr_dns_resolve() -> Int
-    40
+NR_DNS_RESOLVE = 40
 
-fn nr_kill() -> Int
-    52
+NR_KILL = 52
 
-fn nr_rename() -> Int
-    70
+NR_RENAME = 70
 
-fn nr_getenv() -> Int
-    83
+NR_GETENV = 83
 
-fn nr_clock_gettime() -> Int
-    72
+NR_CLOCK_GETTIME = 72
 
-fn nr_getrandom() -> Int
-    78
+NR_GETRANDOM = 78
 
-fn clock_realtime() -> Int
-    0
+CLOCK_REALTIME = 0
 
-fn clock_monotonic() -> Int
-    1
+CLOCK_MONOTONIC = 1
 
-fn stat_size() -> Int
-    32
+STAT_SIZE = 32
 
-fn stat_off_ino() -> Int
-    0
+STAT_OFF_INO = 0
 
-fn stat_off_size() -> Int
-    8
+STAT_OFF_SIZE = 8
 
-fn stat_off_mtime() -> Int
-    16
+STAT_OFF_MTIME = 16
 
-fn stat_off_file_type() -> Int
-    24
+STAT_OFF_FILE_TYPE = 24
 
-fn timespec_size() -> Int
-    16
+TIMESPEC_SIZE = 16
 
-fn timespec_off_sec() -> Int
-    0
+TIMESPEC_OFF_SEC = 0
 
-fn timespec_off_nsec() -> Int
-    8
+TIMESPEC_OFF_NSEC = 8
 
-fn spawn_fd_inherit() -> Int
-    -1
+SPAWN_FD_INHERIT = -1
 
-fn spawn_fd_closed() -> Int
-    -12
+SPAWN_FD_CLOSED = -12
 
-fn o_RDONLY() -> Int
-    0
+O_RDONLY = 0
 
-fn o_WRONLY() -> Int
-    1
+O_WRONLY = 1
 
-fn o_CREAT() -> Int
-    4
+O_CREAT = 4
 
-fn o_APPEND() -> Int
-    2
+O_APPEND = 2
 
-fn o_TRUNC() -> Int
-    8
+O_TRUNC = 8
 
-fn o_EXCL() -> Int
-    16
+O_EXCL = 16
 
-fn ft_file() -> Int
-    1
+FT_FILE = 1
 
-fn ft_dir() -> Int
-    2
+FT_DIR = 2
 
-fn dirent_size() -> Int
-    272
+DIRENT_SIZE = 272
 
-fn dirent_off_ino() -> Int
-    0
+DIRENT_OFF_INO = 0
 
-fn dirent_off_file_type() -> Int
-    8
+DIRENT_OFF_FILE_TYPE = 8
 
-fn dirent_off_name_len() -> Int
-    9
+DIRENT_OFF_NAME_LEN = 9
 
-fn dirent_off_name() -> Int
-    10
+DIRENT_OFF_NAME = 10
 
-fn spawnio_size() -> Int
-    112
+SPAWNIO_SIZE = 112
 
-fn spawnio_off_path_ptr() -> Int
-    0
+SPAWNIO_OFF_PATH_PTR = 0
 
-fn spawnio_off_path_len() -> Int
-    8
+SPAWNIO_OFF_PATH_LEN = 8
 
-fn spawnio_off_stdin() -> Int
-    32
+SPAWNIO_OFF_STDIN = 32
 
-fn spawnio_off_stdout() -> Int
-    40
+SPAWNIO_OFF_STDOUT = 40
 
-fn spawnio_off_stderr() -> Int
-    48
+SPAWNIO_OFF_STDERR = 48
 
-fn spawnio_off_argv_ptr() -> Int
-    56
+SPAWNIO_OFF_ARGV_PTR = 56
 
-fn spawnio_off_argv_count() -> Int
-    64
+SPAWNIO_OFF_ARGV_COUNT = 64
 
-fn spawnio_off_log_fd() -> Int
-    88
+SPAWNIO_OFF_LOG_FD = 88
 
-fn spawnio_off_cwd_ptr() -> Int
-    96
+SPAWNIO_OFF_CWD_PTR = 96
 
-fn spawnio_off_cwd_len() -> Int
-    104
+SPAWNIO_OFF_CWD_LEN = 104
 
-fn sockaddr_size() -> Int
-    8
+SOCKADDR_SIZE = 8

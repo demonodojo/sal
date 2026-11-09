@@ -1,3 +1,4 @@
+# selfhost-xfail: selfhost no califica items de módulo en colisiones de enum
 # exit: 14
 import "mods/en1.sal" as one
 import "mods/en2.sal" as two

@@ -158,6 +158,8 @@ fn ti_inst(h: Int) -> Inst ! alloc
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), vec_get(h, 5), 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_EFIELD()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
+    elsif k == II_ETAG()
+        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
     elsif k == II_SWITCH()
         ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), "", "", "", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 4)), ti_no_insts(), ti_arms_of(vec_get(h, 3)))
     elsif k == II_ANYBOX()

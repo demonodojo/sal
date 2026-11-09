@@ -39,11 +39,10 @@ fn sse_data_payload_go(block: &String) -> String ! alloc
 fn sse_data_start(block: &String, start: Int) -> Int ! alloc
     if start >= block.len()
         start
+    elsif block.char(start) == 32
+        start + 1
     else
-        if block.char(start) == 32
-            start + 1
-        else
-            start
+        start
 
 fn sse_accum_tool_index_go(block: &String) -> Int ! alloc
     idx = block.index_of(d"\"index\":")
@@ -55,11 +54,11 @@ fn sse_accum_tool_index_go(block: &String) -> Int ! alloc
 
 @deprecated("use Sse.new(block).has_data()")
 fn sse_has_data(block: &String) -> Int ! alloc
-    Sse.new(block).has_data()
+    Sse.new(block.clone()).has_data()
 
 @deprecated("use Sse.new(block).is_done()")
 fn sse_is_done(block: &String) -> Int ! alloc
-    Sse.new(block).is_done()
+    Sse.new(block.clone()).is_done()
 
 @deprecated("use Sse.new(block).payload()")
 fn sse_data_payload(block: &String) -> String ! alloc
