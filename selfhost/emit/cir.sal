@@ -73,7 +73,7 @@ fn cir_ops(cc: Int, args: Int, i: Int, n: Int, out: Int) -> Int ! alloc
 fn cir_const(cc: Int, a: Int) -> Int ! alloc
     s = str_from_int(a)
     if cir_is_num(&s) == 1
-        tt_dim_val(a)
+        ts_dim(&s)
     else
         map_get(vec_get(cc, 3), a)
 

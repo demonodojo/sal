@@ -114,6 +114,8 @@ fn call_moves_arg(name: &str, i: usize, nargs: usize) -> bool {
     match name {
         "list_push" => return i == 1,
         "list_set" | "dict_put" => return i == 2,
+        // Free the shell of a container: the argument is consumed (the caller no longer releases it).
+        "list_free_shell" | "enum_free_shell" => return i == 0,
         _ => {}
     }
     TYPED.with(|t| {

@@ -1022,18 +1022,25 @@ fn emit_c_load(arg_parts: Int, stmts: Int) -> String ! alloc
     "({ int64_t __n = 0; (int64_t)(uintptr_t)sal_load_f32((const char *)(uintptr_t)(" + arg_at(arg_parts, 0) + "), &__n); })"
 
 fn emit_c_matmul(args_e: &List[Expr], arg_parts: Int, stmts: Int, tc: &Tc) -> String ! alloc
-    ta = str_as_int(&texpr_type(&tc.env, &list_get(args_e, 0)))
-    tb = str_as_int(&texpr_type(&tc.env, &list_get(args_e, 1)))
-    pa = tt_split(ta)
-    pb = tt_split(tb)
-    if vec_len(pa) < 3
+    ta = texpr_type(&tc.env, &list_get(args_e, 0))
+    tb = texpr_type(&tc.env, &list_get(args_e, 1))
+    pa = ts_split(&ta)
+    pb = ts_split(&tb)
+    out = emit_c_matmul_parts(arg_parts, stmts, tc, &pa, &pb)
+    _fa = list_free(pa)
+    _fb = list_free(pb)
+    out
+
+# The C of `a @ b` from the split shapes `pa` and `pb` (`ts_split`); "0" when one is not rank >= 2.
+fn emit_c_matmul_parts(arg_parts: Int, stmts: Int, tc: &Tc, pa: &List[String], pb: &List[String]) -> String ! alloc
+    if pa.len() < 3
         "0"
-    elsif vec_len(pb) < 3
+    elsif pb.len() < 3
         "0"
     else
-        m = tt_dim_val(vec_get(pa, vec_len(pa) - 2))
-        k = tt_dim_val(vec_get(pa, vec_len(pa) - 1))
-        n = tt_dim_val(vec_get(pb, vec_len(pb) - 1))
+        m = ts_dim(&pa.get(pa.len() - 2))
+        k = ts_dim(&pa.get(pa.len() - 1))
+        n = ts_dim(&pb.get(pb.len() - 1))
         tc_n = list_get(&tc.ctr, 0) + 1
         _u = list_set(tc.ctr, 0, tc_n)
         out = "__mm" + int_to_str(tc_n)

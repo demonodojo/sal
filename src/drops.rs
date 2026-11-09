@@ -780,8 +780,6 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "enum_owns"
             | "enum_box_id"
             | "enum_set"
-            | "enum_free_shell"
-            | "list_free_shell"
             | "list_push_share"
             | "str_share"
             | "bytes_len"

@@ -2622,8 +2622,6 @@ fn drops_body_tc(f: &TFn, denv: Int) -> TBlock ! alloc
 fn dr_borrows(name: &String) -> Int ! alloc
     if str_eq(name, "str_share") + str_eq(name, "list_push_share") + str_eq(name, "enum_set") == 1
         1
-    elsif str_eq(name, "enum_free_shell") + str_eq(name, "list_free_shell") == 1
-        1
     elsif str_eq(name, "str_len") == 1
         1
     elsif str_eq(name, "dict_keys") + str_eq(name, "dict_values") + str_eq(name, "dict_len") + str_eq(name, "dict_remove") == 1

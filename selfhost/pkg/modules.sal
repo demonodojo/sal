@@ -690,13 +690,14 @@ fn methods_resolve_graph(order: &Graph) -> Int ! io, alloc
         u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum](), list_new[TProtocol](), list_new[TConst]())
         _u = union_progs(&order.progs, 0, list_len(&order.progs), &u)
         _m = methods_resolve_modules(order, &u, 0, list_len(&order.progs))
-        _a = list_free(u.fns)
-        _b = list_free(u.imports)
-        _c = list_free(u.structs)
-        _d = list_free(u.aliases)
-        _e = list_free(u.enums)
-        _f = list_free(u.protocols)
-        _g = list_free(u.consts)
+        # The elements are aliases of `order.progs` (`union_*` pushes `list_get`): only the shells go.
+        _a = list_free_shell(u.fns)
+        _b = list_free_shell(u.imports)
+        _c = list_free_shell(u.structs)
+        _d = list_free_shell(u.aliases)
+        _e = list_free_shell(u.enums)
+        _f = list_free_shell(u.protocols)
+        _g = list_free_shell(u.consts)
         _m
 
 fn graph_any_dots(mods: &List[Mod], i: Int, n: Int) -> Int ! alloc

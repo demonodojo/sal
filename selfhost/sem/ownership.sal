@@ -492,6 +492,11 @@ fn call_moves_arg(c: &OC, name: &String, i: Int, modes: &String) -> Int ! alloc
             1
         else
             0
+    elsif str_eq(name, "list_free_shell") + str_eq(name, "enum_free_shell") == 1
+        if i == 0
+            1
+        else
+            0
     elsif own_has(&c.ctors, name, 0, list_len(&c.ctors)) == 1
         1
     elsif own_mode_at(modes, i) == 2

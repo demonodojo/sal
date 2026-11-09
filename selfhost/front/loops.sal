@@ -70,10 +70,9 @@ fn lp_is_while(e: &Expr) -> Int ! alloc
 # same boxes. `hold` owns the tail until the block is built again.
 fn lp_block(b: &TBlock, flag: &String, cx: &List[Int], errs: &List[String]) -> TBlock ! alloc
     hold = List.new[Expr]()
-    hold.push(b.tail)
+    hold.push(tc_expr(&b.tail))
     out = List.new[TStmt]()
     br = lp_stmts(&b.stmts, 0, b.stmts.len(), flag, cx, errs, &out, &hold)
-    _f = list_free_shell(b.stmts)
     if br == 1
         _s = cx.set(1, 1)
         TBlock(out, hold.pop())
@@ -166,7 +165,7 @@ fn lp_expr_statement(st: &TStmt, flag: &String, cx: &List[Int], errs: &List[Stri
             _w = lp_while(&st.expr, out, cx, errs)
             lp_share_one(out, st)
         XIf(cond, then_b, else_b, has_else, elsifs) =>
-            _i = lp_if(&st.expr, cond, then_b, else_b, has_else, &elsifs, flag, cx, errs)
+            _i = lp_if(&st.expr, &cond, &then_b, &else_b, has_else, &elsifs, flag, cx, errs)
             _p = lp_share_one(out, st)
             cx.get(1)
         _ =>
@@ -179,20 +178,21 @@ fn lp_expr_statement(st: &TStmt, flag: &String, cx: &List[Int], errs: &List[Stri
 # `while flag == 0 { if cond { body } else { flag = 1 } }` when the body breaks.
 fn lp_while(e: &Expr, out: &List[TStmt], cx: &List[Int], errs: &List[String]) -> Int ! alloc
     match e
-        XWhile(cond, body) => lp_while_go(e, cond, body, out, cx, errs)
+        XWhile(cond, body) => lp_while_go(e, &cond, &body, out, cx, errs)
         _ => 0
 
-fn lp_while_go(e: &Expr, cond: Expr, body: TBlock, out: &List[TStmt], cx: &List[Int], errs: &List[String]) -> Int ! alloc
-    _c = lp_expr(&cond, cx, errs)
+# `cond` and `body` are borrowed from `e` (rewritten in place): copies go where a value is needed.
+fn lp_while_go(e: &Expr, cond: &Expr, body: &TBlock, out: &List[TStmt], cx: &List[Int], errs: &List[String]) -> Int ! alloc
+    _c = lp_expr(cond, cx, errs)
     n = cx.get(0) + 1
     _n = cx.set(0, n)
     f = "__brk" + n.to_str()
     # The tail of a loop body is discarded: make it a statement.
-    b2 = lp_block(&lp_unit(body), &f, cx, errs)
+    b2 = lp_block(&lp_unit(tc_block(body)), &f, cx, errs)
     if cx.get(1) == 1
         _p = out.push(TStmt(1, f.dup(), XInt(0), "", 1, XNone, 0, 0, 0))
         stop = TBlock(lp_one(lp_set_flag(&f, 1)), XNone)
-        guarded = TBlock(lp_one(lp_if_stmt(cond, b2, stop, 1)), XNone)
+        guarded = TBlock(lp_one(lp_if_stmt(tc_expr(cond), b2, stop, 1)), XNone)
         _a = enum_set(e, 0, lp_flag_clear(&f))
         _b = enum_set(e, 1, guarded)
         0
@@ -208,18 +208,19 @@ fn lp_one(st: TStmt) -> List[TStmt] ! alloc
 # ---- `if` ----
 
 # Rewrites the branches of the existing `if`. `cx[1]` is left at whether one of them may break.
-fn lp_if(e: &Expr, cond: Expr, then_b: TBlock, else_b: TBlock, has_else: Int, elsifs: &List[TElsif], flag: &String, cx: &List[Int], errs: &List[String]) -> Int ! alloc
-    _c = lp_expr(&cond, cx, errs)
-    t2 = lp_block(&then_b, flag, cx, errs)
+# The branches are borrowed from `e`: they are rewritten in place, and nothing here releases them.
+fn lp_if(e: &Expr, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], flag: &String, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+    _c = lp_expr(cond, cx, errs)
+    t2 = lp_block(then_b, flag, cx, errs)
     b1 = cx.get(1)
     _a = lp_elsifs(elsifs, 0, elsifs.len(), flag, cx, errs)
     b2 = cx.get(1)
     if has_else == 1
-        e2 = lp_block(&else_b, flag, cx, errs)
+        e2 = lp_block(else_b, flag, cx, errs)
         b3 = cx.get(1)
         lp_if_store(e, t2, e2, b1 | b2 | b3, cx, elsifs)
     else
-        lp_if_store(e, t2, else_b, b1 | b2, cx, elsifs)
+        lp_if_store(e, t2, tc_block(else_b), b1 | b2, cx, elsifs)
 
 # Writes the branches back. A statement `if` that may break has no value: each tail becomes a statement.
 fn lp_if_store(e: &Expr, then_b: TBlock, else_b: TBlock, broke: Int, cx: &List[Int], elsifs: &List[TElsif]) -> Int ! alloc
@@ -267,7 +268,7 @@ fn lp_expr(e: &Expr, cx: &List[Int], errs: &List[String]) -> Int ! alloc
         XOn(_, body, _, _) =>
             _b = enum_set(e, 1, lp_block(&body, &"", cx, errs))
             0
-        XIf(cond, then_b, else_b, has_else, elsifs) => lp_if(e, cond, then_b, else_b, has_else, &elsifs, &"", cx, errs)
+        XIf(cond, then_b, else_b, has_else, elsifs) => lp_if(e, &cond, &then_b, &else_b, has_else, &elsifs, &"", cx, errs)
         XWhile(_, _) => lp_while_value(e, cx, errs)
         XField(base, _) => lp_expr(&base, cx, errs)
         XLambda(_, body) => lp_expr(&body, cx, errs)

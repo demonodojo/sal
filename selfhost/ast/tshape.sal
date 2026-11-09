@@ -1,10 +1,4 @@
 # Textual tensor types: `Tensor[F32, 2, 3] on cpu`.
-fn ty_trim(t: Int) -> String ! alloc
-    if t == 0
-        "Unknown"
-    else
-        ty_trim_go(str_from_int(t))
-
 fn ty_trim_go(s: String) -> String ! alloc
     n = s.len()
     if n > 0
@@ -16,7 +10,7 @@ fn ty_trim_go(s: String) -> String ! alloc
         s
 
 # ---- tensor shapes ----
-# `Tensor[F32, 2, 3] on cpu` -> parts ["F32", "2", "3"] (string handles).
+# `Tensor[F32, 2, 3] on cpu` -> parts ["F32", "2", "3"] (see `ts_split`).
 fn tt_open(s: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         n
@@ -31,37 +25,6 @@ fn tt_trim_left(s: String) -> String ! alloc
     else
         s
 
-fn tt_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: Int) -> Int ! alloc
-    if i >= n
-        out
-    else
-        ch = s.char(i)
-        if ch == 91
-            tt_parts(s, i + 1, n, from, depth + 1, out)
-        elsif ch == 93
-            if depth == 0
-                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
-                out
-            else
-                tt_parts(s, i + 1, n, from, depth - 1, out)
-        elsif ch == 44
-            if depth == 0
-                _p = vec_push(out, ty_trim_go(tt_trim_left(s.slice(from, i))).to_int())
-                tt_parts(s, i + 1, n, i + 1, depth, out)
-            else
-                tt_parts(s, i + 1, n, from, depth, out)
-        else
-            tt_parts(s, i + 1, n, from, depth, out)
-
-fn tt_split(t: Int) -> Int ! alloc
-    s = ty_trim(t)
-    o = tt_open(&s, 0, s.len())
-    tt_parts(&s, o, s.len(), o, 0, vec_new())
-
-fn tt_place(t: Int) -> String ! alloc
-    s = ty_trim(t)
-    tt_place_go(&s, s.len() - 1, s.len())
-
 fn tt_place_go(s: &String, i: Int, n: Int) -> String ! alloc
     if i < 0
         "cpu"
@@ -72,45 +35,11 @@ fn tt_place_go(s: &String, i: Int, n: Int) -> String ! alloc
     else
         tt_place_go(s, i - 1, n)
 
-fn tt_is_static(d: Int) -> Int ! alloc
-    s = str_from_int(d)
-    if s.len() == 0
-        0
-    elsif s.char(0) >= 48
-        if s.char(0) <= 57
-            1
-        else
-            0
-    else
-        0
-
-fn tt_join_dims(parts: Int, lo: Int, hi: Int, acc: String) -> String ! alloc
-    if lo >= hi
-        acc
-    else
-        tt_join_dims(parts, lo + 1, hi, (acc + ", " + str_from_int(vec_get(parts, lo))))
-
-# Text `Tensor[F32, 2, 3] on cpu` of the `a @ b` result, or 0 when a shape is not literal.
-fn tt_dim_val(d: Int) -> Int ! alloc
-    tt_dim_go(&str_from_int(d), 0, str_from_int(d).len(), 0)
-
 fn tt_dim_go(s: &String, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
         tt_dim_go(s, i + 1, n, acc * 10 + s.char(i) - 48)
-
-fn tt_matmul_text(ta: Int, tb: Int) -> Int ! alloc
-    pa = tt_split(ta)
-    pb = tt_split(tb)
-    if vec_len(pa) < 3
-        0
-    elsif vec_len(pb) < 3
-        0
-    else
-        head = "Tensor[" + str_from_int(vec_get(pa, 0))
-        mid = tt_join_dims(pa, 1, vec_len(pa) - 1, head)
-        (mid + ", " + str_from_int(vec_get(pb, vec_len(pb) - 1)) + "] on " + tt_place(ta)).to_int()
 
 # ---- typed forms: type texts as `String`, shape parts as `List[String]` ----
 # "" stands for an absent type and trims to "Unknown".
@@ -173,3 +102,16 @@ fn ts_join(parts: &List[String], lo: Int, hi: Int, acc: String) -> String ! allo
         acc
     else
         ts_join(parts, lo + 1, hi, (acc + ", " + parts.get(lo)))
+
+# Text `Tensor[F32, M, N] on cpu` of the `a @ b` result, or "" when a shape has no rank-2 literal form.
+fn ts_matmul_text(ta: &String, tb: &String) -> String ! alloc
+    pa = ts_split(ta)
+    pb = ts_split(tb)
+    if pa.len() < 3
+        ""
+    elsif pb.len() < 3
+        ""
+    else
+        head = "Tensor[" + pa.get(0)
+        mid = ts_join(&pa, 1, pa.len() - 1, head)
+        mid + ", " + pb.get(pb.len() - 1) + "] on " + ts_place(ta)

@@ -273,13 +273,9 @@ fn tt_call_returns_string(name: &String) -> Int ! alloc
 
 fn tt_matmul(env: &TEnv, args: &List[Expr]) -> String ! alloc
     if args.len() == 2
-        a = texpr_type(env, &args.get(0)).to_int()
-        b = texpr_type(env, &args.get(1)).to_int()
-        r = tt_matmul_text(a, b)
-        if r == 0
-            ""
-        else
-            str_from_int(r)
+        a = texpr_type(env, &args.get(0))
+        b = texpr_type(env, &args.get(1))
+        ts_matmul_text(&a, &b)
     else
         ""
 

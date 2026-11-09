@@ -401,19 +401,14 @@ fn qx_moved(old: &Expr, neu: &Expr) -> Int ! alloc
 fn qx_same(e: &Expr) -> Expr ! alloc
     tc_expr(e)
 
+# A copy of the list: a shared alias left in a temporary box would be released with the box.
 fn qx_share_list(xs: &List[Expr]) -> List[Expr] ! alloc
-    box = List.new[List[Expr]]()
-    _p = list_push_share(box, xs)
-    got = list_get(box, 0)
-    _f = list_free_shell(box)
-    got
+    out = List.new[Expr]()
+    _c = tc_exprs(xs, 0, xs.len(), &out)
+    out
 
 fn qx_share_str(s: &String) -> String ! alloc
-    box = List.new[String]()
-    _p = list_push_share(box, s)
-    got = list_get(box, 0)
-    _f = list_free_shell(box)
-    got
+    s.dup()
 
 fn qx_field(e: &Expr, base: &Expr, fld: &String, ctx: Int, links: Int) -> Expr ! alloc
     match base
@@ -428,10 +423,7 @@ fn qx_field(e: &Expr, base: &Expr, fld: &String, ctx: Int, links: Int) -> Expr !
 fn qx_field_ident(e: &Expr, base: &Expr, qual: &String, fld: &String, ctx: Int, links: Int) -> Expr ! alloc
     lk = qx_ident_link(ctx, links, qual, fld)
     if lk != 0
-        _q = free(qual)
-        _f = free(fld)
-        _b = enum_free_shell(base)
-        _e = enum_free_shell(e)
+        # `e` and its parts are borrowed here: the shell is left to the caller (never freed twice).
         XIdent(strdup(str_from_int(lk)))
     else
         qx_same(e)
@@ -475,7 +467,6 @@ fn qx_call(e: &Expr, nm: &String, args: &List[Expr], targs: &String, xp: Int, ct
     neu = qx_call_name(nm, ctx, links)
     if str_as_int(&neu) != str_as_int(nm)
         built = XCall(neu, qx_share_list(args), qx_share_str(targs), pos)
-        _e = enum_free_shell(e)
         built
     elsif pos != xp
         _p = enum_set(e, 3, pos)

@@ -1761,12 +1761,11 @@ fn struct_glue_emit(structs: &List[TStruct], enums: &List[TEnum], cand: &List[In
         0
     else
         idx = struct_glue_rank(structs, cand, p, 0, n)
-        sd = structs.get(idx)
-        body = struct_glue_fn(&sd, structs, enums)
+        body = struct_glue_fn(&structs.get(idx), structs, enums)
         if body != 0
             _f = vec_push(out, body)
-            if struct_is_boxed_t(&sd) == 1
-                _e = vec_push(out, struct_elem_glue_fn(&sd.name))
+            if struct_is_boxed_t(&structs.get(idx)) == 1
+                _e = vec_push(out, struct_elem_glue_fn(&structs.get(idx).name))
             else
                 _k = 0
         else
@@ -1862,12 +1861,11 @@ fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
         if i < 0
             0
         else
-            sd = structs.get(i)
-            if sd.tparams.len() != 0
+            if structs.get(i).tparams.len() != 0
                 0
-            elsif struct_glue_fn(&sd, &structs, &cx.enums) == 0
+            elsif struct_glue_fn(&structs.get(i), &structs, &cx.enums) == 0
                 0
-            elsif struct_is_boxed_t(&sd) == 1
+            elsif struct_is_boxed_t(&structs.get(i)) == 1
                 list_set_drop_call(cx, d, &("drop.elem." + t))
             else
                 list_set_drop_call(cx, d, &("drop." + t))
