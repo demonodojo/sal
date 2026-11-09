@@ -6,7 +6,7 @@ struct B
     xs: List[Int]
     tail: E
 
-fn pick(b: &B, f: Int) -> B ! alloc
+fn pick(b: B, f: Int) -> B ! alloc
     if f == 1
         b
     else
@@ -19,5 +19,5 @@ fn mk() -> B ! alloc
 
 fn main() -> Int ! alloc
     t = mk()
-    u = pick(&t, 1)
+    u = pick(t, 1)
     u.xs.len()

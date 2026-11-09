@@ -698,6 +698,8 @@ fn lower_call_runtime_rest(cx: &Cx, name: &String, targs: &String, args: &List[E
         lower_list_new(cx, targs, d, 1)
     elsif str_eq(name, "dict_new") == 1
         lower_container_new(cx, name, targs, d, 2)
+    elsif str_eq(name, "struct_clone") == 1
+        lower_struct_clone(cx, args, arg_names, d)
     else
         if is_user_fn(cx, fname) == 1
             _b = maybe_box_user_args(cx, name, args, arg_names)
@@ -705,6 +707,19 @@ fn lower_call_runtime_rest(cx: &Cx, name: &String, targs: &String, args: &List[E
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
         _r = register_ret_tensor(cx, d, name)
         d
+
+# `x.clone()` of a struct: `sal_desc_copy` with the descriptor of its type (the glue of the copy
+# follows the fields; a struct without a descriptor is copied by its `i` shape).
+fn lower_struct_clone(cx: &Cx, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
+    tname = texpr_type(&cx.env, &list_get(args, 0))
+    desc = desc_struct_or_i(&cx_structs(cx), &cx.enums, &tname)
+    ds = fresh(cx)
+    _c = ir_push(cx, ir_cs(ds, str_own(&desc)))
+    argv = vec_new()
+    _a = vec_push(argv, ds)
+    _b = vec_push(argv, vec_get(arg_names, 0))
+    _p = ir_push(cx, ir_call(d, str_as_int(&"sal_desc_copy"), argv, 1))
+    d
 
 # A user fn declared to return a tensor gives its result that shape.
 fn register_ret_tensor(cx: &Cx, d: Int, name: &String) -> Int ! alloc

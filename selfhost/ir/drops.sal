@@ -106,21 +106,7 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
-# Frees the contexts `dr_new` made for `c`. `lists` is not freed: the caller owns it.
-fn dr_free(c: &DC) -> Int ! alloc
-    _a = nm_free(&c.esc)
-    _b = nm_free(&c.took)
-    _c = nm_free(&c.defs)
-    _d = nm_free(&c.params)
-    _e = nm_free(&c.kinds)
-    _f = nm_free(&c.tainted)
-    _g = nm_free(&c.soft)
-    _h = nm_free(&c.box_shell)
-    _i = nm_free(&c.born)
-    _j = nm_free(&c.owned_enums)
-    _k = nm_free(&c.copy_desc)
-    _l = list_free(c.cells)
-    0
+# A `DC` local is released by the glue of its struct (its `NM` fields included).
 
 fn dr_cell(c: &DC, i: Int) -> Int ! alloc
     list_get(&c.cells, i)
@@ -1994,7 +1980,6 @@ fn dr_ro_pass(ro: Int, cons: &List[Int], fns: &List[TFn], variants: Int, scalars
         nps = c.ps.len()
         ch = dr_ro_params(&c, flags, &c.ps, 0, nps)
         tk = dr_cons_params(&c, took, &c.ps, 0, nps)
-        dr_free(&c)
         _pp = dr_pin_params(&c.ps)
         any = if ch + tk > 0
             1

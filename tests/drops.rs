@@ -706,8 +706,9 @@ fn struct_glue_releases_branch_returned_struct_once() {
     let ir = ir_of_file("tests/glue_escape/branch.sal");
     let main = fn_ir(&ir, "main");
     assert!(main.contains("func: \"pick\""), "{ir}");
-    assert_eq!(main.matches("sal_list_free").count(), 1, "{main}");
-    assert_eq!(main.matches("sal_enum_free").count(), 1, "{main}");
+    // `t` moves into `pick`; the result `u` is released once, by the glue of `B`.
+    assert_eq!(main.matches("func: \"drop.B\"").count(), 1, "{main}");
+    assert_eq!(main.matches("sal_list_free").count(), 0, "{main}");
 }
 
 // Per-type glue (SPEC «Liberación de locales»): `List[T]` releases each element with the
@@ -930,4 +931,48 @@ fn early_return_before_move_releases_the_by_value_param() {
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert_eq!(run.status.code(), Some(0), "{stderr}");
     assert!(!stderr.contains("LEAK") && !stderr.contains("DOUBLE_FREE"), "{stderr}");
+}
+
+// A struct local declared in an `if` branch is released when the branch ends (SPEC «Memoria»:
+// every owned value is released at the end of its scope). Before, the glue of the fn looked the
+// local up after the branch and skipped it without a release.
+#[test]
+fn struct_local_of_if_branch_is_released_when_branch_ends() {
+    let ir = ir_full(
+        "branch_scope_glue",
+        "struct Inner\n    xs: List[String]\n\nstruct Ctx\n    moved: List[String]\n    inner: Inner\n    n: Int\n\nfn ctx_new(k: Int) -> Ctx ! alloc\n    Ctx(list_new[String](), Inner(list_new[String]()), k)\n\nfn ctx_use(c: &Ctx) -> Int ! alloc\n    c.n\n\nfn go(k: Int, round: Int) -> Int ! alloc\n    if round >= 16\n        k\n    else\n        c = ctx_new(k)\n        r = ctx_use(&c)\n        r\n\nfn main() -> Int ! alloc\n    go(3, 0)\n",
+    );
+    let go = fn_ir(&ir, "go");
+    let ctx_use = go.find("func: \"ctx_use\"").expect("ctx_use call");
+    let released = go.find("func: \"drop.Ctx\"").expect("branch-local struct released");
+    assert!(released > ctx_use, "{go}");
+    assert_eq!(go.matches("func: \"drop.Ctx\"").count(), 1, "{go}");
+}
+
+// A `return` leaves its open scopes: the struct locals of the branch it returns from are released
+// before the value goes out. A local the return moves is not released.
+#[test]
+fn return_inside_if_branch_releases_its_struct_locals_but_not_moved_ones() {
+    let ir = ir_full(
+        "return_branch_glue",
+        "struct Inner\n    xs: List[String]\n\nstruct Ctx\n    moved: List[String]\n    inner: Inner\n    n: Int\n\nfn ctx_new(k: Int) -> Ctx ! alloc\n    Ctx(list_new[String](), Inner(list_new[String]()), k)\n\nfn ctx_use(c: &Ctx) -> Int ! alloc\n    c.n\n\nfn early(k: Int, flag: Int) -> Int ! alloc\n    if flag == 1\n        e = ctx_new(k)\n        return ctx_use(&e)\n    else\n        0\n\nfn moves(k: Int, flag: Int) -> Ctx ! alloc\n    if flag == 1\n        c = ctx_new(k)\n        return c\n    d = ctx_new(k + 1)\n    d\n\nfn main() -> Int ! alloc\n    early(2, 1) + moves(4, 0).n\n",
+    );
+    let early = fn_ir(&ir, "early");
+    let ret_use = early.find("func: \"ctx_use\"").expect("ctx_use call");
+    let released = early.find("func: \"drop.Ctx\"").expect("e released before the return");
+    assert!(released > ret_use, "{early}");
+    let moves = fn_ir(&ir, "moves");
+    assert_eq!(moves.matches("func: \"drop.Ctx\"").count(), 0, "{moves}");
+}
+
+// A `return` that is the last statement of the fn body is covered by the glue at the end of the
+// fn: the local is released once, not once by the return and again by the glue.
+#[test]
+fn top_level_return_releases_its_struct_local_once() {
+    let ir = ir_full(
+        "top_return_glue",
+        "struct Ctx\n    moved: List[String]\n    n: Int\n\nfn ctx_new(k: Int) -> Ctx ! alloc\n    Ctx(list_new[String](), k)\n\nfn ctx_use(c: &Ctx) -> Int ! alloc\n    c.n\n\nfn top(k: Int) -> Int ! alloc\n    x = ctx_new(k)\n    v = ctx_use(&x)\n    return v\n\nfn main() -> Int ! alloc\n    top(4)\n",
+    );
+    let top = fn_ir(&ir, "top");
+    assert_eq!(top.matches("func: \"drop.Ctx\"").count(), 1, "{top}");
 }

@@ -309,6 +309,9 @@ fn tt_call_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) ->
         "String"
     elsif name.eq("int_to_float") == 1
         "Float"
+    elsif name.eq("struct_clone") + name.eq("enum_copy") + name.eq("clone") == 1
+        # A copy has the type of the value it copies.
+        texpr_type(env, &args.get(0))
     elsif name.eq("load") == 1
         targs.dup()
     elsif name.eq("matmul") == 1

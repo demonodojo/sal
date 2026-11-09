@@ -727,7 +727,7 @@ fn methods_resolve_one(order: &Graph, u: &TProgram, i: Int) -> Int ! io, alloc
         c = ic_build(&TProgram(u.fns, u.imports, u.structs, tp.aliases, u.enums, tp.protocols, tp.consts), nd, 1)
         _r = infer_program_go(&c, start, start + list_len(&tp.fns))
         _m = mr_fns(&tp.fns, 0, list_len(&tp.fns), &c.res)
-        _f = ic_free(&c)
+        _f = ic_free_tables(&c)
         0
 
 # Number of functions of the modules before `i` (their order in the union).

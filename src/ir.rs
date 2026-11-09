@@ -1038,6 +1038,20 @@ fn export_keep_args(
     }
 }
 
+/// The fn being lowered and its parameter modes. An `if` branch releases the struct
+/// locals it declares when it ends (`block_struct_drops`); that needs the whole fn's moves.
+struct ScopeCtx {
+    f: FnDef,
+    param_modes: HashMap<String, Vec<ParamMode>>,
+    caller_modes: HashMap<String, Vec<ParamMode>>,
+}
+
+thread_local! {
+    static SCOPE_CTX: RefCell<Option<ScopeCtx>> = const { RefCell::new(None) };
+    /// The `if` branches being lowered, outermost first. A `return` releases their struct locals.
+    static OPEN_BRANCHES: RefCell<Vec<Block>> = const { RefCell::new(Vec::new()) };
+}
+
 fn lower_fn(
     f: &FnDef,
     fn_names: &HashMap<String, ()>,
@@ -1045,6 +1059,13 @@ fn lower_fn(
     param_modes: &HashMap<String, Vec<ParamMode>>,
     caller_modes: &HashMap<String, Vec<ParamMode>>,
 ) -> IrFunction {
+    SCOPE_CTX.with(|c| {
+        *c.borrow_mut() = Some(ScopeCtx {
+            f: f.clone(),
+            param_modes: param_modes.clone(),
+            caller_modes: caller_modes.clone(),
+        })
+    });
     let mut instructions = Vec::new();
     let mut regions = Vec::new();
     let mut counter = 0u32;
@@ -1510,15 +1531,7 @@ fn fn_struct_bindings(f: &FnDef, strings: &StringEnv) -> HashMap<String, String>
                     }
                 }
                 Stmt::While { body, .. } => walk(body, strings, out),
-                Stmt::Expr(Expr::If { then_block, elsifs, else_block, .. }) => {
-                    walk(then_block, strings, out);
-                    for a in elsifs {
-                        walk(&a.body, strings, out);
-                    }
-                    if let Some(b) = else_block {
-                        walk(b, strings, out);
-                    }
-                }
+                // Locals of an `if` branch are released when the branch ends (`block_struct_drops`).
                 _ => {}
             }
         }
@@ -1561,6 +1574,72 @@ fn struct_of_type(t: &Type) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// A `return` inside an `if` branch leaves every open scope: the struct locals of the open
+/// branches (innermost first) and of the fn body are released before the value goes out. The return itself is part
+/// of each scope, so a local it moves is not released.
+fn return_struct_drops(
+    ret: &Stmt,
+    instructions: &mut Vec<IrInst>,
+    env: &HashMap<String, String>,
+    counter: &mut u32,
+    strings: &StringEnv,
+) {
+    let scopes: Vec<(Block, FnDef, HashMap<String, Vec<ParamMode>>, HashMap<String, Vec<ParamMode>>)> =
+        SCOPE_CTX.with(|c| {
+            let c = c.borrow();
+            let Some(ctx) = c.as_ref() else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            OPEN_BRANCHES.with(|b| {
+                for block in b.borrow().iter().rev() {
+                    out.push(block.clone());
+                }
+            });
+            // A `return` outside every branch is the last statement of the fn body: the glue
+            // at the end of the fn (before that return) releases the fn's locals.
+            if out.is_empty() {
+                return Vec::new();
+            }
+            out.push(ctx.f.body.clone());
+            out.into_iter()
+                .map(|mut block| {
+                    block.stmts.push(ret.clone());
+                    let mut synth = ctx.f.clone();
+                    synth.params = Vec::new();
+                    synth.body = block.clone();
+                    (block, synth, ctx.param_modes.clone(), ctx.caller_modes.clone())
+                })
+                .collect()
+        });
+    for (_block, synth, param_modes, caller_modes) in scopes {
+        emit_struct_string_drops(&synth, instructions, env, counter, strings, &param_modes, &caller_modes);
+    }
+}
+
+/// Releases the struct locals declared in `block` when the block ends. Its moves are those of
+/// the whole fn, read from the block alone: a local bound elsewhere is not in `env`.
+fn block_struct_drops(
+    block: &Block,
+    instructions: &mut Vec<IrInst>,
+    env: &HashMap<String, String>,
+    counter: &mut u32,
+    strings: &StringEnv,
+) {
+    let scoped = SCOPE_CTX.with(|c| {
+        c.borrow().as_ref().map(|ctx| {
+            let mut synth = ctx.f.clone();
+            synth.params = Vec::new();
+            synth.body = block.clone();
+            (synth, ctx.param_modes.clone(), ctx.caller_modes.clone())
+        })
+    });
+    let Some((synth, param_modes, caller_modes)) = scoped else {
+        return;
+    };
+    emit_struct_string_drops(&synth, instructions, env, counter, strings, &param_modes, &caller_modes);
 }
 
 fn emit_struct_string_drops(
@@ -1694,26 +1773,26 @@ fn field_drop<'a>(
         (_, []) if strings.enums.contains_key(name) => Some(FieldDrop::Call("sal_enum_free")),
         ("List", [e]) if glue.containers && flat(e) => Some(FieldDrop::Call("sal_list_free")),
         ("List", [crate::ast::Type::Named { name, args, .. }])
-            if glue.containers && args.is_empty() && name == "String" && !tainted =>
+            if glue.containers && args.is_empty() && name == "String" =>
         {
             Some(FieldDrop::Call("sal_list_free"))
         }
         ("List", [crate::ast::Type::Named { name: sn, args, .. }])
             if glue.containers
                 && args.is_empty()
-                && !tainted
+               
                 && crate::ir::struct_desc(sn, &strings.structs, &strings.enums).is_some() =>
         {
             Some(FieldDrop::Call("sal_list_free"))
         }
         // A list of structs with glue: its block releases each element through `drop.<S>`.
-        ("List", [crate::ast::Type::Named { name: en, .. }]) if glue.containers && en == "List" && !tainted => {
+        ("List", [crate::ast::Type::Named { name: en, .. }]) if glue.containers && en == "List" => {
             Some(FieldDrop::Call("sal_list_free"))
         }
         ("List", [crate::ast::Type::Named { name: sn, args, .. }])
             if glue.containers
                 && args.is_empty()
-                && !tainted
+               
                 && struct_glue_has(sn, strings) =>
         {
             Some(FieldDrop::Call("sal_list_free"))
@@ -1730,7 +1809,7 @@ fn field_drop<'a>(
             if glue.containers
                 && va.is_empty()
                 && vn == "String"
-                && !tainted
+               
                 && matches!(k, crate::ast::Type::Named { name, args, .. }
                     if args.is_empty() && matches!(name.as_str(), "Int" | "String")) =>
         {
@@ -2499,8 +2578,8 @@ fn lower_stmt(
             );
         }
         Stmt::Return { value, .. } => {
-            if let Some(v) = value {
-                let val = lower_expr(
+            let val = if let Some(v) = value {
+                lower_expr(
                     v,
                     instructions,
                     env,
@@ -2511,8 +2590,7 @@ fn lower_stmt(
                     fn_names,
                     host_literals,
                     strings,
-                );
-                instructions.push(IrInst::Return { value: val });
+                )
             } else {
                 *counter += 1;
                 let z = format!("t{counter}");
@@ -2520,8 +2598,10 @@ fn lower_stmt(
                     dest: z.clone(),
                     value: 0,
                 });
-                instructions.push(IrInst::Return { value: z });
-            }
+                z
+            };
+            return_struct_drops(st, instructions, env, counter, strings);
+            instructions.push(IrInst::Return { value: val });
             return true;
         }
         Stmt::While { cond, body, .. } => {
@@ -4259,6 +4339,7 @@ fn lower_expr(
             let mut then_strings = strings.clone();
             let mut else_strings = strings.clone();
             let mut then_diverged = false;
+            OPEN_BRANCHES.with(|b| b.borrow_mut().push((*then_block).clone()));
             for st in &then_block.stmts {
                 if lower_stmt(
                     st,
@@ -4301,8 +4382,16 @@ fn lower_expr(
                 });
                 d
             };
+            OPEN_BRANCHES.with(|b| b.borrow_mut().pop());
+            if !then_diverged {
+                block_struct_drops(&then_block, &mut then_body, &then_env, counter, &then_strings);
+            }
+            let else_scope = else_block.clone();
+            if let Some(eb) = &else_block {
+                OPEN_BRANCHES.with(|b| b.borrow_mut().push(eb.clone()));
+            }
+            let mut else_diverged = false;
             let else_val = if let Some(else_block) = else_block {
-                let mut else_diverged = false;
                 for st in &else_block.stmts {
                     if lower_stmt(
                         st,
@@ -4354,6 +4443,14 @@ fn lower_expr(
                 });
                 d
             };
+            if else_scope.is_some() {
+                OPEN_BRANCHES.with(|b| b.borrow_mut().pop());
+            }
+            if let Some(eb) = &else_scope {
+                if !else_diverged {
+                    block_struct_drops(eb, &mut else_body, &else_env, counter, &else_strings);
+                }
+            }
             *counter += 1;
             let dest = format!("t{counter}");
             let parent_env = env.clone();

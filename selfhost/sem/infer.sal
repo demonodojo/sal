@@ -60,7 +60,17 @@ fn ic_build(tp: &TProgram, nres: Int, rec: Int) -> IC ! alloc
     imports = list_len(&tp.imports)
     vals = list_new[CVal]()
     _v0 = ce_eval(&tp.consts, &list_new[CVal](), &vals)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns, sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums, tp.aliases, tp.protocols, tstructs_copy(&tp.structs), ic_fx_empty(), vals)
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals)
+
+# The hash tables of an `IC` (handles, which the glue of the struct does not release). Its lists
+# are released by the glue of the struct where the local ends.
+fn ic_free_tables(c: &IC) -> Int ! alloc
+    _e = c.sigs.free()
+    _f = c.names.free()
+    _g = c.tnames.free()
+    _h = c.res.free()
+    _v = c.vtab.free()
+    c.arity.free()
 
 fn ic_free(c: &IC) -> Int ! alloc
     _a = tenv_free(&c.env)
@@ -662,7 +672,7 @@ fn infer_instance_on(c: &IC, rty: &String, base: &String, fld: &String, args: &L
         infer_instance_nominal(c, rty, base, fld, args, id, kind)
 
 fn infer_instance_nominal(c: &IC, rty: &String, base: &String, fld: &String, args: &List[Expr], id: &String, kind: &String) -> String ! alloc
-    bi = mth_builtin(base, fld)
+    bi = clone_builtin_for(c, base, fld, mth_builtin(base, fld))
     mangled = base + "__" + fld
     si = ic_get(&c.sigs, &mangled)
     if str_len(bi) > 0
@@ -675,6 +685,18 @@ fn infer_instance_nominal(c: &IC, rty: &String, base: &String, fld: &String, arg
         "Unknown"
     else
         infer_recv_call(c, rty, &mangled, args, id, kind)
+
+# `x.clone()` on a struct or enum of the program is the copy builtin of its kind (`x.clone()` is a
+# deep copy, SPEC «Memoria»); the other builtin types are in `mth_builtin`.
+fn clone_builtin_for(c: &IC, base: &String, fld: &String, bi: String) -> String ! alloc
+    if str_len(bi) > 0 || str_eq(fld, "clone") == 0
+        bi
+    elsif tt_struct_find(&c.env.structs, base) >= 0
+        "struct_clone"
+    elsif enum_find(&c.enums, base, 0, list_len(&c.enums)) >= 0
+        "enum_copy"
+    else
+        ""
 
 fn infer_any_method(c: &IC, protocol: &String, fld: &String, args: &List[Expr], id: &String) -> String ! alloc
     pi = proto_find(&c.protocols, protocol, 0, list_len(&c.protocols))
@@ -719,7 +741,9 @@ fn infer_recv_call(c: &IC, rty: &String, target: &String, args: &List[Expr], id:
     args2 = list_new[Expr]()
     _p = list_push(&args2, XIdent("__recv"))
     _q = infer_push_from(&args2, args, 1, list_len(args))
-    r = infer_call(c, target, &args2)
+    # A fresh copy: the call's result may be an element of a list that the call frees.
+    res = infer_call(c, target, &args2)
+    r = "" + res
     _s = tenv_truncate(&c.env, mark)
     _r = infer_record(c, id, &(kind + target))
     r

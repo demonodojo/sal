@@ -1,6 +1,6 @@
 import glue_types
 
-fn done(b: &B, flag: Int) -> E ! alloc
+fn done(b: B, flag: Int) -> E ! alloc
     if flag == 1
         EIf(b, 1)
     else
@@ -14,7 +14,7 @@ fn mk() -> B ! alloc
 fn wrap(flag: Int) -> E ! alloc
     t2 = mk()
     k = flag + 1
-    done(&t2, k)
+    done(t2, k)
 
 fn main() -> Int ! alloc
     e = wrap(0)
