@@ -208,6 +208,11 @@ fn emit_c_builtin5(fname: &String, args: Int, stmts: Int) -> String ! alloc
             line = "  sal_bytes_free((void*)(uintptr_t)" + a0 + ");\n"
             _p = vec_push(stmts, line)
             "0"
+        "tensor_free" =>
+            a0 = arg_at(args, 0)
+            line = "  sal_tensor_free(" + a0 + ");\n"
+            _p = vec_push(stmts, line)
+            "0"
         "not" =>
             a0 = arg_at(args, 0)
             "sal_not(" + a0 + ")"
@@ -285,8 +290,21 @@ fn emit_c_syscall(args: Int, stmts: Int) -> String ! alloc
     acc = join_commas(padded, 0, vec_len(padded), acc)
     acc + ")"
 
+# The clone builtins are `sal_<T>_clone_val` (`runtime_call_name` in src/ir.rs), not `sal_<name>`.
+fn emit_c_runtime_name(fname: &String) -> String ! alloc
+    if fname.eq("list_clone") == 1
+        "sal_list_clone_val"
+    elsif fname.eq("dict_clone") == 1
+        "sal_dict_clone_val"
+    elsif fname.eq("bytes_clone") == 1
+        "sal_bytes_clone_val"
+    elsif fname.eq("enum_copy") == 1
+        "sal_enum_copy"
+    else
+        "sal_" + fname
+
 fn emit_c_plain_runtime_call(fname: &String, args: Int, stmts: Int) -> String ! alloc
-    rname = "sal_" + fname
+    rname = emit_c_runtime_name(fname)
     vec_push(stmts, ("  extern int64_t " + rname + "();\n").to_int())
     acc = "((int64_t)" + rname + "("
     acc = join_commas(args, 0, vec_len(args), acc)

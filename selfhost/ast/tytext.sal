@@ -172,3 +172,9 @@ fn ty_any_protocol(t: &String) -> String ! alloc
 
 fn ty_nominal(t: &String) -> String ! alloc
     ty_base(t)
+
+# A handle to a copy the IR owns: an IR name is read later, after the block it came from may be
+# released. Literals are static and keep `str_as_int(&"...")`.
+fn str_own(s: &String) -> Int ! alloc
+    owned = s.dup()
+    str_as_int(&owned)

@@ -146,7 +146,7 @@ fn emit_ir_from_graph(order: &Graph, source_path: String) -> Int ! alloc
     genums = graph_enums_t(order)
     seen = graph_fns(order)
     text = emit_ir_from_prog_with_types(&root_prog, extra, &genums, &env, &seen)
-    _h = list_free(genums)
+    _h = list_free_shell(genums)
     result_ok_str(text)
 
 fn emit_ir_from_path(source_path: String) -> Int ! io, alloc
@@ -491,8 +491,11 @@ fn emit_c_unary(op: &String, operand: &Expr, user: Int, stmts: Int, tc: &Tc) -> 
             "sal_fop(10, " + inner + ", 0LL)"
         else
             "(-(" + inner + "))"
-    else
+    elsif str_eq(op, "not") == 1
         "(!(" + inner + "))"
+    else
+        # `&x`, `&mut x` and `*x` share the handle of `x`.
+        inner
 
 # `left` is the left operand of a string `+`; its own left chain makes the append form.
 fn c_str_add_fname(env: &TEnv, left: &Expr, into_acc: Int) -> String ! alloc
@@ -1078,7 +1081,7 @@ fn emit_c_print(args_e: &List[Expr], arg_parts: Int, tc: &Tc) -> String ! alloc
 # C lvalue/rvalue for `base.field`, or just the base for a one-field struct.
 fn emit_c_field(base_e: &Expr, field: &String, user: Int, stmts: Int, tc: &Tc) -> String ! alloc
     base = emit_c_expr(base_e, user, stmts, tc)
-    si = tt_struct_find(&tc.env.structs, &texpr_type(&tc.env, base_e))
+    si = tt_struct_find(&tc.env.structs, &ty_deref(&texpr_type(&tc.env, base_e)))
     if si < 0
         base
     else
@@ -1477,7 +1480,7 @@ fn emit_c_from_ast_module(tp: &TProgram, callables: Int, externs: Int, allow_mai
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     denv = vec_get(pool, 8)
     body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, seen, allow_main, linkable, pool, 0, list_len(&tp.fns), "")
-    _fe = list_free(enums)
+    _fe = list_free_shell(enums)
     lits = lit_pool_globals(pool)
     if str_len(lits) > 0
         acc = acc + lits
@@ -1551,7 +1554,7 @@ fn emit_c_compile_graph(order: &Graph, root_key: &String, out_path: &String, pro
     genums = graph_enums_t(order)
     seen = graph_fns(order)
     r = emit_c_compile_graph_go(order, 0, list_len(&order.mods), root_key, proot, out_path, &"", &genums, &env, &seen)
-    _h = list_free(genums)
+    _h = list_free_shell(genums)
     r
 
 fn emit_c(src: &String) -> Int ! alloc

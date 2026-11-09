@@ -2,15 +2,12 @@
 # Indexación `xs[i]` no parsea (los corchetes son type-args).
 # Se usa una llamada `index` que el runtime instrumentado deberá comprobar.
 
-fn index(xs: List[Int], i: Int) -> Int
+fn index(xs: &List[Int], i: Int) -> Int
     0
 
 fn empty_list() -> List[Int] ! alloc
-    nil_list()
-
-fn nil_list() -> List[Int] ! alloc
-    empty
+    List.new[Int]()
 
 fn main() -> Int ! alloc
     xs = empty_list()
-    index(xs, 99)
+    index(&xs, 99)

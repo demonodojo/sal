@@ -11,9 +11,7 @@ use sal_compiler::diag::Diagnostic;
 use sal_compiler::fmt::format_program;
 use sal_compiler::fuse::fuse_module;
 use sal_compiler::infer::infer_program;
-use sal_compiler::ir::{ir_to_text, lower_program, lower_program_with_callables_env};
-use sal_compiler::modules::{callable_fn_names, infer_module, resolve_module_graph};
-use sal_compiler::string_expr::StringEnv;
+use sal_compiler::ir::lower_program;
 use sal_compiler::llvm::{host_tensors_for_module, emit_llvm_with_tensors, LlvmOptions};
 use sal_compiler::parser::parse;
 use sal_compiler::typed::TypedProgram;
@@ -209,7 +207,7 @@ fn main() {
         }
         Commands::Emit { kind, file } => {
             if kind == "ir" {
-                match bootstrap_ir_text(&file, &root, toolchain.target) {
+                match sal_compiler::compile::bootstrap_ir_text(&file, &root, toolchain.target) {
                     Ok(text) => print!("{text}"),
                     Err(diags) => {
                         print_diags(&diags, "human");
@@ -462,40 +460,6 @@ fn opts(
     }
 }
 
-fn graph_callee_fns(
-    graph: &sal_compiler::modules::ModuleGraph,
-) -> Vec<&sal_compiler::ast::FnDef> {
-    let mut out = Vec::new();
-    for m in &graph.order {
-        for item in &m.program.items {
-            if let sal_compiler::ast::Item::Fn(f) = item {
-                out.push(f);
-            }
-        }
-    }
-    out
-}
-
-/// IR of `file` as the bootstrap compiler lowers it (the `sal emit ir` text).
-fn bootstrap_ir_text(
-    file: &PathBuf,
-    root: &PathBuf,
-    target: Target,
-) -> Result<String, Vec<Diagnostic>> {
-    let graph = resolve_module_graph(file, root)?;
-    let root_mod = graph.order.last().expect("empty module graph");
-    let callables = callable_fn_names(root_mod, &graph);
-    let infer_out = infer_module(root_mod, &graph, target)?;
-    let graph_progs: Vec<&sal_compiler::ast::Program> =
-        graph.order.iter().map(|m| &m.program).collect();
-    let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
-    let callees = graph_callee_fns(&graph);
-    // The drops pass reads the moves the borrow checker publishes (SPEC «Memoria»).
-    sal_compiler::borrowck::publish_moved_locals(&root_mod.program, &infer_out);
-    let mut ir = lower_program_with_callables_env(&root_mod.program, &callables, strings, &callees);
-    fuse_module(&mut ir);
-    Ok(ir_to_text(&ir))
-}
 
 /// `None` when the bootstrap IR and the selfhost IR of `file` are identical;
 /// otherwise a report naming the first differing line of each.
@@ -511,7 +475,7 @@ fn parity_report(
             selfhost.display()
         ));
     }
-    let boot = bootstrap_ir_text(file, root, target).map_err(|diags| {
+    let boot = sal_compiler::compile::bootstrap_ir_text(file, root, target).map_err(|diags| {
         diags
             .iter()
             .map(|d| d.message.clone())

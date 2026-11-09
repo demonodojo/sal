@@ -2,9 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
-use sal_compiler::fuse::fuse_module;
-use sal_compiler::ir::{ir_to_text, lower_program};
-use sal_compiler::parser::parse;
 use sal_compiler::compile::compile_file;
 use sal_compiler::CompileOptions;
 
@@ -49,12 +46,11 @@ fn corpus_files() -> Vec<PathBuf> {
     .collect()
 }
 
+/// The text of `sal emit ir`: the whole bootstrap pipeline, with the moves the borrow checker
+/// publishes (SPEC «Memoria»), not a bare `lower_program`.
 fn bootstrap_ir(path: &Path) -> String {
-    let src = std::fs::read_to_string(path).unwrap();
-    let p = parse(&src).unwrap();
-    let mut ir = lower_program(&p);
-    fuse_module(&mut ir);
-    ir_to_text(&ir)
+    sal_compiler::compile::bootstrap_ir_text(path, &root(), Default::default())
+        .unwrap_or_else(|d| panic!("bootstrap failed on {}: {:?}", path.display(), d))
 }
 
 fn compile_selfhost(instrument: bool) -> PathBuf {

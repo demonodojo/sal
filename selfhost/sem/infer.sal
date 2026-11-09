@@ -600,7 +600,7 @@ fn infer_push_exprs(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! 
     if i >= n
         0
     else
-        _a = list_push(out, list_get(xs, i))
+        _a = list_push(out, tc_expr(&list_get(xs, i)))
         infer_push_exprs(out, xs, i + 1, n)
 
 fn infer_is_user_type(c: &IC, q: &String) -> Int ! alloc
@@ -729,7 +729,7 @@ fn infer_push_exprs_from(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> I
     if i >= n
         0
     else
-        _a = list_push(out, list_get(xs, i))
+        _a = list_push(out, tc_expr(&list_get(xs, i)))
         infer_push_exprs_from(out, xs, i + 1, n)
 
 # `q.name(args)` with `q` neither a local nor a user type: the constructor of a built-in type
@@ -1048,7 +1048,7 @@ fn infer_t_arg(tys: &List[String], i: Int) -> String ! alloc
         list_get(tys, i)
 
 fn infer_t_list(c: &IC, name: &String, tys: &List[String]) -> String ! alloc
-    xs = infer_t_arg(tys, 0)
+    xs = ty_deref(&infer_t_arg(tys, 0))
     if infer_t_wrong_kind(&xs, &"List[") == 1
         _f = ic_fail(c, &(name + " expects a List"))
         "Unknown"
@@ -1092,7 +1092,7 @@ fn infer_t_wrong_kind(t: &String, prefix: &String) -> Int ! alloc
         0
 
 fn infer_t_dict(c: &IC, name: &String, tys: &List[String]) -> String ! alloc
-    d = infer_t_arg(tys, 0)
+    d = ty_deref(&infer_t_arg(tys, 0))
     if infer_t_wrong_kind(&d, &"Dict[") == 1
         _f = ic_fail(c, &(name + " expects a Dict"))
         "Unknown"
@@ -1167,6 +1167,20 @@ fn infer_builtin_call(c: &IC, name: &String, args: &List[Expr], tys: &List[Strin
     else
         infer_builtin_call_old(c, name, args, tys)
 
+# The builtins that are only checked for their arguments; their result is `Int` (the group in
+# `check_expr` of src/infer.rs).
+fn infer_check_only_int(name: &String) -> Int ! alloc
+    if str_eq(name, "print") + str_eq(name, "print_str") + str_eq(name, "eprint_str") + str_eq(name, "argc") + str_eq(name, "str_eq") + str_eq(name, "str_contains") + str_eq(name, "str_index_of") + str_eq(name, "str_index_from") + str_eq(name, "str_len") + str_eq(name, "str_char") + str_eq(name, "str_skip") + str_eq(name, "str_hash") + str_eq(name, "map_get") + str_eq(name, "map_put") + str_eq(name, "not") + str_eq(name, "free") + str_eq(name, "copy_file") + str_eq(name, "copy_self") + str_eq(name, "gated_print_str") > 0
+        1
+    elsif str_eq(name, "gated_copy_self") + str_eq(name, "write_file") + str_eq(name, "path_readable") + str_eq(name, "mkdir_p") + str_eq(name, "vec_push") + str_eq(name, "vec_get") + str_eq(name, "vec_set") + str_eq(name, "vec_len") + str_eq(name, "vec_free") + str_eq(name, "list_free") + str_eq(name, "list_free_shell") + str_eq(name, "list_push_share") + str_eq(name, "dict_free") + str_eq(name, "enum_free") > 0
+        1
+    elsif str_eq(name, "enum_free_shell") + str_eq(name, "enum_set") + str_eq(name, "enum_owns") + str_eq(name, "enum_box_id") + str_eq(name, "list_box_id") + str_eq(name, "bytes_free") + str_eq(name, "tensor_free") + str_eq(name, "clang") + str_eq(name, "clang_obj") + str_eq(name, "link_objs") + str_eq(name, "exec_compile") + str_eq(name, "write_png") > 0
+        1
+    elsif str_eq(name, "gated_exec_compile") + str_eq(name, "place_matmul_ai_sum") + str_eq(name, "place_launches") > 0
+        1
+    else
+        0
+
 fn infer_builtin_call_old(c: &IC, name: &String, args: &List[Expr], tys: &List[String]) -> String ! alloc
     si = tt_struct_find(&c.env.structs, name)
     if si >= 0
@@ -1195,6 +1209,8 @@ fn infer_builtin_call_old(c: &IC, name: &String, args: &List[Expr], tys: &List[S
         infer_softmax(c, args, tys)
     elsif infer_is_unary_tensor(name) == 1
         infer_unary_tensor(tys)
+    elsif infer_check_only_int(name) == 1
+        "Int"
     elsif tt_call_returns_string(name) == 1
         "String"
     else
@@ -2084,14 +2100,16 @@ fn infer_match(c: &IC, scrut: &Expr, arms: &List[TArm]) -> String ! alloc
     "Unknown"
 
 # 0 Int, 1 String, 2 enum (name in tnames), 3 other.
+# A match on `&T` classifies by `T` (the patterns are those of `T`).
 fn infer_match_scrut_class(sty: &String, c: &IC) -> Int ! alloc
-    if ty_is(sty, &"Int") == 1
+    d = ty_deref(sty)
+    if ty_is(&d, &"Int") == 1
         0
-    elsif ty_is(sty, &"String") == 1
+    elsif ty_is(&d, &"String") == 1
         1
-    elsif ty_is_scalar(sty) == 1
+    elsif ty_is_scalar(&d) == 1
         3
-    elsif ty_is(sty, &"Unknown") == 1
+    elsif ty_is(&d, &"Unknown") == 1
         3
     else
         2

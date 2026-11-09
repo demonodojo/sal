@@ -43,7 +43,7 @@ fn ir_rebind(dest: Int, src: Int) -> Int ! alloc
     inst
 
 fn push_call(cx: &Cx, dest: Int, fname: &String, args: Int, has_dest: Int) -> Int ! alloc
-    ir_push(cx, ir_call(dest, str_as_int(fname), args, has_dest))
+    ir_push(cx, ir_call(dest, str_own(fname), args, has_dest))
 
 fn const_dim(cx: &Cx, n: Int) -> Int ! alloc
     d = fresh(cx)
@@ -51,7 +51,7 @@ fn const_dim(cx: &Cx, n: Int) -> Int ! alloc
     d
 
 fn int_text(n: Int) -> Int ! alloc
-    str_as_int(&int_to_str(n))
+    str_own(&int_to_str(n))
 
 # ---- matmul ----
 fn matmul_lead_go(cx: &Cx, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
@@ -94,10 +94,12 @@ fn matmul_out_conc(lb: Int, rb: Int, n: Int, out: Int) -> Int ! alloc
     else
         0
 
-fn lower_matmul_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+# The dimension constants come before the result, as in the bootstrap's numbering.
+fn lower_matmul_op(cx: &Cx, arg_names: Int) -> Int ! alloc
     lhs = vec_get(arg_names, 0)
     rhs = vec_get(arg_names, 1)
     mkn = matmul_dims(cx, lhs, rhs)
+    d = fresh(cx)
     args = vec_new()
     _a = vec_push(args, lhs)
     _b = vec_push(args, rhs)
@@ -115,6 +117,10 @@ fn lower_matmul_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
         fname = fname
     _p = push_call(cx, d, &fname, args, 1)
     rb = find_tensor(cx, rhs)
+    _rg = lower_matmul_register(cx, d, lb, rb)
+    d
+
+fn lower_matmul_register(cx: &Cx, d: Int, lb: Int, rb: Int) -> Int ! alloc
     if lb != 0
         if rb != 0
             if bind_ndims(lb) >= 2
@@ -312,7 +318,7 @@ fn reduce_axis_of(ax: &Expr) -> Int ! alloc
 # An axis as the literal the runtime takes: the extent when known, else `name_d<i>`.
 fn dim_lit_or_name(b: Int, name: Int, idx: Int, fallback: &String) -> Int ! alloc
     if idx >= bind_ndims(b)
-        str_as_int(fallback)
+        str_own(fallback)
     else
         dv = vec_get(bind_dims(b), idx)
         cv = vec_get(bind_concrete(b), idx)
@@ -430,7 +436,7 @@ fn lower_tensor_append_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
         stride = total / rows_add
     else
         stride = total
-    key = str_as_int(&(str_from_int(cache) + "_d0"))
+    key = str_own(&(str_from_int(cache) + "_d0"))
     kb = cx_find(cx, key)
     seq = 0
     if kb != 0
@@ -452,7 +458,7 @@ fn lower_tensor_append_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     new_seq = fresh(cx)
     ra = const_dim(cx, rows_add)
     _q = ir_push(cx, ir_bin(new_seq, str_as_int(&"add"), seq, ra))
-    dkey = str_as_int(&(str_from_int(d) + "_d0"))
+    dkey = str_own(&(str_from_int(d) + "_d0"))
     _r = cx_bind(cx, dkey, new_seq)
     _s = cx_bind(cx, key, new_seq)
     reg_like(cx, d, find_tensor(cx, cache))
@@ -519,12 +525,6 @@ fn lower_tensor_builtin(cx: &Cx, fname: &String, args: &List[Expr], arg_names: I
     elsif str_eq(fname, "qmatmul") == 1
         if n == 4
             _p = lower_qmatmul_op(cx, d, arg_names)
-            1
-        else
-            0
-    elsif str_eq(fname, "matmul") == 1
-        if n >= 2
-            _p = lower_matmul_op(cx, d, arg_names)
             1
         else
             0

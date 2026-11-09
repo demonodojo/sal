@@ -235,7 +235,7 @@ fn own_field_base(e: &Expr) -> String ! alloc
 
 fn own_ident_name(e: &Expr) -> String ! alloc
     match e
-        XIdent(name) => name
+        XIdent(name) => name.dup()
         _ => ""
 
 # ---- types: only what moves care about ----
@@ -704,7 +704,7 @@ fn own_accumulates_bin(op: &String, value: &Expr, name: &String) -> Int ! alloc
 fn own_leftmost(e: &Expr) -> String ! alloc
     match e
         XBin(op, l, r) => own_leftmost_add(&op, &l)
-        XIdent(name) => name
+        XIdent(name) => name.dup()
         _ => ""
 
 fn own_leftmost_add(op: &String, l: &Expr) -> String ! alloc
@@ -880,9 +880,12 @@ fn check_ownership(tp: &TProgram) -> Int ! alloc
 # ---- parameter modes (the mirror of `infer_param_modes` in src/ownership.rs) ----
 
 # The mode of parameter `pm` once the body has been tracked in `c` (as `infer_fn_modes` in Rust).
+# A reference parameter (`&T`, `&mut T`) is never taken: passing it does not move the caller's value.
 fn own_param_mode(c: &OC, pm: &TParam, arena: Int) -> Int ! alloc
     if pm.mode != 0
         pm.mode
+    elsif str_len(&pm.ty) > 0 && pm.ty.char(0) == 38
+        0
     elsif own_is_copy_ext(&pm.ty, &c.env.structs, 0) == 1
         0
     elsif own_has(&c.taken, &pm.name, 0, list_len(&c.taken)) == 1

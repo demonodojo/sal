@@ -162,7 +162,7 @@ fn cir_softmax_axis(cc: Int, dest: &String, ops: Int, shape: Int) -> Int ! alloc
     if rows < 0
         _y = cc_line(cc, &("  sal_softmax_axis_f32((float *)(uintptr_t)" + input + ", 1, sal_tn_len(" + input + "));\n"))
     else
-        _y = cc_line(cc, &("  sal_softmax_axis_f32((float *)(uintptr_t)" + input + ", " + rows.to_str() + ", " + cols.to_str() + ");\n"))
+        _y = cc_line(cc, &("  sal_softmax_axis_f32((float *)(uintptr_t)" + input + ", " + int_to_str(rows) + ", " + int_to_str(cols) + ");\n"))
     cir_set(cc, dest.to_int(), &input)
 
 # `reduce` of a matrix along an axis (`(outer, axis_len, inner)` as the bootstrap computes it);
@@ -179,18 +179,18 @@ fn cir_reduce(cc: Int, dest: &String, ops: Int, shape: Int) -> Int ! alloc
     if rows < 0
         _z = 0
     elsif axis == 0 - 1
-        alen = (rows * cols).to_str()
+        alen = int_to_str(rows * cols)
     elsif axis == 0
-        alen = rows.to_str()
+        alen = int_to_str(rows)
         inner = cols
     elsif axis == 1
         outer = rows
-        alen = cols.to_str()
+        alen = int_to_str(cols)
     else
         _z = 0
     cc_line(cc, &"  extern void sal_reduce_strided_f32(const float *, float *, int64_t, int64_t, int64_t);\n")
-    cc_line(cc, &("  " + dest + " = (int64_t)(uintptr_t)sal_tn_alloc(" + (outer * inner).to_str() + ");\n"))
-    cc_line(cc, &("  sal_reduce_strided_f32((const float *)(uintptr_t)" + input + ", (float *)(uintptr_t)" + dest + ", " + outer.to_str() + ", " + alen + ", " + inner.to_str() + ");\n"))
+    cc_line(cc, &("  " + dest + " = (int64_t)(uintptr_t)sal_tn_alloc(" + int_to_str(outer * inner) + ");\n"))
+    cc_line(cc, &("  sal_reduce_strided_f32((const float *)(uintptr_t)" + input + ", (float *)(uintptr_t)" + dest + ", " + int_to_str(outer) + ", " + alen + ", " + int_to_str(inner) + ");\n"))
 
 fn sal_tn_len_text(input: &String) -> String ! alloc
     "sal_tn_len(" + input + ")"
@@ -372,12 +372,12 @@ fn cir_tbin(cc: Int, inst: &Inst) -> Int ! alloc
     elem_sz = select_str(is_cmp, "1", "4")
     cc_line(cc, &("  " + d + " = (int64_t)(uintptr_t)sal_tn_alloc_bytes(" + len + ", " + elem_sz + ");\n"))
     argv = vec_new()
-    vec_push(argv, code.to_str().to_int())
+    vec_push(argv, int_to_str(code).to_int())
     vec_push(argv, d.dup().to_int())
     vec_push(argv, left.to_int())
     vec_push(argv, rarg.to_int())
     vec_push(argv, len.to_int())
-    vec_push(argv, scalar.to_str().to_int())
+    vec_push(argv, int_to_str(scalar).to_int())
     vec_push(argv, sval.to_int())
     fn_name = select_str(is_cmp, "sal_tensor_cmp_f32", "sal_tensor_bin_f32")
     cc_line(cc, &("  " + cir_rt_dbl(cc, &fn_name, argv) + ";\n"))
@@ -393,7 +393,7 @@ fn cir_float_text(cc: Int, a: Int) -> String ! alloc
         str_from_int(t)
     else
         c = map_get(vec_get(cc, 3), a)
-        c.to_str()
+        int_to_str(c)
 
 # `neg` over a tensor: the runtime kernel writes a fresh buffer of `len` floats.
 fn cir_tun(cc: Int, inst: &Inst) -> Int ! alloc

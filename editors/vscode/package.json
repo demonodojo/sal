@@ -1,8 +1,8 @@
 {
   "name": "sal",
   "displayName": "sal",
-  "description": "Editar programas sal: resaltado (method/static/init, constantes, @deprecated, break), diagnósticos E_* y W_DEPRECATED, avisos Style/*, formato e ir a definiciones.",
-  "version": "0.5.0",
+  "description": "Editar programas sal: resaltado (method/static/init, protocol/impl, lifetimes, @arena, constantes, @deprecated, break), diagnósticos E_* y W_DEPRECATED, avisos Style/*, formato e ir a definiciones.",
+  "version": "0.6.0",
   "private": true,
   "publisher": "sal",
   "license": "SEE LICENSE IN LICENSE",
@@ -124,6 +124,13 @@
               "scope": "constant.other.sal",
               "settings": {
                 "foreground": "#4FC1FF"
+              }
+            },
+            {
+              "scope": "variable.language.lifetime.sal",
+              "settings": {
+                "foreground": "#4EC9B0",
+                "fontStyle": "italic"
               }
             }
           ]

@@ -3,6 +3,7 @@
   "name": "sal",
   "patterns": [
     { "include": "#comment" },
+    { "include": "#lifetime" },
     { "include": "#fstring" },
     { "include": "#dstring" },
     { "include": "#string" },
@@ -15,6 +16,7 @@
     { "include": "#tensor" },
     { "include": "#method" },
     { "include": "#keyword" },
+    { "include": "#contextual" },
     { "include": "#constant" },
     { "include": "#effect" }
   ],
@@ -71,7 +73,15 @@
     },
     "attribute": {
       "name": "storage.modifier.attribute.sal",
-      "match": "@(?:frozen|stack|no_heap|layout|deprecated)\\b"
+      "match": "@(?:frozen|stack|no_heap|arena|layout|deprecated)\\b"
+    },
+    "lifetime": {
+      "name": "variable.language.lifetime.sal",
+      "match": "'[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "contextual": {
+      "name": "keyword.other.contextual.sal",
+      "match": "\\b(?:mut|self|protocol|impl)\\b"
     },
     "tensor": {
       "name": "keyword.control.sal",
@@ -91,7 +101,7 @@
     },
     "type-builtin": {
       "name": "storage.type.sal",
-      "match": "\\b(?:Tensor|List|Dict|Int|Float|Bool|String|Bytes|Unit|BF16|F16|F32|I8)\\b"
+      "match": "\\b(?:Tensor|List|Dict|Int|Float|Bool|String|Bytes|Unit|BF16|F16|F32|I8|any)\\b"
     },
     "module-const": {
       "name": "constant.other.sal",

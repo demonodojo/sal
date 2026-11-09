@@ -110,8 +110,8 @@ fn variants_fill(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
         0
     else
         ed = list_get(enums, i)
-        _k = map_put(m, str_as_int(&("enum:" + ed.name)), 1)
-        _a = variants_fill_go(m, str_as_int(&ed.name), &ed.variants, 0, list_len(&ed.variants))
+        _k = map_put(m, str_own(&("enum:" + ed.name)), 1)
+        _a = variants_fill_go(m, str_own(&ed.name), &ed.variants, 0, list_len(&ed.variants))
         variants_fill(m, enums, i + 1, n)
 
 fn variants_fill_go(m: Int, ename: Int, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
@@ -127,7 +127,7 @@ fn variants_fill_go(m: Int, ename: Int, vs: &List[TVariant], i: Int, n: Int) -> 
                 i + 1
         else
             i + 1
-        key = str_as_int(&v.name)
+        key = str_own(&v.name)
         if map_get(m, key) == 0
             rec = vec_new()
             _a = vec_push(rec, ename)
@@ -202,7 +202,7 @@ fn fresh(cx: &Cx) -> Int ! alloc
     r = pref + ns
     free(pref)
     free(ns)
-    str_as_int(&r)
+    str_own(&r)
 
 fn ir_ci(dest: Int, v: Int) -> Int ! alloc
     inst = vec_new()
@@ -377,7 +377,7 @@ fn ir_text(p: Int) -> Int ! alloc
         p
     else
         copy = strdup(str_from_int(p))
-        str_as_int(&copy)
+        str_own(&copy)
 
 fn ir_set_text(h: Int, i: Int) -> Int ! alloc
     if i >= vec_len(h)
@@ -720,15 +720,23 @@ fn is_container_op(fname: Int) -> Int ! alloc
         0
 
 fn runtime_name(cx: &Cx, fname: Int) -> Int ! alloc
-    if is_container_op(fname) == 1
-        str_as_int(&("sal_" + str_from_int(fname)))
+    if str_eq(str_from_int(fname), "list_clone") == 1
+        str_as_int(&"sal_list_clone_val")
+    elsif str_eq(str_from_int(fname), "dict_clone") == 1
+        str_as_int(&"sal_dict_clone_val")
+    elsif str_eq(str_from_int(fname), "bytes_clone") == 1
+        str_as_int(&"sal_bytes_clone_val")
+    elsif str_eq(str_from_int(fname), "enum_copy") == 1
+        str_as_int(&"sal_enum_copy")
+    elsif is_container_op(fname) == 1
+        str_own(&("sal_" + str_from_int(fname)))
     elsif is_user_fn(cx, fname) == 1
         fname
     elsif str_eq(str_from_int(fname), "matmul") == 1
         str_as_int(&"sal_matmul_f32")
     else
         pref = "sal_"
-        str_as_int(&(pref + str_from_int(fname)))
+        str_own(&(pref + str_from_int(fname)))
 
 fn ir_call_unary(cx: &Cx, rname: Int, src: Int) -> Int ! alloc
     out = fresh(cx)
@@ -920,7 +928,7 @@ fn axis_len_dim(tname: Int, idx: Int) -> Int ! alloc
     is_ = int_to_str(idx)
     a = str_from_int(tname) + mid
     r = a + is_
-    str_as_int(&r)
+    str_own(&r)
 
 fn fused_op_clone(op: Int) -> Int ! alloc
     if op == 0
@@ -1018,7 +1026,7 @@ fn ssa_key_is_tensor(cx: &Cx, key: Int, i: Int, n: Int) -> Int ! alloc
 
 fn expr_is_tensor(cx: &Cx, e: &Expr) -> Int ! alloc
     match e
-        XIdent(name) => ident_is_tensor(cx, str_as_int(&name))
+        XIdent(name) => ident_is_tensor(cx, str_own(&name))
         XBin(op, l, r) => bin_is_tensor(cx, &l, &r)
         _ => 0
 
@@ -1082,7 +1090,7 @@ fn register_tensor_ssa_go(b: Int, dims: Int, conc: Int, i: Int, n: Int) -> Int !
 fn tensor_len_ssa_name(tensor_ssa: Int) -> Int ! alloc
     mid = "_d0"
     a = str_from_int(tensor_ssa) + mid
-    str_as_int(&a)
+    str_own(&a)
 
 fn conc_product_go(conc: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -1111,7 +1119,7 @@ fn row_len_bind(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
         _ => find_tensor(cx, ssa)
 
 fn row_len_ident_bind(cx: &Cx, name: &String, ssa: Int) -> Int ! alloc
-    b = cx_find(cx, str_as_int(name))
+    b = cx_find(cx, str_own(name))
     if b == 0
         find_tensor(cx, ssa)
     elsif bind_is_tensor(b) == 0
@@ -1146,7 +1154,7 @@ fn row_len_unbound(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
 
 fn drop_name_for(inner: &Expr) -> Int ! alloc
     match inner
-        XIdent(name) => str_as_int(&name)
+        XIdent(name) => str_own(&name)
         _ => str_as_int(&"tmp")
 
 # The `else` of an `if` with `elsif` arms: each arm nests as an `if` in the else of the one before.
@@ -1173,7 +1181,7 @@ fn lower_params(cx: &Cx, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
         0
     else
         pm = list_get(params, i)
-        name = str_as_int(&pm.name)
+        name = str_own(&pm.name)
         b = bind_new(name, name)
         _p = parse_tensor_type(&pm.ty, b)
         if bind_is_tensor(b) == 1
@@ -1197,7 +1205,7 @@ fn add_dim_params(cx: &Cx, b: Int, d: Int, nd: Int) -> Int ! alloc
             bn = str_from_int(bind_name(b))
             a = bn + mid
             nm = a + ds
-            _p = vec_push(cx_dim_params(cx), str_as_int(&nm))
+            _p = vec_push(cx_dim_params(cx), str_own(&nm))
         else
             _p = 0
         add_dim_params(cx, b, d + 1, nd)
@@ -1214,7 +1222,7 @@ fn collect_fn_names_t(fns: &List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        _p = vec_push(out, str_as_int(&list_get(fns, i).name))
+        _p = vec_push(out, str_own(&list_get(fns, i).name))
         collect_fn_names_t(fns, i + 1, n, out)
 
 fn merge_callable_names_go(extra: Int, i: Int, n: Int, names: Int) -> Int ! alloc

@@ -1,9 +1,8 @@
-# Corpus: fuga pensada para --instrument (LEAK).
-# Sin sintaxis de heap explícita; un valor List[Int] con efecto alloc
-# que no se consume es el candidato a LEAK cuando el runtime lo implemente.
+# Corpus: lista con dueño que la función local libera al salir (SPEC «Memoria»).
+# Con --instrument no debe haber LEAK: el dueño la suelta con `drop`.
 
 fn alloc_buf() -> List[Int] ! alloc
-    buf
+    List.new[Int]()
 
 fn main() -> Int ! alloc
     xs = alloc_buf()

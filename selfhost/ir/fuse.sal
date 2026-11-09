@@ -36,7 +36,7 @@ fn tadd_left_is_acc(left: &Expr, acc: Int) -> Int ! alloc
         0
     else
         match left
-            XIdent(name) => str_eq(str_as_int(&name), acc)
+            XIdent(name) => str_eq(str_own(&name), acc)
             _ => 0
 
 fn tspine_acc(left: &Expr, acc: Int) -> Int ! alloc
@@ -91,7 +91,7 @@ fn lower_expr(cx: &Cx, e: &Expr) -> Int ! alloc
         XBool(v) => lower_const(cx, v)
         XFloat(bits, txt) => lower_float(cx, bits, &txt)
         XStr(s) => lower_str_lit(cx, &s)
-        XIdent(name) => lower_ident(cx, str_as_int(&name))
+        XIdent(name) => lower_ident(cx, str_own(&name))
         XMatch(scrut, arms) => lower_match(cx, &scrut, &arms)
         XBin(op, l, r) => lower_binary(cx, &op, &l, &r)
         XTensor(nr, nc, data) => lower_tensor_lit(cx, &data)
@@ -111,14 +111,14 @@ fn lower_const(cx: &Cx, v: Int) -> Int ! alloc
 
 fn lower_float(cx: &Cx, bits: Int, txt: &String) -> Int ! alloc
     d = fresh(cx)
-    _p = ir_push(cx, ir_cf(d, bits, str_as_int(txt)))
+    _p = ir_push(cx, ir_cf(d, bits, str_own(txt)))
     d
 
 # The IR keeps its own copy of the text: the AST's `String` is released with its tree.
 fn lower_str_lit(cx: &Cx, s: &String) -> Int ! alloc
     d = fresh(cx)
     text = s.dup()
-    _p = ir_push(cx, ir_cs(d, str_as_int(&text)))
+    _p = ir_push(cx, ir_cs(d, str_own(&text)))
     d
 
 fn lower_tensor_lit(cx: &Cx, data: &List[String]) -> Int ! alloc
@@ -133,7 +133,7 @@ fn strs_vec(xs: &List[String], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        _p = vec_push(out, str_as_int(&list_get(xs, i)))
+        _p = vec_push(out, str_own(&list_get(xs, i)))
         strs_vec(xs, i + 1, n, out)
 
 # `a && b` is `if a then (b != 0) else false`; `a || b` is `if a then true else (b != 0)`. The
@@ -174,9 +174,9 @@ fn lower_binary_plain(cx: &Cx, op: &String, left: &Expr, right: &Expr) -> Int ! 
 # IR name of a binary op: `fadd` for Float operands, `add` otherwise.
 fn tbinary_ir_op(env: &TEnv, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
     if tt_is_float(&texpr_type(env, left)) + tt_is_float(&texpr_type(env, right)) > 0
-        str_as_int(&("f" + op))
+        str_own(&("f" + op))
     else
-        str_as_int(op)
+        str_own(op)
 
 fn lower_unary(cx: &Cx, op: &String, operand: &Expr) -> Int ! alloc
     inner = lower_expr(cx, operand)
@@ -207,9 +207,9 @@ fn unary_ir_op(env: &TEnv, op: &String, operand: &Expr) -> Int ! alloc
         if tt_is_float(&texpr_type(env, operand)) == 1
             str_as_int(&"fneg")
         else
-            str_as_int(op)
+            str_own(op)
     else
-        str_as_int(op)
+        str_own(op)
 
 # Index of `field` among `fields`; 0 when absent (as the handle typer did).
 fn tt_field_index(fields: &List[TField], field: &String, i: Int, n: Int) -> Int ! alloc
@@ -235,7 +235,7 @@ fn lower_field_of(cx: &Cx, base: Int, sd: &TStruct, field: &String) -> Int ! all
     else
         idx = tt_field_index(&sd.fields, field, 0, nf)
         d = fresh(cx)
-        _p = ir_push(cx, ir_extract(d, base, str_as_int(&sd.name), idx))
+        _p = ir_push(cx, ir_extract(d, base, str_own(&sd.name), idx))
         d
 
 # `S(a, b)`: a single field is the field itself (newtype); more become an Aggregate.
@@ -245,7 +245,7 @@ fn lower_struct_ctor(cx: &Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
     if vec_len(arg_names) == 1
         vec_get(arg_names, 0)
     else
-        _p = ir_push(cx, ir_agg(d, str_as_int(fname), arg_names))
+        _p = ir_push(cx, ir_agg(d, str_own(fname), arg_names))
         d
 
 # The result of `to <place> x` is a tensor of x's shape on that place.
@@ -259,8 +259,8 @@ fn register_to_tensor(cx: &Cx, d: Int, src: Int, place: Int) -> Int ! alloc
 fn lower_to(cx: &Cx, place: &String, inner: &Expr) -> Int ! alloc
     src = lower_expr(cx, inner)
     d = fresh(cx)
-    _p = ir_push(cx, ir_place(d, src, str_as_int(place)))
-    _t = register_to_tensor(cx, d, src, str_as_int(place))
+    _p = ir_push(cx, ir_place(d, src, str_own(place)))
+    _t = register_to_tensor(cx, d, src, str_own(place))
     dropn = drop_name_for(inner)
     _q = ir_push(cx, ir_drop(dropn))
     d
@@ -320,15 +320,14 @@ fn lower_on(cx: &Cx, place: &String, body: &TBlock) -> Int ! alloc
     has_mm = ops_has_kind(ops, FO_MATMUL(), 0, vec_len(ops))
     has_col = ops_has_kind(ops, FO_COLUMN(), 0, vec_len(ops))
     fused = fused_flag(has_ep, has_mm, has_col, vec_len(ops))
-    reg = region_new(str_as_int(place), ops, fused)
+    reg = region_new(str_own(place), ops, fused)
     _e = estimate_peak(reg, cx)
     if has_col == 0
         if has_mm == 0
             _r = vec_push(cx_regions(cx), reg)
             lower_block_value(cx, body)
         else
-            d = fresh(cx)
-            _m = lower_on_matmul(cx, ops, d, 0, vec_len(ops))
+            d = lower_on_matmul(cx, ops, 0, vec_len(ops))
             _r = vec_push(cx_regions(cx), reg)
             if has_ep == 1
                 lower_fused_epilogue_out(cx, ops, d, 0, vec_len(ops))
@@ -360,7 +359,8 @@ fn lower_fused_epilogue_out(cx: &Cx, ops: Int, src: Int, i: Int, n: Int) -> Int 
         else
             lower_fused_epilogue_out(cx, ops, src, i + 1, n)
 
-fn lower_on_matmul(cx: &Cx, ops: Int, d: Int, i: Int, n: Int) -> Int ! alloc
+# The result is allocated after the dimension constants, as in the bootstrap's numbering.
+fn lower_on_matmul(cx: &Cx, ops: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -369,6 +369,7 @@ fn lower_on_matmul(cx: &Cx, ops: Int, d: Int, i: Int, n: Int) -> Int ! alloc
             m = axis_len(cx, vec_get(op, 1), 1)
             k = axis_len(cx, vec_get(op, 1), 0)
             nn = axis_len(cx, vec_get(op, 2), 0)
+            d = fresh(cx)
             args = vec_new()
             _a = vec_push(args, vec_get(op, 1))
             _b = vec_push(args, vec_get(op, 2))
@@ -377,9 +378,9 @@ fn lower_on_matmul(cx: &Cx, ops: Int, d: Int, i: Int, n: Int) -> Int ! alloc
             _e = vec_push(args, nn)
             fnm = str_as_int(&"sal_matmul_f32")
             _p = ir_push(cx, ir_call(d, fnm, args, 1))
-            0
+            d
         else
-            lower_on_matmul(cx, ops, d, i + 1, n)
+            lower_on_matmul(cx, ops, i + 1, n)
 
 fn is_struct_ctor_call(cx: &Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
     si = tt_struct_find(&cx_structs(cx), fname)
@@ -426,7 +427,7 @@ fn maybe_box_any(cx: &Cx, pt: &String, arg: &Expr, payload: Int) -> Int ! alloc
                 payload
             else
                 p = list_get(&cx.protocols, pi)
-                vtab = str_as_int(&proto_vtable_global(&tname, &proto))
+                vtab = str_own(&proto_vtable_global(&tname, &proto))
                 slot = proto_drop_slot(&p)
                 boxd = fresh(cx)
                 _p = ir_push(cx, ir_anybox(boxd, vtab, payload, slot))
@@ -465,7 +466,7 @@ fn lower_protocol_call(cx: &Cx, recv: &String, fld: &String, args: &List[Expr], 
         else
             argv = vec_new()
             _a = lower_args(cx, args, 1, list_len(args), argv)
-            recv_nm = str_as_int(recv)
+            recv_nm = str_own(recv)
             _p = ir_push(cx, ir_anycall(d, recv_nm, slot, argv))
             d
 
@@ -480,21 +481,21 @@ fn lower_call(cx: &Cx, name: &String, args: &List[Expr], targs: &String) -> Int 
             lower_protocol_call(cx, &recv, &fld, args, &proto)
         elsif is_struct_ctor_call(cx, name, args) == 1
             lower_struct_ctor(cx, name, args)
-        elsif variant_rec(cx, str_as_int(name)) != 0
-            lower_variant_ctor(cx, str_as_int(name), args)
+        elsif variant_rec(cx, str_own(name)) != 0
+            lower_variant_ctor(cx, str_own(name), args)
         else
             lower_call_runtime(cx, name, args, targs)
     elsif is_struct_ctor_call(cx, name, args) == 1
         lower_struct_ctor(cx, name, args)
-    elsif variant_rec(cx, str_as_int(name)) != 0
-        lower_variant_ctor(cx, str_as_int(name), args)
+    elsif variant_rec(cx, str_own(name)) != 0
+        lower_variant_ctor(cx, str_own(name), args)
     else
         lower_call_runtime(cx, name, args, targs)
 
 # `list_new[T]()`: the element descriptor travels as a string constant.
 fn lower_list_new(cx: &Cx, txt: &String, d: Int, owned: Int) -> Int ! alloc
     dsc = fresh(cx)
-    _a = ir_push(cx, ir_cs(dsc, str_as_int(&desc_type_text(&cx_structs(cx), &cx.enums, txt, owned))))
+    _a = ir_push(cx, ir_cs(dsc, str_own(&desc_type_text(&cx_structs(cx), &cx.enums, txt, owned))))
     argv = vec_new()
     _b = vec_push(argv, dsc)
     _p = ir_push(cx, ir_call(d, str_as_int(&"sal_list_new_desc"), argv, 1))
@@ -521,7 +522,7 @@ fn lower_container_new(cx: &Cx, name: &String, txt: &String, d: Int, nkinds: Int
     k2d = fresh(cx)
     _c = push_const_int(cx, k2d, k2)
     _e = vec_push(argv, k2d)
-    _p = ir_push(cx, ir_call(d, str_as_int(&("sal_" + name)), argv, 1))
+    _p = ir_push(cx, ir_call(d, str_own(&("sal_" + name)), argv, 1))
     d
 
 fn lower_call_runtime(cx: &Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
@@ -557,7 +558,7 @@ fn lower_map_lambda(cx: &Cx, src: Int, arg: Int, lam: &Expr) -> Int ! alloc
         _ => 0
 
 fn lower_map_lambda_go(cx: &Cx, src: Int, arg: Int, param_name: &String, body: &Expr) -> Int ! alloc
-    param = str_as_int(param_name)
+    param = str_own(param_name)
     prev = cx_find(cx, param)
     b = bind_new(param, arg)
     _t = bind_set_tensor(b, 1)
@@ -589,15 +590,21 @@ fn load_literal_emit(cx: &Cx, d: Int, s: &String) -> Int ! alloc
     qe = "\""
     q3 = q2 + qe
     argv = vec_new()
-    _a = vec_push(argv, str_as_int(&q3))
+    _a = vec_push(argv, str_own(&q3))
     _pl = vec_push(argv, str_as_int(&"cpu"))
     fnm = str_as_int(&"sal_load")
     _p = ir_push(cx, ir_call(d, fnm, argv, 1))
     1
 
 fn lower_call_runtime_go(cx: &Cx, name: &String, targs: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
+    if str_eq(name, "matmul") == 1 && list_len(args) >= 2
+        lower_matmul_op(cx, arg_names)
+    else
+        lower_call_runtime_rest(cx, name, targs, args, arg_names)
+
+fn lower_call_runtime_rest(cx: &Cx, name: &String, targs: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
     d = fresh(cx)
-    fname = str_as_int(name)
+    fname = str_own(name)
     if str_eq(name, "load") == 1
         if lower_load_literal(cx, d, args) == 1
             d
@@ -625,7 +632,7 @@ fn lower_call_runtime_go(cx: &Cx, name: &String, targs: &String, args: &List[Exp
 
 # A user fn declared to return a tensor gives its result that shape.
 fn register_ret_tensor(cx: &Cx, d: Int, name: &String) -> Int ! alloc
-    if is_user_fn(cx, str_as_int(name)) == 0
+    if is_user_fn(cx, str_own(name)) == 0
         0
     else
         r = tt_index_of(&cx.env.fn_names, name, 0, list_len(&cx.env.fn_names))
@@ -645,7 +652,7 @@ fn register_ret_text(cx: &Cx, d: Int, ret: &String) -> Int ! alloc
 # Handle of the struct type `ty` names, or 0.
 fn where_struct_type(cx: &Cx, ty: &String) -> Int ! alloc
     if tt_struct_find(&cx_structs(cx), ty) >= 0
-        str_as_int(ty)
+        str_own(ty)
     else
         0
 
@@ -658,7 +665,7 @@ fn frame_name_for_where(cx: &Cx, e: &Expr) -> Int ! alloc
 
 fn where_call_frame(cx: &Cx, e: &Expr, callee: &String) -> Int ! alloc
     if tt_struct_find(&cx_structs(cx), callee) >= 0
-        str_as_int(callee)
+        str_own(callee)
     else
         where_struct_type(cx, &texpr_type(&cx.env, e))
 
@@ -667,7 +674,7 @@ fn where_frame_lit(frame_ty: Int) -> Int ! alloc
     mid = str_from_int(frame_ty)
     q2 = q1 + mid
     qe = "\""
-    str_as_int(&(q2 + qe))
+    str_own(&(q2 + qe))
 
 fn lower_where_call(cx: &Cx, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
     if list_len(args) < 2
@@ -741,7 +748,7 @@ fn nested_variant_kind(cx: &Cx, a: &Expr) -> Int ! alloc
 fn nested_call_kind(cx: &Cx, name: &String, inner: &List[Expr]) -> Int ! alloc
     if list_len(inner) == 0
         0
-    elsif variant_rec(cx, str_as_int(name)) != 0
+    elsif variant_rec(cx, str_own(name)) != 0
         2
     else
         0
@@ -818,15 +825,15 @@ fn lower_switch_arms(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int, n0:
 fn switch_pattern_tag(cx: &Cx, pat: &TPat) -> Int ! alloc
     k = pat.kind
     if k == 1
-        rec = variant_rec(cx, str_as_int(&pat.name))
+        rec = variant_rec(cx, str_own(&pat.name))
         if rec == 0
             0
         else
             vec_get(rec, 3)
     elsif k == 3
-        rec = variant_rec(cx, str_as_int(&pat.name))
+        rec = variant_rec(cx, str_own(&pat.name))
         if rec == 0
-            name_variant_tag(str_as_int(&pat.name)) + 1
+            name_variant_tag(str_own(&pat.name)) + 1
         else
             vec_get(rec, 3)
     else
@@ -855,7 +862,7 @@ fn bind_variant_payloads(cx: &Cx, scrut: Int, args: &List[TPat], i: Int, n: Int,
         if a.kind == 1
             d = fresh(cx)
             _p = ir_push(cx, ir_efield(d, scrut, i))
-            _b = cx_bind(cx, str_as_int(&a.name), d)
+            _b = cx_bind(cx, str_own(&a.name), d)
             bind_variant_payloads(cx, scrut, args, i + 1, n, k)
         else
             bind_variant_payloads(cx, scrut, args, i + 1, n, k)
@@ -1020,7 +1027,7 @@ fn assigned_stmts(stmts: &List[TStmt], i: Int, n: Int, names: Int) -> Int ! allo
         st = list_get(stmts, i)
         if st.kind == 1
             if st.is_let == 0
-                _a = assigned_add(names, str_as_int(&st.name))
+                _a = assigned_add(names, str_own(&st.name))
             else
                 _a = 0
         else
@@ -1284,7 +1291,7 @@ fn tassign_accumulates_string(cx: &Cx, name: &String, value: &Expr) -> Int ! all
         str_eq(dx_leftmost(value), name)
 
 fn lower_stmt_assign(cx: &Cx, st: &TStmt) -> Int ! alloc
-    name = str_as_int(&st.name)
+    name = str_own(&st.name)
     if tassign_accumulates_string(cx, &st.name, &st.expr) == 1
         _sa = cx_set_acc(cx, name)
     else
@@ -1293,7 +1300,91 @@ fn lower_stmt_assign(cx: &Cx, st: &TStmt) -> Int ! alloc
     _za = cx_set_acc(cx, 0)
     _b = cx_bind(cx, name, v)
     _ns = tenv_bind(&cx.env, &st.name, &texpr_type(&cx.env, &st.expr))
+    _bx = mark_box_place(cx, &st.name, &st.expr)
     lower_assign_shape(cx, name, st)
+
+# A local bound to `list_get` aliases the element's block: a field store writes that block.
+fn mark_box_place(cx: &Cx, name: &String, value: &Expr) -> Int ! alloc
+    key = "box:" + name
+    match value
+        XCall(fname, args, targs, xp) => tenv_bind(&cx.env, &key, &box_mark(is_list_get(&fname)))
+        _ => tenv_bind(&cx.env, &key, &"")
+
+fn box_mark(flag: Int) -> String ! alloc
+    if flag == 1
+        "box"
+    else
+        ""
+
+fn is_list_get(fname: &String) -> Int ! alloc
+    if str_eq(fname, "list_get") == 1
+        1
+    else
+        0
+
+fn is_box_place(cx: &Cx, name: &String) -> Int ! alloc
+    mark = tenv_type(&cx.env, &("box:" + name))
+    if str_eq(&mark, "box") == 1
+        1
+    else
+        0
+
+# `p.f = v`, as the bootstrap: a one-field struct is the field itself, a `list_get` alias is
+# written in place (`sal_struct_set`), any other local is rebuilt with the new field.
+fn lower_stmt_field_assign(cx: &Cx, st: &TStmt) -> Int ! alloc
+    match st.target
+        XField(base, field) => lower_field_assign_base(cx, st, &base, &field)
+        _ => lower_expr(cx, &st.expr)
+
+fn lower_field_assign_base(cx: &Cx, st: &TStmt, base: &Expr, field: &String) -> Int ! alloc
+    match base
+        XIdent(name) => lower_field_assign_named(cx, st, &name, field)
+        _ => lower_expr(cx, &st.expr)
+
+fn lower_field_assign_named(cx: &Cx, st: &TStmt, name: &String, field: &String) -> Int ! alloc
+    si = tt_struct_find(&cx_structs(cx), &ty_deref(&tenv_type(&cx.env, name)))
+    if si < 0
+        lower_expr(cx, &st.expr)
+    else
+        lower_field_assign_struct(cx, st, name, &list_get(&cx_structs(cx), si), field)
+
+fn lower_field_assign_struct(cx: &Cx, st: &TStmt, name: &String, sd: &TStruct, field: &String) -> Int ! alloc
+    nf = list_len(&sd.fields)
+    h = str_own(name)
+    v = lower_expr(cx, &st.expr)
+    if nf == 1
+        cx_bind(cx, h, v)
+    else
+        idx = tt_field_index(&sd.fields, field, 0, nf)
+        base_ssa = cx_lookup(cx, h)
+        if is_box_place(cx, name) == 1
+            lower_field_store(cx, base_ssa, idx, v)
+        else
+            fields = lower_field_rebuild(cx, sd, base_ssa, v, idx, 0, nf, vec_new())
+            d = fresh(cx)
+            _p = ir_push(cx, ir_agg(d, str_own(&sd.name), fields))
+            cx_bind(cx, h, d)
+
+fn lower_field_store(cx: &Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! alloc
+    ix = fresh(cx)
+    _c = push_const_int(cx, ix, idx)
+    args = vec_new()
+    _a = vec_push(args, base_ssa)
+    _b = vec_push(args, ix)
+    _d = vec_push(args, v)
+    ir_push(cx, ir_call(0, str_as_int(&"sal_struct_set"), args, 0))
+
+fn lower_field_rebuild(cx: &Cx, sd: &TStruct, base_ssa: Int, v: Int, idx: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    elsif i == idx
+        _a = vec_push(acc, v)
+        lower_field_rebuild(cx, sd, base_ssa, v, idx, i + 1, n, acc)
+    else
+        d = fresh(cx)
+        _p = ir_push(cx, ir_extract(d, base_ssa, str_own(&sd.name), i))
+        _a = vec_push(acc, d)
+        lower_field_rebuild(cx, sd, base_ssa, v, idx, i + 1, n, acc)
 
 fn lower_stmt_return(cx: &Cx, st: &TStmt) -> Int ! alloc
     match st.expr
@@ -1316,6 +1407,9 @@ fn lower_stmts(cx: &Cx, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
         elsif st.kind == 2
             _c = lower_stmt_return(cx, &st)
             1
+        elsif st.kind == 3
+            _f = lower_stmt_field_assign(cx, &st)
+            lower_stmts(cx, stmts, i + 1, n)
         else
             _v = lower_expr(cx, &st.expr)
             lower_stmts(cx, stmts, i + 1, n)
@@ -1325,7 +1419,7 @@ fn lower_stmts(cx: &Cx, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
 # user fn parameter that takes ownership) ----
 fn mv_add(names: Int, e: &Expr) -> Int ! alloc
     match e
-        XIdent(name) => assigned_add(names, str_as_int(&name))
+        XIdent(name) => assigned_add(names, str_own(&name))
         _ => 0
 
 fn mv_stmts(stmts: &List[TStmt], i: Int, n: Int, names: Int, md: Int) -> Int ! alloc
@@ -1463,9 +1557,9 @@ fn drop_candidates_env(env: &TEnv, params: &List[TParam], modes: Int, i: Int, n:
     else
         nm = list_get(&env.names, i)
         if param_not_taken(params, modes, &nm, 0, list_len(params)) == 0
-            if assigned_has(out, str_as_int(&nm), 0, vec_len(out)) == 0
+            if assigned_has(out, str_own(&nm), 0, vec_len(out)) == 0
                 if tt_struct_find(&env.structs, &tenv_type(env, &nm)) >= 0
-                    _p = vec_push(out, str_as_int(&nm))
+                    _p = vec_push(out, str_own(&nm))
                     _s = names_bubble(out, vec_len(out) - 1)
                 else
                     _s = 0
@@ -1519,10 +1613,10 @@ fn drop_local_clean(fr: &FRC, nm: Int) -> Int ! alloc
 fn drop_glue_call(cx: &Cx, sname: &String, base: Int) -> Int ! alloc
     args = vec_new()
     _a = vec_push(args, base)
-    ir_push(cx, ir_call(0, str_as_int(&("drop." + sname)), args, 0))
+    ir_push(cx, ir_call(0, str_own(&("drop." + sname)), args, 0))
 
 fn fn_modes_of(md: Int, name: &String) -> Int ! alloc
-    ms = map_get(md, str_as_int(name))
+    ms = map_get(md, str_own(name))
     if ms == 0
         vec_new()
     else
@@ -1594,7 +1688,7 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
     else
         _en = 0
     out = vec_new()
-    _d = vec_push(out, str_as_int(&name))
+    _d = vec_push(out, str_own(&name))
     _e = vec_push(out, cx_dim_params(&cx))
     _f = vec_push(out, cx_insts(&cx))
     _g = vec_push(out, cx_regions(&cx))
@@ -1690,7 +1784,7 @@ fn tensor_operand_bind(cx: &Cx, tensor_e: &Expr, tensor_ssa: Int) -> Int ! alloc
         _ => find_tensor(cx, tensor_ssa)
 
 fn tensor_ident_bind(cx: &Cx, name: &String, tensor_ssa: Int) -> Int ! alloc
-    b = cx_find(cx, str_as_int(name))
+    b = cx_find(cx, str_own(name))
     if b == 0
         find_tensor(cx, tensor_ssa)
     elsif bind_is_tensor(b) == 0
@@ -1711,7 +1805,7 @@ fn try_lower_tensor_bin_go(cx: &Cx, op: &String, tensor_ssa: Int, other_ssa: Int
             scalar = 1
         place = bind_place(b)
         elem = bind_elem(b)
-        _p = ir_push(cx, ir_tbin(d, str_as_int(op), elem, place, tensor_ssa, other_ssa, len, scalar))
+        _p = ir_push(cx, ir_tbin(d, str_own(op), elem, place, tensor_ssa, other_ssa, len, scalar))
         src = b
         register_tensor_ssa(cx, d, src)
         1
@@ -1806,7 +1900,7 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
         _r = vec_push(insts, ir_ci(str_as_int(&"r"), 0))
         _t = vec_push(insts, ir_ret(str_as_int(&"r")))
         out = vec_new()
-        _a = vec_push(out, str_as_int(&("drop." + sd.name)))
+        _a = vec_push(out, str_own(&("drop." + sd.name)))
         _b = vec_push(out, vec_new())
         _c = vec_push(out, insts)
         _e = vec_push(out, vec_new())
@@ -1827,14 +1921,14 @@ fn struct_elem_glue_fn(name: &String) -> Int ! alloc
     insts = vec_new()
     args = vec_new()
     _a = vec_push(args, str_as_int(&"v"))
-    _b = vec_push(insts, ir_call(0, str_as_int(&("drop." + name)), args, 0))
+    _b = vec_push(insts, ir_call(0, str_own(&("drop." + name)), args, 0))
     args2 = vec_new()
     _c = vec_push(args2, str_as_int(&"v"))
     _d = vec_push(insts, ir_call(0, str_as_int(&"sal_struct_free_box"), args2, 0))
     _r = vec_push(insts, ir_ci(str_as_int(&"r"), 0))
     _t = vec_push(insts, ir_ret(str_as_int(&"r")))
     out = vec_new()
-    _n = vec_push(out, str_as_int(&("drop.elem." + name)))
+    _n = vec_push(out, str_own(&("drop.elem." + name)))
     _p = vec_push(out, vec_new())
     _q = vec_push(out, insts)
     _e = vec_push(out, vec_new())
@@ -1873,7 +1967,7 @@ fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
 fn list_set_drop_call(cx: &Cx, d: Int, fname: &String) -> Int ! alloc
     args = vec_new()
     _a = vec_push(args, d)
-    _b = vec_push(args, str_as_int(fname))
+    _b = vec_push(args, str_own(fname))
     ir_push(cx, ir_call(0, str_as_int(&"sal_list_set_drop"), args, 0))
 
 fn struct_index_named(structs: &List[TStruct], name: &String, i: Int) -> Int ! alloc
@@ -1957,7 +2051,7 @@ fn mark_released_go(modes: Int, params: &List[TParam], i: Int, n: Int, names: In
     if i >= n
         0
     else
-        _s = if assigned_has(names, str_as_int(&list_get(params, i).name), 0, vec_len(names)) == 1
+        _s = if assigned_has(names, str_own(&list_get(params, i).name), 0, vec_len(names)) == 1
             vec_set(modes, i, 2)
         else
             0
@@ -2033,6 +2127,8 @@ fn rel_releasing(name: &String) -> Int ! alloc
         1
     elsif str_eq(name, "bytes_free") == 1
         1
+    elsif str_eq(name, "tensor_free") == 1
+        1
     elsif str_eq(name, "enum_free") == 1
         1
     elsif str_eq(name, "enum_box_id") == 1
@@ -2050,7 +2146,7 @@ fn rel_root(e: &Expr) -> String ! alloc
 
 fn rel_root_of(e: &Expr) -> String ! alloc
     match e
-        XIdent(name) => name
+        XIdent(name) => name.dup()
         XField(base, field) => rel_root_of(&base)
         _ => ""
 
@@ -2062,7 +2158,7 @@ fn rel_args(args: &List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
         _a = if str_len(root) == 0
             0
         else
-            vec_push(out, str_as_int(&root))
+            vec_push(out, str_own(&root))
         rel_args(args, i + 1, n, out)
 
 fn rel_expr(e: &Expr, out: Int) -> Int ! alloc
@@ -2154,11 +2250,11 @@ fn ret_desc_keys(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         0
     else
         f = list_get(fns, i)
-        h = map_get(m, str_as_int(&("desc:" + trim_spaces(f.ret))))
+        h = map_get(m, str_own(&("desc:" + trim_spaces(f.ret))))
         if h == 0
             ret_desc_keys(m, fns, i + 1, n)
         else
-            _p = map_put(m, str_as_int(&("rd:" + f.name)), h)
+            _p = map_put(m, str_own(&("rd:" + f.name)), h)
             ret_desc_keys(m, fns, i + 1, n)
 
 # `enum:Name` for every enum of the module graph.
@@ -2166,7 +2262,7 @@ fn enum_keys_t(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = map_put(m, str_as_int(&("enum:" + list_get(enums, i).name)), 1)
+        _p = map_put(m, str_own(&("enum:" + list_get(enums, i).name)), 1)
         enum_keys_t(m, enums, i + 1, n)
 
 # Structs a list can own (see `desc_struct_text`) go in the same table under `struct:Name`, with
@@ -2179,8 +2275,8 @@ fn flat_map_structs_t(m: Int, sts: &List[TStruct], enums: &List[TEnum], i: Int, 
         if str_len(desc_struct_text(sts, enums, &sd.name, 0)) > 0
             flags = vec_new()
             _f = field_classes_t(flags, enums, &sd.fields, 0, list_len(&sd.fields))
-            _p = map_put(m, str_as_int(&("struct:" + sd.name)), flags)
-            _d = map_put(m, str_as_int(&("desc:" + sd.name)), str_as_int(&desc_struct_text(sts, enums, &sd.name, 0)))
+            _p = map_put(m, str_own(&("struct:" + sd.name)), flags)
+            _d = map_put(m, str_own(&("desc:" + sd.name)), str_own(&desc_struct_text(sts, enums, &sd.name, 0)))
             _fd = field_desc_keys(m, sts, enums, &sd.name, &sd.fields, 0, list_len(&sd.fields))
             flat_map_structs_t(m, sts, enums, i + 1, n)
         else
@@ -2199,11 +2295,11 @@ fn field_desc_one(m: Int, structs: &List[TStruct], enums: &List[TEnum], sname: &
     if str_eq(d, "i") + str_eq(d, "?") + str_eq(d, "") > 0
         0
     else
-        _p = map_put(m, str_as_int(&("fd:" + sname + "." + f.name)), str_as_int(d))
+        _p = map_put(m, str_own(&("fd:" + sname + "." + f.name)), str_own(d))
         ty = trim_type_piece(&f.ty)
         sd = desc_struct_text(structs, enums, &ty, 0)
         if str_len(sd) > 0
-            map_put(m, str_as_int(&("fs:" + sname + "." + f.name)), str_as_int(&ty))
+            map_put(m, str_own(&("fs:" + sname + "." + f.name)), str_own(&ty))
         else
             0
 
@@ -2219,7 +2315,7 @@ fn variant_map_enums_t(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! all
         0
     else
         ed = list_get(enums, i)
-        _k = map_put(m, str_as_int(&("enum:" + ed.name)), 1)
+        _k = map_put(m, str_own(&("enum:" + ed.name)), 1)
         _a = variant_map_go_t(m, &ed.variants, 0, list_len(&ed.variants))
         variant_map_enums_t(m, enums, i + 1, n)
 
@@ -2236,7 +2332,7 @@ fn variant_map_go_t(m: Int, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
         flags = vec_new()
         _f = variant_field_flags_t(&v.fields, 0, list_len(&v.fields), flags)
         _g = vec_push(rec, flags)
-        _p = map_put(m, str_as_int(&strdup(v.name)), rec)
+        _p = map_put(m, str_own(&strdup(v.name)), rec)
         variant_map_go_t(m, vs, i + 1, n)
 
 fn variant_field_flags_t(fields: &List[String], i: Int, n: Int, out: Int) -> Int ! alloc

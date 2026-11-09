@@ -5,7 +5,7 @@ Compilador del lenguaje **sal** (ownership inferido, CPU/GPU/TPU en el tipo). Do
 - **Arranque (bootstrap)** en Rust: `src/`, binario `sal`, lib `sal_compiler`, runtime C en `runtime/`. Clang compila el LLVM IR.
 - **Autohospedaje** en sal: `selfhost/`. Valida al arranque; no lo sustituye.
 
-Las guías detalladas por área están en `.claude/skills/` (enlace a `.cursor/skills/`). Léelas antes de tocar el área correspondiente.
+Las guías detalladas por área están en `.cursor/skills/`, con enlaces en `.claude/skills/` (Claude Code) y `.agents/skills/` (Freebuff). Léelas antes de tocar el área correspondiente.
 
 ## Autoridad
 

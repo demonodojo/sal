@@ -491,6 +491,8 @@ test("la gramática colorea las palabras del lexer", async () => {
       "module-const": { name: string; match: string };
       tensor: { match: string };
       attribute: { match: string };
+      lifetime: { name: string; match: string };
+      contextual: { match: string };
       functionDef: { captures: { "2": { name: string } } };
       "function-def": { captures: { "2": { name: string } } };
       "fstring-content": { patterns: { name: string }[] };
@@ -511,7 +513,7 @@ test("la gramática colorea las palabras del lexer", async () => {
     grammar.repository["function-def"].captures["2"].name,
     "entity.name.function.sal",
   );
-  for (const word of ["Tensor", "List", "Dict", "Int", "Float", "Bool", "String", "Unit", "F32", "F16", "BF16", "I8"]) {
+  for (const word of ["Tensor", "List", "Dict", "Int", "Float", "Bool", "String", "Unit", "F32", "F16", "BF16", "I8", "any"]) {
     assert.ok(grammar.repository["type-builtin"].match.includes(word), word);
   }
   assert.match(grammar.repository["type-name"].match, /\[A-Z\]/);
@@ -529,15 +531,32 @@ test("la gramática colorea las palabras del lexer", async () => {
   assert.equal(language.comments.lineComment, "#");
   assert.match(language.wordPattern, /A-Za-z_/);
   const headers = language.onEnterRules.map((rule) => rule.beforeText).join("\n");
-  for (const word of ["fn", "method", "static", "init", "if", "elsif", "while", "match", "on", "struct", "enum"]) {
+  for (const word of ["fn", "method", "static", "init", "protocol", "if", "elsif", "while", "match", "on", "struct", "enum"]) {
     assert.match(headers, new RegExp(word));
   }
-  assert.match(grammar.repository.attribute.match, /deprecated/);
+  for (const attr of ["frozen", "stack", "no_heap", "arena", "layout", "deprecated"]) {
+    assert.ok(grammar.repository.attribute.match.includes(attr), attr);
+  }
+  assert.equal(grammar.repository.lifetime.name, "variable.language.lifetime.sal");
+  assert.match(grammar.repository.lifetime.match, /'/);
+  for (const word of ["mut", "self", "protocol", "impl"]) {
+    assert.ok(grammar.repository.contextual.match.includes(word), word);
+  }
   assert.match(headers, /else\\s/);
   assert.match(headers, /=>/);
   assert.match(language.indentationRules.increaseIndentPattern, /while/);
   assert.match(language.indentationRules.increaseIndentPattern, /elsif/);
   assert.match(language.indentationRules.increaseIndentPattern, /else\\s/);
+});
+
+test("scanSalLine pinta any y las palabras contextuales", () => {
+  const scanned = scanSalLine("method V.get(&'a mut self) -> &'a any[Show]");
+  assert.ok(scanned.types.some((span) => span.length === 3), "any");
+  for (const word of ["mut", "self"]) {
+    assert.ok(scanned.keywords.some((span) => span.length === word.length), word);
+  }
+  const protocol = scanSalLine("protocol Show");
+  assert.ok(protocol.keywords.some((span) => span.start === 0 && span.length === 8));
 });
 
 test("scanSalLine marca String y struct en sitios distintos", () => {

@@ -1967,7 +1967,7 @@ fn parse_program_check(tp: TProgram, errs: &List[String], ndots: Int) -> TProgra
         _c = methods_check_defs(&tp, errs)
         if list_len(errs) == 0
             if list_len(&tp.protocols) + protocol_impl_count(&tp) > 0
-                _p = protocols.check_program_protocols(&tp, errs)
+                _p = check_program_protocols(&tp, errs)
         tp
 
 fn protocol_impl_count(tp: &TProgram) -> Int ! alloc
@@ -1995,7 +1995,7 @@ fn parse_program_methods(tp: TProgram, errs: &List[String], ndots: Int) -> TProg
         tp
     else
         if list_len(&tp.protocols) + protocol_impl_count(&tp) > 0
-            _p = protocols.check_program_protocols(&tp, errs)
+            _p = check_program_protocols(&tp, errs)
         if list_len(errs) > 0
             tp
         elsif ndots > 0

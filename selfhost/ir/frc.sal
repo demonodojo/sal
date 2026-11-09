@@ -116,7 +116,7 @@ method FRC.ctor_piece(&self, a: &Expr) -> Int ! alloc
 
 method FRC.arg_is_alias(&self, a: &Expr) -> Int ! alloc
     match a
-        XIdent(name) => assigned_has(self.al, str_as_int(&name), 0, vec_len(self.al))
+        XIdent(name) => assigned_has(self.al, str_own(&name), 0, vec_len(self.al))
         XField(base, field) => self.arg_is_alias(&base)
         _ => 0
 
@@ -249,8 +249,8 @@ method FRC.type_at(&self, name: &String, i: Int) -> String ! alloc
 
 # Adds the local `name` (a string handle) to the set `set` (a vec of handles) unless it is there.
 fn fr_add(set: Int, name: &String) -> Int ! alloc
-    if assigned_has(set, str_as_int(name), 0, vec_len(set)) == 0
-        vec_push(set, str_as_int(name))
+    if assigned_has(set, str_own(name), 0, vec_len(set)) == 0
+        vec_push(set, str_own(name))
     else
         0
 
@@ -388,16 +388,16 @@ fn fr_is_container(t: &String) -> Int ! alloc
 # expression is not such a chain.
 fn fr_chain(e: &Expr, fl: &List[String]) -> String ! alloc
     match e
-        XIdent(name) => name
-        XField(base, field) => fr_chain_push(&base, field, fl)
+        XIdent(name) => name.dup()
+        XField(base, field) => fr_chain_push(&base, &field, fl)
         _ => ""
 
-fn fr_chain_push(base: &Expr, field: String, fl: &List[String]) -> String ! alloc
+fn fr_chain_push(base: &Expr, field: &String, fl: &List[String]) -> String ! alloc
     root = fr_chain(base, fl)
     if str_len(root) == 0
         ""
     else
-        _p = list_push(fl, field)
+        _p = list_push(fl, field.dup())
         root
 
 fn fr_note(c: &FRC, e: &Expr, moving: Int) -> Int ! alloc
@@ -477,10 +477,12 @@ fn fr_join_fields(fl: &List[String], i: Int, n: Int, acc: String) -> String ! al
         fr_join_fields(fl, i + 1, n, (acc + "." + list_get(fl, i)))
 
 fn fr_sm_has(c: &FRC, root: &String, path: &String) -> Int ! alloc
-    assigned_has(c.sm, str_as_int(&(root + "\x1e" + path)), 0, vec_len(c.sm))
+    key = root + "\x1e" + path
+    assigned_has(c.sm, str_own(&key), 0, vec_len(c.sm))
 
 fn fr_ct_has(c: &FRC, root: &String, path: &String) -> Int ! alloc
-    assigned_has(c.ct, str_as_int(&(root + "\x1e" + path)), 0, vec_len(c.ct))
+    key = root + "\x1e" + path
+    assigned_has(c.ct, str_own(&key), 0, vec_len(c.ct))
 
 # 1 when some entry of `set` ("root\x1epath") belongs to `root`.
 fn fr_root_marked(set: Int, root: &String, i: Int) -> Int ! alloc
@@ -685,18 +687,18 @@ fn drop_fields(cx: &Cx, base: Int, sd: &TStruct, fields: &List[TField], i: Int, 
                 _z = 0
             else
                 ssa = drop_field_ssa(cx, base, sd, i)
-                _c = ir_push(cx, ir_call_named(ssa, str_as_int(&fnm)))
+                _c = ir_push(cx, ir_call_named(ssa, str_own(&fnm)))
         elsif str_eq(fnm, "sal_enum_free") == 1
             if fr_sm_has(fr, root, &path) == 1
                 _z = 0
             else
                 ssa = drop_field_ssa(cx, base, sd, i)
-                _c = ir_push(cx, ir_call_named(ssa, str_as_int(&fnm)))
+                _c = ir_push(cx, ir_call_named(ssa, str_own(&fnm)))
         elsif str_eq(fnm, "struct") == 1
             _n = drop_nested(cx, base, sd, i, &fld.ty, depth, g, fr, root, &path)
         else
             ssa = drop_field_ssa(cx, base, sd, i)
-            _c = ir_push(cx, ir_call_named(ssa, str_as_int(&fnm)))
+            _c = ir_push(cx, ir_call_named(ssa, str_own(&fnm)))
         drop_fields(cx, base, sd, fields, i + 1, n, depth, g, fr, root, path_p)
 
 fn drop_field_ssa(cx: &Cx, base: Int, sd: &TStruct, i: Int) -> Int ! alloc
@@ -704,7 +706,7 @@ fn drop_field_ssa(cx: &Cx, base: Int, sd: &TStruct, i: Int) -> Int ! alloc
         base
     else
         d = fresh(cx)
-        _e = ir_push(cx, ir_extract(d, base, str_as_int(&sd.name), i))
+        _e = ir_push(cx, ir_extract(d, base, str_own(&sd.name), i))
         d
 
 # A nested struct field: its own released fields.

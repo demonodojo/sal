@@ -100,6 +100,8 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
     _c = list_push(&cells, 0)
     _d = list_push(&cells, 0)
     _e = list_push(&cells, 0)
+    _f = list_push(&cells, 0)
+    _g = list_push(&cells, 0)
     DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok)
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
@@ -141,6 +143,19 @@ fn dr_soft(c: &DC, st: Int, name: &String) -> Int ! alloc
         0
     else
         _a = list_push(&c.site_ids, st)
+        _b = list_push(&c.site_names, strdup(name))
+        0
+
+# A tail that moves `name` clears its flag before it runs, as a statement does: the tail is
+# identified by its Expr box (cell 5).
+fn dr_tail_site(c: &DC, name: &String) -> Int ! alloc
+    t = dr_cell(c, 5)
+    if t == 0
+        0
+    elsif dr_site_has(c, t, name, 0, list_len(&c.site_ids)) == 1
+        0
+    else
+        _a = list_push(&c.site_ids, t)
         _b = list_push(&c.site_names, strdup(name))
         0
 
@@ -191,7 +206,7 @@ fn dr_tm(t: &String, name: &String) -> Int ! alloc
 # ---- shapes of an expression ----
 fn dx_ident(e: &Expr) -> String ! alloc
     match e
-        XIdent(s) => s
+        XIdent(s) => s.dup()
         _ => ""
 
 fn dx_is_ident(e: &Expr) -> Int ! alloc
@@ -329,7 +344,7 @@ fn dx_list_owns(targs: &String) -> Int ! alloc
         dr_tm(targs, &"String")
 
 fn dr_flat_rec(c: &DC, name: &String) -> Int ! alloc
-    map_get(c.variants, str_as_int(&("struct:" + name)))
+    map_get(c.variants, str_own(&("struct:" + name)))
 
 # `list_push`, a struct ctor, … take the whole box; a user fn only scalarizes the fields.
 fn dr_transfers_box(c: &DC, name: &String) -> Int ! alloc
@@ -386,7 +401,7 @@ fn dx_field_fresh(c: &DC, code: Int, a: &Expr) -> Int ! alloc
 
 # Whether variant `name` has fields.
 fn dr_variant_has_fields(c: &DC, name: &String) -> Int ! alloc
-    rec = map_get(c.variants, str_as_int(name))
+    rec = map_get(c.variants, str_own(name))
     if rec == 0
         0
     elsif vec_get(rec, 0) == 1
@@ -397,7 +412,7 @@ fn dr_variant_has_fields(c: &DC, name: &String) -> Int ! alloc
 # User fns whose `String` result the caller owns (`owned_return_fns` in src/drops.rs): the
 # variant map holds `ownfn:<name>` for each of them.
 fn dr_owned_name(vm: Int, name: &String) -> Int ! alloc
-    if map_get(vm, str_as_int(&("ownfn:" + name))) == 1
+    if map_get(vm, str_own(&("ownfn:" + name))) == 1
         1
     else
         0
@@ -409,7 +424,7 @@ fn owned_fns_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         f = list_get(fns, i)
         _o = if ty_is_string(&f.ret) == 1
             if owned_fn_body(&f) == 1
-                map_put(m, str_as_int(&("ownfn:" + f.name)), 1)
+                map_put(m, str_own(&("ownfn:" + f.name)), 1)
             else
                 0
         else
@@ -547,6 +562,7 @@ fn owned_branches(e: &Expr) -> Int ! alloc
 fn dr_fresh_kind(c: &DC, e: &Expr) -> Int ! alloc
     match e
         XStr(s) => 1
+        XTensor(nr, nc, data) => 10
         XCall(name, args, targs, xp) => dr_fresh_call(c, &name, &targs)
         XBin(op, l, r) => dr_fresh_bin(&op, e)
         _ => 0
@@ -605,25 +621,25 @@ fn dr_fresh_dict(targs: &String) -> Int ! alloc
 # `x = x + ...`: appends in place, not a new binding.
 fn dr_is_accumulate(name: &String, value: &Expr) -> Int ! alloc
     match value
-        XBin(op, l, r) => dr_accumulates(name, &op, l)
+        XBin(op, l, r) => dr_accumulates(name, &op, &l)
         _ => 0
 
-fn dr_accumulates(name: &String, op: &String, l: Expr) -> Int ! alloc
+fn dr_accumulates(name: &String, op: &String, l: &Expr) -> Int ! alloc
     if str_eq(op, "add") == 1
-        str_eq(dx_leftmost(&l), name)
+        str_eq(dx_leftmost(l), name)
     else
         0
 
 # Identifier at the left end of a `+` chain, "" when it is not one.
 fn dx_leftmost(e: &Expr) -> String ! alloc
     match e
-        XBin(op, l, r) => dx_leftmost_bin(&op, l, e)
-        XIdent(s) => s
+        XBin(op, l, r) => dx_leftmost_bin(&op, &l, e)
+        XIdent(s) => s.dup()
         _ => ""
 
-fn dx_leftmost_bin(op: &String, l: Expr, e: &Expr) -> String ! alloc
+fn dx_leftmost_bin(op: &String, l: &Expr, e: &Expr) -> String ! alloc
     if str_eq(op, "add") == 1
-        dx_leftmost(&l)
+        dx_leftmost(l)
     else
         ""
 
@@ -634,7 +650,17 @@ fn dr_arg(c: &DC, a: &Expr, mov: Int) -> Int ! alloc
         XNone => 0
         XIdent(n) => dr_arg_ident(c, &n, mov)
         XField(base, field) => dr_arg_field(c, a, mov)
+        XUnary(op, inner) => dr_arg_unary(c, a, &op, &inner, mov)
         _ => dr_expr(c, a)
+
+# `str_as_int(&s)` stores the handle of `s`: through the reference, `s` still escapes.
+fn dr_arg_unary(c: &DC, a: &Expr, op: &String, inner: &Expr, mov: Int) -> Int ! alloc
+    if mov != 2
+        dr_expr(c, a)
+    elsif str_eq(op, "ref") + str_eq(op, "refmut") > 0
+        dr_arg(c, inner, 2)
+    else
+        dr_expr(c, a)
 
 # A field read in a moving position hands out a value that aliases its base: the base escapes
 # so this function does not release it. It is not `take`: the caller clones only when the
@@ -692,7 +718,7 @@ fn dr_param_ty(ps: &List[TParam], name: &String, i: Int, n: Int) -> String ! all
 fn dr_field_root(e: &Expr) -> String ! alloc
     match e
         XField(base, field) => dr_field_root(&base)
-        XIdent(name) => name
+        XIdent(name) => name.dup()
         _ => ""
 
 fn dr_arg_ident(c: &DC, n: &String, mov: Int) -> Int ! alloc
@@ -708,6 +734,7 @@ fn dr_arg_escape(c: &DC, name: &String, mov: Int) -> Int ! alloc
         dr_escape(c, name)
     elsif dr_cell(c, 1) == 0
         c.take(name)
+        _t = dr_tail_site(c, name)
         dr_escape(c, name)
     elsif nm_get(&c.born, name) == dr_cell(c, 3) + 1
         c.take(name)
@@ -748,7 +775,7 @@ fn dr_call_args(c: &DC, callee: &String, args: &List[Expr], i: Int, n: Int, borr
         0
     else
         reads = dr_ro_at(ro, i)
-        # `str_as_int(&s)` stores the string as a handle the IR reads later: the local escapes
+        # `str_own(&s)` stores the string as a handle the IR reads later: the local escapes
         # (the bootstrap's `escaped` rule for `str_as_int`), so nothing releases it here.
         mov = if str_eq(callee, "str_as_int") == 1
             2
@@ -806,7 +833,7 @@ fn dr_arms_bound(c: &DC, arms: &List[TArm], i: Int, n: Int, acc: String) -> Stri
 
 fn dr_pat_bound(c: &DC, pat: &TPat, acc: String) -> String ! alloc
     if pat.kind == 3
-        rec = map_get(c.variants, str_as_int(&pat.name))
+        rec = map_get(c.variants, str_own(&pat.name))
         dr_pat_bound_go(c, rec, &pat.args, 0, list_len(&pat.args), acc)
     else
         acc
@@ -866,7 +893,7 @@ fn dr_binds_whole(c: &DC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
     else
         pat = list_get(arms, i).pat
         if pat.kind == 1
-            if map_get(c.variants, str_as_int(&pat.name)) == 0
+            if map_get(c.variants, str_own(&pat.name)) == 0
                 1
             else
                 dr_binds_whole(c, arms, i + 1, n)
@@ -920,7 +947,7 @@ fn dr_call(c: &DC, name: &String, args: &List[Expr]) -> Int ! alloc
         _h = dr_set(c, 4, dr_cell(c, 4) + 1)
     else
         _z = 0
-    ro = map_get(c.ro, str_as_int(name))
+    ro = map_get(c.ro, str_own(name))
     hflag = if hard != 0
         1
     else
@@ -1014,7 +1041,7 @@ fn dx_is_fresh_variant(c: &DC, e: &Expr) -> Int ! alloc
         _ => 0
 
 fn dx_unit_variant(c: &DC, name: &String) -> Int ! alloc
-    rec = map_get(c.variants, str_as_int(name))
+    rec = map_get(c.variants, str_own(name))
     if rec == 0
         0
     elsif vec_get(rec, 0) == 2
@@ -1027,7 +1054,7 @@ fn dx_list_enum(c: &DC, targs: &String) -> Int ! alloc
     t = trim_spaces(targs.dup())
     if str_len(t) == 0
         0
-    elsif map_get(c.variants, str_as_int(&("enum:" + t))) != 0
+    elsif map_get(c.variants, str_own(&("enum:" + t))) != 0
         1
     else
         0
@@ -1213,7 +1240,10 @@ fn dr_block(c: &DC, b: &TBlock) -> Int ! alloc
     _a = dr_stmts(c, &b.stmts, 0, list_len(&b.stmts))
     outer = dr_cell(c, 1)
     _n = dr_set(c, 1, 0)
+    tail_outer = dr_cell(c, 5)
+    _i = dr_set(c, 5, enum_box_id(b.tail))
     r = dr_top(c, &b.tail, 3)
+    _j = dr_set(c, 5, tail_outer)
     _t = dr_set(c, 1, outer)
     r
 
@@ -1279,7 +1309,7 @@ fn dx_struct_copy_call(c: &DC, name: &String, args: &List[Expr]) -> Int ! alloc
             if s == 0
                 0
             else
-                map_get(c.variants, str_as_int(&("desc:" + str_from_int(s))))
+                map_get(c.variants, str_own(&("desc:" + str_from_int(s))))
 
 # `list_pop` of an owned struct list: the element is a box the local releases
 # with `struct_free` under the list's element descriptor. `list_get` only borrows.
@@ -1321,7 +1351,9 @@ fn dr_plain(e: Expr) -> TStmt ! alloc
     TStmt(0, "", e, "", 0, XNone, 0, 0, 0)
 
 fn dr_free_fn(kind: Int) -> String ! alloc
-    if kind == 9
+    if kind == 10
+        "tensor_free"
+    elsif kind == 9
         "struct_free_box"
     elsif kind == 8
         "struct_free"
@@ -1574,6 +1606,7 @@ fn dr_return_tmp(c: &DC, v: Expr, out: &List[TStmt]) -> Expr ! alloc
 fn dr_xform_block(c: &DC, b: &TBlock) -> TBlock ! alloc
     mark = list_len(&c.live)
     out = list_new[TStmt]()
+    _sd = dr_seed_live_params(c, &out)
     diverged = dr_xform_stmts(c, &b.stmts, 0, list_len(&b.stmts), &out)
     # Statements after a `return` stay as they were.
     if diverged == 1
@@ -1583,6 +1616,7 @@ fn dr_xform_block(c: &DC, b: &TBlock) -> TBlock ! alloc
         _f = dr_free_stmts(&b.stmts)
         TBlock(out, tail)
     else
+        _m = dr_clear_tail_moved(c, b, &out)
         tail = dr_xform_expr(c, &b.tail)
         _f = dr_free_stmts(&b.stmts)
         if list_len(&c.live) > mark
@@ -1592,6 +1626,72 @@ fn dr_xform_block(c: &DC, b: &TBlock) -> TBlock ! alloc
         else
             _t = dr_truncate(c, mark)
             TBlock(out, tail)
+
+# The first block of a fn releases its by-value `String`, `List`, `Dict` and enum parameters at
+# scope end unless it moved them; a parameter moved on some path sits behind its flag, set on
+# entry (`owned_param_release` in src/drops.rs).
+fn dr_seed_live_params(c: &DC, out: &List[TStmt]) -> Int ! alloc
+    if dr_cell(c, 6) == 0
+        0
+    else
+        _z = dr_set(c, 6, 0)
+        dr_seed_param_go(c, out, 0, c.ps.len())
+
+fn dr_seed_param_go(c: &DC, out: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = c.ps.get(i)
+        _a = dr_seed_one_param(c, out, &p.name, &p.ty)
+        dr_seed_param_go(c, out, i + 1, n)
+
+fn dr_seed_one_param(c: &DC, out: &List[TStmt], name: &String, ty: &String) -> Int ! alloc
+    k = dr_param_kind(c, ty)
+    if k == 0
+        0
+    elsif nm_get(&c.defs, name) != 1
+        0
+    elsif nm_get(&c.esc, name) != 0 && nm_get(&c.soft, name) == 0 && nm_get(&c.box_shell, name) == 0
+        0
+    else
+        _k = nm_put(&c.kinds, name, k)
+        if nm_get(&c.soft, name) != 0
+            _f = list_push(out, dr_flag_init(name))
+        else
+            _f = list_len(out)
+        _l = list_push(&c.live, strdup(name))
+        0
+
+# The release of a by-value parameter of this type. Enum parameters are not released by the
+# callee yet (subplan 07): the selfhost still passes aliases of an `Expr` to by-value
+# parameters, which the callee would free.
+fn dr_param_kind(c: &DC, ty: &String) -> Int ! alloc
+    if dr_param_is_ref(ty) == 1
+        0
+    elsif ty_is_string(ty) == 1
+        1
+    else
+        open = ty_find_open(ty, 0)
+        if open < 0
+            0
+        else
+            dr_param_generic_kind(trim_spaces(ty.slice(0, open)))
+
+fn dr_param_generic_kind(head: String) -> Int ! alloc
+    if head.eq("List") == 1
+        2
+    elsif head.eq("Dict") == 1
+        4
+    else
+        0
+
+# A tail with a box (not a unit tag, whose id is 0) clears the flags of the locals it moves.
+fn dr_clear_tail_moved(c: &DC, b: &TBlock, out: &List[TStmt]) -> Int ! alloc
+    t = enum_box_id(b.tail)
+    if t == 0
+        0
+    else
+        dr_clear_moved(c, t, out)
 
 # Appends the releases of this block's own locals; returns the new tail.
 fn dr_finish_block(c: &DC, out: &List[TStmt], tail: Expr, mark: Int) -> Expr ! alloc
@@ -1773,7 +1873,7 @@ fn dr_took_map(m: Int, fns: &List[TFn], cons: &List[Int], i: Int, n: Int) -> Int
     if i >= n
         0
     else
-        _p = map_put(m, str_as_int(&list_get(fns, i).name.dup()), list_get(cons, i))
+        _p = map_put(m, str_own(&list_get(fns, i).name.dup()), list_get(cons, i))
         dr_took_map(m, fns, cons, i + 1, n)
 
 fn dr_cons_list(fns: &List[TFn]) -> List[Int] ! alloc
@@ -1794,10 +1894,42 @@ fn dr_ro_init(ro: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     else
         f = fns.get(i)
         flags = vec_new()
-        _o = dr_ro_ones(flags, f.params.len())
+        _o = dr_ro_ref_flags(flags, &f.params, 0, f.params.len())
         nk = f.name.dup()
         map_put(ro, nk.to_int(), flags)
         dr_ro_init(ro, fns, i + 1, n)
+
+# A by-value parameter is owned by the fn (SPEC «Memoria»): the caller gave it up, so it is
+# never read-only. Only `&T` leaves the caller the release.
+fn dr_ro_ref_flags(flags: Int, ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _p = vec_push(flags, dr_param_caller_keeps(&ps.get(i).ty))
+        dr_ro_ref_flags(flags, ps, i + 1, n)
+
+# 1 when the caller keeps the release: a reference, or a type the callee does not release.
+fn dr_param_caller_keeps(ty: &String) -> Int ! alloc
+    if dr_param_is_ref(ty) == 1
+        1
+    elsif ty_is_string(ty) == 1
+        0
+    else
+        open = ty_find_open(ty, 0)
+        if open < 0
+            1
+        elsif dr_param_generic_kind(trim_spaces(ty.slice(0, open))) == 0
+            1
+        else
+            0
+
+fn dr_param_is_ref(ty: &String) -> Int ! alloc
+    if ty.len() == 0
+        1
+    elsif ty.char(0) == 38
+        1
+    else
+        0
 
 fn dr_ro_zeros(flags: Int, n: Int) -> Int ! alloc
     if n == 0
@@ -2075,7 +2207,7 @@ fn dr_lists_params(m: &NM, params: &List[TParam], i: Int, n: Int, variants: Int)
         _x = if str_len(s) == 0
             0
         else
-            nm_put(m, &p.name, str_as_int(&s))
+            nm_put(m, &p.name, str_own(&s))
         dr_lists_params(m, params, i + 1, n, variants)
 
 # The element struct of the list type text `List[S]` ("" when not a list of an ownable struct).
@@ -2097,7 +2229,7 @@ fn dr_ty_arg0(t: &String) -> String ! alloc
 # The struct `t` when a copy of it can be released ("" otherwise).
 fn dr_struct_of(txt: &String, variants: Int) -> String ! alloc
     t = trim_type_piece(txt)
-    if map_get(variants, str_as_int(&("desc:" + t))) == 0
+    if map_get(variants, str_own(&("desc:" + t))) == 0
         ""
     else
         t
@@ -2131,7 +2263,7 @@ fn dr_lists_new(m: &NM, name: &String, fname: &String, targs: &String, variants:
         if str_len(s) == 0
             0
         else
-            nm_put(m, name, str_as_int(&s))
+            nm_put(m, name, str_own(&s))
 
 # A `while` body is scanned too (as `Stmt::While` is in src/drops.rs).
 fn dr_lists_expr(m: &NM, e: &Expr, variants: Int) -> Int ! alloc
@@ -2202,10 +2334,10 @@ fn dr_elem_desc(targs: &String, variants: Int) -> String ! alloc
     t = trim_type_piece(targs)
     if str_eq(t, "String") == 1
         "s"
-    elsif map_get(variants, str_as_int(&("enum:" + t))) != 0
+    elsif map_get(variants, str_own(&("enum:" + t))) != 0
         "E"
-    elsif map_get(variants, str_as_int(&("desc:" + t))) != 0
-        str_from_int(map_get(variants, str_as_int(&("desc:" + t))))
+    elsif map_get(variants, str_own(&("desc:" + t))) != 0
+        str_from_int(map_get(variants, str_own(&("desc:" + t))))
     else
         ""
 
@@ -2215,7 +2347,7 @@ fn dr_seed_elems(lists: &NM, variants: Int, elems: &NM, i: Int, n: Int) -> Int !
     else
         name = list_get(&lists.names, i)
         sn = str_from_int(list_get(&lists.vals, i))
-        h = map_get(variants, str_as_int(&("desc:" + sn)))
+        h = map_get(variants, str_own(&("desc:" + sn)))
         _p = if h == 0
             0
         else
@@ -2234,7 +2366,7 @@ fn dr_note_params(ps: &List[TParam], variants: Int, elems: &NM, i: Int, n: Int) 
             if str_len(d) == 0
                 0
             else
-                nm_put(elems, &p.name, str_as_int(&strdup(d)))
+                nm_put(elems, &p.name, str_own(&strdup(d)))
         dr_note_params(ps, variants, elems, i + 1, n)
 
 fn dr_note_list(name: &String, e: &Expr, variants: Int, elems: &NM) -> Int ! alloc
@@ -2247,7 +2379,7 @@ fn dr_note_list(name: &String, e: &Expr, variants: Int, elems: &NM) -> Int ! all
                 if str_len(d) == 0
                     0
                 else
-                    nm_put(elems, name, str_as_int(&strdup(d)))
+                    nm_put(elems, name, str_own(&strdup(d)))
         _ => 0
 
 fn dr_list_sn(xs: &Expr, lists: &NM) -> String ! alloc
@@ -2270,7 +2402,7 @@ fn dr_borrow_sn(e: &Expr, variants: Int, lists: &NM, sns: &NM) -> String ! alloc
             if str_len(sn) == 0
                 ""
             else
-                h = map_get(variants, str_as_int(&("fs:" + sn + "." + field)))
+                h = map_get(variants, str_own(&("fs:" + sn + "." + field)))
                 if h == 0
                     ""
                 else
@@ -2286,7 +2418,7 @@ fn dr_borrow_desc(e: &Expr, variants: Int, elems: &NM, borrows: &NM, lists: &NM,
             if str_len(sn) == 0
                 ""
             else
-                h = map_get(variants, str_as_int(&("fd:" + sn + "." + field)))
+                h = map_get(variants, str_own(&("fd:" + sn + "." + field)))
                 if h == 0
                     ""
                 else
@@ -2299,14 +2431,14 @@ fn dr_borrow_call(name: &String, args: &List[Expr], variants: Int, elems: &NM, b
             ""
         else
             dr_get_desc(&list_get(args, 0), elems)
-    elsif map_get(variants, str_as_int(&("desc:" + name))) != 0
+    elsif map_get(variants, str_own(&("desc:" + name))) != 0
         if dr_ctor_pure(args, 0, list_len(args), variants, elems, borrows, lists, sns, took, 0) == 1
-            str_from_int(map_get(variants, str_as_int(&("desc:" + name))))
+            str_from_int(map_get(variants, str_own(&("desc:" + name))))
         else
             ""
-    elsif map_get(variants, str_as_int(&("rd:" + name))) != 0
+    elsif map_get(variants, str_own(&("rd:" + name))) != 0
         if dr_call_shares(name, args, 0, list_len(args), variants, elems, borrows, lists, sns, took) == 1
-            str_from_int(map_get(variants, str_as_int(&("rd:" + name))))
+            str_from_int(map_get(variants, str_own(&("rd:" + name))))
         else
             ""
     else
@@ -2364,12 +2496,12 @@ fn dr_note_borrow(local: &String, e: &Expr, variants: Int, elems: &NM, borrows: 
         _a = nm_put(borrows, local, 0)
         nm_put(sns, local, 0)
     else
-        _a = nm_put(borrows, local, str_as_int(&strdup(d)))
+        _a = nm_put(borrows, local, str_own(&strdup(d)))
         sn = dr_borrow_sn(e, variants, lists, sns)
         if str_len(sn) == 0
             nm_put(sns, local, 0)
         else
-            nm_put(sns, local, str_as_int(&strdup(sn)))
+            nm_put(sns, local, str_own(&strdup(sn)))
 
 fn dr_wrap_copy(e: &Expr, desc: &String) -> Expr ! alloc
     args = list_new[Expr]()
@@ -2378,7 +2510,7 @@ fn dr_wrap_copy(e: &Expr, desc: &String) -> Expr ! alloc
     XCall("desc_copy", args, "", 0)
 
 fn dr_took_at(took: Int, callee: &String, i: Int) -> Int ! alloc
-    flags = map_get(took, str_as_int(callee))
+    flags = map_get(took, str_own(callee))
     if flags == 0
         0
     elsif i >= vec_len(flags)
@@ -2406,9 +2538,9 @@ fn dr_arg_owns(callee: &String, i: Int, variants: Int, took: Int) -> Int ! alloc
         0
     elsif dr_borrows(callee) == 1
         0
-    elsif map_get(variants, str_as_int(&("struct:" + callee))) != 0
+    elsif map_get(variants, str_own(&("struct:" + callee))) != 0
         0
-    elsif map_get(variants, str_as_int(callee)) != 0
+    elsif map_get(variants, str_own(callee)) != 0
         1
     else
         dr_took_at(took, callee, i)
@@ -2515,7 +2647,7 @@ fn dr_claim_arms_in(arms: &List[TArm], i: Int, n: Int, own: Int, variants: Int, 
 fn dr_ctor_arg_own(own: Int, callee: &String, args: &List[Expr], i: Int, variants: Int, elems: &NM, borrows: &NM, lists: &NM, sns: &NM, took: Int) -> Int ! alloc
     if own == 1
         1
-    elsif map_get(variants, str_as_int(&("struct:" + callee))) == 0
+    elsif map_get(variants, str_own(&("struct:" + callee))) == 0
         0
     elsif dr_ctor_pure(args, 0, list_len(args), variants, elems, borrows, lists, sns, took, 0) == 1
         0
@@ -2603,6 +2735,7 @@ fn drops_body(f: &TFn, denv: Int) -> TBlock ! alloc
     hoisted = dr_hoist_block(&h, &f.body)
     claimed = dr_claim_fn(f, &hoisted, vec_get(denv, 0), &h.lists, vec_get(denv, 3))
     c = dr_facts(&f.params, &claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
+    _sp = dr_set(&c, 6, 1)
     res = dr_xform_block(&c, &claimed)
     _pp = dr_pin_params(&c.ps)
     _ph = dr_pin_list(&hoisted.stmts)

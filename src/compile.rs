@@ -613,3 +613,37 @@ fn run_cmd(mut cmd: Command) -> Result<(), Vec<Diagnostic>> {
 fn internal_diag(msg: String) -> Diagnostic {
     Diagnostic::new(ErrorCode::EInternal, msg, Default::default())
 }
+
+/// Every function of the module graph, in order: the callees the drops pass looks at.
+fn graph_callee_fns(graph: &ModuleGraph) -> Vec<&FnDef> {
+    let mut out = Vec::new();
+    for m in &graph.order {
+        for item in &m.program.items {
+            if let Item::Fn(f) = item {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+/// IR of `file` as the bootstrap compiler lowers it (the `sal emit ir` text): the module graph,
+/// inference, the moves the borrow checker publishes, drops, lowering and fusion.
+pub fn bootstrap_ir_text(
+    file: &Path,
+    root: &Path,
+    target: crate::target::Target,
+) -> Result<String, Vec<Diagnostic>> {
+    let graph = resolve_module_graph(&file.to_path_buf(), &root.to_path_buf())?;
+    let root_mod = graph.order.last().expect("empty module graph");
+    let callables = callable_fn_names(root_mod, &graph);
+    let infer_out = infer_module(root_mod, &graph, target)?;
+    let graph_progs: Vec<&Program> = graph.order.iter().map(|m| &m.program).collect();
+    let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
+    let callees = graph_callee_fns(&graph);
+    // The drops pass reads the moves the borrow checker publishes (SPEC «Memoria»).
+    crate::borrowck::publish_moved_locals(&root_mod.program, &infer_out);
+    let mut ir = lower_program_with_callables_env(&root_mod.program, &callables, strings, &callees);
+    crate::fuse::fuse_module(&mut ir);
+    Ok(ir_to_text(&ir))
+}

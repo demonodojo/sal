@@ -15,14 +15,15 @@ struct TEnv
     g_idx: List[Int]
 
 # ---- type text helpers ----
-fn tt_is_string(ty: &String) -> Int ! alloc
+fn tt_is_string(ty0: &String) -> Int ! alloc
+    ty = ty_deref(ty0)
     if ty.eq("String") == 1
         1
     else
         ty.eq("String ")
 
 fn tt_is_float(ty: &String) -> Int ! alloc
-    trim_spaces(ty.dup()).eq("Float")
+    ty_deref(ty).eq("Float")
 
 # `ty` names `name`; the parser leaves one trailing space after an identifier ("Path ").
 fn tt_matches(ty: &String, name: &String) -> Int ! alloc
@@ -58,15 +59,16 @@ fn tt_arg(t: &String, i: Int) -> String ! alloc
         str_from_int(h)
 
 # `T` of a `List[T]` type text, "" otherwise.
-fn tt_list_elem(t: &String) -> String ! alloc
+fn tt_list_elem(t0: &String) -> String ! alloc
+    t = ty_deref(t0)
     if t.len() == 0
         ""
     else
-        open = ty_find_open(t, 0)
+        open = ty_find_open(&t, 0)
         if open < 0
             ""
         elsif trim_spaces(t.slice(0, open)).eq("List") == 1
-            tt_arg(t, 0)
+            tt_arg(&t, 0)
         else
             ""
 
@@ -260,7 +262,7 @@ fn tt_field_type_go(fields: &List[TField], field: &String, i: Int, n: Int) -> St
         tt_field_type_go(fields, field, i + 1, n)
 
 fn tt_field_type(structs: &List[TStruct], sname: &String, field: &String) -> String ! alloc
-    si = tt_struct_find(structs, sname)
+    si = tt_struct_find(structs, &ty_deref(sname))
     if si < 0
         ""
     else
@@ -280,7 +282,7 @@ fn tt_matmul(env: &TEnv, args: &List[Expr]) -> String ! alloc
         ""
 
 fn tt_dict_get(env: &TEnv, args: &List[Expr]) -> String ! alloc
-    dt = texpr_type(env, &args.get(0))
+    dt = ty_deref(&texpr_type(env, &args.get(0)))
     v = tt_arg(&dt, 1)
     if v.len() == 0
         ""
@@ -363,8 +365,11 @@ fn tt_binary_type(env: &TEnv, op: &String, l: &Expr, r: &Expr) -> String ! alloc
 fn tt_unary_type(env: &TEnv, op: &String, inner: &Expr) -> String ! alloc
     if op.eq("neg") == 1
         texpr_type(env, inner)
-    else
+    elsif op.eq("not") == 1
         ""
+    else
+        # `&x`, `&mut x`, `*x`: the C emitter erases references.
+        ty_deref(&texpr_type(env, inner))
 
 # Type text of `e` under `env`, "" when unknown.
 fn texpr_type(env: &TEnv, e: &Expr) -> String ! alloc

@@ -25,9 +25,10 @@ const BUILTIN_TYPES = [
   "F16",
   "F32",
   "I8",
+  "any",
 ] as const;
 
-const KEYWORD_EXTRA = ["method", "static", "init"] as const;
+const KEYWORD_EXTRA = ["method", "static", "init", "protocol", "impl", "mut", "self"] as const;
 const EFFECTS = ["alloc", "io"] as const;
 
 const KEYWORD_RE = new RegExp(
