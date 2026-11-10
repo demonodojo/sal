@@ -71,10 +71,10 @@ fn sal_http_mock_integration() {
         .spawn()
         .expect("spawn mock");
     std::thread::sleep(Duration::from_millis(400));
-    let path = root().join("tests/sal/test_http_mock.sal");
+    let path = root().join("tests/sal/http_mock_integration.sal");
     let bin_dir = root().join("target/sal-out/tests");
     std::fs::create_dir_all(&bin_dir).ok();
-    let out = bin_dir.join("test_http_mock");
+    let out = bin_dir.join("http_mock_integration");
     let opts = CompileOptions {
         toolchain: Default::default(),
         output: Some(out.clone()),
@@ -94,5 +94,5 @@ fn sal_http_mock_integration() {
         .unwrap_or(99);
     let _ = child.kill();
     let _ = child.wait();
-    assert_eq!(code, 0, "test_http_mock exit {code}");
+    assert_eq!(code, 0, "http_mock_integration exit {code}");
 }

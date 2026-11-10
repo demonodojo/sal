@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use sal_compiler::compile::compile_file;
 use sal_compiler::CompileOptions;
@@ -54,15 +54,22 @@ fn bootstrap_ir(path: &Path) -> String {
         .unwrap_or_else(|d| panic!("bootstrap failed on {}: {:?}", path.display(), d))
 }
 
+/// Stage1 (plain / instrumented) and stage2 are compiled once per process and reused.
 fn compile_selfhost(instrument: bool) -> PathBuf {
-    // The debug compile of the selfhost recurses deeper than the default thread stack.
-    std::thread::Builder::new()
-        .name("sal-selfhost".into())
-        .stack_size(256 << 20)
-        .spawn(move || compile_selfhost_here(instrument))
-        .expect("spawn selfhost compile")
-        .join()
-        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    static PLAIN: OnceLock<PathBuf> = OnceLock::new();
+    static INST: OnceLock<PathBuf> = OnceLock::new();
+    let cell = if instrument { &INST } else { &PLAIN };
+    cell.get_or_init(|| {
+        // The debug compile of the selfhost recurses deeper than the default thread stack.
+        std::thread::Builder::new()
+            .name("sal-selfhost".into())
+            .stack_size(256 << 20)
+            .spawn(move || compile_selfhost_here(instrument))
+            .expect("spawn selfhost compile")
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
+    .clone()
 }
 
 fn compile_selfhost_here(instrument: bool) -> PathBuf {
@@ -78,14 +85,9 @@ fn compile_selfhost_here(instrument: bool) -> PathBuf {
     };
     let art = compile_file(&root().join("selfhost/main.sal"), &opts).expect("compile selfhost");
     let bin = art.binary.expect("binary");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
     let copy = PathBuf::from(format!(
-        "/tmp/sal-selfhost-bin-{}-{}-{}",
+        "/tmp/sal-selfhost-bin-{}-{}",
         std::process::id(),
-        stamp,
         if instrument { "inst" } else { "plain" }
     ));
     std::fs::copy(&bin, &copy).expect("copy binary");
@@ -116,14 +118,15 @@ fn run_emit_ir_in(bin: &Path, input: &Path, project: &Path, cache_tag: &str) -> 
 }
 
 fn compile_stage2(stage1: &Path) -> PathBuf {
-    let out = PathBuf::from(format!(
-        "/tmp/sal-stage2-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    static STAGE2: OnceLock<PathBuf> = OnceLock::new();
+    let stage1 = stage1.to_path_buf();
+    STAGE2
+        .get_or_init(|| compile_stage2_here(&stage1))
+        .clone()
+}
+
+fn compile_stage2_here(stage1: &Path) -> PathBuf {
+    let out = PathBuf::from(format!("/tmp/sal-stage2-{}", std::process::id()));
     let status = Command::new(stage1)
         .arg(root().join("selfhost/main.sal"))
         .arg("-o")
@@ -1060,7 +1063,7 @@ const PARITY_FILES: &[&str] = &[
     "tests/sal/support/assert.sal",
     "tests/sal/test_glob.sal",
     "tests/sal/test_http_chunk.sal",
-    "tests/sal/test_http_mock.sal",
+    "tests/sal/http_mock_integration.sal",
     "tests/sal/test_json_esc.sal",
     "tests/sal/test_sse.sal",
 ];

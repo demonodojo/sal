@@ -893,9 +893,27 @@ char *sal_str_slice(const char *s, int64_t start, int64_t end) {
 }
 
 char *sal_int_to_str(int64_t v) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%lld", (long long)v);
-    return sal_str_from_cstr(buf);
+    /* Decimal digits, without `snprintf` (it was ~30% of the instructions in the
+     * `node` memory benchmark) and without a second pass through strlen/memcpy:
+     * the digits are written backwards into a stack buffer of the exact size. */
+    char buf[20];
+    int at = 20;
+    uint64_t mag = v < 0 ? ~(uint64_t)v + 1u : (uint64_t)v;
+    do {
+        buf[--at] = (char)('0' + (int)(mag % 10u));
+        mag /= 10u;
+    } while (mag != 0);
+    if (v < 0) {
+        buf[--at] = '-';
+    }
+    size_t n = (size_t)(20 - at);
+    char *out = sal_str_alloc_size(n, n + 1);
+    if (!out) {
+        return NULL;
+    }
+    memcpy(out, buf + at, n);
+    out[n] = '\0';
+    return out;
 }
 
 char *sal_char_to_str(int64_t c) {
@@ -2634,6 +2652,14 @@ void *sal_list_new_typed(int64_t elem_kind) {
     return vp;
 }
 
+/* A descriptor that already releases one element (`String`, describable struct or
+ * enum): the element glue would repeat the same work through two more calls (the
+ * glue and, for a struct, the block free). Lists without a descriptor (`i`) still
+ * need their glue (`sal_list_free_elem`, `drop.elem.<S>`). */
+static int desc_owns_elem(const char *d) {
+    return d && (d[0] == 's' || d[0] == 'S' || d[0] == 'E');
+}
+
 /* Frees a list. A list owns its elements as its descriptor says: Strings are
  * released, flat structs release their blocks and String fields. */
 int64_t sal_list_box_id(void *vp) {
@@ -2646,8 +2672,9 @@ void sal_list_free(void *vp) {
         return;
     }
     if (l->owned) {
+        int by_desc = desc_owns_elem(l->desc);
         for (size_t i = 0; i < l->vec.len; i++) {
-            if (l->elem_drop) {
+            if (l->elem_drop && !by_desc) {
                 l->elem_drop(l->vec.data[i]);
             } else {
                 desc_free(l->desc, l->vec.data[i]);

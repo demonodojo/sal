@@ -38,7 +38,7 @@ Convenciones de la ABI (SPEC, sección `syscall`): `PIPE` devuelve `(escritura <
 
 ## Pruebas (`tests/sal/`)
 
-`sal test [dir]` (por defecto `tests/sal`) compila y ejecuta cada `test_*.sal`; exit 0 = pasa. El ayudante `tests/sal/support/assert.sal` (`assert_ne`, `assert_zero`, `assert_str_eq`, `assert_contains`) devuelve 0 si se cumple o un código distinto de cero que identifica la aserción. Cada paso lleva su propio código para saber cuál falló. `test_http_mock.sal` lee el puerto de `OC_MOCK_PORT` (7422 por defecto), así que necesita un servidor local escuchando ahí; compruébalo antes de dar por roto un fallo de conexión.
+`sal test [dir]` (por defecto `tests/sal`) compila y ejecuta cada `test_*.sal`; exit 0 = pasa. El ayudante `tests/sal/support/assert.sal` (`assert_ne`, `assert_zero`, `assert_str_eq`, `assert_contains`) devuelve 0 si se cumple o un código distinto de cero que identifica la aserción. Cada paso lleva su propio código para saber cuál falló. La integración HTTP con mock (`tests/sal/http_mock_integration.sal`, puerto `OC_MOCK_PORT` / 7422) no entra en `sal test`: la arranca `tests/t85_lib.rs` con `opencode-sal/tests/mock_llm.py` si está presente.
 
 `tests/std_io_linux.rs` compila y ejecuta `examples/std_io_smoke.sal` para linux; es la comprobación mínima de que la ABI y el shim siguen alineados.
 
