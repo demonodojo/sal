@@ -121,7 +121,10 @@ fn cir_call(cc: Int, inst: &Inst) -> Int ! alloc
     args = ih_vec(&inst.strs, 0, inst.strs.len(), vec_new())
     ops = cir_ops(cc, args, 0, vec_len(args), vec_new())
     if inst.n1 == 0
-        cir_call_free(cc, &fname, ops)
+        if cir_is_list_glue_call(&fname) == 1
+            cir_list_glue_call(cc, &fname, args)
+        else
+            cir_call_free(cc, &fname, ops)
     elsif cir_shaped_call(&fname, inst.n2) == 1
         cir_shaped(cc, &inst.dest, &fname, ops, inst.n2)
     else
@@ -201,6 +204,31 @@ fn cir_reduce(cc: Int, dest: &String, ops: Int, shape: Int) -> Int ! alloc
 
 fn sal_tn_len_text(input: &String) -> String ! alloc
     "sal_tn_len(" + input + ")"
+
+# `sal_list_set_drop(l, drop.elem.T)` and `sal_list_set_clone(l, clone.T)`: the second operand
+# names a glue function, not a value. It goes as a function pointer of the type the runtime
+# takes, and the symbol is declared before use (its definition comes later in the file).
+fn cir_is_list_glue_call(fname: &String) -> Int ! alloc
+    if str_eq(fname, "sal_list_set_drop") + str_eq(fname, "sal_list_set_clone") > 0
+        1
+    else
+        0
+
+fn cir_list_glue_call(cc: Int, fname: &String, args: Int) -> Int ! alloc
+    ops = vec_new()
+    _a = vec_push(ops, cir_op(cc, vec_get(args, 0)).to_int())
+    cast = if str_eq(fname, "sal_list_set_clone") == 1
+        "(int64_t (*)(int64_t))"
+    else
+        "(void (*)(int64_t))"
+    _b = vec_push(ops, (cast + cir_glue_symbol(cc, &str_from_int(vec_get(args, 1)))).to_int())
+    cc_line(cc, &("  " + cir_rt(cc, fname, ops) + ";\n"))
+
+# A glue symbol (`drop.<T>`, `drop.elem.<T>`, `clone.<T>`, `sal_list_free_elem`) as C: declared
+# with its asm label, so the reference resolves to the definition emitted later.
+fn cir_glue_symbol(cc: Int, name: &String) -> String ! alloc
+    cir_decl(cc, name)
+    "R_" + cir_cname(name)
 
 fn cir_call_free(cc: Int, fname: &String, ops: Int) -> Int ! alloc
     cc_line(cc, &("  " + cir_call_expr(cc, fname, ops) + ";\n"))

@@ -1,0 +1,14 @@
+# exit: 2
+# El clon de una lista de structs con un campo `List` es profundo: escribir en el clon no toca
+# el original (cada lista posee sus propias cajas).
+struct Bag
+    name: String
+    items: List[Int]
+
+fn main() -> Int ! alloc
+    xs = List.new[Bag]()
+    xs.push(Bag("ab", List.new[Int]()))
+    ys = xs.clone()
+    o = ys.get_mut(0)
+    o.name = "zzz"
+    xs.get(0).name.len()

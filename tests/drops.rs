@@ -248,13 +248,13 @@ fn copy_element_list_and_bytes_are_freed() {
 }
 
 #[test]
-fn list_push_alias_keeps_the_list_alive() {
+fn list_push_keeps_the_list_alive() {
     let ir = ir_of(
-        "push_alias",
-        "fn f() -> Int ! alloc\n    ys = list_new()\n    zs = list_push(ys, 1)\n    list_len(zs)\n",
+        "push_keep",
+        "fn f() -> Int ! alloc\n    ys = list_new[Int]()\n    list_push(ys, 1)\n    list_len(ys)\n",
     );
-    // `ys` moved into `zs`: its flag is cleared, so only the guarded free remains.
-    assert!(ir.contains("op: \"eq\""), "{ir}");
+    // `list_push` takes `&mut` and returns `Unit`: the list local stays live and is released once.
+    assert!(ir.contains("func: \"sal_list_free\"") || ir.contains("func: \"drop."), "{ir}");
 }
 
 #[test]

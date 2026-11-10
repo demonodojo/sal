@@ -312,6 +312,9 @@ fn tt_call_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) ->
     elsif name.eq("struct_clone") + name.eq("enum_copy") + name.eq("clone") == 1
         # A copy has the type of the value it copies; the copy of a `&T` is an owned `T`.
         ty_deref(&texpr_type(env, &args.get(0)))
+    elsif tt_is_container_clone(name) == 1
+        # `xs.clone()` of a List/Dict/Bytes, and `x.clone()` of a Copy scalar, keep their type.
+        ty_deref(&texpr_type(env, &args.get(0)))
     elsif name.eq("load") == 1
         targs.dup()
     elsif name.eq("matmul") == 1
@@ -336,6 +339,16 @@ fn tt_call_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) ->
         tt_dict_get(env, args)
     else
         tt_user_call(env, name, args)
+
+# The clone builtins of the containers and of the Copy scalars (`infer_typed_builtin` in
+# selfhost/sem/infer.sal): their result has the type of the receiver.
+fn tt_is_container_clone(name: &String) -> Int ! alloc
+    if name.eq("list_clone") + name.eq("dict_clone") + name.eq("bytes_clone") > 0
+        1
+    elsif name.eq("clone_copy") == 1
+        1
+    else
+        0
 
 fn tt_block_tail_type(env: &TEnv, b: &TBlock) -> String ! alloc
     texpr_type(env, &b.tail)
