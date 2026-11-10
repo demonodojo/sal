@@ -1,0 +1,12 @@
+# error: E_BORROW
+# selfhost-xfail: el borrowck del selfhost no rechaza mover un campo fuera de una referencia
+struct P
+    name: String
+    n: Int
+
+fn take(p: &P) -> String
+    p.name
+
+fn main() -> Int ! alloc
+    p = P(d"ab".dup(), 1)
+    take(&p).len()

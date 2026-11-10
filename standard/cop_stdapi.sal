@@ -214,10 +214,10 @@ fn stdapi_consider(src: &String, lex: &Lex, i: Int) -> Off ! alloc
         return std_off_skip()
     off_new(d"Style/StdApi", d"use the std method API instead of " + name, lex.start(i), call.rparen + 1, 1, fix)
 
-fn cop_stdapi(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
+fn cop_stdapi(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     cop_stdapi_go(src, lex, offs, 0, lex.len())
 
-fn cop_stdapi_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_stdapi_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

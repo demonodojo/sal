@@ -1,0 +1,40 @@
+# Corpus: liberación al reasignar, contenedor devuelto por función, lista de listas, lista de
+# structs con glue y `clone` profundo de un struct con un campo `List` y de una lista de ellos
+# (SPEC «Memoria»). Con --instrument no hay LEAK.
+
+struct Bag
+    name: String
+    items: List[Int]
+
+fn make(n: Int) -> List[Int] ! alloc
+    xs = List.new[Int]()
+    xs.push(n)
+    xs
+
+fn rebind(n: Int) -> Int ! alloc
+    s = n.to_str()
+    s = (n + 100).to_str()
+    s.len()
+
+fn nested() -> Int ! alloc
+    xss = List.new[List[String]]()
+    xs = List.new[String]()
+    xs.push((1).to_str())
+    xss.push(xs)
+    xss.len()
+
+fn deep(b: &Bag) -> Int ! alloc
+    c = b.clone()
+    c.items.push(7)
+    c.items.len() - b.items.len()
+
+fn bags() -> Int ! alloc
+    xs = List.new[Bag]()
+    xs.push(Bag((5).to_str(), List.new[Int]()))
+    ys = xs.clone()
+    xs.len() + ys.len()
+
+fn main() -> Int ! alloc
+    ys = make(3)
+    b = Bag((5).to_str(), make(1))
+    ys.len() + rebind(9) + nested() + deep(&b) + bags()

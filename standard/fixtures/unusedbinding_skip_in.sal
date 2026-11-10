@@ -7,3 +7,12 @@ fn f(xs: List[Int]) -> Int ! alloc
 fn g(xs: List[Int]) -> Int ! alloc
     xs.push(2)
     last = xs.len()
+
+enum Opt
+    No
+    Yes(Int)
+
+fn h(o: Opt) -> Int
+    match o
+        Yes(n) => n
+        No => h(Yes(2)) + 1

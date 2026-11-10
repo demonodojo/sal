@@ -9,5 +9,5 @@ fn third(xs: &List[B]) -> Int ! alloc
 
 fn main() -> Int ! alloc
     xs = list_new[B]()
-    _a = list_push(&xs, B(1, 2, 3))
+    _a = list_push(&mut xs, B(1, 2, 3))
     third(&xs)

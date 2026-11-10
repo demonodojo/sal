@@ -7,7 +7,7 @@ fn count(n: Int) -> Int ! alloc
     xs = list_new[Tok]()
     i = 0
     while i < n
-        _a = list_push(&xs, End)
+        _a = list_push(&mut xs, End)
         i = i + 1
     list_len(&xs)
 

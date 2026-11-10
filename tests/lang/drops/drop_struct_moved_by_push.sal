@@ -3,15 +3,15 @@ struct Item
     name: String
     tags: List[Int]
 
-fn fill(xs: &List[Item]) -> Int ! alloc
+fn fill(xs: &mut List[Item]) -> Int ! alloc
     tags = list_new[Int]()
-    _t = list_push(&tags, 7)
+    _t = list_push(&mut tags, 7)
     it = Item(strdup("a"), tags)
     _p = list_push(xs, it)
     0
 
 fn main() -> Int ! alloc
     xs = list_new[Item]()
-    _f = fill(&xs)
+    _f = fill(&mut xs)
     s = list_get(&xs, 0)
     list_get(&s.tags, 0)

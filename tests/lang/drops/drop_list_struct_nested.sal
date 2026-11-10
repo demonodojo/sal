@@ -12,11 +12,12 @@ fn build(n: Int) -> Int ! alloc
     xs = list_new[Outer]()
     i = 0
     while i < n
-        _a = list_push(&xs, Outer(int_to_str(i), Inner(int_to_str(i + 10), i), i))
+        _a = list_push(&mut xs, Outer(int_to_str(i), Inner(int_to_str(i + 10), i), i))
         i = i + 1
     o = list_get(&xs, 1)
-    _b = list_set(xs, 0, Outer("zz", Inner("yy", 40), 2))
-    o.inner.n + o.k + list_len(&xs) + str_len(o.name)
+    k = o.inner.n + o.k + str_len(o.name)
+    _b = list_set(&mut xs, 0, Outer("zz", Inner("yy", 40), 2))
+    k + list_len(&xs)
 
 fn main() -> Int ! alloc
     build(3)

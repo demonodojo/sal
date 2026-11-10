@@ -11,7 +11,7 @@ struct Outer
 fn fill() -> Int ! alloc
     xs = list_new[Outer]()
     inr = Inner("q", 7)
-    _a = list_push(&xs, Outer("a", inr, 1))
+    _a = list_push(&mut xs, Outer("a", inr, 1))
     list_len(&xs) + 1
 
 fn main() -> Int ! alloc

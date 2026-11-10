@@ -1,6 +1,9 @@
 # exit: 6
 fn main() -> Int ! alloc
-    xs = list_push(&list_push(&list_push(&list_new(), 1), 2), 3)
+    xs = list_new()
+    list_push(&mut xs, 1)
+    list_push(&mut xs, 2)
+    list_push(&mut xs, 3)
     s = 0
     i = 0
     while i < list_len(&xs)

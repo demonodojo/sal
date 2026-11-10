@@ -38,6 +38,7 @@ fn corpus_files() -> Vec<PathBuf> {
         "corpus/column_ops.sal",
         "corpus/newtypes.sal",
         "corpus/early_return.sal",
+        "corpus/drop_rebind.sal",
         "examples/hello.sal",
         "examples/forward.sal",
     ]
@@ -965,6 +966,7 @@ const PARITY_FILES: &[&str] = &[
     "corpus/drop_flags.sal",
     "corpus/drop_list_struct.sal",
     "corpus/drop_temporaries.sal",
+    "corpus/drop_rebind.sal",
     "corpus/enum_match.sal",
     "corpus/param_modes.sal",
     "corpus/places.sal",

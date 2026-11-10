@@ -62,4 +62,5 @@ fn main() -> Int ! alloc
     (a + b).dup()
     "a" + "b"
     s + "c"
+    (77).to_str()
     0

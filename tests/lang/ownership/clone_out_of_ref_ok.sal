@@ -1,0 +1,11 @@
+# exit: 4
+struct P
+    name: String
+    n: Int
+
+fn take(p: &P) -> String ! alloc
+    p.name.clone()
+
+fn main() -> Int ! alloc
+    p = P(d"ab".dup(), 1)
+    take(&p).len() + p.name.len()

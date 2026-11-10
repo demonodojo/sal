@@ -115,12 +115,57 @@ fn local_moved_into_another_local_is_released_once() {
 }
 
 #[test]
-fn reassigned_local_is_not_freed() {
+fn reassigned_local_releases_the_old_value() {
+    // SPEC «Memoria»: a reassignment computes the new value, releases the old one and rebinds
+    // the name; the last value is released at scope end. Two Strings, two releases.
     let ir = ir_of(
         "reassigned",
         "fn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    s = str_slice(\"abcdef\", 0, 3)\n    str_len(s)\n",
     );
-    assert_eq!(frees(&ir), 0, "{ir}");
+    assert_eq!(releases_in(&ir, "main", "sal_free"), (2, 0), "{ir}");
+}
+
+#[test]
+fn container_returned_by_a_fn_is_released_by_the_caller() {
+    // SPEC «Memoria»: returning a container moves it to the caller, which owns and releases it.
+    let ir = ir_full(
+        "ret_list",
+        "fn make() -> List[Int] ! alloc\n    xs = list_new[Int]()\n    xs\n\nfn main() -> Int ! alloc\n    ys = make()\n    list_len(&ys)\n",
+    );
+    assert_eq!(releases_in(&ir, "make", "sal_list_free"), (0, 0), "{ir}");
+    assert_eq!(releases_in(&ir, "main", "sal_list_free"), (1, 0), "{ir}");
+}
+
+const BAG: &str = "struct Bag\n    name: String\n    items: List[Int]\n\n";
+
+#[test]
+fn clone_of_a_struct_with_a_list_field_is_built_and_released_by_its_glue() {
+    // `b.clone()` of a struct without a descriptor goes through `clone.Bag` (a copy of every
+    // field), and the local that holds the clone releases it with `drop.Bag`.
+    let ir = ir_full(
+        "clone_glue",
+        &format!("{BAG}fn count(b: &Bag) -> Int ! alloc\n    c = b.clone()\n    c.items.len()\n\nfn main() -> Int ! alloc\n    b = Bag(int_to_str(5), list_new[Int]())\n    count(&b)\n"),
+    );
+    let count = fn_ir(&ir, "count");
+    assert!(count.contains("func: \"clone.Bag\", args: [\"b\"]"), "{ir}");
+    assert_eq!(count.matches("func: \"drop.Bag\"").count(), 1, "{ir}");
+    let glue = fn_ir(&ir, "clone.Bag");
+    assert!(glue.contains("sal_strdup") && glue.contains("sal_list_clone_val"), "{ir}");
+}
+
+#[test]
+fn list_of_glue_structs_and_its_clone_are_released() {
+    // A `List[Bag]` releases its elements through `drop.elem.Bag`; `xs.clone()` is a fresh list
+    // that copies each element with `clone.Bag`. Each local releases its own list, and the
+    // receiver of `clone` is only read.
+    let ir = ir_full(
+        "clone_list",
+        &format!("{BAG}fn main() -> Int ! alloc\n    xs = list_new[Bag]()\n    ys = xs.clone()\n    list_len(&xs) + list_len(&ys)\n"),
+    );
+    let main = fn_ir(&ir, "main");
+    assert!(main.contains("func: \"sal_list_set_drop\", args: [\"t1\", \"drop.elem.Bag\"]"), "{ir}");
+    assert!(main.contains("func: \"sal_list_set_clone\", args: [\"t1\", \"clone.Bag\"]"), "{ir}");
+    assert_eq!(releases_in(&ir, "main", "sal_list_free"), (2, 0), "{ir}");
 }
 
 #[test]

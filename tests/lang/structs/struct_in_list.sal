@@ -5,6 +5,6 @@ struct P
 
 fn main() -> Int ! alloc
     v = list_new[P]()
-    _ = list_push(&v, P(1, 2))
+    _ = list_push(&mut v, P(1, 2))
     q = list_get(&v, 0)
     q.y

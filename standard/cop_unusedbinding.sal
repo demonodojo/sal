@@ -5,11 +5,11 @@ import util
 fn CODE_UNUSED() -> String ! alloc
     d"Style/UnusedBinding"
 
-fn cop_unusedbinding(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
+fn cop_unusedbinding(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     n = lex.len()
     cop_unused_go(src, lex, offs, 0, n)
 
-fn cop_unused_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_unused_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif ub_offense_at(src, lex, n, i) == 1
@@ -40,6 +40,9 @@ fn ub_offense_at(src: &String, lex: &Lex, n: Int, i: Int) -> Int ! alloc
     elsif i + 3 >= n
         0
     elsif lex.kind(i + 1) != TK_EQ()
+        0
+    elsif src.char(lex.start(i + 1) + 1) == 62
+        # `No => f(x)` is a match arm, not a binding.
         0
     else
         p = ub_rhs_lparen(lex, n, i + 2)

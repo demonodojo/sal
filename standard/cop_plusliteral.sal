@@ -64,11 +64,11 @@ fn dstring_in_plus(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     else
         plus_before_dstring(lex, n, i)
 
-fn cop_plusliteral(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
+fn cop_plusliteral(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     n = lex.len()
     cop_pluslit_go(src, lex, offs, 0, n)
 
-fn cop_pluslit_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_pluslit_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif dstring_in_plus(lex, n, i) == 1

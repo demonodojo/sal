@@ -326,7 +326,7 @@ fn module_qualifiers_go(tp: &TProgram, i: Int, n: Int, mpath: &String, proot: &S
                     ex2 = quals_push(explicit, str_as_int(&strdup(alias)), dep_key)
                     module_qualifiers_go(tp, i + 1, n, mpath, proot, ex2, implicit)
             else
-                iq = implicit_qualifier(imp)
+                iq = implicit_qualifier(imp.clone())
                 if str_len(iq) == 0
                     module_qualifiers_go(tp, i + 1, n, mpath, proot, explicit, implicit)
                 else
@@ -404,7 +404,7 @@ fn qx_same(e: &Expr) -> Expr ! alloc
 # A copy of the list: a shared alias left in a temporary box would be released with the box.
 fn qx_share_list(xs: &List[Expr]) -> List[Expr] ! alloc
     out = List.new[Expr]()
-    _c = tc_exprs(xs, 0, xs.len(), &out)
+    _c = tc_exprs(xs, 0, xs.len(), &mut out)
     out
 
 fn qx_share_str(s: &String) -> String ! alloc
@@ -449,7 +449,7 @@ fn qx_call_name(nm: &String, ctx: Int, links: Int) -> String ! alloc
         else
             strdup(str_from_int(lk))
 
-fn qx_args(xs: &List[Expr], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_args(xs: &mut List[Expr], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -461,7 +461,7 @@ fn qx_args(xs: &List[Expr], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
 
 # A renamed callee is a new call: the constructor takes the string. The argument list and the
 # type arguments stay the ones this call already had. An unchanged name keeps the box.
-fn qx_call(e: &Expr, nm: &String, args: &List[Expr], targs: &String, xp: Int, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_call(e: &Expr, nm: &String, args: &mut List[Expr], targs: &String, xp: Int, ctx: Int, links: Int) -> Expr ! alloc
     pos = qx_call_pos(nm, xp, ctx)
     _a = qx_args(args, 0, list_len(args), ctx, links)
     neu = qx_call_name(nm, ctx, links)
@@ -487,20 +487,20 @@ fn qx_call_pos(nm: &String, xp: Int, ctx: Int) -> Int ! alloc
     else
         xp - str_len(nm)
 
-fn qx_elsifs(xs: &List[TElsif], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_elsifs(xs: &mut List[TElsif], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
-        _c = qx_bind(&a, ctx, links)
+        a = list_get(&mut xs, i)
+        _c = qx_bind(&mut a, ctx, links)
         qx_elsifs(xs, i + 1, n, ctx, links)
 
 # The condition stays in its box unless it was `M.campo`. The body is the same block.
-fn qx_bind(a: &TElsif, ctx: Int, links: Int) -> Int ! alloc
+fn qx_bind(a: &mut TElsif, ctx: Int, links: Int) -> Int ! alloc
     neu = qx(&a.cond, ctx, links)
     if qx_moved(&a.cond, &neu) == 1
         a.cond = neu
-    a.body = qx_block(&a.body, ctx, links)
+    a.body = qx_block(&mut a.body, ctx, links)
     0
 
 fn qx_expr_slot(e: &Expr, i: Int, child: &Expr, ctx: Int, links: Int) -> Int ! alloc
@@ -514,13 +514,13 @@ fn qx_expr_slot(e: &Expr, i: Int, child: &Expr, ctx: Int, links: Int) -> Int ! a
 fn qx(e: &Expr, ctx: Int, links: Int) -> Expr ! alloc
     match e
         XField(base, fld) => qx_field(e, &base, &fld, ctx, links)
-        XCall(nm, args, targs, xp) => qx_call(e, &nm, &args, &targs, xp, ctx, links)
+        XCall(nm, args, targs, xp) => qx_call(e, &nm, &mut args, &targs, xp, ctx, links)
         XBin(_, l, r) => qx_bin(e, &l, &r, ctx, links)
-        XIf(cond, then_b, else_b, has_else, elsifs) => qx_if(e, &cond, &then_b, &else_b, has_else, &elsifs, ctx, links)
-        XWhile(cond, body) => qx_while(e, &cond, &body, ctx, links)
+        XIf(cond, then_b, else_b, has_else, elsifs) => qx_if(e, &cond, &mut then_b, &mut else_b, has_else, &mut elsifs, ctx, links)
+        XWhile(cond, body) => qx_while(e, &cond, &mut body, ctx, links)
         XTo(_, inner) => qx_one(e, 1, &inner, ctx, links)
-        XOn(_, body, _, _) => qx_on(e, &body, ctx, links)
-        XMatch(scrut, arms) => qx_match(e, &scrut, &arms, ctx, links)
+        XOn(_, body, _, _) => qx_on(e, &mut body, ctx, links)
+        XMatch(scrut, arms) => qx_match(e, &scrut, &mut arms, ctx, links)
         _ => qx_same(e)
 
 fn qx_bin(e: &Expr, l: &Expr, r: &Expr, ctx: Int, links: Int) -> Expr ! alloc
@@ -532,7 +532,7 @@ fn qx_one(e: &Expr, i: Int, child: &Expr, ctx: Int, links: Int) -> Expr ! alloc
     _c = qx_expr_slot(e, i, child, ctx, links)
     qx_same(e)
 
-fn qx_if(e: &Expr, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], ctx: Int, links: Int) -> Expr ! alloc
+fn qx_if(e: &Expr, cond: &Expr, then_b: &mut TBlock, else_b: &mut TBlock, has_else: Int, elsifs: &mut List[TElsif], ctx: Int, links: Int) -> Expr ! alloc
     _c = qx_expr_slot(e, 0, cond, ctx, links)
     _t = enum_set(e, 1, qx_block(then_b, ctx, links))
     if has_else == 1
@@ -540,30 +540,30 @@ fn qx_if(e: &Expr, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int,
     _a = qx_elsifs(elsifs, 0, list_len(elsifs), ctx, links)
     qx_same(e)
 
-fn qx_while(e: &Expr, cond: &Expr, body: &TBlock, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_while(e: &Expr, cond: &Expr, body: &mut TBlock, ctx: Int, links: Int) -> Expr ! alloc
     _c = qx_expr_slot(e, 0, cond, ctx, links)
     _b = enum_set(e, 1, qx_block(body, ctx, links))
     qx_same(e)
 
-fn qx_on(e: &Expr, body: &TBlock, ctx: Int, links: Int) -> Expr ! alloc
+fn qx_on(e: &Expr, body: &mut TBlock, ctx: Int, links: Int) -> Expr ! alloc
     _b = enum_set(e, 1, qx_block(body, ctx, links))
     qx_same(e)
 
-fn qx_match(e: &Expr, scrut: &Expr, arms: &List[TArm], ctx: Int, links: Int) -> Expr ! alloc
+fn qx_match(e: &Expr, scrut: &Expr, arms: &mut List[TArm], ctx: Int, links: Int) -> Expr ! alloc
     _s = qx_expr_slot(e, 0, scrut, ctx, links)
     _a = qx_arms(arms, 0, list_len(arms), ctx, links)
     qx_same(e)
 
-fn qx_arms(xs: &List[TArm], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_arms(xs: &mut List[TArm], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
+        a = list_get(&mut xs, i)
         _p = qx_pat(&a.pat, ctx, links)
         neu = qx(&a.body, ctx, links)
         if qx_moved(&a.body, &neu) == 1
             a.body = neu
-        a.suite = qx_block(&a.suite, ctx, links)
+        a.suite = qx_block(&mut a.suite, ctx, links)
         qx_arms(xs, i + 1, n, ctx, links)
 
 # Variant patterns of an arm. `alias.V` needs an alias whose module has `V`; a bare `V` must be a
@@ -613,7 +613,7 @@ fn flat_keys_go(order: &Graph, proot: &String, tp: &TProgram, ctx: Int, i: Int, 
     elsif str_len(list_get(&tp.aliases, i)) != 0
         flat_keys_go(order, proot, tp, ctx, i + 1, n, seen)
     else
-        _a = flat_add_import(order, proot, ctx, &implicit_qualifier(list_get(&tp.imports, i)), seen)
+        _a = flat_add_import(order, proot, ctx, &implicit_qualifier(list_get(&tp.imports, i).clone()), seen)
         flat_keys_go(order, proot, tp, ctx, i + 1, n, seen)
 
 # The module a plain import names is flat; so are the modules it imports flat.
@@ -672,26 +672,27 @@ fn own_one_enum(vs: &List[TVariant], j: Int, n: Int, out: Int) -> Int ! alloc
         _a = vec_push(out, str_as_int(&strdup(list_get(vs, j).name)))
         own_one_enum(vs, j + 1, n, out)
 
-fn qx_stmt(st: &TStmt, ctx: Int, links: Int) -> Int ! alloc
+fn qx_stmt(st: &mut TStmt, ctx: Int, links: Int) -> Int ! alloc
     neu = qx(&st.expr, ctx, links)
     if qx_moved(&st.expr, &neu) == 1
         st.expr = neu
     0
 
-fn qx_stmts(xs: &List[TStmt], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_stmts(xs: &mut List[TStmt], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = qx_stmt(&list_get(xs, i), ctx, links)
+        _a = qx_stmt(&mut list_get(&mut xs, i), ctx, links)
         qx_stmts(xs, i + 1, n, ctx, links)
 
-fn qx_block(b: &TBlock, ctx: Int, links: Int) -> TBlock ! alloc
-    _a = qx_stmts(&b.stmts, 0, list_len(&b.stmts), ctx, links)
+fn qx_block(b: &mut TBlock, ctx: Int, links: Int) -> TBlock ! alloc
+    h689_0 = list_len(&b.stmts)
+    _a = qx_stmts(&mut b.stmts, 0, h689_0, ctx, links)
     neu = qx(&b.tail, ctx, links)
     if qx_moved(&b.tail, &neu) == 1
-        TBlock(b.stmts, neu)
+        TBlock(b.stmts.clone(), neu)
     else
-        TBlock(b.stmts, b.tail)
+        TBlock(b.stmts.clone(), b.tail.clone())
 
 # A type string changes only when the handle says so. The same pointer stays otherwise.
 fn qx_apply_ty(cur: &String, ctx: Int, links: Int) -> String ! alloc
@@ -705,11 +706,11 @@ fn qx_apply_ty(cur: &String, ctx: Int, links: Int) -> String ! alloc
             _f = free(cur)
             strdup(str_from_int(neu))
 
-fn qx_params(ps: &List[TParam], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_params(ps: &mut List[TParam], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        pm = list_get(ps, i)
+        pm = list_get(&mut ps, i)
         pm.ty = qx_apply_ty(&pm.ty, ctx, links)
         qx_params(ps, i + 1, n, ctx, links)
 
@@ -721,51 +722,52 @@ fn qx_new_name(cur: &String, r: Int) -> String ! alloc
     else
         strdup(str_from_int(lk))
 
-fn qx_fns(fns: &List[TFn], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_fns(fns: &mut List[TFn], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fns, i)
-        _p = qx_params(&f.params, 0, list_len(&f.params), ctx, links)
-        f.body = qx_block(&f.body, ctx, links)
+        f = list_get(&mut fns, i)
+        n_params = list_len(&f.params)
+        _p = qx_params(&mut f.params, 0, n_params, ctx, links)
+        f.body = qx_block(&mut f.body, ctx, links)
         f.ret = qx_apply_ty(&f.ret, ctx, links)
         qx_fns(fns, i + 1, n, ctx, links)
 
-fn qx_rename_fns(fns: &List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc
+fn qx_rename_fns(fns: &mut List[TFn], i: Int, n: Int, r: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fns, i)
+        f = list_get(&mut fns, i)
         neu = qx_new_name(&f.name, r)
         if str_len(neu) != 0
             f.name = neu
         qx_rename_fns(fns, i + 1, n, r)
 
-fn qx_consts(cs: &List[TConst], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
+fn qx_consts(cs: &mut List[TConst], i: Int, n: Int, ctx: Int, links: Int) -> Int ! alloc
     if i >= n
         0
     else
-        c = list_get(cs, i)
+        c = list_get(&mut cs, i)
         neu = qx(&c.expr, ctx, links)
         if qx_moved(&c.expr, &neu) == 1
             c.expr = neu
         qx_consts(cs, i + 1, n, ctx, links)
 
-fn qx_rename_consts(cs: &List[TConst], i: Int, n: Int, r: Int) -> Int ! alloc
+fn qx_rename_consts(cs: &mut List[TConst], i: Int, n: Int, r: Int) -> Int ! alloc
     if i >= n
         0
     else
-        c = list_get(cs, i)
+        c = list_get(&mut cs, i)
         neu = qx_new_name(&c.name, r)
         if str_len(neu) != 0
             c.name = neu
         qx_rename_consts(cs, i + 1, n, r)
 
-fn qx_rename_structs(sts: &List[TStruct], i: Int, n: Int, r: Int) -> Int ! alloc
+fn qx_rename_structs(sts: &mut List[TStruct], i: Int, n: Int, r: Int) -> Int ! alloc
     if i >= n
         0
     else
-        s = list_get(sts, i)
+        s = list_get(&mut sts, i)
         neu = qx_new_name(&s.name, r)
         if str_len(neu) != 0
             s.name = neu
@@ -773,13 +775,18 @@ fn qx_rename_structs(sts: &List[TStruct], i: Int, n: Int, r: Int) -> Int ! alloc
 
 # Qualifies module `mi` where it already sits. Bodies are rewritten before names, so the
 # rename map's keys stay alive for the lookups.
-fn qualify_typed(order: &Graph, mi: Int, ctx: Int, links: Int, r: Int) -> Int ! alloc
-    tp = list_get(&order.progs, mi)
-    _a = qx_fns(&tp.fns, 0, list_len(&tp.fns), ctx, links)
-    _k = qx_consts(&tp.consts, 0, list_len(&tp.consts), ctx, links)
-    _f = qx_rename_fns(&tp.fns, 0, list_len(&tp.fns), r)
-    _s = qx_rename_structs(&tp.structs, 0, list_len(&tp.structs), r)
-    _c = qx_rename_consts(&tp.consts, 0, list_len(&tp.consts), r)
+fn qualify_typed(order: &mut Graph, mi: Int, ctx: Int, links: Int, r: Int) -> Int ! alloc
+    tp = list_get(&mut order.progs, mi)
+    n_fns = list_len(&tp.fns)
+    _a = qx_fns(&mut tp.fns, 0, n_fns, ctx, links)
+    n_consts = list_len(&tp.consts)
+    _k = qx_consts(&mut tp.consts, 0, n_consts, ctx, links)
+    n_fns = list_len(&tp.fns)
+    _f = qx_rename_fns(&mut tp.fns, 0, n_fns, r)
+    n_structs = list_len(&tp.structs)
+    _s = qx_rename_structs(&mut tp.structs, 0, n_structs, r)
+    n_consts = list_len(&tp.consts)
+    _c = qx_rename_consts(&mut tp.consts, 0, n_consts, r)
     0
 
 fn flat_export_name_seen(seen: Int, name: Int) -> Int ! alloc
@@ -966,7 +973,7 @@ fn local_renames_structs(sts: &List[TStruct], i: Int, n: Int, clash: Int, modid:
         else
             local_renames_structs(sts, i + 1, n, clash, modid, r)
 
-fn qualify_one_module(order: &Graph, mi: Int, proot: &String, links: Int, clash: Int) -> Int ! io, alloc
+fn qualify_one_module(order: &mut Graph, mi: Int, proot: &String, links: Int, clash: Int) -> Int ! io, alloc
     ctx_step = module_qualifiers(order, mi, proot)
     if result_is_err(ctx_step) == 1
         ctx_step
@@ -1004,11 +1011,11 @@ fn alias_dep_keys(ctx: Int, aliases: &List[String], i: Int, n: Int, out: Int) ->
                 _p = vec_push(out, dep)
         alias_dep_keys(ctx, aliases, i + 1, n, out)
 
-fn qualify_all_modules(order: &Graph, n: Int, proot: &String, links: Int) -> Int ! io, alloc
+fn qualify_all_modules(order: &mut Graph, n: Int, proot: &String, links: Int) -> Int ! io, alloc
     clash = build_clash_map(order, n)
     qualify_all_go(order, 0, n, proot, links, clash)
 
-fn qualify_all_go(order: &Graph, i: Int, n: Int, proot: &String, links: Int, clash: Int) -> Int ! io, alloc
+fn qualify_all_go(order: &mut Graph, i: Int, n: Int, proot: &String, links: Int, clash: Int) -> Int ! io, alloc
     if i >= n
         result_ok(0)
     else
@@ -1030,7 +1037,7 @@ fn check_all_flat_clashes(order: &Graph, i: Int, n: Int, proot: &String) -> Int 
         else
             check_all_flat_clashes(order, i + 1, n, proot)
 
-fn qualify_module_graph(order: &Graph, proot: &String) -> Int ! io, alloc
+fn qualify_module_graph(order: &mut Graph, proot: &String) -> Int ! io, alloc
     n = list_len(&order.mods)
     if needs_qualify(order, n) == 0
         result_ok(0)

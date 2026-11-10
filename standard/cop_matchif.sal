@@ -593,7 +593,7 @@ fn suite_has_return_or_if_go(src: &String, lex: &Lex, i: Int, end: Int) -> Int !
 fn mi_arm_new(pat: String, body: String) -> MiArm ! alloc
     MiArm(pat, body, body_is_block(&body))
 
-fn mi_push_arm(arms: &List[MiArm], arm: MiArm) -> Int ! alloc
+fn mi_push_arm(arms: &mut List[MiArm], arm: MiArm) -> Int ! alloc
     _p = arms.push(arm)
     0
 
@@ -679,7 +679,7 @@ fn mi_try_if_go(src: &String, lex: &Lex, if_i: Int, n: Int, ind: Int) -> MiPack 
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
     arms = List.new[MiArm]()
-    _a0 = mi_push_arm(&arms, mi_arm_new(p0, b0))
+    _a0 = mi_push_arm(&mut arms, mi_arm_new(p0, b0))
     return mi_collect_elsifs(src, lex, n, if_i, fam, s0, lead, start, arms, j)
 
 fn mi_collect_elsifs(src: &String, lex: &Lex, n: Int, if_i: Int, fam: Int, scrut: String, lead: String, start: Int, arms: List[MiArm], i: Int) -> MiPack ! alloc
@@ -700,7 +700,7 @@ fn mi_collect_elsifs(src: &String, lex: &Lex, n: Int, if_i: Int, fam: Int, scrut
         return mi_fail()
     if suite_has_return_or_if(src, lex, ind, suite_end) == 1
         return mi_fail()
-    _a = mi_push_arm(&arms, mi_arm_new(p, b))
+    _a = mi_push_arm(&mut arms, mi_arm_new(p, b))
     j = skip_nl(lex, n, suite_end)
     if j >= n
         return mi_fail()
@@ -723,7 +723,7 @@ fn mi_finish_else(src: &String, lex: &Lex, n: Int, if_i: Int, scrut: String, arm
         return mi_fail()
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
-    _a = mi_push_arm(&arms, mi_arm_new(d"_", b))
+    _a = mi_push_arm(&mut arms, mi_arm_new(d"_", b))
     if_end = mi_consume_if(lex, n, if_i)
     return MiPack(1, start, lex.end(if_end - 1), scrut, lead, arms)
 
@@ -760,7 +760,7 @@ fn build_match_go(pack: &MiPack, i: Int, n: Int, acc: String, arm_lead: &String)
         acc
     else
         arm = pack.arms.get(i)
-        pat = arm.pat
+        pat = arm.pat.clone()
         if arm.is_block == 1
             head = acc + pack.lead + arm_lead + pat + d" =>\n"
             body = indent_block(&arm.body, &(pack.lead + arm_lead + d"    "))
@@ -770,7 +770,7 @@ fn build_match_go(pack: &MiPack, i: Int, n: Int, acc: String, arm_lead: &String)
             line = acc + pack.lead + arm_lead + pat + d" => " + expr + d"\n"
             build_match_go(pack, i + 1, n, line, arm_lead)
 
-fn cop_matchif(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
+fn cop_matchif(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     n = lex.len()
     cop_matchif_go(src, lex, offs, 0, n)
 
@@ -782,7 +782,7 @@ fn tok_at_or_after(lex: &Lex, n: Int, i: Int, byte: Int) -> Int ! alloc
     else
         tok_at_or_after(lex, n, i + 1, byte)
 
-fn cop_matchif_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_matchif_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif lex.kind(i) == TK_IF()

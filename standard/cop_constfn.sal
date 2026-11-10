@@ -19,22 +19,22 @@ struct Cand
 fn CODE_CONST() -> String ! alloc
     d"Style/ConstFn"
 
-fn cop_constfn(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
+fn cop_constfn(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     n = lex.len()
     cs = List.new[Cand]()
     known = List.new[String]()
-    scan_items(src, lex, 0, n, 0, &cs, &known)
+    scan_items(src, lex, 0, n, 0, &mut cs, &mut known)
     mark = List.new[Int]()
-    zero_marks(&cs, &mark)
-    kill_complex(src, lex, n, &cs, &mark)
-    fill_eligible(src, &cs, &known, &mark)
+    zero_marks(&cs, &mut mark)
+    kill_complex(src, lex, n, &cs, &mut mark)
+    fill_eligible(src, &cs, &mut known, &mut mark)
     emit_defs(src, offs, &cs, &mark, &known)
     emit_calls(src, lex, offs, n, &cs, &mark)
 
-fn zero_marks(cs: &List[Cand], mark: &List[Int]) -> Int ! alloc
+fn zero_marks(cs: &List[Cand], mark: &mut List[Int]) -> Int ! alloc
     zero_marks_go(cs, mark, 0, cs.len())
 
-fn zero_marks_go(cs: &List[Cand], mark: &List[Int], i: Int, n: Int) -> Int ! alloc
+fn zero_marks_go(cs: &List[Cand], mark: &mut List[Int], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -547,10 +547,10 @@ fn call_is_complex(src: &String, lex: &Lex, n: Int, i: Int) -> Int ! alloc
         else
             0
 
-fn kill_complex(src: &String, lex: &Lex, n: Int, cs: &List[Cand], mark: &List[Int]) -> Int ! alloc
+fn kill_complex(src: &String, lex: &Lex, n: Int, cs: &List[Cand], mark: &mut List[Int]) -> Int ! alloc
     kill_complex_go(src, lex, n, cs, mark, 0, cs.len())
 
-fn kill_complex_go(src: &String, lex: &Lex, n: Int, cs: &List[Cand], mark: &List[Int], i: Int, cn: Int) -> Int ! alloc
+fn kill_complex_go(src: &String, lex: &Lex, n: Int, cs: &List[Cand], mark: &mut List[Int], i: Int, cn: Int) -> Int ! alloc
     if i >= cn
         0
     else
@@ -584,17 +584,17 @@ fn has_complex_go(src: &String, lex: &Lex, n: Int, name: &String, at: Int, i: In
     else
         has_complex_go(src, lex, n, name, at, i + 1)
 
-fn fill_eligible(src: &String, cs: &List[Cand], known: &List[String], mark: &List[Int]) -> Int ! alloc
+fn fill_eligible(src: &String, cs: &List[Cand], known: &mut List[String], mark: &mut List[Int]) -> Int ! alloc
     step = fill_pass(src, cs, known, mark)
     if step == 0
         0
     else
         fill_eligible(src, cs, known, mark)
 
-fn fill_pass(src: &String, cs: &List[Cand], known: &List[String], mark: &List[Int]) -> Int ! alloc
+fn fill_pass(src: &String, cs: &List[Cand], known: &mut List[String], mark: &mut List[Int]) -> Int ! alloc
     fill_pass_go(src, cs, known, mark, 0, cs.len(), 0)
 
-fn fill_pass_go(src: &String, cs: &List[Cand], known: &List[String], mark: &List[Int], i: Int, n: Int, changed: Int) -> Int ! alloc
+fn fill_pass_go(src: &String, cs: &List[Cand], known: &mut List[String], mark: &mut List[Int], i: Int, n: Int, changed: Int) -> Int ! alloc
     if i >= n
         changed
     elsif mark.get(i) != 0
@@ -609,10 +609,10 @@ fn fill_pass_go(src: &String, cs: &List[Cand], known: &List[String], mark: &List
             known.push(cand_name(src, cs, i))
             fill_pass_go(src, cs, known, mark, i + 1, n, 1)
 
-fn emit_defs(src: &String, offs: &List[Off], cs: &List[Cand], mark: &List[Int], known: &List[String]) -> Int ! alloc
+fn emit_defs(src: &String, offs: &mut List[Off], cs: &List[Cand], mark: &List[Int], known: &List[String]) -> Int ! alloc
     emit_defs_go(src, offs, cs, mark, known, 0, cs.len())
 
-fn emit_defs_go(src: &String, offs: &List[Off], cs: &List[Cand], mark: &List[Int], known: &List[String], i: Int, n: Int) -> Int ! alloc
+fn emit_defs_go(src: &String, offs: &mut List[Off], cs: &List[Cand], mark: &List[Int], known: &List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif mark.get(i) != 1
@@ -642,15 +642,15 @@ fn in_def_go(cs: &List[Cand], mark: &List[Int], pos: Int, i: Int, n: Int) -> Int
         else
             in_def_go(cs, mark, pos, i + 1, n)
 
-fn emit_calls(src: &String, lex: &Lex, offs: &List[Off], n: Int, cs: &List[Cand], mark: &List[Int]) -> Int ! alloc
+fn emit_calls(src: &String, lex: &Lex, offs: &mut List[Off], n: Int, cs: &List[Cand], mark: &List[Int]) -> Int ! alloc
     el = List.new[String]()
-    eligible_names(src, cs, mark, &el)
+    eligible_names(src, cs, mark, &mut el)
     emit_calls_go(src, lex, offs, n, cs, mark, &el, 0)
 
-fn eligible_names(src: &String, cs: &List[Cand], mark: &List[Int], el: &List[String]) -> Int ! alloc
+fn eligible_names(src: &String, cs: &List[Cand], mark: &List[Int], el: &mut List[String]) -> Int ! alloc
     eligible_names_go(src, cs, mark, el, 0, cs.len())
 
-fn eligible_names_go(src: &String, cs: &List[Cand], mark: &List[Int], el: &List[String], i: Int, n: Int) -> Int ! alloc
+fn eligible_names_go(src: &String, cs: &List[Cand], mark: &List[Int], el: &mut List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif mark.get(i) != 1
@@ -659,7 +659,7 @@ fn eligible_names_go(src: &String, cs: &List[Cand], mark: &List[Int], el: &List[
         el.push(cand_name(src, cs, i))
         eligible_names_go(src, cs, mark, el, i + 1, n)
 
-fn emit_calls_go(src: &String, lex: &Lex, offs: &List[Off], n: Int, cs: &List[Cand], mark: &List[Int], el: &List[String], i: Int) -> Int ! alloc
+fn emit_calls_go(src: &String, lex: &Lex, offs: &mut List[Off], n: Int, cs: &List[Cand], mark: &List[Int], el: &List[String], i: Int) -> Int ! alloc
     if i >= n
         0
     elsif lex.kind(i) != TK_IDENT()
@@ -682,7 +682,7 @@ fn emit_calls_go(src: &String, lex: &Lex, offs: &List[Off], n: Int, cs: &List[Ca
                 offs.push(o)
                 emit_calls_go(src, lex, offs, n, cs, mark, el, rp + 1)
 
-fn emit_recv_call(src: &String, lex: &Lex, offs: &List[Off], name: &String, i: Int, rp: Int) -> Int ! alloc
+fn emit_recv_call(src: &String, lex: &Lex, offs: &mut List[Off], name: &String, i: Int, rp: Int) -> Int ! alloc
     p = prev_tok(lex, i)
     if p < 0
         0
@@ -695,7 +695,7 @@ fn emit_recv_call(src: &String, lex: &Lex, offs: &List[Off], name: &String, i: I
         offs.push(o)
         0
 
-fn scan_items(src: &String, lex: &Lex, i: Int, n: Int, depth: Int, cs: &List[Cand], known: &List[String]) -> Int ! alloc
+fn scan_items(src: &String, lex: &Lex, i: Int, n: Int, depth: Int, cs: &mut List[Cand], known: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -711,7 +711,7 @@ fn scan_items(src: &String, lex: &Lex, i: Int, n: Int, depth: Int, cs: &List[Can
         else
             scan_ident(src, lex, i, n, cs, known)
 
-fn scan_ident(src: &String, lex: &Lex, i: Int, n: Int, cs: &List[Cand], known: &List[String]) -> Int ! alloc
+fn scan_ident(src: &String, lex: &Lex, i: Int, n: Int, cs: &mut List[Cand], known: &mut List[String]) -> Int ! alloc
     text = lex.text(src, i)
     kind = kw_kind_of(&text)
     if kind >= 0
@@ -729,13 +729,13 @@ fn scan_ident(src: &String, lex: &Lex, i: Int, n: Int, cs: &List[Cand], known: &
     else
         scan_items(src, lex, i + 1, n, 0, cs, known)
 
-fn note_if_const(src: &String, lex: &Lex, n: Int, i: Int, known: &List[String]) -> Int ! alloc
+fn note_if_const(src: &String, lex: &Lex, n: Int, i: Int, known: &mut List[String]) -> Int ! alloc
     if at_col0(src, lex, i) == 1
         note_const(src, lex, n, i, known)
     else
         0
 
-fn note_const(src: &String, lex: &Lex, n: Int, i: Int, known: &List[String]) -> Int ! alloc
+fn note_const(src: &String, lex: &Lex, n: Int, i: Int, known: &mut List[String]) -> Int ! alloc
     if looks_like_const_item(lex, n, i) == 0
         0
     else
@@ -769,15 +769,15 @@ fn eq_before_nl(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     else
         eq_before_nl(lex, n, j + 1)
 
-fn try_cand(src: &String, lex: &Lex, n: Int, i: Int, kind: Int, cs: &List[Cand]) -> Int ! alloc
+fn try_cand(src: &String, lex: &Lex, n: Int, i: Int, kind: Int, cs: &mut List[Cand]) -> Int ! alloc
     if prefix_ok(src, lex.start(i)) == 0
         0 - 1
     else
         try_cand_go(src, lex, n, i, kind, cs)
 
-fn try_cand_go(src: &String, lex: &Lex, n: Int, i: Int, kind: Int, cs: &List[Cand]) -> Int ! alloc
+fn try_cand_go(src: &String, lex: &Lex, n: Int, i: Int, kind: Int, cs: &mut List[Cand]) -> Int ! alloc
     ids = List.new[Int]()
-    j = collect_idents(lex, n, skip_nl(lex, n, i + 1), &ids)
+    j = collect_idents(lex, n, skip_nl(lex, n, i + 1), &mut ids)
     if j >= n
         0 - 1
     elsif lex.kind(j) != TK_LPAREN()
@@ -787,7 +787,7 @@ fn try_cand_go(src: &String, lex: &Lex, n: Int, i: Int, kind: Int, cs: &List[Can
     else
         try_after_paren(src, lex, n, i, kind, &ids, j, cs)
 
-fn collect_idents(lex: &Lex, n: Int, j: Int, ids: &List[Int]) -> Int ! alloc
+fn collect_idents(lex: &Lex, n: Int, j: Int, ids: &mut List[Int]) -> Int ! alloc
     if j >= n
         j
     elsif lex.kind(j) != TK_IDENT()
@@ -810,7 +810,7 @@ fn idents_ok(src: &String, lex: &Lex, kind: Int, ids: &List[Int]) -> Int ! alloc
     else
         0
 
-fn try_after_paren(src: &String, lex: &Lex, n: Int, kw: Int, kind: Int, ids: &List[Int], lp: Int, cs: &List[Cand]) -> Int ! alloc
+fn try_after_paren(src: &String, lex: &Lex, n: Int, kw: Int, kind: Int, ids: &List[Int], lp: Int, cs: &mut List[Cand]) -> Int ! alloc
     rp = match_rparen(lex, n, lp + 1, 1)
     if rp < 0
         0 - 1
@@ -839,7 +839,7 @@ fn match_rparen(lex: &Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
     else
         match_rparen(lex, n, j + 1, depth)
 
-fn try_body(src: &String, lex: &Lex, n: Int, kw: Int, kind: Int, ids: &List[Int], rp: Int, cs: &List[Cand]) -> Int ! alloc
+fn try_body(src: &String, lex: &Lex, n: Int, kw: Int, kind: Int, ids: &List[Int], rp: Int, cs: &mut List[Cand]) -> Int ! alloc
     j = skip_nl(lex, n, header_end(lex, n, rp + 1))
     if j >= n
         0 - 1
@@ -865,7 +865,7 @@ fn body_dedent(lex: &Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
     else
         body_dedent(lex, n, j + 1, depth)
 
-fn keep_body(src: &String, lex: &Lex, kw: Int, kind: Int, ids: &List[Int], ind: Int, close: Int, cs: &List[Cand]) -> Int ! alloc
+fn keep_body(src: &String, lex: &Lex, kw: Int, kind: Int, ids: &List[Int], ind: Int, close: Int, cs: &mut List[Cand]) -> Int ! alloc
     raw_lo = lex.end(ind)
     raw_hi = lex.start(close)
     blo = trim_lo(src, raw_lo, raw_hi)
@@ -878,7 +878,7 @@ fn keep_body(src: &String, lex: &Lex, kw: Int, kind: Int, ids: &List[Int], ind: 
         push_cand(src, lex, kw, kind, ids, blo, bhi, cs)
         close + 1
 
-fn push_cand(src: &String, lex: &Lex, kw: Int, kind: Int, ids: &List[Int], blo: Int, bhi: Int, cs: &List[Cand]) -> Int ! alloc
+fn push_cand(src: &String, lex: &Lex, kw: Int, kind: Int, ids: &List[Int], blo: Int, bhi: Int, cs: &mut List[Cand]) -> Int ! alloc
     name_i = name_index(kind, ids)
     recv = recv_span(lex, kind, ids)
     cs.push(Cand(kind, name_i, lex.start(name_i), lex.end(name_i), recv, recv_end(lex, kind, ids), lex.start(kw), bhi, blo, bhi))

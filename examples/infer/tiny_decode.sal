@@ -49,9 +49,11 @@ fn run_benchmark() -> Int ! io, alloc
     let a3 = reshape(a43, 8, 128)
     let x13 = matmul(a3, wo3)
     let x23 = x13 + residual3
-    let up3 = matmul(x23, transpose(w_up3))
+    let w_up3_t = transpose(w_up3)
+    let w_down3_t = transpose(w_down3)
+    let up3 = matmul(x23, w_up3_t)
     let up23 = silu(up3)
-    let x43 = matmul(up23, transpose(w_down3))
+    let x43 = matmul(up23, w_down3_t)
     let _h4 = x43 + residual3
     kc = tensor_append(kc, k43)
     vc = tensor_append(vc, v43)
@@ -76,9 +78,9 @@ fn run_benchmark() -> Int ! io, alloc
         let a = reshape(a4, 1, 128)
         let x1 = matmul(a, wo3)
         let x2 = x1 + residual
-        let up = matmul(x2, transpose(w_up3))
+        let up = matmul(x2, w_up3_t)
         let up2 = silu(up)
-        let x4 = matmul(up2, transpose(w_down3))
+        let x4 = matmul(up2, w_down3_t)
         tok = x4 + residual
         pos = pos + 1
         steps = steps + 1

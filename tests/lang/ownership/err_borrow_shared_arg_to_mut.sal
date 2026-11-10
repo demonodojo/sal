@@ -1,0 +1,9 @@
+# error: E_TYPE
+# selfhost-xfail: el infer del selfhost acepta `&T` donde se pide `&mut T`
+fn add(xs: &mut List[Int]) -> Int ! alloc
+    xs.push(1)
+    xs.len()
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    add(&xs)

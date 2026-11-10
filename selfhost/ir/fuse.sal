@@ -13,7 +13,7 @@ import fused
 import desc
 import frc
 
-fn lower_args(cx: &Cx, args: &List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_args(cx: &mut Cx, args: &List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
@@ -58,7 +58,7 @@ fn tadd_left_is_fresh_call(left: &Expr) -> Int ! alloc
         XCall(name, args, targs, xp) => call_allocates_fresh_string(&name)
         _ => 0
 
-fn lower_str_add(cx: &Cx, left: &Expr, right: &Expr) -> Int ! alloc
+fn lower_str_add(cx: &mut Cx, left: &Expr, right: &Expr) -> Int ! alloc
     # Only the left spine of the chain may see the accumulator.
     acc = cx_acc(cx)
     _s = cx_set_acc(cx, tspine_acc(left, acc))
@@ -84,7 +84,7 @@ fn lower_str_add(cx: &Cx, left: &Expr, right: &Expr) -> Int ! alloc
             _h = ir_push(cx, ir_call(0, str_as_int(&"sal_free"), largs, 0))
     d
 
-fn lower_expr(cx: &Cx, e: &Expr) -> Int ! alloc
+fn lower_expr(cx: &mut Cx, e: &Expr) -> Int ! alloc
     match e
         XNone => 0
         XInt(v) => lower_const(cx, v)
@@ -106,24 +106,24 @@ fn lower_expr(cx: &Cx, e: &Expr) -> Int ! alloc
         XUnary(op, inner) => lower_unary(cx, &op, &inner)
         _ => fresh(cx)
 
-fn lower_const(cx: &Cx, v: Int) -> Int ! alloc
+fn lower_const(cx: &mut Cx, v: Int) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, v)
     d
 
-fn lower_float(cx: &Cx, bits: Int, txt: &String) -> Int ! alloc
+fn lower_float(cx: &mut Cx, bits: Int, txt: &String) -> Int ! alloc
     d = fresh(cx)
     _p = ir_push(cx, ir_cf(d, bits, str_own(txt)))
     d
 
 # The IR keeps its own copy of the text: the AST's `String` is released with its tree.
-fn lower_str_lit(cx: &Cx, s: &String) -> Int ! alloc
+fn lower_str_lit(cx: &mut Cx, s: &String) -> Int ! alloc
     d = fresh(cx)
     text = s.dup()
     _p = ir_push(cx, ir_cs(d, str_own(&text)))
     d
 
-fn lower_tensor_lit(cx: &Cx, data: &List[String]) -> Int ! alloc
+fn lower_tensor_lit(cx: &mut Cx, data: &List[String]) -> Int ! alloc
     d = fresh(cx)
     lit = vec_new()
     _l0 = vec_push(lit, d)
@@ -152,7 +152,7 @@ fn short_circuit(op: &String, left: &Expr, right: &Expr) -> Expr ! alloc
     else
         XIf(fu_alias(left), TBlock(list_new[TStmt](), XBool(1)), TBlock(list_new[TStmt](), truth), 1, list_new[TElsif]())
 
-fn lower_binary(cx: &Cx, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
+fn lower_binary(cx: &mut Cx, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
     if str_eq(op, "and") + str_eq(op, "or") > 0
         lower_expr(cx, &short_circuit(op, left, right))
     elsif str_eq(op, "add") == 1
@@ -163,7 +163,7 @@ fn lower_binary(cx: &Cx, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
     else
         lower_binary_plain(cx, op, left, right)
 
-fn lower_binary_plain(cx: &Cx, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
+fn lower_binary_plain(cx: &mut Cx, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
     l = lower_expr(cx, left)
     r = lower_expr(cx, right)
     d = fresh(cx)
@@ -180,14 +180,14 @@ fn tbinary_ir_op(env: &TEnv, op: &String, left: &Expr, right: &Expr) -> Int ! al
     else
         str_own(op)
 
-fn lower_unary(cx: &Cx, op: &String, operand: &Expr) -> Int ! alloc
+fn lower_unary(cx: &mut Cx, op: &String, operand: &Expr) -> Int ! alloc
     inner = lower_expr(cx, operand)
     if str_eq(op, "ref") + str_eq(op, "refmut") + str_eq(op, "deref") > 0
         inner
     else
         lower_unary_op(cx, op, operand, inner)
 
-fn lower_unary_op(cx: &Cx, op: &String, operand: &Expr, inner: Int) -> Int ! alloc
+fn lower_unary_op(cx: &mut Cx, op: &String, operand: &Expr, inner: Int) -> Int ! alloc
     d = fresh(cx)
     if str_eq(op, "neg") + expr_is_tensor(cx, operand) == 2
         lower_tensor_neg(cx, operand, inner, d)
@@ -197,7 +197,7 @@ fn lower_unary_op(cx: &Cx, op: &String, operand: &Expr, inner: Int) -> Int ! all
         d
 
 # `-t` on a tensor is a `TensorUnary` over the operand's own length and place.
-fn lower_tensor_neg(cx: &Cx, operand: &Expr, inner: Int, d: Int) -> Int ! alloc
+fn lower_tensor_neg(cx: &mut Cx, operand: &Expr, inner: Int, d: Int) -> Int ! alloc
     b = tensor_operand_bind(cx, operand, inner)
     len = tensor_len_operand(cx, b, inner)
     _p = ir_push(cx, ir_tun(d, str_as_int(&"neg"), bind_elem(b), bind_place(b), inner, len))
@@ -222,7 +222,7 @@ fn tt_field_index(fields: &List[TField], field: &String, i: Int, n: Int) -> Int 
     else
         tt_field_index(fields, field, i + 1, n)
 
-fn lower_field(cx: &Cx, base: &Expr, field: &String) -> Int ! alloc
+fn lower_field(cx: &mut Cx, base: &Expr, field: &String) -> Int ! alloc
     b = lower_expr(cx, base)
     si = tt_struct_find(&cx_structs(cx), &ty_deref(&texpr_type(&cx.env, base)))
     if si < 0
@@ -230,7 +230,7 @@ fn lower_field(cx: &Cx, base: &Expr, field: &String) -> Int ! alloc
     else
         lower_field_of(cx, b, &list_get(&cx_structs(cx), si), field)
 
-fn lower_field_of(cx: &Cx, base: Int, sd: &TStruct, field: &String) -> Int ! alloc
+fn lower_field_of(cx: &mut Cx, base: Int, sd: &TStruct, field: &String) -> Int ! alloc
     nf = list_len(&sd.fields)
     if nf == 1
         base
@@ -241,7 +241,7 @@ fn lower_field_of(cx: &Cx, base: Int, sd: &TStruct, field: &String) -> Int ! all
         d
 
 # `S(a, b)`: a single field is the field itself (newtype); more become an Aggregate.
-fn lower_struct_ctor(cx: &Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
+fn lower_struct_ctor(cx: &mut Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
     arg_names = lower_args(cx, args, 0, list_len(args), vec_new())
     d = fresh(cx)
     if vec_len(arg_names) == 1
@@ -258,7 +258,7 @@ fn register_to_tensor(cx: &Cx, d: Int, src: Int, place: Int) -> Int ! alloc
     else
         reg_tensor(cx, d, bind_elem(b), place, vec_copy(bind_dims(b)), vec_copy(bind_concrete(b)))
 
-fn lower_to(cx: &Cx, place: &String, inner: &Expr) -> Int ! alloc
+fn lower_to(cx: &mut Cx, place: &String, inner: &Expr) -> Int ! alloc
     src = lower_expr(cx, inner)
     d = fresh(cx)
     _p = ir_push(cx, ir_place(d, src, str_own(place)))
@@ -316,7 +316,7 @@ fn fused_flag(has_ep: Int, has_mm: Int, has_col: Int, nops: Int) -> Int ! alloc
     else
         0
 
-fn lower_on(cx: &Cx, place: &String, body: &TBlock) -> Int ! alloc
+fn lower_on(cx: &mut Cx, place: &String, body: &TBlock) -> Int ! alloc
     ops = collect_on_ops(body, cx)
     has_ep = ops_has_kind(ops, FO_EPILOGUE(), 0, vec_len(ops))
     has_mm = ops_has_kind(ops, FO_MATMUL(), 0, vec_len(ops))
@@ -351,7 +351,7 @@ fn ops_has_kind(ops: Int, kind: Int, i: Int, n: Int) -> Int ! alloc
         else
             ops_has_kind(ops, kind, i + 1, n)
 
-fn lower_fused_epilogue_out(cx: &Cx, ops: Int, src: Int, i: Int, n: Int) -> Int ! alloc
+fn lower_fused_epilogue_out(cx: &mut Cx, ops: Int, src: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         src
     else
@@ -362,7 +362,7 @@ fn lower_fused_epilogue_out(cx: &Cx, ops: Int, src: Int, i: Int, n: Int) -> Int 
             lower_fused_epilogue_out(cx, ops, src, i + 1, n)
 
 # The result is allocated after the dimension constants, as in the bootstrap's numbering.
-fn lower_on_matmul(cx: &Cx, ops: Int, i: Int, n: Int) -> Int ! alloc
+fn lower_on_matmul(cx: &mut Cx, ops: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -412,7 +412,7 @@ fn cx_fn_index_go(fns: &List[TFn], name: &String, i: Int, n: Int) -> Int ! alloc
     else
         cx_fn_index_go(fns, name, i + 1, n)
 
-fn maybe_box_any(cx: &Cx, pt: &String, arg: &Expr, payload: Int) -> Int ! alloc
+fn maybe_box_any(cx: &mut Cx, pt: &String, arg: &Expr, payload: Int) -> Int ! alloc
     proto = ty_any_protocol(pt)
     if str_len(proto) == 0
         payload
@@ -435,14 +435,14 @@ fn maybe_box_any(cx: &Cx, pt: &String, arg: &Expr, payload: Int) -> Int ! alloc
                 _p = ir_push(cx, ir_anybox(boxd, vtab, payload, slot))
                 boxd
 
-fn maybe_box_user_args(cx: &Cx, name: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
+fn maybe_box_user_args(cx: &mut Cx, name: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
     fi = cx_fn_index(cx, name)
     if fi < 0
         0
     else
         maybe_box_user_go(cx, &list_get(&cx.fns, fi).params, args, arg_names, 0, list_len(args))
 
-fn maybe_box_user_go(cx: &Cx, params: &List[TParam], args: &List[Expr], arg_names: Int, i: Int, n: Int) -> Int ! alloc
+fn maybe_box_user_go(cx: &mut Cx, params: &List[TParam], args: &List[Expr], arg_names: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif i >= list_len(params)
@@ -455,7 +455,7 @@ fn maybe_box_user_go(cx: &Cx, params: &List[TParam], args: &List[Expr], arg_name
             _s = vec_set(arg_names, i, neu)
         maybe_box_user_go(cx, params, args, arg_names, i + 1, n)
 
-fn lower_protocol_call(cx: &Cx, recv: &String, fld: &String, args: &List[Expr], proto: &String) -> Int ! alloc
+fn lower_protocol_call(cx: &mut Cx, recv: &String, fld: &String, args: &List[Expr], proto: &String) -> Int ! alloc
     d = fresh(cx)
     pi = proto_find(&cx.protocols, proto, 0, list_len(&cx.protocols))
     if pi < 0
@@ -472,7 +472,7 @@ fn lower_protocol_call(cx: &Cx, recv: &String, fld: &String, args: &List[Expr], 
             _p = ir_push(cx, ir_anycall(d, recv_nm, slot, argv))
             d
 
-fn lower_call(cx: &Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
+fn lower_call(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
     dot = fuse_dot(name, 0, str_len(name))
     if dot >= 0
         recv = str_slice(name, 0, dot)
@@ -495,7 +495,7 @@ fn lower_call(cx: &Cx, name: &String, args: &List[Expr], targs: &String) -> Int 
         lower_call_runtime(cx, name, args, targs)
 
 # `list_new[T]()`: the element descriptor travels as a string constant.
-fn lower_list_new(cx: &Cx, txt: &String, d: Int, owned: Int) -> Int ! alloc
+fn lower_list_new(cx: &mut Cx, txt: &String, d: Int, owned: Int) -> Int ! alloc
     dsc = fresh(cx)
     _a = ir_push(cx, ir_cs(dsc, str_own(&desc_type_text(&cx_structs(cx), &cx.enums, txt, owned))))
     argv = vec_new()
@@ -508,7 +508,7 @@ fn lower_list_new(cx: &Cx, txt: &String, d: Int, owned: Int) -> Int ! alloc
     d
 
 # `dict_new[K, V]()` passes both runtime kinds (Int 0, Float 1, Bool 2, String 3).
-fn lower_container_new(cx: &Cx, name: &String, txt: &String, d: Int, nkinds: Int) -> Int ! alloc
+fn lower_container_new(cx: &mut Cx, name: &String, txt: &String, d: Int, nkinds: Int) -> Int ! alloc
     comma = find_char(txt, 44, 0, str_len(txt))
     k1 = 0
     k2 = 0
@@ -529,7 +529,7 @@ fn lower_container_new(cx: &Cx, name: &String, txt: &String, d: Int, nkinds: Int
     _p = ir_push(cx, ir_call(d, str_own(&("sal_" + name)), argv, 1))
     d
 
-fn lower_call_runtime(cx: &Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
+fn lower_call_runtime(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
     out = vec_new()
     arg_names = lower_args(cx, args, 0, list_len(args), out)
     src = map_lambda_source(cx, name, args, arg_names)
@@ -542,7 +542,7 @@ fn lower_call_runtime(cx: &Cx, name: &String, args: &List[Expr], targs: &String)
         lower_call_runtime_go(cx, name, targs, args, arg_names)
 
 # `f(a)` with `f = x => body`: the body is lowered with `x` bound to the argument.
-fn lower_lambda_call(cx: &Cx, li: Int, arg: Int) -> Int ! alloc
+fn lower_lambda_call(cx: &mut Cx, li: Int, arg: Int) -> Int ! alloc
     lam = cx.lams.get(li)
     param = str_own(&lam.param)
     prev = cx_find(cx, param)
@@ -554,7 +554,7 @@ fn lower_lambda_call(cx: &Cx, li: Int, arg: Int) -> Int ! alloc
 
 # `try e`: when `e` is the failing variant (`Err` / `None`) of its enum the function returns it,
 # otherwise the value is the payload (`Expr::Try` in src/ir.rs).
-fn lower_try(cx: &Cx, inner: &Expr) -> Int ! alloc
+fn lower_try(cx: &mut Cx, inner: &Expr) -> Int ! alloc
     v = lower_expr(cx, inner)
     tag = try_fail_tag(cx, &texpr_type(&cx.env, inner))
     if tag < 0
@@ -628,12 +628,12 @@ fn map_lambda_source(cx: &Cx, fname: &String, args: &List[Expr], arg_names: Int)
 
 # The body is lowered with the parameter bound to the tensor, so its operators
 # become tensor ops.
-fn lower_map_lambda(cx: &Cx, src: Int, arg: Int, lam: &Expr) -> Int ! alloc
+fn lower_map_lambda(cx: &mut Cx, src: Int, arg: Int, lam: &Expr) -> Int ! alloc
     match lam
         XLambda(param, body) => lower_map_lambda_go(cx, src, arg, &param, &body)
         _ => 0
 
-fn lower_map_lambda_go(cx: &Cx, src: Int, arg: Int, param_name: &String, body: &Expr) -> Int ! alloc
+fn lower_map_lambda_go(cx: &mut Cx, src: Int, arg: Int, param_name: &String, body: &Expr) -> Int ! alloc
     param = str_own(param_name)
     prev = cx_find(cx, param)
     b = bind_new(param, arg)
@@ -672,13 +672,13 @@ fn load_literal_emit(cx: &Cx, d: Int, s: &String) -> Int ! alloc
     _p = ir_push(cx, ir_call(d, fnm, argv, 1))
     1
 
-fn lower_call_runtime_go(cx: &Cx, name: &String, targs: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_call_runtime_go(cx: &mut Cx, name: &String, targs: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
     if str_eq(name, "matmul") == 1 && list_len(args) >= 2
         lower_matmul_op(cx, arg_names)
     else
         lower_call_runtime_rest(cx, name, targs, args, arg_names)
 
-fn lower_call_runtime_rest(cx: &Cx, name: &String, targs: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_call_runtime_rest(cx: &mut Cx, name: &String, targs: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
     d = fresh(cx)
     fname = str_own(name)
     if str_eq(name, "load") == 1
@@ -710,15 +710,107 @@ fn lower_call_runtime_rest(cx: &Cx, name: &String, targs: &String, args: &List[E
 
 # `x.clone()` of a struct: `sal_desc_copy` with the descriptor of its type (the glue of the copy
 # follows the fields; a struct without a descriptor is copied by its `i` shape).
-fn lower_struct_clone(cx: &Cx, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
-    tname = texpr_type(&cx.env, &list_get(args, 0))
-    desc = desc_struct_or_i(&cx_structs(cx), &cx.enums, &tname)
-    ds = fresh(cx)
-    _c = ir_push(cx, ir_cs(ds, str_own(&desc)))
+fn lower_struct_clone(cx: &mut Cx, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
+    tname = ty_deref(&texpr_type(&cx.env, &list_get(args, 0)))
     argv = vec_new()
-    _a = vec_push(argv, ds)
-    _b = vec_push(argv, vec_get(arg_names, 0))
-    _p = ir_push(cx, ir_call(d, str_as_int(&"sal_desc_copy"), argv, 1))
+    if struct_clone_glue_t(&cx_structs(cx), &cx.enums, &tname) == 1
+        # A struct with a `List`/`Dict` field has no descriptor: its glue copies it.
+        _b = vec_push(argv, vec_get(arg_names, 0))
+        _p = ir_push(cx, ir_call(d, str_own(&("clone." + tname)), argv, 1))
+    else
+        desc = desc_struct_or_i(&cx_structs(cx), &cx.enums, &tname)
+        ds = fresh(cx)
+        _c = ir_push(cx, ir_cs(ds, str_own(&desc)))
+        _a = vec_push(argv, ds)
+        _b = vec_push(argv, vec_get(arg_names, 0))
+        _p = ir_push(cx, ir_call(d, str_as_int(&"sal_desc_copy"), argv, 1))
+    d
+
+# Whether `x.clone()` of the struct `name` goes through `clone.<name>` (`struct_clone_glue` in
+# src/ir.rs): the struct has glue (it owns heap fields) and no descriptor.
+fn struct_clone_glue_t(structs: &List[TStruct], enums: &List[TEnum], name: &String) -> Int ! alloc
+    i = struct_index_named(structs, name, 0)
+    if i < 0
+        0
+    elsif structs.get(i).tparams.len() != 0
+        0
+    elsif struct_glue_fn(&structs.get(i), structs, enums) == 0
+        0
+    elsif str_len(desc_struct_text(structs, enums, name, 0)) > 0
+        0
+    else
+        1
+
+# `clone.<Struct>(v)` (`struct_clone_fn` in src/ir.rs): a copy that owns a copy of everything
+# `drop.<Struct>` releases. What the glue does not release is shared.
+fn struct_clone_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> Int ! alloc
+    fns0 = List.new[TFn]()
+    env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
+    cx = cx_new(0, map_new(), env, enums, &fns0, &List.new[TProtocol]())
+    fields = vec_new()
+    _c = clone_fields(&mut cx, sd, 0, sd.fields.len(), fields)
+    insts = cx_insts(&cx)
+    if sd.fields.len() == 1
+        _t = vec_push(insts, ir_ret(vec_get(fields, 0)))
+    else
+        _g = vec_push(insts, ir_agg(str_as_int(&"r"), str_own(&sd.name), fields))
+        _t = vec_push(insts, ir_ret(str_as_int(&"r")))
+    out = vec_new()
+    _a = vec_push(out, str_own(&("clone." + sd.name)))
+    _b = vec_push(out, vec_new())
+    _d = vec_push(out, insts)
+    _e = vec_push(out, vec_new())
+    _h = vec_push(out, vec_new())
+    ir_own_fn(out)
+    out
+
+fn clone_fields(cx: &mut Cx, sd: &TStruct, i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        fld = list_get(&sd.fields, i)
+        fnm = drop_field_fn(&cx_structs(cx), &cx.enums, &fld.ty, 3, 0, 0)
+        raw = drop_field_ssa(cx, str_as_int(&"v"), sd, i)
+        if str_len(fnm) == 0
+            _p = vec_push(out, raw)
+        elsif str_eq(fnm, "struct") == 1
+            _p = vec_push(out, clone_nested(cx, &fld.ty, raw))
+        else
+            d = fresh(cx)
+            argv = vec_new()
+            _a = vec_push(argv, raw)
+            _c = ir_push(cx, ir_call(d, str_own(&clone_fn_of(&fnm)), argv, 1))
+            _p = vec_push(out, d)
+        clone_fields(cx, sd, i + 1, n, out)
+
+# The copy that pairs with each release of `drop_field_fn`.
+fn clone_fn_of(release: &String) -> String ! alloc
+    if str_eq(release, "sal_free") == 1
+        "sal_strdup"
+    elsif str_eq(release, "sal_bytes_free") == 1
+        "sal_bytes_clone_val"
+    elsif str_eq(release, "sal_enum_free") == 1
+        "sal_enum_copy"
+    elsif str_eq(release, "sal_dict_free") == 1
+        "sal_dict_clone_val"
+    else
+        "sal_list_clone_val"
+
+# A nested struct field: by its descriptor when it has one, by its own glue otherwise.
+fn clone_nested(cx: &mut Cx, fty: &String, raw: Int) -> Int ! alloc
+    t = trim_type_piece(fty)
+    d = fresh(cx)
+    desc = desc_struct_text(&cx_structs(cx), &cx.enums, &t, 0)
+    argv = vec_new()
+    if str_len(desc) > 0
+        ds = fresh(cx)
+        _c = ir_push(cx, ir_cs(ds, str_own(&desc)))
+        _a = vec_push(argv, ds)
+        _b = vec_push(argv, raw)
+        _p = ir_push(cx, ir_call(d, str_as_int(&"sal_desc_copy"), argv, 1))
+    else
+        _b = vec_push(argv, raw)
+        _p = ir_push(cx, ir_call(d, str_own(&("clone." + t)), argv, 1))
     d
 
 # A user fn declared to return a tensor gives its result that shape.
@@ -767,7 +859,7 @@ fn where_frame_lit(frame_ty: Int) -> Int ! alloc
     qe = "\""
     str_own(&(q2 + qe))
 
-fn lower_where_call(cx: &Cx, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
+fn lower_where_call(cx: &mut Cx, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
     if list_len(args) < 2
         _p = push_const_int(cx, d, 0)
         d
@@ -794,7 +886,7 @@ fn variant_rec(cx: &Cx, name: Int) -> Int ! alloc
     map_get(cx_variants(cx), name)
 
 # A bound name, or a payload-free variant (a unit value), else the name itself.
-fn lower_ident(cx: &Cx, name: Int) -> Int ! alloc
+fn lower_ident(cx: &mut Cx, name: Int) -> Int ! alloc
     b = cx_find(cx, name)
     if b != 0
         bind_ssa(b)
@@ -809,7 +901,7 @@ fn lower_ident(cx: &Cx, name: Int) -> Int ! alloc
         else
             name
 
-fn lower_variant_ctor(cx: &Cx, fname: Int, args: &List[Expr]) -> Int ! alloc
+fn lower_variant_ctor(cx: &mut Cx, fname: Int, args: &List[Expr]) -> Int ! alloc
     rec = variant_rec(cx, fname)
     arg_names = lower_args(cx, args, 0, list_len(args), vec_new())
     d = fresh(cx)
@@ -845,15 +937,16 @@ fn nested_call_kind(cx: &Cx, name: &String, inner: &List[Expr]) -> Int ! alloc
         0
 
 # `match` over an enum: a `Switch` on the tag. Only variant, bare and `_` patterns lower.
-fn lower_match(cx: &Cx, scrut_e: &Expr, arms: &List[TArm]) -> Int ! alloc
+fn lower_match(cx: &mut Cx, scrut_e: &Expr, arms: &List[TArm]) -> Int ! alloc
     scrut = lower_expr(cx, scrut_e)
     mark = tenv_len(&cx.env)
-    _ty = tenv_bind(&cx.env, &"match:ty", &texpr_type(&cx.env, scrut_e))
+    h851_0 = texpr_type(&cx.env, scrut_e)
+    _ty = tenv_bind(&mut cx.env, &"match:ty", &h851_0)
     r = lower_match_arms(cx, scrut, arms)
-    _tr = tenv_truncate(&cx.env, mark)
+    _tr = tenv_truncate(&mut cx.env, mark)
     r
 
-fn lower_match_arms(cx: &Cx, scrut: Int, arms: &List[TArm]) -> Int ! alloc
+fn lower_match_arms(cx: &mut Cx, scrut: Int, arms: &List[TArm]) -> Int ! alloc
     if list_len(arms) == 0
         fresh(cx)
     elsif match_switchable(arms, 0, list_len(arms)) == 0
@@ -865,9 +958,9 @@ fn lower_match_arms(cx: &Cx, scrut: Int, arms: &List[TArm]) -> Int ! alloc
 
 # `match` with integer, string, regex or binding patterns: a chain of `If`s (`lower_match_chain_into`
 # in src/ir.rs). The last arm has no else branch.
-fn lower_match_chain(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int ! alloc
+fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int ! alloc
     arm = arms.get(i)
-    pat = arm.pat
+    pat = arm.pat.clone()
     cond = match_arm_cond(cx, scrut, &pat)
     saved = cx_insts(cx)
     binds = cx_binds(cx)
@@ -887,7 +980,7 @@ fn lower_match_chain(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int ! al
     then_snap = snap_binds(binds, 0, n0, vec_new())
     _k1 = kill_new_binds(cx, n0)
     _r1 = restore_binds(binds, base_snap, 0, n0)
-    _rs = tenv_truncate(&cx.env, slen)
+    _rs = tenv_truncate(&mut cx.env, slen)
     _b = cx_set_insts(cx, vec_new())
     else_val = if i + 1 >= arms.len()
         str_as_int(&"0")
@@ -899,7 +992,7 @@ fn lower_match_chain(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int ! al
     else_snap = snap_binds(binds, 0, n0, vec_new())
     _k2 = kill_new_binds(cx, n0)
     _r2 = restore_binds(binds, base_snap, 0, n0)
-    _rs2 = tenv_truncate(&cx.env, slen)
+    _rs2 = tenv_truncate(&mut cx.env, slen)
     _c = cx_set_insts(cx, saved)
     d = fresh(cx)
     order = sorted_live_binds(cx, n0)
@@ -933,7 +1026,7 @@ fn match_has_text_pat(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
         match_has_text_pat(arms, i + 1, n)
 
 # The condition of one arm over `scrut`: `_` and a binding are always true.
-fn match_arm_cond(cx: &Cx, scrut: Int, pat: &TPat) -> Int ! alloc
+fn match_arm_cond(cx: &mut Cx, scrut: Int, pat: &TPat) -> Int ! alloc
     k = pat.kind
     if k == 2
         d = fresh(cx)
@@ -969,7 +1062,7 @@ fn match_switchable(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
     else
         match_switchable(arms, i + 1, n)
 
-fn lower_match_switch(cx: &Cx, scrut: Int, arms: &List[TArm], start: Int) -> Int ! alloc
+fn lower_match_switch(cx: &mut Cx, scrut: Int, arms: &List[TArm], start: Int) -> Int ! alloc
     saved = cx_insts(cx)
     binds = cx_binds(cx)
     n0 = vec_len(binds)
@@ -985,12 +1078,12 @@ fn lower_match_switch(cx: &Cx, scrut: Int, arms: &List[TArm], start: Int) -> Int
     _p = ir_push(cx, ir_switch(d, scrut, sw, vec_get(dflt, 0), vec_get(dflt, 1)))
     d
 
-fn lower_switch_arms(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int, n0: Int, snap: Int, slen: Int, sw: Int, dflt: Int) -> Int ! alloc
+fn lower_switch_arms(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int, n0: Int, snap: Int, slen: Int, sw: Int, dflt: Int) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
-        pat = arm.pat
+        pat = arm.pat.clone()
         k = pat.kind
         _i = cx_set_insts(cx, vec_new())
         tag = switch_pattern_tag(cx, &pat)
@@ -1002,7 +1095,7 @@ fn lower_switch_arms(cx: &Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int, n0:
         body = cx_insts(cx)
         _k = kill_new_binds(cx, n0)
         _r = restore_binds(cx_binds(cx), snap, 0, n0)
-        _s = tenv_truncate(&cx.env, slen)
+        _s = tenv_truncate(&mut cx.env, slen)
         if k == 0
             _x = vec_set(dflt, 0, body)
             _y = vec_set(dflt, 1, val)
@@ -1046,7 +1139,7 @@ fn name_variant_tag(name: Int) -> Int ! alloc
         1
 
 # One `EnumField` per bound payload name of a variant pattern.
-fn bind_variant_payloads(cx: &Cx, scrut: Int, vname: &String, args: &List[TPat], i: Int, n: Int, k: Int) -> Int ! alloc
+fn bind_variant_payloads(cx: &mut Cx, scrut: Int, vname: &String, args: &List[TPat], i: Int, n: Int, k: Int) -> Int ! alloc
     if k != 3
         0
     elsif i >= n
@@ -1057,7 +1150,8 @@ fn bind_variant_payloads(cx: &Cx, scrut: Int, vname: &String, args: &List[TPat],
             d = fresh(cx)
             _p = ir_push(cx, ir_efield(d, scrut, i))
             _b = cx_bind(cx, str_own(&a.name), d)
-            _t = tenv_bind(&cx.env, &a.name, &fuse_variant_field_type(cx, vname, i))
+            h1061_1 = fuse_variant_field_type(cx, vname, i)
+            _t = tenv_bind(&mut cx.env, &a.name, &h1061_1)
             bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
         else
             bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
@@ -1107,7 +1201,7 @@ fn variant_field_text(vs: &List[TVariant], vname: &String, i: Int, j: Int) -> St
     else
         variant_field_text(vs, vname, i, j + 1)
 
-fn lower_if(cx: &Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs: &List[TElsif]) -> Int ! alloc
+fn lower_if(cx: &mut Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs: &List[TElsif]) -> Int ! alloc
     c = lower_expr(cx, cond)
     saved = cx_insts(cx)
     binds = cx_binds(cx)
@@ -1120,7 +1214,7 @@ fn lower_if(cx: &Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs: &Li
     then_snap = snap_binds(binds, 0, n0, vec_new())
     _k1 = kill_new_binds(cx, n0)
     _r1 = restore_binds(binds, base_snap, 0, n0)
-    _rs = tenv_truncate(&cx.env, slen)
+    _rs = tenv_truncate(&mut cx.env, slen)
     _b = cx_set_insts(cx, vec_new())
     else_b = elsifs_else_block(else_b0, elsifs)
     else_val = lower_block_value(cx, &else_b)
@@ -1129,7 +1223,7 @@ fn lower_if(cx: &Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs: &Li
     else_snap = snap_binds(binds, 0, n0, vec_new())
     _k2 = kill_new_binds(cx, n0)
     _r2 = restore_binds(binds, base_snap, 0, n0)
-    _rs2 = tenv_truncate(&cx.env, slen)
+    _rs2 = tenv_truncate(&mut cx.env, slen)
     _c = cx_set_insts(cx, saved)
     d = fresh(cx)
     order = sorted_live_binds(cx, n0)
@@ -1227,7 +1321,7 @@ fn sorted_bubble(binds: Int, out: Int, j: Int) -> Int ! alloc
         else
             0
 
-fn merge_if_carries(cx: &Cx, order: Int, k: Int, base: Int, ts: Int, es: Int, out: Int) -> Int ! alloc
+fn merge_if_carries(cx: &mut Cx, order: Int, k: Int, base: Int, ts: Int, es: Int, out: Int) -> Int ! alloc
     if k >= vec_len(order)
         out
     else
@@ -1245,7 +1339,7 @@ fn merge_if_carries(cx: &Cx, order: Int, k: Int, base: Int, ts: Int, es: Int, ou
             _s = carry_one(cx, b, t, e, out)
         merge_if_carries(cx, order, k + 1, base, ts, es, out)
 
-fn carry_one(cx: &Cx, b: Int, t: Int, e: Int, out: Int) -> Int ! alloc
+fn carry_one(cx: &mut Cx, b: Int, t: Int, e: Int, out: Int) -> Int ! alloc
     if str_eq(t, e) == 1
         bind_set_ssa(b, t)
     else
@@ -1375,7 +1469,7 @@ fn names_bubble(out: Int, j: Int) -> Int ! alloc
         0
 
 # [name, incoming, dest] per carried binding; dests are allocated in name order.
-fn while_specs(cx: &Cx, names: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn while_specs(cx: &mut Cx, names: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
@@ -1411,7 +1505,7 @@ fn while_carries(cx: &Cx, specs: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         _d = vec_push(out, c)
         while_carries(cx, specs, i + 1, n, out)
 
-fn lower_while(cx: &Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
+fn lower_while(cx: &mut Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
     assigned = vec_new()
     _a = assigned_block(body, assigned)
     names = while_carried_names(cx, assigned, 0, vec_len(assigned), vec_new())
@@ -1427,7 +1521,7 @@ fn lower_while(cx: &Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
     _v = lower_block_effects(cx, body)
     body_insts = cx_insts(cx)
     _k = kill_new_binds(cx, n0)
-    _rs = tenv_truncate(&cx.env, slen)
+    _rs = tenv_truncate(&mut cx.env, slen)
     _d = cx_set_insts(cx, saved)
     carried = while_carries(cx, specs, 0, vec_len(specs), vec_new())
     inst = vec_new()
@@ -1440,19 +1534,19 @@ fn lower_while(cx: &Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
     0
 
 # Statements and tail for effect only: no placeholder value when there is no tail.
-fn lower_block_effects(cx: &Cx, b: &TBlock) -> Int ! alloc
+fn lower_block_effects(cx: &mut Cx, b: &TBlock) -> Int ! alloc
     stopped = lower_stmts(cx, &b.stmts, 0, list_len(&b.stmts))
     if stopped == 1
         0
     else
         lower_effect_tail(cx, &b.tail)
 
-fn lower_effect_tail(cx: &Cx, tail: &Expr) -> Int ! alloc
+fn lower_effect_tail(cx: &mut Cx, tail: &Expr) -> Int ! alloc
     match tail
         XNone => 0
         _ => lower_expr(cx, tail)
 
-fn lower_block_value(cx: &Cx, b: &TBlock) -> Int ! alloc
+fn lower_block_value(cx: &mut Cx, b: &TBlock) -> Int ! alloc
     stopped = lower_stmts(cx, &b.stmts, 0, list_len(&b.stmts))
     if stopped == 1
         d = fresh(cx)
@@ -1460,7 +1554,7 @@ fn lower_block_value(cx: &Cx, b: &TBlock) -> Int ! alloc
     else
         lower_value_tail(cx, &b.tail)
 
-fn lower_value_tail(cx: &Cx, tail: &Expr) -> Int ! alloc
+fn lower_value_tail(cx: &mut Cx, tail: &Expr) -> Int ! alloc
     match tail
         XNone => lower_const(cx, 0)
         _ => lower_expr(cx, tail)
@@ -1559,7 +1653,7 @@ fn tassign_accumulates_string(cx: &Cx, name: &String, value: &Expr) -> Int ! all
     else
         str_eq(dx_leftmost(value), name)
 
-fn lower_stmt_assign(cx: &Cx, st: &TStmt) -> Int ! alloc
+fn lower_stmt_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     name = str_own(&st.name)
     if tassign_accumulates_string(cx, &st.name, &st.expr) == 1
         _sa = cx_set_acc(cx, name)
@@ -1569,26 +1663,27 @@ fn lower_stmt_assign(cx: &Cx, st: &TStmt) -> Int ! alloc
     v = lower_expr(cx, &st.expr)
     _za = cx_set_acc(cx, 0)
     _b = cx_bind(cx, name, v)
-    _ns = tenv_bind(&cx.env, &st.name, &texpr_type(&cx.env, &st.expr))
+    h1574_2 = texpr_type(&cx.env, &st.expr)
+    _ns = tenv_bind(&mut cx.env, &st.name, &h1574_2)
     _bx = mark_box_place(cx, &st.name, &st.expr)
     lower_assign_shape(cx, name, st)
 
 # `f = x => body`: later calls of `f` inline the body.
-fn note_lambda(cx: &Cx, name: &String, value: &Expr) -> Int ! alloc
+fn note_lambda(cx: &mut Cx, name: &String, value: &Expr) -> Int ! alloc
     match value
         XLambda(param, body) => lambda_push(cx, name, &param, &body)
         _ => 0
 
-fn lambda_push(cx: &Cx, name: &String, param: &String, body: &Expr) -> Int ! alloc
+fn lambda_push(cx: &mut Cx, name: &String, param: &String, body: &Expr) -> Int ! alloc
     _p = cx.lams.push(Lam(name.dup(), param.dup(), tc_expr(body)))
     0
 
 # A local bound to `list_get` aliases the element's block: a field store writes that block.
-fn mark_box_place(cx: &Cx, name: &String, value: &Expr) -> Int ! alloc
+fn mark_box_place(cx: &mut Cx, name: &String, value: &Expr) -> Int ! alloc
     key = "box:" + name
     match value
-        XCall(fname, args, targs, xp) => tenv_bind(&cx.env, &key, &box_mark(is_list_get(&fname)))
-        _ => tenv_bind(&cx.env, &key, &"")
+        XCall(fname, args, targs, xp) => tenv_bind(&mut cx.env, &key, &box_mark(is_list_get(&fname)))
+        _ => tenv_bind(&mut cx.env, &key, &"")
 
 fn box_mark(flag: Int) -> String ! alloc
     if flag == 1
@@ -1611,24 +1706,24 @@ fn is_box_place(cx: &Cx, name: &String) -> Int ! alloc
 
 # `p.f = v`, as the bootstrap: a one-field struct is the field itself, a `list_get` alias is
 # written in place (`sal_struct_set`), any other local is rebuilt with the new field.
-fn lower_stmt_field_assign(cx: &Cx, st: &TStmt) -> Int ! alloc
+fn lower_stmt_field_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.target
         XField(base, field) => lower_field_assign_base(cx, st, &base, &field)
         _ => lower_expr(cx, &st.expr)
 
-fn lower_field_assign_base(cx: &Cx, st: &TStmt, base: &Expr, field: &String) -> Int ! alloc
+fn lower_field_assign_base(cx: &mut Cx, st: &TStmt, base: &Expr, field: &String) -> Int ! alloc
     match base
         XIdent(name) => lower_field_assign_named(cx, st, &name, field)
         _ => lower_expr(cx, &st.expr)
 
-fn lower_field_assign_named(cx: &Cx, st: &TStmt, name: &String, field: &String) -> Int ! alloc
+fn lower_field_assign_named(cx: &mut Cx, st: &TStmt, name: &String, field: &String) -> Int ! alloc
     si = tt_struct_find(&cx_structs(cx), &ty_deref(&tenv_type(&cx.env, name)))
     if si < 0
         lower_expr(cx, &st.expr)
     else
         lower_field_assign_struct(cx, st, name, &list_get(&cx_structs(cx), si), field)
 
-fn lower_field_assign_struct(cx: &Cx, st: &TStmt, name: &String, sd: &TStruct, field: &String) -> Int ! alloc
+fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruct, field: &String) -> Int ! alloc
     nf = list_len(&sd.fields)
     h = str_own(name)
     v = lower_expr(cx, &st.expr)
@@ -1645,7 +1740,7 @@ fn lower_field_assign_struct(cx: &Cx, st: &TStmt, name: &String, sd: &TStruct, f
             _p = ir_push(cx, ir_agg(d, str_own(&sd.name), fields))
             cx_bind(cx, h, d)
 
-fn lower_field_store(cx: &Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! alloc
+fn lower_field_store(cx: &mut Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! alloc
     ix = fresh(cx)
     _c = push_const_int(cx, ix, idx)
     args = vec_new()
@@ -1654,7 +1749,7 @@ fn lower_field_store(cx: &Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! alloc
     _d = vec_push(args, v)
     ir_push(cx, ir_call(0, str_as_int(&"sal_struct_set"), args, 0))
 
-fn lower_field_rebuild(cx: &Cx, sd: &TStruct, base_ssa: Int, v: Int, idx: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn lower_field_rebuild(cx: &mut Cx, sd: &TStruct, base_ssa: Int, v: Int, idx: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     elsif i == idx
@@ -1666,17 +1761,17 @@ fn lower_field_rebuild(cx: &Cx, sd: &TStruct, base_ssa: Int, v: Int, idx: Int, i
         _a = vec_push(acc, d)
         lower_field_rebuild(cx, sd, base_ssa, v, idx, i + 1, n, acc)
 
-fn lower_stmt_return(cx: &Cx, st: &TStmt) -> Int ! alloc
+fn lower_stmt_return(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.expr
         XNone => lower_return_unit(cx)
         _ => ir_push(cx, ir_ret(lower_expr(cx, &st.expr)))
 
-fn lower_return_unit(cx: &Cx) -> Int ! alloc
+fn lower_return_unit(cx: &mut Cx) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, 0)
     ir_push(cx, ir_ret(d))
 
-fn lower_stmts(cx: &Cx, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+fn lower_stmts(cx: &mut Cx, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1849,7 +1944,7 @@ fn drop_candidates_env(env: &TEnv, params: &List[TParam], modes: Int, i: Int, n:
             _s = 0
         drop_candidates_env(env, params, modes, i + 1, n, out)
 
-fn drop_locals(cx: &Cx, fr: &FRC, names: Int, moved: Int, i: Int, n: Int) -> Int ! alloc
+fn drop_locals(cx: &mut Cx, fr: &FRC, names: Int, moved: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1858,7 +1953,7 @@ fn drop_locals(cx: &Cx, fr: &FRC, names: Int, moved: Int, i: Int, n: Int) -> Int
         drop_locals(cx, fr, names, moved, i + 1, n)
 
 # Releases the fields of the struct local `nm` when it is not moved and not an alias of a list element.
-fn drop_local_one(cx: &Cx, fr: &FRC, moved: Int, nm: Int) -> Int ! alloc
+fn drop_local_one(cx: &mut Cx, fr: &FRC, moved: Int, nm: Int) -> Int ! alloc
     if assigned_has(moved, nm, 0, vec_len(moved)) == 1
         0
     elsif assigned_has(fr.al, nm, 0, vec_len(fr.al)) == 1
@@ -1902,7 +1997,7 @@ fn fn_modes_of(md: Int, name: &String) -> Int ! alloc
     else
         ms
 
-fn emit_struct_drops(cx: &Cx, f: &TFn, body: &TBlock, md: Int, seen: &List[TFn]) -> Int ! alloc
+fn emit_struct_drops(cx: &mut Cx, f: &TFn, body: &TBlock, md: Int, seen: &List[TFn]) -> Int ! alloc
     moved = vec_new()
     _m = mv_block(body, moved, md)
     name = f.name.dup()
@@ -1912,7 +2007,7 @@ fn emit_struct_drops(cx: &Cx, f: &TFn, body: &TBlock, md: Int, seen: &List[TFn])
     drop_locals(cx, &fr, names, moved, 0, vec_len(names))
 
 # Instructions without a trailing Return, which is returned separately (0 when none).
-fn pop_final_ret(cx: &Cx) -> Int ! alloc
+fn pop_final_ret(cx: &mut Cx) -> Int ! alloc
     insts = cx_insts(cx)
     n = vec_len(insts)
     if n == 0
@@ -1926,7 +2021,7 @@ fn pop_final_ret(cx: &Cx) -> Int ! alloc
     else
         0
 
-fn ir_prepend(cx: &Cx, inst: Int) -> Int ! alloc
+fn ir_prepend(cx: &mut Cx, inst: Int) -> Int ! alloc
     old = cx_insts(cx)
     keep = vec_new()
     _a = vec_push(keep, inst)
@@ -1944,17 +2039,17 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
 # so the caller can `tp_free_block` after the C for this function is emitted.
 fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn]) -> Int ! alloc
     env = tenv_clone(env_tpl)
-    _t = tenv_truncate(&env, 0)
+    _t = tenv_truncate(&mut env, 0)
     cx = cx_new(fn_names, fm, env, enums, prog_fns, prog_protocols)
-    _a = lower_params(&cx, &f.params, 0, list_len(&f.params))
-    stopped = lower_stmts(&cx, &f.body.stmts, 0, list_len(&f.body.stmts))
+    _a = lower_params(&mut cx, &f.params, 0, list_len(&f.params))
+    stopped = lower_stmts(&mut cx, &f.body.stmts, 0, list_len(&f.body.stmts))
     if stopped == 0
-        _c = lower_fn_tail(&cx, &f.body.tail)
+        _c = lower_fn_tail(&mut cx, &f.body.tail)
     else
         _c = 0
-    ret = pop_final_ret(&cx)
+    ret = pop_final_ret(&mut cx)
     name = f.name.dup()
-    _dr = emit_struct_drops(&cx, f, &f.body, vec_get(denv, 1), seen)
+    _dr = emit_struct_drops(&mut cx, f, &f.body, vec_get(denv, 1), seen)
     if f.arena == 1
         _lv = ir_push(&cx, ir_call(0, str_as_int(&"sal_arena_leave"), vec_new(), 0))
     else
@@ -1964,7 +2059,7 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
     else
         _rr = 0
     if f.arena == 1
-        _en = ir_prepend(&cx, ir_call(0, str_as_int(&"sal_arena_enter"), vec_new(), 0))
+        _en = ir_prepend(&mut cx, ir_call(0, str_as_int(&"sal_arena_enter"), vec_new(), 0))
     else
         _en = 0
     out = vec_new()
@@ -1990,12 +2085,12 @@ fn keep_expr(e: &Expr) -> Int ! alloc
 fn keep_stmts(xs: &List[TStmt]) -> Int ! alloc
     0
 
-fn lower_fn_tail(cx: &Cx, tail: &Expr) -> Int ! alloc
+fn lower_fn_tail(cx: &mut Cx, tail: &Expr) -> Int ! alloc
     match tail
         XNone => 0
         _ => ir_push(cx, ir_ret(lower_expr(cx, tail)))
 
-fn try_lower_tensor_bin(cx: &Cx, op: &String, left_e: &Expr, right_e: &Expr, l: Int, r: Int, d: Int) -> Int ! alloc
+fn try_lower_tensor_bin(cx: &mut Cx, op: &String, left_e: &Expr, right_e: &Expr, l: Int, r: Int, d: Int) -> Int ! alloc
     if expr_is_tensor(cx, left_e) == 0
         if expr_is_tensor(cx, right_e) == 0
             0
@@ -2006,7 +2101,7 @@ fn try_lower_tensor_bin(cx: &Cx, op: &String, left_e: &Expr, right_e: &Expr, l: 
 
 # `s op t`: the kernel takes the scalar on the right. `s - t` is `(-t) + s`; a comparison flips;
 # the other operators swap their operands (as `src/ir.rs` does).
-fn scalar_left_tensor_bin(cx: &Cx, op: &String, tensor_ssa: Int, scalar_ssa: Int, tensor_e: &Expr, scalar_e: &Expr, d: Int) -> Int ! alloc
+fn scalar_left_tensor_bin(cx: &mut Cx, op: &String, tensor_ssa: Int, scalar_ssa: Int, tensor_e: &Expr, scalar_e: &Expr, d: Int) -> Int ! alloc
     if str_eq(op, "sub") == 1
         b = tensor_operand_bind(cx, tensor_e, tensor_ssa)
         len = tensor_len_operand(cx, b, tensor_ssa)
@@ -2032,7 +2127,7 @@ fn scalar_left_tensor_bin(cx: &Cx, op: &String, tensor_ssa: Int, scalar_ssa: Int
 # Element count operand: a 1-D tensor keeps its symbolic axis; otherwise the
 # product of the extents as a constant (1 when an extent is unknown).
 # A 1-D tensor with a known extent gets a constant; otherwise its symbolic axis.
-fn tensor_len_axis0(cx: &Cx, b: Int, tensor_ssa: Int) -> Int ! alloc
+fn tensor_len_axis0(cx: &mut Cx, b: Int, tensor_ssa: Int) -> Int ! alloc
     conc = bind_concrete(b)
     if vec_len(conc) == 0
         tensor_len_ssa_name(tensor_ssa)
@@ -2043,7 +2138,7 @@ fn tensor_len_axis0(cx: &Cx, b: Int, tensor_ssa: Int) -> Int ! alloc
         _p = push_const_int(cx, d, vec_get(conc, 0))
         d
 
-fn tensor_len_operand(cx: &Cx, b: Int, tensor_ssa: Int) -> Int ! alloc
+fn tensor_len_operand(cx: &mut Cx, b: Int, tensor_ssa: Int) -> Int ! alloc
     if bind_ndims(b) == 1
         tensor_len_axis0(cx, b, tensor_ssa)
     else
@@ -2072,7 +2167,7 @@ fn tensor_ident_bind(cx: &Cx, name: &String, tensor_ssa: Int) -> Int ! alloc
     else
         b
 
-fn try_lower_tensor_bin_go(cx: &Cx, op: &String, tensor_ssa: Int, other_ssa: Int, tensor_e: &Expr, other_e: &Expr, d: Int) -> Int ! alloc
+fn try_lower_tensor_bin_go(cx: &mut Cx, op: &String, tensor_ssa: Int, other_ssa: Int, tensor_e: &Expr, other_e: &Expr, d: Int) -> Int ! alloc
     b = tensor_operand_bind(cx, tensor_e, tensor_ssa)
     if b == 0
         0
@@ -2091,21 +2186,23 @@ fn try_lower_tensor_bin_go(cx: &Cx, op: &String, tensor_ssa: Int, other_ssa: Int
         1
 
 # Lowers a module whose own structs and fn results are the only ones in scope.
-fn lower_program_with_callables(tp: &TProgram, extra: Int) -> Int ! alloc
+fn lower_program_with_callables(tp: &mut TProgram, extra: Int) -> Int ! alloc
     env = tenv_new(tp)
     ir = lower_program_typed(tp, extra, &env, &tp.enums, &tp.fns)
     ir
 
 # `seen` is every function of the module graph. The struct glue reads it to tell when a call
 # returns one of its parameters (`returns_param_map`); a callee may live in another module.
-fn lower_program_typed(tp: &TProgram, extra: Int, env_tpl: &TEnv, em: &List[TEnum], seen: &List[TFn]) -> Int ! alloc
+fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[TEnum], seen: &List[TFn]) -> Int ! alloc
     names = collect_fn_names_t(&tp.fns, 0, list_len(&tp.fns), vec_new())
     names = merge_callable_names(extra, names)
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = vec_new()
     denv = drop_env_t(tp, &env_tpl.structs, em, seen)
-    lower_fns(&tp.fns, names, fm, env_tpl, em, denv, &tp.fns, &tp.protocols, seen, 0, list_len(&tp.fns), out)
+    n_fns = list_len(&tp.fns)
+    h2112_3 = tp.fns.clone()
+    lower_fns(&mut tp.fns, names, fm, env_tpl, em, denv, &h2112_3, &tp.protocols, seen, 0, n_fns, out)
     _g = struct_glue_all(&tp.structs, em, out)
     out
 
@@ -2142,6 +2239,10 @@ fn struct_glue_emit(structs: &List[TStruct], enums: &List[TEnum], cand: &List[In
                 _e = vec_push(out, struct_elem_glue_fn(&structs.get(idx).name))
             else
                 _k = 0
+            if struct_clone_glue_t(structs, enums, &structs.get(idx).name) == 1
+                _cl = vec_push(out, struct_clone_fn(&structs.get(idx), structs, enums))
+            else
+                _k2 = 0
         else
             _g = 0
         struct_glue_emit(structs, enums, cand, p + 1, n, out)
@@ -2172,7 +2273,7 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
     env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
     fr = fr_new(&env, enums, map_new(), &params0, &fns0)
     cx = cx_new(0, map_new(), env, enums, &fns0, &List.new[TProtocol]())
-    _d = drop_fields(&cx, str_as_int(&"v"), sd, &sd.fields, 0, sd.fields.len(), 0, 3, &fr, &sd.name, &"")
+    _d = drop_fields(&mut cx, str_as_int(&"v"), sd, &sd.fields, 0, sd.fields.len(), 0, 3, &fr, &sd.name, &"")
     insts = cx_insts(&cx)
     if vec_len(insts) == 0
         0
@@ -2221,11 +2322,8 @@ fn struct_elem_glue_fn(name: &String) -> Int ! alloc
 # `T` a struct releases each element with `drop.<T>` (or `drop.elem.<T>` when boxed).
 fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
     if find_char(txt, 91, 0, str_len(txt)) >= 0
-        if find_char(txt, 91, 0, str_len(txt)) == 4
-            if str_eq(&str_slice(txt, 0, 4), "List") == 1
-                list_set_drop_call(cx, d, &"sal_list_free_elem")
-            else
-                0
+        if ty_base(txt).eq("List") == 1
+            list_set_drop_call(cx, d, &"sal_list_free_elem")
         else
             0
     else
@@ -2240,9 +2338,21 @@ fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
             elsif struct_glue_fn(&structs.get(i), &structs, &cx.enums) == 0
                 0
             elsif struct_is_boxed_t(&structs.get(i)) == 1
-                list_set_drop_call(cx, d, &("drop.elem." + t))
+                _sd = list_set_drop_call(cx, d, &("drop.elem." + t))
+                list_set_clone_call(cx, &structs, d, &t)
             else
-                list_set_drop_call(cx, d, &("drop." + t))
+                _sd = list_set_drop_call(cx, d, &("drop." + t))
+                list_set_clone_call(cx, &structs, d, &t)
+
+# `xs.clone()` copies each element with the glue of its type (`sal_list_set_clone`).
+fn list_set_clone_call(cx: &Cx, structs: &List[TStruct], d: Int, t: &String) -> Int ! alloc
+    if struct_clone_glue_t(structs, &cx.enums, t) == 0
+        0
+    else
+        args = vec_new()
+        _a = vec_push(args, d)
+        _b = vec_push(args, str_own(&("clone." + t)))
+        ir_push(cx, ir_call(0, str_as_int(&"sal_list_set_clone"), args, 0))
 
 fn list_set_drop_call(cx: &Cx, d: Int, fname: &String) -> Int ! alloc
     args = vec_new()
@@ -2289,6 +2399,8 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     denv = vec_new()
     _a = vec_push(denv, variant_map_t(tp, structs, enums, seen))
     _o = owned_fns_put(vec_get(denv, 0), &tp.fns, 0, list_len(&tp.fns))
+    _rk = ret_kinds_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
+    _rs = ret_kinds_put(vec_get(denv, 0), seen, 0, seen.len())
     cons = dr_cons_list(&tp.fns)
     ro = dr_read_only_t(tp, vec_get(denv, 0), &cons)
     modes = map_new()
@@ -2560,6 +2672,8 @@ fn flat_map_structs_t(m: Int, sts: &List[TStruct], enums: &List[TEnum], i: Int, 
             _fd = field_desc_keys(m, sts, enums, &sd.name, &sd.fields, 0, list_len(&sd.fields))
             flat_map_structs_t(m, sts, enums, i + 1, n)
         else
+            # `glue:Name`: a struct without a descriptor, whose list elements its glue releases.
+            _g = map_put(m, str_own(&("glue:" + sd.name)), 1)
             flat_map_structs_t(m, sts, enums, i + 1, n)
 
 fn field_desc_keys(m: Int, structs: &List[TStruct], enums: &List[TEnum], sname: &String, fields: &List[TField], i: Int, n: Int) -> Int ! alloc
@@ -2622,12 +2736,12 @@ fn variant_field_flags_t(fields: &List[String], i: Int, n: Int, out: Int) -> Int
         _p = vec_push(out, dr_field_owned_t(&list_get(fields, i)))
         variant_field_flags_t(fields, i + 1, n, out)
 
-fn lower_fns(fns: &List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_fns(fns: &mut List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
-        f = list_get(fns, i)
-        f.body = drops_body(&f, denv)
+        f = list_get(&mut fns, i)
+        f.body = drops_body(&mut f, denv)
         irf = lower_fn(&f, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen)
         _p = vec_push(out, irf)
         lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen, i + 1, n, out)

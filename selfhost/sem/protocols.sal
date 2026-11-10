@@ -72,7 +72,7 @@ fn fn_sig_index(fns: &List[TFn], mangled: &String, i: Int, n: Int) -> Int ! allo
 fn types_equal_text(a: &String, b: &String) -> Int ! alloc
     str_eq(trim_spaces(a.dup()), trim_spaces(b.dup()))
 
-fn method_matches_proto(tp: &TProgram, type_name: &String, pm: &TProtocolMethod, errs: &List[String]) -> Int ! alloc
+fn method_matches_proto(tp: &TProgram, type_name: &String, pm: &TProtocolMethod, errs: &mut List[String]) -> Int ! alloc
     mangled = type_name + "__" + pm.name
     fi = fn_sig_index(&tp.fns, &mangled, 0, list_len(&tp.fns))
     if fi < 0
@@ -103,7 +103,7 @@ fn method_matches_proto(tp: &TProgram, type_name: &String, pm: &TProtocolMethod,
         else
             proto_params_match(&f.params, &pm.params, 1, list_len(&f.params), &mangled, errs)
 
-fn proto_params_match(fparams: &List[TParam], pparams: &List[TParam], i: Int, n: Int, mangled: &String, errs: &List[String]) -> Int ! alloc
+fn proto_params_match(fparams: &List[TParam], pparams: &List[TParam], i: Int, n: Int, mangled: &String, errs: &mut List[String]) -> Int ! alloc
     if i >= n
         1
     else
@@ -129,7 +129,7 @@ fn fx_equal_go(a: &List[Int], b: &List[Int], i: Int, n: Int) -> Int ! alloc
     else
         fx_equal_go(a, b, i + 1, n)
 
-fn check_type_protocols(tp: &TProgram, st: &TStruct, errs: &List[String]) -> Int ! alloc
+fn check_type_protocols(tp: &TProgram, st: &TStruct, errs: &mut List[String]) -> Int ! alloc
     if list_len(&st.protocols) == 0
         0
     elsif list_len(&st.tparams) > 0
@@ -138,7 +138,7 @@ fn check_type_protocols(tp: &TProgram, st: &TStruct, errs: &List[String]) -> Int
     else
         check_claims(tp, &st.name, &st.protocols, 0, list_len(&st.protocols), errs)
 
-fn check_enum_protocols(tp: &TProgram, e: &TEnum, errs: &List[String]) -> Int ! alloc
+fn check_enum_protocols(tp: &TProgram, e: &TEnum, errs: &mut List[String]) -> Int ! alloc
     if list_len(&e.protocols) == 0
         0
     elsif list_len(&e.tparams) > 0
@@ -147,7 +147,7 @@ fn check_enum_protocols(tp: &TProgram, e: &TEnum, errs: &List[String]) -> Int ! 
     else
         check_claims(tp, &e.name, &e.protocols, 0, list_len(&e.protocols), errs)
 
-fn check_claims(tp: &TProgram, type_name: &String, claims: &List[String], i: Int, n: Int, errs: &List[String]) -> Int ! alloc
+fn check_claims(tp: &TProgram, type_name: &String, claims: &List[String], i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -161,25 +161,25 @@ fn check_claims(tp: &TProgram, type_name: &String, claims: &List[String], i: Int
             _m = check_proto_methods(tp, type_name, &p, 0, list_len(&p.methods), errs)
             check_claims(tp, type_name, claims, i + 1, n, errs)
 
-fn check_proto_methods(tp: &TProgram, type_name: &String, p: &TProtocol, i: Int, n: Int, errs: &List[String]) -> Int ! alloc
+fn check_proto_methods(tp: &TProgram, type_name: &String, p: &TProtocol, i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
         _m = method_matches_proto(tp, type_name, &list_get(&p.methods, i), errs)
         check_proto_methods(tp, type_name, p, i + 1, n, errs)
 
-fn check_program_protocols(tp: &TProgram, errs: &List[String]) -> Int ! alloc
+fn check_program_protocols(tp: &TProgram, errs: &mut List[String]) -> Int ! alloc
     _s = check_structs(tp, 0, list_len(&tp.structs), errs)
     check_enums(tp, 0, list_len(&tp.enums), errs)
 
-fn check_structs(tp: &TProgram, i: Int, n: Int, errs: &List[String]) -> Int ! alloc
+fn check_structs(tp: &TProgram, i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
         _c = check_type_protocols(tp, &list_get(&tp.structs, i), errs)
         check_structs(tp, i + 1, n, errs)
 
-fn check_enums(tp: &TProgram, i: Int, n: Int, errs: &List[String]) -> Int ! alloc
+fn check_enums(tp: &TProgram, i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -191,11 +191,11 @@ fn any_drop_thunk(type_name: &String) -> String ! alloc
 
 fn vtable_entry_symbols(type_name: &String, p: &TProtocol) -> List[String] ! alloc
     out = list_new[String]()
-    _a = vtable_methods_go(type_name, &p.methods, 0, list_len(&p.methods), &out)
-    _b = list_push(&out, any_drop_thunk(type_name))
+    _a = vtable_methods_go(type_name, &p.methods, 0, list_len(&p.methods), &mut out)
+    _b = list_push(&mut out, any_drop_thunk(type_name))
     out
 
-fn vtable_methods_go(type_name: &String, methods: &List[TProtocolMethod], i: Int, n: Int, out: &List[String]) -> Int ! alloc
+fn vtable_methods_go(type_name: &String, methods: &List[TProtocolMethod], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else

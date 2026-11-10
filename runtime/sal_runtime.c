@@ -2387,6 +2387,9 @@ typedef struct {
     /* Element glue (SPEC «Liberación de locales»): set by sal_list_set_drop, it releases
      * one element. NULL keeps the descriptor path (desc_free). */
     void (*elem_drop)(int64_t);
+    /* The copy of one element (`clone.<Tipo>`), set by sal_list_set_clone next to elem_drop:
+     * `xs.clone()` copies each element with it, so the copy owns its own elements. */
+    int64_t (*elem_clone)(int64_t);
     SalVec vec;
 } SalList;
 
@@ -2593,6 +2596,7 @@ void *sal_list_new_desc(const char *desc) {
     l->desc = l->owned ? d + 1 : d;
     l->desc_owned = 0;
     l->elem_drop = NULL;
+    l->elem_clone = NULL;
     l->vec.data = NULL;
     l->vec.len = 0;
     l->vec.cap = 0;
@@ -2615,6 +2619,15 @@ void sal_list_set_drop(void *vp, void (*glue)(int64_t)) {
     }
     l->owned = 1;
     l->elem_drop = glue;
+}
+
+/* The glue that copies one element of the list (the `clone.<Tipo>` of T). */
+void sal_list_set_clone(void *vp, int64_t (*glue)(int64_t)) {
+    SalList *l = (SalList *)vp;
+    if (!l) {
+        return;
+    }
+    l->elem_clone = glue;
 }
 
 /* A list built from a legacy packed kind (dict keys and values, select). */
@@ -2870,6 +2883,24 @@ static void *sal_list_clone(void *vp) {
         memcpy(copy, in->desc, n);
         out->desc = copy;
         out->desc_owned = 1;
+    }
+    if (in->elem_drop == sal_list_free_elem) {
+        /* A list of lists: each element is copied as a list and released as one. */
+        out->elem_drop = in->elem_drop;
+        for (size_t i = 0; i < in->vec.len; i++) {
+            void *e = sal_list_clone((void *)(uintptr_t)in->vec.data[i]);
+            sal_list_push(out, (int64_t)(uintptr_t)e);
+        }
+        return outp;
+    }
+    if (in->elem_drop && in->elem_clone) {
+        /* Elements with glue: the copy owns its own elements and releases them alike. */
+        out->elem_drop = in->elem_drop;
+        out->elem_clone = in->elem_clone;
+        for (size_t i = 0; i < in->vec.len; i++) {
+            sal_list_push(out, in->elem_clone(in->vec.data[i]));
+        }
+        return outp;
     }
     for (size_t i = 0; i < in->vec.len; i++) {
         int64_t elem = desc_copy(out->desc, in->vec.data[i]);

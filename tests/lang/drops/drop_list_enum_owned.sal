@@ -8,9 +8,9 @@ fn build(n: Int) -> Int ! alloc
     ts = list_new[Tok]()
     i = 0
     while i < n
-        _a = list_push(&ts, Word(int_to_str(i), i))
-        _b = list_push(&ts, Num(i))
-        _c = list_push(&ts, End)
+        _a = list_push(&mut ts, Word(int_to_str(i), i))
+        _b = list_push(&mut ts, Num(i))
+        _c = list_push(&mut ts, End)
         i = i + 1
     k = list_get(&ts, 0)
     total = match k

@@ -1,0 +1,17 @@
+# exit: 2
+enum Opt
+    No
+    Yes(String)
+
+fn size(o: Opt) -> Int
+    match o
+        Yes(s) => s.len()
+        No => 0
+
+fn pick(o: Opt) -> Int ! alloc
+    match o
+        Yes(s) => s.len()
+        No => size(o) + 2
+
+fn main() -> Int ! alloc
+    pick(No)

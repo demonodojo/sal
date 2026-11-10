@@ -81,7 +81,7 @@ method Lex.end(&self, i: Int) -> Int ! alloc
 method Lex.text(&self, src: &String, i: Int) -> String ! alloc
     src.slice(self.start(i), self.end(i))
 
-method Lex.push(&self, kind: Int, start: Int, end: Int) -> Int ! alloc
+method Lex.push(&mut self, kind: Int, start: Int, end: Int) -> Int ! alloc
     self.kinds.push(kind)
     self.starts.push(start)
     _c = self.ends.push(end)
@@ -119,11 +119,11 @@ fn indent_top(st: &List[Int]) -> Int ! alloc
     n = st.len()
     indent_top_at(st, n - 1)
 
-fn indent_push(st: &List[Int], col: Int) -> Int ! alloc
+fn indent_push(st: &mut List[Int], col: Int) -> Int ! alloc
     _p = st.push(col)
     0
 
-fn indent_tombstone_at(st: &List[Int], i: Int) -> Int ! alloc
+fn indent_tombstone_at(st: &mut List[Int], i: Int) -> Int ! alloc
     if i < 0
         0
     else
@@ -134,7 +134,7 @@ fn indent_tombstone_at(st: &List[Int], i: Int) -> Int ! alloc
             _p = st.set(i, 0 - 1)
             0
 
-fn indent_pop(st: &List[Int]) -> Int ! alloc
+fn indent_pop(st: &mut List[Int]) -> Int ! alloc
     n = st.len()
     indent_tombstone_at(st, n - 1)
 
@@ -163,7 +163,7 @@ fn string_close_end(src: &String, open_quote: Int, n: Int) -> Int ! alloc
     else
         0 - 1
 
-fn dedent_to_col(out: &Lex, st: &List[Int], col: Int, pos: Int) -> Int ! alloc
+fn dedent_to_col(out: &mut Lex, st: &mut List[Int], col: Int, pos: Int) -> Int ! alloc
     top = indent_top(st)
     if col < top
         indent_pop(st)
@@ -172,11 +172,11 @@ fn dedent_to_col(out: &Lex, st: &List[Int], col: Int, pos: Int) -> Int ! alloc
     else
         0
 
-fn lex_fail(err: &List[Int]) -> Int ! alloc
+fn lex_fail(err: &mut List[Int]) -> Int ! alloc
     _s = err.set(0, 1)
     0
 
-fn lex_emit_string(src: &String, i: Int, n: Int, out: &Lex, st: &List[Int], kind: Int, err: &List[Int]) -> Int ! alloc
+fn lex_emit_string(src: &String, i: Int, n: Int, out: &mut Lex, st: &mut List[Int], kind: Int, err: &mut List[Int]) -> Int ! alloc
     if kind == TK_DSTRING()
         end = string_close_end(src, i + 1, n)
         if end < 0
@@ -206,7 +206,7 @@ fn lex_emit_string(src: &String, i: Int, n: Int, out: &Lex, st: &List[Int], kind
             out.push(kind, i, end)
             lex_go(src, end, n, out, st, 0, err)
 
-fn lex_go(src: &String, i: Int, n: Int, out: &Lex, st: &List[Int], at_start: Int, err: &List[Int]) -> Int ! alloc
+fn lex_go(src: &String, i: Int, n: Int, out: &mut Lex, st: &mut List[Int], at_start: Int, err: &mut List[Int]) -> Int ! alloc
     if err.get(0) == 1
         0
     elsif i >= n
@@ -337,7 +337,7 @@ fn lex(src: &String) -> Lex ! alloc
     err = List.new[Int]()
     err.push(0)
     n = src.len()
-    lex_go(src, 0, n, &out, &st, 1, &err)
+    lex_go(src, 0, n, &mut out, &mut st, 1, &mut err)
     if err.get(0) == 1
         Lex(LEX_ERR_TAB(), List.new[Int](), List.new[Int](), List.new[Int]())
     else

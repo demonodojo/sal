@@ -1387,8 +1387,8 @@ impl Parser {
                 let e = self.parse_unary()?;
                 Ok(Expr::Unary {
                     op: UnOp::Neg,
+                    span: Span::merge(sp, e.span()),
                     expr: Box::new(e),
-                    span: sp,
                 })
             }
             TokenKind::Amp => {
@@ -1397,8 +1397,8 @@ impl Parser {
                 let e = self.parse_unary()?;
                 Ok(Expr::Unary {
                     op: if mutable { UnOp::RefMut } else { UnOp::Ref },
+                    span: Span::merge(sp, e.span()),
                     expr: Box::new(e),
-                    span: sp,
                 })
             }
             TokenKind::Star => {
@@ -1406,8 +1406,8 @@ impl Parser {
                 let e = self.parse_unary()?;
                 Ok(Expr::Unary {
                     op: UnOp::Deref,
+                    span: Span::merge(sp, e.span()),
                     expr: Box::new(e),
-                    span: sp,
                 })
             }
             TokenKind::Bang => {
@@ -1415,8 +1415,8 @@ impl Parser {
                 let e = self.parse_unary()?;
                 Ok(Expr::Unary {
                     op: UnOp::Not,
+                    span: Span::merge(sp, e.span()),
                     expr: Box::new(e),
-                    span: sp,
                 })
             }
             _ => self.parse_postfix(),
@@ -1461,7 +1461,10 @@ impl Parser {
                         }
                     }
                     self.skip_group_newlines();
-                    self.expect(TokenKind::RParen, "expected )")?;
+                    let close = self.expect(TokenKind::RParen, "expected )")?.span;
+                    // A punctuation token has an empty span at its position: the call ends after `)`.
+                    let mut sp = Span::merge(sp, close);
+                    sp.end = sp.end.max(close.start + 1);
                     self.leave_group();
                     e = Expr::Call {
                         func: Box::new(e),
@@ -1488,7 +1491,10 @@ impl Parser {
                         }
                     }
                     self.skip_group_newlines();
-                    self.expect(TokenKind::RParen, "expected )")?;
+                    let close = self.expect(TokenKind::RParen, "expected )")?.span;
+                    // A punctuation token has an empty span at its position: the call ends after `)`.
+                    let mut sp = Span::merge(sp, close);
+                    sp.end = sp.end.max(close.start + 1);
                     self.leave_group();
                     e = Expr::Call {
                         func: Box::new(e),
@@ -1499,8 +1505,9 @@ impl Parser {
                 }
                 TokenKind::Dot => {
                     self.bump();
+                    let field_sp = self.peek().span;
                     let field = self.parse_ident()?;
-                    let sp = e.span();
+                    let sp = Span::merge(e.span(), field_sp);
                     e = Expr::Field {
                         base: Box::new(e),
                         field,

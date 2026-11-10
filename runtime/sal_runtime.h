@@ -203,6 +203,7 @@ int64_t sal_list_len(void *v);
 int64_t sal_list_get(void *v, int64_t i);
 /* Deep copy of a borrowed element (`s`, `E` or `S(...)`). `list_get` does not copy. */
 int64_t sal_desc_copy(const char *desc, int64_t raw);
+void sal_list_set_clone(void *l, int64_t (*glue)(int64_t));
 /* Element descriptor: "i" Copy scalar, "s" String, "S(d..)" flat struct (see sal_runtime.c). */
 void *sal_list_new_desc(const char *desc);
 void sal_struct_free(int64_t raw, const char *desc);

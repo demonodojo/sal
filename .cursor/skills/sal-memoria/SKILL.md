@@ -42,7 +42,7 @@ Dentro de una función `@arena`, el `free` de un puntero interior es un no-op y 
 | Movimiento parcial y `borrow`/`take` | `src/ownership.rs` | `selfhost/sem/ownership.sal` |
 | Runtime (`sal_dict_*`, `sal_enum_*`, vistas `bytes`, `sal_tensor_free`) | `runtime/sal_runtime.c` | el mismo |
 
-`insert_drops` va entre `TypedProgram` y `lower_program`. No compruebes en un pase posterior lo que este ya decide. El selfhost arma `drop_env_t` en `fuse.sal` (`enum:`, `struct:`, `desc:`, `ownfn:`) para `dr_*`.
+`insert_drops` va entre `TypedProgram` y `lower_program`. No compruebes en un pase posterior lo que este ya decide. El selfhost arma `drop_env_t` en `fuse.sal` (`enum:`, `struct:`, `desc:`, `ownfn:`, `retk:` para la función que devuelve un contenedor, `glue:` para el struct sin descriptor) para `dr_*`.
 
 Un cambio de esta zona toca los dos compiladores en el mismo cambio (y runtime si cambian kinds o dueño). La IR tiene que coincidir; el emisor C del selfhost debe espejar la cola cuando stage2 ejecuta.
 
@@ -51,7 +51,9 @@ Un cambio de esta zona toca los dos compiladores en el mismo cambio (y runtime s
 Un local se libera si se liga una sola vez a un valor **fresco** (`fresh_kind`) y no escapa:
 
 - **`String`**: literal, builtins de cadena fresca, o `+` con operando `String`.
-- **`List` / `Dict`**: tipos y dueño según SPEC; contenedor tainted si guarda un nombre o resultado de función de usuario (`Facts.tainted` / `container_tainted` en cola de struct).
+- **`List` / `Dict`**: tipos y dueño según SPEC. Lo guardado se movió al contenedor: la marca tainted solo cuenta en el arranque cuando no hay movimientos publicados (`facts.moved`), y el selfhost no la usa. También son frescos el contenedor que devuelve una función de usuario (`user_call_kind`, `retk:`), `xs.clone()` / `d.clone()` / `b.clone()`, la lista de listas y `List.new[S]()` de un struct con glue (`list_glue_arg`, `glue:`).
+- **Reasignación**: un local ligado más de una vez, siempre a un valor fresco del mismo tipo (`rebound_locals`, `dr_rebound`), suelta el valor viejo al reasignar (`rebind`, `dr_rebind`): `__new<N>` = valor nuevo, suelta el viejo, asigna, repone `__live`.
+- **`x.clone()`** solo lee su receptor (`borrows_args`, `dr_borrows`). El clon de un struct describible es una caja `struct:<desc>` (`struct_copy_kind`; en el selfhost `dx_clone_desc`, que solo conoce el struct de un parámetro o de un `list_get`); el de un struct con `clone.<Struct>` lo suelta la cola de structs (`value_struct` en `src/ir.rs`; alias en `FRC.alias_call` si es describible).
 - **`Dict`**: valores escalares, `String`, enum sin type params o struct describible (kinds en `sal_dict_new`; ver `dict_val_kind` en `src/ir.rs`).
 - **Enum** (caja de variante), **`Bytes`** (`bytes_new`; **`bytes_view`** / **`bytes_view_mem`**: solo cabecera de vista).
 - **`dict_get`**: `Option` fresco → `enum_free` si no escapa; `match dict_get(…)` descartado como sentencia igual.
@@ -65,7 +67,8 @@ Otras reglas:
 - **Descarte** (`discard_kind`): `xs.pop()`, `get`, `int_to_str(n)`, `match dict_get(…)` → temporal `__dis<N>` y suelta en la sentencia (`dr_next_tmp_p` en selfhost).
 - **Solo lectura** (`read_only_params`): punto fijo optimista.
 - **`__live_x`**: escape solo en algunas ramas del mismo nivel de bucle.
-- **`list_push` / `list_set` / `dict_put`**: prestados como sentencia o `_nombre`; `ys = xs.push(v)` escapa.
+- **`list_push` / `list_set` / `dict_put`**: prestados como sentencia o `_nombre`; `ys = xs.push(v)` escapa. Su receptor no cuenta como movido para la cola de structs (`field_reads`, `fr_call`): `c.items.push(v)` deja `items` con su struct.
+- **Cola que es una llamada** (`is_call_tail`, `dr_is_call_tail`): mueve sus argumentos detrás de su bandera, como una sentencia.
 
 ### Préstamo de `list_get` y copia al tomar posesión
 
@@ -121,7 +124,7 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 
 ## Siguen sin liberarse (SPEC)
 
-Campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String` como asa `Int`**; **`z = k`** sobre la misma copia. Tensores en región fusionada: `IrInst::Drop` + `sal_place_free` en bajada LLVM, no el mismo camino que un local escalar.
+La **caja de un struct local** construido con su constructor (`drop.<Struct>` suelta los campos, no el bloque de `sal_struct_new`; `--instrument` no lo cuenta, valgrind sí); el payload `List`/struct de una caja de enum copiada con `sal_enum_copy` (se comparte). Campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String` como asa `Int`**; **`z = k`** sobre la misma copia. Tensores en región fusionada: `IrInst::Drop` + `sal_place_free` en bajada LLVM, no el mismo camino que un local escalar.
 
 ## Verificar
 

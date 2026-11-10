@@ -9,10 +9,10 @@ struct P
 
 fn main() -> Int ! alloc
     names = dict_new[String, String]()
-    _a = dict_put(&names, &"k", "abc")
-    _b = dict_put(&names, &"k", "defg")
+    _a = dict_put(&mut names, &"k", "abc")
+    _b = dict_put(&mut names, &"k", "defg")
     ps = dict_new[String, P]()
-    _c = dict_put(&ps, &"p", P(3, 4))
+    _c = dict_put(&mut ps, &"p", P(3, 4))
     n = match dict_get(&names, &"k")
         Some(s) => str_len(s)
         None => 0

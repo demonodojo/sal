@@ -1,8 +1,9 @@
 # exit: 25
 fn total() -> Int ! alloc
     xs = list_new[Int]()
-    _a = list_push(&xs, 3)
-    _b = list_push(&list_push(&xs, 4), 5)
+    _a = list_push(&mut xs, 3)
+    _b = list_push(&mut xs, 4)
+    list_push(&mut xs, 5)
     b = bytes_new(8)
     _c = bytes_set_u8(b, 0, 7)
     list_get(&xs, 0) + list_get(&xs, 1) + list_get(&xs, 2) + bytes_get_u8(b, 0) + list_len(&xs)

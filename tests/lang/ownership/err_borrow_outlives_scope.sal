@@ -1,0 +1,9 @@
+# error: E_BORROW
+# selfhost-xfail: el borrowck del selfhost no comprueba el ámbito del referente
+fn main() -> Int ! alloc
+    a = d"ab".dup()
+    r = &a
+    if a.len() == 2
+        b = d"cde".dup()
+        r = &b
+    r.len()

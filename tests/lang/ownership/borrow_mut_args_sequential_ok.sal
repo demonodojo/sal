@@ -1,0 +1,9 @@
+# exit: 2
+fn add(xs: &mut List[Int], v: Int) -> Int ! alloc
+    xs.push(v)
+    xs.len()
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    add(&mut xs, 1)
+    add(&mut xs, 2)

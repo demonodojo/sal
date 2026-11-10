@@ -18,7 +18,7 @@ struct Tc
     env: TEnv
     enums: List[TEnum]
 
-fn tc_new(pool: Int, env: &TEnv, enums: &List[TEnum]) -> Tc ! alloc
+fn tc_new(pool: Int, env: &mut TEnv, enums: &List[TEnum]) -> Tc ! alloc
     ctr = List.new[Int]()
     ctr.push(0)
     acc = List.new[Int]()
@@ -45,7 +45,7 @@ fn tc_lit_pool(tc: &Tc) -> Int ! alloc
 fn tc_acc(tc: &Tc) -> Int ! alloc
     tc.acc.get(0)
 
-fn tc_set_acc(tc: &Tc, name: Int) -> Int ! alloc
+fn tc_set_acc(tc: &mut Tc, name: Int) -> Int ! alloc
     _s = tc.acc.set(0, name)
     0
 
@@ -57,18 +57,18 @@ fn tc_lam_find(tc: &Tc, name: &String, i: Int) -> Int ! alloc
     else
         tc_lam_find(tc, name, i - 1)
 
-fn tc_lam_add(tc: &Tc, name: &String, lam: &Expr) -> Int ! alloc
+fn tc_lam_add(tc: &mut Tc, name: &String, lam: &Expr) -> Int ! alloc
     match lam
         XLambda(param, body) => tc_lam_push(tc, name, &param, &body)
         _ => 0
 
-fn tc_lam_push(tc: &Tc, name: &String, param: &String, body: &Expr) -> Int ! alloc
+fn tc_lam_push(tc: &mut Tc, name: &String, param: &String, body: &Expr) -> Int ! alloc
     tc.lam_names.push(name.dup())
     tc.lam_params.push(param.dup())
     _c = tc.lam_bodies.push(tc_expr(body))
     0
 
-fn seed_string_params(params: &List[TParam], i: Int, n: Int, env: &TEnv) -> Int ! alloc
+fn seed_string_params(params: &List[TParam], i: Int, n: Int, env: &mut TEnv) -> Int ! alloc
     if i >= n
         0
     else
@@ -76,7 +76,7 @@ fn seed_string_params(params: &List[TParam], i: Int, n: Int, env: &TEnv) -> Int 
         tenv_bind(env, &pm.name, &pm.ty)
         seed_string_params(params, i + 1, n, env)
 
-fn tmp_fresh(tc: &Tc) -> String ! alloc
+fn tmp_fresh(tc: &mut Tc) -> String ! alloc
     n = tc.ctr.get(0) + 1
     tc.ctr.set(0, n)
     "__t" + n.to_str()

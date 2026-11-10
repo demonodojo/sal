@@ -1,0 +1,15 @@
+# error: E_MOVED
+# selfhost-xfail: el selfhost no trata como movimiento el payload no Copy que enlaza un brazo de match
+enum Opt
+    No
+    Yes(String)
+
+fn main() -> Int ! alloc
+    o = Yes(d"77".dup())
+    a = match o
+        Yes(s) => s.len()
+        No => 0
+    b = match o
+        Yes(s) => s.len()
+        No => 0
+    a + b

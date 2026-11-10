@@ -45,21 +45,21 @@ fn ic_build(tp: &TProgram, nres: Int, rec: Int) -> IC ! alloc
     n = list_len(&tp.fns) + list_len(&tp.structs) + list_len(&tp.enums) + 4
     nv = ic_count_variants(&tp.enums, 0, list_len(&tp.enums), 0)
     ret = list_new[String]()
-    _r = list_push(&ret, strdup(""))
+    _r = list_push(&mut ret, strdup(""))
     allow = list_new[Int]()
-    _a = list_push(&allow, 1)
+    _a = list_push(&mut allow, 1)
     sigs = HT.new(n)
     names = HT.new(n + nv)
     tnames = HT.new(n)
     arity = HT.new(nv)
     vtab = HT.new(nv * 2)
-    _s = infer_sigs_go(&sigs, &tp.fns, 0, list_len(&tp.fns))
-    _g = infer_names_fns(&names, &tp.fns, 0, list_len(&tp.fns))
-    _e = infer_names_enums(&names, &arity, &vtab, &tnames, &tp.enums, 0, list_len(&tp.enums))
-    _t = infer_type_names_structs(&tnames, &tp.structs, 0, list_len(&tp.structs))
+    _s = infer_sigs_go(&mut sigs, &tp.fns, 0, list_len(&tp.fns))
+    _g = infer_names_fns(&mut names, &tp.fns, 0, list_len(&tp.fns))
+    _e = infer_names_enums(&mut names, &mut arity, &mut vtab, &mut tnames, &tp.enums, 0, list_len(&tp.enums))
+    _t = infer_type_names_structs(&mut tnames, &tp.structs, 0, list_len(&tp.structs))
     imports = list_len(&tp.imports)
     vals = list_new[CVal]()
-    _v0 = ce_eval(&tp.consts, &list_new[CVal](), &vals)
+    _v0 = ce_eval(&tp.consts, &list_new[CVal](), &mut vals)
     IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals)
 
 # The hash tables of an `IC` (handles, which the glue of the struct does not release). Its lists
@@ -99,27 +99,27 @@ fn ic_failed(c: &IC) -> Int ! alloc
     else
         1
 
-fn ic_fail(c: &IC, msg: &String) -> Int ! alloc
+fn ic_fail(c: &mut IC, msg: &String) -> Int ! alloc
     if list_len(&c.err) == 0
-        _a = list_push(&c.err, strdup(msg))
+        _a = list_push(&mut c.err, strdup(msg))
         0
     else
         0
 
 fn ic_fx_empty() -> List[Int] ! alloc
     fx = list_new[Int]()
-    _a = list_push(&fx, 0)
-    _b = list_push(&fx, 0)
-    _c = list_push(&fx, 0)
-    _d = list_push(&fx, 0)
-    _e = list_push(&fx, 0)
-    _f = list_push(&fx, 0)
+    _a = list_push(&mut fx, 0)
+    _b = list_push(&mut fx, 0)
+    _c = list_push(&mut fx, 0)
+    _d = list_push(&mut fx, 0)
+    _e = list_push(&mut fx, 0)
+    _f = list_push(&mut fx, 0)
     fx
 
-fn ic_load_fx(c: &IC, fx: &List[Int]) -> Int ! alloc
-    ic_load_fx_go(&c.cur_fx, fx, 0, list_len(fx))
+fn ic_load_fx(c: &mut IC, fx: &List[Int]) -> Int ! alloc
+    ic_load_fx_go(&mut c.cur_fx, fx, 0, list_len(fx))
 
-fn ic_load_fx_go(dst: &List[Int], src: &List[Int], i: Int, n: Int) -> Int ! alloc
+fn ic_load_fx_go(dst: &mut List[Int], src: &List[Int], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -135,9 +135,9 @@ fn fx_has_alloc(fx: &List[Int]) -> Int ! alloc
         0
 
 fn ic_tp(c: &IC) -> TProgram ! alloc
-    TProgram(c.fns, list_new[String](), c.structs, c.aliases, c.enums, c.protocols, list_new[TConst]())
+    TProgram(c.fns.clone(), list_new[String](), c.structs.clone(), c.aliases.clone(), c.enums.clone(), c.protocols.clone(), list_new[TConst]())
 
-fn ty_compat_or_any(c: &IC, at: &String, pt: &String) -> Int ! alloc
+fn ty_compat_or_any(c: &mut IC, at: &String, pt: &String) -> Int ! alloc
     if str_len(ty_any_protocol(pt)) > 0
         if str_len(ty_any_protocol(at)) > 0
             ty_compat_any_text(at, pt)
@@ -154,7 +154,7 @@ fn ty_compat_any_text(a: &String, b: &String) -> Int ! alloc
     else
         0
 
-fn ty_try_any_coerce(c: &IC, at: &String, pt: &String) -> Int ! alloc
+fn ty_try_any_coerce(c: &mut IC, at: &String, pt: &String) -> Int ! alloc
     proto = ty_any_protocol(pt)
     if str_len(proto) == 0
         0
@@ -172,13 +172,13 @@ fn ty_try_any_coerce(c: &IC, at: &String, pt: &String) -> Int ! alloc
             1
 
 # Clears what a fn leaves behind, so the context serves the next one.
-fn ic_reset(c: &IC) -> Int ! alloc
-    _a = tenv_truncate(&c.env, 0)
-    _b = ic_clear(&c.err)
+fn ic_reset(c: &mut IC) -> Int ! alloc
+    _a = tenv_truncate(&mut c.env, 0)
+    _b = ic_clear(&mut c.err)
     _c = list_set(c.allow, 0, 1)
     0
 
-fn ic_clear(xs: &List[String]) -> Int ! alloc
+fn ic_clear(xs: &mut List[String]) -> Int ! alloc
     if list_len(xs) > 0
         _a = list_pop(xs)
         ic_clear(xs)
@@ -186,7 +186,7 @@ fn ic_clear(xs: &List[String]) -> Int ! alloc
         0
 
 fn ic_ret(c: &IC) -> String ! alloc
-    list_get(&c.ret, 0)
+    list_get(&c.ret, 0).clone()
 
 fn ic_num(s: &String, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -249,14 +249,14 @@ fn ty_msg(t: &String) -> String ! alloc
     ts_trim(t)
 
 # ---- program-wide tables ----
-fn infer_sigs_go(h: &HT, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+fn infer_sigs_go(h: &mut HT, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = h.put(&list_get(fns, i).name, &int_to_str(i + 1))
         infer_sigs_go(h, fns, i + 1, n)
 
-fn infer_names_fns(m: &HT, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+fn infer_names_fns(m: &mut HT, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -265,7 +265,7 @@ fn infer_names_fns(m: &HT, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
 
 # Variants as bare names and with their arity, and the enums as type names. `vtab` maps the variant
 # of a non-generic enum to its enum (`name`: index + 1) and its position (`name#`: index + 1).
-fn infer_names_enums(names: &HT, arity: &HT, vtab: &HT, tnames: &HT, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
+fn infer_names_enums(names: &mut HT, arity: &mut HT, vtab: &mut HT, tnames: &mut HT, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -274,7 +274,7 @@ fn infer_names_enums(names: &HT, arity: &HT, vtab: &HT, tnames: &HT, enums: &Lis
         _b = tnames.put(&e.name, &int_to_str(1 + list_len(&e.tparams)))
         infer_names_enums(names, arity, vtab, tnames, enums, i + 1, n)
 
-fn infer_names_variants(names: &HT, arity: &HT, vtab: &HT, vs: &List[TVariant], i: Int, n: Int, ei: Int, generic: Int) -> Int ! alloc
+fn infer_names_variants(names: &mut HT, arity: &mut HT, vtab: &mut HT, vs: &List[TVariant], i: Int, n: Int, ei: Int, generic: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -284,7 +284,7 @@ fn infer_names_variants(names: &HT, arity: &HT, vtab: &HT, vs: &List[TVariant], 
         _r = infer_vtab_put(vtab, &v.name, ei, i, generic)
         infer_names_variants(names, arity, vtab, vs, i + 1, n, ei, generic)
 
-fn infer_vtab_put(vtab: &HT, name: &String, ei: Int, vi: Int, generic: Int) -> Int ! alloc
+fn infer_vtab_put(vtab: &mut HT, name: &String, ei: Int, vi: Int, generic: Int) -> Int ! alloc
     if generic > 0
         0
     else
@@ -312,9 +312,9 @@ fn infer_variant_field_ty(c: &IC, name: &String, j: Int) -> String ! alloc
         elsif str_len(list_get(&fields, j)) == 0
             "Unknown"
         else
-            list_get(&fields, j)
+            list_get(&fields, j).clone()
 
-fn infer_type_names_structs(m: &HT, v: &List[TStruct], i: Int, n: Int) -> Int ! alloc
+fn infer_type_names_structs(m: &mut HT, v: &List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -403,7 +403,7 @@ fn infer_builtin_type(b: &String) -> Int ! alloc
 
 # `E_TYPE` for a parameter or return type that names nothing declared.
 # Single-letter names (type parameters) and qualified names are not checked.
-fn infer_check_known(c: &IC, t: &String) -> Int ! alloc
+fn infer_check_known(c: &mut IC, t: &String) -> Int ! alloc
     if str_len(t) == 0
         0
     else
@@ -445,7 +445,7 @@ fn infer_targ_count(txt: &String, i: Int, n: Int, depth: Int, commas: Int, open:
         else
             infer_targ_count(txt, i + 1, n, depth, commas, open)
 
-fn infer_check_any(c: &IC, txt: &String) -> Int ! alloc
+fn infer_check_any(c: &mut IC, txt: &String) -> Int ! alloc
     got = infer_targ_count(txt, 0, str_len(txt), 0, 0, 0)
     if got != 1
         ic_fail(c, &"`any` expects one protocol argument: `any[Protocol]`")
@@ -458,14 +458,14 @@ fn infer_check_any(c: &IC, txt: &String) -> Int ! alloc
         else
             0
 
-fn infer_check_targs(c: &IC, base: &String, txt: &String, want: Int) -> Int ! alloc
+fn infer_check_targs(c: &mut IC, base: &String, txt: &String, want: Int) -> Int ! alloc
     got = infer_targ_count(txt, 0, str_len(txt), 0, 0, 0)
     if got == want
         0
     else
         ic_fail(c, &("`" + base + "` expects " + int_to_str(want) + " type argument(s), found " + int_to_str(got)))
 
-fn infer_check_builtin_targs(c: &IC, base: &String, txt: &String) -> Int ! alloc
+fn infer_check_builtin_targs(c: &mut IC, base: &String, txt: &String) -> Int ! alloc
     if str_eq(base, "Int") == 1
         infer_check_not_generic(c, base, txt)
     elsif str_eq(base, "Float") == 1
@@ -479,14 +479,14 @@ fn infer_check_builtin_targs(c: &IC, base: &String, txt: &String) -> Int ! alloc
     else
         0
 
-fn infer_check_not_generic(c: &IC, base: &String, txt: &String) -> Int ! alloc
+fn infer_check_not_generic(c: &mut IC, base: &String, txt: &String) -> Int ! alloc
     if infer_targ_count(txt, 0, str_len(txt), 0, 0, 0) > 0
         ic_fail(c, &("`" + base + "` is not generic"))
     else
         0
 
 # ---- expressions ----
-fn infer_args(c: &IC, args: &List[Expr], i: Int, n: Int, tys: &List[String]) -> Int ! alloc
+fn infer_args(c: &mut IC, args: &List[Expr], i: Int, n: Int, tys: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -494,12 +494,12 @@ fn infer_args(c: &IC, args: &List[Expr], i: Int, n: Int, tys: &List[String]) -> 
         infer_args(c, args, i + 1, n, tys)
 
 # Types the arguments from `i` on for their errors only.
-fn infer_args_free(c: &IC, args: &List[Expr], i: Int) -> Int ! alloc
+fn infer_args_free(c: &mut IC, args: &List[Expr], i: Int) -> Int ! alloc
     tys = list_new[String]()
-    _a = infer_args(c, args, i, list_len(args), &tys)
+    _a = infer_args(c, args, i, list_len(args), &mut tys)
     list_free(tys)
 
-fn infer_user_args(c: &IC, name: &String, params: &List[TParam], tys: &List[String], i: Int, n: Int) -> Int ! alloc
+fn infer_user_args(c: &mut IC, name: &String, params: &List[TParam], tys: &List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif ic_failed(c) == 1
@@ -549,7 +549,7 @@ fn mth_id(t: String) -> String ! alloc
     else
         t.slice(p + 1, t.len())
 
-fn infer_record(c: &IC, id: &String, val: &String) -> Int ! alloc
+fn infer_record(c: &mut IC, id: &String, val: &String) -> Int ! alloc
     if c.rec == 0
         0
     elsif str_len(id) == 0
@@ -557,14 +557,14 @@ fn infer_record(c: &IC, id: &String, val: &String) -> Int ! alloc
     else
         c.res.put(id, val)
 
-fn infer_call_t(c: &IC, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
+fn infer_call_t(c: &mut IC, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
     p = mth_dot(name, 0, str_len(name))
     if p < 0
         infer_call_ta(c, name, args, targs)
     else
         infer_dotted(c, name, p, args, targs)
 
-fn infer_dotted(c: &IC, name: &String, p: Int, args: &List[Expr], targs: &String) -> String ! alloc
+fn infer_dotted(c: &mut IC, name: &String, p: Int, args: &List[Expr], targs: &String) -> String ! alloc
     q = str_slice(name, 0, p)
     fld = str_slice(name, p + 1, str_len(name))
     id = mth_id(targs.dup())
@@ -593,7 +593,7 @@ fn infer_is_alias(aliases: &List[String], q: &String, i: Int) -> Int ! alloc
         infer_is_alias(aliases, q, i + 1)
 
 # `alias.f(args)`: the function `f` of the imported module (qualify links it by name).
-fn infer_module_item(c: &IC, q: &String, fld: &String, args: &List[Expr], ta: String) -> String ! alloc
+fn infer_module_item(c: &mut IC, q: &String, fld: &String, args: &List[Expr], ta: String) -> String ! alloc
     if ic_get(&c.sigs, fld) > 0
         infer_call(c, fld, args)
     else
@@ -604,11 +604,11 @@ fn infer_module_item(c: &IC, q: &String, fld: &String, args: &List[Expr], ta: St
 # `[q] ++ args`: the local `q` as the receiver of a call.
 fn infer_with_local(q: &String, args: &List[Expr]) -> List[Expr] ! alloc
     out = list_new[Expr]()
-    _a = list_push(&out, XIdent(strdup(q)))
-    _b = infer_push_exprs(&out, args, 0, list_len(args))
+    _a = list_push(&mut out, XIdent(strdup(q)))
+    _b = infer_push_exprs(&mut out, args, 0, list_len(args))
     out
 
-fn infer_push_exprs(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
+fn infer_push_exprs(out: &mut List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -624,7 +624,7 @@ fn infer_is_user_type(c: &IC, q: &String) -> Int ! alloc
         0
 
 # `T.name(args)` where `T` is a user type: the `static` or `init` `T__name`.
-fn infer_static(c: &IC, q: &String, fld: &String, args: &List[Expr], ta: &String, id: &String) -> String ! alloc
+fn infer_static(c: &mut IC, q: &String, fld: &String, args: &List[Expr], ta: &String, id: &String) -> String ! alloc
     mangled = q + "__" + fld
     si = ic_get(&c.sigs, &mangled)
     if str_len(ta) > 0
@@ -645,7 +645,7 @@ fn infer_static(c: &IC, q: &String, fld: &String, args: &List[Expr], ta: &String
 
 # `recv.name(args)`: `args[0]` is the receiver, typed once and bound as `__recv` so a chain of calls
 # is inferred in linear time.
-fn infer_instance(c: &IC, fld: &String, args: &List[Expr], ta: &String, id: &String, kind: &String) -> String ! alloc
+fn infer_instance(c: &mut IC, fld: &String, args: &List[Expr], ta: &String, id: &String, kind: &String) -> String ! alloc
     rty = infer_expr(c, &list_get(args, 0))
     if ic_failed(c) == 1
         "Unknown"
@@ -660,18 +660,18 @@ fn infer_instance(c: &IC, fld: &String, args: &List[Expr], ta: &String, id: &Str
         infer_instance_on(c, &rty, &infer_type_base(ts_trim(&rty), 0, ts_trim(&rty).len()), fld, args, id, kind)
 
 # The receiver's type is not known here: type the rest of the arguments and leave the call as it is.
-fn infer_unresolved(c: &IC, args: &List[Expr]) -> String ! alloc
+fn infer_unresolved(c: &mut IC, args: &List[Expr]) -> String ! alloc
     _a = infer_args_free(c, args, 1)
     "Unknown"
 
-fn infer_instance_on(c: &IC, rty: &String, base: &String, fld: &String, args: &List[Expr], id: &String, kind: &String) -> String ! alloc
+fn infer_instance_on(c: &mut IC, rty: &String, base: &String, fld: &String, args: &List[Expr], id: &String, kind: &String) -> String ! alloc
     proto = ty_any_protocol(rty)
     if str_len(proto) > 0
         infer_any_method(c, &proto, fld, args, id)
     else
         infer_instance_nominal(c, rty, base, fld, args, id, kind)
 
-fn infer_instance_nominal(c: &IC, rty: &String, base: &String, fld: &String, args: &List[Expr], id: &String, kind: &String) -> String ! alloc
+fn infer_instance_nominal(c: &mut IC, rty: &String, base: &String, fld: &String, args: &List[Expr], id: &String, kind: &String) -> String ! alloc
     bi = clone_builtin_for(c, base, fld, mth_builtin(base, fld))
     mangled = base + "__" + fld
     si = ic_get(&c.sigs, &mangled)
@@ -698,13 +698,13 @@ fn clone_builtin_for(c: &IC, base: &String, fld: &String, bi: String) -> String 
     else
         ""
 
-fn infer_any_method(c: &IC, protocol: &String, fld: &String, args: &List[Expr], id: &String) -> String ! alloc
+fn infer_any_method(c: &mut IC, protocol: &String, fld: &String, args: &List[Expr], id: &String) -> String ! alloc
     pi = proto_find(&c.protocols, protocol, 0, list_len(&c.protocols))
     if pi < 0
         _f = ic_fail(c, &("`" + protocol + "` is not a protocol"))
         "Unknown"
     else
-        p = list_get(&c.protocols, pi)
+        p = list_get(&c.protocols, pi).clone()
         mi = proto_method_slot(&p.methods, fld, 0, list_len(&p.methods))
         if mi < 0
             _f = ic_fail(c, &("protocol `" + protocol + "` has no method `" + fld + "`"))
@@ -718,9 +718,9 @@ fn infer_any_method(c: &IC, protocol: &String, fld: &String, args: &List[Expr], 
             else
                 infer_any_method_args(c, &pm.params, args, 1, want)
                 _r = infer_record(c, id, &"p")
-                pm.ret
+                pm.ret.clone()
 
-fn infer_any_method_args(c: &IC, params: &List[TParam], args: &List[Expr], ai: Int, an: Int) -> Int ! alloc
+fn infer_any_method_args(c: &mut IC, params: &List[TParam], args: &List[Expr], ai: Int, an: Int) -> Int ! alloc
     if ai >= an
         0
     elsif ic_failed(c) == 1
@@ -735,23 +735,23 @@ fn infer_any_method_args(c: &IC, params: &List[TParam], args: &List[Expr], ai: I
             infer_any_method_args(c, params, args, ai + 1, an)
 
 # The call `target(recv, rest..)` with the receiver bound to `__recv` (typed once).
-fn infer_recv_call(c: &IC, rty: &String, target: &String, args: &List[Expr], id: &String, kind: &String) -> String ! alloc
+fn infer_recv_call(c: &mut IC, rty: &String, target: &String, args: &List[Expr], id: &String, kind: &String) -> String ! alloc
     mark = tenv_len(&c.env)
-    _b = tenv_bind(&c.env, &"__recv", rty)
+    _b = tenv_bind(&mut c.env, &"__recv", rty)
     args2 = list_new[Expr]()
-    _p = list_push(&args2, XIdent("__recv"))
-    _q = infer_push_from(&args2, args, 1, list_len(args))
+    _p = list_push(&mut args2, XIdent("__recv"))
+    _q = infer_push_from(&mut args2, args, 1, list_len(args))
     # A fresh copy: the call's result may be an element of a list that the call frees.
     res = infer_call(c, target, &args2)
     r = "" + res
-    _s = tenv_truncate(&c.env, mark)
+    _s = tenv_truncate(&mut c.env, mark)
     _r = infer_record(c, id, &(kind + target))
     r
 
-fn infer_push_from(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
+fn infer_push_from(out: &mut List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
     infer_push_exprs_from(out, xs, i, n)
 
-fn infer_push_exprs_from(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
+fn infer_push_exprs_from(out: &mut List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -761,7 +761,7 @@ fn infer_push_exprs_from(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> I
 # `q.name(args)` with `q` neither a local nor a user type: the constructor of a built-in type
 # (`List.new[Int]()`, `Dict.new[String, Int]()`, `Bytes.new(n)`, `String.from_char(c)`) or a module member
 # (not ours to check).
-fn infer_dotted_other(c: &IC, q: &String, fld: &String, args: &List[Expr], ta: &String, id: &String) -> String ! alloc
+fn infer_dotted_other(c: &mut IC, q: &String, fld: &String, args: &List[Expr], ta: &String, id: &String) -> String ! alloc
     sb = mth_static(q, fld)
     if str_len(sb) > 0
         infer_builtin_static(c, q, fld, &sb, args, ta, id)
@@ -781,7 +781,7 @@ fn infer_is_builtin_type(q: &String) -> Int ! alloc
     else
         0
 
-fn infer_builtin_static(c: &IC, q: &String, fld: &String, sb: &String, args: &List[Expr], ta: &String, id: &String) -> String ! alloc
+fn infer_builtin_static(c: &mut IC, q: &String, fld: &String, sb: &String, args: &List[Expr], ta: &String, id: &String) -> String ! alloc
     want = mth_static_targs(q, fld)
     got = infer_dotted_targ_count(ta)
     if got != want
@@ -849,6 +849,8 @@ fn mth_builtin(base: &String, fld: &String) -> String ! alloc
     elsif str_eq(base, "List") + str_eq(fld, "push") == 2
         "list_push"
     elsif str_eq(base, "List") + str_eq(fld, "get") == 2
+        "list_get"
+    elsif str_eq(base, "List") + str_eq(fld, "get_mut") == 2
         "list_get"
     elsif str_eq(base, "List") + str_eq(fld, "set") == 2
         "list_set"
@@ -949,17 +951,17 @@ fn mth_static_targs(ty: &String, name: &String) -> Int ! alloc
     else
         0
 
-fn infer_call(c: &IC, name: &String, args: &List[Expr]) -> String ! alloc
+fn infer_call(c: &mut IC, name: &String, args: &List[Expr]) -> String ! alloc
     infer_call_ta(c, name, args, &"")
 
 # `targs` is the text of the type arguments (`list_new[Int]()`).
-fn infer_call_ta(c: &IC, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
+fn infer_call_ta(c: &mut IC, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
     tys = list_new[String]()
-    r = infer_call_go(c, name, args, &tys, targs)
+    r = infer_call_go(c, name, args, &mut tys, targs)
     _f = list_free(tys)
     r
 
-fn infer_call_go(c: &IC, name: &String, args: &List[Expr], tys: &List[String], targs: &String) -> String ! alloc
+fn infer_call_go(c: &mut IC, name: &String, args: &List[Expr], tys: &mut List[String], targs: &String) -> String ! alloc
     si = ic_get(&c.sigs, name)
     if si != 0
         infer_user_call(c, name, &list_get(&c.fns, si - 1), args, tys)
@@ -975,7 +977,7 @@ fn infer_call_go(c: &IC, name: &String, args: &List[Expr], tys: &List[String], t
 # ---- typed builtins ----
 # The result of the builtins whose signature matters to methods: the containers, the string and float helpers.
 # "" when `name` is not one of them. Mirror of the matching cases of `src/infer.rs`.
-fn infer_typed_builtin(c: &IC, name: &String, tys: &List[String], targs: &String) -> String ! alloc
+fn infer_typed_builtin(c: &mut IC, name: &String, tys: &List[String], targs: &String) -> String ! alloc
     if str_eq(name, "list_new") == 1
         infer_t_list_new(targs)
     elsif str_eq(name, "dict_new") == 1
@@ -1054,11 +1056,11 @@ fn infer_t_is_float(name: &String) -> Int ! alloc
     else
         0
 
-fn infer_t_float(c: &IC, name: &String, tys: &List[String]) -> String ! alloc
+fn infer_t_float(c: &mut IC, name: &String, tys: &List[String]) -> String ! alloc
     _a = infer_t_float_args(c, name, tys, 0)
     "Float"
 
-fn infer_t_float_args(c: &IC, name: &String, tys: &List[String], i: Int) -> Int ! alloc
+fn infer_t_float_args(c: &mut IC, name: &String, tys: &List[String], i: Int) -> Int ! alloc
     if i >= list_len(tys)
         0
     elsif ty_compat(&list_get(tys, i), &"Float") == 0
@@ -1071,9 +1073,9 @@ fn infer_t_arg(tys: &List[String], i: Int) -> String ! alloc
     if i >= list_len(tys)
         "Unknown"
     else
-        list_get(tys, i)
+        list_get(tys, i).clone()
 
-fn infer_t_list(c: &IC, name: &String, tys: &List[String]) -> String ! alloc
+fn infer_t_list(c: &mut IC, name: &String, tys: &List[String]) -> String ! alloc
     xs = ty_deref(&infer_t_arg(tys, 0))
     if infer_t_wrong_kind(&xs, &"List[") == 1
         _f = ic_fail(c, &(name + " expects a List"))
@@ -1081,7 +1083,7 @@ fn infer_t_list(c: &IC, name: &String, tys: &List[String]) -> String ! alloc
     else
         infer_t_list_op(c, name, tys, &xs, &tt_list_elem(&ts_trim(&xs)))
 
-fn infer_t_list_op(c: &IC, name: &String, tys: &List[String], xs: &String, elem: &String) -> String ! alloc
+fn infer_t_list_op(c: &mut IC, name: &String, tys: &List[String], xs: &String, elem: &String) -> String ! alloc
     if str_eq(name, "list_len") == 1
         "Int"
     elsif str_eq(name, "list_push") == 1
@@ -1095,7 +1097,7 @@ fn infer_t_list_op(c: &IC, name: &String, tys: &List[String], xs: &String, elem:
     else
         elem.dup()
 
-fn infer_t_elem_ok(c: &IC, tys: &List[String], i: Int, elem: &String) -> Int ! alloc
+fn infer_t_elem_ok(c: &mut IC, tys: &List[String], i: Int, elem: &String) -> Int ! alloc
     if str_len(elem) == 0
         0
     elsif i >= list_len(tys)
@@ -1117,7 +1119,7 @@ fn infer_t_wrong_kind(t: &String, prefix: &String) -> Int ! alloc
     else
         0
 
-fn infer_t_dict(c: &IC, name: &String, tys: &List[String]) -> String ! alloc
+fn infer_t_dict(c: &mut IC, name: &String, tys: &List[String]) -> String ! alloc
     d = ty_deref(&infer_t_arg(tys, 0))
     if infer_t_wrong_kind(&d, &"Dict[") == 1
         _f = ic_fail(c, &(name + " expects a Dict"))
@@ -1125,7 +1127,7 @@ fn infer_t_dict(c: &IC, name: &String, tys: &List[String]) -> String ! alloc
     else
         infer_t_dict_op(c, name, tys, &d, &tt_arg(&ts_trim(&d), 0), &tt_arg(&ts_trim(&d), 1))
 
-fn infer_t_dict_op(c: &IC, name: &String, tys: &List[String], d: &String, k: &String, v: &String) -> String ! alloc
+fn infer_t_dict_op(c: &mut IC, name: &String, tys: &List[String], d: &String, k: &String, v: &String) -> String ! alloc
     if str_eq(name, "dict_len") == 1
         "Int"
     elsif str_eq(name, "dict_keys") == 1
@@ -1152,7 +1154,7 @@ fn infer_t_wrap(head: &String, arg: &String) -> String ! alloc
     else
         head + "[" + arg + "]"
 
-fn infer_t_key_ok(c: &IC, tys: &List[String], k: &String) -> Int ! alloc
+fn infer_t_key_ok(c: &mut IC, tys: &List[String], k: &String) -> Int ! alloc
     if str_len(k) == 0
         0
     elsif list_len(tys) < 2
@@ -1162,7 +1164,7 @@ fn infer_t_key_ok(c: &IC, tys: &List[String], k: &String) -> Int ! alloc
     else
         0
 
-fn infer_t_dict_val_ok(c: &IC, tys: &List[String], v: &String) -> Int ! alloc
+fn infer_t_dict_val_ok(c: &mut IC, tys: &List[String], v: &String) -> Int ! alloc
     if str_len(v) == 0
         0
     elsif list_len(tys) < 3
@@ -1172,7 +1174,7 @@ fn infer_t_dict_val_ok(c: &IC, tys: &List[String], v: &String) -> Int ! alloc
     else
         0
 
-fn infer_user_call(c: &IC, name: &String, f: &TFn, args: &List[Expr], tys: &List[String]) -> String ! alloc
+fn infer_user_call(c: &mut IC, name: &String, f: &TFn, args: &List[Expr], tys: &mut List[String]) -> String ! alloc
     if list_len(args) != list_len(&f.params)
         _a = infer_args(c, args, 0, list_len(args), tys)
         _f = ic_fail(c, &("function `" + name + "` expects " + int_to_str(list_len(&f.params)) + " argument(s), found " + int_to_str(list_len(args))))
@@ -1186,7 +1188,7 @@ fn infer_user_call(c: &IC, name: &String, f: &TFn, args: &List[Expr], tys: &List
             f.ret.dup()
 
 # Builtins typed here take priority over the older cases below.
-fn infer_builtin_call(c: &IC, name: &String, args: &List[Expr], tys: &List[String], targs: &String) -> String ! alloc
+fn infer_builtin_call(c: &mut IC, name: &String, args: &List[Expr], tys: &List[String], targs: &String) -> String ! alloc
     t = infer_typed_builtin(c, name, tys, targs)
     if str_len(t) > 0
         t
@@ -1207,7 +1209,7 @@ fn infer_check_only_int(name: &String) -> Int ! alloc
     else
         0
 
-fn infer_builtin_call_old(c: &IC, name: &String, args: &List[Expr], tys: &List[String]) -> String ! alloc
+fn infer_builtin_call_old(c: &mut IC, name: &String, args: &List[Expr], tys: &List[String]) -> String ! alloc
     si = tt_struct_find(&c.env.structs, name)
     if si >= 0
         infer_struct_call(c, name, &list_get(&c.env.structs, si), args, tys)
@@ -1242,7 +1244,7 @@ fn infer_builtin_call_old(c: &IC, name: &String, args: &List[Expr], tys: &List[S
     else
         "Unknown"
 
-fn infer_struct_call(c: &IC, name: &String, sd: &TStruct, args: &List[Expr], tys: &List[String]) -> String ! alloc
+fn infer_struct_call(c: &mut IC, name: &String, sd: &TStruct, args: &List[Expr], tys: &List[String]) -> String ! alloc
     if sd.is_frame == 0
         if list_len(args) != list_len(&sd.fields)
             _f = ic_fail(c, &("struct `" + name + "` expects " + int_to_str(list_len(&sd.fields)) + " field(s), found " + int_to_str(list_len(args))))
@@ -1255,7 +1257,7 @@ fn infer_struct_call(c: &IC, name: &String, sd: &TStruct, args: &List[Expr], tys
     else
         name.dup()
 
-fn infer_variant_call(c: &IC, name: &String, args: &List[Expr]) -> String ! alloc
+fn infer_variant_call(c: &mut IC, name: &String, args: &List[Expr]) -> String ! alloc
     want = ic_get(&c.arity, name) - 1
     if list_len(args) != want
         _f = ic_fail(c, &("variant `" + name + "` expects " + int_to_str(want) + " payload field(s), found " + int_to_str(list_len(args))))
@@ -1263,19 +1265,19 @@ fn infer_variant_call(c: &IC, name: &String, args: &List[Expr]) -> String ! allo
     else
         infer_variant_ty(c, name)
 
-fn infer_matmul_call(c: &IC, tys: &List[String]) -> String ! alloc
+fn infer_matmul_call(c: &mut IC, tys: &List[String]) -> String ! alloc
     if list_len(tys) == 2
         infer_matmul(c, &list_get(tys, 0), &list_get(tys, 1))
     else
         "Unknown"
 
-fn infer_transpose_call(c: &IC, tys: &List[String]) -> String ! alloc
+fn infer_transpose_call(c: &mut IC, tys: &List[String]) -> String ! alloc
     if list_len(tys) == 1
         infer_transpose(c, &list_get(tys, 0))
     else
         "Unknown"
 
-fn infer_argmax(c: &IC, tys: &List[String]) -> String ! alloc
+fn infer_argmax(c: &mut IC, tys: &List[String]) -> String ! alloc
     if list_len(tys) >= 1
         if infer_known_scalar(&list_get(tys, 0)) == 1
             _f = ic_fail(c, &"argmax expects a tensor")
@@ -1289,13 +1291,13 @@ fn infer_argmax(c: &IC, tys: &List[String]) -> String ! alloc
 fn infer_unary_tensor(tys: &List[String]) -> String ! alloc
     if list_len(tys) >= 1
         if ty_is_tensor(&list_get(tys, 0)) == 1
-            list_get(tys, 0)
+            list_get(tys, 0).clone()
         else
             "Unknown"
     else
         "Unknown"
 
-fn infer_struct_fields(c: &IC, sd: &TStruct, tys: &List[String], i: Int, n: Int) -> Int ! alloc
+fn infer_struct_fields(c: &mut IC, sd: &TStruct, tys: &List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1322,7 +1324,7 @@ fn infer_elem(t: &String) -> String ! alloc
     ps = ts_split(t)
     e = list_get(&ps, 0)
     _f = list_free(ps)
-    e
+    e.clone()
 
 fn infer_same_elem(a: &String, b: &String) -> Int ! alloc
     str_eq(infer_elem(a), infer_elem(b))
@@ -1330,7 +1332,7 @@ fn infer_same_elem(a: &String, b: &String) -> Int ! alloc
 fn infer_same_place(a: &String, b: &String) -> Int ! alloc
     str_eq(ts_place(a), ts_place(b))
 
-fn infer_attention(c: &IC, tys: &List[String]) -> String ! alloc
+fn infer_attention(c: &mut IC, tys: &List[String]) -> String ! alloc
     if list_len(tys) != 4
         _f = ic_fail(c, &"attention expects q, k, v, causal")
         "Unknown"
@@ -1343,7 +1345,7 @@ fn infer_attention(c: &IC, tys: &List[String]) -> String ! alloc
     else
         "Unknown"
 
-fn infer_attention_tensors(c: &IC, q: &String, k: &String, v: &String) -> Int ! alloc
+fn infer_attention_tensors(c: &mut IC, q: &String, k: &String, v: &String) -> Int ! alloc
     if infer_same_elem(q, k) + infer_same_elem(k, v) + infer_same_place(q, k) + infer_same_place(q, v) < 4
         ic_fail(c, &"attention q/k/v element and place must match")
     elsif infer_rank(q) != 3
@@ -1355,7 +1357,7 @@ fn infer_attention_tensors(c: &IC, q: &String, k: &String, v: &String) -> Int ! 
     else
         0
 
-fn infer_qmatmul(c: &IC, tys: &List[String]) -> String ! alloc
+fn infer_qmatmul(c: &mut IC, tys: &List[String]) -> String ! alloc
     if list_len(tys) != 4
         _f = ic_fail(c, &"qmatmul expects a, w, scale, group")
         "Unknown"
@@ -1368,7 +1370,7 @@ fn infer_qmatmul(c: &IC, tys: &List[String]) -> String ! alloc
     else
         "Unknown"
 
-fn infer_qmatmul_tensors(c: &IC, a: &String, w: &String) -> Int ! alloc
+fn infer_qmatmul_tensors(c: &mut IC, a: &String, w: &String) -> Int ! alloc
     if str_eq(infer_elem(w), "I8") == 0
         ic_fail(c, &"qmatmul weight must be I8")
     elsif str_eq(infer_elem(a), "I8") == 1
@@ -1393,7 +1395,7 @@ fn lit_int(e: &Expr) -> Int ! alloc
         XInt(v) => v
         _ => 0
 
-fn infer_reduce(c: &IC, args: &List[Expr], tys: &List[String]) -> String ! alloc
+fn infer_reduce(c: &mut IC, args: &List[Expr], tys: &List[String]) -> String ! alloc
     if list_len(tys) < 1
         _f = ic_fail(c, &"reduce expects a tensor")
         "Unknown"
@@ -1406,7 +1408,7 @@ fn infer_reduce(c: &IC, args: &List[Expr], tys: &List[String]) -> String ! alloc
     else
         "Unknown"
 
-fn infer_reduce_axis(c: &IC, args: &List[Expr], t: &String) -> Int ! alloc
+fn infer_reduce_axis(c: &mut IC, args: &List[Expr], t: &String) -> Int ! alloc
     if list_len(args) >= 2
         a = list_get(args, 1)
         ps = ts_split(t)
@@ -1434,7 +1436,7 @@ fn infer_dims_equal(pa: &List[String], pb: &List[String], i: Int) -> Int ! alloc
     else
         infer_dims_equal(pa, pb, i + 1)
 
-fn infer_rms_norm(c: &IC, tys: &List[String]) -> String ! alloc
+fn infer_rms_norm(c: &mut IC, tys: &List[String]) -> String ! alloc
     if list_len(tys) != 2
         _f = ic_fail(c, &"rms_norm expects tensor and weight")
         "Unknown"
@@ -1445,11 +1447,11 @@ fn infer_rms_norm(c: &IC, tys: &List[String]) -> String ! alloc
         a = list_get(tys, 0)
         w = list_get(tys, 1)
         _f = infer_rms_shapes(c, &a, &w)
-        a
+        a.clone()
     else
         "Unknown"
 
-fn infer_rms_shapes(c: &IC, a: &String, w: &String) -> Int ! alloc
+fn infer_rms_shapes(c: &mut IC, a: &String, w: &String) -> Int ! alloc
     pa = ts_split(a)
     pw = ts_split(w)
     r = infer_rms_check(c, a, w, &pa, &pw)
@@ -1457,7 +1459,7 @@ fn infer_rms_shapes(c: &IC, a: &String, w: &String) -> Int ! alloc
     _f2 = list_free(pw)
     r
 
-fn infer_rms_check(c: &IC, a: &String, w: &String, pa: &List[String], pw: &List[String]) -> Int ! alloc
+fn infer_rms_check(c: &mut IC, a: &String, w: &String, pa: &List[String], pw: &List[String]) -> Int ! alloc
     if list_len(pa) != list_len(pw)
         ic_fail(c, &"rms_norm weight shape must match input")
     elsif infer_dims_equal(pa, pw, 0) == 0
@@ -1467,7 +1469,7 @@ fn infer_rms_check(c: &IC, a: &String, w: &String, pa: &List[String], pw: &List[
     else
         0
 
-fn infer_tensor_append(c: &IC, tys: &List[String]) -> String ! alloc
+fn infer_tensor_append(c: &mut IC, tys: &List[String]) -> String ! alloc
     if list_len(tys) != 2
         _f = ic_fail(c, &"tensor_append expects cache and row")
         "Unknown"
@@ -1529,7 +1531,7 @@ fn infer_tensor_op_ok(op: &String) -> Int ! alloc
         0
 
 # Checks `a op b` when at least one side is a tensor; returns the base tensor type.
-fn infer_tensor_binary(c: &IC, op: &String, lt: &String, rt: &String) -> String ! alloc
+fn infer_tensor_binary(c: &mut IC, op: &String, lt: &String, rt: &String) -> String ! alloc
     if infer_tensor_op_ok(op) == 0
         _f = ic_fail(c, &"this operator is not defined on tensors")
     elsif ty_is_tensor(lt) + ty_is_tensor(rt) == 2
@@ -1541,7 +1543,7 @@ fn infer_tensor_binary(c: &IC, op: &String, lt: &String, rt: &String) -> String 
     else
         rt.dup()
 
-fn infer_tensor_pair(c: &IC, lt: &String, rt: &String) -> Int ! alloc
+fn infer_tensor_pair(c: &mut IC, lt: &String, rt: &String) -> Int ! alloc
     if infer_same_elem(lt, rt) == 0
         ic_fail(c, &"tensor operands must share element type")
     elsif infer_same_place(lt, rt) == 0
@@ -1567,7 +1569,7 @@ fn infer_is_unary_tensor(n: &String) -> Int ! alloc
     else
         0
 
-fn infer_transpose(c: &IC, t: &String) -> String ! alloc
+fn infer_transpose(c: &mut IC, t: &String) -> String ! alloc
     if ty_is_tensor(t) == 0
         if infer_known_scalar(t) == 1
             _f = ic_fail(c, &"transpose expects a tensor")
@@ -1580,7 +1582,7 @@ fn infer_transpose(c: &IC, t: &String) -> String ! alloc
         _f = list_free(p)
         r
 
-fn infer_transpose_parts(c: &IC, t: &String, p: &List[String]) -> String ! alloc
+fn infer_transpose_parts(c: &mut IC, t: &String, p: &List[String]) -> String ! alloc
     if list_len(p) < 3
         _f = ic_fail(c, &"transpose requires rank >= 2")
         "Unknown"
@@ -1610,7 +1612,7 @@ fn infer_lit_dims(args: &List[Expr], i: Int, n: Int, head: &String) -> String ! 
         else
             infer_lit_dims(args, i + 1, n, &(head + ", " + int_to_str(lit_int(&a))))
 
-fn infer_reshape(c: &IC, args: &List[Expr], tys: &List[String]) -> String ! alloc
+fn infer_reshape(c: &mut IC, args: &List[Expr], tys: &List[String]) -> String ! alloc
     if list_len(args) < 2
         "Unknown"
     elsif ty_is_tensor(&list_get(tys, 0)) == 0
@@ -1627,7 +1629,7 @@ fn infer_reshape(c: &IC, args: &List[Expr], tys: &List[String]) -> String ! allo
         _f = list_free(p)
         r
 
-fn infer_reshape_to(c: &IC, t: &String, p: &List[String], dims: &String) -> String ! alloc
+fn infer_reshape_to(c: &mut IC, t: &String, p: &List[String], dims: &String) -> String ! alloc
     if str_len(dims) == 0
         _f = ic_fail(c, &"reshape dimensions must be integer literals")
         "Unknown"
@@ -1646,7 +1648,7 @@ fn infer_reshape_to(c: &IC, t: &String, p: &List[String], dims: &String) -> Stri
         else
             full
 
-fn infer_softmax(c: &IC, args: &List[Expr], tys: &List[String]) -> String ! alloc
+fn infer_softmax(c: &mut IC, args: &List[Expr], tys: &List[String]) -> String ! alloc
     if list_len(tys) < 1
         "Unknown"
     elsif ty_is_tensor(&list_get(tys, 0)) == 0
@@ -1658,9 +1660,9 @@ fn infer_softmax(c: &IC, args: &List[Expr], tys: &List[String]) -> String ! allo
     else
         t = list_get(tys, 0)
         _f = infer_softmax_axis(c, args, &t)
-        t
+        t.clone()
 
-fn infer_softmax_axis(c: &IC, args: &List[Expr], t: &String) -> Int ! alloc
+fn infer_softmax_axis(c: &mut IC, args: &List[Expr], t: &String) -> Int ! alloc
     if list_len(args) >= 2
         a = list_get(args, 1)
         ps = ts_split(t)
@@ -1680,7 +1682,7 @@ fn infer_softmax_axis(c: &IC, args: &List[Expr], t: &String) -> Int ! alloc
     else
         0
 
-fn infer_matmul(c: &IC, ta: &String, tb: &String) -> String ! alloc
+fn infer_matmul(c: &mut IC, ta: &String, tb: &String) -> String ! alloc
     if ty_is_tensor(ta) == 0
         if infer_known_scalar(ta) == 1
             _f = ic_fail(c, &"matmul left must be tensor")
@@ -1701,7 +1703,7 @@ fn infer_matmul(c: &IC, ta: &String, tb: &String) -> String ! alloc
         _f2 = list_free(pb)
         r
 
-fn infer_matmul_parts(c: &IC, ta: &String, pa: &List[String], pb: &List[String]) -> String ! alloc
+fn infer_matmul_parts(c: &mut IC, ta: &String, pa: &List[String], pb: &List[String]) -> String ! alloc
     if list_len(pa) < 2
         "Unknown"
     elsif list_len(pb) < 2
@@ -1732,7 +1734,7 @@ fn infer_matmul_type(pa: &List[String], pb: &List[String], ta: &String) -> Strin
     mid = ts_join(pa, 1, list_len(pa) - 1, head)
     mid + ", " + list_get(pb, list_len(pb) - 1) + "] on " + ts_place(ta)
 
-fn infer_binary(c: &IC, op: &String, l: &Expr, r: &Expr) -> String ! alloc
+fn infer_binary(c: &mut IC, op: &String, l: &Expr, r: &Expr) -> String ! alloc
     lt = infer_expr(c, l)
     rt = infer_expr(c, r)
     if ty_is_tensor(&lt) + ty_is_tensor(&rt) > 0
@@ -1747,7 +1749,7 @@ fn infer_binary(c: &IC, op: &String, l: &Expr, r: &Expr) -> String ! alloc
     else
         infer_numeric(c, &lt, &rt)
 
-fn infer_scalar_left(c: &IC, op: &String, lt: &String, rt: &String) -> Int ! alloc
+fn infer_scalar_left(c: &mut IC, op: &String, lt: &String, rt: &String) -> Int ! alloc
     if ty_is_tensor(lt) == 0
         if ty_is_tensor(rt) == 1
             if infer_scalar_left_unsupported(op) == 1
@@ -1759,7 +1761,7 @@ fn infer_scalar_left(c: &IC, op: &String, lt: &String, rt: &String) -> Int ! all
     else
         0
 
-fn infer_add(c: &IC, lt: &String, rt: &String) -> String ! alloc
+fn infer_add(c: &mut IC, lt: &String, rt: &String) -> String ! alloc
     if ty_is(lt, &"String") == 1
         if ty_is_scalar(rt) == 1
             if ty_is(rt, &"String") == 0
@@ -1785,23 +1787,23 @@ fn infer_is_logic(op: &String) -> Int ! alloc
     else
         0
 
-fn infer_logic(c: &IC, lt: &String, rt: &String) -> String ! alloc
+fn infer_logic(c: &mut IC, lt: &String, rt: &String) -> String ! alloc
     _f = infer_truth_side(c, lt)
     _g = infer_truth_side(c, rt)
     "Bool"
 
-fn infer_truth_side(c: &IC, t: &String) -> Int ! alloc
+fn infer_truth_side(c: &mut IC, t: &String) -> Int ! alloc
     if ty_is(t, &"Bool") + ty_is(t, &"Int") + ty_is(t, &"Unknown") == 0
         ic_fail(c, &"`&&` and `||` take Bool or Int operands")
     else
         0
 
-fn infer_bitop(c: &IC, lt: &String, rt: &String) -> String ! alloc
+fn infer_bitop(c: &mut IC, lt: &String, rt: &String) -> String ! alloc
     _f = infer_bit_side(c, lt)
     _g = infer_bit_side(c, rt)
     "Int"
 
-fn infer_bit_side(c: &IC, t: &String) -> Int ! alloc
+fn infer_bit_side(c: &mut IC, t: &String) -> Int ! alloc
     if ty_is_scalar(t) == 1
         if ty_is(t, &"Int") == 0
             ic_fail(c, &"integer bitwise/shift operation requires Int")
@@ -1822,7 +1824,7 @@ fn infer_scalar_left_unsupported(op: &String) -> Int ! alloc
     else
         0
 
-fn infer_numeric(c: &IC, lt: &String, rt: &String) -> String ! alloc
+fn infer_numeric(c: &mut IC, lt: &String, rt: &String) -> String ! alloc
     if ty_numeric(lt) == 0
         _f = ic_fail(c, &"numeric operation requires Int or Float")
         lt.dup()
@@ -1848,7 +1850,7 @@ fn infer_is_bitop(op: &String) -> Int ! alloc
     else
         0
 
-fn infer_ident(c: &IC, name: &String) -> String ! alloc
+fn infer_ident(c: &mut IC, name: &String) -> String ! alloc
     if tt_index_of(&c.env.names, name, 0, list_len(&c.env.names)) >= 0
         t = tenv_type(&c.env, name)
         if str_len(t) == 0
@@ -1881,7 +1883,7 @@ fn infer_imported_variant(c: &IC, name: &String) -> Int ! alloc
         0
 
 # A field of a reference is a field of the value (`it.xs` with `it: &Items`).
-fn infer_field(c: &IC, base: &Expr, field: &String) -> String ! alloc
+fn infer_field(c: &mut IC, base: &Expr, field: &String) -> String ! alloc
     bt = ty_deref(&infer_expr(c, base))
     if ty_is_scalar(&bt) == 1
         _f = ic_fail(c, &("type `" + ty_msg(&bt) + "` has no field `" + field + "`"))
@@ -1899,36 +1901,36 @@ fn infer_field(c: &IC, base: &Expr, field: &String) -> String ! alloc
                 ft
 
 # A branch block in its own scope: its type, or "<diverged>" when it diverged.
-fn infer_branch(c: &IC, b: &TBlock) -> String ! alloc
+fn infer_branch(c: &mut IC, b: &TBlock) -> String ! alloc
     mark = tenv_len(&c.env)
     div = infer_block_flow(c, b)
     r = infer_branch_type(c, b, div)
-    _s = tenv_truncate(&c.env, mark)
+    _s = tenv_truncate(&mut c.env, mark)
     r
 
-fn infer_branch_type(c: &IC, b: &TBlock, div: Int) -> String ! alloc
+fn infer_branch_type(c: &mut IC, b: &TBlock, div: Int) -> String ! alloc
     if div == 1
         _f = infer_unreachable(c, b)
         "<diverged>"
     else
         infer_tail_type(c, b)
 
-fn infer_unreachable(c: &IC, b: &TBlock) -> Int ! alloc
+fn infer_unreachable(c: &mut IC, b: &TBlock) -> Int ! alloc
     match b.tail
         XNone => 0
         _ => ic_fail(c, &"unreachable code after return")
 
-fn infer_tail_type(c: &IC, b: &TBlock) -> String ! alloc
+fn infer_tail_type(c: &mut IC, b: &TBlock) -> String ! alloc
     match b.tail
         XNone => "Unit"
         XWhile(cond, body) => infer_while_tail(c, &b.tail)
         _ => infer_expr(c, &b.tail)
 
-fn infer_while_tail(c: &IC, e: &Expr) -> String ! alloc
+fn infer_while_tail(c: &mut IC, e: &Expr) -> String ! alloc
     _t = infer_expr(c, e)
     "Unit"
 
-fn infer_elsifs(c: &IC, arms: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+fn infer_elsifs(c: &mut IC, arms: &List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1938,7 +1940,7 @@ fn infer_elsifs(c: &IC, arms: &List[TElsif], i: Int, n: Int) -> Int ! alloc
         infer_elsifs(c, arms, i + 1, n)
 
 # A condition is Bool or Int; a String is rejected.
-fn infer_cond(c: &IC, e: &Expr) -> Int ! alloc
+fn infer_cond(c: &mut IC, e: &Expr) -> Int ! alloc
     t = infer_expr(c, e)
     if ty_is(&t, &"String") == 1
         ic_fail(c, &"condition must be Bool or Int, found String")
@@ -1958,7 +1960,7 @@ fn infer_scalar_kind(t: &String) -> Int ! alloc
     else
         0
 
-fn infer_check_rebind(c: &IC, name: &String, ty: &String) -> Int ! alloc
+fn infer_check_rebind(c: &mut IC, name: &String, ty: &String) -> Int ! alloc
     old = tenv_type(&c.env, name)
     if str_len(old) == 0
         0
@@ -1977,7 +1979,7 @@ fn infer_check_rebind(c: &IC, name: &String, ty: &String) -> Int ! alloc
             ic_fail(c, &("cannot assign " + ty_msg(ty) + " to `" + name + "`, which holds " + ty_msg(&old)))
 
 # `try x`: x must be a Result/Option and the fn must return the same enum.
-fn infer_try(c: &IC, inner: &Expr) -> String ! alloc
+fn infer_try(c: &mut IC, inner: &Expr) -> String ! alloc
     t = infer_expr(c, inner)
     if str_len(t) == 0
         "Unknown"
@@ -2000,7 +2002,7 @@ fn infer_try(c: &IC, inner: &Expr) -> String ! alloc
         else
             "Unknown"
 
-fn infer_if(c: &IC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> String ! alloc
+fn infer_if(c: &mut IC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> String ! alloc
     _a = infer_cond(c, cond)
     if has_else == 0
         _b = infer_branch(c, then_b)
@@ -2015,7 +2017,7 @@ fn infer_if(c: &IC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int
 fn infer_diverged(t: &String) -> Int ! alloc
     str_eq(t, "<diverged>")
 
-fn infer_if_join(c: &IC, tb: &String, eb: &String) -> String ! alloc
+fn infer_if_join(c: &mut IC, tb: &String, eb: &String) -> String ! alloc
     if infer_diverged(tb) == 1
         if infer_diverged(eb) == 1
             "Unit"
@@ -2030,18 +2032,18 @@ fn infer_if_join(c: &IC, tb: &String, eb: &String) -> String ! alloc
         else
             tb.dup()
 
-fn infer_expr(c: &IC, e: &Expr) -> String ! alloc
+fn infer_expr(c: &mut IC, e: &Expr) -> String ! alloc
     match e
         XNone => "Unit"
         _ => infer_expr_live(c, e)
 
-fn infer_expr_live(c: &IC, e: &Expr) -> String ! alloc
+fn infer_expr_live(c: &mut IC, e: &Expr) -> String ! alloc
     if ic_failed(c) == 1
         "Unknown"
     else
         infer_expr_go(c, e)
 
-fn infer_expr_go(c: &IC, e: &Expr) -> String ! alloc
+fn infer_expr_go(c: &mut IC, e: &Expr) -> String ! alloc
     match e
         XInt(v) => "Int"
         XFloat(bits, txt) => "Float"
@@ -2065,7 +2067,7 @@ fn infer_expr_go(c: &IC, e: &Expr) -> String ! alloc
 fn infer_tensor_lit(nr: Int, nc: Int) -> String ! alloc
     "Tensor[F32, " + int_to_str(nr) + ", " + int_to_str(nc) + "] on cpu"
 
-fn infer_unary(c: &IC, op: &String, inner: &Expr) -> String ! alloc
+fn infer_unary(c: &mut IC, op: &String, inner: &Expr) -> String ! alloc
     ut = infer_expr(c, inner)
     if str_eq(op, "not") == 1
         _u = infer_check_not_tensor(c, &ut)
@@ -2097,30 +2099,30 @@ fn ty_peel_ref(t: &String) -> String ! alloc
     else
         u
 
-fn infer_while(c: &IC, cond: &Expr, body: &TBlock) -> String ! alloc
+fn infer_while(c: &mut IC, cond: &Expr, body: &TBlock) -> String ! alloc
     _a = infer_cond(c, cond)
     _b = infer_block_flow(c, body)
     _t = infer_tail_expr(c, body)
     "Unit"
 
-fn infer_on(c: &IC, body: &TBlock) -> String ! alloc
+fn infer_on(c: &mut IC, body: &TBlock) -> String ! alloc
     mark = tenv_len(&c.env)
     _a = infer_block_flow(c, body)
     _t = infer_tail_expr(c, body)
-    _s = tenv_truncate(&c.env, mark)
+    _s = tenv_truncate(&mut c.env, mark)
     "Unknown"
 
-fn infer_lambda(c: &IC, param: &String, body: &Expr) -> String ! alloc
+fn infer_lambda(c: &mut IC, param: &String, body: &Expr) -> String ! alloc
     mark = tenv_len(&c.env)
-    _b = tenv_bind(&c.env, param, &"Float")
+    _b = tenv_bind(&mut c.env, param, &"Float")
     _r = list_set(c.allow, 0, 0)
     _t = infer_expr(c, body)
     _q = list_set(c.allow, 0, 1)
-    _s = tenv_truncate(&c.env, mark)
+    _s = tenv_truncate(&mut c.env, mark)
     # A lambda has one parameter; a local bound to it is called with one argument (`lambda_arity_error`).
     "fn 1"
 
-fn infer_match(c: &IC, scrut: &Expr, arms: &List[TArm]) -> String ! alloc
+fn infer_match(c: &mut IC, scrut: &Expr, arms: &List[TArm]) -> String ! alloc
     sty = infer_expr(c, scrut)
     _a = infer_match_arms(c, arms, 0, list_len(arms), &sty)
     "Unknown"
@@ -2172,7 +2174,7 @@ fn pat_kind_bad_on_enum(k: Int) -> Int ! alloc
     else
         0
 
-fn infer_match_pat_ok(c: &IC, p: &TPat, sty: &String) -> Int ! alloc
+fn infer_match_pat_ok(c: &mut IC, p: &TPat, sty: &String) -> Int ! alloc
     cls = infer_match_scrut_class(sty, c)
     k = p.kind
     if cls == 0
@@ -2193,22 +2195,22 @@ fn infer_match_pat_ok(c: &IC, p: &TPat, sty: &String) -> Int ! alloc
     else
         0
 
-fn infer_tail_expr(c: &IC, b: &TBlock) -> Int ! alloc
+fn infer_tail_expr(c: &mut IC, b: &TBlock) -> Int ! alloc
     match b.tail
         XNone => 0
         _ => infer_tail_value(c, &b.tail)
 
-fn infer_tail_value(c: &IC, e: &Expr) -> Int ! alloc
+fn infer_tail_value(c: &mut IC, e: &Expr) -> Int ! alloc
     _t = infer_expr(c, e)
     0
 
-fn infer_pattern_binds(c: &IC, p: &TPat) -> Int ! alloc
+fn infer_pattern_binds(c: &mut IC, p: &TPat) -> Int ! alloc
     infer_pattern_binds_ty(c, p, &"Unknown")
 
 # Binds the names of `p`, which matches a value of type `ty`; a variant's payload binds its field types.
-fn infer_pattern_binds_ty(c: &IC, p: &TPat, ty: &String) -> Int ! alloc
+fn infer_pattern_binds_ty(c: &mut IC, p: &TPat, ty: &String) -> Int ! alloc
     if p.kind == 1
-        tenv_bind(&c.env, &p.name, ty)
+        tenv_bind(&mut c.env, &p.name, ty)
     elsif p.kind == 3
         want = ic_get(&c.arity, &p.name)
         _f = infer_pattern_arity(c, p, want)
@@ -2216,7 +2218,7 @@ fn infer_pattern_binds_ty(c: &IC, p: &TPat, ty: &String) -> Int ! alloc
     else
         0
 
-fn infer_pattern_arity(c: &IC, p: &TPat, want: Int) -> Int ! alloc
+fn infer_pattern_arity(c: &mut IC, p: &TPat, want: Int) -> Int ! alloc
     if want != 0
         if list_len(&p.args) != want - 1
             ic_fail(c, &("variant `" + p.name + "` expects " + int_to_str(want - 1) + " field(s), found " + int_to_str(list_len(&p.args))))
@@ -2225,14 +2227,14 @@ fn infer_pattern_arity(c: &IC, p: &TPat, want: Int) -> Int ! alloc
     else
         0
 
-fn infer_pattern_list(c: &IC, p: &TPat, i: Int, n: Int) -> Int ! alloc
+fn infer_pattern_list(c: &mut IC, p: &TPat, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = infer_pattern_binds_ty(c, &list_get(&p.args, i), &infer_variant_field_ty(c, &p.name, i))
         infer_pattern_list(c, p, i + 1, n)
 
-fn infer_match_arms(c: &IC, arms: &List[TArm], i: Int, n: Int, sty: &String) -> Int ! alloc
+fn infer_match_arms(c: &mut IC, arms: &List[TArm], i: Int, n: Int, sty: &String) -> Int ! alloc
     if i >= n
         0
     else
@@ -2244,12 +2246,12 @@ fn infer_match_arms(c: &IC, arms: &List[TArm], i: Int, n: Int, sty: &String) -> 
             _b = infer_branch(c, &arm.suite)
         else
             _b = infer_expr(c, &arm.body)
-        _s = tenv_truncate(&c.env, mark)
+        _s = tenv_truncate(&mut c.env, mark)
         infer_match_arms(c, arms, i + 1, n, sty)
 
 # ---- statements ----
 # Returns 1 when the statement diverges.
-fn infer_stmt(c: &IC, st: &TStmt) -> Int ! alloc
+fn infer_stmt(c: &mut IC, st: &TStmt) -> Int ! alloc
     if st.kind == 2
         _f = infer_return(c, &st.expr)
         1
@@ -2263,7 +2265,7 @@ fn infer_stmt(c: &IC, st: &TStmt) -> Int ! alloc
         _a = infer_expr(c, &st.expr)
         0
 
-fn infer_return(c: &IC, ex: &Expr) -> Int ! alloc
+fn infer_return(c: &mut IC, ex: &Expr) -> Int ! alloc
     if list_get(&c.allow, 0) == 0
         ic_fail(c, &"return not allowed here")
     else
@@ -2271,14 +2273,14 @@ fn infer_return(c: &IC, ex: &Expr) -> Int ! alloc
             XNone => infer_return_unit(c)
             _ => infer_return_value(c, ex)
 
-fn infer_return_value(c: &IC, ex: &Expr) -> Int ! alloc
+fn infer_return_value(c: &mut IC, ex: &Expr) -> Int ! alloc
     vt = infer_expr(c, ex)
     if ty_compat(&vt, &ic_ret(c)) == 0
         ic_fail(c, &("return type mismatch: expected " + ty_msg(&ic_ret(c)) + ", found " + ty_msg(&vt)))
     else
         0
 
-fn infer_return_unit(c: &IC) -> Int ! alloc
+fn infer_return_unit(c: &mut IC) -> Int ! alloc
     if ty_unit(&ic_ret(c)) == 0
         if str_len(ic_ret(c)) != 0
             ic_fail(c, &"return requires a value")
@@ -2287,7 +2289,7 @@ fn infer_return_unit(c: &IC) -> Int ! alloc
     else
         0
 
-fn infer_binding(c: &IC, st: &TStmt) -> Int ! alloc
+fn infer_binding(c: &mut IC, st: &TStmt) -> Int ! alloc
     if st.is_let == 0
         if ce_has(&c.cvals, &st.name) == 1
             if tt_index_of(&c.env.names, &st.name, 0, list_len(&c.env.names)) < 0
@@ -2296,20 +2298,20 @@ fn infer_binding(c: &IC, st: &TStmt) -> Int ! alloc
     if str_len(st.ty) != 0
         _k = infer_check_known(c, &st.ty)
         _f = infer_declared(c, &ty, &st.ty)
-        _b = tenv_bind(&c.env, &st.name, &st.ty)
+        _b = tenv_bind(&mut c.env, &st.name, &st.ty)
         0
     else
         _r = infer_check_rebind(c, &st.name, &ty)
-        _b = tenv_bind(&c.env, &st.name, &ty)
+        _b = tenv_bind(&mut c.env, &st.name, &ty)
         0
 
-fn infer_declared(c: &IC, ty: &String, decl: &String) -> Int ! alloc
+fn infer_declared(c: &mut IC, ty: &String, decl: &String) -> Int ! alloc
     if ty_compat_or_any(c, ty, decl) == 0
         ic_fail(c, &"let binding type mismatch")
     else
         0
 
-fn infer_stmts(c: &IC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+fn infer_stmts(c: &mut IC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif ic_failed(c) == 1
@@ -2319,11 +2321,11 @@ fn infer_stmts(c: &IC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     else
         infer_stmts(c, stmts, i + 1, n)
 
-fn infer_block_flow(c: &IC, b: &TBlock) -> Int ! alloc
+fn infer_block_flow(c: &mut IC, b: &TBlock) -> Int ! alloc
     infer_stmts(c, &b.stmts, 0, list_len(&b.stmts))
 
 # The fn body: its tail must have the declared type.
-fn infer_fn_body(c: &IC, f: &TFn) -> Int ! alloc
+fn infer_fn_body(c: &mut IC, f: &TFn) -> Int ! alloc
     _r = list_set(c.ret, 0, strdup(f.ret))
     div = infer_block_flow(c, &f.body)
     if ic_failed(c) == 1
@@ -2333,13 +2335,13 @@ fn infer_fn_body(c: &IC, f: &TFn) -> Int ! alloc
             XNone => infer_no_tail(c, div, &f.ret)
             _ => infer_with_tail(c, &f.body.tail, div, &f.ret)
 
-fn infer_no_tail(c: &IC, div: Int, ret: &String) -> Int ! alloc
+fn infer_no_tail(c: &mut IC, div: Int, ret: &String) -> Int ! alloc
     if div == 0
         infer_missing_value(c, ret)
     else
         0
 
-fn infer_with_tail(c: &IC, tail: &Expr, div: Int, ret: &String) -> Int ! alloc
+fn infer_with_tail(c: &mut IC, tail: &Expr, div: Int, ret: &String) -> Int ! alloc
     if div == 1
         ic_fail(c, &"unreachable code after return")
     else
@@ -2347,18 +2349,18 @@ fn infer_with_tail(c: &IC, tail: &Expr, div: Int, ret: &String) -> Int ! alloc
             XWhile(cond, body) => infer_while_value(c, tail, ret)
             _ => infer_tail_matches(c, tail, ret)
 
-fn infer_while_value(c: &IC, tail: &Expr, ret: &String) -> Int ! alloc
+fn infer_while_value(c: &mut IC, tail: &Expr, ret: &String) -> Int ! alloc
     _t = infer_expr(c, tail)
     infer_missing_value(c, ret)
 
-fn infer_tail_matches(c: &IC, tail: &Expr, ret: &String) -> Int ! alloc
+fn infer_tail_matches(c: &mut IC, tail: &Expr, ret: &String) -> Int ! alloc
     ty = infer_expr(c, tail)
     if ty_compat(&ty, ret) == 0
         ic_fail(c, &("expected " + ty_msg(ret) + ", found " + ty_msg(&ty)))
     else
         0
 
-fn infer_missing_value(c: &IC, ret: &String) -> Int ! alloc
+fn infer_missing_value(c: &mut IC, ret: &String) -> Int ! alloc
     if str_len(ret) == 0
         0
     elsif ty_unit(ret) == 1
@@ -2366,7 +2368,7 @@ fn infer_missing_value(c: &IC, ret: &String) -> Int ! alloc
     else
         ic_fail(c, &("function must return a value of type " + ty_msg(ret)))
 
-fn infer_fn(c: &IC, f: &TFn) -> Int ! alloc
+fn infer_fn(c: &mut IC, f: &TFn) -> Int ! alloc
     _r = ic_reset(c)
     _fx = ic_load_fx(c, &f.fx)
     _s = infer_seed(c, &f.params, 0, list_len(&f.params))
@@ -2378,18 +2380,18 @@ fn infer_fn(c: &IC, f: &TFn) -> Int ! alloc
     else
         result_ok(0)
 
-fn infer_seed(c: &IC, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
+fn infer_seed(c: &mut IC, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         pm = list_get(params, i)
-        _b = tenv_bind(&c.env, &pm.name, &pm.ty)
+        _b = tenv_bind(&mut c.env, &pm.name, &pm.ty)
         _e = infer_check_elem(c, &pm.ty)
         _u = infer_check_known(c, &pm.ty)
         infer_seed(c, params, i + 1, n)
 
 # `!` on a tensor needs I8 elements.
-fn infer_check_not_tensor(c: &IC, t: &String) -> Int ! alloc
+fn infer_check_not_tensor(c: &mut IC, t: &String) -> Int ! alloc
     if str_len(t) == 0
         0
     elsif ty_is_tensor(t) == 0
@@ -2400,7 +2402,7 @@ fn infer_check_not_tensor(c: &IC, t: &String) -> Int ! alloc
         ic_fail(c, &"! on a tensor expects Tensor[I8, …]")
 
 # `Tensor[Float, 2] on cpu`: the element must be F32, F16, BF16 or I8.
-fn infer_check_elem(c: &IC, t: &String) -> Int ! alloc
+fn infer_check_elem(c: &mut IC, t: &String) -> Int ! alloc
     if str_len(t) == 0
         0
     elsif ty_is_tensor(t) == 0
@@ -2418,7 +2420,7 @@ fn infer_check_elem(c: &IC, t: &String) -> Int ! alloc
         else
             ic_fail(c, &("`" + e + "` is not a tensor element type"))
 
-fn infer_program_go(c: &IC, i: Int, n: Int) -> Int ! alloc
+fn infer_program_go(c: &mut IC, i: Int, n: Int) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
@@ -2431,7 +2433,7 @@ fn infer_program_go(c: &IC, i: Int, n: Int) -> Int ! alloc
 # Ok(0), or Err(message) for the first type error.
 fn infer_program(tp: &TProgram) -> Int ! alloc
     vals = list_new[CVal]()
-    err = ce_eval(&tp.consts, &list_new[CVal](), &vals)
+    err = ce_eval(&tp.consts, &list_new[CVal](), &mut vals)
     if str_len(err) > 0
         _f = list_free(vals)
         result_err_str(&err)
@@ -2444,6 +2446,6 @@ fn infer_with_vals(tp: &TProgram, vals: List[CVal]) -> Int ! alloc
     c = ic_new(tp)
     _s = list_free(c.cvals)
     c.cvals = vals
-    r = infer_program_go(&c, 0, list_len(&tp.fns))
+    r = infer_program_go(&mut c, 0, list_len(&tp.fns))
     _f = ic_free(&c)
     r

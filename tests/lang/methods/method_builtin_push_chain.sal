@@ -1,5 +1,8 @@
 # exit: 12
 fn main() -> Int ! alloc
     xs = List.new[Int]()
-    xs.push(1).push(2).push(3).set(0, 9)
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    xs.set(0, 9)
     xs.len() + xs.get(0)

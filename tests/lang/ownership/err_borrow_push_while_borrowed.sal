@@ -1,0 +1,8 @@
+# error: E_BORROW
+# selfhost-xfail: el borrowck del selfhost no trata `get`/`push` como préstamos de la lista
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(d"ab".dup())
+    r = xs.get(0)
+    xs.push(d"cd".dup())
+    r.len()

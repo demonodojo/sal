@@ -92,11 +92,11 @@ struct Cx
 
 fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn], protocols: &List[TProtocol]) -> Cx ! alloc
     ctr = list_new[Int]()
-    _a = list_push(&ctr, 0)
+    _a = list_push(&mut ctr, 0)
     insts = list_new[Int]()
-    _b = list_push(&insts, vec_new())
+    _b = list_push(&mut insts, vec_new())
     acc = list_new[Int]()
-    _c = list_push(&acc, 0)
+    _c = list_push(&mut acc, 0)
     vm = map_new()
     _m = variants_fill(vm, enums, 0, list_len(enums))
     Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam]())
@@ -150,13 +150,13 @@ fn cx_literals(cx: &Cx) -> Int ! alloc
     cx.literals
 
 fn cx_structs(cx: &Cx) -> List[TStruct] ! alloc
-    cx.env.structs
+    cx.env.structs.clone()
 
 # Name of the binding an `x = x + ...` chain accumulates into (0 when none).
 fn cx_acc(cx: &Cx) -> Int ! alloc
     list_get(&cx.acc, 0)
 
-fn cx_set_acc(cx: &Cx, name: Int) -> Int ! alloc
+fn cx_set_acc(cx: &mut Cx, name: Int) -> Int ! alloc
     _s = list_set(cx.acc, 0, name)
     0
 
@@ -176,14 +176,14 @@ fn cx_fn_map(cx: &Cx) -> Int ! alloc
 fn cx_counter(cx: &Cx) -> Int ! alloc
     list_get(&cx.ctr, 0)
 
-fn cx_set_counter(cx: &Cx, v: Int) -> Int ! alloc
+fn cx_set_counter(cx: &mut Cx, v: Int) -> Int ! alloc
     _s = list_set(cx.ctr, 0, v)
     0
 
 fn cx_insts(cx: &Cx) -> Int ! alloc
     list_get(&cx.insts, 0)
 
-fn cx_set_insts(cx: &Cx, v: Int) -> Int ! alloc
+fn cx_set_insts(cx: &mut Cx, v: Int) -> Int ! alloc
     _s = list_set(cx.insts, 0, v)
     0
 
@@ -199,7 +199,7 @@ fn cx_dim_params(cx: &Cx) -> Int ! alloc
 fn cx_regions(cx: &Cx) -> Int ! alloc
     cx.regions
 
-fn fresh(cx: &Cx) -> Int ! alloc
+fn fresh(cx: &mut Cx) -> Int ! alloc
     n = cx_counter(cx) + 1
     _s = cx_set_counter(cx, n)
     pref = char_to_str(116)
@@ -754,7 +754,7 @@ fn runtime_name(cx: &Cx, fname: Int) -> Int ! alloc
         pref = "sal_"
         str_own(&(pref + str_from_int(fname)))
 
-fn ir_call_unary(cx: &Cx, rname: Int, src: Int) -> Int ! alloc
+fn ir_call_unary(cx: &mut Cx, rname: Int, src: Int) -> Int ! alloc
     out = fresh(cx)
     argv = vec_new()
     _a = vec_push(argv, src)
@@ -893,7 +893,7 @@ fn axis_idx(ndims: Int, take_row: Int) -> Int ! alloc
     else
         ndims - 1
 
-fn axis_len_from_dim(cx: &Cx, tname: Int, dims: Int, conc: Int, idx: Int) -> Int ! alloc
+fn axis_len_from_dim(cx: &mut Cx, tname: Int, dims: Int, conc: Int, idx: Int) -> Int ! alloc
     if idx < vec_len(dims)
         dv = vec_get(dims, idx)
         if dv >= 0
@@ -905,7 +905,7 @@ fn axis_len_from_dim(cx: &Cx, tname: Int, dims: Int, conc: Int, idx: Int) -> Int
     else
         axis_len_fallback(tname, 0)
 
-fn axis_len_from_conc(cx: &Cx, tname: Int, conc: Int, idx: Int) -> Int ! alloc
+fn axis_len_from_conc(cx: &mut Cx, tname: Int, conc: Int, idx: Int) -> Int ! alloc
     if idx < vec_len(conc)
         cv = vec_get(conc, idx)
         if cv >= 0
@@ -917,7 +917,7 @@ fn axis_len_from_conc(cx: &Cx, tname: Int, conc: Int, idx: Int) -> Int ! alloc
     else
         axis_len_dim(tname, idx)
 
-fn axis_len(cx: &Cx, tname: Int, take_row: Int) -> Int ! alloc
+fn axis_len(cx: &mut Cx, tname: Int, take_row: Int) -> Int ! alloc
     b = cx_find(cx, tname)
     if b == 0
         b = bind_for_ssa(cx, tname)
@@ -1118,7 +1118,7 @@ fn conc_product_go(conc: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         else
             conc_product_go(conc, i + 1, n, acc * cv)
 
-fn tensor_row_len_from_bind(cx: &Cx, b: Int) -> Int ! alloc
+fn tensor_row_len_from_bind(cx: &mut Cx, b: Int) -> Int ! alloc
     conc = bind_concrete(b)
     prod = conc_product_go(conc, 0, vec_len(conc), 1)
     if prod > 0
@@ -1143,17 +1143,17 @@ fn row_len_ident_bind(cx: &Cx, name: &String, ssa: Int) -> Int ! alloc
     else
         b
 
-fn row_len_const_one(cx: &Cx) -> Int ! alloc
+fn row_len_const_one(cx: &mut Cx) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, 1)
     d
 
-fn tensor_row_len_for_expr(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
+fn tensor_row_len_for_expr(cx: &mut Cx, e: &Expr, ssa: Int) -> Int ! alloc
     match e
         XNone => row_len_const_one(cx)
         _ => row_len_for_some(cx, e, ssa)
 
-fn row_len_for_some(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
+fn row_len_for_some(cx: &mut Cx, e: &Expr, ssa: Int) -> Int ! alloc
     b = row_len_bind(cx, e, ssa)
     if b == 0
         row_len_unbound(cx, e, ssa)
@@ -1163,7 +1163,7 @@ fn row_len_for_some(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
         tensor_row_len_from_bind(cx, b)
 
 # No tensor bind: a binary looks at its left operand, anything else is a single row.
-fn row_len_unbound(cx: &Cx, e: &Expr, ssa: Int) -> Int ! alloc
+fn row_len_unbound(cx: &mut Cx, e: &Expr, ssa: Int) -> Int ! alloc
     match e
         XBin(op, l, r) => tensor_row_len_for_expr(cx, &l, ssa)
         _ => row_len_const_one(cx)
@@ -1192,7 +1192,7 @@ fn elsifs_else_go(else_b: &TBlock, arms: &List[TElsif], i: Int) -> TBlock ! allo
     else
         elsifs_else_go(&blk, arms, i - 1)
 
-fn lower_params(cx: &Cx, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
+fn lower_params(cx: &mut Cx, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1206,7 +1206,7 @@ fn lower_params(cx: &Cx, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
             _d = 0
         _q = vec_push(cx_binds(cx), b)
         _m = map_put(cx_bind_map(cx), name, b)
-        _s = tenv_bind(&cx.env, &pm.name, &pm.ty)
+        _s = tenv_bind(&mut cx.env, &pm.name, &pm.ty)
         lower_params(cx, params, i + 1, n)
 
 fn add_dim_params(cx: &Cx, b: Int, d: Int, nd: Int) -> Int ! alloc

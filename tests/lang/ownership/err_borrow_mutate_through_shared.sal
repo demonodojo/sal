@@ -1,0 +1,9 @@
+# error: E_BORROW
+# selfhost-xfail: el borrowck del selfhost no rechaza mutar a través de `&`
+fn add(xs: &List[Int]) -> Int ! alloc
+    xs.push(1)
+    xs.len()
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    add(&xs)

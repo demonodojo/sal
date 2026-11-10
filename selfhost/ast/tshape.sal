@@ -49,7 +49,7 @@ fn ts_trim(s: &String) -> String ! alloc
     else
         ty_trim_go(s.dup())
 
-fn ts_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: &List[String]) -> Int ! alloc
+fn ts_parts(s: &String, i: Int, n: Int, from: Int, depth: Int, out: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -76,7 +76,7 @@ fn ts_split(t: &String) -> List[String] ! alloc
     s = ts_trim(t)
     o = tt_open(&s, 0, s.len())
     out = List.new[String]()
-    ts_parts(&s, o, s.len(), o, 0, &out)
+    ts_parts(&s, o, s.len(), o, 0, &mut out)
     out
 
 fn ts_place(t: &String) -> String ! alloc

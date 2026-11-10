@@ -2,7 +2,7 @@ fn branch(n: Int) -> Int ! alloc
     s = int_to_str(n)
     xs = list_new[String]()
     if n > 3
-        _a = list_push(&xs, s)
+        _a = list_push(&mut xs, s)
         0
     else
         0
@@ -14,7 +14,7 @@ fn early(n: Int) -> Int ! alloc
     s = int_to_str(n)
     xs = list_new[String]()
     if n > 3
-        _a = list_push(&xs, s)
+        _a = list_push(&mut xs, s)
         _b = list_free(xs)
         return 1
     k = str_len(s)
@@ -27,7 +27,7 @@ fn looped(n: Int) -> Int ! alloc
     while i < n
         t = int_to_str(i)
         if i > 1
-            _a = list_push(&xs, t)
+            _a = list_push(&mut xs, t)
             0
         else
             0

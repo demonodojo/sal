@@ -1,0 +1,14 @@
+# exit: 14
+enum Opt
+    No
+    Yes(Int)
+
+fn main() -> Int
+    o = Yes(7)
+    a = match o
+        Yes(n) => n
+        No => 0
+    b = match o
+        Yes(n) => n
+        No => 0
+    a + b

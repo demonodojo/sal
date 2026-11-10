@@ -21,7 +21,7 @@ fn json_esc_byte(c: Int) -> String ! alloc
         13 => String.from_char(92) + String.from_char(114)
         _ => String.from_char(c)
 
-fn json_esc_fill(s: &String, i: Int, n: Int, buf: &Bytes, pos: Int) -> Int ! alloc
+fn json_esc_fill(s: &String, i: Int, n: Int, buf: &mut Bytes, pos: Int) -> Int ! alloc
     if i >= n
         pos
     else
@@ -29,7 +29,7 @@ fn json_esc_fill(s: &String, i: Int, n: Int, buf: &Bytes, pos: Int) -> Int ! all
         p2 = json_esc_write(buf, pos, &piece, 0, piece.len())
         json_esc_fill(s, i + 1, n, buf, p2)
 
-fn json_esc_write(buf: &Bytes, pos: Int, piece: &String, i: Int, n: Int) -> Int ! alloc
+fn json_esc_write(buf: &mut Bytes, pos: Int, piece: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         pos
     else
@@ -42,7 +42,7 @@ fn json_esc_content(s: &String) -> String ! alloc
         d""
     else
         buf = Bytes.new(n * 6 + 1)
-        end = json_esc_fill(s, 0, n, &buf, 0)
+        end = json_esc_fill(s, 0, n, &mut buf, 0)
         Bytes.view_mem(buf.ptr(), end).to_str()
 
 fn quote_end(body: &String, end: Int, n: Int) -> Int ! alloc

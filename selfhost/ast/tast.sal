@@ -71,15 +71,15 @@ struct TArm
 # Match arm value: indented block tail or single expression.
 fn tarm_value(arm: &TArm) -> Expr ! alloc
     if arm.has_suite == 1
-        arm.suite.tail
+        arm.suite.tail.clone()
     else
-        arm.body
+        arm.body.clone()
 
 fn tarm_block(arm: &TArm) -> TBlock ! alloc
     if arm.has_suite == 1
-        arm.suite
+        arm.suite.clone()
     else
-        TBlock(List.new[TStmt](), arm.body)
+        TBlock(List.new[TStmt](), arm.body.clone())
 
 struct TElsif
     cond: Expr
@@ -163,7 +163,7 @@ fn tp_free_block(b: &TBlock) -> Int ! alloc
 fn tp_free_expr_list(xs: &List[Expr]) -> Int ! alloc
     0
 
-fn tp_lseen_take(id: Int, lseen: &HT) -> Int ! alloc
+fn tp_lseen_take(id: Int, lseen: &mut HT) -> Int ! alloc
     if id == 0
         0
     else
@@ -195,7 +195,7 @@ fn tp_keep_stmts(xs: &List[TStmt]) -> Int ! alloc
 
 # ---- deep copies ----
 # A copy shares nothing with the original, so either can be released alone.
-fn tc_exprs(xs: &List[Expr], i: Int, n: Int, out: &List[Expr]) -> Int ! alloc
+fn tc_exprs(xs: &List[Expr], i: Int, n: Int, out: &mut List[Expr]) -> Int ! alloc
     if i >= n
         0
     else
@@ -204,15 +204,15 @@ fn tc_exprs(xs: &List[Expr], i: Int, n: Int, out: &List[Expr]) -> Int ! alloc
 
 fn tc_list(xs: &List[Expr]) -> List[Expr] ! alloc
     out = List.new[Expr]()
-    tc_exprs(xs, 0, xs.len(), &out)
+    tc_exprs(xs, 0, xs.len(), &mut out)
     out
 
 fn tc_strs(xs: &List[String]) -> List[String] ! alloc
     out = List.new[String]()
-    tc_strs_go(xs, 0, xs.len(), &out)
+    tc_strs_go(xs, 0, xs.len(), &mut out)
     out
 
-fn tc_strs_go(xs: &List[String], i: Int, n: Int, out: &List[String]) -> Int ! alloc
+fn tc_strs_go(xs: &List[String], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -242,10 +242,10 @@ fn tc_expr(e: &Expr) -> Expr ! alloc
 
 fn tc_elsifs(xs: &List[TElsif]) -> List[TElsif] ! alloc
     out = List.new[TElsif]()
-    tc_elsifs_go(xs, 0, xs.len(), &out)
+    tc_elsifs_go(xs, 0, xs.len(), &mut out)
     out
 
-fn tc_elsifs_go(xs: &List[TElsif], i: Int, n: Int, out: &List[TElsif]) -> Int ! alloc
+fn tc_elsifs_go(xs: &List[TElsif], i: Int, n: Int, out: &mut List[TElsif]) -> Int ! alloc
     if i >= n
         0
     else
@@ -255,10 +255,10 @@ fn tc_elsifs_go(xs: &List[TElsif], i: Int, n: Int, out: &List[TElsif]) -> Int ! 
 
 fn tc_arms(xs: &List[TArm]) -> List[TArm] ! alloc
     out = List.new[TArm]()
-    tc_arms_go(xs, 0, xs.len(), &out)
+    tc_arms_go(xs, 0, xs.len(), &mut out)
     out
 
-fn tc_arms_go(xs: &List[TArm], i: Int, n: Int, out: &List[TArm]) -> Int ! alloc
+fn tc_arms_go(xs: &List[TArm], i: Int, n: Int, out: &mut List[TArm]) -> Int ! alloc
     if i >= n
         0
     else
@@ -268,10 +268,10 @@ fn tc_arms_go(xs: &List[TArm], i: Int, n: Int, out: &List[TArm]) -> Int ! alloc
 
 fn tc_pats(xs: &List[TPat]) -> List[TPat] ! alloc
     out = List.new[TPat]()
-    tc_pats_go(xs, 0, xs.len(), &out)
+    tc_pats_go(xs, 0, xs.len(), &mut out)
     out
 
-fn tc_pats_go(xs: &List[TPat], i: Int, n: Int, out: &List[TPat]) -> Int ! alloc
+fn tc_pats_go(xs: &List[TPat], i: Int, n: Int, out: &mut List[TPat]) -> Int ! alloc
     if i >= n
         0
     else
@@ -284,7 +284,7 @@ fn tc_pat(p: &TPat) -> TPat ! alloc
 fn tc_stmt(s: &TStmt) -> TStmt ! alloc
     TStmt(s.kind, s.name.dup(), tc_expr(&s.expr), s.ty.dup(), s.is_let, tc_expr(&s.target), s.frozen, s.stack, s.id)
 
-fn tc_stmts(xs: &List[TStmt], i: Int, n: Int, out: &List[TStmt]) -> Int ! alloc
+fn tc_stmts(xs: &List[TStmt], i: Int, n: Int, out: &mut List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
@@ -293,7 +293,7 @@ fn tc_stmts(xs: &List[TStmt], i: Int, n: Int, out: &List[TStmt]) -> Int ! alloc
 
 fn tc_block(b: &TBlock) -> TBlock ! alloc
     out = List.new[TStmt]()
-    tc_stmts(&b.stmts, 0, b.stmts.len(), &out)
+    tc_stmts(&b.stmts, 0, b.stmts.len(), &mut out)
     TBlock(out, tc_expr(&b.tail))
 
 # ---- view copies ----
@@ -302,7 +302,7 @@ fn tc_block(b: &TBlock) -> TBlock ! alloc
 fn tv_s(s: &String) -> String ! alloc
     str_from_int(s.dup().to_int())
 
-fn tv_exprs(xs: &List[Expr], i: Int, n: Int, out: &List[Expr]) -> Int ! alloc
+fn tv_exprs(xs: &List[Expr], i: Int, n: Int, out: &mut List[Expr]) -> Int ! alloc
     if i >= n
         0
     else
@@ -311,7 +311,7 @@ fn tv_exprs(xs: &List[Expr], i: Int, n: Int, out: &List[Expr]) -> Int ! alloc
 
 fn tv_list(xs: &List[Expr]) -> List[Expr] ! alloc
     out = List.new[Expr]()
-    tv_exprs(xs, 0, xs.len(), &out)
+    tv_exprs(xs, 0, xs.len(), &mut out)
     out
 
 fn tv_expr(e: &Expr) -> Expr ! alloc
@@ -337,10 +337,10 @@ fn tv_expr(e: &Expr) -> Expr ! alloc
 
 fn tv_elsifs(xs: &List[TElsif]) -> List[TElsif] ! alloc
     out = List.new[TElsif]()
-    tv_elsifs_go(xs, 0, xs.len(), &out)
+    tv_elsifs_go(xs, 0, xs.len(), &mut out)
     out
 
-fn tv_elsifs_go(xs: &List[TElsif], i: Int, n: Int, out: &List[TElsif]) -> Int ! alloc
+fn tv_elsifs_go(xs: &List[TElsif], i: Int, n: Int, out: &mut List[TElsif]) -> Int ! alloc
     if i >= n
         0
     else
@@ -350,10 +350,10 @@ fn tv_elsifs_go(xs: &List[TElsif], i: Int, n: Int, out: &List[TElsif]) -> Int ! 
 
 fn tv_arms(xs: &List[TArm]) -> List[TArm] ! alloc
     out = List.new[TArm]()
-    tv_arms_go(xs, 0, xs.len(), &out)
+    tv_arms_go(xs, 0, xs.len(), &mut out)
     out
 
-fn tv_arms_go(xs: &List[TArm], i: Int, n: Int, out: &List[TArm]) -> Int ! alloc
+fn tv_arms_go(xs: &List[TArm], i: Int, n: Int, out: &mut List[TArm]) -> Int ! alloc
     if i >= n
         0
     else
@@ -363,10 +363,10 @@ fn tv_arms_go(xs: &List[TArm], i: Int, n: Int, out: &List[TArm]) -> Int ! alloc
 
 fn tv_pats(xs: &List[TPat]) -> List[TPat] ! alloc
     out = List.new[TPat]()
-    tv_pats_go(xs, 0, xs.len(), &out)
+    tv_pats_go(xs, 0, xs.len(), &mut out)
     out
 
-fn tv_pats_go(xs: &List[TPat], i: Int, n: Int, out: &List[TPat]) -> Int ! alloc
+fn tv_pats_go(xs: &List[TPat], i: Int, n: Int, out: &mut List[TPat]) -> Int ! alloc
     if i >= n
         0
     else
@@ -379,7 +379,7 @@ fn tv_pat(p: &TPat) -> TPat ! alloc
 fn tv_stmt(s: &TStmt) -> TStmt ! alloc
     TStmt(s.kind, tv_s(&s.name), tv_expr(&s.expr), tv_s(&s.ty), s.is_let, tv_expr(&s.target), s.frozen, s.stack, s.id)
 
-fn tv_stmts(xs: &List[TStmt], i: Int, n: Int, out: &List[TStmt]) -> Int ! alloc
+fn tv_stmts(xs: &List[TStmt], i: Int, n: Int, out: &mut List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
@@ -388,5 +388,5 @@ fn tv_stmts(xs: &List[TStmt], i: Int, n: Int, out: &List[TStmt]) -> Int ! alloc
 
 fn tv_block(b: &TBlock) -> TBlock ! alloc
     out = List.new[TStmt]()
-    tv_stmts(&b.stmts, 0, b.stmts.len(), &out)
+    tv_stmts(&b.stmts, 0, b.stmts.len(), &mut out)
     TBlock(out, tv_expr(&b.tail))

@@ -54,6 +54,10 @@ Conflictos, `E_BORROW`:
 
 El origen de una referencia es el lugar prestado. Un retorno `&'a T` solo es válido si `'a` es un lifetime de un parámetro (no de un local) y el origen lo satisface.
 
+**Referencias.** `&mut T` se acepta donde se espera `&T`; lo contrario es `E_TYPE` (lo da `infer_program`). `&r` de una referencia represta. Mutar a través de `&T` es `E_BORROW`.
+
+**`match`.** Si el escrutinio es un lugar con dueño y un brazo liga un payload no `Copy`, el lugar se mueve en ese brazo (`borrowck::match_moves`, que `ownership.rs` consulta mientras dure). Si el escrutinio está tras una referencia, los nombres del patrón quedan como préstamos (`Binding.from_ref`) y moverlos es `E_BORROW`. Los enums de otros módulos llegan por `set_extern_enums` (`modules::graph_enums`).
+
 **Autoderef y autoref.** Leer un campo o llamar un método pela `&`/`&mut`. El receptor de un método se autoreferencia si la firma pide `&self` o `&mut self` y el valor es dueño. Un argumento de función no se autoreferencia: se escribe `&x`.
 
 ## Drop glue y elaboración
@@ -80,7 +84,18 @@ El origen de una referencia es el lugar prestado. Un retorno `&'a T` solo es vá
 
 El bloque de una lista guarda el puntero a la glue del elemento (`sal_list_set_drop`), no un bit de dueño. Un `Dict` posee sus claves `String` y las suelta. `list_get` presta (`&T`); `list_get_mut` es `&mut T`; `pop` mueve; `push`/`set`/`put` toman `&mut` del contenedor, mueven el valor y devuelven `Unit`.
 
-`x.clone()` copia: `strdup`, `sal_list_clone`, `sal_dict_clone`, `sal_bytes_clone`, `sal_enum_copy` o `sal_desc_copy`. Efecto `alloc`. `Tensor.clone` es `E_TYPE`.
+`x.clone()` copia: `strdup`, `sal_list_clone`, `sal_dict_clone`, `sal_bytes_clone`, `sal_enum_copy`, `sal_desc_copy` (struct describible) o `clone.<Struct>` (struct con glue y sin descriptor: `struct_clone_fn` en `src/ir.rs`, `struct_clone_fn` en `selfhost/ir/fuse.sal`). El receptor de `clone` solo se lee (`borrows_args`, `dr_borrows`). Efecto `alloc`. `Tensor.clone` es `E_TYPE`. Una lista de structs con `clone.<Struct>` la registra con `sal_list_set_clone`, y `sal_list_clone` la usa por elemento; una lista de listas clona cada lista interior.
+
+Estado de la liberación mientras `insert_drops` siga en su puesto (lo que ya sigue la SPEC en los dos compiladores, con `corpus/drop_rebind.sal` en la paridad):
+
+- Reasignar un local cuyas ligaduras son todas valores con dueño del mismo tipo (`String`, `List`, `Dict`, `Bytes`) suelta el valor viejo: `rebind` en `src/drops.rs`, `dr_rebind` en `selfhost/ir/drops.sal` (`__new<N>` = valor nuevo, suelta, asigna, repone `__live`).
+- Un contenedor devuelto por una función de usuario lo suelta el llamante (`user_call_kind`; `retk:<fn>` en `drop_env_t`).
+- `xs.clone()`, `d.clone()` y `b.clone()` son contenedores con dueño; `x.clone()` de un struct con `clone.<Struct>` lo suelta la cola de structs (`value_struct`; en el selfhost el tipo del local), y el de un struct describible, `struct_free` con su descriptor.
+- `List.new[S]()` con `S` un struct con glue se suelta como cualquier lista (`list_glue_arg`; `glue:<S>` en `drop_env_t`). Una lista de listas, igual.
+- El receptor de `push`/`set`/`put` no se mueve: un campo `List` al que se le hace `push` lo sigue soltando su struct.
+- El selfhost ya no usa la marca de «contenedor tainted» para decidir si suelta una lista: lo guardado se movió a ella.
+
+Pendiente frente a la SPEC: la caja de un struct local construido con su constructor (`sal_struct_new`) no se suelta al salir del ámbito (`drop.<Struct>` suelta los campos; `drop.elem.<Struct>` solo se usa en listas); un payload `List`/struct de una caja de enum copiada con `sal_enum_copy` se comparte; las reglas nuevas del borrow checker (`get` como `&T`, mover fuera de una referencia, payload de `match`, `&mut`→`&`) no están en `selfhost/sem/` y sus tests llevan `selfhost-xfail`.
 
 Se retiran `fresh_kind`, `OWNED_FNS`, `read_only_params`, `last_consumed_params`, `caller_param_modes`, `field_reads` como análisis de «¿suelto esto?», la copia implícita `desc_copy` y `finish_module_box_shell_drops`. Los `tp_free_*` escritos a mano en `selfhost/` se eliminan: la glue los suelta y serían una doble liberación. Las asas `Int` (`str_as_int`, `vec_push`, `map_put`) siguen fuera del modelo.
 
@@ -102,7 +117,8 @@ Sin cambio de runtime (`sal_arena_enter` / `sal_arena_leave`, páginas de 64 KiB
 
 - `tests/frontend.rs`: árbol de `&T`, `&'a mut T`, `&x`, `&mut x`, `*x`, `&self`, y `fmt` idempotente.
 - `tests/lang/ownership/`: conflicto `&`/`&mut` (`E_BORROW`), referencia que sobrevive al referente, devolver `&` de un local, elisión válida e inválida, préstamo que acaba antes de mutar, movimiento en bucle (`E_MOVED`), movimiento parcial, `clone` exigido.
-- `tests/lang/drops/`: drop en rama, bucle, `match`, `return` y reasignación; contenedor que posee elementos de cualquier origen.
+- `tests/lang/drops/`: drop en rama, bucle, `match`, `return` y reasignación (`drop_reassign.sal`); contenedor que posee elementos de cualquier origen; contenedor devuelto por una función (`drop_fn_returns_container.sal`).
+- `tests/lang/ownership/`: `clone` profundo (`clone_struct_list_field_deep.sal`, `clone_list_of_structs_deep.sal`), payload de `match` (`err_moved_match_payload.sal`, `match_ref_borrows_payload_ok.sal`).
 - `tests/lang/attributes/`: `@arena` con `&T`, `keep` rechazado, retorno con `&` es `E_TYPE`.
 - `tests/semantics.rs`, `tests/drops.rs`: el diagnóstico o la IR que la SPEC fija, escritos a mano.
 - Selfhost: `cargo test --test selfhost_ir -- --test-threads=1`.

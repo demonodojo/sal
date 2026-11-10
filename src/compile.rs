@@ -153,7 +153,9 @@ fn compile_file_with_imports(
         graph.order.iter().map(|m| (m.path.clone(), &m.program)).collect();
     print_warnings(&crate::deprecation::check_deprecations(&modules));
     for m in &graph.order {
-        check_module_semantics(m, &graph, opts.toolchain.target)?;
+        if let Err(d) = check_module_semantics(m, &graph, opts.toolchain.target) {
+            return Err(d);
+        }
     }
 
     let root = graph

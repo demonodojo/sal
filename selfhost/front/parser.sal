@@ -25,22 +25,22 @@ struct Parser
 fn parser_new(toks: &Toks) -> Parser ! alloc
     st = List.new[Int]()
     st.push(0)
-    _b = list_push(&st, 0)
-    _c = list_push(&st, 0)
-    _n = list_push(&st, 0)
-    _o = list_push(&st, 0)
+    _b = list_push(&mut st, 0)
+    _c = list_push(&mut st, 0)
+    _n = list_push(&mut st, 0)
+    _o = list_push(&mut st, 0)
     msg = list_new[String]()
-    _d = list_push(&msg, "")
+    _d = list_push(&mut msg, "")
     dep = list_new[String]()
-    _e = list_push(&dep, "")
-    Parser(toks.kinds, toks.texts, toks.ivals, st, msg, dep, toks.offs, list_new[Int]())
+    _e = list_push(&mut dep, "")
+    Parser(toks.kinds.clone(), toks.texts.clone(), toks.ivals.clone(), st, msg, dep, toks.offs.clone(), list_new[Int]())
 
 # The local `Parser` is dropped at the end of its scope, which releases these
 # lists. Freeing them here as well is a double free.
 fn parser_free(pr: &Parser) -> Int ! alloc
     0
 
-fn p_set_err(pr: &Parser, msg: String) -> Int ! alloc
+fn p_set_err(pr: &mut Parser, msg: String) -> Int ! alloc
     _a = list_set(pr.st, 1, 1)
     _b = list_set(pr.msg, 0, msg)
     0
@@ -49,10 +49,10 @@ fn p_has_err(pr: &Parser) -> Int ! alloc
     list_get(&pr.st, 1)
 
 fn p_err_msg(pr: &Parser) -> String ! alloc
-    list_get(&pr.msg, 0)
+    list_get(&pr.msg, 0).clone()
 
 # A fresh statement id (never 0, which stands for a statement a pass creates).
-fn p_next_id(pr: &Parser) -> Int ! alloc
+fn p_next_id(pr: &mut Parser) -> Int ! alloc
     n = list_get(&pr.st, 3) + 1
     _s = list_set(pr.st, 3, n)
     n
@@ -60,7 +60,7 @@ fn p_next_id(pr: &Parser) -> Int ! alloc
 fn p_idx(pr: &Parser) -> Int ! alloc
     list_get(&pr.st, 0)
 
-fn p_set_idx(pr: &Parser, i: Int) -> Int ! alloc
+fn p_set_idx(pr: &mut Parser, i: Int) -> Int ! alloc
     _s = list_set(pr.st, 0, i)
     0
 
@@ -75,7 +75,7 @@ fn tok_text(pr: &Parser, t: Int) -> String ! alloc
     if t >= list_len(&pr.texts)
         ""
     else
-        list_get(&pr.texts, t)
+        list_get(&pr.texts, t).clone()
 
 fn tok_ival(pr: &Parser, t: Int) -> Int ! alloc
     if t >= list_len(&pr.ivals)
@@ -94,7 +94,7 @@ fn call_pos(pr: &Parser) -> Int ! alloc
 fn p_peek(pr: &Parser) -> Int ! alloc
     p_idx(pr)
 
-fn p_advance(pr: &Parser) -> Int ! alloc
+fn p_advance(pr: &mut Parser) -> Int ! alloc
     t = p_peek(pr)
     if tok_kind(pr, t) == TK_EOF()
         t
@@ -102,7 +102,7 @@ fn p_advance(pr: &Parser) -> Int ! alloc
         _s = p_set_idx(pr, t + 1)
         t
 
-fn p_skip_nls(pr: &Parser) -> Int ! alloc
+fn p_skip_nls(pr: &mut Parser) -> Int ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_NL()
         _a = p_advance(pr)
         p_skip_nls(pr)
@@ -112,27 +112,27 @@ fn p_skip_nls(pr: &Parser) -> Int ! alloc
 fn p_group(pr: &Parser) -> Int ! alloc
     list_get(&pr.st, 2)
 
-fn p_set_group(pr: &Parser, d: Int) -> Int ! alloc
+fn p_set_group(pr: &mut Parser, d: Int) -> Int ! alloc
     _s = list_set(pr.st, 2, d)
     0
 
-fn p_enter_group(pr: &Parser) -> Int ! alloc
+fn p_enter_group(pr: &mut Parser) -> Int ! alloc
     p_set_group(pr, p_group(pr) + 1)
 
-fn p_leave_group(pr: &Parser) -> Int ! alloc
+fn p_leave_group(pr: &mut Parser) -> Int ! alloc
     d = p_group(pr)
     if d > 0
         p_set_group(pr, d - 1)
     else
         0
 
-fn p_skip_group_nls(pr: &Parser) -> Int ! alloc
+fn p_skip_group_nls(pr: &mut Parser) -> Int ! alloc
     if p_group(pr) > 0
         p_skip_nls(pr)
     else
         0
 
-fn p_accept(pr: &Parser, k: Int) -> Int ! alloc
+fn p_accept(pr: &mut Parser, k: Int) -> Int ! alloc
     if tok_kind(pr, p_peek(pr)) == k
         _a = p_advance(pr)
         1
@@ -155,7 +155,7 @@ fn at_block_end(pr: &Parser) -> Int ! alloc
         0
 
 # ---- type text / expr parsing ----
-fn parse_type_text_go(pr: &Parser, depth: Int, acc: String) -> String ! alloc
+fn parse_type_text_go(pr: &mut Parser, depth: Int, acc: String) -> String ! alloc
     t = p_peek(pr)
     k = tok_kind(pr, t)
     if k == TK_EOF()
@@ -180,7 +180,7 @@ fn parse_type_text_go(pr: &Parser, depth: Int, acc: String) -> String ! alloc
         parse_type_text_cont(pr, depth, acc, t, k)
 
 # `borrow` / `take` after a parameter type are its mode, not part of the type text.
-fn parse_type_text_ident(pr: &Parser, depth: Int, acc: String, t: Int) -> String ! alloc
+fn parse_type_text_ident(pr: &mut Parser, depth: Int, acc: String, t: Int) -> String ! alloc
     tx = tok_text(pr, t)
     if depth == 0
         if type_text_is_mode(&tx) == 1
@@ -199,7 +199,7 @@ fn type_text_is_mode(tx: &String) -> Int ! alloc
         str_eq(tx, "take")
 
 # `alias.Nombre` in a type: the qualifier and the name stay together (`one.Pt`).
-fn parse_type_text_dot(pr: &Parser, depth: Int, acc: String) -> String ! alloc
+fn parse_type_text_dot(pr: &mut Parser, depth: Int, acc: String) -> String ! alloc
     _a = p_advance(pr)
     t = p_peek(pr)
     if tok_kind(pr, t) != TK_IDENT()
@@ -207,7 +207,8 @@ fn parse_type_text_dot(pr: &Parser, depth: Int, acc: String) -> String ! alloc
     else
         tx = tok_text(pr, t)
         # The name after a qualifier is placed at the qualifier, as the bootstrap reports it.
-        _r = list_push(&pr.tyat, list_get(&pr.offs, p_idx(pr) - 2))
+        h210_0 = list_get(&pr.offs, p_idx(pr) - 2)
+        _r = list_push(&mut pr.tyat, h210_0)
         _b = p_advance(pr)
         base = if str_len(acc) > 0
             str_slice(acc, 0, str_len(acc) - 1)
@@ -227,11 +228,12 @@ fn tyat_join(src: &List[Int], i: Int, n: Int, acc: String) -> String ! alloc
 
 # The offset of the token at the cursor, recorded for a word of a type text. A word that is followed
 # by `.` is a qualifier: it is not recorded (the name after the dot is).
-fn tyat_note_here(pr: &Parser) -> Int ! alloc
-    _n = list_push(&pr.tyat, list_get(&pr.offs, p_idx(pr)))
+fn tyat_note_here(pr: &mut Parser) -> Int ! alloc
+    h232_1 = list_get(&pr.offs, p_idx(pr))
+    _n = list_push(&mut pr.tyat, h232_1)
     0
 
-fn parse_type_text_word(pr: &Parser, depth: Int, acc: String, tx: &String) -> String ! alloc
+fn parse_type_text_word(pr: &mut Parser, depth: Int, acc: String, tx: &String) -> String ! alloc
     if tok_kind(pr, p_peek(pr) + 1) != TK_DOT()
         _r = tyat_note_here(pr)
     _a = p_advance(pr)
@@ -241,7 +243,7 @@ fn parse_type_text_word(pr: &Parser, depth: Int, acc: String, tx: &String) -> St
     free(sp)
     parse_type_text_go(pr, depth, acc3)
 
-fn parse_type_text_cont(pr: &Parser, depth: Int, acc: String, t: Int, k: Int) -> String ! alloc
+fn parse_type_text_cont(pr: &mut Parser, depth: Int, acc: String, t: Int, k: Int) -> String ! alloc
     if k == TK_NL()
         _a = p_advance(pr)
         parse_type_text_go(pr, depth, acc)
@@ -309,7 +311,7 @@ fn parse_type_text_cont(pr: &Parser, depth: Int, acc: String, t: Int, k: Int) ->
         acc
 
 # `'a` in a type: the tick and the name stay one word, and the name is not a type to resolve.
-fn parse_type_text_tick(pr: &Parser, depth: Int, acc: String) -> String ! alloc
+fn parse_type_text_tick(pr: &mut Parser, depth: Int, acc: String) -> String ! alloc
     _a = p_advance(pr)
     nt = p_peek(pr)
     if tok_kind(pr, nt) != TK_IDENT()
@@ -322,7 +324,7 @@ fn parse_type_text_tick(pr: &Parser, depth: Int, acc: String) -> String ! alloc
         free(piece)
         parse_type_text_go(pr, depth, acc2)
 
-fn parse_type_text(pr: &Parser) -> String ! alloc
+fn parse_type_text(pr: &mut Parser) -> String ! alloc
     acc = ""
     r = parse_type_text_go(pr, 0, acc)
     if str_len(r) == 0
@@ -437,7 +439,7 @@ fn assign_kind(e: &Expr) -> Int ! alloc
         XField(b, f) => 3
         _ => 0
 
-fn parse_expr(pr: &Parser) -> Expr ! alloc
+fn parse_expr(pr: &mut Parser) -> Expr ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_TRY()
         _a = p_advance(pr)
@@ -446,7 +448,7 @@ fn parse_expr(pr: &Parser) -> Expr ! alloc
         parse_lambda(pr)
 
 # lambda -> cmp "=>" expr | cmp
-fn parse_lambda(pr: &Parser) -> Expr ! alloc
+fn parse_lambda(pr: &mut Parser) -> Expr ! alloc
     left = parse_binary(pr, 0)
     _s = p_skip_group_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_FATARROW()
@@ -461,7 +463,7 @@ fn parse_lambda(pr: &Parser) -> Expr ! alloc
         left
 
 # unary -> "-" unary | "!" unary | "to" place unary | postfix
-fn parse_unary(pr: &Parser) -> Expr ! alloc
+fn parse_unary(pr: &mut Parser) -> Expr ! alloc
     _s = p_skip_group_nls(pr)
     k = tok_kind(pr, p_peek(pr))
     if k == TK_MINUS()
@@ -485,7 +487,7 @@ fn parse_unary(pr: &Parser) -> Expr ! alloc
         parse_postfix(pr)
 
 # `&x` or `&mut x`. `mut` is only the word after `&`, not a keyword.
-fn parse_unary_ref(pr: &Parser) -> Expr ! alloc
+fn parse_unary_ref(pr: &mut Parser) -> Expr ! alloc
     _a = p_advance(pr)
     t = p_peek(pr)
     if tok_kind(pr, t) == TK_IDENT()
@@ -509,7 +511,7 @@ fn call_name_from_expr(e: &Expr) -> String ! alloc
         XField(base, fld) => qualified_name(&ident_of(&base), &fld)
         _ => ""
 
-fn parse_postfix_go(pr: &Parser, e: Expr) -> Expr ! alloc
+fn parse_postfix_go(pr: &mut Parser, e: Expr) -> Expr ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_DOT()
         _d = p_advance(pr)
@@ -533,7 +535,7 @@ fn parse_postfix_go(pr: &Parser, e: Expr) -> Expr ! alloc
         e
 
 # After `e.name`: a method call (with optional type arguments, `List.new[Int]()`) or a field.
-fn parse_postfix_member(pr: &Parser, e: Expr, fld: &String) -> Expr ! alloc
+fn parse_postfix_member(pr: &mut Parser, e: Expr, fld: &String) -> Expr ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
         text = parse_type_text_go(pr, 1, "")
@@ -546,7 +548,7 @@ fn parse_postfix_member(pr: &Parser, e: Expr, fld: &String) -> Expr ! alloc
 # `base.fld(args)`. On a bare identifier it is `base.fld` as a qualified call (a module member, a
 # static call `T.new(..)` or a method of the local `base`: `methods.sal` tells them apart); on any
 # other receiver it is `.fld` with the receiver as first argument.
-fn parse_method_call(pr: &Parser, base: Expr, fld: &String, targs: &String) -> Expr ! alloc
+fn parse_method_call(pr: &mut Parser, base: Expr, fld: &String, targs: &String) -> Expr ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_LPAREN()
         _e = p_set_err(pr, "parse error: expected ( after the type arguments")
         base
@@ -556,34 +558,34 @@ fn parse_method_call(pr: &Parser, base: Expr, fld: &String, targs: &String) -> E
         _a = p_advance(pr)
         _g = p_enter_group(pr)
         args = list_new[Expr]()
-        nm = parse_method_target(base, fld, &args)
+        nm = parse_method_target(base, fld, &mut args)
         args = parse_arg_list(pr, args)
         _h = p_leave_group(pr)
         parse_postfix_go(pr, XCall(nm, args, targs + "@" + int_to_str(p_note_dot(pr)), xp))
 
 # Counts a dotted call or a method definition (see `prepare_methods`); returns a fresh id for the call.
-fn p_note_dot(pr: &Parser) -> Int ! alloc
+fn p_note_dot(pr: &mut Parser) -> Int ! alloc
     _a = list_set(pr.st, 4, list_get(&pr.st, 4) + 1)
     p_next_id(pr)
 
 # The call name for `base.fld`; a receiver that is not a bare identifier goes first in `args`.
-fn parse_method_target(base: Expr, fld: &String, args: &List[Expr]) -> String ! alloc
+fn parse_method_target(base: Expr, fld: &String, args: &mut List[Expr]) -> String ! alloc
     match base
         XIdent(q) => qualified_name(&strdup(q), fld)
         _ => parse_method_target_expr(base, fld, args)
 
-fn parse_method_target_expr(base: Expr, fld: &String, args: &List[Expr]) -> String ! alloc
+fn parse_method_target_expr(base: Expr, fld: &String, args: &mut List[Expr]) -> String ! alloc
     _a = list_push(args, base)
     "." + fld
 
-fn parse_postfix(pr: &Parser) -> Expr ! alloc
+fn parse_postfix(pr: &mut Parser) -> Expr ! alloc
     parse_postfix_go(pr, parse_primary(pr))
 
-fn parse_binary(pr: &Parser, min_prec: Int) -> Expr ! alloc
+fn parse_binary(pr: &mut Parser, min_prec: Int) -> Expr ! alloc
     left = parse_unary(pr)
     parse_binary_loop(pr, min_prec, left)
 
-fn parse_binary_loop(pr: &Parser, min_prec: Int, left: Expr) -> Expr ! alloc
+fn parse_binary_loop(pr: &mut Parser, min_prec: Int, left: Expr) -> Expr ! alloc
     _s = p_skip_group_nls(pr)
     t = p_peek(pr)
     k = tok_kind(pr, t)
@@ -599,14 +601,14 @@ fn parse_binary_loop(pr: &Parser, min_prec: Int, left: Expr) -> Expr ! alloc
         nleft = XBin(op, left, right)
         parse_binary_loop(pr, min_prec, nleft)
 
-fn parse_arg_list(pr: &Parser, args: List[Expr]) -> List[Expr] ! alloc
+fn parse_arg_list(pr: &mut Parser, args: List[Expr]) -> List[Expr] ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         _a = p_accept(pr, TK_RPAREN())
         args
     else
         e = parse_expr(pr)
-        _b = list_push(&args, e)
+        _b = list_push(&mut args, e)
         _t = p_skip_group_nls(pr)
         if p_accept(pr, TK_COMMA()) == 1
             parse_arg_list(pr, args)
@@ -615,7 +617,7 @@ fn parse_arg_list(pr: &Parser, args: List[Expr]) -> List[Expr] ! alloc
             _c = p_accept(pr, TK_RPAREN())
             args
 
-fn skip_brackets(pr: &Parser, depth: Int) -> Int ! alloc
+fn skip_brackets(pr: &mut Parser, depth: Int) -> Int ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_EOF()
         0
     else
@@ -635,12 +637,12 @@ fn skip_brackets_depth(depth: Int, k: Int) -> Int ! alloc
     else
         depth
 
-fn parse_tensor_rows(pr: &Parser, nrows: Int, ncols: Int, data: List[String]) -> Expr ! alloc
+fn parse_tensor_rows(pr: &mut Parser, nrows: Int, ncols: Int, data: List[String]) -> Expr ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
         _e = p_enter_group(pr)
-        rowc = parse_tensor_cells(pr, 0, &data)
+        rowc = parse_tensor_cells(pr, 0, &mut data)
         _b = p_accept(pr, TK_RBRACK())
         _l = p_leave_group(pr)
         _n = p_skip_group_nls(pr)
@@ -654,7 +656,7 @@ fn parse_tensor_rows(pr: &Parser, nrows: Int, ncols: Int, data: List[String]) ->
     else
         XTensor(nrows, ncols, data)
 
-fn parse_tensor_cells(pr: &Parser, rowc: Int, data: &List[String]) -> Int ! alloc
+fn parse_tensor_cells(pr: &mut Parser, rowc: Int, data: &mut List[String]) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     k = tok_kind(pr, p_peek(pr))
     if k == TK_RBRACK()
@@ -682,7 +684,7 @@ fn or_place(place: &String, fallback: &String) -> String ! alloc
     else
         place.dup()
 
-fn parse_primary(pr: &Parser) -> Expr ! alloc
+fn parse_primary(pr: &mut Parser) -> Expr ! alloc
     _s = p_skip_group_nls(pr)
     t = p_peek(pr)
     k = tok_kind(pr, t)
@@ -705,7 +707,7 @@ fn parse_primary(pr: &Parser) -> Expr ! alloc
     elsif k == TK_DSTRING()
         _a = p_advance(pr)
         args = list_new[Expr]()
-        _b = list_push(&args, XStr(tok_own(pr, t)))
+        _b = list_push(&mut args, XStr(tok_own(pr, t)))
         XCall("strdup", args, "", 0)
     elsif k == TK_RSTRING()
         _e = p_set_err(pr, "parse error: regex literal is only allowed in a match pattern")
@@ -744,7 +746,7 @@ fn parse_primary(pr: &Parser) -> Expr ! alloc
         XInt(0)
 
 # `on place [kernel [idx in type]]` and its block.
-fn parse_on(pr: &Parser) -> Expr ! alloc
+fn parse_on(pr: &mut Parser) -> Expr ! alloc
     _a = p_advance(pr)
     pl = p_advance(pr)
     place = or_place(&tok_own(pr, pl), &"pp")
@@ -764,7 +766,7 @@ fn parse_on(pr: &Parser) -> Expr ! alloc
     body = parse_block_after_indent(pr)
     XOn(place, body, is_kernel, has_index)
 
-fn parse_elsif_arms(pr: &Parser, arms: List[TElsif]) -> List[TElsif] ! alloc
+fn parse_elsif_arms(pr: &mut Parser, arms: List[TElsif]) -> List[TElsif] ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_ELSIF()
         _a = p_advance(pr)
         cond = parse_expr(pr)
@@ -772,12 +774,12 @@ fn parse_elsif_arms(pr: &Parser, arms: List[TElsif]) -> List[TElsif] ! alloc
         _c = p_accept(pr, TK_INDENT())
         body = parse_block_after_indent(pr)
         _d = p_skip_nls(pr)
-        _g = list_push(&arms, TElsif(cond, body))
+        _g = list_push(&mut arms, TElsif(cond, body))
         parse_elsif_arms(pr, arms)
     else
         arms
 
-fn parse_if(pr: &Parser) -> Expr ! alloc
+fn parse_if(pr: &mut Parser) -> Expr ! alloc
     _a = p_advance(pr)
     cond = parse_expr(pr)
     _b = p_skip_nls(pr)
@@ -840,7 +842,7 @@ fn interp_flush(left: Expr, lit: &String) -> Expr ! alloc
         XBin("add", left, XStr(lit.dup()))
 
 # pattern -> "_" | INT | IDENT "." IDENT "(" patterns ")" | IDENT "(" patterns ")" | IDENT
-fn parse_pattern(pr: &Parser) -> TPat ! alloc
+fn parse_pattern(pr: &mut Parser) -> TPat ! alloc
     t = p_advance(pr)
     k = tok_kind(pr, t)
     if k == TK_INT()
@@ -873,17 +875,17 @@ fn parse_pattern(pr: &Parser) -> TPat ! alloc
         _e = p_set_err(pr, "parse error: expected pattern")
         TPat(0, 0, "", "", list_new[TPat]())
 
-fn parse_pattern_args(pr: &Parser) -> List[TPat] ! alloc
+fn parse_pattern_args(pr: &mut Parser) -> List[TPat] ! alloc
     args = list_new[TPat]()
     if p_accept(pr, TK_LPAREN()) == 1
         _g = p_enter_group(pr)
-        _l = parse_pattern_list(pr, &args)
+        _l = parse_pattern_list(pr, &mut args)
         _h = p_leave_group(pr)
         args
     else
         args
 
-fn parse_pattern_list(pr: &Parser, args: &List[TPat]) -> Int ! alloc
+fn parse_pattern_list(pr: &mut Parser, args: &mut List[TPat]) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         p_accept(pr, TK_RPAREN())
@@ -895,7 +897,7 @@ fn parse_pattern_list(pr: &Parser, args: &List[TPat]) -> Int ! alloc
         else
             p_accept(pr, TK_RPAREN())
 
-fn parse_match_arms(pr: &Parser, arms: List[TArm]) -> List[TArm] ! alloc
+fn parse_match_arms(pr: &mut Parser, arms: List[TArm]) -> List[TArm] ! alloc
     _s = p_skip_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_DEDENT()
         _a = p_advance(pr)
@@ -911,19 +913,19 @@ fn parse_match_arms(pr: &Parser, arms: List[TArm]) -> List[TArm] ! alloc
             if tok_kind(pr, p_peek(pr)) == TK_INDENT()
                 _in = p_advance(pr)
                 suite = parse_block_after_indent(pr)
-                _e = list_push(&arms, TArm(pat, XNone, suite, 1))
+                _e = list_push(&mut arms, TArm(pat, XNone, suite, 1))
             else
                 _err = p_set_err(pr, "parse error: expected indented match arm body")
-                _e = list_push(&arms, TArm(pat, XNone, empty_block(), 0))
+                _e = list_push(&mut arms, TArm(pat, XNone, empty_block(), 0))
         else
             body = parse_expr(pr)
-            _e = list_push(&arms, TArm(pat, body, empty_block(), 0))
+            _e = list_push(&mut arms, TArm(pat, body, empty_block(), 0))
         if p_has_err(pr) == 1
             arms
         else
             parse_match_arms(pr, arms)
 
-fn parse_match(pr: &Parser) -> Expr ! alloc
+fn parse_match(pr: &mut Parser) -> Expr ! alloc
     _a = p_advance(pr)
     scrut = parse_expr(pr)
     _b = p_skip_nls(pr)
@@ -932,7 +934,7 @@ fn parse_match(pr: &Parser) -> Expr ! alloc
     XMatch(scrut, arms)
 
 # kernel index list: IDENT ("," IDENT)* "in" type
-fn skip_kernel_index(pr: &Parser) -> Int ! alloc
+fn skip_kernel_index(pr: &mut Parser) -> Int ! alloc
     k = tok_kind(pr, p_peek(pr))
     if k == TK_IDENT()
         _a = p_advance(pr)
@@ -949,7 +951,7 @@ fn skip_kernel_index(pr: &Parser) -> Int ! alloc
     else
         0
 
-fn parse_while(pr: &Parser) -> Expr ! alloc
+fn parse_while(pr: &mut Parser) -> Expr ! alloc
     _a = p_advance(pr)
     cond = parse_expr(pr)
     _b = p_skip_nls(pr)
@@ -963,7 +965,7 @@ fn or_fn_name(name: &String) -> String ! alloc
     else
         name.dup()
 
-fn parse_ident_primary(pr: &Parser) -> Expr ! alloc
+fn parse_ident_primary(pr: &mut Parser) -> Expr ! alloc
     t = p_advance(pr)
     name = or_fn_name(&tok_own(pr, t))
     if str_eq(name, "tensor") == 1
@@ -986,7 +988,7 @@ fn parse_ident_primary(pr: &Parser) -> Expr ! alloc
     else
         parse_ident_or_call(pr, &name)
 
-fn parse_ident_or_call(pr: &Parser, name: &String) -> Expr ! alloc
+fn parse_ident_or_call(pr: &mut Parser, name: &String) -> Expr ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
         text = parse_type_text_go(pr, 1, "")
@@ -1005,7 +1007,7 @@ fn trim_closing_bracket(text: &String) -> String ! alloc
     else
         text.dup()
 
-fn parse_call_with_type_args(pr: &Parser, name: &String, targs: &String) -> Expr ! alloc
+fn parse_call_with_type_args(pr: &mut Parser, name: &String, targs: &String) -> Expr ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_LPAREN()
         xp = call_pos(pr)
         _a = p_advance(pr)
@@ -1016,11 +1018,11 @@ fn parse_call_with_type_args(pr: &Parser, name: &String, targs: &String) -> Expr
     else
         XIdent(name.dup())
 
-fn parse_block_after_indent(pr: &Parser) -> TBlock ! alloc
+fn parse_block_after_indent(pr: &mut Parser) -> TBlock ! alloc
     _a = p_skip_nls(pr)
     parse_block_go(pr, list_new[TStmt]())
 
-fn parse_return_value(pr: &Parser) -> Expr ! alloc
+fn parse_return_value(pr: &mut Parser) -> Expr ! alloc
     if at_block_end(pr) == 1
         XNone
     elsif tok_kind(pr, p_peek(pr)) == TK_NL()
@@ -1029,10 +1031,10 @@ fn parse_return_value(pr: &Parser) -> Expr ! alloc
         parse_expr(pr)
 
 # A statement of `kind` with a fresh id (see `TStmt`).
-fn mk_stmt(pr: &Parser, kind: Int, name: String, expr: Expr) -> TStmt ! alloc
+fn mk_stmt(pr: &mut Parser, kind: Int, name: String, expr: Expr) -> TStmt ! alloc
     TStmt(kind, name, expr, "", 0, XNone, 0, 0, p_next_id(pr))
 
-fn parse_block_go(pr: &Parser, stmts: List[TStmt]) -> TBlock ! alloc
+fn parse_block_go(pr: &mut Parser, stmts: List[TStmt]) -> TBlock ! alloc
     _a = p_skip_nls(pr)
     if at_block_end(pr) == 1
         _b = p_accept(pr, TK_DEDENT())
@@ -1040,12 +1042,12 @@ fn parse_block_go(pr: &Parser, stmts: List[TStmt]) -> TBlock ! alloc
     elsif tok_kind(pr, p_peek(pr)) == TK_RETURN()
         _r = p_advance(pr)
         rex = parse_return_value(pr)
-        _d = list_push(&stmts, mk_stmt(pr, 2, "", rex))
+        _d = list_push(&mut stmts, mk_stmt(pr, 2, "", rex))
         _e = p_skip_nls(pr)
         parse_block_go(pr, stmts)
     elsif tok_kind(pr, p_peek(pr)) == TK_BREAK()
         _r = p_advance(pr)
-        _d = list_push(&stmts, mk_stmt(pr, 4, "", XNone))
+        _d = list_push(&mut stmts, mk_stmt(pr, 4, "", XNone))
         _e = p_skip_nls(pr)
         parse_block_go(pr, stmts)
     elsif tok_kind(pr, p_peek(pr)) == TK_LET()
@@ -1063,7 +1065,7 @@ fn parse_block_go(pr: &Parser, stmts: List[TStmt]) -> TBlock ! alloc
         parse_block_expr(pr, stmts)
 
 # `@frozen` (1) and `@stack` (2) before a `let`; -1 on error.
-fn parse_stmt_attrs(pr: &Parser, flags: Int) -> Int ! alloc
+fn parse_stmt_attrs(pr: &mut Parser, flags: Int) -> Int ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_AT()
         flags
     else
@@ -1086,7 +1088,7 @@ fn parse_stmt_attrs(pr: &Parser, flags: Int) -> Int ! alloc
                 -1
 
 # Forgets the offsets recorded since `mark` (a type text the parser reads and discards).
-fn tyat_drop_to(pr: &Parser, mark: Int) -> Int ! alloc
+fn tyat_drop_to(pr: &mut Parser, mark: Int) -> Int ! alloc
     if list_len(&pr.tyat) <= mark
         0
     else
@@ -1094,13 +1096,13 @@ fn tyat_drop_to(pr: &Parser, mark: Int) -> Int ! alloc
         tyat_drop_to(pr, mark)
 
 # The type text after `:`, empty when omitted.
-fn parse_opt_type(pr: &Parser) -> String ! alloc
+fn parse_opt_type(pr: &mut Parser) -> String ! alloc
     if p_accept(pr, TK_COLON()) == 1
         parse_type_text(pr)
     else
         ""
 
-fn parse_let(pr: &Parser, stmts: List[TStmt], flags: Int) -> TBlock ! alloc
+fn parse_let(pr: &mut Parser, stmts: List[TStmt], flags: Int) -> TBlock ! alloc
     _l = p_advance(pr)
     nt = p_advance(pr)
     nm = tok_own(pr, nt)
@@ -1108,11 +1110,11 @@ fn parse_let(pr: &Parser, stmts: List[TStmt], flags: Int) -> TBlock ! alloc
     _q = p_accept(pr, TK_EQ())
     ex = parse_expr(pr)
     st = TStmt(1, nm, ex, ty, 1, XNone, flags & 1, (flags & 2) / 2, p_next_id(pr))
-    _d = list_push(&stmts, st)
+    _d = list_push(&mut stmts, st)
     _e = p_skip_nls(pr)
     parse_block_go(pr, stmts)
 
-fn parse_block_expr(pr: &Parser, stmts: List[TStmt]) -> TBlock ! alloc
+fn parse_block_expr(pr: &mut Parser, stmts: List[TStmt]) -> TBlock ! alloc
     ex = parse_expr(pr)
     if p_accept(pr, TK_EQ()) == 1
         parse_assign_stmt(pr, stmts, ex)
@@ -1120,45 +1122,45 @@ fn parse_block_expr(pr: &Parser, stmts: List[TStmt]) -> TBlock ! alloc
         parse_block_expr_tail(pr, stmts, ex)
 
 # `lvalue = expr`: the lvalue is an identifier or a chain of fields.
-fn parse_assign_stmt(pr: &Parser, stmts: List[TStmt], target: Expr) -> TBlock ! alloc
+fn parse_assign_stmt(pr: &mut Parser, stmts: List[TStmt], target: Expr) -> TBlock ! alloc
     value = parse_expr(pr)
     ak = assign_kind(&target)
     if ak == 1
-        _d = list_push(&stmts, mk_stmt(pr, 1, ident_of(&target), value))
+        _d = list_push(&mut stmts, mk_stmt(pr, 1, ident_of(&target), value))
     elsif ak == 3
         st = TStmt(3, "", value, "", 0, target, 0, 0, p_next_id(pr))
-        _d = list_push(&stmts, st)
+        _d = list_push(&mut stmts, st)
     else
         _e = p_set_err(pr, "parse error: invalid assignment target")
     _n = p_skip_nls(pr)
     parse_block_go(pr, stmts)
 
-fn parse_block_expr_tail(pr: &Parser, stmts: List[TStmt], ex: Expr) -> TBlock ! alloc
+fn parse_block_expr_tail(pr: &mut Parser, stmts: List[TStmt], ex: Expr) -> TBlock ! alloc
     _a = p_skip_nls(pr)
     if at_block_end(pr) == 1
         _c = p_accept(pr, TK_DEDENT())
         TBlock(stmts, ex)
     else
-        _d = list_push(&stmts, mk_stmt(pr, 0, "", ex))
+        _d = list_push(&mut stmts, mk_stmt(pr, 0, "", ex))
         parse_block_go(pr, stmts)
 
 # Effect names after `!` set their flag in `fx` (see `fx_list_new`).
 fn fx_list_new() -> List[Int] ! alloc
     fx = list_new[Int]()
-    _a = list_push(&fx, 0)
-    _b = list_push(&fx, 0)
-    _c = list_push(&fx, 0)
-    _d = list_push(&fx, 0)
-    _e = list_push(&fx, 0)
+    _a = list_push(&mut fx, 0)
+    _b = list_push(&mut fx, 0)
+    _c = list_push(&mut fx, 0)
+    _d = list_push(&mut fx, 0)
+    _e = list_push(&mut fx, 0)
     fx
 
-fn parse_effects(pr: &Parser, fx: &List[Int]) -> Int ! alloc
+fn parse_effects(pr: &mut Parser, fx: &mut List[Int]) -> Int ! alloc
     if p_accept(pr, TK_BANG()) == 0
         0
     else
         parse_effects_go(pr, fx)
 
-fn parse_effects_go(pr: &Parser, fx: &List[Int]) -> Int ! alloc
+fn parse_effects_go(pr: &mut Parser, fx: &mut List[Int]) -> Int ! alloc
     t = p_peek(pr)
     k = tok_kind(pr, t)
     if k == TK_IDENT()
@@ -1171,7 +1173,7 @@ fn parse_effects_go(pr: &Parser, fx: &List[Int]) -> Int ! alloc
     else
         0
 
-fn mark_effect(fx: &List[Int], name: &String) -> Int ! alloc
+fn mark_effect(fx: &mut List[Int], name: &String) -> Int ! alloc
     slot = effect_slot(name)
     if slot < 0
         0
@@ -1199,15 +1201,15 @@ fn or_arg_name(pn: &String) -> String ! alloc
     else
         pn.dup()
 
-fn parse_param_ty(pr: &Parser) -> String ! alloc
+fn parse_param_ty(pr: &mut Parser) -> String ! alloc
     if p_accept(pr, TK_COLON()) == 1
         parse_type_text(pr)
     else
-        _s = list_push(&pr.tyat, 0)
+        _s = list_push(&mut pr.tyat, 0)
         "Int"
 
 # Explicit `borrow` (1) / `take` (2) after a parameter type, 0 when absent.
-fn parse_param_mode(pr: &Parser) -> Int ! alloc
+fn parse_param_mode(pr: &mut Parser) -> Int ! alloc
     t = p_peek(pr)
     if tok_kind(pr, t) == TK_IDENT()
         if str_eq(tok_text(pr, t), "borrow") == 1
@@ -1224,7 +1226,7 @@ fn parse_param_mode(pr: &Parser) -> Int ! alloc
     else
         0
 
-fn parse_params(pr: &Parser, params: List[TParam]) -> List[TParam] ! alloc
+fn parse_params(pr: &mut Parser, params: List[TParam]) -> List[TParam] ! alloc
     _s = p_skip_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         params
@@ -1233,14 +1235,14 @@ fn parse_params(pr: &Parser, params: List[TParam]) -> List[TParam] ! alloc
         pn = or_arg_name(&tok_own(pr, pn_t))
         ty = parse_param_ty(pr)
         mode = parse_param_mode(pr)
-        _a = list_push(&params, TParam(pn, ty, mode))
+        _a = list_push(&mut params, TParam(pn, ty, mode))
         if p_accept(pr, TK_COMMA()) == 1
             parse_params(pr, params)
         else
             _t = p_skip_nls(pr)
             params
 
-fn parse_struct_fields(pr: &Parser, fields: List[TField]) -> List[TField] ! alloc
+fn parse_struct_fields(pr: &mut Parser, fields: List[TField]) -> List[TField] ! alloc
     _s = p_skip_nls(pr)
     if at_block_end(pr) == 1
         fields
@@ -1248,7 +1250,7 @@ fn parse_struct_fields(pr: &Parser, fields: List[TField]) -> List[TField] ! allo
         pn_t = p_advance(pr)
         pn = or_arg_name(&tok_own(pr, pn_t))
         ty = parse_param_ty(pr)
-        _a = list_push(&fields, TField(pn, ty))
+        _a = list_push(&mut fields, TField(pn, ty))
         parse_struct_fields(pr, fields)
     else
         _e = p_set_err(pr, "parse error: expected struct field")
@@ -1256,7 +1258,7 @@ fn parse_struct_fields(pr: &Parser, fields: List[TField]) -> List[TField] ! allo
 
 # The bits of the attributes in front of an item: 1 @no_heap, 2 @layout(c), 4 @deprecated("…"), 8 @arena.
 # The message of @deprecated goes to `pr.dep`; -1 is an error (already set).
-fn parse_item_attrs(pr: &Parser, bits: Int) -> Int ! alloc
+fn parse_item_attrs(pr: &mut Parser, bits: Int) -> Int ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_AT()
         bits
     else
@@ -1276,7 +1278,7 @@ fn item_attr_has(bits: Int, b: Int) -> Int ! alloc
     else
         0
 
-fn parse_item_attr_one(pr: &Parser) -> Int ! alloc
+fn parse_item_attr_one(pr: &mut Parser) -> Int ! alloc
     _at = p_accept(pr, TK_AT())
     nt = p_peek(pr)
     if tok_kind(pr, nt) != TK_IDENT()
@@ -1319,7 +1321,7 @@ fn parse_item_attr_one(pr: &Parser) -> Int ! alloc
             -1
 
 # `("message")` after @deprecated; the message is kept as "d:" + message (see `TFn.deprecated`).
-fn parse_deprecated_arg(pr: &Parser) -> Int ! alloc
+fn parse_deprecated_arg(pr: &mut Parser) -> Int ! alloc
     if p_accept(pr, TK_LPAREN()) == 0
         _e = p_set_err(pr, "parse error: expected (\"message\") after @deprecated")
         -1
@@ -1339,7 +1341,7 @@ fn parse_deprecated_arg(pr: &Parser) -> Int ! alloc
                 4
 
 # type_params -> "[" IDENT ("," IDENT)* "]" | empty; returns the names.
-fn parse_type_params(pr: &Parser) -> List[String] ! alloc
+fn parse_type_params(pr: &mut Parser) -> List[String] ! alloc
     ps = list_new[String]()
     if tok_kind(pr, p_peek(pr)) == TK_LBRACK()
         _a = p_advance(pr)
@@ -1347,12 +1349,12 @@ fn parse_type_params(pr: &Parser) -> List[String] ! alloc
     else
         ps
 
-fn parse_type_params_go(pr: &Parser, ps: List[String]) -> List[String] ! alloc
+fn parse_type_params_go(pr: &mut Parser, ps: List[String]) -> List[String] ! alloc
     t = p_peek(pr)
     k = tok_kind(pr, t)
     if k == TK_IDENT()
         _a = p_advance(pr)
-        _b = list_push(&ps, tok_own(pr, t))
+        _b = list_push(&mut ps, tok_own(pr, t))
         parse_type_params_go(pr, ps)
     elsif k == TK_TICK()
         parse_type_param_tick(pr, ps)
@@ -1367,7 +1369,7 @@ fn parse_type_params_go(pr: &Parser, ps: List[String]) -> List[String] ! alloc
 
 # Copies the names of `xs` that are lifetimes (`tick` 1: they start with `'`) or type parameters
 # (`tick` 0) into `out`, in order.
-fn split_tick_names(xs: &List[String], i: Int, n: Int, tick: Int, out: &List[String]) -> Int ! alloc
+fn split_tick_names(xs: &List[String], i: Int, n: Int, tick: Int, out: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -1382,7 +1384,7 @@ fn split_tick_names(xs: &List[String], i: Int, n: Int, tick: Int, out: &List[Str
             _q = 0
         split_tick_names(xs, i + 1, n, tick, out)
 
-fn parse_type_param_tick(pr: &Parser, ps: List[String]) -> List[String] ! alloc
+fn parse_type_param_tick(pr: &mut Parser, ps: List[String]) -> List[String] ! alloc
     _a = p_advance(pr)
     nt = p_peek(pr)
     if tok_kind(pr, nt) != TK_IDENT()
@@ -1390,10 +1392,10 @@ fn parse_type_param_tick(pr: &Parser, ps: List[String]) -> List[String] ! alloc
     else
         _b = p_advance(pr)
         name = "'" + tok_own(pr, nt)
-        _c = list_push(&ps, name)
+        _c = list_push(&mut ps, name)
         parse_type_params_go(pr, ps)
 
-fn parse_variant_fields(pr: &Parser, fields: &List[String]) -> Int ! alloc
+fn parse_variant_fields(pr: &mut Parser, fields: &mut List[String]) -> Int ! alloc
     _s = p_skip_group_nls(pr)
     if tok_kind(pr, p_peek(pr)) == TK_RPAREN()
         p_advance(pr)
@@ -1404,7 +1406,7 @@ fn parse_variant_fields(pr: &Parser, fields: &List[String]) -> Int ! alloc
         else
             p_accept(pr, TK_RPAREN())
 
-fn parse_enum_variants(pr: &Parser, vs: List[TVariant]) -> List[TVariant] ! alloc
+fn parse_enum_variants(pr: &mut Parser, vs: List[TVariant]) -> List[TVariant] ! alloc
     _s = p_skip_nls(pr)
     t = p_peek(pr)
     if tok_kind(pr, t) == TK_IDENT()
@@ -1412,15 +1414,15 @@ fn parse_enum_variants(pr: &Parser, vs: List[TVariant]) -> List[TVariant] ! allo
         fields = list_new[String]()
         if tok_kind(pr, p_peek(pr)) == TK_LPAREN()
             _b = p_advance(pr)
-            _c = parse_variant_fields(pr, &fields)
+            _c = parse_variant_fields(pr, &mut fields)
         else
             _c = 0
-        _d = list_push(&vs, TVariant(tok_own(pr, t), fields))
+        _d = list_push(&mut vs, TVariant(tok_own(pr, t), fields))
         parse_enum_variants(pr, vs)
     else
         vs
 
-fn parse_enum(pr: &Parser) -> TEnum ! alloc
+fn parse_enum(pr: &mut Parser) -> TEnum ! alloc
     start = list_len(&pr.tyat)
     _a = p_advance(pr)
     nt = p_peek(pr)
@@ -1440,7 +1442,7 @@ fn parse_enum(pr: &Parser) -> TEnum ! alloc
         _e = p_set_err(pr, "parse error: expected enum name")
         TEnum("_bad", list_new[TVariant](), list_new[String](), list_new[String](), "", "")
 
-fn parse_struct(pr: &Parser, layout_c: Int) -> TStruct ! alloc
+fn parse_struct(pr: &mut Parser, layout_c: Int) -> TStruct ! alloc
     start = list_len(&pr.tyat)
     is_frame = 0
     if tok_kind(pr, p_peek(pr)) == TK_STRUCT()
@@ -1459,8 +1461,8 @@ fn parse_struct(pr: &Parser, layout_c: Int) -> TStruct ! alloc
         declared = parse_type_params(pr)
         sparams = list_new[String]()
         lifetimes = list_new[String]()
-        _tp = split_tick_names(&declared, 0, list_len(&declared), 0, &sparams)
-        _lt = split_tick_names(&declared, 0, list_len(&declared), 1, &lifetimes)
+        _tp = split_tick_names(&declared, 0, list_len(&declared), 0, &mut sparams)
+        _lt = split_tick_names(&declared, 0, list_len(&declared), 1, &mut lifetimes)
         impls = parse_impl_clause(pr)
         if list_len(&sparams) > 0
             if list_len(&impls) > 0
@@ -1477,7 +1479,7 @@ fn parse_struct(pr: &Parser, layout_c: Int) -> TStruct ! alloc
         _e = p_set_err(pr, "parse error: expected struct name")
         TStruct("_bad", list_new[TField](), 0, list_new[String](), 0, list_new[String](), "", "", list_new[String]())
 
-fn parse_impl_clause(pr: &Parser) -> List[String] ! alloc
+fn parse_impl_clause(pr: &mut Parser) -> List[String] ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_IDENT()
         list_new[String]()
     elsif str_eq(tok_text(pr, p_peek(pr)), "impl") == 0
@@ -1486,18 +1488,18 @@ fn parse_impl_clause(pr: &Parser) -> List[String] ! alloc
         _a = p_advance(pr)
         parse_impl_list(pr, list_new[String]())
 
-fn parse_impl_list(pr: &Parser, out: List[String]) -> List[String] ! alloc
+fn parse_impl_list(pr: &mut Parser, out: List[String]) -> List[String] ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_IDENT()
         out
     else
         nt = p_advance(pr)
-        _p = list_push(&out, tok_own(pr, nt))
+        _p = list_push(&mut out, tok_own(pr, nt))
         if p_accept(pr, TK_COMMA()) == 1
             parse_impl_list(pr, out)
         else
             out
 
-fn parse_protocol(pr: &Parser) -> TProtocol ! alloc
+fn parse_protocol(pr: &mut Parser) -> TProtocol ! alloc
     _a = p_advance(pr)
     nt = p_peek(pr)
     if tok_kind(pr, nt) != TK_IDENT()
@@ -1512,7 +1514,7 @@ fn parse_protocol(pr: &Parser) -> TProtocol ! alloc
         _e = p_accept(pr, TK_DEDENT())
         TProtocol(name, methods)
 
-fn parse_protocol_methods(pr: &Parser, out: List[TProtocolMethod]) -> List[TProtocolMethod] ! alloc
+fn parse_protocol_methods(pr: &mut Parser, out: List[TProtocolMethod]) -> List[TProtocolMethod] ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_DEDENT()
         out
     elsif tok_kind(pr, p_peek(pr)) != TK_IDENT()
@@ -1520,11 +1522,11 @@ fn parse_protocol_methods(pr: &Parser, out: List[TProtocolMethod]) -> List[TProt
     elsif str_eq(tok_text(pr, p_peek(pr)), "method") == 0
         out
     else
-        _m = list_push(&out, parse_protocol_method_sig(pr))
+        _m = list_push(&mut out, parse_protocol_method_sig(pr))
         _n = p_skip_nls(pr)
         parse_protocol_methods(pr, out)
 
-fn parse_protocol_method_sig(pr: &Parser) -> TProtocolMethod ! alloc
+fn parse_protocol_method_sig(pr: &mut Parser) -> TProtocolMethod ! alloc
     _k = p_advance(pr)
     nt = p_peek(pr)
     if tok_kind(pr, nt) != TK_IDENT()
@@ -1539,13 +1541,13 @@ fn parse_protocol_method_sig(pr: &Parser) -> TProtocolMethod ! alloc
         _r = p_accept(pr, TK_RPAREN())
         ret = parse_fn_ret(pr)
         fx = fx_list_new()
-        _e = parse_effects(pr, &fx)
+        _e = parse_effects(pr, &mut fx)
         _f = p_skip_nls(pr)
         _g = p_accept(pr, TK_NL())
         TProtocolMethod(mname, params, ret, fx, self_mode)
 
 # Consumes optional `self` / `self take` / `self borrow`; protocol `params` exclude `self` (mirror bootstrap).
-fn parse_protocol_self(pr: &Parser) -> Int ! alloc
+fn parse_protocol_self(pr: &mut Parser) -> Int ! alloc
     _s = p_skip_nls(pr)
     t = p_peek(pr)
     if tok_kind(pr, t) != TK_IDENT()
@@ -1562,14 +1564,14 @@ fn parse_protocol_self(pr: &Parser) -> Int ! alloc
         mode
 
 # The return type text after `->`; empty (and an error) when there is none.
-fn parse_fn_ret(pr: &Parser) -> String ! alloc
+fn parse_fn_ret(pr: &mut Parser) -> String ! alloc
     if p_accept(pr, TK_ARROW()) == 1
         parse_type_text(pr)
     else
         _e = p_set_err(pr, "parse error: expected -> after parameters")
         ""
 
-fn parse_fn(pr: &Parser, no_heap: Int) -> TFn ! alloc
+fn parse_fn(pr: &mut Parser, no_heap: Int) -> TFn ! alloc
     start = list_len(&pr.tyat)
     _a = p_accept(pr, TK_FN())
     nt = p_peek(pr)
@@ -1583,7 +1585,7 @@ fn parse_fn(pr: &Parser, no_heap: Int) -> TFn ! alloc
         _c = p_accept(pr, TK_RPAREN())
         ret = parse_fn_ret(pr)
         fx = fx_list_new()
-        _e = parse_effects(pr, &fx)
+        _e = parse_effects(pr, &mut fx)
         _f = p_skip_nls(pr)
         _g = p_accept(pr, TK_INDENT())
         body = parse_block_after_indent(pr)
@@ -1611,7 +1613,7 @@ fn method_bad() -> TFn ! alloc
 
 # `method T.name(self, params) -> R`, `static T.name(params) -> R` and `init T(params) ! fx`: a function
 # `T__name` (`T__new` for `init`, which returns a `T`); a method takes `self: T` first.
-fn parse_method_item(pr: &Parser, mk: Int) -> TFn ! alloc
+fn parse_method_item(pr: &mut Parser, mk: Int) -> TFn ! alloc
     _k = p_advance(pr)
     _n = p_note_dot(pr)
     rt = p_advance(pr)
@@ -1634,32 +1636,32 @@ fn parse_method_item(pr: &Parser, mk: Int) -> TFn ! alloc
         else
             parse_method_sig(pr, mk, &recv, &name, tparams)
 
-fn parse_method_sig(pr: &Parser, mk: Int, recv: &String, name: &String, tparams: List[String]) -> TFn ! alloc
+fn parse_method_sig(pr: &mut Parser, mk: Int, recv: &String, name: &String, tparams: List[String]) -> TFn ! alloc
     start = list_len(&pr.tyat)
     _b = p_accept(pr, TK_LPAREN())
     params = list_new[TParam]()
-    _s = parse_self_param(pr, mk, recv, &params)
+    _s = parse_self_param(pr, mk, recv, &mut params)
     params = parse_params(pr, params)
     _n = p_skip_nls(pr)
     _c = p_accept(pr, TK_RPAREN())
     ret = parse_method_ret(pr, mk, recv)
     fx = fx_list_new()
-    _e = parse_effects(pr, &fx)
+    _e = parse_effects(pr, &mut fx)
     _f = p_skip_nls(pr)
     _g = p_accept(pr, TK_INDENT())
     body = parse_block_after_indent(pr)
     TFn(recv + "__" + name, params, body, ret, 0, 0, fx, tparams, recv.dup(), mk, "", tyat_since(pr, start))
 
-fn parse_method_ret(pr: &Parser, mk: Int, recv: &String) -> String ! alloc
+fn parse_method_ret(pr: &mut Parser, mk: Int, recv: &String) -> String ! alloc
     if mk == 3
-        _s = list_push(&pr.tyat, 0)
+        _s = list_push(&mut pr.tyat, 0)
         strdup(recv)
     else
         parse_fn_ret(pr)
 
 # A method always takes `self: T` first; the source only spells it to set the mode: `self`, `self take`
 # or `self borrow` (then a comma, or the end of the list).
-fn parse_self_param(pr: &Parser, mk: Int, recv: &String, params: &List[TParam]) -> Int ! alloc
+fn parse_self_param(pr: &mut Parser, mk: Int, recv: &String, params: &mut List[TParam]) -> Int ! alloc
     if mk != 1
         0
     else
@@ -1681,7 +1683,7 @@ fn parse_self_param(pr: &Parser, mk: Int, recv: &String, params: &List[TParam]) 
             parse_self_push(pr, params, recv, mode)
 
 # `&self` / `&mut self`: the type carries the reference and the mode is borrow.
-fn parse_self_ref(pr: &Parser, recv: &String, params: &List[TParam]) -> Int ! alloc
+fn parse_self_ref(pr: &mut Parser, recv: &String, params: &mut List[TParam]) -> Int ! alloc
     _a = p_advance(pr)
     t = p_peek(pr)
     mut = 0
@@ -1705,11 +1707,11 @@ fn parse_self_ref(pr: &Parser, recv: &String, params: &List[TParam]) -> Int ! al
             "&" + recv + " "
         parse_self_push_ty(pr, params, ty, 1)
 
-fn parse_self_push(pr: &Parser, params: &List[TParam], recv: &String, mode: Int) -> Int ! alloc
+fn parse_self_push(pr: &mut Parser, params: &mut List[TParam], recv: &String, mode: Int) -> Int ! alloc
     parse_self_push_ty(pr, params, (recv + " "), mode)
 
-fn parse_self_push_ty(pr: &Parser, params: &List[TParam], ty: String, mode: Int) -> Int ! alloc
-    _s = list_push(&pr.tyat, 0)
+fn parse_self_push_ty(pr: &mut Parser, params: &mut List[TParam], ty: String, mode: Int) -> Int ! alloc
+    _s = list_push(&mut pr.tyat, 0)
     _p = list_push(params, TParam("self", ty, mode))
     0
 
@@ -1731,7 +1733,7 @@ fn parse_self_follows(pr: &Parser, t: Int) -> Int ! alloc
     else
         0
 
-fn parse_import_path_dots(pr: &Parser, path: &String) -> String ! alloc
+fn parse_import_path_dots(pr: &mut Parser, path: &String) -> String ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_DOT()
         _d = p_advance(pr)
         if tok_kind(pr, p_peek(pr)) == TK_IDENT()
@@ -1746,7 +1748,7 @@ fn parse_import_path_dots(pr: &Parser, path: &String) -> String ! alloc
         path.dup()
 
 # The alias after `as`, empty when there is none.
-fn parse_optional_import_as(pr: &Parser) -> String ! alloc
+fn parse_optional_import_as(pr: &mut Parser) -> String ! alloc
     if tok_kind(pr, p_peek(pr)) == TK_IDENT()
         if str_eq(tok_text(pr, p_peek(pr)), "as") == 1
             _a = p_advance(pr)
@@ -1761,7 +1763,7 @@ fn parse_optional_import_as(pr: &Parser) -> String ! alloc
     else
         ""
 
-fn parse_import_path(pr: &Parser) -> String ! alloc
+fn parse_import_path(pr: &mut Parser) -> String ! alloc
     t = p_peek(pr)
     k = tok_kind(pr, t)
     if k == TK_STRING()
@@ -1788,7 +1790,7 @@ struct Items
 
 # The item after its attributes (`bits`, see `parse_item_attrs`): @no_heap goes to fn and method,
 # @layout(c) to struct, @deprecated to fn, method, struct and enum.
-fn parse_attributed_item(pr: &Parser, it: &Items, bits: Int) -> Int ! alloc
+fn parse_attributed_item(pr: &mut Parser, it: &mut Items, bits: Int) -> Int ! alloc
     dep = take_dep(pr)
     nh = item_attr_has(bits, 1)
     lay = item_attr_has(bits, 2)
@@ -1798,38 +1800,38 @@ fn parse_attributed_item(pr: &Parser, it: &Items, bits: Int) -> Int ! alloc
         if lay == 1
             attr_not_here(pr)
         else
-            _c = list_push(&it.fns, fn_with_attrs(&parse_fn(pr, nh), nh, &dep, ar))
+            _c = list_push(&mut it.fns, fn_with_attrs(&parse_fn(pr, nh), nh, &dep, ar))
             parse_program_go(pr, it)
     elsif k == TK_STRUCT()
         if nh + ar > 0
             attr_not_here(pr)
         else
-            _s = list_push(&it.structs, struct_with_dep(&parse_struct(pr, lay), &dep))
+            _s = list_push(&mut it.structs, struct_with_dep(&parse_struct(pr, lay), &dep))
             parse_program_go(pr, it)
     elsif k == TK_ENUM()
         if nh + lay + ar > 0
             attr_not_here(pr)
         else
-            _s = list_push(&it.enums, enum_with_dep(&parse_enum(pr), &dep))
+            _s = list_push(&mut it.enums, enum_with_dep(&parse_enum(pr), &dep))
             parse_program_go(pr, it)
     elsif k == TK_IDENT()
         if str_eq(tok_text(pr, p_peek(pr)), "protocol") == 1
             if nh + lay + ar > 0
                 attr_not_here(pr)
             else
-                _p = list_push(&it.protocols, parse_protocol(pr))
+                _p = list_push(&mut it.protocols, parse_protocol(pr))
                 parse_program_go(pr, it)
         elsif parse_method_kw(pr) > 0
             if lay == 1
                 attr_not_here(pr)
             else
-                _m = list_push(&it.fns, fn_with_attrs(&parse_method_item(pr, parse_method_kw(pr)), nh, &dep, ar))
+                _m = list_push(&mut it.fns, fn_with_attrs(&parse_method_item(pr, parse_method_kw(pr)), nh, &dep, ar))
                 parse_program_go(pr, it)
         elsif looks_like_const(pr) == 1
             if nh + lay + ar > 0
                 attr_not_here(pr)
             else
-                _c = list_push(&it.consts, parse_const_item(pr, &dep))
+                _c = list_push(&mut it.consts, parse_const_item(pr, &dep))
                 if p_has_err(pr) == 0
                     parse_program_go(pr, it)
                 else
@@ -1841,24 +1843,24 @@ fn parse_attributed_item(pr: &Parser, it: &Items, bits: Int) -> Int ! alloc
 
 # The item with its attributes: `nh` is @no_heap, `dep` the "d:" message ("" when none).
 fn fn_with_attrs(f: &TFn, nh: Int, dep: &String, ar: Int) -> TFn ! alloc
-    TFn(f.name, f.params, f.body, f.ret, nh, ar, f.fx, f.tparams, f.recv, f.mkind, dep.dup(), f.tyat)
+    TFn(f.name.clone(), f.params.clone(), f.body.clone(), f.ret.clone(), nh, ar, f.fx.clone(), f.tparams.clone(), f.recv.clone(), f.mkind, dep.dup(), f.tyat.clone())
 
 fn struct_with_dep(s: &TStruct, dep: &String) -> TStruct ! alloc
-    TStruct(s.name, s.fields, s.layout_c, s.tparams, s.is_frame, s.protocols, dep.dup(), s.tyat, s.lifetimes)
+    TStruct(s.name.clone(), s.fields.clone(), s.layout_c, s.tparams.clone(), s.is_frame, s.protocols.clone(), dep.dup(), s.tyat.clone(), s.lifetimes.clone())
 
 fn enum_with_dep(e: &TEnum, dep: &String) -> TEnum ! alloc
-    TEnum(e.name, e.variants, e.tparams, e.protocols, dep.dup(), e.tyat)
+    TEnum(e.name.clone(), e.variants.clone(), e.tparams.clone(), e.protocols.clone(), dep.dup(), e.tyat.clone())
 
-fn attr_not_here(pr: &Parser) -> Int ! alloc
+fn attr_not_here(pr: &mut Parser) -> Int ! alloc
     _e = p_set_err(pr, "parse error: attribute not allowed on this item")
     0
 
-fn take_dep(pr: &Parser) -> String ! alloc
-    text = list_get(&pr.dep, 0)
+fn take_dep(pr: &mut Parser) -> String ! alloc
+    text = list_get(&pr.dep, 0).clone()
     _s = list_set(pr.dep, 0, "")
-    text
+    text.clone()
 
-fn parse_program_go(pr: &Parser, it: &Items) -> Int ! alloc
+fn parse_program_go(pr: &mut Parser, it: &mut Items) -> Int ! alloc
     _a = p_skip_nls(pr)
     k = tok_kind(pr, p_peek(pr))
     if k == TK_EOF()
@@ -1874,30 +1876,30 @@ fn parse_program_go(pr: &Parser, it: &Items) -> Int ! alloc
         _i = p_advance(pr)
         path = parse_import_path(pr)
         alias = parse_optional_import_as(pr)
-        _b = list_push(&it.imports, strdup(path))
-        _c = list_push(&it.aliases, strdup(alias))
+        _b = list_push(&mut it.imports, strdup(path))
+        _c = list_push(&mut it.aliases, strdup(alias))
         parse_program_go(pr, it)
     elsif k == TK_STRUCT()
-        _s = list_push(&it.structs, parse_struct(pr, 0))
+        _s = list_push(&mut it.structs, parse_struct(pr, 0))
         parse_program_go(pr, it)
     elsif k == TK_FRAME()
-        _s = list_push(&it.structs, parse_struct(pr, 0))
+        _s = list_push(&mut it.structs, parse_struct(pr, 0))
         parse_program_go(pr, it)
     elsif k == TK_ENUM()
-        _s = list_push(&it.enums, parse_enum(pr))
+        _s = list_push(&mut it.enums, parse_enum(pr))
         parse_program_go(pr, it)
     elsif k == TK_IDENT()
         if str_eq(tok_text(pr, p_peek(pr)), "protocol") == 1
-            _p = list_push(&it.protocols, parse_protocol(pr))
+            _p = list_push(&mut it.protocols, parse_protocol(pr))
             parse_program_go(pr, it)
         elsif str_eq(tok_text(pr, p_peek(pr)), "struct") == 1
-            _s = list_push(&it.structs, parse_struct(pr, 0))
+            _s = list_push(&mut it.structs, parse_struct(pr, 0))
             parse_program_go(pr, it)
         elsif parse_method_kw(pr) > 0
-            _m = list_push(&it.fns, parse_method_item(pr, parse_method_kw(pr)))
+            _m = list_push(&mut it.fns, parse_method_item(pr, parse_method_kw(pr)))
             parse_program_go(pr, it)
         elsif looks_like_const(pr) == 1
-            _c = list_push(&it.consts, parse_const_item(pr, &""))
+            _c = list_push(&mut it.consts, parse_const_item(pr, &""))
             if p_has_err(pr) == 0
                 parse_program_go(pr, it)
             else
@@ -1906,7 +1908,7 @@ fn parse_program_go(pr: &Parser, it: &Items) -> Int ! alloc
             _d = p_advance(pr)
             parse_program_go(pr, it)
     elsif k == TK_FN()
-        _c = list_push(&it.fns, parse_fn(pr, 0))
+        _c = list_push(&mut it.fns, parse_fn(pr, 0))
         parse_program_go(pr, it)
     else
         _d = p_advance(pr)
@@ -1938,19 +1940,20 @@ fn errs_take(errs: &List[String]) -> String ! alloc
 # The parsed program. A parse error leaves its message in `errs` (empty otherwise) and the
 # program is then whatever was read before it. `break` is rewritten away (see `loops.sal`) and
 # methods resolved (see `methods.sal`).
-fn parse_program(src: &String, errs: &List[String]) -> TProgram ! alloc
+fn parse_program(src: &String, errs: &mut List[String]) -> TProgram ! alloc
     flags = list_new[Int]()
-    _f = list_push(&flags, 0)
-    parse_program_post(parse_program_raw(src, errs, &flags), src, errs, &flags)
+    _f = list_push(&mut flags, 0)
+    raw = parse_program_raw(src, errs, &mut flags)
+    parse_program_post(raw, src, errs, &flags)
 
 # Like `parse_program`, but the dotted calls stay for `methods_resolve_graph`, which resolves them
 # with the items of every module in view. `out` gets the dotted-call count of the program.
-fn parse_program_deferred(src: &String, errs: &List[String], out: &List[Int]) -> TProgram ! alloc
+fn parse_program_deferred(src: &String, errs: &mut List[String], out: &mut List[Int]) -> TProgram ! alloc
     flags = list_new[Int]()
-    _f = list_push(&flags, 0)
-    parse_program_deferred_post(parse_program_raw(src, errs, &flags), src, errs, &flags, out)
+    _f = list_push(&mut flags, 0)
+    parse_program_deferred_post(parse_program_raw(src, errs, &mut flags), src, errs, &flags, out)
 
-fn parse_program_deferred_post(tp: TProgram, src: &String, errs: &List[String], flags: &List[Int], out: &List[Int]) -> TProgram ! alloc
+fn parse_program_deferred_post(tp: TProgram, src: &String, errs: &mut List[String], flags: &List[Int], out: &mut List[Int]) -> TProgram ! alloc
     ndots = list_get(flags, 0)
     _o = list_push(out, ndots)
     if list_len(errs) > 0
@@ -1960,7 +1963,7 @@ fn parse_program_deferred_post(tp: TProgram, src: &String, errs: &List[String], 
     else
         parse_program_check(tp, errs, ndots)
 
-fn parse_program_check(tp: TProgram, errs: &List[String], ndots: Int) -> TProgram ! alloc
+fn parse_program_check(tp: TProgram, errs: &mut List[String], ndots: Int) -> TProgram ! alloc
     if list_len(errs) > 0
         tp
     else
@@ -1981,7 +1984,7 @@ fn protocol_impl_structs(sts: &List[TStruct], i: Int, n: Int, acc: Int) -> Int !
         acc2 = acc + list_len(&st.protocols)
         protocol_impl_structs(sts, i + 1, n, acc2)
 
-fn parse_program_post(tp: TProgram, src: &String, errs: &List[String], flags: &List[Int]) -> TProgram ! alloc
+fn parse_program_post(tp: TProgram, src: &String, errs: &mut List[String], flags: &List[Int]) -> TProgram ! alloc
     ndots = list_get(flags, 0)
     if list_len(errs) > 0
         tp
@@ -1990,7 +1993,7 @@ fn parse_program_post(tp: TProgram, src: &String, errs: &List[String], flags: &L
     else
         parse_program_methods(tp, errs, ndots)
 
-fn parse_program_methods(tp: TProgram, errs: &List[String], ndots: Int) -> TProgram ! alloc
+fn parse_program_methods(tp: TProgram, errs: &mut List[String], ndots: Int) -> TProgram ! alloc
     if list_len(errs) > 0
         tp
     else
@@ -2003,11 +2006,11 @@ fn parse_program_methods(tp: TProgram, errs: &List[String], ndots: Int) -> TProg
         else
             tp
 
-fn parse_program_raw(src: &String, errs: &List[String], flags: &List[Int]) -> TProgram ! alloc
+fn parse_program_raw(src: &String, errs: &mut List[String], flags: &mut List[Int]) -> TProgram ! alloc
     pr = parser_new(&lex(src))
     it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[TProtocol](), list_new[String](), list_new[String](), list_new[TConst]())
-    _a = p_skip_nls(&pr)
-    _b = parse_program_go(&pr, &it)
+    _a = p_skip_nls(&mut pr)
+    _b = parse_program_go(&mut pr, &mut it)
     msg = parse_program_error(&pr, list_len(&it.fns), list_len(&it.structs), list_len(&it.enums), list_len(&it.consts), src)
     _n = list_set(flags, 0, list_get(&pr.st, 4))
     _f = parser_free(&pr)
@@ -2068,7 +2071,7 @@ fn is_const_rest(s: &String, i: Int, n: Int) -> Int ! alloc
         else
             0
 
-fn parse_const_item(pr: &Parser, dep: &String) -> TConst ! alloc
+fn parse_const_item(pr: &mut Parser, dep: &String) -> TConst ! alloc
     t = p_advance(pr)
     name = tok_own(pr, t)
     if is_const_name(&name) == 0

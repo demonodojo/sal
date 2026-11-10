@@ -1,0 +1,13 @@
+# exit: 22
+# `xs.clone()` de una lista de structs con glue copia cada elemento con `clone.<Tipo>`: las dos
+# listas liberan elementos distintos.
+struct Bag
+    name: String
+    items: List[Int]
+
+fn main() -> Int ! alloc
+    xs = List.new[Bag]()
+    xs.push(Bag((5).to_str(), List.new[Int]()))
+    xs.push(Bag((6).to_str(), List.new[Int]()))
+    ys = xs.clone()
+    xs.len() * 10 + ys.len()

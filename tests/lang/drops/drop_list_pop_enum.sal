@@ -5,7 +5,7 @@ enum Tok
 
 fn main() -> Int ! alloc
     xs = list_new[Tok]()
-    _a = list_push(&xs, Word(int_to_str(3), 4))
+    _a = list_push(&mut xs, Word(int_to_str(3), 4))
     t = list_pop(xs)
     n = match t
         Word(s, c) => str_len(s) + c

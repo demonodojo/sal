@@ -20,7 +20,7 @@ fn check_program_in(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
         check_after_infer(tp, progs, infer_program(tp))
     else
         vals = list_new[CVal]()
-        err = ce_eval_all(progs, &vals)
+        err = ce_eval_all(progs, &mut vals)
         if str_len(err) > 0
             _f = list_free(vals)
             result_err_str(&err)

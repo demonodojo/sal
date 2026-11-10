@@ -45,7 +45,7 @@ fn ir_rebind(dest: Int, src: Int) -> Int ! alloc
 fn push_call(cx: &Cx, dest: Int, fname: &String, args: Int, has_dest: Int) -> Int ! alloc
     ir_push(cx, ir_call(dest, str_own(fname), args, has_dest))
 
-fn const_dim(cx: &Cx, n: Int) -> Int ! alloc
+fn const_dim(cx: &mut Cx, n: Int) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, n)
     d
@@ -54,7 +54,7 @@ fn int_text(n: Int) -> Int ! alloc
     str_own(&int_to_str(n))
 
 # ---- matmul ----
-fn matmul_lead_go(cx: &Cx, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
+fn matmul_lead_go(cx: &mut Cx, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     else
@@ -64,7 +64,7 @@ fn matmul_lead_go(cx: &Cx, b: Int, name: Int, i: Int, n: Int, acc: Int) -> Int !
         matmul_lead_go(cx, b, name, i + 1, n, r)
 
 # Batch `m`: the product of every leading axis but the last two.
-fn matmul_batch_m(cx: &Cx, lhs: Int) -> Int ! alloc
+fn matmul_batch_m(cx: &mut Cx, lhs: Int) -> Int ! alloc
     b = find_tensor(cx, lhs)
     if b == 0
         const_dim(cx, 1)
@@ -74,7 +74,7 @@ fn matmul_batch_m(cx: &Cx, lhs: Int) -> Int ! alloc
         first = axis_len_from_dim(cx, lhs, bind_dims(b), bind_concrete(b), 0)
         matmul_lead_go(cx, b, lhs, 1, bind_ndims(b) - 2, first)
 
-fn matmul_dims(cx: &Cx, lhs: Int, rhs: Int) -> Int ! alloc
+fn matmul_dims(cx: &mut Cx, lhs: Int, rhs: Int) -> Int ! alloc
     out = vec_new()
     _m = vec_push(out, matmul_batch_m(cx, lhs))
     _k = vec_push(out, axis_len(cx, lhs, 0))
@@ -95,7 +95,7 @@ fn matmul_out_conc(lb: Int, rb: Int, n: Int, out: Int) -> Int ! alloc
         0
 
 # The dimension constants come before the result, as in the bootstrap's numbering.
-fn lower_matmul_op(cx: &Cx, arg_names: Int) -> Int ! alloc
+fn lower_matmul_op(cx: &mut Cx, arg_names: Int) -> Int ! alloc
     lhs = vec_get(arg_names, 0)
     rhs = vec_get(arg_names, 1)
     mkn = matmul_dims(cx, lhs, rhs)
@@ -142,7 +142,7 @@ fn lower_matmul_register(cx: &Cx, d: Int, lb: Int, rb: Int) -> Int ! alloc
     else
         0
 
-fn lower_qmatmul_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_qmatmul_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     a = vec_get(arg_names, 0)
     w = vec_get(arg_names, 1)
     mkn = matmul_dims(cx, a, w)
@@ -205,7 +205,7 @@ fn transpose_is_copy(b: Int) -> Int ! alloc
     else
         1
 
-fn lower_transpose_copy(cx: &Cx, d: Int, src: Int, b: Int) -> Int ! alloc
+fn lower_transpose_copy(cx: &mut Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     r = fresh(cx)
     _a = push_const_int(cx, r, tdim(b, 0))
     c = fresh(cx)
@@ -223,7 +223,7 @@ fn lower_transpose_copy(cx: &Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     _w = vec_push(args, c)
     push_call(cx, d, &"sal_transpose_f32", args, 1)
 
-fn lower_transpose_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_transpose_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     src = vec_get(arg_names, 0)
     b = find_tensor(cx, src)
     if transpose_is_copy(b) == 1
@@ -366,7 +366,7 @@ fn lower_attention_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
     _p = push_call(cx, d, &"sal_attention_f32", args, 1)
     reg_like(cx, d, qb)
 
-fn lower_rope_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_rope_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     seq = 0
@@ -410,7 +410,7 @@ fn dims_elems_or_one(b: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
         else
             0 - 1
 
-fn lower_tensor_append_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_tensor_append_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     cache = vec_get(arg_names, 0)
     row = vec_get(arg_names, 1)
     rb = find_tensor(cx, row)
@@ -465,7 +465,7 @@ fn lower_tensor_append_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
 
 # ---- dispatch ----
 # Lowers `fname(args)` when it is a shape-aware tensor builtin; returns 1 when handled.
-fn lower_tensor_builtin(cx: &Cx, fname: &String, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
+fn lower_tensor_builtin(cx: &mut Cx, fname: &String, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
     n = vec_len(arg_names)
     if str_eq(fname, "reshape") == 1
         if n >= 2

@@ -42,6 +42,25 @@ thread_local! {
     /// Locals passed to `list_push_share`: the list borrows the element, so a later
     /// `list_get` is the same pointer and the list must not be released with `list_free`.
     static SHARED_LISTS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// Names of the user fns (of the program and of the modules it calls). A container one
+    /// returns by value is moved to the caller (SPEC «Memoria»): the caller owns and releases it.
+    static USER_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
+/// The release of the container a user fn returns by value, from the type of the call.
+fn user_call_kind(name: &str, call: &Expr) -> Option<&'static str> {
+    if !USER_FNS.with(|f| f.borrow().contains(name)) {
+        return None;
+    }
+    match type_at(call)? {
+        Type::Named { name, .. } => match name.as_str() {
+            "List" => Some("list_free"),
+            "Dict" => Some("dict_free"),
+            "Bytes" => Some("bytes_free"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn collect_enum_types(enums: &HashMap<String, EnumDef>) {
@@ -138,6 +157,17 @@ fn struct_copy_kind(local: &str, init: &Expr) -> Option<&'static str> {
     let Expr::Call { func, args, .. } = init else {
         return None;
     };
+    // `x.clone()` of a describable struct is a fresh box too (SPEC «Memoria»).
+    if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "struct_clone") {
+        let Some(Type::Named { name: sn, args: targs, .. }) = type_at(init) else {
+            return None;
+        };
+        if !targs.is_empty() || !is_ownable_struct(&sn) {
+            return None;
+        }
+        let desc = STRUCT_DESC.with(|t| t.borrow().get(&sn).cloned())?;
+        return Some(Box::leak(format!("struct:{desc}").into_boxed_str()));
+    }
     if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == "desc_copy") {
         return None;
     }
@@ -450,6 +480,13 @@ pub fn insert_drops(
     collect_ownable(structs, enums);
     collect_enum_types(enums);
     OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog));
+    let user_fns: HashSet<String> = prog
+        .items
+        .iter()
+        .filter_map(|i| if let Item::Fn(f) = i { Some(f.name.clone()) } else { None })
+        .chain(callees.iter().map(|f| f.name.clone()))
+        .collect();
+    USER_FNS.with(|f| *f.borrow_mut() = user_fns);
     let mut hoisted = prog.clone();
     for item in &mut hoisted.items {
         if let Item::Fn(f) = item {
@@ -747,7 +784,9 @@ fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly, cons: &ReadOnly) -> F
 pub(crate) fn borrows_args(name: &str) -> bool {
     matches!(
         name,
-        "str_len"
+        // `x.clone()` reads its receiver through `&self` (SPEC «Memoria»).
+        "struct_clone" | "enum_copy" | "list_clone" | "dict_clone" | "bytes_clone" | "clone_copy"
+            | "str_len"
             | "str_eq"
             | "str_char"
             | "str_contains"
@@ -840,6 +879,10 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
                 Some(("list_free", true))
             } else if name == "list_new" && list_elem_args(type_args) {
                 Some(("list_free", list_owns_elems(type_args)))
+            } else if name == "list_new" && list_glue_arg(type_args) {
+                // A list of structs with glue releases each element through `drop.elem.<S>`
+                // (`sal_list_set_drop`): the local owns the list like any other (SPEC «Memoria»).
+                Some(("list_free", false))
             } else if matches!(name.as_str(), "dict_keys" | "dict_values") {
                 // A fresh list whose String elements are copies the list owns.
                 Some(("list_free", true))
@@ -849,8 +892,15 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
                 Some(("bytes_free", false))
             } else if name == "dict_new" && dict_args(type_args) {
                 Some(("dict_free", dict_owns_values(type_args)))
+            } else if name == "list_clone" {
+                // `xs.clone()` is a fresh container that owns a copy of every element.
+                Some(("list_free", false))
+            } else if name == "dict_clone" {
+                Some(("dict_free", false))
+            } else if name == "bytes_clone" {
+                Some(("bytes_free", false))
             } else {
-                None
+                user_call_kind(name, init).map(|k| (k, false))
             }
         }
         Expr::Binary { op: BinOp::Add, .. } if add_is_string_chain(init) => Some(("free", false)),
@@ -864,6 +914,13 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
         },
         _ => None,
     }
+}
+
+/// `list_new[S]()` with `S` a non-generic struct that has no descriptor: its elements are
+/// released by the glue of `S`.
+fn list_glue_arg(type_args: &[TypeArg]) -> bool {
+    matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })]
+        if args.is_empty() && !is_ownable_struct(name) && FIELDS.with(|f| f.borrow().contains_key(name)))
 }
 
 fn list_flat_arg(type_args: &[TypeArg]) -> bool {
@@ -1442,6 +1499,77 @@ struct Ctx {
     owned_elems: HashMap<String, &'static str>,
     /// Struct copies whose box was freed right after a scalarizing call (`clear_moved`).
     shell_freed: HashSet<String>,
+    /// Locals bound more than once whose every binding is a fresh value of one kind: a
+    /// reassignment releases the old value first (SPEC «Liberación»).
+    rebound: HashSet<String>,
+}
+
+/// Every `name = init` of `b` (declarations and reassignments, not the in-place `x = x + …`).
+fn binding_inits<'a>(b: &'a Block, out: &mut HashMap<String, Vec<&'a Expr>>) {
+    fn in_expr<'a>(e: &'a Expr, out: &mut HashMap<String, Vec<&'a Expr>>) {
+        match e {
+            Expr::Block(b) | Expr::On { body: b, .. } => binding_inits(b, out),
+            Expr::If { then_block, elsifs, else_block, .. } => {
+                binding_inits(then_block, out);
+                for el in elsifs {
+                    binding_inits(&el.body, out);
+                }
+                if let Some(b) = else_block {
+                    binding_inits(b, out);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for a in arms {
+                    in_expr(&a.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    for st in &b.stmts {
+        match st {
+            Stmt::Let { name, init, .. } => {
+                out.entry(name.clone()).or_default().push(init);
+                in_expr(init, out);
+            }
+            Stmt::Assign { target, value, .. } => {
+                if let Expr::Ident { name, .. } = target {
+                    if !is_accumulate(name, value) {
+                        out.entry(name.clone()).or_default().push(value);
+                    }
+                }
+                in_expr(value, out);
+            }
+            Stmt::Expr(e) => in_expr(e, out),
+            Stmt::While { body, .. } => binding_inits(body, out),
+            Stmt::Return { value: Some(v), .. } => in_expr(v, out),
+            Stmt::Return { .. } | Stmt::Break { .. } => {}
+        }
+    }
+    if let Some(t) = &b.tail {
+        in_expr(t, out);
+    }
+}
+
+fn rebound_locals(body: &Block, variants: &Variants) -> HashSet<String> {
+    let mut inits = HashMap::new();
+    binding_inits(body, &mut inits);
+    inits
+        .into_iter()
+        .filter(|(name, es)| {
+            if es.len() < 2 {
+                return false;
+            }
+            let Some((k, _)) = fresh_kind(es[0], variants) else { return false };
+            matches!(k, "free" | "list_free" | "dict_free" | "bytes_free")
+                && es.iter().all(|e| {
+                    struct_copy_kind(name, e).is_none()
+                        && !matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop"))
+                        && fresh_kind(e, variants).is_some_and(|(k2, _)| k2 == k)
+                })
+        })
+        .map(|(n, _)| n)
+        .collect()
 }
 
 /// An enum list the pass releases is built as `list_new_owned`, so the lowering stores the
@@ -1566,7 +1694,7 @@ impl Ctx {
             }
         }
         let ok = !self.params.contains(name)
-            && self.facts.bindings.get(name) == Some(&1)
+            && (self.facts.bindings.get(name) == Some(&1) || self.rebound.contains(name))
             && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
         ok.then_some((kind, self.facts.soft.contains(name)))
     }
@@ -1726,6 +1854,11 @@ struct Borr {
 }
 
 fn desc_of_type(t: &Type) -> Option<Borr> {
+    // `list_get` types its element as `&T`: the descriptor is the one of `T`.
+    let mut t = t;
+    while let Type::Ref { inner, .. } = t {
+        t = inner;
+    }
     let Type::Named { name, args, .. } = t else {
         return None;
     };
@@ -1800,6 +1933,10 @@ fn borrow_of(e: &Expr, borrows: &HashMap<String, Borr>) -> Option<Borr> {
             if borrows_args(name) || is_ownable_struct(name) || is_variant_ctor(name) {
                 return None;
             }
+            // An explicit copy is a fresh value: it owns everything it holds.
+            if matches!(name.as_str(), "strdup" | "struct_clone" | "enum_copy" | "list_clone" | "dict_clone" | "bytes_clone" | "clone_copy" | "desc_copy") {
+                return None;
+            }
             let shares = args.iter().enumerate().any(|(i, a)| {
                 !user_param_owns(name, i) && (borrow_of(a, borrows).is_some() || field_of_borrow(a, borrows))
             });
@@ -1819,19 +1956,6 @@ fn borrow_of(e: &Expr, borrows: &HashMap<String, Borr>) -> Option<Borr> {
             }
         }
         _ => None,
-    }
-}
-
-fn desc_copy_expr(inner: Expr, desc: &str) -> Expr {
-    let span = inner.span();
-    Expr::Call {
-        func: Box::new(Expr::Ident { name: "desc_copy".into(), span }),
-        type_args: vec![],
-        args: vec![
-            Expr::String { value: desc.to_string(), parts: vec![], span },
-            inner,
-        ],
-        span,
     }
 }
 
@@ -1857,11 +1981,9 @@ fn arg_is_owning(callee: &str, index: usize, variants: &Variants) -> bool {
 }
 
 fn claim_expr(e: Expr, own: bool, borrows: &mut HashMap<String, Borr>, variants: &Variants) -> Expr {
-    if own {
-        if let Some(b) = borrow_of(&e, borrows) {
-            return desc_copy_expr(e, &b.desc);
-        }
-    }
+    // SPEC «Memoria»: no implicit copy. A borrowed value an owner takes is `E_TYPE`/`E_BORROW`
+    // upstream; the source says `x.clone()`.
+    let _ = own;
     match e {
         Expr::Call { func, type_args, args, span } => {
             let callee = match func.as_ref() {
@@ -2128,6 +2250,7 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         tmp: 0,
         owned_elems: HashMap::new(),
         shell_freed: HashSet::new(),
+        rebound: rebound_locals(&f.body, variants),
     };
     // A by-value `String`/`List`/`Dict` parameter moves into the fn: the fn releases it at
     // scope end unless it moved it. Without the moved set there is nothing to decide by.
@@ -2222,6 +2345,41 @@ fn flag_init(name: &str, span: Span) -> Stmt {
         stack: false,
         span,
     }
+}
+
+/// `__live_x = 1` after a reassignment of a flagged local (the flag is already declared).
+fn flag_set(name: &str, span: Span) -> Stmt {
+    Stmt::Assign {
+        target: Expr::Ident { name: flag_name(name), span },
+        value: int_expr(1, span),
+        span,
+    }
+}
+
+/// `name = value` over a live owned local: the new value is computed first (it may read the
+/// old one), then the old value is released, then the name takes the new one.
+fn rebind(name: &str, value: Expr, span: Span, cx: &mut Ctx, stmts: &mut Vec<Stmt>) -> bool {
+    let Some((_, k, fl)) = cx.live.iter().rev().find(|(l, _, _)| l == name).cloned() else {
+        return false;
+    };
+    cx.tmp += 1;
+    let t = format!("__new{}", cx.tmp);
+    let value = xform_expr(value, cx);
+    stmts.push(Stmt::Let { name: t.clone(), ty: None, init: value, frozen: false, stack: false, span });
+    clear_moved(cx, stmt_key(span), span, stmts);
+    if !cx.facts.escaped.contains(name) && !cx.shell_freed.contains(name) {
+        stmts.push(release(name, k, fl, cx.facts.box_shell.contains(name), span));
+    }
+    stmts.push(Stmt::Assign {
+        target: Expr::Ident { name: name.to_string(), span },
+        value: Expr::Ident { name: t, span },
+        span,
+    });
+    if fl {
+        stmts.push(flag_set(name, span));
+    }
+    drop_escaped_from_live(cx);
+    true
 }
 
 fn flag_clear(name: &str, span: Span) -> Stmt {
@@ -2320,6 +2478,10 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
             Stmt::Break { span } => stmts.push(Stmt::Break { span }),
             Stmt::Let { name, ty, init, frozen, stack, span } => {
                 let cand = cx.candidate(&name, &ty, &init);
+                if cand.is_some() && cx.rebound.contains(&name) && cx.live.iter().any(|(l, _, _)| l == &name) {
+                    rebind(&name, init, span, cx, &mut stmts);
+                    continue;
+                }
                 let mut init = init;
                 own_enum_list(&name, matches!(cand, Some((k, _)) if k == "list_free"), &mut init, &mut cx.owned_elems);
                 let init = xform_expr(init, cx);
@@ -2340,6 +2502,13 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                     }
                     _ => None,
                 };
+                if let Some((n, _, _)) = &decl {
+                    if cx.rebound.contains(n) && cx.live.iter().any(|(l, _, _)| l == n) {
+                        let n = n.clone();
+                        rebind(&n, value, span, cx, &mut stmts);
+                        continue;
+                    }
+                }
                 let mut value = value;
                 if let (Some((n, k, _)), Expr::Ident { .. }) = (&decl, &target) {
                     own_enum_list(n, *k == "list_free", &mut value, &mut cx.owned_elems);

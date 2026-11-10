@@ -1,0 +1,7 @@
+# exit: 4
+fn two(a: &String, b: &String) -> Int ! alloc
+    a.len() + b.len()
+
+fn main() -> Int ! alloc
+    s = d"ab".dup()
+    two(&s, &s)

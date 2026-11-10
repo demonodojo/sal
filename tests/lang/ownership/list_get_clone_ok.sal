@@ -1,0 +1,7 @@
+# exit: 4
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(d"ab".dup())
+    ys = List.new[String]()
+    ys.push(xs.get(0).clone())
+    xs.get(0).len() + ys.get(0).len()

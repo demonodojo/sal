@@ -1,0 +1,14 @@
+# error: E_BORROW
+# selfhost-xfail: el borrowck del selfhost no sigue el préstamo que devuelve una llamada
+struct P
+    name: String
+    n: Int
+
+fn name(p: &P) -> &String
+    &p.name
+
+fn main() -> Int ! alloc
+    p = P(d"ab".dup(), 1)
+    r = name(&p)
+    p.name = d"cd".dup()
+    r.len()

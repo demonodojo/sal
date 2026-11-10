@@ -145,10 +145,10 @@ fn at_stmt_lets(structs: &List[TStruct], stmts: &List[TStmt], i: Int, n: Int, mo
             else
                 at_stmt_lets(structs, stmts, i + 1, n, mode)
 
-fn at_no_heap_body(structs: &List[TStruct], f: &TFn, env: &TEnv) -> Int ! alloc
+fn at_no_heap_body(structs: &List[TStruct], f: &TFn, env: &mut TEnv) -> Int ! alloc
     used = fx_new(callees_new())
     fx_seed_params(&f.params, 0, f.params.len(), env)
-    fx_scan_block(&f.body, &used, env)
+    fx_scan_block(&f.body, &mut used, env)
     tenv_truncate(env, 0)
     allocates = fx_used(&used, 1)
     _f = list_free(used.flags)
@@ -157,7 +157,7 @@ fn at_no_heap_body(structs: &List[TStruct], f: &TFn, env: &TEnv) -> Int ! alloc
     else
         at_block_lets(structs, &f.body, 0)
 
-fn at_no_heap_fn(structs: &List[TStruct], f: &TFn, env: &TEnv) -> Int ! alloc
+fn at_no_heap_fn(structs: &List[TStruct], f: &TFn, env: &mut TEnv) -> Int ! alloc
     if at_ty_heap(structs, &f.ret) == 1
         result_err_str(&"@no_heap function cannot return a heap type")
     else
@@ -168,14 +168,14 @@ fn at_no_heap_fn(structs: &List[TStruct], f: &TFn, env: &TEnv) -> Int ! alloc
             at_no_heap_body(structs, f, env)
 
 # `names`: the `@frozen` bindings seen so far in the fn.
-fn at_frozen_block(b: &TBlock, names: &List[String]) -> Int ! alloc
+fn at_frozen_block(b: &TBlock, names: &mut List[String]) -> Int ! alloc
     r = at_frozen_stmts(&b.stmts, 0, list_len(&b.stmts), names)
     if result_is_err(r) == 1
         r
     else
         at_frozen_expr(&b.tail, names)
 
-fn at_frozen_elsifs(arms: &List[TElsif], i: Int, n: Int, names: &List[String]) -> Int ! alloc
+fn at_frozen_elsifs(arms: &List[TElsif], i: Int, n: Int, names: &mut List[String]) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
@@ -185,7 +185,7 @@ fn at_frozen_elsifs(arms: &List[TElsif], i: Int, n: Int, names: &List[String]) -
         else
             at_frozen_elsifs(arms, i + 1, n, names)
 
-fn at_frozen_if(then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], names: &List[String]) -> Int ! alloc
+fn at_frozen_if(then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], names: &mut List[String]) -> Int ! alloc
     r = at_frozen_block(then_b, names)
     if result_is_err(r) == 1
         r
@@ -196,7 +196,7 @@ fn at_frozen_if(then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], names: 
         else
             at_frozen_block(else_b, names)
 
-fn at_frozen_expr(e: &Expr, names: &List[String]) -> Int ! alloc
+fn at_frozen_expr(e: &Expr, names: &mut List[String]) -> Int ! alloc
     match e
         XWhile(cond, body) => at_frozen_block(&body, names)
         XOn(place, body, is_kern, has_index) => at_frozen_block(&body, names)
@@ -211,7 +211,7 @@ fn at_name_in(names: &List[String], name: &String, i: Int, n: Int) -> Int ! allo
     else
         at_name_in(names, name, i + 1, n)
 
-fn at_frozen_stmts(stmts: &List[TStmt], i: Int, n: Int, names: &List[String]) -> Int ! alloc
+fn at_frozen_stmts(stmts: &List[TStmt], i: Int, n: Int, names: &mut List[String]) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
@@ -236,7 +236,7 @@ fn at_frozen_stmts(stmts: &List[TStmt], i: Int, n: Int, names: &List[String]) ->
 
 fn at_frozen_fn(f: &TFn) -> Int ! alloc
     names = list_new[String]()
-    r = at_frozen_block(&f.body, &names)
+    r = at_frozen_block(&f.body, &mut names)
     _f = list_free(names)
     r
 
@@ -289,7 +289,7 @@ fn at_arena_head(structs: &List[TStruct], f: &TFn) -> Int ! alloc
     else
         at_keep_params(f, 0, list_len(&f.params))
 
-fn at_check_fn(structs: &List[TStruct], f: &TFn, env: &TEnv) -> Int ! alloc
+fn at_check_fn(structs: &List[TStruct], f: &TFn, env: &mut TEnv) -> Int ! alloc
     r0 = at_arena_head(structs, f)
     r = if result_is_err(r0) == 1
         r0
@@ -306,7 +306,7 @@ fn at_check_fn(structs: &List[TStruct], f: &TFn, env: &TEnv) -> Int ! alloc
         else
             at_frozen_fn(f)
 
-fn at_check_fns(tp: &TProgram, i: Int, n: Int, env: &TEnv) -> Int ! alloc
+fn at_check_fns(tp: &TProgram, i: Int, n: Int, env: &mut TEnv) -> Int ! alloc
     if i >= n
         result_ok(0)
     else
@@ -323,5 +323,5 @@ fn check_attrs(tp: &TProgram) -> Int ! alloc
         r
     else
         env = tenv_new(tp)
-        out = at_check_fns(tp, 0, tp.fns.len(), &env)
+        out = at_check_fns(tp, 0, tp.fns.len(), &mut env)
         out

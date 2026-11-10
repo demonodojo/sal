@@ -296,9 +296,114 @@ fn struct_glue_fns(strings: &StringEnv, own: &HashSet<&str>) -> Vec<IrFunction> 
             if boxed {
                 out.push(struct_elem_glue_fn(name));
             }
+            if struct_clone_glue(name, strings) {
+                out.push(struct_clone_fn(name, strings));
+            }
         }
     }
     out
+}
+
+/// Whether `x.clone()` of struct `name` goes through `clone.<name>`: the struct has glue (it
+/// owns heap fields) and no descriptor (`sal_desc_copy` cannot follow a `List`/`Dict` field).
+fn struct_clone_glue(name: &str, strings: &StringEnv) -> bool {
+    struct_glue_has(name, strings) && struct_desc(name, &strings.structs, &strings.enums).is_none()
+}
+
+/// `clone.<name>(v)`: a copy of the value that owns a copy of everything `drop.<name>`
+/// releases (SPEC «Memoria»: `x.clone()` is a deep copy). What the glue does not release is
+/// not owned by the value, and the copy shares it.
+fn struct_clone_fn(name: &str, strings: &StringEnv) -> IrFunction {
+    let mut ins = Vec::new();
+    let mut counter = 0u32;
+    let mut fields = Vec::new();
+    let glue = Glue {
+        nested: true,
+        containers: true,
+    };
+    let sd = strings.structs.get(name);
+    let transparent = sd.is_some_and(is_transparent_struct);
+    for (i, field) in sd.map(|d| d.fields.as_slice()).unwrap_or(&[]).iter().enumerate() {
+        let raw = if transparent {
+            "v".to_string()
+        } else {
+            counter += 1;
+            let d = format!("t{counter}");
+            ins.push(IrInst::Extract {
+                dest: d.clone(),
+                base: "v".into(),
+                struct_name: name.to_string(),
+                field_index: i as u32,
+            });
+            d
+        };
+        let copy = match field_drop(&field.ty, strings, glue, 0, None, "", "") {
+            None => raw,
+            Some(FieldDrop::Call(release)) => {
+                let func = match release {
+                    "sal_free" => "sal_strdup",
+                    "sal_bytes_free" => "sal_bytes_clone_val",
+                    "sal_enum_free" => "sal_enum_copy",
+                    "sal_list_free" => "sal_list_clone_val",
+                    "sal_dict_free" => "sal_dict_clone_val",
+                    _ => "",
+                };
+                if func.is_empty() {
+                    raw
+                } else {
+                    counter += 1;
+                    let d = format!("t{counter}");
+                    ins.push(IrInst::Call {
+                        dest: Some(d.clone()),
+                        func: func.into(),
+                        args: vec![raw],
+                    });
+                    d
+                }
+            }
+            Some(FieldDrop::Struct(inner)) => {
+                counter += 1;
+                let d = format!("t{counter}");
+                match struct_desc(&inner.name, &strings.structs, &strings.enums) {
+                    Some(desc) => {
+                        counter += 1;
+                        let ds = format!("t{counter}");
+                        ins.push(IrInst::ConstString { dest: ds.clone(), value: desc });
+                        ins.push(IrInst::Call {
+                            dest: Some(d.clone()),
+                            func: "sal_desc_copy".into(),
+                            args: vec![ds, raw],
+                        });
+                    }
+                    None => ins.push(IrInst::Call {
+                        dest: Some(d.clone()),
+                        func: format!("clone.{}", inner.name),
+                        args: vec![raw],
+                    }),
+                }
+                d
+            }
+        };
+        fields.push(copy);
+    }
+    if transparent {
+        ins.push(IrInst::Return { value: fields.into_iter().next().unwrap_or_else(|| "v".into()) });
+    } else {
+        ins.push(IrInst::Aggregate {
+            dest: "r".into(),
+            struct_name: name.to_string(),
+            fields,
+        });
+        ins.push(IrInst::Return { value: "r".into() });
+    }
+    IrFunction {
+        name: format!("clone.{name}"),
+        params: vec!["v".into()],
+        instructions: ins,
+        regions: Vec::new(),
+        dim_params: Vec::new(),
+        host_literals: Vec::new(),
+    }
 }
 
 /// A struct of two or more fields is a block on the heap (a list element is that block). A
@@ -363,6 +468,9 @@ pub fn struct_glue_externs(strings: &StringEnv, program: &Program) -> HashMap<St
             let mut names = vec![(format!("drop.{n}"), 1usize)];
             if struct_is_boxed(n, strings) {
                 names.push((format!("drop.elem.{n}"), 1usize));
+            }
+            if struct_clone_glue(n, strings) {
+                names.push((format!("clone.{n}"), 1usize));
             }
             names
         })
@@ -1549,6 +1657,19 @@ fn value_struct(value: &Expr, strings: &StringEnv, out: &HashMap<String, String>
     }
     match value {
         Expr::Ident { name: src, .. } => out.get(src).cloned(),
+        // `x.clone()` of a struct whose copy is made by its glue (`clone.<S>`): a fresh value the
+        // local owns (SPEC «Memoria»). The clone of a describable struct is a `struct:<desc>`
+        // box the drops pass releases (`struct_copy_kind`).
+        Expr::Call { func, args, .. }
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "struct_clone") && args.len() == 1 =>
+        {
+            let mut src = &args[0];
+            while let Expr::Unary { expr, .. } = src {
+                src = expr;
+            }
+            let sn = value_struct(src, strings, out)?;
+            struct_clone_glue(&sn, strings).then_some(sn)
+        }
         Expr::Field { base, field, .. } => {
             let Expr::Ident { name: b, .. } = base.as_ref() else {
                 return None;
@@ -2022,8 +2143,12 @@ fn field_reads(
                             }
                         }
                     }
+                    // `xs.push(v)`, `xs.set(i, v)` and `d.put(k, v)` take their receiver by
+                    // `&mut` (SPEC «Memoria»): the container stays with its owner.
+                    let store = matches!(callee, Some("list_push" | "list_set" | "dict_put"));
                     for (i, a) in args.iter().enumerate() {
                         let keeps = match callee {
+                            _ if store && i == 0 => false,
                             Some(n) => match self.modes.get(n) {
                                 Some(m) => m.get(i) == Some(&ParamMode::Take),
                                 None => !crate::drops::borrows_args(n),
@@ -3822,6 +3947,14 @@ fn lower_expr(
                             func: "sal_list_set_drop".into(),
                             args: vec![dest.clone(), struct_elem_glue_name(name, strings)],
                         });
+                        // `xs.clone()` copies each element with the glue of its type.
+                        if struct_clone_glue(name, strings) {
+                            instructions.push(IrInst::Call {
+                                dest: None,
+                                func: "sal_list_set_clone".into(),
+                                args: vec![dest.clone(), format!("clone.{name}")],
+                            });
+                        }
                     }
                 }
                 return dest;
@@ -3849,9 +3982,32 @@ fn lower_expr(
                 return arg_names.into_iter().next().unwrap_or(dest);
             }
             if fname == "struct_clone" && arg_names.len() == 1 {
-                let desc = strings
-                    .expr_type(&args[0])
-                    .and_then(|t| match t {
+                // A struct with a `List`/`Dict` field has no descriptor: its glue copies it.
+                // The receiver may be a borrow (`xs.get(i).clone()`): the type is its referent.
+                fn peel(t: &Type) -> &Type {
+                    match t {
+                        Type::Ref { inner, .. } => peel(inner),
+                        other => other,
+                    }
+                }
+                let recv_ty = strings.expr_type(&args[0]);
+                let by_glue = recv_ty.as_ref().and_then(|t| match peel(t) {
+                    Type::Named { name, .. } | Type::Qualified { name, .. } => {
+                        struct_clone_glue(name, strings).then(|| name.clone())
+                    }
+                    _ => None,
+                });
+                if let Some(sn) = by_glue {
+                    instructions.push(IrInst::Call {
+                        dest: Some(dest.clone()),
+                        func: format!("clone.{sn}"),
+                        args: vec![arg_names[0].clone()],
+                    });
+                    return dest;
+                }
+                let desc = recv_ty
+                    .as_ref()
+                    .and_then(|t| match peel(t) {
                         Type::Named { name, .. } | Type::Qualified { name, .. } => {
                             struct_desc(name, &strings.structs, &strings.enums)
                         }

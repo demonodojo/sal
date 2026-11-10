@@ -117,7 +117,7 @@ fn ih_vec(xs: &List[String], i: Int, n: Int, out: Int) -> Int ! alloc
 
 fn cir_call(cc: Int, inst: &Inst) -> Int ! alloc
     dest = ih(&inst.dest)
-    fname = inst.s1
+    fname = inst.s1.clone()
     args = ih_vec(&inst.strs, 0, inst.strs.len(), vec_new())
     ops = cir_ops(cc, args, 0, vec_len(args), vec_new())
     if inst.n1 == 0
@@ -370,8 +370,8 @@ fn cir_attention(cc: Int, dest: Int, ops: Int) -> Int ! alloc
 
 fn cir_tbin(cc: Int, inst: &Inst) -> Int ! alloc
     dest = ih(&inst.dest)
-    op = inst.s1
-    d = inst.dest
+    op = inst.s1.clone()
+    d = inst.dest.clone()
     len = cir_op(cc, ih(&inst.s5))
     left = cir_op(cc, ih(&inst.s3))
     right = cir_op(cc, ih(&inst.s4))
@@ -411,7 +411,7 @@ fn cir_float_text(cc: Int, a: Int) -> String ! alloc
 
 # `neg` over a tensor: the runtime kernel writes a fresh buffer of `len` floats.
 fn cir_tun(cc: Int, inst: &Inst) -> Int ! alloc
-    d = inst.dest
+    d = inst.dest.clone()
     input = cir_op(cc, ih(&inst.s3))
     len = cir_op(cc, ih(&inst.s5))
     cc_line(cc, &("  " + d + " = (int64_t)(uintptr_t)sal_tn_alloc(" + len + ");\n"))

@@ -22,7 +22,7 @@
 # `cx = [next flag number, broke (result of the last lp_block), failed]`; `errs` takes the first message.
 import "../ast/tast.sal"
 
-fn lp_fail(errs: &List[String], cx: &List[Int], msg: &String) -> Int ! alloc
+fn lp_fail(errs: &mut List[String], cx: &mut List[Int], msg: &String) -> Int ! alloc
     if cx.get(2) == 1
         0
     else
@@ -68,21 +68,21 @@ fn lp_is_while(e: &Expr) -> Int ! alloc
 # Rewrites `b`, whose enclosing loop (if any) uses `flag` ("" when none). Leaves in `cx[1]` whether a
 # `break` of that loop can run inside it. The statement vector is a new shell; its elements are the
 # same boxes. `hold` owns the tail until the block is built again.
-fn lp_block(b: &TBlock, flag: &String, cx: &List[Int], errs: &List[String]) -> TBlock ! alloc
+fn lp_block(b: &TBlock, flag: &String, cx: &mut List[Int], errs: &mut List[String]) -> TBlock ! alloc
     hold = List.new[Expr]()
     hold.push(tc_expr(&b.tail))
     out = List.new[TStmt]()
-    br = lp_stmts(&b.stmts, 0, b.stmts.len(), flag, cx, errs, &out, &hold)
+    br = lp_stmts(&b.stmts, 0, b.stmts.len(), flag, cx, errs, &mut out, &mut hold)
     if br == 1
         _s = cx.set(1, 1)
         TBlock(out, hold.pop())
     else
-        tail = lp_tail(hold.pop(), &out, cx, errs)
+        tail = lp_tail(hold.pop(), &mut out, cx, errs)
         _s = cx.set(1, 0)
         TBlock(out, tail)
 
 # The tail of a block: a `while` there may need its flag declared before it. The same box comes back.
-fn lp_tail(e: Expr, out: &List[TStmt], cx: &List[Int], errs: &List[String]) -> Expr ! alloc
+fn lp_tail(e: Expr, out: &mut List[TStmt], cx: &mut List[Int], errs: &mut List[String]) -> Expr ! alloc
     if lp_is_while(&e) == 1
         _w = lp_while(&e, out, cx, errs)
         e
@@ -91,7 +91,7 @@ fn lp_tail(e: Expr, out: &List[TStmt], cx: &List[Int], errs: &List[String]) -> E
         e
 
 # Returns whether a `break` of the enclosing loop ran (1) in the block's statements.
-fn lp_stmts(stmts: &List[TStmt], i: Int, n: Int, flag: &String, cx: &List[Int], errs: &List[String], out: &List[TStmt], hold: &List[Expr]) -> Int ! alloc
+fn lp_stmts(stmts: &List[TStmt], i: Int, n: Int, flag: &String, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt], hold: &mut List[Expr]) -> Int ! alloc
     if i >= n
         0
     else
@@ -102,7 +102,7 @@ fn lp_stmts(stmts: &List[TStmt], i: Int, n: Int, flag: &String, cx: &List[Int], 
             lp_after(stmts, i + 1, n, flag, code, cx, errs, out, hold)
 
 # What follows a statement that may break (code 1: an `if`) or is a `break` (code 2).
-fn lp_after(stmts: &List[TStmt], i: Int, n: Int, flag: &String, code: Int, cx: &List[Int], errs: &List[String], out: &List[TStmt], hold: &List[Expr]) -> Int ! alloc
+fn lp_after(stmts: &List[TStmt], i: Int, n: Int, flag: &String, code: Int, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt], hold: &mut List[Expr]) -> Int ! alloc
     tail = list_get(hold, 0)
     if code == 2 && (i < n || lp_none(&tail) == 0)
         _a = lp_fail(errs, cx, &"unreachable code after `break`")
@@ -112,10 +112,10 @@ fn lp_after(stmts: &List[TStmt], i: Int, n: Int, flag: &String, code: Int, cx: &
         lp_guard(stmts, i, n, flag, cx, errs, out, hold)
 
 # `if flag == 0` around the rest of the block: it runs only if the `if` before it did not break.
-fn lp_guard(stmts: &List[TStmt], i: Int, n: Int, flag: &String, cx: &List[Int], errs: &List[String], out: &List[TStmt], hold: &List[Expr]) -> Int ! alloc
+fn lp_guard(stmts: &List[TStmt], i: Int, n: Int, flag: &String, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt], hold: &mut List[Expr]) -> Int ! alloc
     rest = List.new[TStmt]()
     _c = lp_share_stmts(stmts, i, n, &rest)
-    _t = lp_move_tail(&rest, hold)
+    _t = lp_move_tail(&mut rest, hold)
     rb = lp_block(&TBlock(rest, XNone), flag, cx, errs)
     _p = out.push(lp_if_stmt(lp_flag_clear(flag), rb, lp_empty(), 0))
     1
@@ -132,7 +132,7 @@ fn lp_share_one(out: &List[TStmt], st: &TStmt) -> Int ! alloc
     0
 
 # Moves the tail into `rest` when it is a value, and leaves `XNone` in `hold`.
-fn lp_move_tail(rest: &List[TStmt], hold: &List[Expr]) -> Int ! alloc
+fn lp_move_tail(rest: &mut List[TStmt], hold: &mut List[Expr]) -> Int ! alloc
     e = hold.pop()
     if lp_none(&e) == 1
         _b = hold.push(e)
@@ -144,7 +144,7 @@ fn lp_move_tail(rest: &List[TStmt], hold: &List[Expr]) -> Int ! alloc
 
 # Rewrites one statement into `out`. Returns 1 when it may run a `break` of the enclosing loop (an
 # `if`), 2 for a bare `break`, 0 otherwise. The statement box is shared; its expression is updated.
-fn lp_stmt(st: &TStmt, flag: &String, cx: &List[Int], errs: &List[String], out: &List[TStmt]) -> Int ! alloc
+fn lp_stmt(st: &TStmt, flag: &String, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
     if st.kind == 4
         if flag.len() == 0
             _e = lp_fail(errs, cx, &"`break` has to be a statement of a `while` body (or of an `if` block inside it)")
@@ -159,13 +159,13 @@ fn lp_stmt(st: &TStmt, flag: &String, cx: &List[Int], errs: &List[String], out: 
         _t = lp_expr(&st.target, cx, errs)
         lp_share_one(out, st)
 
-fn lp_expr_statement(st: &TStmt, flag: &String, cx: &List[Int], errs: &List[String], out: &List[TStmt]) -> Int ! alloc
+fn lp_expr_statement(st: &TStmt, flag: &String, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
     match st.expr
         XWhile(_, _) =>
             _w = lp_while(&st.expr, out, cx, errs)
             lp_share_one(out, st)
         XIf(cond, then_b, else_b, has_else, elsifs) =>
-            _i = lp_if(&st.expr, &cond, &then_b, &else_b, has_else, &elsifs, flag, cx, errs)
+            _i = lp_if(&st.expr, &cond, &then_b, &else_b, has_else, &mut elsifs, flag, cx, errs)
             _p = lp_share_one(out, st)
             cx.get(1)
         _ =>
@@ -176,13 +176,13 @@ fn lp_expr_statement(st: &TStmt, flag: &String, cx: &List[Int], errs: &List[Stri
 
 # `let flag = 0` (pushed to `out`) + the same `while` box rewritten to
 # `while flag == 0 { if cond { body } else { flag = 1 } }` when the body breaks.
-fn lp_while(e: &Expr, out: &List[TStmt], cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_while(e: &Expr, out: &mut List[TStmt], cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     match e
         XWhile(cond, body) => lp_while_go(e, &cond, &body, out, cx, errs)
         _ => 0
 
 # `cond` and `body` are borrowed from `e` (rewritten in place): copies go where a value is needed.
-fn lp_while_go(e: &Expr, cond: &Expr, body: &TBlock, out: &List[TStmt], cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_while_go(e: &Expr, cond: &Expr, body: &TBlock, out: &mut List[TStmt], cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     _c = lp_expr(cond, cx, errs)
     n = cx.get(0) + 1
     _n = cx.set(0, n)
@@ -209,7 +209,7 @@ fn lp_one(st: TStmt) -> List[TStmt] ! alloc
 
 # Rewrites the branches of the existing `if`. `cx[1]` is left at whether one of them may break.
 # The branches are borrowed from `e`: they are rewritten in place, and nothing here releases them.
-fn lp_if(e: &Expr, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], flag: &String, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_if(e: &Expr, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &mut List[TElsif], flag: &String, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     _c = lp_expr(cond, cx, errs)
     t2 = lp_block(then_b, flag, cx, errs)
     b1 = cx.get(1)
@@ -223,7 +223,7 @@ fn lp_if(e: &Expr, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int,
         lp_if_store(e, t2, tc_block(else_b), b1 | b2, cx, elsifs)
 
 # Writes the branches back. A statement `if` that may break has no value: each tail becomes a statement.
-fn lp_if_store(e: &Expr, then_b: TBlock, else_b: TBlock, broke: Int, cx: &List[Int], elsifs: &List[TElsif]) -> Int ! alloc
+fn lp_if_store(e: &Expr, then_b: TBlock, else_b: TBlock, broke: Int, cx: &mut List[Int], elsifs: &mut List[TElsif]) -> Int ! alloc
     _s = cx.set(1, broke)
     if broke == 1
         _t = enum_set(e, 1, lp_unit(then_b))
@@ -234,21 +234,21 @@ fn lp_if_store(e: &Expr, then_b: TBlock, else_b: TBlock, broke: Int, cx: &List[I
         _e = enum_set(e, 2, else_b)
         0
 
-fn lp_unit_arms(xs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+fn lp_unit_arms(xs: &mut List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
-        a.body = lp_unit(a.body)
+        a = list_get(&mut xs, i)
+        a.body = lp_unit(a.body.clone())
         lp_unit_arms(xs, i + 1, n)
 
 # Rewrites the arms in place. Leaves in `cx[1]` whether the last one may break; the caller ors them.
-fn lp_elsifs(xs: &List[TElsif], i: Int, n: Int, flag: &String, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_elsifs(xs: &mut List[TElsif], i: Int, n: Int, flag: &String, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     if i >= n
         _s = cx.set(1, 0)
         0
     else
-        a = list_get(xs, i)
+        a = list_get(&mut xs, i)
         _c = lp_expr(&a.cond, cx, errs)
         a.body = lp_block(&a.body, flag, cx, errs)
         here = cx.get(1)
@@ -260,7 +260,7 @@ fn lp_elsifs(xs: &List[TElsif], i: Int, n: Int, flag: &String, cx: &List[Int], e
 
 # Walks an expression for loops nested in it. A `break` in here is never valid: the blocks start with
 # no enclosing loop. The box stays; only a `while` that breaks changes its fields.
-fn lp_expr(e: &Expr, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_expr(e: &Expr, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     match e
         XBin(_, l, r) => lp_pair(&l, &r, cx, errs)
         XCall(_, args, _, _) => lp_exprs(&args, 0, args.len(), cx, errs)
@@ -268,45 +268,45 @@ fn lp_expr(e: &Expr, cx: &List[Int], errs: &List[String]) -> Int ! alloc
         XOn(_, body, _, _) =>
             _b = enum_set(e, 1, lp_block(&body, &"", cx, errs))
             0
-        XIf(cond, then_b, else_b, has_else, elsifs) => lp_if(e, &cond, &then_b, &else_b, has_else, &elsifs, &"", cx, errs)
+        XIf(cond, then_b, else_b, has_else, elsifs) => lp_if(e, &cond, &then_b, &else_b, has_else, &mut elsifs, &"", cx, errs)
         XWhile(_, _) => lp_while_value(e, cx, errs)
         XField(base, _) => lp_expr(&base, cx, errs)
         XLambda(_, body) => lp_expr(&body, cx, errs)
         XUnary(_, inner) => lp_expr(&inner, cx, errs)
         XTry(inner) => lp_expr(&inner, cx, errs)
-        XMatch(scrut, arms) => lp_match(&scrut, &arms, cx, errs)
+        XMatch(scrut, arms) => lp_match(&scrut, &mut arms, cx, errs)
         _ => 0
 
-fn lp_pair(l: &Expr, r: &Expr, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_pair(l: &Expr, r: &Expr, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     _l = lp_expr(l, cx, errs)
     lp_expr(r, cx, errs)
 
 # A `while` somewhere that is neither a statement nor a block tail: no place for its flag.
-fn lp_while_value(e: &Expr, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_while_value(e: &Expr, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     scratch = List.new[TStmt]()
-    _w = lp_while(e, &scratch, cx, errs)
+    _w = lp_while(e, &mut scratch, cx, errs)
     if scratch.len() > 0
         lp_fail(errs, cx, &"`break` has to be a statement of a `while` body (or of an `if` block inside it)")
         0
     else
         0
 
-fn lp_exprs(xs: &List[Expr], i: Int, n: Int, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_exprs(xs: &List[Expr], i: Int, n: Int, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
         _e = lp_expr(&list_get(xs, i), cx, errs)
         lp_exprs(xs, i + 1, n, cx, errs)
 
-fn lp_match(scrut: &Expr, arms: &List[TArm], cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_match(scrut: &Expr, arms: &mut List[TArm], cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     _s = lp_expr(scrut, cx, errs)
     lp_arms(arms, 0, arms.len(), cx, errs)
 
-fn lp_arms(xs: &List[TArm], i: Int, n: Int, cx: &List[Int], errs: &List[String]) -> Int ! alloc
+fn lp_arms(xs: &mut List[TArm], i: Int, n: Int, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
-        a = list_get(xs, i)
+        a = list_get(&mut xs, i)
         if a.has_suite == 1
             a.suite = lp_block(&a.suite, &"", cx, errs)
             0
@@ -318,18 +318,19 @@ fn lp_arms(xs: &List[TArm], i: Int, n: Int, cx: &List[Int], errs: &List[String])
 # ---- program ----
 
 # Rewrites every `break` in the program already built. The first error goes to `errs`.
-fn desugar_break(tp: TProgram, errs: &List[String]) -> TProgram ! alloc
-    _a = lp_fns(&tp.fns, 0, tp.fns.len(), errs)
+fn desugar_break(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
+    n_fns = tp.fns.len()
+    _a = lp_fns(&mut tp.fns, 0, n_fns, errs)
     tp
 
-fn lp_fns(xs: &List[TFn], i: Int, n: Int, errs: &List[String]) -> Int ! alloc
+fn lp_fns(xs: &mut List[TFn], i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(xs, i)
+        f = list_get(&mut xs, i)
         cx = List.new[Int]()
         _a = cx.push(0)
         _b = cx.push(0)
         _c = cx.push(0)
-        f.body = lp_block(&f.body, &"", &cx, errs)
+        f.body = lp_block(&f.body, &"", &mut cx, errs)
         lp_fns(xs, i + 1, n, errs)

@@ -1,0 +1,7 @@
+# error: E_BORROW
+fn two(a: &mut List[Int], b: &mut List[Int]) -> Int ! alloc
+    a.len() + b.len()
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    two(&mut xs, &mut xs)

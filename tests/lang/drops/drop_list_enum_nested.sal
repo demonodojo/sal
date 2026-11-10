@@ -11,8 +11,8 @@ fn total(n: Int) -> Int ! alloc
     xs = list_new[Node]()
     i = 0
     while i < n
-        _a = list_push(&xs, Wrap(Word(int_to_str(i), i), 1))
-        _b = list_push(&xs, Leaf(i))
+        _a = list_push(&mut xs, Wrap(Word(int_to_str(i), i), 1))
+        _b = list_push(&mut xs, Leaf(i))
         i = i + 1
     g = list_get(&xs, 0)
     t = match g

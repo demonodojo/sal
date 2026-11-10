@@ -17,37 +17,37 @@ struct DepSet
 fn dep_message(dep: &String) -> String ! alloc
     dep.slice(2, dep.len())
 
-fn dep_collect_fns(fns: &List[TFn], i: Int, n: Int, ds: &DepSet) -> Int ! alloc
+fn dep_collect_fns(fns: &List[TFn], i: Int, n: Int, ds: &mut DepSet) -> Int ! alloc
     if i >= n
         0
     else
         f = fns.get(i)
         if f.deprecated.len() > 0
-            ds.names.push(f.name)
+            ds.names.push(f.name.clone())
             _b = ds.msgs.push(dep_message(&f.deprecated))
         dep_collect_fns(fns, i + 1, n, ds)
 
-fn dep_collect_structs(sts: &List[TStruct], i: Int, n: Int, ds: &DepSet) -> Int ! alloc
+fn dep_collect_structs(sts: &List[TStruct], i: Int, n: Int, ds: &mut DepSet) -> Int ! alloc
     if i >= n
         0
     else
         s = list_get(sts, i)
         if str_len(s.deprecated) > 0
-            _a = list_push(&ds.names, s.name)
-            _b = list_push(&ds.msgs, dep_message(&s.deprecated))
+            _a = list_push(&mut ds.names, s.name.clone())
+            _b = list_push(&mut ds.msgs, dep_message(&s.deprecated))
         dep_collect_structs(sts, i + 1, n, ds)
 
-fn dep_collect_enums(es: &List[TEnum], i: Int, n: Int, ds: &DepSet) -> Int ! alloc
+fn dep_collect_enums(es: &List[TEnum], i: Int, n: Int, ds: &mut DepSet) -> Int ! alloc
     if i >= n
         0
     else
         e = list_get(es, i)
         if str_len(e.deprecated) > 0
-            _a = list_push(&ds.names, e.name)
-            _b = list_push(&ds.msgs, dep_message(&e.deprecated))
+            _a = list_push(&mut ds.names, e.name.clone())
+            _b = list_push(&mut ds.msgs, dep_message(&e.deprecated))
         dep_collect_enums(es, i + 1, n, ds)
 
-fn dep_collect(tp: &TProgram, ds: &DepSet) -> Int ! alloc
+fn dep_collect(tp: &TProgram, ds: &mut DepSet) -> Int ! alloc
     _a = dep_collect_fns(&tp.fns, 0, list_len(&tp.fns), ds)
     _b = dep_collect_structs(&tp.structs, 0, list_len(&tp.structs), ds)
     dep_collect_enums(&tp.enums, 0, list_len(&tp.enums), ds)
@@ -73,7 +73,7 @@ fn dep_hit(ds: &DepSet, w: &Where, out: Int, name: &String, xp: Int) -> Int ! al
 # `path:line:column` of offset `xp` in the file, or the path alone when there is no position.
 fn where_text(w: &Where, xp: Int) -> String ! alloc
     if xp <= 0
-        w.path
+        w.path.clone()
     else
         w.path + ":" + int_to_str(loc_line(&w.pre, xp, 0, 1)) + ":" + int_to_str(loc_col(&w.pre, xp))
 
@@ -333,12 +333,12 @@ fn dep_type_list(ds: &DepSet, w: &Where, out: Int, tc: Int, tys: &List[String], 
 # Warnings of the qualified modules of a graph, printed to stderr in module order; 0 when none.
 fn dep_warnings_graph(order: &Graph) -> Int ! io, alloc
     ds = DepSet(list_new[String](), list_new[String]())
-    _c = dep_collect_all(order, 0, list_len(&order.progs), &ds)
+    _c = dep_collect_all(order, 0, list_len(&order.progs), &mut ds)
     out = vec_new()
     _d = dep_scan_all(order, 0, list_len(&order.progs), &ds, out)
     dep_print(out, 0, vec_len(out))
 
-fn dep_collect_all(order: &Graph, i: Int, n: Int, ds: &DepSet) -> Int ! alloc
+fn dep_collect_all(order: &Graph, i: Int, n: Int, ds: &mut DepSet) -> Int ! alloc
     if i >= n
         0
     else
@@ -365,7 +365,7 @@ fn dep_print(out: Int, i: Int, n: Int) -> Int ! io, alloc
 # preprocessed text.
 fn dep_warnings_single(label: String, pre: String, tp: &TProgram) -> Int ! io, alloc
     ds = DepSet(list_new[String](), list_new[String]())
-    _c = dep_collect(tp, &ds)
+    _c = dep_collect(tp, &mut ds)
     out = vec_new()
     _d = dep_program(&ds, &Where(label, pre), out, tp)
     dep_print(out, 0, vec_len(out))

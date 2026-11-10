@@ -20,7 +20,7 @@ enum Result[T, E]
 fn list_new() -> List[Int] ! alloc
     list_new()
 
-fn list_push(xs: &List[Int], x: Int) -> List[Int]
+fn list_push(xs: &mut List[Int], x: Int) -> Unit
     list_push(xs, x)
 
 fn list_len(xs: &List[Int]) -> Int
@@ -32,7 +32,7 @@ fn list_get(xs: &List[Int], i: Int) -> Int
 fn dict_new() -> Dict[String, Int] ! alloc
     dict_new()
 
-fn dict_put(d: &Dict[String, Int], k: &String, v: Int) -> Dict[String, Int]
+fn dict_put(d: &mut Dict[String, Int], k: &String, v: Int) -> Unit
     dict_put(d, k, v)
 
 fn dict_get(d: &Dict[String, Int], k: &String) -> Option[Int]

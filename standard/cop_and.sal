@@ -378,7 +378,7 @@ fn and_build(src: &String, lex: &Lex, hit: AndHit) -> String ! alloc
     else_body = and_suite_src(src, lex, hit.outer_else_indent, hit.end_i)
     lead + "if " + ca + " && " + cb + "\n" + then_body + lead + "else\n" + else_body
 
-fn and_emit(src: &String, lex: &Lex, offs: &List[Off], hit: AndHit) -> Int ! alloc
+fn and_emit(src: &String, lex: &Lex, offs: &mut List[Off], hit: AndHit) -> Int ! alloc
     start = and_line_start(src, lex.start(hit.if_i) - 1)
     endb = lex.start(hit.end_i - 1)
     if and_comment_blocks(src, lex, hit) == 1
@@ -393,10 +393,10 @@ fn and_emit(src: &String, lex: &Lex, offs: &List[Off], hit: AndHit) -> Int ! all
         offs.push(o)
         0
 
-fn cop_and(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
+fn cop_and(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     cop_and_go(src, lex, offs, 0, lex.len())
 
-fn cop_and_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_and_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif lex.kind(i) == TK_IF()

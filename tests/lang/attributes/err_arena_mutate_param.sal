@@ -1,4 +1,4 @@
-# error: E_TYPE
+# error: E_BORROW
 @arena
 fn f(xs: &List[Int]) -> Int ! alloc
     _a = xs.push(1)

@@ -1,6 +1,6 @@
 # exit: 1
 fn main() -> Int ! alloc
     xs = list_new[String]()
-    _a = list_push(&xs, int_to_str(3))
+    _a = list_push(&mut xs, int_to_str(3))
     s = list_pop(xs)
     str_len(s)

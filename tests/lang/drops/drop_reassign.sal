@@ -1,0 +1,10 @@
+# exit: 4
+# Reasignar un local con dueño calcula el valor nuevo (que puede leer el viejo), libera el
+# viejo y enlaza el nuevo (SPEC «Memoria»).
+fn main() -> Int ! alloc
+    s = (7).to_str()
+    s = (s.len() + 99).to_str()
+    xs = List.new[Int]()
+    xs.push(1)
+    xs = List.new[Int]()
+    s.len() + xs.len() + 1

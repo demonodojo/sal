@@ -1,0 +1,17 @@
+# exit: 12
+# `x.clone()` de un struct con un campo `List` es una copia profunda: el clon tiene su propia
+# lista, y cada uno libera la suya.
+struct Bag
+    name: String
+    items: List[Int]
+
+fn grow(b: &Bag) -> Int ! alloc
+    c = b.clone()
+    c.items.push(7)
+    b.items.len() * 10 + c.items.len()
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(1)
+    b = Bag((5).to_str(), xs)
+    grow(&b)

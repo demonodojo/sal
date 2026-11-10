@@ -1,0 +1,16 @@
+# exit: 9
+# Un contenedor devuelto por valor se mueve al llamante, que lo libera al salir de su ámbito.
+fn make(n: Int) -> List[Int] ! alloc
+    xs = List.new[Int]()
+    xs.push(n)
+    xs.push(n + 1)
+    xs
+
+fn main() -> Int ! alloc
+    i = 0
+    n = 0
+    while i < 3
+        ys = make(i)
+        n = n + ys.get(0) + ys.len()
+        i = i + 1
+    n

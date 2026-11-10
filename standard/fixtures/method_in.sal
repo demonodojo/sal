@@ -62,4 +62,5 @@ fn main() -> Int ! alloc
     strdup(a + b)
     str_concat("a", "b")
     str_append(s, "c")
+    int_to_str(77)
     0

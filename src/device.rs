@@ -174,9 +174,9 @@ fn check_expr_devices(
         }
         Expr::Call {
             func,
+            type_args,
             args,
             span,
-            ..
         } => {
             check_expr_devices(func, env, expected.clone(), string_frames)?;
             let mut arg_tys = Vec::new();
@@ -212,6 +212,13 @@ fn check_expr_devices(
                         }
                     }
                 }
+            }
+            // `load[T](path)` is a `T`: its argument is the path, not the value.
+            if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "load") {
+                return Ok(match type_args.first() {
+                    Some(TypeArg::Type(t)) => t.clone(),
+                    _ => named("Unknown", *span),
+                });
             }
             Ok(arg_tys.first().cloned().unwrap_or_else(|| named("Unknown", *span)))
         }

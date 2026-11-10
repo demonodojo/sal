@@ -2232,9 +2232,12 @@ fn infer_call(
                 span,
             ))
         }
-        "list_push" => infer_list_push(args, env, ctx, types, entries, span),
-        "list_get" => infer_list_get(args, env, ctx, types, entries, span),
-        "list_set" => infer_list_set(args, env, ctx, types, entries, span),
+        // SPEC «Memoria»: the container is mutated in place; the call has no value.
+        "list_push" => infer_list_push(args, env, ctx, types, entries, span).map(|_| unit_type(span)),
+        "list_get" => infer_list_get(args, env, ctx, types, entries, span, false),
+        "list_get_mut" => infer_list_get(args, env, ctx, types, entries, span, true),
+        // SPEC «Memoria»: the container is mutated in place; the call has no value.
+        "list_set" => infer_list_set(args, env, ctx, types, entries, span).map(|_| unit_type(span)),
         "list_pop" => infer_list_pop(args, env, ctx, types, entries, span),
         "dict_has" => infer_dict_has(args, env, ctx, types, entries, span),
         "dict_len" | "dict_remove" | "dict_keys" | "dict_values" => {
@@ -2251,7 +2254,8 @@ fn infer_call(
             })
         }
         "dict_new" => infer_dict_new(type_args, span),
-        "dict_put" => infer_dict_put(args, env, ctx, types, entries, span),
+        // SPEC «Memoria»: the container is mutated in place; the call has no value.
+        "dict_put" => infer_dict_put(args, env, ctx, types, entries, span).map(|_| unit_type(span)),
         "dict_get" => infer_dict_get(args, env, ctx, types, entries, span),
         "syscall" => {
             if types.target != crate::target::Target::Soso
@@ -3764,7 +3768,11 @@ fn types_compatible_core(a: &Type, b: &Type) -> bool {
                 inner: i2,
                 ..
             },
-        ) => m1 == m2 && types_compatible(i1, i2),
+        ) => {
+            // `a` is the value and `b` what is expected: `&mut T` reborrows as `&T`, never the
+            // other way round.
+            (m1 == m2 || (*m1 && !*m2)) && types_compatible(i1, i2)
+        }
         _ => type_name(a) == type_name(b) || type_name(a) == "Unknown" || type_name(b) == "Unknown",
     }
 }
@@ -3871,6 +3879,31 @@ fn infer_list_push(
     Ok(peel_refs(&xs_ty).clone())
 }
 
+/// Whether a list element of this type is copied out by `get` (it owns no heap).
+fn elem_is_copy(ty: &Type, types: &TypeEnv) -> bool {
+    fn rec(ty: &Type, types: &TypeEnv, depth: u32) -> bool {
+        match ty {
+            Type::Named { name, args, .. } | Type::Qualified { name, args, .. } => {
+                if matches!(name.as_str(), "Int" | "Float" | "Bool" | "Unit" | "Unknown") {
+                    return true;
+                }
+                if !args.is_empty() || depth > 8 {
+                    return false;
+                }
+                match types.structs.get(name) {
+                    Some(def) => def.fields.iter().all(|f| rec(&f.ty, types, depth + 1)),
+                    // A bare type parameter: the instance decides, so nothing is lent here.
+                    None => !types.enums.contains_key(name) && !types.opaque_enums.contains_key(name)
+                        && !matches!(name.as_str(), "String" | "List" | "Dict" | "Bytes"),
+                }
+            }
+            Type::Ref { mutable, .. } => !mutable,
+            Type::Tensor { .. } | Type::Fn { .. } => false,
+        }
+    }
+    rec(ty, types, 0)
+}
+
 fn infer_list_get(
     args: &[Expr],
     env: &HashMap<String, Type>,
@@ -3878,6 +3911,7 @@ fn infer_list_get(
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
+    force_mut: bool,
 ) -> DiagResult<Type> {
     if let Some(a) = args.first() {
         let xs_ty = check_expr(a, env, ctx, types, entries)?;
@@ -3885,7 +3919,13 @@ fn infer_list_get(
             if args.get(1).is_some() {
                 check_expr(&args[1], env, ctx, types, entries)?;
             }
-            return Ok(elem);
+            // SPEC «Memoria»: `get` lends the element. A `Copy` element is read by value; any
+            // other is `&T`, or `&mut T` when the list itself came as `&mut`.
+            if elem_is_copy(&elem, types) || matches!(elem, Type::Ref { .. }) {
+                return Ok(elem);
+            }
+            let mutable = force_mut || matches!(xs_ty, Type::Ref { mutable: true, .. });
+            return Ok(Type::Ref { mutable, lifetime: None, inner: Box::new(elem), span });
         }
     }
     Err(vec![Diagnostic::new(
@@ -4231,17 +4271,15 @@ fn peel_refs(ty: &Type) -> &Type {
 
 fn infer_ref_unary(op: UnOp, inner: Type, span: Span) -> Type {
     match op {
-        UnOp::Ref => Type::Ref {
-            mutable: false,
-            lifetime: None,
-            inner: Box::new(inner),
-            span,
+        // `&r` of a reference reborrows its referent (`&*r`): there is no `&&T`. A `&mut` of a
+        // shared reference stays shared, so the mismatch shows where `&mut` is expected.
+        UnOp::Ref => match inner {
+            Type::Ref { inner, lifetime, .. } => Type::Ref { mutable: false, lifetime, inner, span },
+            inner => Type::Ref { mutable: false, lifetime: None, inner: Box::new(inner), span },
         },
-        UnOp::RefMut => Type::Ref {
-            mutable: true,
-            lifetime: None,
-            inner: Box::new(inner),
-            span,
+        UnOp::RefMut => match inner {
+            Type::Ref { mutable, inner, lifetime, .. } => Type::Ref { mutable, lifetime, inner, span },
+            inner => Type::Ref { mutable: true, lifetime: None, inner: Box::new(inner), span },
         },
         UnOp::Deref => match inner {
             Type::Ref { inner, .. } => *inner,

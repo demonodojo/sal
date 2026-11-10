@@ -44,6 +44,7 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("List", "len") => "list_len",
         ("List", "push") => "list_push",
         ("List", "get") => "list_get",
+        ("List", "get_mut") => "list_get_mut",
         ("List", "set") => "list_set",
         ("List", "pop") => "list_pop",
         ("Dict", "get") => "dict_get",
@@ -293,14 +294,23 @@ fn expr(e: &mut Expr, r: &Resolved) {
             if let (Expr::Field { base, .. }, Some((name, is_static))) =
                 (&mut **func, r.get(&(span.start, span.end)))
             {
+                let mut name = name.clone();
                 if !*is_static {
-                    let recv = std::mem::replace(
+                    let mut recv = std::mem::replace(
                         &mut **base,
                         Expr::Bool { value: false, span: *span },
                     );
+                    // `xs.get_mut(i)` is `list_get(&mut xs, i)`: the element comes as `&mut T`.
+                    if name == "list_get_mut" {
+                        name = "list_get".to_string();
+                        if !matches!(recv, Expr::Unary { op: UnOp::RefMut, .. }) {
+                            let sp = recv.span();
+                            recv = Expr::Unary { op: UnOp::RefMut, expr: Box::new(recv), span: sp };
+                        }
+                    }
                     args.insert(0, recv);
                 }
-                **func = Expr::Ident { name: name.clone(), span: *span };
+                **func = Expr::Ident { name, span: *span };
             }
         }
         Expr::Field { base, .. } => expr(base, r),

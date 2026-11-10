@@ -625,6 +625,9 @@ fn needs_paren(s: &String) -> Int ! alloc
     n = s.len()
     if n == 0
         1
+    elsif is_digit(s.char(0)) == 1
+        # `77.to_str()` does not parse: the literal takes the dot.
+        1
     else
         pos = parse_atom(s, 0, n)
         if pos < 0
@@ -752,10 +755,10 @@ fn consider(src: &String, lex: &Lex, n: Int, i: Int) -> Off ! alloc
     msg = method_msg(&name, &spec)
     off_new(CODE_METHOD(), msg, lex.start(i), call.rparen + 1, 1, fix)
 
-fn cop_method(src: &String, lex: &Lex, offs: &List[Off]) -> Int ! alloc
+fn cop_method(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     cop_method_go(src, lex, offs, 0, lex.len())
 
-fn cop_method_go(src: &String, lex: &Lex, offs: &List[Off], i: Int, n: Int) -> Int ! alloc
+fn cop_method_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

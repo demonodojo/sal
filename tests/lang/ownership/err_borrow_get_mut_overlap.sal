@@ -1,0 +1,13 @@
+# error: E_BORROW
+# selfhost-xfail: el borrowck del selfhost no trata `get`/`get_mut` como préstamos de la lista
+struct P
+    name: String
+    n: Int
+
+fn main() -> Int ! alloc
+    ps = List.new[P]()
+    ps.push(P(d"ab".dup(), 1))
+    p = ps.get_mut(0)
+    q = ps.get(0)
+    p.n = 7
+    q.n

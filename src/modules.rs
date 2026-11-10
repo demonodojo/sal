@@ -721,6 +721,32 @@ pub fn infer_module(
     crate::infer::infer_program_with_env(&module.program, &env)
 }
 
+/// Parameter types of every fn of the graph, by final name (the borrow checker reads them to
+/// know what a call across modules does with each argument).
+pub fn graph_sigs(graph: &ModuleGraph) -> HashMap<String, Vec<crate::ast::Type>> {
+    let mut sigs = HashMap::new();
+    for m in &graph.order {
+        for item in &m.program.items {
+            if let Item::Fn(f) = item {
+                sigs.insert(f.name.clone(), f.params.iter().map(|p| p.ty.clone()).collect());
+            }
+        }
+    }
+    sigs
+}
+
+pub fn graph_enums(graph: &ModuleGraph) -> Vec<crate::ast::EnumDef> {
+    let mut out = Vec::new();
+    for m in &graph.order {
+        for item in &m.program.items {
+            if let Item::Enum(e) = item {
+                out.push(e.clone());
+            }
+        }
+    }
+    out
+}
+
 pub fn check_module_semantics(
     module: &LoadedModule,
     graph: &ModuleGraph,
@@ -734,6 +760,8 @@ pub fn check_module_semantics(
     crate::attrs::check_no_heap_fns(&module.program, &strings)?;
     crate::attrs::check_arena_fns(&module.program)?;
     crate::effects::check_effects_with_graph(&module.program, &out, &programs)?;
+    crate::borrowck::set_extern_sigs(graph_sigs(graph));
+    crate::borrowck::set_extern_enums(graph_enums(graph));
     crate::ownership::check_ownership(&module.program, &out)?;
     crate::device::check_devices(&module.program)?;
     Ok(())

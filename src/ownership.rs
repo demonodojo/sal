@@ -611,14 +611,40 @@ fn track_expr(
         Expr::Match {
             scrutinee, arms, span, ..
         } => {
-            track_expr(scrutinee, env, moved, params, taken, used, frozen)?;
+            let sty = track_expr(scrutinee, env, moved, params, taken, used, frozen)?;
+            // SPEC «Memoria»: binding a non-`Copy` payload of an owned scrutinee moves it.
+            let sty = match scrutinee.as_ref() {
+                Expr::Ident { name, .. } => env.get(name).cloned().unwrap_or(sty),
+                _ => sty,
+            };
+            // Only the arm whose pattern binds it sees the scrutinee moved; after the `match` it
+            // is moved if any arm moved it.
+            let owned_place = STRICT_MOVES.with(|s| s.get())
+                && !matches!(sty, Type::Ref { .. })
+                && matches!(scrutinee.as_ref(), Expr::Ident { .. } | Expr::Field { .. });
             // Arms are alternatives: a move in one does not move the value in another.
             let branch_base = moved.clone();
             let mut merged = branch_base.clone();
             for arm in arms {
                 let mut local = env.clone();
                 bind_pattern_names(&arm.pattern, &mut local);
+                if matches!(sty, Type::Ref { .. }) {
+                    // A pattern over a reference borrows its payload.
+                    let mut names = HashMap::new();
+                    bind_pattern_names(&arm.pattern, &mut names);
+                    for (n, t) in names {
+                        let span = t.span();
+                        local.insert(n, Type::Ref { mutable: false, lifetime: None, inner: Box::new(t), span });
+                    }
+                }
                 let mut br_moved = branch_base.clone();
+                if owned_place
+                    && TYPED.with(|t| {
+                        crate::borrowck::match_moves(&sty, std::slice::from_ref(arm), &t.borrow().structs)
+                    })
+                {
+                    consume_if_unique(scrutinee, &sty, env, &mut br_moved, params, taken);
+                }
                 let diverged = match &arm.body {
                     Expr::Block(b) => {
                         track_block(b, &mut local, &mut br_moved, params, taken, used, frozen)?
@@ -1056,7 +1082,7 @@ fn param_index(f: &FnDef, name: &str) -> Option<usize> {
     f.params.iter().position(|p| p.name == name)
 }
 
-fn mutates_container(name: &str) -> bool {
+pub(crate) fn mutates_container(name: &str) -> bool {
     matches!(
         name,
         "list_push"

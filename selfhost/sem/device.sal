@@ -15,11 +15,11 @@ struct DevC
 
 fn dc_new() -> DevC ! alloc
     st = list_new[Int]()
-    _a = list_push(&st, 0)
+    _a = list_push(&mut st, 0)
     msg = List.new[String]()
-    _b = list_push(&msg, "")
+    _b = list_push(&mut msg, "")
     place = list_new[String]()
-    _c = list_push(&place, "")
+    _c = list_push(&mut place, "")
     DevC(list_new[String](), list_new[String](), st, msg, place)
 
 # The local `DevC` is dropped at the end of its scope, which releases these lists.
@@ -31,13 +31,13 @@ fn dc_failed(c: &DevC) -> Int ! alloc
     list_get(&c.st, 0)
 
 fn dc_expected(c: &DevC) -> String ! alloc
-    list_get(&c.place, 0)
+    list_get(&c.place, 0).clone()
 
-fn dc_set_expected(c: &DevC, p: &String) -> Int ! alloc
+fn dc_set_expected(c: &mut DevC, p: &String) -> Int ! alloc
     _a = list_set(c.place, 0, strdup(p))
     0
 
-fn dc_fail(c: &DevC, msg: &String) -> Int ! alloc
+fn dc_fail(c: &mut DevC, msg: &String) -> Int ! alloc
     if list_get(&c.st, 0) == 0
         _a = list_set(c.msg, 0, strdup(msg))
         _b = list_set(c.st, 0, 1)
@@ -45,7 +45,7 @@ fn dc_fail(c: &DevC, msg: &String) -> Int ! alloc
     else
         0
 
-fn dc_bind(c: &DevC, name: &String, ty: &String) -> Int ! alloc
+fn dc_bind(c: &mut DevC, name: &String, ty: &String) -> Int ! alloc
     _a = c.names.push(strdup(name))
     _b = c.tys.push(strdup(ty))
     0
@@ -54,7 +54,7 @@ fn dc_len(c: &DevC) -> Int ! alloc
     list_len(&c.names)
 
 # Drops the bindings made since the scope had `mark` of them.
-fn dc_truncate(c: &DevC, mark: Int) -> Int ! alloc
+fn dc_truncate(c: &mut DevC, mark: Int) -> Int ! alloc
     if list_len(&c.names) > mark
         _a = list_pop(c.names)
         _b = list_pop(c.tys)
@@ -152,7 +152,7 @@ fn dv_is_string(ty: &String) -> Int ! alloc
     else
         str_eq(ty_trim_end(ty), "String")
 
-fn reject_string_off_cpu(c: &DevC, ty: &String) -> Int ! alloc
+fn reject_string_off_cpu(c: &mut DevC, ty: &String) -> Int ! alloc
     if dv_is_string(ty) == 1
         exp = dc_expected(c)
         if str_len(exp) != 0
@@ -166,14 +166,14 @@ fn reject_string_off_cpu(c: &DevC, ty: &String) -> Int ! alloc
         0
 
 # ---- expressions ----
-fn dv_args(c: &DevC, args: &List[Expr], i: Int, n: Int, tys: &List[String]) -> Int ! alloc
+fn dv_args(c: &mut DevC, args: &List[Expr], i: Int, n: Int, tys: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
         _t = list_push(tys, dv_expr(c, &list_get(args, i)))
         dv_args(c, args, i + 1, n, tys)
 
-fn dv_check_arg_places(c: &DevC, tys: &List[String], i: Int, n: Int) -> Int ! alloc
+fn dv_check_arg_places(c: &mut DevC, tys: &List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif dc_failed(c) == 1
@@ -189,7 +189,7 @@ fn dv_check_arg_places(c: &DevC, tys: &List[String], i: Int, n: Int) -> Int ! al
             _f = 0
         dv_check_arg_places(c, tys, i + 1, n)
 
-fn dv_matmul_places(c: &DevC, tys: &List[String]) -> Int ! alloc
+fn dv_matmul_places(c: &mut DevC, tys: &List[String]) -> Int ! alloc
     pa = dv_place(&list_get(tys, 0))
     pb = dv_place(&list_get(tys, 1))
     if str_len(pa) != 0
@@ -203,9 +203,9 @@ fn dv_matmul_places(c: &DevC, tys: &List[String]) -> Int ! alloc
     else
         0
 
-fn dv_call(c: &DevC, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
+fn dv_call(c: &mut DevC, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
     tys = list_new[String]()
-    _a = dv_args(c, args, 0, list_len(args), &tys)
+    _a = dv_args(c, args, 0, list_len(args), &mut tys)
     if str_len(dc_expected(c)) != 0
         _b = dv_check_arg_places(c, &tys, 0, list_len(&tys))
     else
@@ -225,7 +225,7 @@ fn dv_call(c: &DevC, name: &String, args: &List[Expr], targs: &String) -> String
     else
         "Unknown"
 
-fn dv_ident(c: &DevC, name: &String) -> String ! alloc
+fn dv_ident(c: &mut DevC, name: &String) -> String ! alloc
     found = dc_lookup(c, name, dc_len(c) - 1)
     ty = if str_len(found) == 0
         "Unknown"
@@ -246,7 +246,7 @@ fn dv_ident(c: &DevC, name: &String) -> String ! alloc
     _r = reject_string_off_cpu(c, &ty)
     ty
 
-fn dv_on_kernel(c: &DevC, place: &String, is_kern: Int, has_index: Int) -> Int ! alloc
+fn dv_on_kernel(c: &mut DevC, place: &String, is_kern: Int, has_index: Int) -> Int ! alloc
     if is_kern == 1
         if str_eq(place, "tpu") == 1
             dc_fail(c, &"TPU does not support `on tpu kernel`")
@@ -260,7 +260,7 @@ fn dv_on_kernel(c: &DevC, place: &String, is_kern: Int, has_index: Int) -> Int !
     else
         0
 
-fn dv_on(c: &DevC, place: &String, body: &TBlock, is_kern: Int, has_index: Int) -> String ! alloc
+fn dv_on(c: &mut DevC, place: &String, body: &TBlock, is_kern: Int, has_index: Int) -> String ! alloc
     _f = dv_on_kernel(c, place, is_kern, has_index)
     saved = dc_expected(c)
     mark = dc_len(c)
@@ -270,7 +270,7 @@ fn dv_on(c: &DevC, place: &String, body: &TBlock, is_kern: Int, has_index: Int) 
     _s = dc_truncate(c, mark)
     "Unit"
 
-fn dv_to(c: &DevC, place: &String, inner: &Expr) -> String ! alloc
+fn dv_to(c: &mut DevC, place: &String, inner: &Expr) -> String ! alloc
     saved = dc_expected(c)
     _a = dc_set_expected(c, &"")
     ty = dv_expr(c, inner)
@@ -284,13 +284,13 @@ fn dv_to(c: &DevC, place: &String, inner: &Expr) -> String ! alloc
         _f = 0
     with_place(&ty, place)
 
-fn dv_scoped_block(c: &DevC, b: &TBlock) -> String ! alloc
+fn dv_scoped_block(c: &mut DevC, b: &TBlock) -> String ! alloc
     mark = dc_len(c)
     r = dv_block(c, b)
     _s = dc_truncate(c, mark)
     r
 
-fn dv_elsifs(c: &DevC, arms: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+fn dv_elsifs(c: &mut DevC, arms: &List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -299,7 +299,7 @@ fn dv_elsifs(c: &DevC, arms: &List[TElsif], i: Int, n: Int) -> Int ! alloc
         _b = dv_scoped_block(c, &arm.body)
         dv_elsifs(c, arms, i + 1, n)
 
-fn dv_pattern_binds(c: &DevC, p: &TPat) -> Int ! alloc
+fn dv_pattern_binds(c: &mut DevC, p: &TPat) -> Int ! alloc
     if p.kind == 1
         dc_bind(c, &p.name, &"Unknown")
     elsif p.kind == 3
@@ -307,14 +307,14 @@ fn dv_pattern_binds(c: &DevC, p: &TPat) -> Int ! alloc
     else
         0
 
-fn dv_pattern_list(c: &DevC, ps: &List[TPat], i: Int, n: Int) -> Int ! alloc
+fn dv_pattern_list(c: &mut DevC, ps: &List[TPat], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = dv_pattern_binds(c, &list_get(ps, i))
         dv_pattern_list(c, ps, i + 1, n)
 
-fn dv_match_arms(c: &DevC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
+fn dv_match_arms(c: &mut DevC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -328,7 +328,7 @@ fn dv_match_arms(c: &DevC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
         _s = dc_truncate(c, mark)
         dv_match_arms(c, arms, i + 1, n)
 
-fn dv_tensor(c: &DevC) -> String ! alloc
+fn dv_tensor(c: &mut DevC) -> String ! alloc
     exp = dc_expected(c)
     if str_len(exp) != 0
         if places_compatible(&"cpu", &exp) == 0
@@ -339,37 +339,37 @@ fn dv_tensor(c: &DevC) -> String ! alloc
         _f = 0
     "Tensor on cpu"
 
-fn dv_if(c: &DevC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif]) -> String ! alloc
+fn dv_if(c: &mut DevC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif]) -> String ! alloc
     _a = dv_expr(c, cond)
     _b = dv_scoped_block(c, then_b)
     _c = dv_elsifs(c, elsifs, 0, list_len(elsifs))
     _d = dv_scoped_block(c, else_b)
     "Int"
 
-fn dv_lambda(c: &DevC, param: &String, body: &Expr) -> String ! alloc
+fn dv_lambda(c: &mut DevC, param: &String, body: &Expr) -> String ! alloc
     mark = dc_len(c)
     _b = dc_bind(c, param, &"Float")
     _t = dv_expr(c, body)
     _s = dc_truncate(c, mark)
     "Unknown"
 
-fn dv_match(c: &DevC, scrut: &Expr, arms: &List[TArm]) -> String ! alloc
+fn dv_match(c: &mut DevC, scrut: &Expr, arms: &List[TArm]) -> String ! alloc
     _a = dv_expr(c, scrut)
     _b = dv_match_arms(c, arms, 0, list_len(arms))
     "Unknown"
 
-fn dv_expr(c: &DevC, e: &Expr) -> String ! alloc
+fn dv_expr(c: &mut DevC, e: &Expr) -> String ! alloc
     match e
         XNone => "Unit"
         _ => dv_live(c, e)
 
-fn dv_live(c: &DevC, e: &Expr) -> String ! alloc
+fn dv_live(c: &mut DevC, e: &Expr) -> String ! alloc
     if dc_failed(c) == 1
         "Unknown"
     else
         dv_expr_go(c, e)
 
-fn dv_expr_go(c: &DevC, e: &Expr) -> String ! alloc
+fn dv_expr_go(c: &mut DevC, e: &Expr) -> String ! alloc
     match e
         XNone => "Unit"
         XInt(v) => "Int"
@@ -390,25 +390,25 @@ fn dv_expr_go(c: &DevC, e: &Expr) -> String ! alloc
         XLambda(param, body) => dv_lambda(c, &param, &body)
         XMatch(scrut, arms) => dv_match(c, &scrut, &arms)
 
-fn dv_string(c: &DevC) -> String ! alloc
+fn dv_string(c: &mut DevC) -> String ! alloc
     _r = reject_string_off_cpu(c, &"String")
     "String"
 
-fn dv_binary(c: &DevC, l: &Expr, r: &Expr) -> String ! alloc
+fn dv_binary(c: &mut DevC, l: &Expr, r: &Expr) -> String ! alloc
     _a = dv_expr(c, l)
     _b = dv_expr(c, r)
     "Int"
 
-fn dv_field(c: &DevC, base: &Expr) -> String ! alloc
+fn dv_field(c: &mut DevC, base: &Expr) -> String ! alloc
     _a = dv_expr(c, base)
     "Unknown"
 
-fn dv_while(c: &DevC, cond: &Expr, body: &TBlock) -> String ! alloc
+fn dv_while(c: &mut DevC, cond: &Expr, body: &TBlock) -> String ! alloc
     _a = dv_expr(c, cond)
     _b = dv_block(c, body)
     "Unit"
 
-fn dv_stmt(c: &DevC, st: &TStmt) -> Int ! alloc
+fn dv_stmt(c: &mut DevC, st: &TStmt) -> Int ! alloc
     if st.kind == 1
         ty = dv_expr(c, &st.expr)
         if str_len(st.ty) != 0
@@ -423,7 +423,7 @@ fn dv_stmt(c: &DevC, st: &TStmt) -> Int ! alloc
         _c = dv_expr(c, &st.expr)
         0
 
-fn dv_stmts(c: &DevC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+fn dv_stmts(c: &mut DevC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif dc_failed(c) == 1
@@ -432,11 +432,11 @@ fn dv_stmts(c: &DevC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
         _a = dv_stmt(c, &list_get(stmts, i))
         dv_stmts(c, stmts, i + 1, n)
 
-fn dv_block(c: &DevC, b: &TBlock) -> String ! alloc
+fn dv_block(c: &mut DevC, b: &TBlock) -> String ! alloc
     _a = dv_stmts(c, &b.stmts, 0, list_len(&b.stmts))
     dv_expr(c, &b.tail)
 
-fn dv_seed(c: &DevC, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
+fn dv_seed(c: &mut DevC, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -446,8 +446,8 @@ fn dv_seed(c: &DevC, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
 
 fn check_fn_devices(f: &TFn) -> Int ! alloc
     c = dc_new()
-    _s = dv_seed(&c, &f.params, 0, list_len(&f.params))
-    _t = dv_block(&c, &f.body)
+    _s = dv_seed(&mut c, &f.params, 0, list_len(&f.params))
+    _t = dv_block(&mut c, &f.body)
     # The Result keeps the message as a handle: an owned copy, never released (see `str_as_int`).
     r = if dc_failed(&c) == 1
         m = list_get(&c.msg, 0).dup()

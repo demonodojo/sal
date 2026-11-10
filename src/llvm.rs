@@ -570,6 +570,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_vec_free(ptr)\n");
     s.push_str("declare void @sal_list_free(ptr)\n");
     s.push_str("declare void @sal_list_set_drop(ptr, ptr)\n");
+    s.push_str("declare void @sal_list_set_clone(ptr, ptr)\n");
     s.push_str("declare void @sal_list_free_elem(i64)\n");
     s.push_str("declare void @sal_list_free_shell(ptr)\n");
     s.push_str("declare i64 @sal_list_box_id(ptr)\n");
@@ -3351,6 +3352,15 @@ fn emit_runtime_or_user_call(
         "sal_dict_free" => {
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             s.push_str(&format!("  call void @sal_dict_free(ptr {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_list_set_clone" => {
+            // The second argument names a `clone.<Struct>` function: its address is the glue.
+            let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            let glue = args.get(1).cloned().unwrap_or_default();
+            s.push_str(&format!("  call void @sal_list_set_clone(ptr {a}, ptr @{})\n", llsym(&glue)));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }

@@ -12,7 +12,7 @@ import "../ast/tast.sal"
 import infer
 import "../ast/thash.sal"
 
-fn mr_fail(errs: &List[String], msg: &String) -> Int ! alloc
+fn mr_fail(errs: &mut List[String], msg: &String) -> Int ! alloc
     if errs.len() == 0
         _a = errs.push(msg.dup())
         0
@@ -53,10 +53,10 @@ fn methods_dup(fns: &List[TFn], name: &String, at: Int, i: Int, n: Int) -> Int !
     else
         methods_dup(fns, name, at, i + 1, n)
 
-fn methods_check_defs(tp: &TProgram, errs: &List[String]) -> Int ! alloc
+fn methods_check_defs(tp: &TProgram, errs: &mut List[String]) -> Int ! alloc
     methods_check_go(tp, 0, list_len(&tp.fns), errs)
 
-fn methods_check_go(tp: &TProgram, i: Int, n: Int, errs: &List[String]) -> Int ! alloc
+fn methods_check_go(tp: &TProgram, i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     elsif list_len(errs) > 0
@@ -65,7 +65,7 @@ fn methods_check_go(tp: &TProgram, i: Int, n: Int, errs: &List[String]) -> Int !
         _c = methods_check_fn(tp, &list_get(&tp.fns, i), i, errs)
         methods_check_go(tp, i + 1, n, errs)
 
-fn methods_check_fn(tp: &TProgram, f: &TFn, at: Int, errs: &List[String]) -> Int ! alloc
+fn methods_check_fn(tp: &TProgram, f: &TFn, at: Int, errs: &mut List[String]) -> Int ! alloc
     if f.mkind == 0
         0
     else
@@ -81,14 +81,14 @@ fn methods_check_fn(tp: &TProgram, f: &TFn, at: Int, errs: &List[String]) -> Int
 
 # ---- calls ----
 # `ndots` sizes the table of resolutions (the number of dotted calls and methods the parser saw).
-fn prepare_methods(tp: TProgram, ndots: Int, errs: &List[String]) -> TProgram ! alloc
+fn prepare_methods(tp: TProgram, ndots: Int, errs: &mut List[String]) -> TProgram ! alloc
     _d = methods_check_defs(&tp, errs)
     if list_len(errs) > 0
         tp
     else
-        methods_resolve(tp, &ic_build(&tp, ndots, 1))
+        methods_resolve(tp, &mut ic_build(&tp, ndots, 1))
 
-fn methods_resolve(tp: TProgram, c: &IC) -> TProgram ! alloc
+fn methods_resolve(tp: TProgram, c: &mut IC) -> TProgram ! alloc
     _r = infer_program_go(c, 0, list_len(&tp.fns))
     _a = mr_fns(&tp.fns, 0, list_len(&tp.fns), &c.res)
     _f = ic_free(c)
@@ -213,7 +213,7 @@ fn mr_apply(e: &Expr, name: &String, args: &List[Expr], old_ta: &String, ta: &St
 fn mr_prepend_local(e: &Expr, name: &String, args: &List[Expr], target: &String) -> Int ! alloc
     recv = str_slice(name, 0, mth_dot(name, 0, str_len(name)))
     nargs = list_new[Expr]()
-    _a = list_push(&nargs, XIdent(recv))
+    _a = list_push(&mut nargs, XIdent(recv))
     _b = mr_share_args(&nargs, args, 0, list_len(args))
     _c = list_free_shell(args)
     _d = enum_set(e, 1, nargs)

@@ -3,7 +3,7 @@ struct P
     name: String
     n: Int
 
-fn read_n(p: P) -> Int ! alloc
+fn read_n(p: &P) -> Int ! alloc
     p.n
 
 fn main() -> Int ! alloc

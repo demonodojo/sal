@@ -79,6 +79,13 @@ method FRC.alias_call(&self, name: &String, fname: &String, args: &List[Expr]) -
             0
         else
             fr_add(self.al, name)
+    elsif fname.eq("struct_clone") == 1
+        # The clone of a describable struct is a box the drops pass releases (`dx_struct_copy`);
+        # the glue only releases the clone its `clone.<S>` built (`value_struct` in src/ir.rs).
+        if desc_struct_text(&self.structs, &self.enums, &ty_deref(&self.type_of(name)), 0).len() == 0
+            0
+        else
+            fr_add(self.al, name)
     elsif self.ctor_alias(fname, args) == 1
         fr_add(self.al, name)
     elsif self.call_shares(name, fname, args) == 1
@@ -157,10 +164,10 @@ fn fr_returned_idx(params: &List[TParam], body: &TBlock, i: Int, n: Int, out: Li
     if i >= n
         out
     else
-        fr_returned_push(&out, body, &params.get(i).name, i)
+        fr_returned_push(&mut out, body, &params.get(i).name, i)
         fr_returned_idx(params, body, i + 1, n, out)
 
-fn fr_returned_push(out: &List[Int], body: &TBlock, name: &String, i: Int) -> Int ! alloc
+fn fr_returned_push(out: &mut List[Int], body: &TBlock, name: &String, i: Int) -> Int ! alloc
     if fr_tail_is_param(&body.tail, name) == 1
         out.push(i)
         0
@@ -243,7 +250,7 @@ method FRC.type_at(&self, name: &String, i: Int) -> String ! alloc
     if i < 0
         ""
     elsif self.names.get(i).eq(name) == 1
-        self.tys.get(i)
+        self.tys.get(i).clone()
     else
         self.type_at(name, i - 1)
 
@@ -386,13 +393,13 @@ fn fr_is_container(t: &String) -> Int ! alloc
 
 # The root local of a field chain `a.f1.f2`, pushing the field names onto `fl`; "" when the
 # expression is not such a chain.
-fn fr_chain(e: &Expr, fl: &List[String]) -> String ! alloc
+fn fr_chain(e: &Expr, fl: &mut List[String]) -> String ! alloc
     match e
         XIdent(name) => name.dup()
         XField(base, field) => fr_chain_push(&base, &field, fl)
         _ => ""
 
-fn fr_chain_push(base: &Expr, field: &String, fl: &List[String]) -> String ! alloc
+fn fr_chain_push(base: &Expr, field: &String, fl: &mut List[String]) -> String ! alloc
     root = fr_chain(base, fl)
     if str_len(root) == 0
         ""
@@ -402,7 +409,7 @@ fn fr_chain_push(base: &Expr, field: &String, fl: &List[String]) -> String ! all
 
 fn fr_note(c: &FRC, e: &Expr, moving: Int) -> Int ! alloc
     fl = list_new[String]()
-    root = fr_chain(e, &fl)
+    root = fr_chain(e, &mut fl)
     if str_len(root) == 0
         0
     else
@@ -472,7 +479,7 @@ fn fr_join_fields(fl: &List[String], i: Int, n: Int, acc: String) -> String ! al
     if i >= n
         acc
     elsif str_len(acc) == 0
-        fr_join_fields(fl, i + 1, n, list_get(fl, i))
+        fr_join_fields(fl, i + 1, n, list_get(fl, i).clone())
     else
         fr_join_fields(fl, i + 1, n, (acc + "." + list_get(fl, i)))
 
@@ -514,7 +521,7 @@ fn fr_field_type(fields: &List[TField], name: &String, i: Int, n: Int) -> String
     if i >= n
         ""
     elsif str_eq(list_get(fields, i).name, name) == 1
-        list_get(fields, i).ty
+        list_get(fields, i).ty.clone()
     else
         fr_field_type(fields, name, i + 1, n)
 
@@ -554,7 +561,12 @@ fn fr_call(c: &FRC, name: &String, args: &List[Expr], i: Int, n: Int) -> Int ! a
         0
     else
         _t = fr_call_taint_if_zero(c, name, args, i)
-        keeps = fr_keeps(c, name, i)
+        # `xs.push(v)`, `xs.set(i, v)` and `d.put(k, v)` take their receiver by `&mut`: the
+        # container stays with its owner.
+        keeps = if i == 0 && name.eq("list_push") + name.eq("list_set") + name.eq("dict_put") > 0
+            0
+        else
+            fr_keeps(c, name, i)
         _a = fr_ex(c, &list_get(args, i), keeps)
         fr_call(c, name, args, i + 1, n)
 
@@ -571,7 +583,7 @@ fn fr_call_container_taint(c: &FRC, name: &String, args: &List[Expr]) -> Int ! a
         0
     else
         fl = list_new[String]()
-        root = fr_chain(&list_get(args, 0), &fl)
+        root = fr_chain(&list_get(args, 0), &mut fl)
         path = fr_join_fields(&fl, 0, list_len(&fl), "")
         if str_len(root) == 0
             0
@@ -669,13 +681,13 @@ fn drop_glue_bits(fr: &FRC, nm: Int) -> Int ! alloc
     nested + containers
 
 # Frees the released fields of the struct value `base` (of type `sd`), in field order.
-fn drop_fields(cx: &Cx, base: Int, sd: &TStruct, fields: &List[TField], i: Int, n: Int, depth: Int, g: Int, fr: &FRC, root: &String, path_p: &String) -> Int ! alloc
+fn drop_fields(cx: &mut Cx, base: Int, sd: &TStruct, fields: &List[TField], i: Int, n: Int, depth: Int, g: Int, fr: &FRC, root: &String, path_p: &String) -> Int ! alloc
     if i >= n
         0
     else
         fld = list_get(fields, i)
         path = if str_len(path_p) == 0
-            fld.name
+            fld.name.clone()
         else
             path_p + "." + fld.name
         taint = fr_ct_has(fr, root, &path)
@@ -701,7 +713,7 @@ fn drop_fields(cx: &Cx, base: Int, sd: &TStruct, fields: &List[TField], i: Int, 
             _c = ir_push(cx, ir_call_named(ssa, str_own(&fnm)))
         drop_fields(cx, base, sd, fields, i + 1, n, depth, g, fr, root, path_p)
 
-fn drop_field_ssa(cx: &Cx, base: Int, sd: &TStruct, i: Int) -> Int ! alloc
+fn drop_field_ssa(cx: &mut Cx, base: Int, sd: &TStruct, i: Int) -> Int ! alloc
     if list_len(&sd.fields) == 1
         base
     else
@@ -710,10 +722,10 @@ fn drop_field_ssa(cx: &Cx, base: Int, sd: &TStruct, i: Int) -> Int ! alloc
         d
 
 # A nested struct field: its own released fields.
-fn drop_nested(cx: &Cx, base: Int, sd: &TStruct, i: Int, fty: &String, depth: Int, g: Int, fr: &FRC, root: &String, path: &String) -> Int ! alloc
+fn drop_nested(cx: &mut Cx, base: Int, sd: &TStruct, i: Int, fty: &String, depth: Int, g: Int, fr: &FRC, root: &String, path: &String) -> Int ! alloc
     inner = list_get(&cx_structs(cx), tt_struct_find(&cx_structs(cx), &trim_type_piece(fty)))
     ssa = drop_field_ssa(cx, base, sd, i)
     drop_fields(cx, ssa, &inner, &inner.fields, 0, list_len(&inner.fields), depth + 1, g, fr, root, path)
 
-fn drop_struct_fields(cx: &Cx, base: Int, sd: &TStruct, g: Int, fr: &FRC, root: &String) -> Int ! alloc
+fn drop_struct_fields(cx: &mut Cx, base: Int, sd: &TStruct, g: Int, fr: &FRC, root: &String) -> Int ! alloc
     drop_fields(cx, base, sd, &sd.fields, 0, list_len(&sd.fields), 0, g, fr, root, &"")
