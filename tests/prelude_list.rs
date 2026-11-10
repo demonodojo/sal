@@ -19,11 +19,15 @@ fn link_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn compile_list(src: &str, instrument: bool) -> PathBuf {
+    compile_list_opts(src, instrument, false)
+}
+
+fn compile_list_opts(src: &str, instrument: bool, release: bool) -> PathBuf {
     let _guard = link_lock();
     let opts = CompileOptions {
         toolchain: Default::default(),
         output: None,
-        release: false,
+        release,
         instrument,
         device: "cpu".into(),
         project_root: root(),
@@ -104,6 +108,50 @@ fn main() -> Int ! alloc
         "expected non-zero exit on OOB; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Growing by `push` reuses the buffer with `realloc`: the peak RSS stays near
+/// the final 32 MB instead of also keeping every previous buffer (~64 MB).
+#[test]
+fn list_push_growth_does_not_keep_old_buffers() {
+    const N: u64 = 4_000_001; // final buffer: 32 MB; exit = N & 255 = 1
+    // Worst case of a copying realloc (old 16 MB + new 32 MB) still fits here;
+    // keeping the old buffers peaks at ~64 MB.
+    const CAP_KB: u64 = 56_000;
+    let src = r#"
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    i = 0
+    while i < 4000001
+        xs.push(i)
+        i = i + 1
+    xs.len() & 255
+"#;
+    let bin = compile_list_opts(src, false, true);
+    let log = std::env::temp_dir().join(format!("sal-vec-rss-{}", std::process::id()));
+    let out = Command::new("/usr/bin/time")
+        .args(["-f", "%M", "-o"])
+        .arg(&log)
+        .arg(&bin)
+        .output()
+        .expect("time the list program");
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    let rss = text
+        .lines()
+        .rev()
+        .find_map(|l| l.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    assert_eq!(
+        out.status.code(),
+        Some((N & 255) as i32),
+        "push/len wrong; stderr={:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        rss > 0 && rss < CAP_KB,
+        "peak RSS {rss} KB for a 32 MB list; old buffers are being kept (cap {CAP_KB} KB)"
     );
 }
 

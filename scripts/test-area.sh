@@ -19,7 +19,7 @@ usage() {
   lang         comportamiento del lenguaje (tests/lang)
   builtins     builtins mal usados
   target       destino linux/soso
-  std          std/                    cargo run -- test
+  std          std/                    cargo run --bin sal -- test
   standard     linter standard         (serie)
   selfhost     selfhost / preludio / corpus  (serie)
 EOF
@@ -42,7 +42,7 @@ case "$1" in
     lang)       cargo test --test lang ;;
     builtins)   cargo test --test builtin_errors ;;
     target)     cargo test --test soso_target --test cli_target --test std_io_linux ;;
-    std)        cargo run -- test ;;
+    std)        cargo run --bin sal -- test ;;
     standard)   cargo test --test standard -- --test-threads=1 ;;
     selfhost)   cargo test --test selfhost_ir -- --test-threads=1 ;;
     *)

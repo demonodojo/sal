@@ -564,6 +564,10 @@ fn runtime_objects(
 ) -> Result<Vec<PathBuf>, Vec<Diagnostic>> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Tests (and hosts) may link several programs at once; a tmp keyed only by
+    // pid races when two threads compile the same missing object.
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let dir = out_dir.join("rt-cache");
     fs::create_dir_all(&dir).map_err(|e| vec![internal_diag(e.to_string())])?;
     let mut objs = Vec::new();
@@ -578,7 +582,12 @@ fn runtime_objects(
         let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("rt");
         let obj = dir.join(format!("{stem}-{:016x}.o", h.finish()));
         if !obj.is_file() {
-            let tmp = dir.join(format!("{stem}-{:016x}.{}.tmp", h.finish(), std::process::id()));
+            let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp = dir.join(format!(
+                "{stem}-{:016x}.{}-{seq}.tmp",
+                h.finish(),
+                std::process::id()
+            ));
             let mut cmd = Command::new(cc);
             cmd.arg("-c").arg(src).args(defs).arg(opt_flag).arg("-w").arg("-o").arg(&tmp);
             let child = cmd
@@ -593,9 +602,16 @@ fn runtime_objects(
     for (child, tmp, obj) in children {
         let out = child.wait_with_output().map_err(|e| vec![internal_diag(e.to_string())])?;
         if !out.status.success() {
+            let _ = fs::remove_file(&tmp);
             return Err(vec![internal_diag(String::from_utf8_lossy(&out.stderr).into_owned())]);
         }
-        fs::rename(&tmp, &obj).map_err(|e| vec![internal_diag(e.to_string())])?;
+        // Another concurrent linker may already have published `obj`.
+        if let Err(e) = fs::rename(&tmp, &obj) {
+            let _ = fs::remove_file(&tmp);
+            if !obj.is_file() {
+                return Err(vec![internal_diag(e.to_string())]);
+            }
+        }
     }
     Ok(objs)
 }

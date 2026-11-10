@@ -990,20 +990,13 @@ int64_t sal_vec_push(void *vp, int64_t x) {
                 memcpy(nd, v->data, v->len * sizeof(int64_t));
             }
         } else {
-#ifdef SAL_INSTRUMENT
+            /* Grow in place when the allocator can: `realloc` extends the block
+             * instead of allocating a second one, and never leaves the old
+             * buffer behind (it used to leak on every growth). */
             nd = (int64_t *)realloc(v->data, bytes);
             if (!nd) {
                 sal_panic("oom");
             }
-#else
-            nd = (int64_t *)sal_xmalloc(bytes, "vec");
-            if (!nd) {
-                sal_panic("oom");
-            }
-            if (v->data && v->len) {
-                memcpy(nd, v->data, v->len * sizeof(int64_t));
-            }
-#endif
         }
         v->data = nd;
         v->cap = ncap;
@@ -2664,8 +2657,8 @@ void sal_list_free(void *vp) {
     if (l->desc_owned) {
         free((void *)l->desc);
     }
-    /* The buffer comes from realloc (instrumented builds) or aligned_alloc, not
-     * from the probe table. An interior page pointer must not reach libc free. */
+    /* The buffer comes from realloc, not from the probe table. An interior page
+     * pointer must not reach libc free. */
     if (l->vec.data && !sal_ptr_in_any(l->vec.data)) {
         free(l->vec.data);
     }
