@@ -9,11 +9,11 @@ fn model_check(ir: Int, needle: &String) -> Int ! alloc
 fn run_model_package_tests() -> Int ! io, alloc
     src = read_file("selfhost/models.sal")
     r = emit_ir(&src)
-    if result_is_err(r) == 1
-        _e = eprint_str(result_format_err(r))
+    if result_is_err(&r) == 1
+        _e = eprint_str(result_format_err(&r))
         1
     else
-        ir = result_unwrap(r)
+        ir = result_unwrap(&r)
         ok = 1
         if model_check(ir, &"peak_bytes") == 0
             ok = 0
@@ -103,17 +103,17 @@ fn main() -> Int ! io, alloc
         src = read_file(path)
         if do_o == 1
             r = emit_c_for_file(&path, &src, &out)
-            if result_is_err(r) == 1
-                _e = eprint_str(result_format_err(r))
+            if result_is_err(&r) == 1
+                _e = eprint_str(result_format_err(&r))
                 1
             else
                 0
         else
             r = emit_ir_for_file(path, &src)
-            if result_is_err(r) == 1
-                _e = eprint_str(result_format_err(r))
+            if result_is_err(&r) == 1
+                _e = eprint_str(result_format_err(&r))
                 1
             else
-                ir = result_unwrap(r)
+                ir = result_unwrap(&r)
                 _pr = print_str(str_from_int(ir))
                 0

@@ -35,12 +35,7 @@ fn reg_like(cx: &Cx, ssa: Int, src: Int) -> Int ! alloc
     else
         reg_tensor(cx, ssa, bind_elem(src), bind_place(src), vec_copy(bind_dims(src)), vec_copy(bind_concrete(src)))
 
-fn ir_rebind(dest: Int, src: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_REBIND())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, src)
-    inst
+# `ir_rebind` lives in ir.sal (returns `Inst`).
 
 fn push_call(cx: &Cx, dest: Int, fname: &String, args: Int, has_dest: Int) -> Int ! alloc
     ir_push(cx, ir_call(dest, str_own(fname), args, has_dest))

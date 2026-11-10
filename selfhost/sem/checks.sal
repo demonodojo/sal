@@ -10,12 +10,12 @@ import "../ast/tast.sal"
 import consteval
 
 # Ok(0), or Err(message) for the first violation in `prog`.
-fn check_program(tp: &TProgram) -> Int ! alloc
+fn check_program(tp: &TProgram) -> Res ! alloc
     none = List.new[TProgram]()
     check_program_in(tp, &none)
 
 # `progs`: every program of the module graph (empty when single-file).
-fn check_program_in(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
+fn check_program_in(tp: &TProgram, progs: &List[TProgram]) -> Res ! alloc
     if list_len(progs) == 0
         check_after_infer(tp, progs, infer_program(tp))
     else
@@ -27,27 +27,27 @@ fn check_program_in(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
         else
             check_after_infer(tp, progs, infer_with_vals(tp, vals))
 
-fn check_after_infer(tp: &TProgram, progs: &List[TProgram], ty: Int) -> Int ! alloc
-    if result_is_err(ty) == 1
+fn check_after_infer(tp: &TProgram, progs: &List[TProgram], ty: Res) -> Res ! alloc
+    if result_is_err(&ty) == 1
         ty
     else
         check_typed(tp, progs)
 
-fn check_typed(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
+fn check_typed(tp: &TProgram, progs: &List[TProgram]) -> Res ! alloc
     at = check_attrs(tp)
-    if result_is_err(at) == 1
+    if result_is_err(&at) == 1
         at
     else
         fx = check_effects_with(tp, progs)
-        if result_is_err(fx) == 1
+        if result_is_err(&fx) == 1
             fx
         else
             own = check_ownership(tp)
-            if result_is_err(own) == 1
+            if result_is_err(&own) == 1
                 own
             else
                 br = check_borrows(tp)
-                if result_is_err(br) == 1
+                if result_is_err(&br) == 1
                     br
                 else
                     check_devices(tp)

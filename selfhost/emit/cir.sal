@@ -6,10 +6,10 @@ import "../ir/tensorops.sal"
 import "../pkg/qualify.sal"
 
 # ---- IR -> C (functions that touch tensors) ----
-# Context: [pool, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main]
-fn cc_new(pool: Int, user: Int, is_main: Int) -> Int ! alloc
+# Context: [pool.raw, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main]
+fn cc_new(pool: &LitPool, user: Int, is_main: Int) -> Int ! alloc
     c = vec_new()
-    vec_push(c, pool)
+    vec_push(c, pool.raw)
     vec_push(c, user)
     _c = vec_push(c, vec_new())
     vec_push(c, map_new())
@@ -50,6 +50,9 @@ fn cir_is_num(s: &String) -> Int ! alloc
         else
             0
 
+fn cc_pool(cc: Int) -> LitPool ! alloc
+    LitPool(vec_get(cc, 0))
+
 # An IR operand as a C int64 expression.
 fn cir_op(cc: Int, a: Int) -> String ! alloc
     s = str_from_int(a)
@@ -57,7 +60,8 @@ fn cir_op(cc: Int, a: Int) -> String ! alloc
         "0"
     elsif s.char(0) == 34
         inner = s.slice(1, s.len() - 1)
-        ensure_sal_lit(inner.to_int(), vec_get(cc, 0))
+        pool = cc_pool(cc)
+        pool.ensure(inner.to_int())
     elsif cir_is_num(&s) == 1
         s + "LL"
     elsif names_has(vec_get(cc, 2), a, 0, vec_len(vec_get(cc, 2))) == 1
@@ -482,7 +486,8 @@ fn cir_inst(cc: Int, inst: &Inst) -> Int ! alloc
         cir_set(cc, dest, &inst.n1.to_str())
     elsif k == II_CS()
         _m = map_put(vec_get(cc, 5), dest, 1)
-        cir_set(cc, dest, &ensure_sal_lit(inst.s1.dup().to_int(), vec_get(cc, 0)))
+        pool = cc_pool(cc)
+        cir_set(cc, dest, &pool.ensure(inst.s1.dup().to_int()))
     elsif k == II_CF()
         _m = map_put(vec_get(cc, 4), dest, inst.s1.dup().to_int())
         cir_set(cc, dest, &("(int64_t)" + inst.n1.to_str() + "LL"))
@@ -725,7 +730,7 @@ fn cir_decl_locals(cc: Int, params: Int, acc: String) -> String ! alloc
     out
 
 # An IR function `[name, dim_params, insts, regions]` as C; params come from the AST fn.
-fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: Int) -> String ! alloc
+fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: &LitPool) -> String ! alloc
     header = emit_c_fn_header(f, linkable, allow_main)
     if header.len() == 0
         ""
@@ -745,7 +750,7 @@ fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: 
 
 # A glue function (`drop.<Struct>`, `drop.elem.<Struct>`) as C: one `v` parameter, symbol
 # `drop.<...>` set by an asm label (the name is not a C identifier).
-fn cir_glue(irf: &IrFn, user: Int, pool: Int) -> String ! alloc
+fn cir_glue(irf: &IrFn, user: Int, pool: &LitPool) -> String ! alloc
     c = "G_" + cir_cname(&irf.name)
     pnames = vec_new()
     _p = vec_push(pnames, str_as_int(&"v"))

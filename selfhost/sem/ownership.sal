@@ -843,34 +843,34 @@ fn own_seed_names(c: &mut OC, params: &List[TParam], i: Int, n: Int) -> Int ! al
         own_seed_names(c, params, i + 1, n)
 
 # ---- checking ----
-fn check_fn_moves(c: &mut OC, f: &TFn) -> Int ! alloc
+fn check_fn_moves(c: &mut OC, f: &TFn) -> Res ! alloc
     _r = oc_reset(c)
     _s = own_seed_params(c, &f.params, 0, list_len(&f.params))
     _t = track_block(c, &f.body)
     own_fn_result(c)
 
-fn own_fn_result(c: &OC) -> Int ! alloc
+fn own_fn_result(c: &OC) -> Res ! alloc
     if oc_failed(c) == 1
         result_err_str(&list_get(&c.err, 0))
     else
         result_ok(0)
 
-fn check_ownership_go(c: &mut OC, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+fn check_ownership_go(c: &mut OC, fns: &List[TFn], i: Int, n: Int) -> Res ! alloc
     if i >= n
         result_ok(0)
     else
         r = check_fn_moves(c, &list_get(fns, i))
-        if result_is_err(r) == 1
+        if result_is_err(&r) == 1
             r
         else
             check_ownership_go(c, fns, i + 1, n)
 
 # Ok(0), or Err(message) for the first use of a moved value.
-fn check_ownership(tp: &TProgram) -> Int ! alloc
+fn check_ownership(tp: &TProgram) -> Res ! alloc
     table = own_mode_table(tp)
     c = oc_new(tp, table)
     r = check_ownership_go(&mut c, &tp.fns, 0, list_len(&tp.fns))
-    r2 = if result_is_err(r) == 1
+    r2 = if result_is_err(&r) == 1
         r
     else
         check_arena(tp, &c.table)
@@ -1439,7 +1439,7 @@ fn ar_param_err(f: &TFn, table: &HT, flags: &String, i: Int, n: Int) -> String !
         else
             ar_param_err(f, table, flags, i + 1, n)
 
-fn ar_report(fns: &List[TFn], i: Int, n: Int, table: &HT, muts: &HT) -> Int ! alloc
+fn ar_report(fns: &List[TFn], i: Int, n: Int, table: &HT, muts: &HT) -> Res ! alloc
     if i >= n
         result_ok(0)
     else
@@ -1463,13 +1463,13 @@ fn ar_any(fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     else
         ar_any(fns, i + 1, n)
 
-fn check_arena(tp: &TProgram, table: &HT) -> Int ! alloc
+fn check_arena(tp: &TProgram, table: &HT) -> Res ! alloc
     if ar_any(&tp.fns, 0, list_len(&tp.fns)) == 0
         result_ok(0)
     else
         check_arena_go(tp, table)
 
-fn check_arena_go(tp: &TProgram, table: &HT) -> Int ! alloc
+fn check_arena_go(tp: &TProgram, table: &HT) -> Res ! alloc
     muts = HT.new(list_len(&tp.fns))
     _z = ar_seed(&tp.fns, 0, list_len(&tp.fns), &mut muts)
     _r = ar_fix(tp, table, &mut muts, list_len(&tp.fns) + 1)

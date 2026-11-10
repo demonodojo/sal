@@ -2368,7 +2368,7 @@ fn infer_missing_value(c: &mut IC, ret: &String) -> Int ! alloc
     else
         ic_fail(c, &("function must return a value of type " + ty_msg(ret)))
 
-fn infer_fn(c: &mut IC, f: &TFn) -> Int ! alloc
+fn infer_fn(c: &mut IC, f: &TFn) -> Res ! alloc
     _r = ic_reset(c)
     _fx = ic_load_fx(c, &f.fx)
     _s = infer_seed(c, &f.params, 0, list_len(&f.params))
@@ -2420,18 +2420,18 @@ fn infer_check_elem(c: &mut IC, t: &String) -> Int ! alloc
         else
             ic_fail(c, &("`" + e + "` is not a tensor element type"))
 
-fn infer_program_go(c: &mut IC, i: Int, n: Int) -> Int ! alloc
+fn infer_program_go(c: &mut IC, i: Int, n: Int) -> Res ! alloc
     if i >= n
         result_ok(0)
     else
         r = infer_fn(c, &list_get(&c.fns, i))
-        if result_is_err(r) == 1
+        if result_is_err(&r) == 1
             r
         else
             infer_program_go(c, i + 1, n)
 
 # Ok(0), or Err(message) for the first type error.
-fn infer_program(tp: &TProgram) -> Int ! alloc
+fn infer_program(tp: &TProgram) -> Res ! alloc
     vals = list_new[CVal]()
     err = ce_eval(&tp.consts, &list_new[CVal](), &mut vals)
     if str_len(err) > 0
@@ -2442,7 +2442,7 @@ fn infer_program(tp: &TProgram) -> Int ! alloc
 
 # `vals` already holds the constants visible in `tp` (its own and, when the caller
 # evaluated the graph, the imported ones).
-fn infer_with_vals(tp: &TProgram, vals: List[CVal]) -> Int ! alloc
+fn infer_with_vals(tp: &TProgram, vals: List[CVal]) -> Res ! alloc
     c = ic_new(tp)
     _s = list_free(c.cvals)
     c.cvals = vals

@@ -4,6 +4,7 @@
 import "../ast/tast.sal"
 import "../ast/tytext.sal"
 import "../ast/ttypes.sal"
+import "../ast/tir.sal"
 import ir
 import tensorops
 import drops
@@ -267,42 +268,27 @@ fn lower_to(cx: &mut Cx, place: &String, inner: &Expr) -> Int ! alloc
     _q = ir_push(cx, ir_drop(dropn))
     d
 
-fn collect_on_ops(body: &TBlock, cx: &Cx) -> Int ! alloc
-    ops = vec_new()
-    _seed = vec_push(ops, vec_new())
-    _t = collect_on_tail(&body.tail, cx, ops)
-    fused_ops_drop_empty(ops)
+fn collect_on_ops(body: &TBlock, cx: &Cx) -> List[FOp] ! alloc
+    ops = List.new[FOp]()
+    _t = collect_on_tail(&body.tail, cx, &mut ops)
+    ops
 
 # A binary tail is a column expression: its operators fuse in evaluation order.
-fn collect_on_tail(tail: &Expr, cx: &Cx, ops: Int) -> Int ! alloc
+fn collect_on_tail(tail: &Expr, cx: &Cx, ops: &mut List[FOp]) -> Int ! alloc
     match tail
         XNone => 0
         XBin(op, l, r) => collect_column_bins(tail, cx, ops)
         _ => collect_fused(tail, cx, ops)
 
-fn collect_column_bins(e: &Expr, cx: &Cx, ops: Int) -> Int ! alloc
+fn collect_column_bins(e: &Expr, cx: &Cx, ops: &mut List[FOp]) -> Int ! alloc
     match e
         XBin(op, l, r) => collect_column_walk(cx, ops, &op, &l, &r)
         _ => 0
 
-fn collect_column_walk(cx: &Cx, ops: Int, op: &String, l: &Expr, r: &Expr) -> Int ! alloc
+fn collect_column_walk(cx: &Cx, ops: &mut List[FOp], op: &String, l: &Expr, r: &Expr) -> Int ! alloc
     _l = collect_column_bins(l, cx, ops)
     _r = collect_column_bins(r, cx, ops)
     collect_fused_binary(cx, ops, op, l, r)
-
-fn fused_ops_drop_empty(ops: Int) -> Int ! alloc
-    out = vec_new()
-    _c = fused_ops_drop_empty_go(ops, out, 0, vec_len(ops))
-    out
-
-fn fused_ops_drop_empty_go(ops: Int, out: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        op = vec_get(ops, i)
-        if vec_len(op) > 0
-            _p = vec_push(out, op)
-        fused_ops_drop_empty_go(ops, out, i + 1, n)
 
 fn fused_flag(has_ep: Int, has_mm: Int, has_col: Int, nops: Int) -> Int ! alloc
     if has_ep == 1
@@ -317,7 +303,8 @@ fn fused_flag(has_ep: Int, has_mm: Int, has_col: Int, nops: Int) -> Int ! alloc
         0
 
 fn lower_on(cx: &mut Cx, place: &String, body: &TBlock) -> Int ! alloc
-    ops = collect_on_ops(body, cx)
+    tops = collect_on_ops(body, cx)
+    ops = fops_pack(&tops)
     has_ep = ops_has_kind(ops, FO_EPILOGUE(), 0, vec_len(ops))
     has_mm = ops_has_kind(ops, FO_MATMUL(), 0, vec_len(ops))
     has_col = ops_has_kind(ops, FO_COLUMN(), 0, vec_len(ops))
@@ -568,17 +555,8 @@ fn lower_try(cx: &mut Cx, inner: &Expr) -> Int ! alloc
         _c = ir_push(cx, ir_bin(cond, str_as_int(&"eq"), low, tagc))
         join = fresh(cx)
         then_body = vec_new()
-        _d = vec_push(then_body, ir_ret(v))
-        inst = vec_new()
-        _e = vec_push(inst, II_IF())
-        _f = vec_push(inst, join)
-        _g = vec_push(inst, cond)
-        _h = vec_push(inst, then_body)
-        _i = vec_push(inst, vec_new())
-        _j = vec_push(inst, v)
-        _k = vec_push(inst, v)
-        _l = vec_push(inst, vec_new())
-        _p = ir_push(cx, inst)
+        _d = vec_push(then_body, inst_pack(&ir_ret(v)))
+        _p = ir_push(cx, ir_if(join, cond, then_body, vec_new(), v, v, vec_new()))
         payload = fresh(cx)
         _q = ir_push(cx, ir_efield(payload, v, 0))
         payload
@@ -734,7 +712,7 @@ fn struct_clone_glue_t(structs: &List[TStruct], enums: &List[TEnum], name: &Stri
         0
     elsif structs.get(i).tparams.len() != 0
         0
-    elsif struct_glue_fn(&structs.get(i), structs, enums) == 0
+    elsif struct_glue_fn(&structs.get(i), structs, enums).name.len() == 0
         0
     elsif str_len(desc_struct_text(structs, enums, name, 0)) > 0
         0
@@ -743,7 +721,7 @@ fn struct_clone_glue_t(structs: &List[TStruct], enums: &List[TEnum], name: &Stri
 
 # `clone.<Struct>(v)` (`struct_clone_fn` in src/ir.rs): a copy that owns a copy of everything
 # `drop.<Struct>` releases. What the glue does not release is shared.
-fn struct_clone_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> Int ! alloc
+fn struct_clone_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> IrFn ! alloc
     fns0 = List.new[TFn]()
     env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
     cx = cx_new(0, map_new(), env, enums, &fns0, &List.new[TProtocol]())
@@ -751,10 +729,10 @@ fn struct_clone_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -
     _c = clone_fields(&mut cx, sd, 0, sd.fields.len(), fields)
     insts = cx_insts(&cx)
     if sd.fields.len() == 1
-        _t = vec_push(insts, ir_ret(vec_get(fields, 0)))
+        _t = vec_push(insts, inst_pack(&ir_ret(vec_get(fields, 0))))
     else
-        _g = vec_push(insts, ir_agg(str_as_int(&"r"), str_own(&sd.name), fields))
-        _t = vec_push(insts, ir_ret(str_as_int(&"r")))
+        _g = vec_push(insts, inst_pack(&ir_agg(str_as_int(&"r"), str_own(&sd.name), fields)))
+        _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
     out = vec_new()
     _a = vec_push(out, str_own(&("clone." + sd.name)))
     _b = vec_push(out, vec_new())
@@ -762,7 +740,7 @@ fn struct_clone_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -
     _e = vec_push(out, vec_new())
     _h = vec_push(out, vec_new())
     ir_own_fn(out)
-    out
+    ti_fn(out)
 
 fn clone_fields(cx: &mut Cx, sd: &TStruct, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
@@ -997,16 +975,7 @@ fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int 
     d = fresh(cx)
     order = sorted_live_binds(cx, n0)
     carried = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, vec_new())
-    inst = vec_new()
-    _d = vec_push(inst, II_IF())
-    _e = vec_push(inst, d)
-    _f = vec_push(inst, cond)
-    _g = vec_push(inst, then_body)
-    _h = vec_push(inst, else_body)
-    _i = vec_push(inst, then_val)
-    _j = vec_push(inst, else_val)
-    _l = vec_push(inst, carried)
-    _p = ir_push(cx, inst)
+    _p = ir_push(cx, ir_if(d, cond, then_body, else_body, then_val, else_val, carried))
     d
 
 # Whether the arms from `i` lower as a `Switch` (a catch-all tail after integer patterns); a
@@ -1228,16 +1197,7 @@ fn lower_if(cx: &mut Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs:
     d = fresh(cx)
     order = sorted_live_binds(cx, n0)
     carried = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, vec_new())
-    inst = vec_new()
-    _d = vec_push(inst, II_IF())
-    _e = vec_push(inst, d)
-    _f = vec_push(inst, c)
-    _g = vec_push(inst, then_body)
-    _h = vec_push(inst, else_body)
-    _i = vec_push(inst, then_val)
-    _j = vec_push(inst, else_val)
-    _l = vec_push(inst, carried)
-    _p = ir_push(cx, inst)
+    _p = ir_push(cx, ir_if(d, c, then_body, else_body, then_val, else_val, carried))
     d
 
 fn snap_binds(binds: Int, i: Int, n: Int, out: Int) -> Int ! alloc
@@ -1524,13 +1484,7 @@ fn lower_while(cx: &mut Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
     _rs = tenv_truncate(&mut cx.env, slen)
     _d = cx_set_insts(cx, saved)
     carried = while_carries(cx, specs, 0, vec_len(specs), vec_new())
-    inst = vec_new()
-    _e = vec_push(inst, II_WHILE())
-    _f = vec_push(inst, cond_insts)
-    _g = vec_push(inst, c)
-    _h = vec_push(inst, body_insts)
-    _i = vec_push(inst, carried)
-    _p = ir_push(cx, inst)
+    _p = ir_push(cx, ir_while(cond_insts, c, body_insts, carried))
     0
 
 # Statements and tail for effect only: no placeholder value when there is no tail.
@@ -1964,7 +1918,7 @@ fn drop_local_one(cx: &mut Cx, fr: &FRC, moved: Int, nm: Int) -> Int ! alloc
             si = tt_struct_find(&cx_structs(cx), &tenv_type(&cx.env, &str_from_int(nm)))
             sd = list_get(&cx_structs(cx), si)
             # A clean local is released by the glue of its struct: one call, the same releases.
-            if drop_local_clean(fr, nm) == 1 && struct_glue_fn(&sd, &cx_structs(cx), &cx.enums) != 0
+            if drop_local_clean(fr, nm) == 1 && struct_glue_fn(&sd, &cx_structs(cx), &cx.enums).name.len() != 0
                 drop_glue_call(cx, &sd.name, bind_ssa(b))
             else
                 drop_struct_fields(cx, bind_ssa(b), &sd, drop_glue_bits(fr, nm), fr, &str_from_int(nm))
@@ -2021,10 +1975,10 @@ fn pop_final_ret(cx: &mut Cx) -> Int ! alloc
     else
         0
 
-fn ir_prepend(cx: &mut Cx, inst: Int) -> Int ! alloc
+fn ir_prepend(cx: &mut Cx, inst: Inst) -> Int ! alloc
     old = cx_insts(cx)
     keep = vec_new()
-    _a = vec_push(keep, inst)
+    _a = vec_push(keep, inst_pack(&inst))
     _b = copy_insts(old, keep, 0, vec_len(old))
     cx_set_insts(cx, keep)
 
@@ -2037,7 +1991,7 @@ fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
 
 # `drops_body` moved this body once. `ir_own_fn` copies every string the instructions keep,
 # so the caller can `tp_free_block` after the C for this function is emitted.
-fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn]) -> Int ! alloc
+fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn]) -> IrFn ! alloc
     env = tenv_clone(env_tpl)
     _t = tenv_truncate(&mut env, 0)
     cx = cx_new(fn_names, fm, env, enums, prog_fns, prog_protocols)
@@ -2055,7 +2009,7 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
     else
         _lv = 0
     if ret != 0
-        _rr = ir_push(&cx, ret)
+        _rr = ir_push_raw(&cx, ret)
     else
         _rr = 0
     if f.arena == 1
@@ -2071,7 +2025,7 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
     _z = cx_free(&cx)
     keep_block(&f.body)
     ir_own_fn(out)
-    out
+    ti_fn(out)
 
 # Hands a block to no one. The IR already holds its own copies; the caller frees the block.
 fn keep_block(b: &TBlock) -> Int ! alloc
@@ -2186,30 +2140,30 @@ fn try_lower_tensor_bin_go(cx: &mut Cx, op: &String, tensor_ssa: Int, other_ssa:
         1
 
 # Lowers a module whose own structs and fn results are the only ones in scope.
-fn lower_program_with_callables(tp: &mut TProgram, extra: Int) -> Int ! alloc
+fn lower_program_with_callables(tp: &mut TProgram, extra: Int) -> List[IrFn] ! alloc
     env = tenv_new(tp)
     ir = lower_program_typed(tp, extra, &env, &tp.enums, &tp.fns)
     ir
 
 # `seen` is every function of the module graph. The struct glue reads it to tell when a call
 # returns one of its parameters (`returns_param_map`); a callee may live in another module.
-fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[TEnum], seen: &List[TFn]) -> Int ! alloc
+fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[TEnum], seen: &List[TFn]) -> List[IrFn] ! alloc
     names = collect_fn_names_t(&tp.fns, 0, list_len(&tp.fns), vec_new())
     names = merge_callable_names(extra, names)
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
-    out = vec_new()
+    out = List.new[IrFn]()
     denv = drop_env_t(tp, &env_tpl.structs, em, seen)
     n_fns = list_len(&tp.fns)
     h2112_3 = tp.fns.clone()
-    lower_fns(&mut tp.fns, names, fm, env_tpl, em, denv, &h2112_3, &tp.protocols, seen, 0, n_fns, out)
-    _g = struct_glue_all(&tp.structs, em, out)
+    lower_fns(&mut tp.fns, names, fm, env_tpl, em, denv, &h2112_3, &tp.protocols, seen, 0, n_fns, &mut out)
+    _g = struct_glue_all(&tp.structs, em, &mut out)
     out
 
 # Per-type glue (`struct_glue_fns` in src/ir.rs): one `drop.<Struct>` per non-generic struct of
 # this module with a `String` or `List` field, after the user fns, in name order. It releases those fields
 # in declaration order. The text is the bootstrap's, so the two IRs stay identical.
-fn struct_glue_all(structs: &List[TStruct], enums: &List[TEnum], out: Int) -> Int ! alloc
+fn struct_glue_all(structs: &List[TStruct], enums: &List[TEnum], out: &mut List[IrFn]) -> Int ! alloc
     cand = struct_glue_candidates(structs, 0, structs.len(), List.new[Int]())
     struct_glue_emit(structs, enums, &cand, 0, cand.len(), out)
 
@@ -2227,20 +2181,20 @@ fn struct_glue_candidates(structs: &List[TStruct], i: Int, n: Int, acc: List[Int
 
 # Emits in name order: the p-th struct is the one with exactly p candidates before it. A struct
 # that frees nothing has no glue.
-fn struct_glue_emit(structs: &List[TStruct], enums: &List[TEnum], cand: &List[Int], p: Int, n: Int, out: Int) -> Int ! alloc
+fn struct_glue_emit(structs: &List[TStruct], enums: &List[TEnum], cand: &List[Int], p: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
     if p >= n
         0
     else
         idx = struct_glue_rank(structs, cand, p, 0, n)
         body = struct_glue_fn(&structs.get(idx), structs, enums)
-        if body != 0
-            _f = vec_push(out, body)
+        if body.name.len() != 0
+            _f = out.push(body)
             if struct_is_boxed_t(&structs.get(idx)) == 1
-                _e = vec_push(out, struct_elem_glue_fn(&structs.get(idx).name))
+                _e = out.push(struct_elem_glue_fn(&structs.get(idx).name))
             else
                 _k = 0
             if struct_clone_glue_t(structs, enums, &structs.get(idx).name) == 1
-                _cl = vec_push(out, struct_clone_fn(&structs.get(idx), structs, enums))
+                _cl = out.push(struct_clone_fn(&structs.get(idx), structs, enums))
             else
                 _k2 = 0
         else
@@ -2267,7 +2221,10 @@ fn struct_glue_before(structs: &List[TStruct], cand: &List[Int], idx: Int, j: In
 # The glue of `sd` (SPEC «Liberación de locales»): `drop.<Struct>(v)` releases what
 # `drop_fields` releases of a local of that struct with nothing moved or read whole (the
 # default glue bits, no moved or tainted fields). 0 when that frees nothing.
-fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> Int ! alloc
+fn ir_fn_empty() -> IrFn ! alloc
+    IrFn("".dup(), List.new[String](), List.new[Inst](), List.new[Region](), List.new[Lit]())
+
+fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> IrFn ! alloc
     fns0 = List.new[TFn]()
     params0 = List.new[TParam]()
     env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
@@ -2276,10 +2233,10 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
     _d = drop_fields(&mut cx, str_as_int(&"v"), sd, &sd.fields, 0, sd.fields.len(), 0, 3, &fr, &sd.name, &"")
     insts = cx_insts(&cx)
     if vec_len(insts) == 0
-        0
+        ir_fn_empty()
     else
-        _r = vec_push(insts, ir_ci(str_as_int(&"r"), 0))
-        _t = vec_push(insts, ir_ret(str_as_int(&"r")))
+        _r = vec_push(insts, inst_pack(&ir_ci(str_as_int(&"r"), 0)))
+        _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
         out = vec_new()
         _a = vec_push(out, str_own(&("drop." + sd.name)))
         _b = vec_push(out, vec_new())
@@ -2287,7 +2244,7 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
         _e = vec_push(out, vec_new())
         _h = vec_push(out, vec_new())
         ir_own_fn(out)
-        out
+        ti_fn(out)
 
 # A struct of two or more fields is a block on the heap (`struct_is_boxed` in src/ir.rs).
 fn struct_is_boxed_t(sd: &TStruct) -> Int
@@ -2298,16 +2255,16 @@ fn struct_is_boxed_t(sd: &TStruct) -> Int
 
 # `drop.elem.<Struct>(v)`: releases the element's fields, then its block (`struct_elem_glue_fn`
 # in src/ir.rs). A list holds this function for each element that is a boxed struct with glue.
-fn struct_elem_glue_fn(name: &String) -> Int ! alloc
+fn struct_elem_glue_fn(name: &String) -> IrFn ! alloc
     insts = vec_new()
     args = vec_new()
     _a = vec_push(args, str_as_int(&"v"))
-    _b = vec_push(insts, ir_call(0, str_own(&("drop." + name)), args, 0))
+    _b = vec_push(insts, inst_pack(&ir_call(0, str_own(&("drop." + name)), args, 0)))
     args2 = vec_new()
     _c = vec_push(args2, str_as_int(&"v"))
-    _d = vec_push(insts, ir_call(0, str_as_int(&"sal_struct_free_box"), args2, 0))
-    _r = vec_push(insts, ir_ci(str_as_int(&"r"), 0))
-    _t = vec_push(insts, ir_ret(str_as_int(&"r")))
+    _d = vec_push(insts, inst_pack(&ir_call(0, str_as_int(&"sal_struct_free_box"), args2, 0)))
+    _r = vec_push(insts, inst_pack(&ir_ci(str_as_int(&"r"), 0)))
+    _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
     out = vec_new()
     _n = vec_push(out, str_own(&("drop.elem." + name)))
     _p = vec_push(out, vec_new())
@@ -2315,7 +2272,7 @@ fn struct_elem_glue_fn(name: &String) -> Int ! alloc
     _e = vec_push(out, vec_new())
     _h = vec_push(out, vec_new())
     ir_own_fn(out)
-    out
+    ti_fn(out)
 
 # `list_new[T]()` with `T` a list or a struct with glue: `sal_list_set_drop` (`set_drop` in
 # `list_new` in src/ir.rs). `T` = `List[..]` releases each element with `sal_list_free_elem`;
@@ -2335,7 +2292,7 @@ fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
         else
             if structs.get(i).tparams.len() != 0
                 0
-            elsif struct_glue_fn(&structs.get(i), &structs, &cx.enums) == 0
+            elsif struct_glue_fn(&structs.get(i), &structs, &cx.enums).name.len() == 0
                 0
             elsif struct_is_boxed_t(&structs.get(i)) == 1
                 _sd = list_set_drop_call(cx, d, &("drop.elem." + t))
@@ -2736,12 +2693,12 @@ fn variant_field_flags_t(fields: &List[String], i: Int, n: Int, out: Int) -> Int
         _p = vec_push(out, dr_field_owned_t(&list_get(fields, i)))
         variant_field_flags_t(fields, i + 1, n, out)
 
-fn lower_fns(fns: &mut List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn], i: Int, n: Int, out: Int) -> Int ! alloc
+fn lower_fns(fns: &mut List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn], i: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
     if i >= n
-        out
+        0
     else
         f = list_get(&mut fns, i)
         f.body = drops_body(&mut f, denv)
         irf = lower_fn(&f, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen)
-        _p = vec_push(out, irf)
+        _p = out.push(irf)
         lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen, i + 1, n, out)

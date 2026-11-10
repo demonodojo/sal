@@ -683,7 +683,7 @@ fn bk_fn(c: &mut BK, f: &TFn) -> Int ! alloc
     _w = bk_block(c, &f.body, 1, 1)
     bk_finish(c)
 
-fn bk_fns(c: &mut BK, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+fn bk_fns(c: &mut BK, fns: &List[TFn], i: Int, n: Int) -> Res ! alloc
     if i >= n
         result_ok(0)
     elsif bk_failed(c) == 1
@@ -824,6 +824,6 @@ fn bk_moved_loans(c: &mut BK, i: Int, j: Int, n: Int) -> Int ! alloc
         else
             bk_moved_loans(c, i, j + 1, n)
 
-fn check_borrows(tp: &TProgram) -> Int ! alloc
+fn check_borrows(tp: &TProgram) -> Res ! alloc
     c = bk_new(tp)
     bk_fns(&mut c, &tp.fns, 0, list_len(&tp.fns))

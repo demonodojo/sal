@@ -123,7 +123,11 @@ fn chain(parts: Vec<StringPart>, sp: Span) -> Expr {
 /// `Option` and `Result` are part of the language: a program that uses them
 /// without declaring them gets the standard definitions appended (at the end,
 /// so spans of the user's code do not move).
+///
+/// `Result` is not injected when the file imports `result.sal` / `result`
+/// (selfhost owns the enum there; a second copy is `E_TYPE`).
 pub fn with_prelude_enums(src: &str) -> std::borrow::Cow<'_, str> {
+    let imports_result = src.contains("import result") || src.contains("result.sal");
     let mut extra = String::new();
     for (name, def) in [
         ("Result", "\nenum Result[T, E]\n    Ok(T)\n    Err(E)\n"),
@@ -131,7 +135,8 @@ pub fn with_prelude_enums(src: &str) -> std::borrow::Cow<'_, str> {
     ] {
         let uses = src.contains(&format!("{name}["));
         let declares = src.contains(&format!("enum {name}"));
-        if uses && !declares {
+        let skip_result = name == "Result" && imports_result;
+        if uses && !declares && !skip_result {
             extra.push_str(def);
         }
     }

@@ -15,40 +15,58 @@ fn FO_SOFTMAX() -> Int
 fn FO_COLUMN() -> Int
     3
 
-fn collect_fused(e: &Expr, cx: &Cx, ops: Int) -> Int ! alloc
+fn fo_new(kind: Int, a: &String, b: &String, c: &String) -> FOp ! alloc
+    FOp(kind, a.dup(), b.dup(), c.dup(), "".dup(), "".dup(), 4)
+
+fn fo_column(op: &String, lhs: &String, rhs: &String, dest: &String, scalar: &String) -> FOp ! alloc
+    FOp(FO_COLUMN(), op.dup(), lhs.dup(), rhs.dup(), dest.dup(), scalar.dup(), 6)
+
+# Pack a typed op back to the Int-vec layout Cx/region still store (until oleada E).
+fn fop_pack(op: &FOp) -> Int ! alloc
+    o = vec_new()
+    _a = vec_push(o, op.kind)
+    _b = vec_push(o, str_as_int(&op.a))
+    _c = vec_push(o, str_as_int(&op.b))
+    _d = vec_push(o, str_as_int(&op.c))
+    if op.nslots >= 5
+        _e = vec_push(o, str_as_int(&op.d))
+    if op.nslots >= 6
+        if op.scalar.len() != 0
+            _f = vec_push(o, str_as_int(&op.scalar))
+    o
+
+fn fops_pack(ops: &List[FOp]) -> Int ! alloc
+    v = vec_new()
+    fops_pack_go(ops, 0, ops.len(), v)
+
+fn fops_pack_go(ops: &List[FOp], i: Int, n: Int, v: Int) -> Int ! alloc
+    if i >= n
+        v
+    else
+        _p = vec_push(v, fop_pack(&ops.get(i)))
+        fops_pack_go(ops, i + 1, n, v)
+
+fn collect_fused(e: &Expr, cx: &Cx, ops: &mut List[FOp]) -> Int ! alloc
     match e
         XCall(name, args, targs, xp) => collect_fused_call_args(cx, ops, &name, &args)
         XBin(op, l, r) => collect_fused_bin_args(cx, ops, &op, &l, &r)
         _ => 0
 
-fn collect_fused_call_args(cx: &Cx, ops: Int, name: &String, args: &List[Expr]) -> Int ! alloc
+fn collect_fused_call_args(cx: &Cx, ops: &mut List[FOp], name: &String, args: &List[Expr]) -> Int ! alloc
     _a = collect_fused_args(args, cx, ops, 0, list_len(args))
     collect_fused_call(cx, ops, name, args)
 
-fn collect_fused_bin_args(cx: &Cx, ops: Int, op: &String, l: &Expr, r: &Expr) -> Int ! alloc
+fn collect_fused_bin_args(cx: &Cx, ops: &mut List[FOp], op: &String, l: &Expr, r: &Expr) -> Int ! alloc
     _a = collect_fused(l, cx, ops)
     _b = collect_fused(r, cx, ops)
     collect_fused_binary(cx, ops, op, l, r)
 
-fn collect_fused_args(args: &List[Expr], cx: &Cx, ops: Int, i: Int, n: Int) -> Int ! alloc
+fn collect_fused_args(args: &List[Expr], cx: &Cx, ops: &mut List[FOp], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = collect_fused(&list_get(args, i), cx, ops)
         collect_fused_args(args, cx, ops, i + 1, n)
-
-fn fo_new(kind: Int, a: Int, b: Int, c: Int) -> Int ! alloc
-    o = vec_new()
-    _a = vec_push(o, kind)
-    _b = vec_push(o, a)
-    _c = vec_push(o, b)
-    _d = vec_push(o, c)
-    o
-
-fn fo_column(op: Int, lhs: Int, rhs: Int, dest: Int, scalar: Int) -> Int ! alloc
-    o = fo_new(FO_COLUMN(), op, lhs, rhs)
-    _e = vec_push(o, dest)
-    o
 
 fn fused_rhs_is_scalar(right: &Expr) -> Int ! alloc
     match right
@@ -56,54 +74,43 @@ fn fused_rhs_is_scalar(right: &Expr) -> Int ! alloc
         XFloat(bits, txt) => 1
         _ => 0
 
-fn fused_arg_name(cx: &Cx, a: &Expr) -> Int ! alloc
+fn fused_arg_name(cx: &Cx, a: &Expr) -> String ! alloc
     match a
-        XIdent(name) => cx_lookup(cx, str_own(&name))
-        _ => str_as_int(&"tmp")
+        XIdent(name) =>
+            h = cx_lookup(cx, str_own(&name))
+            if h == 0
+                "tmp".dup()
+            else
+                str_from_int(h)
+        _ => "tmp".dup()
 
-fn fused_arg0_name(cx: &Cx, args: &List[Expr]) -> Int ! alloc
+fn fused_arg0_name(cx: &Cx, args: &List[Expr]) -> String ! alloc
     if list_len(args) > 0
         fused_arg_name(cx, &list_get(args, 0))
     else
-        str_as_int(&"tmp")
+        "tmp".dup()
 
-fn fused_op_is_matmul(op: Int) -> Int ! alloc
-    if op == 0
-        0
-    elsif vec_len(op) < 4
-        0
-    elsif vec_get(op, 0) == FO_MATMUL()
+fn fused_op_is_matmul(op: &FOp) -> Int ! alloc
+    if op.kind == FO_MATMUL()
         1
     else
         0
 
-fn fused_ops_valid_count(ops: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        op = vec_get(ops, i)
-        if vec_len(op) == 0
-            fused_ops_valid_count(ops, i + 1, n)
-        else
-            rest = fused_ops_valid_count(ops, i + 1, n)
-            1 + rest
-
-fn collect_fused_binary(cx: &Cx, ops: Int, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
+fn collect_fused_binary(cx: &Cx, ops: &mut List[FOp], op: &String, left: &Expr, right: &Expr) -> Int ! alloc
     lhs = fused_arg_name(cx, left)
     rhs = fused_arg_name(cx, right)
-    idx = fused_ops_valid_count(ops, 0, vec_len(ops))
-    dest = str_own(&("col_" + int_to_str(idx)))
-    scal = 0
+    idx = ops.len()
+    dest = "col_" + int_to_str(idx)
+    scal = ""
     if fused_rhs_is_scalar(right) == 1
-        scal = str_as_int(&"tmp")
+        scal = "tmp".dup()
     else
-        scal = 0
-    oprec = fo_column(str_own(op), lhs, rhs, dest, scal)
-    _p = vec_push(ops, oprec)
+        scal = "".dup()
+    ops.push(fo_column(op, &lhs, &rhs, &dest, &scal))
     0
 
-fn collect_fused_call(cx: &Cx, ops: Int, fname: &String, args: &List[Expr]) -> Int ! alloc
-    nops = vec_len(ops)
+fn collect_fused_call(cx: &Cx, ops: &mut List[FOp], fname: &String, args: &List[Expr]) -> Int ! alloc
+    nops = ops.len()
     if str_eq(fname, "relu") == 1
         collect_fused_epilogue(ops, fname, nops)
     elsif str_eq(fname, "map") == 1
@@ -112,28 +119,24 @@ fn collect_fused_call(cx: &Cx, ops: Int, fname: &String, args: &List[Expr]) -> I
         if list_len(args) == 2
             lhs = fused_arg_name(cx, &list_get(args, 0))
             rhs = fused_arg_name(cx, &list_get(args, 1))
-            mm = str_as_int(&"mm")
-            _p = vec_push(ops, fo_new(FO_MATMUL(), lhs, rhs, mm))
+            ops.push(fo_new(FO_MATMUL(), &lhs, &rhs, &"mm"))
             0
         else
             0
     elsif str_eq(fname, "softmax") == 1
         inp = fused_arg0_name(cx, args)
-        sm = str_as_int(&"sm")
-        _p = vec_push(ops, fo_new(FO_SOFTMAX(), inp, 0, sm))
+        ops.push(fo_new(FO_SOFTMAX(), &inp, &"", &"sm"))
         0
     else
         0
 
 # `relu`/`map` after a fused matmul add its epilogue.
-fn collect_fused_epilogue(ops: Int, fname: &String, nops: Int) -> Int ! alloc
+fn collect_fused_epilogue(ops: &mut List[FOp], fname: &String, nops: Int) -> Int ! alloc
     if nops > 0
-        last = vec_get(ops, nops - 1)
-        if fused_op_is_matmul(last) == 1
-            mmc = vec_get(last, 3)
-            ep = "_epilogue"
-            dest = str_from_int(mmc) + ep
-            _p = vec_push(ops, fo_new(FO_EPILOGUE(), str_own(fname), mmc, str_own(&dest)))
+        last = ops.get(nops - 1)
+        if fused_op_is_matmul(&last) == 1
+            dest = last.c + "_epilogue"
+            ops.push(fo_new(FO_EPILOGUE(), fname, &last.c, &dest))
             0
         else
             0

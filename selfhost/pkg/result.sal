@@ -1,39 +1,34 @@
-# Result — same surface as std/prelude; encoded as Int vec [tag, payload]
-# tag 0 = Ok(T), tag 1 = Err(E). Used on the emit/compile error path.
-enum Result[T, E]
-    Ok(T)
-    Err(E)
+# Compile/emit error path. Oleada G: typed Ok/Err with a String message on Err
+# (no `str_as_int` on the error). A flat `struct Res` crosses modules; the language
+# `enum Result[T, E]` does not unify when imported (each module gets its own
+# `Mod__Result` identity → `E_TYPE`). Prelude `Result` stays for user programs.
+struct Res
+    tag: Int
+    val: Int
+    err: String
 
-fn result_ok(v: Int) -> Int ! alloc
-    r = vec_new()
-    _a = vec_push(r, 0)
-    _b = vec_push(r, v)
-    r
+fn result_ok(v: Int) -> Res ! alloc
+    Res(0, v, "".dup())
 
-fn result_ok_str(v: String) -> Int ! alloc
-    result_ok(str_as_int(v))
+fn result_ok_str(v: String) -> Res ! alloc
+    Res(0, str_as_int(&v), "".dup())
 
-fn result_err(e: Int) -> Int ! alloc
-    r = vec_new()
-    _a = vec_push(r, 1)
-    _b = vec_push(r, e)
-    r
+fn result_err(e: Int) -> Res ! alloc
+    Res(1, 0, str_from_int(e).dup())
 
-fn result_err_str(e: &String) -> Int ! alloc
-    result_err(str_as_int(e))
+fn result_err_str(e: &String) -> Res ! alloc
+    Res(1, 0, e.dup())
 
-fn result_is_err(r: Int) -> Int ! alloc
-    if vec_get(r, 0) == 1
-        1
-    else
-        0
+fn result_is_err(r: &Res) -> Int
+    r.tag
 
-fn result_unwrap(r: Int) -> Int ! alloc
-    vec_get(r, 1)
+fn result_unwrap(r: &Res) -> Int
+    r.val
 
-fn result_payload(r: Int) -> Int ! alloc
-    vec_get(r, 1)
+fn result_payload(r: &Res) -> Int
+    r.val
 
+# Legacy: some callers stuffed a raw vec that looked like Result; keep the unwrap.
 fn module_order_vec(x: Int) -> Int ! alloc
     if vec_len(x) == 2
         if vec_get(x, 0) == 0
@@ -43,8 +38,7 @@ fn module_order_vec(x: Int) -> Int ! alloc
     else
         x
 
-fn result_format_err(r: Int) -> String ! alloc
-    msg = result_unwrap(r)
+fn result_format_err(r: &Res) -> String ! alloc
     acc = "Err("
-    acc = acc + str_from_int(msg) + ")\n"
+    acc = acc + r.err + ")\n"
     acc

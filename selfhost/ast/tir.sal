@@ -1,64 +1,7 @@
-# Typed form of the IR that `fuse` builds: instructions, functions, regions and fused ops.
-# Everything is a flat struct (Strings, Ints and Lists) so `list_get` copies an element whole.
-# Bridge: `ti_module` reads the handle IR; `ti_free_module` releases the typed copy.
+# Handle→typed bridge helpers (`ti_fn` still used while `lower_fn` packs Cx asas).
+# `ti_module` is unused after oleada F (`lower_program_*` returns `List[IrFn]`).
 import "../ir/ir.sal"
 import tast
-
-# `kind` is an `II_*` code. Slots by kind (handle slot in brackets):
-#   CI dest n1=value | CS dest s1=text | BIN dest s1=op s2=left s3=right | CF dest n1=bits s1=text
-#   TBIN dest s1=op n1=elem s2=place s3=left s4=right s5=len n2=scalar | CALL dest s1=func strs=args n1=has_dest
-#   PLACE dest s1=from s2=to | RET s1=value | DROP s1=name
-#   IF dest s1=cond b1=then b2=else s2=then_val s3=else_val rows=carried(dest,s1,s2)
-#   WHILE b1=cond_insts s1=cond b2=body rows=carried(dest,s1,s2) | AGG dest s1=struct strs=fields
-#   EXTRACT dest s1=base s2=struct n1=index | REBIND dest s1=src
-#   EMAKE dest s1=enum n1=variant strs=payload n2=owned | EFIELD dest s1=value n1=index
-#   SWITCH dest s1=scrut rows=arms(n1=tag, b1=body, s1=value) b1=default_body s2=default_val
-struct Inst
-    kind: Int
-    dest: String
-    s1: String
-    s2: String
-    s3: String
-    s4: String
-    s5: String
-    n1: Int
-    n2: Int
-    n3: Int
-    strs: List[String]
-    b1: List[Inst]
-    b2: List[Inst]
-    rows: List[Inst]
-
-# A fused op: `kind` is an `FO_*` code, `nslots` the length of the handle (a column op with 6 has a scalar).
-struct FOp
-    kind: Int
-    a: String
-    b: String
-    c: String
-    d: String
-    scalar: String
-    nslots: Int
-
-struct Region
-    place: String
-    fused: Int
-    has_peak: Int
-    has_sym: Int
-    peak: Int
-    peak_sym: String
-    ops: List[FOp]
-
-# A tensor literal `[name, element texts]`.
-struct Lit
-    name: String
-    data: List[String]
-
-struct IrFn
-    name: String
-    dps: List[String]
-    insts: List[Inst]
-    regions: List[Region]
-    lits: List[Lit]
 
 fn ti_s(h: Int) -> String ! alloc
     tt_str(h).dup()

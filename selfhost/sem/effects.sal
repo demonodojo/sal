@@ -319,7 +319,7 @@ fn fx_reset(used: &mut Fx, i: Int) -> Int ! alloc
         _a = list_set(used.flags, i, 0)
         fx_reset(used, i + 1)
 
-fn check_fn_effects(f: &TFn, env: &mut TEnv, used: &mut Fx) -> Int ! alloc
+fn check_fn_effects(f: &TFn, env: &mut TEnv, used: &mut Fx) -> Res ! alloc
     _z0 = fx_reset(used, 0)
     _s = fx_seed_params(&f.params, 0, list_len(&f.params), env)
     _b = fx_scan_block(&f.body, used, env)
@@ -334,12 +334,12 @@ fn check_fn_effects(f: &TFn, env: &mut TEnv, used: &mut Fx) -> Int ! alloc
         nm = fx_effect_name(miss)
         result_err_str(&("function `" + f.name + "` uses effect `" + nm + "` but signature does not declare it\nhint: add `! " + nm + "` to the signature"))
 
-fn check_effects_go(tp: &TProgram, i: Int, n: Int, env: &mut TEnv, used: &mut Fx) -> Int ! alloc
+fn check_effects_go(tp: &TProgram, i: Int, n: Int, env: &mut TEnv, used: &mut Fx) -> Res ! alloc
     if i >= n
         result_ok(0)
     else
         r = check_fn_effects(&list_get(&tp.fns, i), env, used)
-        if result_is_err(r) == 1
+        if result_is_err(&r) == 1
             r
         else
             check_effects_go(tp, i + 1, n, env, used)
@@ -369,12 +369,12 @@ fn fx_callees_progs(m: &mut Callees, progs: &List[TProgram], i: Int, n: Int) -> 
         fx_callees_progs(m, progs, i + 1, n)
 
 # Ok(0), or Err(message) for the first fn using an undeclared effect.
-fn check_effects(tp: &TProgram) -> Int ! alloc
+fn check_effects(tp: &TProgram) -> Res ! alloc
     none = list_new[TProgram]()
     check_effects_with(tp, &none)
 
 # Same, counting the fns of `progs` (every module of the graph; empty for none).
-fn check_effects_with(tp: &TProgram, progs: &List[TProgram]) -> Int ! alloc
+fn check_effects_with(tp: &TProgram, progs: &List[TProgram]) -> Res ! alloc
     env = tenv_new(tp)
     callees = callees_new()
     _a = fx_callees_typed(&mut callees, &tp.fns, 0, list_len(&tp.fns))

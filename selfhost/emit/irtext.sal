@@ -403,12 +403,9 @@ fn emit_regions(regions: &List[Region], i: Int, n: Int, acc: String) -> String !
         acc = acc + piece
         emit_regions(regions, i + 1, n, acc)
 
-# The IR module is a vec of function handles; it is read through its typed copy.
-fn ir_to_text(mod: Int) -> String ! alloc
-    fns = ti_module(mod)
-    text = emit_fns(&fns, 0, fns.len(), "")
-    ti_free_module(&fns)
-    text
+# Typed IR module from `lower_program_*` (oleada F: no `ti_module` bridge).
+fn ir_to_text(fns: &List[IrFn]) -> String ! alloc
+    emit_fns(fns, 0, fns.len(), "")
 
 fn emit_fns(fns: &List[IrFn], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n

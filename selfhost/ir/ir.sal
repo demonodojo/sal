@@ -68,6 +68,64 @@ fn II_ANYCALL() -> Int
 fn II_ETAG() -> Int
     20
 
+# Typed IR values (flat structs so `list_get` copies an element whole). Lived in tir.sal;
+# they sit here so `ir_*` builders can return `Inst` without an import cycle with tir.
+# `kind` is an `II_*` code. Slots by kind (handle slot in brackets):
+#   CI dest n1=value | CS dest s1=text | BIN dest s1=op s2=left s3=right | CF dest n1=bits s1=text
+#   TBIN dest s1=op n1=elem s2=place s3=left s4=right s5=len n2=scalar | CALL dest s1=func strs=args n1=has_dest
+#   PLACE dest s1=from s2=to | RET s1=value | DROP s1=name
+#   IF dest s1=cond b1=then b2=else s2=then_val s3=else_val rows=carried(dest,s1,s2)
+#   WHILE b1=cond_insts s1=cond b2=body rows=carried(dest,s1,s2) | AGG dest s1=struct strs=fields
+#   EXTRACT dest s1=base s2=struct n1=index | REBIND dest s1=src
+#   EMAKE dest s1=enum n1=variant strs=payload n2=owned | EFIELD dest s1=value n1=index
+#   SWITCH dest s1=scrut rows=arms(n1=tag, b1=body, s1=value) b1=default_body s2=default_val
+struct Inst
+    kind: Int
+    dest: String
+    s1: String
+    s2: String
+    s3: String
+    s4: String
+    s5: String
+    n1: Int
+    n2: Int
+    n3: Int
+    strs: List[String]
+    b1: List[Inst]
+    b2: List[Inst]
+    rows: List[Inst]
+
+# A fused op: `kind` is an `FO_*` code, `nslots` the length of the handle (a column op with 6 has a scalar).
+struct FOp
+    kind: Int
+    a: String
+    b: String
+    c: String
+    d: String
+    scalar: String
+    nslots: Int
+
+struct Region
+    place: String
+    fused: Int
+    has_peak: Int
+    has_sym: Int
+    peak: Int
+    peak_sym: String
+    ops: List[FOp]
+
+# A tensor literal `[name, element texts]`.
+struct Lit
+    name: String
+    data: List[String]
+
+struct IrFn
+    name: String
+    dps: List[String]
+    insts: List[Inst]
+    regions: List[Region]
+    lits: List[Lit]
+
 # ---- Lower / IR ----
 # Lowering state of one function. The counter, the instruction list and the accumulator name live in
 # one-slot lists so a callee can update them; the rest are handle vecs/maps (the IR stays in handles).
@@ -209,178 +267,432 @@ fn fresh(cx: &mut Cx) -> Int ! alloc
     free(ns)
     str_own(&r)
 
-fn ir_ci(dest: Int, v: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_CI())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, v)
-    inst
+# Handle text → owned String (builders still take Int SSA/name handles from lowering).
+fn ir_s(h: Int) -> String ! alloc
+    if h == 0
+        "".dup()
+    else
+        str_from_int(h).dup()
 
-fn ir_cs(dest: Int, text: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_CS())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, text)
-    inst
+fn ir_no_insts() -> List[Inst] ! alloc
+    List.new[Inst]()
 
-fn ir_bin(dest: Int, op: Int, left: Int, right: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_BIN())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, op)
-    _d = vec_push(inst, left)
-    _e = vec_push(inst, right)
-    inst
+fn ir_no_strs() -> List[String] ! alloc
+    List.new[String]()
 
-fn ir_cf(dest: Int, bits: Int, txt: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_CF())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, bits)
-    _d = vec_push(inst, txt)
-    inst
+fn ir_strs_of(hs: Int) -> List[String] ! alloc
+    out = List.new[String]()
+    ir_strs_go(hs, 0, vec_len(hs), &mut out)
+    out
 
-fn ir_tbin(dest: Int, op: Int, elem: Int, place: Int, left: Int, right: Int, len: Int, scalar: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_TBIN())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, op)
-    _d = vec_push(inst, elem)
-    _e = vec_push(inst, place)
-    _f = vec_push(inst, left)
-    _g = vec_push(inst, right)
-    _h = vec_push(inst, len)
-    _i = vec_push(inst, scalar)
-    inst
+fn ir_strs_go(hs: Int, i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        out.push(ir_s(vec_get(hs, i)))
+        ir_strs_go(hs, i + 1, n, out)
+
+fn ir_mk(kind: Int, dest: String, s1: String, s2: String, s3: String, s4: String, s5: String, n1: Int, n2: Int, n3: Int, strs: List[String], b1: List[Inst], b2: List[Inst], rows: List[Inst]) -> Inst ! alloc
+    Inst(kind, dest, s1, s2, s3, s4, s5, n1, n2, n3, strs, b1, b2, rows)
+
+# Nested handle bodies (IF/WHILE/SWITCH still collect asas until Cx.insts is List[Inst]).
+fn ir_insts_of(hs: Int) -> List[Inst] ! alloc
+    out = List.new[Inst]()
+    ir_insts_go(hs, 0, vec_len(hs), &mut out)
+    out
+
+fn ir_insts_go(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        out.push(ir_inst_of(vec_get(hs, i)))
+        ir_insts_go(hs, i + 1, n, out)
+
+fn ir_carries_of(hs: Int) -> List[Inst] ! alloc
+    out = List.new[Inst]()
+    ir_carries_go(hs, 0, vec_len(hs), &mut out)
+    out
+
+fn ir_carries_go(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        c = vec_get(hs, i)
+        out.push(ir_mk(0, ir_s(vec_get(c, 0)), ir_s(vec_get(c, 1)), ir_s(vec_get(c, 2)), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts()))
+        ir_carries_go(hs, i + 1, n, out)
+
+fn ir_arms_of(hs: Int) -> List[Inst] ! alloc
+    out = List.new[Inst]()
+    ir_arms_go(hs, 0, vec_len(hs), &mut out)
+    out
+
+fn ir_arms_go(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = vec_get(hs, i)
+        out.push(ir_mk(0, "".dup(), ir_s(vec_get(a, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(a, 0), 0, 0, ir_no_strs(), ir_insts_of(vec_get(a, 1)), ir_no_insts(), ir_no_insts()))
+        ir_arms_go(hs, i + 1, n, out)
+
+fn ir_call_shape_of(h: Int) -> Int ! alloc
+    if vec_len(h) > 5
+        vec_get(h, 5)
+    else
+        0
+
+# Handle row → Inst (used when a nested body is still an asa).
+fn ir_inst_of(h: Int) -> Inst ! alloc
+    k = vec_get(h, 0)
+    if k == II_CI()
+        ir_mk(k, ir_s(vec_get(h, 1)), "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 2), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_CS()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_BIN()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), ir_s(vec_get(h, 4)), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_CF()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 2), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_TBIN()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 4)), ir_s(vec_get(h, 5)), ir_s(vec_get(h, 6)), ir_s(vec_get(h, 7)), vec_get(h, 3), vec_get(h, 8), 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_TUN()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 4)), ir_s(vec_get(h, 5)), "".dup(), ir_s(vec_get(h, 6)), vec_get(h, 3), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_CALL()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 4), ir_call_shape_of(h), 0, ir_strs_of(vec_get(h, 3)), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_PLACE()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_RET()
+        ir_mk(k, "".dup(), ir_s(vec_get(h, 1)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_DROP()
+        ir_mk(k, "".dup(), ir_s(vec_get(h, 1)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_IF()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 5)), ir_s(vec_get(h, 6)), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(vec_get(h, 3)), ir_insts_of(vec_get(h, 4)), ir_carries_of(vec_get(h, 7)))
+    elsif k == II_WHILE()
+        ir_mk(k, "".dup(), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(vec_get(h, 1)), ir_insts_of(vec_get(h, 3)), ir_carries_of(vec_get(h, 4)))
+    elsif k == II_AGG()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_strs_of(vec_get(h, 3)), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_EXTRACT()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), vec_get(h, 4), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_REBIND()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_EMAKE()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 3), vec_get(h, 5), 0, ir_strs_of(vec_get(h, 4)), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_EFIELD()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 3), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_ETAG()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_SWITCH()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 5)), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(vec_get(h, 4)), ir_no_insts(), ir_arms_of(vec_get(h, 3)))
+    elsif k == II_ANYBOX()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), vec_get(h, 4), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    elsif k == II_ANYCALL()
+        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 3), 0, 0, ir_strs_of(vec_get(h, 4)), ir_no_insts(), ir_no_insts(), ir_no_insts())
+    else
+        ir_mk(k, "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+# Pack Inst → asa (owned string handles). Inverse of ir_inst_of / ti_inst.
+fn ir_pack_strs(xs: &List[String]) -> Int ! alloc
+    v = vec_new()
+    ir_pack_strs_go(xs, 0, xs.len(), v)
+
+fn ir_pack_strs_go(xs: &List[String], i: Int, n: Int, v: Int) -> Int ! alloc
+    if i >= n
+        v
+    else
+        _p = vec_push(v, str_own(&xs.get(i)))
+        ir_pack_strs_go(xs, i + 1, n, v)
+
+fn ir_pack_carries(xs: &List[Inst]) -> Int ! alloc
+    v = vec_new()
+    ir_pack_carries_go(xs, 0, xs.len(), v)
+
+fn ir_pack_carries_go(xs: &List[Inst], i: Int, n: Int, v: Int) -> Int ! alloc
+    if i >= n
+        v
+    else
+        c = xs.get(i)
+        row = vec_new()
+        _a = vec_push(row, str_own(&c.dest))
+        _b = vec_push(row, str_own(&c.s1))
+        _c = vec_push(row, str_own(&c.s2))
+        _p = vec_push(v, row)
+        ir_pack_carries_go(xs, i + 1, n, v)
+
+fn ir_pack_arms(xs: &List[Inst]) -> Int ! alloc
+    v = vec_new()
+    ir_pack_arms_go(xs, 0, xs.len(), v)
+
+fn ir_pack_arms_go(xs: &List[Inst], i: Int, n: Int, v: Int) -> Int ! alloc
+    if i >= n
+        v
+    else
+        a = xs.get(i)
+        row = vec_new()
+        _t = vec_push(row, a.n1)
+        _b = vec_push(row, insts_pack(&a.b1))
+        _v = vec_push(row, str_own(&a.s1))
+        _p = vec_push(v, row)
+        ir_pack_arms_go(xs, i + 1, n, v)
+
+fn inst_pack(op: &Inst) -> Int ! alloc
+    k = op.kind
+    if k == II_CI()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, op.n1)
+        h
+    elsif k == II_CS()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        h
+    elsif k == II_BIN()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, str_own(&op.s2))
+        _e = vec_push(h, str_own(&op.s3))
+        h
+    elsif k == II_CF()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, op.n1)
+        _d = vec_push(h, str_own(&op.s1))
+        h
+    elsif k == II_TBIN()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, op.n1)
+        _e = vec_push(h, str_own(&op.s2))
+        _f = vec_push(h, str_own(&op.s3))
+        _g = vec_push(h, str_own(&op.s4))
+        _i = vec_push(h, str_own(&op.s5))
+        _j = vec_push(h, op.n2)
+        h
+    elsif k == II_TUN()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, op.n1)
+        _e = vec_push(h, str_own(&op.s2))
+        _f = vec_push(h, str_own(&op.s3))
+        _g = vec_push(h, str_own(&op.s5))
+        h
+    elsif k == II_CALL()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, ir_pack_strs(&op.strs))
+        _e = vec_push(h, op.n1)
+        if op.n2 != 0
+            _f = vec_push(h, op.n2)
+        h
+    elsif k == II_PLACE()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, str_own(&op.s2))
+        h
+    elsif k == II_RET()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.s1))
+        h
+    elsif k == II_DROP()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.s1))
+        h
+    elsif k == II_IF()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, insts_pack(&op.b1))
+        _e = vec_push(h, insts_pack(&op.b2))
+        _f = vec_push(h, str_own(&op.s2))
+        _g = vec_push(h, str_own(&op.s3))
+        _i = vec_push(h, ir_pack_carries(&op.rows))
+        h
+    elsif k == II_WHILE()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, insts_pack(&op.b1))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, insts_pack(&op.b2))
+        _e = vec_push(h, ir_pack_carries(&op.rows))
+        h
+    elsif k == II_AGG()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, ir_pack_strs(&op.strs))
+        h
+    elsif k == II_EXTRACT()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, str_own(&op.s2))
+        _e = vec_push(h, op.n1)
+        h
+    elsif k == II_REBIND()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        h
+    elsif k == II_EMAKE()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, op.n1)
+        _e = vec_push(h, ir_pack_strs(&op.strs))
+        _f = vec_push(h, op.n2)
+        h
+    elsif k == II_EFIELD()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, op.n1)
+        h
+    elsif k == II_ETAG()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        h
+    elsif k == II_SWITCH()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, ir_pack_arms(&op.rows))
+        _e = vec_push(h, insts_pack(&op.b1))
+        _f = vec_push(h, str_own(&op.s2))
+        h
+    elsif k == II_ANYBOX()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, str_own(&op.s2))
+        _e = vec_push(h, op.n1)
+        h
+    elsif k == II_ANYCALL()
+        h = vec_new()
+        _a = vec_push(h, k)
+        _b = vec_push(h, str_own(&op.dest))
+        _c = vec_push(h, str_own(&op.s1))
+        _d = vec_push(h, op.n1)
+        _e = vec_push(h, ir_pack_strs(&op.strs))
+        h
+    else
+        h = vec_new()
+        _a = vec_push(h, k)
+        h
+
+fn insts_pack(ops: &List[Inst]) -> Int ! alloc
+    v = vec_new()
+    insts_pack_go(ops, 0, ops.len(), v)
+
+fn insts_pack_go(ops: &List[Inst], i: Int, n: Int, v: Int) -> Int ! alloc
+    if i >= n
+        v
+    else
+        _p = vec_push(v, inst_pack(&ops.get(i)))
+        insts_pack_go(ops, i + 1, n, v)
+
+fn ir_ci(dest: Int, v: Int) -> Inst ! alloc
+    ir_mk(II_CI(), ir_s(dest), "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), v, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+fn ir_cs(dest: Int, text: Int) -> Inst ! alloc
+    ir_mk(II_CS(), ir_s(dest), ir_s(text), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+fn ir_bin(dest: Int, op: Int, left: Int, right: Int) -> Inst ! alloc
+    ir_mk(II_BIN(), ir_s(dest), ir_s(op), ir_s(left), ir_s(right), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+fn ir_cf(dest: Int, bits: Int, txt: Int) -> Inst ! alloc
+    ir_mk(II_CF(), ir_s(dest), ir_s(txt), "".dup(), "".dup(), "".dup(), "".dup(), bits, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+fn ir_tbin(dest: Int, op: Int, elem: Int, place: Int, left: Int, right: Int, len: Int, scalar: Int) -> Inst ! alloc
+    ir_mk(II_TBIN(), ir_s(dest), ir_s(op), ir_s(place), ir_s(left), ir_s(right), ir_s(len), elem, scalar, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
 # `TensorUnary`: `op` (only `neg`) over the tensor `input`, `len` elements of `elem`.
-fn ir_tun(dest: Int, op: Int, elem: Int, place: Int, input: Int, len: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_TUN())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, op)
-    _d = vec_push(inst, elem)
-    _e = vec_push(inst, place)
-    _f = vec_push(inst, input)
-    _g = vec_push(inst, len)
-    inst
+fn ir_tun(dest: Int, op: Int, elem: Int, place: Int, input: Int, len: Int) -> Inst ! alloc
+    ir_mk(II_TUN(), ir_s(dest), ir_s(op), ir_s(place), ir_s(input), "".dup(), ir_s(len), elem, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_agg(dest: Int, sname: Int, fields: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_AGG())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, sname)
-    _d = vec_push(inst, fields)
-    inst
+fn ir_agg(dest: Int, sname: Int, fields: Int) -> Inst ! alloc
+    ir_mk(II_AGG(), ir_s(dest), ir_s(sname), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_strs_of(fields), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_extract(dest: Int, base: Int, sname: Int, idx: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_EXTRACT())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, base)
-    _d = vec_push(inst, sname)
-    _e = vec_push(inst, idx)
-    inst
+fn ir_extract(dest: Int, base: Int, sname: Int, idx: Int) -> Inst ! alloc
+    ir_mk(II_EXTRACT(), ir_s(dest), ir_s(base), ir_s(sname), "".dup(), "".dup(), "".dup(), idx, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_emake(dest: Int, ename: Int, vidx: Int, payload: Int, owned: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_EMAKE())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, ename)
-    _d = vec_push(inst, vidx)
-    _e = vec_push(inst, payload)
-    _f = vec_push(inst, owned)
-    inst
+fn ir_emake(dest: Int, ename: Int, vidx: Int, payload: Int, owned: Int) -> Inst ! alloc
+    ir_mk(II_EMAKE(), ir_s(dest), ir_s(ename), "".dup(), "".dup(), "".dup(), "".dup(), vidx, owned, 0, ir_strs_of(payload), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_efield(dest: Int, value: Int, idx: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_EFIELD())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, value)
-    _d = vec_push(inst, idx)
-    inst
+fn ir_efield(dest: Int, value: Int, idx: Int) -> Inst ! alloc
+    ir_mk(II_EFIELD(), ir_s(dest), ir_s(value), "".dup(), "".dup(), "".dup(), "".dup(), idx, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
 # `EnumTag`: the low tag byte of an enum value.
-fn ir_etag(dest: Int, value: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_ETAG())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, value)
-    inst
+fn ir_etag(dest: Int, value: Int) -> Inst ! alloc
+    ir_mk(II_ETAG(), ir_s(dest), ir_s(value), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-# `arms` are `[tag, body, value]`.
-fn ir_switch(dest: Int, scrut: Int, arms: Int, default_body: Int, default_val: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_SWITCH())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, scrut)
-    _d = vec_push(inst, arms)
-    _e = vec_push(inst, default_body)
-    _f = vec_push(inst, default_val)
-    inst
+# `arms` are `[tag, body, value]` asas; converted to typed rows.
+fn ir_switch(dest: Int, scrut: Int, arms: Int, default_body: Int, default_val: Int) -> Inst ! alloc
+    ir_mk(II_SWITCH(), ir_s(dest), ir_s(scrut), ir_s(default_val), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(default_body), ir_no_insts(), ir_arms_of(arms))
 
-fn ir_anybox(dest: Int, vtable: Int, payload: Int, drop_slot: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_ANYBOX())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, vtable)
-    _d = vec_push(inst, payload)
-    _e = vec_push(inst, drop_slot)
-    inst
+fn ir_anybox(dest: Int, vtable: Int, payload: Int, drop_slot: Int) -> Inst ! alloc
+    ir_mk(II_ANYBOX(), ir_s(dest), ir_s(vtable), ir_s(payload), "".dup(), "".dup(), "".dup(), drop_slot, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_anycall(dest: Int, receiver: Int, slot: Int, args: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_ANYCALL())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, receiver)
-    _d = vec_push(inst, slot)
-    _e = vec_push(inst, args)
-    inst
+fn ir_anycall(dest: Int, receiver: Int, slot: Int, args: Int) -> Inst ! alloc
+    ir_mk(II_ANYCALL(), ir_s(dest), ir_s(receiver), "".dup(), "".dup(), "".dup(), "".dup(), slot, 0, 0, ir_strs_of(args), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_call_free(arg: Int) -> Int ! alloc
+fn ir_call_free(arg: Int) -> Inst ! alloc
     ir_call_named(arg, str_as_int(&"sal_free"))
 
 # A call of the runtime function `func` (a handle) on `arg`, for a release.
-fn ir_call_named(arg: Int, func: Int) -> Int ! alloc
+fn ir_call_named(arg: Int, func: Int) -> Inst ! alloc
     args = vec_new()
     _a = vec_push(args, arg)
     ir_call(0, func, args, 0)
 
-fn ir_call(dest: Int, func: Int, args: Int, has_dest: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_CALL())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, func)
-    _d = vec_push(inst, args)
-    _e = vec_push(inst, has_dest)
-    inst
+fn ir_call(dest: Int, func: Int, args: Int, has_dest: Int) -> Inst ! alloc
+    ir_mk(II_CALL(), ir_s(dest), ir_s(func), "".dup(), "".dup(), "".dup(), "".dup(), has_dest, 0, 0, ir_strs_of(args), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
 # A call whose tensor shape the C emitter needs (`shape` = vec [rows, cols, axis], -1 when unknown).
-# The slot is not printed: the IR text is the bootstrap's.
-fn ir_call_shaped(dest: Int, func: Int, args: Int, has_dest: Int, shape: Int) -> Int ! alloc
-    inst = ir_call(dest, func, args, has_dest)
-    _a = vec_push(inst, shape)
-    inst
+# The slot is not printed: the IR text is the bootstrap's. Shape travels in `n2`.
+fn ir_call_shaped(dest: Int, func: Int, args: Int, has_dest: Int, shape: Int) -> Inst ! alloc
+    ir_mk(II_CALL(), ir_s(dest), ir_s(func), "".dup(), "".dup(), "".dup(), "".dup(), has_dest, shape, 0, ir_strs_of(args), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_place(dest: Int, fr: Int, to_pl: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_PLACE())
-    _b = vec_push(inst, dest)
-    _c = vec_push(inst, fr)
-    _d = vec_push(inst, to_pl)
-    inst
+fn ir_place(dest: Int, fr: Int, to_pl: Int) -> Inst ! alloc
+    ir_mk(II_PLACE(), ir_s(dest), ir_s(fr), ir_s(to_pl), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_ret(val: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_RET())
-    _b = vec_push(inst, val)
-    inst
+fn ir_ret(val: Int) -> Inst ! alloc
+    ir_mk(II_RET(), "".dup(), ir_s(val), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-fn ir_drop(name: Int) -> Int ! alloc
-    inst = vec_new()
-    _a = vec_push(inst, II_DROP())
-    _b = vec_push(inst, name)
-    inst
+fn ir_drop(name: Int) -> Inst ! alloc
+    ir_mk(II_DROP(), "".dup(), ir_s(name), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+fn ir_rebind(dest: Int, src: Int) -> Inst ! alloc
+    ir_mk(II_REBIND(), ir_s(dest), ir_s(src), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+# IF built from handle bodies (match/try/while still collect asas into Cx.insts).
+fn ir_if(dest: Int, cond: Int, then_body: Int, else_body: Int, then_val: Int, else_val: Int, carried: Int) -> Inst ! alloc
+    ir_mk(II_IF(), ir_s(dest), ir_s(cond), ir_s(then_val), ir_s(else_val), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(then_body), ir_insts_of(else_body), ir_carries_of(carried))
+
+fn ir_while(cond_insts: Int, cond: Int, body: Int, carried: Int) -> Inst ! alloc
+    ir_mk(II_WHILE(), "".dup(), ir_s(cond), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(cond_insts), ir_insts_of(body), ir_carries_of(carried))
 
 # A string the instruction keeps. Small integers (opcodes, lengths, tags) stay as they are.
 # The IR keeps its own copy of the text: the copy is bound to a local that `str_as_int` hands
@@ -612,7 +924,13 @@ fn ir_own_fn(f: Int) -> Int ! alloc
     _r = ir_own_regions(vec_get(f, 3))
     ir_own_lits(vec_get(f, 4))
 
-fn ir_push(cx: &Cx, inst: Int) -> Int ! alloc
+# Push a typed instruction; packs to the handle list Cx still stores (until List[Inst]).
+fn ir_push(cx: &Cx, inst: Inst) -> Int ! alloc
+    _p = vec_push(cx_insts(cx), inst_pack(&inst))
+    0
+
+# Push an already-packed handle (nested IF bodies assembled as asas).
+fn ir_push_raw(cx: &Cx, inst: Int) -> Int ! alloc
     _p = vec_push(cx_insts(cx), inst)
     0
 

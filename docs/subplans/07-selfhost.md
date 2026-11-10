@@ -135,4 +135,16 @@ Avance del paso 4c (parser): `parser.sal` construye `Expr`/`TBlock`/`TStmt`/`TFn
 
 Orden (fácil → difícil): A deprecation/`FRC` sets → B `LitPool` → C qualify tablas → D fused → E ir builders/`Cx` → F fuse produce `IrFn` → G `Result` real.
 
-**Oleada A (cerrada):** en `deprecation.sal`, el cursor de offsets es `struct TyCur { i, offs }` con `new`/`scan`/`take`/`free` (`offs` sigue siendo un vec `Int`, para no pelear con la glue de `List` tras `&mut`). Los conjuntos de `FRC` (`sv`/`hm`/`al`/`sm`/`ct`) se dejan en asas `Int` de momento: pasarlos a `List[String]` y mutarlos vía `&mut FRC` dispara `LEAK` bajo `--instrument` (la glue tras `&mut` no cierra bien esas listas). Siguiente: oleada B (`LitPool` en `cenv.sal`).
+**Oleada A (cerrada):** en `deprecation.sal`, el cursor de offsets es `struct TyCur { i, offs }` con `new`/`scan`/`take`/`free` (`offs` sigue siendo un vec `Int`, para no pelear con la glue de `List` tras `&mut`). Los conjuntos de `FRC` (`sv`/`hm`/`al`/`sm`/`ct`) se dejan en asas `Int` de momento: pasarlos a `List[String]` y mutarlos vía `&mut FRC` dispara `LEAK` bajo `--instrument` (la glue tras `&mut` no cierra bien esas listas).
+
+**Oleada B (cerrada):** en `cenv.sal`, el pool de literales/variantes/arena/keep/drop-env es `struct LitPool { raw: Int }` con `new`/`variants`/`variant_fields`/`globals`/`ensure`/`free_texts` y accesores de slots (`raw` sigue siendo un vec `Int`); `Tc.pool` lo guarda y los call sites de `emit`/`cir` pasan `&mut LitPool`/`&LitPool` (el contexto IR sigue guardando `raw` en el vec).
+
+**Oleada C (cerrada):** en `qualify.sal`, tablas tipadas `Link`/`Qual`/`Rename` y `QualCtx` (`List[Link]`/`List[Qual]`/`List[Rename]`; `errs`/`own`/`alias_deps`/`flat` siguen Int). `modules.sal` no cambia en este corte (bases/visited siguen asas).
+
+**Oleada D (cerrada):** en `fused.sal`, `fo_new`/`fo_column` producen `FOp` y `collect_fused*` acumula `List[FOp]`; `fops_pack` baja a asas para `region_new`/`estimate_peak`/`lower_on_*`.
+
+**Oleada E (cerrada):** `Inst`/`FOp`/`Region`/`Lit`/`IrFn` viven en `ir.sal` (sin ciclo con `tir`). Los builders `ir_*`/`ir_if`/`ir_while`/`ir_rebind` construyen `Inst`; `ir_push` empaqueta con `inst_pack` hacia el vec de asas que `Cx.insts` aún guarda. `Cx.binds`/`regions`/`literals`/`variants`/`fn_map` siguen asas (el contador/acc siguen listas de una celda).
+
+**Oleada F (cerrada):** `lower_fn` → `IrFn`, `lower_program_*` → `List[IrFn]`; `ir_to_text`/`emit_c_*` consumen `IrFn` tipado. `ti_module` ya no se llama (queda `ti_fn` solo para el pack interno de `lower_fn`/glue mientras Cx.insts sea asa).
+
+**Oleada G (cerrada):** el camino de error del selfhost es `struct Res { tag, val, err: String }` en `result.sal` (Ok=`tag=0`/`val`, Err=`tag=1`/`err` sin `str_as_int` en el mensaje). El `enum Result[T, E]` del lenguaje no unifica entre módulos (`ModA__Result` ≠ `ModB__Result` → `E_TYPE`); por eso el selfhost no lo usa en firmas cruzadas. El arranque no inyecta `Result` en ficheros que importan `result.sal` (`with_prelude_enums`).

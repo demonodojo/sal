@@ -444,7 +444,7 @@ fn dv_seed(c: &mut DevC, params: &List[TParam], i: Int, n: Int) -> Int ! alloc
         _b = dc_bind(c, &pm.name, &pm.ty)
         dv_seed(c, params, i + 1, n)
 
-fn check_fn_devices(f: &TFn) -> Int ! alloc
+fn check_fn_devices(f: &TFn) -> Res ! alloc
     c = dc_new()
     _s = dv_seed(&mut c, &f.params, 0, list_len(&f.params))
     _t = dv_block(&mut c, &f.body)
@@ -458,16 +458,16 @@ fn check_fn_devices(f: &TFn) -> Int ! alloc
     _f = dc_free(&c)
     r
 
-fn check_devices_go(tp: &TProgram, i: Int, n: Int) -> Int ! alloc
+fn check_devices_go(tp: &TProgram, i: Int, n: Int) -> Res ! alloc
     if i >= n
         result_ok(0)
     else
         r = check_fn_devices(&list_get(&tp.fns, i))
-        if result_is_err(r) == 1
+        if result_is_err(&r) == 1
             r
         else
             check_devices_go(tp, i + 1, n)
 
 # Ok(0), or Err(message) for the first misplaced tensor or device misuse.
-fn check_devices(tp: &TProgram) -> Int ! alloc
+fn check_devices(tp: &TProgram) -> Res ! alloc
     check_devices_go(tp, 0, list_len(&tp.fns))

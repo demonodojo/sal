@@ -850,9 +850,10 @@ fn preprocess(src: &String) -> String ! alloc
     with_prelude_enums(preprocess_go(src, 0, n, acc, 0))
 
 # `Option` / `Result` are part of the language: append the standard enums when
-# a program uses them without declaring them.
+# a program uses them without declaring them. Skip `Result` when `result.sal`
+# is imported (that module owns the enum; a second copy is `E_TYPE`).
 fn with_prelude_enums(src: String) -> String ! alloc
-    r = if src.contains("Result[") == 1 && src.contains("enum Result") == 0
+    r = if src.contains("Result[") == 1 && src.contains("enum Result") == 0 && src_imports_result(&src) == 0
         "\nenum Result[T, E]\n    Ok(T)\n    Err(E)\n"
     else
         ""
@@ -864,6 +865,14 @@ fn with_prelude_enums(src: String) -> String ! alloc
         src
     else
         src + "\n" + r + o
+
+fn src_imports_result(src: &String) -> Int ! alloc
+    if src.contains("import result") == 1
+        1
+    elsif src.contains("result.sal") == 1
+        1
+    else
+        0
 
 fn find_char(s: &String, ch: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
