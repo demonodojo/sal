@@ -1,0 +1,166 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión X.Y.Z (sin v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # workflow_dispatch: bump Cargo.toml, commit, tag anotado y push.
+  # El push del tag dispara de nuevo este workflow (job release).
+  prepare:
+    name: prepare
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sal
+    steps:
+      - name: Checkout sal
+        uses: actions/checkout@v4
+        with:
+          path: sal
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout soso
+        uses: actions/checkout@v4
+        with:
+          repository: demonodojo/soso
+          path: soso
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump version, commit, tag and push
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "versión inválida: $VERSION (espera X.Y.Z)" >&2
+            exit 1
+          fi
+
+          git fetch --tags origin
+          git fetch origin main
+          git checkout -B main origin/main
+
+          latest="$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -n1 || true)"
+          if [[ -n "$latest" ]]; then
+            newer="$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -n1)"
+            if [[ "$newer" != "$VERSION" || "$VERSION" == "$latest" ]]; then
+              echo "la versión $VERSION no es posterior al último tag v$latest" >&2
+              exit 1
+            fi
+          fi
+
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "el tag v$VERSION ya existe" >&2
+            exit 1
+          fi
+
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          grep -q "^version = \"$VERSION\"$" Cargo.toml
+
+          cargo update --offline -p sal --precise "$VERSION"
+          grep -A1 'name = "sal"' Cargo.lock | grep -q "version = \"$VERSION\""
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release sal $VERSION"
+          git tag -a "v$VERSION" -m "sal $VERSION"
+          git push origin HEAD:main
+          git push origin "v$VERSION"
+
+  release:
+    name: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sal
+    steps:
+      - name: Checkout sal
+        uses: actions/checkout@v4
+        with:
+          path: sal
+          fetch-depth: 0
+
+      - name: Checkout soso
+        uses: actions/checkout@v4
+        with:
+          repository: demonodojo/soso
+          path: soso
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sal
+
+      - name: Resolve and verify version
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag inválido: $GITHUB_REF_NAME (espera vX.Y.Z)" >&2
+            exit 1
+          fi
+          crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [[ "$crate_version" != "$VERSION" ]]; then
+            echo "Cargo.toml ($crate_version) no coincide con v$VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: cargo test --locked
+        env:
+          RUST_TEST_THREADS: "1"
+        run: cargo test --locked
+
+      - name: cargo build --release
+        run: cargo build --locked --release --bin sal --bin standard
+
+      - name: Stage binaries
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          mkdir -p /tmp/sal-release
+          cp target/release/sal "/tmp/sal-release/sal-${VERSION}-linux-x86_64"
+          cp target/release/standard "/tmp/sal-release/standard-${VERSION}-linux-x86_64"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "v${VERSION}" \
+            --repo "${{ github.repository }}" \
+            --title "sal ${VERSION}" \
+            --generate-notes \
+            "/tmp/sal-release/sal-${VERSION}-linux-x86_64" \
+            "/tmp/sal-release/standard-${VERSION}-linux-x86_64"

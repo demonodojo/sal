@@ -213,9 +213,9 @@ fn find_up_go(name: &String, depth: Int) -> String ! io, alloc
 
 fn path_join_file(dir: &String, name: &String) -> String ! alloc
     if dir.eq(d"/") == 1
-        d"/" + name
+        "/" + name
     else
-        dir + d"/" + name
+        dir + "/" + name
 
 fn stat_is_file_go(path: &String) -> Int ! io, alloc
     st = Bytes.new(STAT_SIZE)

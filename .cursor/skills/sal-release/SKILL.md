@@ -10,7 +10,16 @@ description: >-
 
 Esto es el compilador **sal** (`demonodojo/sal`). No es opencode-sal: no edites ese repo, su `Sal.toml` ni sus tags.
 
-No hay workflow de release. Publicar es commit en `main`, tag y `gh release create`. No hagas `cargo publish`: `sosomodel` es una dependencia `path` y este paquete no sale a crates.io.
+No hagas `cargo publish`: `sosomodel` es una dependencia `path` y este paquete no sale a crates.io.
+
+## CI
+
+- **Tests:** [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) en `pull_request` y `push` a `main`: jobs por área (`scripts/test-area.sh`) y gate `RUST_TEST_THREADS=1 cargo test --locked`. Clona `demonodojo/soso` como `../soso`.
+- **Release:** [`.github/workflows/release.yml`](../../../.github/workflows/release.yml):
+  - Push de tag `vX.Y.Z` → tests, `cargo build --locked --release --bin sal --bin standard`, `gh release create` con `sal-X.Y.Z-linux-x86_64` y `standard-X.Y.Z-linux-x86_64`.
+  - `workflow_dispatch` (Actions → Release, input `version` = `X.Y.Z`) → bump de `Cargo.toml`/`Cargo.lock`, commit `Release sal X.Y.Z`, tag anotado, push a `main` y del tag; el push del tag dispara el job de release anterior. Si `main` tiene branch protection que bloquea a `github-actions[bot]`, hay que permitir ese actor o usar un PAT en el checkout del job `prepare`.
+
+Si el usuario pide publicar vía CI, preferir el `workflow_dispatch` (o el tag tras un bump local) en lugar de `gh release create` a mano.
 
 ## Versión canónica
 
@@ -20,11 +29,13 @@ Los tags `v0.1.0` y `v0.2.0` no subieron `Cargo.toml`; desde `v0.3.0` (commit «
 
 `std/io/Sal.toml` es el paquete de E/S, no el compilador. No lo cambies en un release de sal.
 
-## Flujo
+## Flujo local
+
+Sigue válido si el usuario pide hacerlo a mano (o sin Actions). El workflow de release cubre los pasos 3–6 al pushear el tag.
 
 ### 1. Elegir versión
 
-Desde el último tag (hoy `v0.3.0`):
+Desde el último tag:
 
 - **Patch** (0.3.0 → 0.3.1): correcciones.
 - **Minor** (0.3.0 → 0.4.0): lenguaje o compilador compatible.
@@ -56,7 +67,7 @@ target/release/sal --version    # sal X.Y.Z
 cargo test --locked
 ```
 
-`cargo test --locked` es la puerta del tag. Si falla, no etiquetes: el arreglo sigue [sal-verificar](../sal-verificar/SKILL.md).
+`cargo test --locked` es la puerta del tag. Si falla, no etiquetes: el arreglo sigue [sal-verificar](../sal-verificar/SKILL.md). En CI el job de release vuelve a correr `RUST_TEST_THREADS=1 cargo test --locked` antes de crear la release.
 
 ### 4. Commit
 
@@ -72,9 +83,9 @@ git push origin HEAD
 git push origin "vX.Y.Z"
 ```
 
-El tag apunta al commit que ya tiene `Cargo.toml` en `X.Y.Z`.
+El tag apunta al commit que ya tiene `Cargo.toml` en `X.Y.Z`. El push del tag dispara `.github/workflows/release.yml` (tests + binarios + GitHub Release). No hace falta `gh release create` a mano salvo que Actions falle.
 
-### 6. GitHub Release
+### 6. GitHub Release (manual, solo si CI no corre)
 
 En x86_64:
 
@@ -112,5 +123,6 @@ Ese cambio es un commit aparte en `soso`.
 | `sal --version` no es `sal X.Y.Z` | `Cargo.toml` no está en esa versión, o el binario es de antes del bump |
 | `cargo test --locked` rechaza el lock | `Cargo.lock` no se regeneró tras cambiar `version` |
 | La versión nueva no es posterior al último tag | Se partió de `Cargo.toml` en vez de `git tag -l 'v*'` |
+| Release CI: Cargo.toml ≠ tag | Tag pusheado sin bump, o bump en otro commit |
 | `cargo publish` | No aplica: dependencia `path` a `sosomodel` |
 | Release de opencode-sal | Skill equivocada; esa publicación no es esta |

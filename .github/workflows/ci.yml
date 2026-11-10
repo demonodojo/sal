@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  area:
+    name: area-${{ matrix.area }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        area:
+          - frontend
+          - semantics
+          - drops
+          - ir
+          - kernels
+          - llvm
+          - instrument
+          - toolchain
+          - lang
+          - builtins
+          - target
+          - std
+          - standard
+          - selfhost
+    defaults:
+      run:
+        working-directory: sal
+    steps:
+      - name: Checkout sal
+        uses: actions/checkout@v4
+        with:
+          path: sal
+
+      - name: Checkout soso
+        uses: actions/checkout@v4
+        with:
+          repository: demonodojo/soso
+          path: soso
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sal
+
+      - name: Test area
+        run: scripts/test-area.sh ${{ matrix.area }}
+
+  gate:
+    name: gate
+    needs: area
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sal
+    steps:
+      - name: Checkout sal
+        uses: actions/checkout@v4
+        with:
+          path: sal
+
+      - name: Checkout soso
+        uses: actions/checkout@v4
+        with:
+          repository: demonodojo/soso
+          path: soso
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sal
+
+      - name: cargo test --locked
+        env:
+          RUST_TEST_THREADS: "1"
+        run: cargo test --locked
