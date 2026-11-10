@@ -45,7 +45,46 @@ fn speed_work_sal_matches_rust_output() {
     );
 }
 
-/// A struct is a value: the hot loop of `struct_work.sal` must not touch the heap, and
+
+/// Los benchmarks de memoria de `benches/mem/` pueden asignar, pero el resultado debe ser
+/// el mismo que el del gemelo Rust (la `N` de cada pareja está sincronizada).
+#[test]
+fn memory_benches_match_rust_output() {
+    let out_dir = root().join("target/test-bench-memory");
+    std::fs::create_dir_all(&out_dir).expect("mkdir");
+    for name in ["node", "strings", "ints"] {
+        let rust_src = root().join(format!("benches/mem/{name}.rs"));
+        let sal_src = root().join(format!("benches/mem/{name}.sal"));
+        let rust_bin = out_dir.join(format!("{name}-rust"));
+
+        let rustc = Command::new("rustc")
+            .args(["-C", "opt-level=3", rust_src.to_str().unwrap(), "-o"])
+            .arg(&rust_bin)
+            .status()
+            .expect("rustc");
+        assert!(rustc.success(), "rustc failed to build benches/mem/{name}.rs");
+
+        let opts = CompileOptions {
+            toolchain: Default::default(),
+            output: Some(out_dir.join(format!("{name}-sal"))),
+            release: true,
+            instrument: false,
+            device: "cpu".into(),
+            project_root: root(),
+            skip_link: false,
+        };
+        let art = compile_file(&sal_src, &opts).unwrap_or_else(|e| panic!("compile {name}.sal: {e:?}"));
+        let sal_bin = art.binary.expect("sal binary");
+
+        let rust_out = Command::new(&rust_bin).output().expect("run rust");
+        let sal_out = Command::new(&sal_bin).output().expect("run sal");
+        assert_eq!(
+            rust_out.status.code(),
+            sal_out.status.code(),
+            "{name}: exit codes must match (sync N in {name}.rs and {name}.sal)"
+        );
+    }
+}
 /// it must agree with the same loop in Rust and stay in the same speed class.
 #[test]
 fn speed_struct_work_is_heap_free_and_matches_rust() {

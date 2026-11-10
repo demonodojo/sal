@@ -1,0 +1,24 @@
+# Structs con dueño dentro de una lista: construir, recorrer y liberar. Mide asignación y
+# liberación de elementos con String. Misma carga que benches/mem/node.rs (N debe coincidir).
+# El clon profundo de elementos con dueño lo cubre benches/mem/strings.sal.
+
+struct Node
+    id: Int
+    name: String
+
+fn build(n: Int) -> List[Node] ! alloc
+    xs = List.new[Node]()
+    i = 0
+    while i < n
+        xs.push(Node(i, (i & 1023).to_str()))
+        i = i + 1
+    xs
+
+fn main() -> Int ! alloc
+    xs = build(1000000)
+    total = 0
+    i = 0
+    while i < xs.len()
+        total = total + xs.get(i).id + xs.get(i).name.len()
+        i = i + 1
+    total & 255

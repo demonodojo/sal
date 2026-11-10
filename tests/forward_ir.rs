@@ -239,30 +239,40 @@ fn show(s: String, h: Int) -> String ! alloc
 
 #[test]
 fn nested_variant_match_binds_inner_ident() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(root.join("selfhost/ir/drops.sal")).expect("drops.sal");
-    let p = parse(&src).expect("parse drops");
-    let ir = lower_program(&p);
-    let owned = ir
-        .functions
-        .iter()
-        .find(|f| f.name == "owned_param_string_field")
-        .expect("owned_param_string_field");
-    let root_fn = ir
-        .functions
-        .iter()
-        .find(|f| f.name == "owned_param_root")
-        .expect("owned_param_root");
-    let outer = format!("{owned:?}");
-    let inner = format!("{root_fn:?}");
-    assert!(
-        outer.contains(r#"func: "owned_param_root""#),
-        "the field pattern must hand its base to owned_param_root:\n{outer}"
-    );
-    assert!(
-        inner.contains(r#"func: "param_named""#),
-        "the ident pattern must bind the name before calling param_named:\n{inner}"
-    );
+    // Lowering and Debug-printing `selfhost/ir/drops.sal` overflows the default
+    // test-thread stack (~2 MiB). Keep the check; give it room.
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .name("nested_variant_match".into())
+        .spawn(|| {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let src = std::fs::read_to_string(root.join("selfhost/ir/drops.sal")).expect("drops.sal");
+            let p = parse(&src).expect("parse drops");
+            let ir = lower_program(&p);
+            let owned = ir
+                .functions
+                .iter()
+                .find(|f| f.name == "owned_param_string_field")
+                .expect("owned_param_string_field");
+            let root_fn = ir
+                .functions
+                .iter()
+                .find(|f| f.name == "owned_param_root")
+                .expect("owned_param_root");
+            let outer = format!("{owned:?}");
+            let inner = format!("{root_fn:?}");
+            assert!(
+                outer.contains(r#"func: "owned_param_root""#),
+                "the field pattern must hand its base to owned_param_root:\n{outer}"
+            );
+            assert!(
+                inner.contains(r#"func: "param_named""#),
+                "the ident pattern must bind the name before calling param_named:\n{inner}"
+            );
+        })
+        .expect("spawn")
+        .join()
+        .expect("nested_variant_match thread");
 }
 
 #[test]

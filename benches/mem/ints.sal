@@ -1,0 +1,15 @@
+# Lista de Int que crece por push: mide el bloque contiguo sin elementos con dueño.
+# Misma carga que benches/mem/ints.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    i = 0
+    while i < 5000000
+        xs.push(i)
+        i = i + 1
+    total = 0
+    i = 0
+    while i < xs.len()
+        total = total + xs.get(i)
+        i = i + 1
+    total & 255

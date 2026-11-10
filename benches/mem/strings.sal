@@ -1,0 +1,20 @@
+# Lista de cadenas con dueño: construir, clonar (copia profunda) y recorrer.
+# Misma carga que benches/mem/strings.rs (N debe coincidir).
+
+fn build(n: Int) -> List[String] ! alloc
+    xs = List.new[String]()
+    i = 0
+    while i < n
+        xs.push(i.to_str())
+        i = i + 1
+    xs
+
+fn main() -> Int ! alloc
+    xs = build(300000)
+    ys = xs.clone()
+    total = 0
+    i = 0
+    while i < ys.len()
+        total = total + ys.get(i).len()
+        i = i + 1
+    total & 255

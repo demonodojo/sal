@@ -691,8 +691,8 @@ fn list_string_elem_typechecks() {
     expect_ok(
         r#"
 fn main() -> Int ! alloc
-    xs = list_new()
-    xs = list_push(xs, 1)
+    xs = list_new[Int]()
+    list_push(xs, 1)
     list_get(xs, 0)
 "#,
     );
@@ -707,9 +707,9 @@ enum Option[T]
     Some(T)
 
 fn main() -> Int ! alloc
-    d = dict_new()
-    d = dict_put(d, "a", 1)
-    d = dict_put(d, "b", 2)
+    d = dict_new[String, Int]()
+    dict_put(d, "a", 1)
+    dict_put(d, "b", 2)
     0
 "#,
     );

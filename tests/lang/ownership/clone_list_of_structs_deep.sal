@@ -7,7 +7,7 @@ struct Bag
 
 fn main() -> Int ! alloc
     xs = List.new[Bag]()
-    xs.push(Bag((5).to_str(), List.new[Int]()))
-    xs.push(Bag((6).to_str(), List.new[Int]()))
+    xs.push(Bag(int_to_str(5), List.new[Int]()))
+    xs.push(Bag(int_to_str(6), List.new[Int]()))
     ys = xs.clone()
     xs.len() * 10 + ys.len()

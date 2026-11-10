@@ -19,7 +19,7 @@ fn rebind(n: Int) -> Int ! alloc
 fn nested() -> Int ! alloc
     xss = List.new[List[String]]()
     xs = List.new[String]()
-    xs.push((1).to_str())
+    xs.push(int_to_str(1))
     xss.push(xs)
     xss.len()
 
@@ -30,11 +30,11 @@ fn deep(b: &Bag) -> Int ! alloc
 
 fn bags() -> Int ! alloc
     xs = List.new[Bag]()
-    xs.push(Bag((5).to_str(), List.new[Int]()))
+    xs.push(Bag(int_to_str(5), List.new[Int]()))
     ys = xs.clone()
     xs.len() + ys.len()
 
 fn main() -> Int ! alloc
     ys = make(3)
-    b = Bag((5).to_str(), make(1))
+    b = Bag(int_to_str(5), make(1))
     ys.len() + rebind(9) + nested() + deep(&b) + bags()

@@ -25,8 +25,15 @@ fn instrument_opts() -> CompileOptions {
     }
 }
 
+fn link_lock() -> std::sync::MutexGuard<'static, ()> {
+    // A prior panic while holding the lock must not poison the rest of the suite.
+    LINK_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn compile_instrumented(file: &Path) -> (String, PathBuf) {
-    let _guard = LINK_LOCK.lock().expect("link lock");
+    let _guard = link_lock();
     let art = compile_file(file, &instrument_opts()).expect("compile instrumented");
     let bin = art.binary.expect("binary");
     let stamp = std::time::SystemTime::now()
@@ -42,18 +49,26 @@ fn compile_instrumented(file: &Path) -> (String, PathBuf) {
     (art.llvm, copy)
 }
 
-/// Instrumented build reserves host tensors and does not free them before
-/// `sal_instrument_shutdown`, so stderr must contain LEAK.
+/// A String handed to a user fn that returns it keeps unknown provenance: the caller
+/// does not free it, so instrumented shutdown reports LEAK. Also wires `--instrument-out`.
 #[test]
 fn instrument_sal_leak() {
-    let file = root().join("examples/cpu_matmul.sal");
+    let file = PathBuf::from(format!("/tmp/sal-inst-leak-{}.sal", std::process::id()));
+    std::fs::write(
+        &file,
+        "fn keep(s: String) -> String\n    s\n\nfn main() -> Int ! alloc\n    s = int_to_str(12345)\n    t = keep(s)\n    str_len(t)\n",
+    )
+    .expect("write leak source");
     let (llvm, bin) = compile_instrumented(&file);
     assert!(
         llvm.contains("sal_instrument_malloc")
             && llvm.contains("sal_instrument_shutdown"),
         "expected instrument probes:\n{llvm}"
     );
-    let out = Command::new(&bin).output().expect("run");
+    let out = Command::new(&bin)
+        .env("SAL_INSTRUMENT_STRICT", "1")
+        .output()
+        .expect("run");
     assert_ne!(out.status.code(), Some(0), "expected non-zero exit on LEAK");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -64,13 +79,14 @@ fn instrument_sal_leak() {
     // Also exercise CLI `--instrument-out` via `sal run`.
     let out_path = PathBuf::from("/tmp/sal-instrument-out-wiring.json");
     let sal = env!("CARGO_BIN_EXE_sal");
-    let _guard = LINK_LOCK.lock().expect("link lock");
+    let _guard = link_lock();
     let status = Command::new(sal)
         .arg("run")
         .arg(&file)
         .arg("--instrument")
         .arg("--instrument-out")
         .arg(&out_path)
+        .env("SAL_INSTRUMENT_STRICT", "1")
         .current_dir(root())
         .output()
         .expect("sal run");
@@ -248,10 +264,10 @@ fn instrument_strict_discarded_fresh_values_are_clean() {
     assert_eq!(out.status.code(), Some(4), "stderr: {stderr}");
 }
 
-/// Pushing a borrowed element copies it. Both lists free their own box: no leak, no double free.
+/// Pushing a borrowed element clones it. Both lists free their own box: no leak, no double free.
 #[test]
 fn instrument_strict_list_get_pushed_copies_once() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    ys = list_new[P]()\n    list_push(ys, o)\n    list_len(xs) + list_len(ys)\n";
+    let src = "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    ys = list_new[P]()\n    list_push(ys, o.clone())\n    list_len(xs) + list_len(ys)\n";
     let out = run_strict(src, "struct_push");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
@@ -259,12 +275,13 @@ fn instrument_strict_list_get_pushed_copies_once() {
     assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
 }
 
-/// Returning a borrowed element copies it. The caller frees that copy once.
+/// Returning a borrowed element by value needs `clone`. Moving that copy into another list
+/// frees it once; the source list keeps its element.
 #[test]
 fn instrument_strict_list_get_returned_is_freed_once() {
     // `list_get` lends the element (SPEC «Memoria»): returning it by value is `E_BORROW`, so the
-    // program reads a field of the borrow and the list keeps its element.
-    let src = "struct P\n    name: String\n    n: Int\n\nfn give(xs: List[P]) -> Int ! alloc\n    list_get(xs, 0).n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    give(xs)\n";
+    // callee clones out of the borrow and the list keeps its element.
+    let src = "struct P\n    name: String\n    n: Int\n\nfn give(xs: &List[P]) -> P ! alloc\n    list_get(xs, 0).clone()\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    p = give(&xs)\n    ys = list_new[P]()\n    list_push(ys, p)\n    list_get(ys, 0).n\n";
     let out = run_strict(src, "struct_ret");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
@@ -275,7 +292,7 @@ fn instrument_strict_list_get_returned_is_freed_once() {
 /// Reading a field of a borrowed struct does not copy it.
 #[test]
 fn instrument_strict_list_get_field_read_is_clean() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn read_n(p: &P) -> Int ! alloc\n    p.n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    read_n(&o)\n";
+    let src = "struct P\n    name: String\n    n: Int\n\nfn read_n(p: &P) -> Int ! alloc\n    p.n\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    read_n(o)\n";
     let out = run_strict(src, "struct_read");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
@@ -283,10 +300,11 @@ fn instrument_strict_list_get_field_read_is_clean() {
     assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
 }
 
-/// Rebuilding a borrowed struct from its fields shares the pointers. No copy, no leak.
+/// Rebuilding a borrowed struct clones its owned fields. Moving the result into a list frees
+/// that copy; the source list still owns the original element.
 #[test]
 fn instrument_strict_list_get_rebuilt_is_clean() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: P) -> P ! alloc\n    P(p.name, p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    q.n\n";
+    let src = "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: &P) -> P ! alloc\n    P(p.name.clone(), p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    ys = list_new[P]()\n    list_push(ys, q)\n    list_get(ys, 0).n\n";
     let out = run_strict(src, "struct_rebuild");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
@@ -294,10 +312,10 @@ fn instrument_strict_list_get_rebuilt_is_clean() {
     assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
 }
 
-/// Pushing the rebuilt alias copies it once. Both lists free their own strings.
+/// Pushing the rebuilt value moves that owned copy. Both lists free their own strings.
 #[test]
 fn instrument_strict_list_get_rebuilt_then_pushed_is_clean() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: P) -> P ! alloc\n    P(p.name, p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    ys = list_new[P]()\n    list_push(ys, q)\n    list_len(xs) + list_len(ys)\n";
+    let src = "struct P\n    name: String\n    n: Int\n\nfn rebuild(p: &P) -> P ! alloc\n    P(p.name.clone(), p.n)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    q = rebuild(o)\n    ys = list_new[P]()\n    list_push(ys, q)\n    list_len(xs) + list_len(ys)\n";
     let out = run_strict(src, "struct_rebuild_push");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
@@ -305,10 +323,10 @@ fn instrument_strict_list_get_rebuilt_then_pushed_is_clean() {
     assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
 }
 
-/// `o.n = v` on a list element writes that element.
+/// `o.n = v` needs `&mut` of the list element (`xs.get_mut(i)`).
 #[test]
 fn instrument_strict_field_write_updates_the_list_element() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    o.n = 9\n    p = list_get(xs, 0)\n    p.n\n";
+    let src = "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = List.new[P]()\n    xs.push(P(\"a\", 1))\n    o = xs.get_mut(0)\n    o.n = 9\n    xs.get(0).n\n";
     let out = run_strict(src, "struct_field_write");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
@@ -316,10 +334,10 @@ fn instrument_strict_field_write_updates_the_list_element() {
     assert_eq!(out.status.code(), Some(9), "stderr: {stderr}");
 }
 
-/// A callee that stores the struct takes it: the caller copies, and that copy is freed once.
+/// A callee that stores the struct takes it: the caller clones out of the borrow.
 #[test]
 fn instrument_strict_list_get_taken_is_freed_once() {
-    let src = "struct P\n    name: String\n    n: Int\n\nfn keep(p: P) -> Int ! alloc\n    ys = list_new[P]()\n    list_push(ys, p)\n    list_len(ys)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    keep(o)\n";
+    let src = "struct P\n    name: String\n    n: Int\n\nfn keep(p: P) -> Int ! alloc\n    ys = list_new[P]()\n    list_push(ys, p)\n    list_len(ys)\n\nfn main() -> Int ! alloc\n    xs = list_new[P]()\n    list_push(xs, P(\"a\", 1))\n    o = list_get(xs, 0)\n    keep(o.clone())\n";
     let out = run_strict(src, "struct_take");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");

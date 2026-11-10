@@ -12,8 +12,14 @@ fn root() -> PathBuf {
 /// `compile_source` links to a shared out path; serialize parallel list tests.
 static LINK_LOCK: Mutex<()> = Mutex::new(());
 
+fn link_lock() -> std::sync::MutexGuard<'static, ()> {
+    LINK_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn compile_list(src: &str, instrument: bool) -> PathBuf {
-    let _guard = LINK_LOCK.lock().expect("link lock");
+    let _guard = link_lock();
     let opts = CompileOptions {
         toolchain: Default::default(),
         output: None,
@@ -43,7 +49,9 @@ fn compile_list(src: &str, instrument: bool) -> PathBuf {
 fn list_len_of_two_ints_is_2() {
     let src = r#"
 fn main() -> Int ! alloc
-    xs = list_push(list_push(list_new(), 1), 2)
+    xs = list_new[Int]()
+    list_push(xs, 1)
+    list_push(xs, 2)
     list_len(xs)
 "#;
     let bin = compile_list(src, false);
@@ -62,7 +70,9 @@ fn main() -> Int ! alloc
 fn list_get_index_0_returns_first_element() {
     let src = r#"
 fn main() -> Int ! alloc
-    xs = list_push(list_push(list_new(), 1), 2)
+    xs = list_new[Int]()
+    list_push(xs, 1)
+    list_push(xs, 2)
     list_get(xs, 0)
 "#;
     let bin = compile_list(src, false);
@@ -81,7 +91,9 @@ fn main() -> Int ! alloc
 fn list_get_oob_exits_nonzero() {
     let src = r#"
 fn main() -> Int ! alloc
-    xs = list_push(list_push(list_new(), 1), 2)
+    xs = list_new[Int]()
+    list_push(xs, 1)
+    list_push(xs, 2)
     list_get(xs, 5)
 "#;
     let bin = compile_list(src, false);
@@ -100,7 +112,9 @@ fn main() -> Int ! alloc
 fn list_get_oob_instrument_emits_oob() {
     let src = r#"
 fn main() -> Int ! alloc
-    xs = list_push(list_push(list_new(), 1), 2)
+    xs = list_new[Int]()
+    list_push(xs, 1)
+    list_push(xs, 2)
     list_get(xs, 5)
 "#;
     let bin = compile_list(src, true);

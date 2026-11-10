@@ -13,5 +13,5 @@ fn grow(b: &Bag) -> Int ! alloc
 fn main() -> Int ! alloc
     xs = List.new[Int]()
     xs.push(1)
-    b = Bag((5).to_str(), xs)
+    b = Bag(int_to_str(5), xs)
     grow(&b)
