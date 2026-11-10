@@ -97,7 +97,6 @@ struct Cx {
     groups: Vec<Vec<Span>>,
     /// Blocks that end in a `return` (the block, the offset of the `return`).
     diverge: Vec<(Span, u32)>,
-    fn_name: String,
 }
 
 thread_local! {
@@ -320,7 +319,6 @@ fn run_fn(
         whiles: Vec::new(),
         groups: Vec::new(),
         diverge: Vec::new(),
-        fn_name: f.name.clone(),
     };
     cx.ret_refs = cx.ref_carrying(&f.ret);
     for p in &f.params {

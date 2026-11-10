@@ -108,38 +108,47 @@ fn qdyn_count(pre: &String, lo: Int, hi: Int, acc: Int) -> Int ! alloc
     else
         qdyn_count(pre, lo + 1, hi, acc)
 
-# The cursor over the byte offsets of one item's types (`TFn.tyat`): a vector of handles whose slot 0
-# is the next index and whose other slots are the offsets (a vector, so no drop glue frees them).
-fn tycur_new(at: &String) -> Int ! alloc
-    tc = vec_new()
-    _a = vec_push(tc, 0)
-    _b = tycur_scan(at, 0, str_len(at), 0, tc)
+# The cursor over the byte offsets of one item's types (`TFn.tyat`).
+# `offs` stays an Int vec so drop glue does not free the offset slots.
+struct TyCur
+    i: Int
+    offs: Int
+
+static TyCur.new(at: &String) -> TyCur ! alloc
+    offs = vec_new()
+    tc = TyCur(0, offs)
+    _b = TyCur.scan(at, 0, str_len(at), 0, &mut tc)
     tc
 
-# Reads "o1,o2,..." (each offset ends with a comma) into the cursor's vector.
-fn tycur_scan(at: &String, i: Int, n: Int, acc: Int, tc: Int) -> Int ! alloc
+# Reads "o1,o2,..." (each offset ends with a comma) into the cursor.
+static TyCur.scan(at: &String, i: Int, n: Int, acc: Int, tc: &mut TyCur) -> Int ! alloc
     if i >= n
         0
     elsif str_char(at, i) == 44
-        _a = vec_push(tc, acc)
-        tycur_scan(at, i + 1, n, 0, tc)
+        vec_push(tc.offs, acc)
+        TyCur.scan(at, i + 1, n, 0, tc)
     else
-        tycur_scan(at, i + 1, n, acc * 10 + str_char(at, i) - 48, tc)
+        TyCur.scan(at, i + 1, n, acc * 10 + str_char(at, i) - 48, tc)
 
-fn tycur_take(tc: Int) -> Int ! alloc
-    k = vec_get(tc, 0)
-    _b = vec_set(tc, 0, k + 1)
-    if k + 1 < vec_len(tc)
-        vec_get(tc, k + 1)
+method TyCur.take(&mut self) -> Int ! alloc
+    k = self.i
+    self.i = k + 1
+    if k < vec_len(self.offs)
+        vec_get(self.offs, k)
     else
         0
 
+method TyCur.free(&mut self) -> Int ! alloc
+    vec_free(self.offs)
+    self.offs = vec_new()
+    0
+
 # Every identifier of a type text is a use of its name; the qualifier before a `.` is not (its name
 # after the dot is). Each name takes the next recorded offset.
-fn dep_type_text(ds: &DepSet, w: &Where, out: Int, tc: Int, ty: &String) -> Int ! alloc
+fn dep_type_text(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, ty: &String) -> Int ! alloc
     dep_type_go(ds, w, out, tc, ty, 0, str_len(ty))
 
-fn dep_type_go(ds: &DepSet, w: &Where, out: Int, tc: Int, ty: &String, i: Int, n: Int) -> Int ! alloc
+fn dep_type_go(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, ty: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif ident_char(str_char(ty, i), 1) == 0
@@ -150,10 +159,10 @@ fn dep_type_go(ds: &DepSet, w: &Where, out: Int, tc: Int, ty: &String, i: Int, n
             if str_char(ty, j) == 46
                 dep_type_go(ds, w, out, tc, ty, j, n)
             else
-                _h = dep_hit(ds, w, out, &str_slice(ty, i, j), tycur_take(tc))
+                _h = dep_hit(ds, w, out, &str_slice(ty, i, j), tc.take())
                 dep_type_go(ds, w, out, tc, ty, j, n)
         else
-            _h = dep_hit(ds, w, out, &str_slice(ty, i, j), tycur_take(tc))
+            _h = dep_hit(ds, w, out, &str_slice(ty, i, j), tc.take())
             dep_type_go(ds, w, out, tc, ty, j, n)
 
 fn ident_char(c: Int, first: Int) -> Int ! alloc
@@ -185,25 +194,25 @@ fn ident_end(ty: &String, i: Int, n: Int) -> Int ! alloc
         i
 
 fn dep_fn(ds: &DepSet, w: &Where, out: Int, f: &TFn) -> Int ! alloc
-    tc = tycur_new(&f.tyat)
-    _a = dep_params(ds, w, out, tc, &f.params, 0, list_len(&f.params))
-    _b = dep_type_text(ds, w, out, tc, &f.ret)
-    _c = dep_block(ds, w, out, tc, &f.body)
-    vec_free(tc)
+    tc = TyCur.new(&f.tyat)
+    _a = dep_params(ds, w, out, &mut tc, &f.params, 0, list_len(&f.params))
+    _b = dep_type_text(ds, w, out, &mut tc, &f.ret)
+    _c = dep_block(ds, w, out, &mut tc, &f.body)
+    tc.free()
 
-fn dep_params(ds: &DepSet, w: &Where, out: Int, tc: Int, ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
+fn dep_params(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = dep_type_text(ds, w, out, tc, &list_get(ps, i).ty)
         dep_params(ds, w, out, tc, ps, i + 1, n)
 
-fn dep_block(ds: &DepSet, w: &Where, out: Int, tc: Int, b: &TBlock) -> Int ! alloc
+fn dep_block(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, b: &TBlock) -> Int ! alloc
     _a = dep_stmts(ds, w, out, tc, &b.stmts, 0, list_len(&b.stmts))
     dep_expr(ds, w, out, tc, &b.tail)
 
 # A `let` reads its type, then its value; an assignment reads its target, then its value.
-fn dep_stmts(ds: &DepSet, w: &Where, out: Int, tc: Int, xs: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+fn dep_stmts(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, xs: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -213,21 +222,21 @@ fn dep_stmts(ds: &DepSet, w: &Where, out: Int, tc: Int, xs: &List[TStmt], i: Int
         _c = dep_expr(ds, w, out, tc, &st.expr)
         dep_stmts(ds, w, out, tc, xs, i + 1, n)
 
-fn dep_args(ds: &DepSet, w: &Where, out: Int, tc: Int, xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
+fn dep_args(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = dep_expr(ds, w, out, tc, &list_get(xs, i))
         dep_args(ds, w, out, tc, xs, i + 1, n)
 
-fn dep_arms(ds: &DepSet, w: &Where, out: Int, tc: Int, xs: &List[TArm], i: Int, n: Int) -> Int ! alloc
+fn dep_arms(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, xs: &List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = dep_expr(ds, w, out, tc, &list_get(xs, i).body)
         dep_arms(ds, w, out, tc, xs, i + 1, n)
 
-fn dep_elsifs(ds: &DepSet, w: &Where, out: Int, tc: Int, xs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+fn dep_elsifs(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, xs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -236,7 +245,7 @@ fn dep_elsifs(ds: &DepSet, w: &Where, out: Int, tc: Int, xs: &List[TElsif], i: I
         _b = dep_block(ds, w, out, tc, &a.body)
         dep_elsifs(ds, w, out, tc, xs, i + 1, n)
 
-fn dep_expr(ds: &DepSet, w: &Where, out: Int, tc: Int, e: &Expr) -> Int ! alloc
+fn dep_expr(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, e: &Expr) -> Int ! alloc
     match e
         XCall(name, args, targs, xp) => dep_call(ds, w, out, tc, &name, &args, &targs, xp)
         XBin(op, l, r) => dep_pair(ds, w, out, tc, &l, &r)
@@ -252,27 +261,27 @@ fn dep_expr(ds: &DepSet, w: &Where, out: Int, tc: Int, e: &Expr) -> Int ! alloc
         _ => 0
 
 # The callee's name is a use at the call's position; its type arguments come before its arguments.
-fn dep_call(ds: &DepSet, w: &Where, out: Int, tc: Int, name: &String, args: &List[Expr], targs: &String, xp: Int) -> Int ! alloc
+fn dep_call(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, name: &String, args: &List[Expr], targs: &String, xp: Int) -> Int ! alloc
     _h = dep_hit(ds, w, out, name, xp)
     _t = dep_type_text(ds, w, out, tc, targs)
     dep_args(ds, w, out, tc, args, 0, list_len(args))
 
-fn dep_pair(ds: &DepSet, w: &Where, out: Int, tc: Int, l: &Expr, r: &Expr) -> Int ! alloc
+fn dep_pair(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, l: &Expr, r: &Expr) -> Int ! alloc
     _a = dep_expr(ds, w, out, tc, l)
     dep_expr(ds, w, out, tc, r)
 
 # `if` reads its condition, its then-block, the elsif arms, then the else-block.
-fn dep_if(ds: &DepSet, w: &Where, out: Int, tc: Int, c: &Expr, t: &TBlock, el: &TBlock, elsifs: &List[TElsif]) -> Int ! alloc
+fn dep_if(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, c: &Expr, t: &TBlock, el: &TBlock, elsifs: &List[TElsif]) -> Int ! alloc
     _a = dep_expr(ds, w, out, tc, c)
     _b = dep_block(ds, w, out, tc, t)
     _c = dep_elsifs(ds, w, out, tc, elsifs, 0, list_len(elsifs))
     dep_block(ds, w, out, tc, el)
 
-fn dep_while(ds: &DepSet, w: &Where, out: Int, tc: Int, c: &Expr, body: &TBlock) -> Int ! alloc
+fn dep_while(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, c: &Expr, body: &TBlock) -> Int ! alloc
     _a = dep_expr(ds, w, out, tc, c)
     dep_block(ds, w, out, tc, body)
 
-fn dep_match(ds: &DepSet, w: &Where, out: Int, tc: Int, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
+fn dep_match(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
     _a = dep_expr(ds, w, out, tc, scrut)
     dep_arms(ds, w, out, tc, arms, 0, list_len(arms))
 
@@ -294,12 +303,12 @@ fn dep_fields(ds: &DepSet, w: &Where, out: Int, sts: &List[TStruct], i: Int, n: 
         0
     else
         st = list_get(sts, i)
-        tc = tycur_new(&st.tyat)
-        _a = dep_field_list(ds, w, out, tc, &st.fields, 0, list_len(&st.fields))
-        vec_free(tc)
+        tc = TyCur.new(&st.tyat)
+        _a = dep_field_list(ds, w, out, &mut tc, &st.fields, 0, list_len(&st.fields))
+        tc.free()
         dep_fields(ds, w, out, sts, i + 1, n)
 
-fn dep_field_list(ds: &DepSet, w: &Where, out: Int, tc: Int, fs: &List[TField], i: Int, n: Int) -> Int ! alloc
+fn dep_field_list(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, fs: &List[TField], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -311,19 +320,19 @@ fn dep_variants(ds: &DepSet, w: &Where, out: Int, es: &List[TEnum], i: Int, n: I
         0
     else
         e = list_get(es, i)
-        tc = tycur_new(&e.tyat)
-        _a = dep_variant_list(ds, w, out, tc, &e.variants, 0, list_len(&e.variants))
-        vec_free(tc)
+        tc = TyCur.new(&e.tyat)
+        _a = dep_variant_list(ds, w, out, &mut tc, &e.variants, 0, list_len(&e.variants))
+        tc.free()
         dep_variants(ds, w, out, es, i + 1, n)
 
-fn dep_variant_list(ds: &DepSet, w: &Where, out: Int, tc: Int, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
+fn dep_variant_list(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         _a = dep_type_list(ds, w, out, tc, &list_get(vs, i).fields, 0, list_len(&list_get(vs, i).fields))
         dep_variant_list(ds, w, out, tc, vs, i + 1, n)
 
-fn dep_type_list(ds: &DepSet, w: &Where, out: Int, tc: Int, tys: &List[String], i: Int, n: Int) -> Int ! alloc
+fn dep_type_list(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, tys: &List[String], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else

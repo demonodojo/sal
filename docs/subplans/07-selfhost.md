@@ -130,3 +130,9 @@ Regla aprendida: un struct con `String` y con un campo struct anidado no se copi
 Avance del paso 4b (qualify/modules): `qualify.sal` y `modules.sal` trabajan sobre `TProgram` (`Graph { mods, progs }`); ya no se lee ninguna asa de programa salvo al cargar.
 
 Avance del paso 4c (parser): `parser.sal` construye `Expr`/`TBlock`/`TStmt`/`TFn`/`TStruct`/`TEnum`/`TProgram` directamente (`parse_program(src, errs) -> TProgram`; un error deja su mensaje en `errs`, se recoge con `errs_take`). Los textos que se guardan se copian (`tok_own`): los de listas de `String` los libera `list_free`. Los ids de sentencia salen de un contador del `Parser`. Se borran `ast.sal`, `to_typed`, `fh_*` y los `tt_*` de AST; los tipadores de texto que sobreviven están en `tytext.sal` y los ayudantes de asas de la IR en `tir.sal`. `drops_body` mueve el cuerpo una vez y lo escribe en el `TFn`. La IR copia las cadenas que conserva y el C ya tiene las suyas; el cuerpo se suelta con `tp_free_block` antes de la función siguiente. Los caminos de un solo fichero liberan el programa con `tp_free` (sin ello el hello instrumentado da `LEAK`). Memoria de stage1 sobre `fuse.sal`/`emit.sal`: 0,97 GB / 4,2 GB (antes 1,32 GB / 5,0 GB; sigue sobre los 73 MB / 207 MB de referencia, que aún no se recuperan).
+
+## Migración residual asas → structs (oleadas)
+
+Orden (fácil → difícil): A deprecation/`FRC` sets → B `LitPool` → C qualify tablas → D fused → E ir builders/`Cx` → F fuse produce `IrFn` → G `Result` real.
+
+**Oleada A (cerrada):** en `deprecation.sal`, el cursor de offsets es `struct TyCur { i, offs }` con `new`/`scan`/`take`/`free` (`offs` sigue siendo un vec `Int`, para no pelear con la glue de `List` tras `&mut`). Los conjuntos de `FRC` (`sv`/`hm`/`al`/`sm`/`ct`) se dejan en asas `Int` de momento: pasarlos a `List[String]` y mutarlos vía `&mut FRC` dispara `LEAK` bajo `--instrument` (la glue tras `&mut` no cierra bien esas listas). Siguiente: oleada B (`LitPool` en `cenv.sal`).
