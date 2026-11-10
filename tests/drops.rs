@@ -846,7 +846,11 @@ fn ir_expanded(name: &str, src: &str) -> String {
             let func = line[i + 7..].split('"').next().unwrap().to_string();
             let arg = line.split("args: [\"").nth(1).unwrap().split('"').next().unwrap().to_string();
             for body in bodies.get(&func).cloned().unwrap_or_default() {
-                out.push_str(&body.replace("base: \"v\"", &format!("base: \"{arg}\"")));
+                out.push_str(
+                    &body
+                        .replace("base: \"v\"", &format!("base: \"{arg}\""))
+                        .replace("args: [\"v\"]", &format!("args: [\"{arg}\"]")),
+                );
                 out.push('\n');
             }
             continue;
@@ -1021,6 +1025,25 @@ fn top_level_return_releases_its_struct_local_once() {
     );
     let top = fn_ir(&ir, "top");
     assert_eq!(top.matches("func: \"drop.Ctx\"").count(), 1, "{top}");
+}
+
+// Multi-field `drop.<Struct>` frees the heap block too (SPEC / Rust Drop of an owning value).
+#[test]
+fn drop_struct_frees_heap_box() {
+    let ir = ir_full(
+        "drop_box",
+        "struct OC\n    moved: List[String]\n    n: Int\n\nfn main() -> Int ! alloc\n    c = OC(List.new[String](), 1)\n    list_len(&c.moved)\n",
+    );
+    let drop_oc = fn_ir(&ir, "drop.OC");
+    assert!(
+        drop_oc.contains("func: \"sal_struct_free_box\""),
+        "drop.OC must free the struct block:\n{drop_oc}"
+    );
+    let drop_elem = fn_ir(&ir, "drop.elem.OC");
+    assert!(
+        drop_elem.contains("func: \"drop.OC\"") && !drop_elem.contains("sal_struct_free_box"),
+        "drop.elem.OC only forwards to drop.OC:\n{drop_elem}"
+    );
 }
 
 // `f(&g())`: the temporary from `g()` is bound and released (SPEC / Rust; Hoist Ref/RefMut).

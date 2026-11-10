@@ -721,11 +721,23 @@ fn drop_field_ssa(cx: &mut Cx, base: Int, sd: &TStruct, i: Int) -> Int ! alloc
         _e = ir_push(cx, ir_extract(d, base, str_own(&sd.name), i))
         d
 
-# A nested struct field: its own released fields.
+# A nested struct field: inline its releases, then free its heap block when multi-field.
 fn drop_nested(cx: &mut Cx, base: Int, sd: &TStruct, i: Int, fty: &String, depth: Int, g: Int, fr: &FRC, root: &String, path: &String) -> Int ! alloc
     inner = list_get(&cx_structs(cx), tt_struct_find(&cx_structs(cx), &trim_type_piece(fty)))
     ssa = drop_field_ssa(cx, base, sd, i)
-    drop_fields(cx, ssa, &inner, &inner.fields, 0, list_len(&inner.fields), depth + 1, g, fr, root, path)
+    _d = drop_fields(cx, ssa, &inner, &inner.fields, 0, list_len(&inner.fields), depth + 1, g, fr, root, path)
+    if list_len(&inner.fields) > 1
+        args2 = vec_new()
+        _b = vec_push(args2, ssa)
+        ir_push(cx, ir_call(0, str_as_int(&"sal_struct_free_box"), args2, 0))
+    else
+        0
 
 fn drop_struct_fields(cx: &mut Cx, base: Int, sd: &TStruct, g: Int, fr: &FRC, root: &String) -> Int ! alloc
-    drop_fields(cx, base, sd, &sd.fields, 0, list_len(&sd.fields), 0, g, fr, root, &"")
+    _f = drop_fields(cx, base, sd, &sd.fields, 0, list_len(&sd.fields), 0, g, fr, root, &"")
+    if list_len(&sd.fields) > 1
+        args = vec_new()
+        _a = vec_push(args, base)
+        ir_push(cx, ir_call(0, str_as_int(&"sal_struct_free_box"), args, 0))
+    else
+        0

@@ -124,7 +124,7 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 
 ## Siguen sin liberarse (SPEC)
 
-La **caja de un struct local** construido con su constructor (`drop.<Struct>` suelta los campos, no el bloque de `sal_struct_new`; `--instrument` no lo cuenta, valgrind sí); el payload `List`/struct de una caja de enum copiada con `sal_enum_copy` (se comparte). Campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String` como asa `Int`**; **`z = k`** sobre la misma copia. Tensores en región fusionada: `IrInst::Drop` + `sal_place_free` en bajada LLVM, no el mismo camino que un local escalar.
+Un struct multi-campo suelta su bloque en `drop.<Struct>` (`sal_struct_free_box`); un valor solo en registros (scalarize) no tiene caja que soltar. Siguen abiertos: el payload `List`/struct de una caja de enum copiada con `sal_enum_copy` (se comparte); campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String` como asa `Int`**; **`z = k`** sobre la misma copia. Tensores en región fusionada: `IrInst::Drop` + `sal_place_free` en bajada LLVM, no el mismo camino que un local escalar.
 
 ## Verificar
 

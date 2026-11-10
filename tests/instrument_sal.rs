@@ -345,26 +345,26 @@ fn instrument_strict_field_overwrite_drops_old() {
     assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
 }
 
-/// `c.field = v` through `&mut` writes back to the caller and drops the old field.
-/// (A multi-field local still boxes for `drop.OC` without freeing that shell — known
-/// pending in subplan 13 — so this is not run under `SAL_INSTRUMENT_STRICT`.)
+/// `c.field = v` through `&mut` writes back; the local's box is freed by `drop.OC`.
 #[test]
-fn instrument_mut_param_field_assign_writes_back() {
+fn instrument_strict_mut_param_field_assign_is_clean() {
     let src = "struct OC\n    moved: List[String]\n    n: Int\n\nfn reset(c: &mut OC) -> Int ! alloc\n    c.moved = List.new[String]()\n    0\n\nfn main() -> Int ! alloc\n    c = OC(List.new[String](), 1)\n    list_push(&mut c.moved, \"a\")\n    reset(&mut c)\n    list_len(&c.moved)\n";
-    let file = PathBuf::from(format!(
-        "/tmp/sal-mut-field-{}-.sal",
-        std::process::id()
-    ));
-    std::fs::write(&file, src).expect("write");
-    let (_llvm, bin) = compile_instrumented(&file);
-    let out = Command::new(&bin)
-        .current_dir(root())
-        .output()
-        .expect("run");
+    let out = run_strict(src, "mut_field_assign");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
     assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
-    assert!(!stderr.contains("USE_AFTER_FREE"), "use after free: {stderr}");
-    assert_eq!(out.status.code(), Some(0), "writeback failed: {stderr}");
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+}
+
+/// A multi-field local frees its `sal_struct_new` block with `drop.<Struct>` (Rust Drop).
+#[test]
+fn instrument_strict_struct_local_box_is_clean() {
+    let src = "struct OC\n    moved: List[String]\n    n: Int\n\nfn main() -> Int ! alloc\n    c = OC(List.new[String](), 1)\n    list_len(&c.moved)\n";
+    let out = run_strict(src, "struct_local_box");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
 }
 
 /// A callee that stores the struct takes it: the caller clones out of the borrow.

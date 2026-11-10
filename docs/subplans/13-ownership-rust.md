@@ -79,7 +79,7 @@ El origen de una referencia es el lugar prestado. Un retorno `&'a T` solo es vá
 | `Bytes` | `sal_bytes_free` (una vista solo suelta la cabecera) |
 | `Tensor` | `sal_tensor_free` / `sal_place_free` |
 | `List[T]` / `Dict[K, V]` | recorre elementos (y claves `String`) con la glue del elemento y luego el bloque |
-| struct | campos en orden de declaración |
+| struct | campos en orden de declaración; si tiene ≥2 campos, también el bloque (`sal_struct_free_box`) |
 | enum | `switch` por tag |
 | `&T`, `&mut T`, `Copy` | nada |
 
@@ -98,7 +98,7 @@ Estado de la liberación mientras `insert_drops` siga en su puesto (lo que ya si
 - Un temporal prestado (`f(&g())` / `&mut g()`) se liga a un local (`Hoist` / `dr_hoist_unary`) y lo suelta la cola o la glue del struct.
 - Sobreescribir un campo suelta el valor viejo; en un parámetro `&mut` o un alias de `list_get` se escribe in situ (`sal_struct_set`); tras llamar con un local scalarizado, `scalarize` repone los slots desde la caja.
 
-Pendiente frente a la SPEC: la caja de un struct local construido con su constructor (`sal_struct_new`) no se suelta al salir del ámbito (`drop.<Struct>` suelta los campos; `drop.elem.<Struct>` solo se usa en listas); un payload `List`/struct de una caja de enum copiada con `sal_enum_copy` se comparte; las reglas nuevas del borrow checker (`get` como `&T`, mover fuera de una referencia, payload de `match`, `&mut`→`&`) no están en `selfhost/sem/` y sus tests llevan `selfhost-xfail`.
+`drop.<Struct>` de un struct con dos o más campos suelta también el bloque (`sal_struct_free_box`); `drop.elem.<Struct>` es un envoltorio que lo llama (listas). Pendiente frente a la SPEC: un payload `List`/struct de una caja de enum copiada con `sal_enum_copy` se comparte; las reglas nuevas del borrow checker (`get` como `&T`, mover fuera de una referencia, payload de `match`, `&mut`→`&`) no están en `selfhost/sem/` y sus tests llevan `selfhost-xfail`.
 
 Se retiran `fresh_kind`, `OWNED_FNS`, `read_only_params`, `last_consumed_params`, `caller_param_modes`, `field_reads` como análisis de «¿suelto esto?», la copia implícita `desc_copy` y `finish_module_box_shell_drops`. Los `tp_free_*` escritos a mano en `selfhost/` se eliminan: la glue los suelta y serían una doble liberación. Las asas `Int` (`str_as_int`, `vec_push`, `map_put`) siguen fuera del modelo.
 

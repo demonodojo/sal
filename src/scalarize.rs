@@ -561,6 +561,12 @@ impl<'a> Pass<'a> {
         out: &mut Vec<IrInst>,
     ) {
         let Some(sig) = self.sigs.get(func).cloned() else {
+            // A scalarised value has no heap shell: field releases already ran on its slots.
+            if func == "sal_struct_free_box"
+                && args.first().is_some_and(|a| scope.vals.contains_key(a))
+            {
+                return;
+            }
             // Boxing a scalarised alias for `desc_copy` allocates a shallow block.
             // The deep copy is what the second owner keeps; the shallow block is freed here.
             let shallow = func == "sal_desc_copy"

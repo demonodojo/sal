@@ -412,8 +412,8 @@ fn struct_is_boxed(name: &str, strings: &StringEnv) -> bool {
     strings.structs.get(name).is_some_and(|sd| !is_transparent_struct(sd))
 }
 
-/// The glue a list calls for each element of struct `name`: `drop.<name>` releases the fields,
-/// and the element's block goes too (`drop.elem.<name>`, which the list holds).
+/// The glue a list calls for each element of struct `name`. Multi-field structs use
+/// `drop.elem.<name>` (a thin wrapper over `drop.<name>`, which already frees the block).
 fn struct_elem_glue_name(name: &str, strings: &StringEnv) -> String {
     if struct_is_boxed(name, strings) {
         format!("drop.elem.{name}")
@@ -422,6 +422,8 @@ fn struct_elem_glue_name(name: &str, strings: &StringEnv) -> String {
     }
 }
 
+/// `drop.elem.<name>`: same as `drop.<name>` (fields + block). Kept as a distinct symbol so
+/// lists can hold an element glue without special-casing transparent structs.
 fn struct_elem_glue_fn(name: &str) -> IrFunction {
     IrFunction {
         name: format!("drop.elem.{name}"),
@@ -430,11 +432,6 @@ fn struct_elem_glue_fn(name: &str) -> IrFunction {
             IrInst::Call {
                 dest: None,
                 func: format!("drop.{name}"),
-                args: vec!["v".into()],
-            },
-            IrInst::Call {
-                dest: None,
-                func: "sal_struct_free_box".into(),
                 args: vec!["v".into()],
             },
             IrInst::ConstInt {
@@ -503,6 +500,8 @@ fn struct_glue_has(name: &str, strings: &StringEnv) -> bool {
 
 /// The body of `drop.<name>`, or `None` when that struct frees nothing. The same function
 /// as the inline releases of a clean local (`free_struct_strings`), so both release alike.
+/// A multi-field value is a heap block (`sal_struct_new`): after its fields, the block goes
+/// too — same as Rust dropping a value that owns its allocation.
 fn struct_glue_body(name: &str, strings: &StringEnv) -> Option<Vec<IrInst>> {
     let sd = strings.structs.get(name)?;
     if !sd.type_params.is_empty() {
@@ -529,6 +528,13 @@ fn struct_glue_body(name: &str, strings: &StringEnv) -> Option<Vec<IrInst>> {
     );
     if ins.is_empty() {
         return None;
+    }
+    if struct_is_boxed(name, strings) {
+        ins.push(IrInst::Call {
+            dest: None,
+            func: "sal_struct_free_box".into(),
+            args: vec!["v".into()],
+        });
     }
     ins.push(IrInst::ConstInt {
         dest: "r".into(),
@@ -1859,6 +1865,13 @@ fn emit_struct_string_drops(
             Some(&reads),
             &name,
         );
+        if struct_is_boxed(&sn, strings) {
+            instructions.push(IrInst::Call {
+                dest: None,
+                func: "sal_struct_free_box".into(),
+                args: vec![base],
+            });
+        }
     }
 }
 
@@ -2061,6 +2074,8 @@ fn free_struct_strings(
                 args: vec![ssa],
             }),
             FieldDrop::Struct(inner) => {
+                // Inline nested fields (same as before) and free the nested block when
+                // multi-field — so `drop.<Outer>` stays a flat body `ir_expanded` can splice.
                 free_struct_strings(
                     &ssa,
                     inner,
@@ -2073,7 +2088,14 @@ fn free_struct_strings(
                     &path,
                     reads,
                     root,
-                )
+                );
+                if !is_transparent_struct(inner) {
+                    instructions.push(IrInst::Call {
+                        dest: None,
+                        func: "sal_struct_free_box".into(),
+                        args: vec![ssa],
+                    });
+                }
             }
         }
     }

@@ -2238,7 +2238,9 @@ fn struct_glue_before(structs: &List[TStruct], cand: &List[Int], idx: Int, j: In
 
 # The glue of `sd` (SPEC «Liberación de locales»): `drop.<Struct>(v)` releases what
 # `drop_fields` releases of a local of that struct with nothing moved or read whole (the
-# default glue bits, no moved or tainted fields). 0 when that frees nothing.
+# default glue bits, no moved or tainted fields). A multi-field value also frees its
+# heap block (`sal_struct_free_box`), like Rust dropping a value that owns its allocation.
+# 0 when that frees nothing.
 fn ir_fn_empty() -> IrFn ! alloc
     IrFn("".dup(), List.new[String](), List.new[Inst](), List.new[Region](), List.new[Lit]())
 
@@ -2254,6 +2256,12 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
     if vec_len(insts) == 0
         ir_fn_empty()
     else
+        if struct_is_boxed_t(sd) == 1
+            args_b = vec_new()
+            _fb = vec_push(args_b, str_as_int(&"v"))
+            _sb = vec_push(insts, inst_pack(&ir_call(0, str_as_int(&"sal_struct_free_box"), args_b, 0)))
+        else
+            _nb = 0
         _r = vec_push(insts, inst_pack(&ir_ci(str_as_int(&"r"), 0)))
         _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
         out = vec_new()
@@ -2272,16 +2280,13 @@ fn struct_is_boxed_t(sd: &TStruct) -> Int
     else
         1
 
-# `drop.elem.<Struct>(v)`: releases the element's fields, then its block (`struct_elem_glue_fn`
-# in src/ir.rs). A list holds this function for each element that is a boxed struct with glue.
+# `drop.elem.<Struct>(v)`: same as `drop.<Struct>` (fields + block). Kept as a distinct
+# symbol so lists can hold element glue without special-casing transparent structs.
 fn struct_elem_glue_fn(name: &String) -> IrFn ! alloc
     insts = vec_new()
     args = vec_new()
     _a = vec_push(args, str_as_int(&"v"))
     _b = vec_push(insts, inst_pack(&ir_call(0, str_own(&("drop." + name)), args, 0)))
-    args2 = vec_new()
-    _c = vec_push(args2, str_as_int(&"v"))
-    _d = vec_push(insts, inst_pack(&ir_call(0, str_as_int(&"sal_struct_free_box"), args2, 0)))
     _r = vec_push(insts, inst_pack(&ir_ci(str_as_int(&"r"), 0)))
     _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
     out = vec_new()
