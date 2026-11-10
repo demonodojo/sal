@@ -334,6 +334,39 @@ fn instrument_strict_field_write_updates_the_list_element() {
     assert_eq!(out.status.code(), Some(9), "stderr: {stderr}");
 }
 
+/// Overwriting an owned field drops the previous value and stores in place (Rust).
+#[test]
+fn instrument_strict_field_overwrite_drops_old() {
+    let src = "struct P\n    name: String\n    n: Int\n\nfn main() -> Int ! alloc\n    xs = List.new[P]()\n    xs.push(P(strdup(\"a\"), 1))\n    o = xs.get_mut(0)\n    o.name = strdup(\"bb\")\n    str_len(xs.get(0).name)\n";
+    let out = run_strict(src, "struct_field_overwrite");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+}
+
+/// `c.field = v` through `&mut` writes back to the caller and drops the old field.
+/// (A multi-field local still boxes for `drop.OC` without freeing that shell — known
+/// pending in subplan 13 — so this is not run under `SAL_INSTRUMENT_STRICT`.)
+#[test]
+fn instrument_mut_param_field_assign_writes_back() {
+    let src = "struct OC\n    moved: List[String]\n    n: Int\n\nfn reset(c: &mut OC) -> Int ! alloc\n    c.moved = List.new[String]()\n    0\n\nfn main() -> Int ! alloc\n    c = OC(List.new[String](), 1)\n    list_push(&mut c.moved, \"a\")\n    reset(&mut c)\n    list_len(&c.moved)\n";
+    let file = PathBuf::from(format!(
+        "/tmp/sal-mut-field-{}-.sal",
+        std::process::id()
+    ));
+    std::fs::write(&file, src).expect("write");
+    let (_llvm, bin) = compile_instrumented(&file);
+    let out = Command::new(&bin)
+        .current_dir(root())
+        .output()
+        .expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+    assert!(!stderr.contains("USE_AFTER_FREE"), "use after free: {stderr}");
+    assert_eq!(out.status.code(), Some(0), "writeback failed: {stderr}");
+}
+
 /// A callee that stores the struct takes it: the caller clones out of the borrow.
 #[test]
 fn instrument_strict_list_get_taken_is_freed_once() {

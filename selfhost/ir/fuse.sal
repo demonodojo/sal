@@ -723,8 +723,9 @@ fn struct_clone_glue_t(structs: &List[TStruct], enums: &List[TEnum], name: &Stri
 # `drop.<Struct>` releases. What the glue does not release is shared.
 fn struct_clone_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> IrFn ! alloc
     fns0 = List.new[TFn]()
+    prots0 = List.new[TProtocol]()
     env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
-    cx = cx_new(0, map_new(), env, enums, &fns0, &List.new[TProtocol]())
+    cx = cx_new(0, map_new(), env, enums, &fns0, &prots0)
     fields = vec_new()
     _c = clone_fields(&mut cx, sd, 0, sd.fields.len(), fields)
     insts = cx_insts(&cx)
@@ -1658,8 +1659,8 @@ fn is_box_place(cx: &Cx, name: &String) -> Int ! alloc
     else
         0
 
-# `p.f = v`, as the bootstrap: a one-field struct is the field itself, a `list_get` alias is
-# written in place (`sal_struct_set`), any other local is rebuilt with the new field.
+# `p.f = v`, as the bootstrap: a one-field struct is the field itself; multi-field values are
+# heap boxes written in place (`sal_struct_set`), dropping the previous field (Rust).
 fn lower_stmt_field_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.target
         XField(base, field) => lower_field_assign_base(cx, st, &base, &field)
@@ -1682,10 +1683,16 @@ fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruc
     h = str_own(name)
     v = lower_expr(cx, &st.expr)
     if nf == 1
+        old = cx_lookup(cx, h)
+        _d = lower_field_drop_old(cx, &list_get(&sd.fields, 0).ty, old)
         cx_bind(cx, h, v)
     else
         idx = tt_field_index(&sd.fields, field, 0, nf)
         base_ssa = cx_lookup(cx, h)
+        old = fresh(cx)
+        _e = ir_push(cx, ir_extract(old, base_ssa, str_own(&sd.name), idx))
+        _d = lower_field_drop_old(cx, &list_get(&sd.fields, idx).ty, old)
+        # `list_get` alias: write in place. Owned locals rebuild (scalarize slots).
         if is_box_place(cx, name) == 1
             lower_field_store(cx, base_ssa, idx, v)
         else
@@ -1693,15 +1700,6 @@ fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruc
             d = fresh(cx)
             _p = ir_push(cx, ir_agg(d, str_own(&sd.name), fields))
             cx_bind(cx, h, d)
-
-fn lower_field_store(cx: &mut Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! alloc
-    ix = fresh(cx)
-    _c = push_const_int(cx, ix, idx)
-    args = vec_new()
-    _a = vec_push(args, base_ssa)
-    _b = vec_push(args, ix)
-    _d = vec_push(args, v)
-    ir_push(cx, ir_call(0, str_as_int(&"sal_struct_set"), args, 0))
 
 fn lower_field_rebuild(cx: &mut Cx, sd: &TStruct, base_ssa: Int, v: Int, idx: Int, i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -1714,6 +1712,26 @@ fn lower_field_rebuild(cx: &mut Cx, sd: &TStruct, base_ssa: Int, v: Int, idx: In
         _p = ir_push(cx, ir_extract(d, base_ssa, str_own(&sd.name), i))
         _a = vec_push(acc, d)
         lower_field_rebuild(cx, sd, base_ssa, v, idx, i + 1, n, acc)
+
+fn lower_field_drop_old(cx: &mut Cx, ty: &String, ssa: Int) -> Int ! alloc
+    fn_name = drop_field_fn(&cx_structs(cx), &cx.enums, ty, 3, 0, 0)
+    if str_len(&fn_name) == 0
+        0
+    elsif str_eq(&fn_name, "struct") == 1
+        drop_glue_call(cx, &trim_type_piece(ty), ssa)
+    else
+        args = vec_new()
+        _a = vec_push(args, ssa)
+        ir_push(cx, ir_call(0, str_as_int(&fn_name), args, 0))
+
+fn lower_field_store(cx: &mut Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! alloc
+    ix = fresh(cx)
+    _c = push_const_int(cx, ix, idx)
+    args = vec_new()
+    _a = vec_push(args, base_ssa)
+    _b = vec_push(args, ix)
+    _d = vec_push(args, v)
+    ir_push(cx, ir_call(0, str_as_int(&"sal_struct_set"), args, 0))
 
 fn lower_stmt_return(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.expr
@@ -2226,10 +2244,11 @@ fn ir_fn_empty() -> IrFn ! alloc
 
 fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> IrFn ! alloc
     fns0 = List.new[TFn]()
+    prots0 = List.new[TProtocol]()
     params0 = List.new[TParam]()
     env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
     fr = fr_new(&env, enums, map_new(), &params0, &fns0)
-    cx = cx_new(0, map_new(), env, enums, &fns0, &List.new[TProtocol]())
+    cx = cx_new(0, map_new(), env, enums, &fns0, &prots0)
     _d = drop_fields(&mut cx, str_as_int(&"v"), sd, &sd.fields, 0, sd.fields.len(), 0, 3, &fr, &sd.name, &"")
     insts = cx_insts(&cx)
     if vec_len(insts) == 0

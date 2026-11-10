@@ -881,6 +881,8 @@ thread_local! {
     static ARENA_KEEP: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Locals that are the pointer of a `list_get` element. `p.x = v` writes that block.
     static BOX_PLACE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Parameters typed `&mut Struct`: field assigns write through the shared box.
+    static MUT_REF_PLACE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 fn arena_leave() -> IrInst {
@@ -1190,6 +1192,20 @@ fn lower_fn(
         }
     });
     BOX_PLACE.with(|b| *b.borrow_mut() = box_places(f));
+    MUT_REF_PLACE.with(|m| {
+        *m.borrow_mut() = f
+            .params
+            .iter()
+            .filter_map(|p| match &p.ty {
+                Type::Ref {
+                    mutable: true,
+                    inner,
+                    ..
+                } if matches!(peel_ref_ty(inner), Type::Named { .. }) => Some(p.name.clone()),
+                _ => None,
+            })
+            .collect();
+    });
 
     for p in &f.params {
         env.insert(p.name.clone(), p.name.clone());
@@ -1945,6 +1961,54 @@ fn field_drop<'a>(
     }
 }
 
+/// Drop an owned SSA value of type `ty` that a field overwrite replaces (Rust: the
+/// previous value is dropped before the store).
+fn emit_owned_value_drop(
+    ssa: &str,
+    ty: &crate::ast::Type,
+    strings: &StringEnv,
+    counter: &mut u32,
+    instructions: &mut Vec<IrInst>,
+) {
+    let glue = Glue {
+        nested: true,
+        containers: true,
+    };
+    match field_drop(ty, strings, glue, 0, None, "", "") {
+        Some(FieldDrop::Call(func)) => {
+            instructions.push(IrInst::Call {
+                dest: None,
+                func: func.into(),
+                args: vec![ssa.to_string()],
+            });
+        }
+        Some(FieldDrop::Struct(sdef)) => {
+            if struct_glue_has(&sdef.name, strings) {
+                instructions.push(IrInst::Call {
+                    dest: None,
+                    func: format!("drop.{}", sdef.name),
+                    args: vec![ssa.to_string()],
+                });
+            } else {
+                free_struct_strings(
+                    ssa,
+                    sdef,
+                    strings,
+                    glue,
+                    0,
+                    counter,
+                    instructions,
+                    None,
+                    "",
+                    None,
+                    "",
+                );
+            }
+        }
+        None => {}
+    }
+}
+
 /// Frees the heap fields of the struct value `base` (of type `sdef`) and, when
 /// `glue.nested`, those of the structs held in its fields, recursively. A field of a
 /// transparent (single-field) struct is the value itself; otherwise it is read
@@ -2577,6 +2641,17 @@ fn lower_stmt(
                     if let Some(sn) = strings.struct_types.get(name).cloned() {
                         if let Some(sdef) = strings.structs.get(&sn).cloned() {
                             if is_transparent_struct(&sdef) {
+                                if let Some(old) = env.get(name).cloned() {
+                                    if let Some(fd) = sdef.fields.first() {
+                                        emit_owned_value_drop(
+                                            &old,
+                                            &fd.ty,
+                                            strings,
+                                            counter,
+                                            instructions,
+                                        );
+                                    }
+                                }
                                 let v = lower_expr(
                                     value,
                                     instructions,
@@ -2593,7 +2668,8 @@ fn lower_stmt(
                                 return false;
                             }
                             if let Some(idx) = struct_field_index(&sdef, field) {
-                                let writes_box = BOX_PLACE.with(|b| b.borrow().contains(name));
+                                let writes_box = BOX_PLACE.with(|b| b.borrow().contains(name))
+                                    || MUT_REF_PLACE.with(|m| m.borrow().contains(name));
                                 let new_val = lower_expr(
                                     value,
                                     instructions,
@@ -2607,6 +2683,26 @@ fn lower_stmt(
                                     strings,
                                 );
                                 let base_ssa = env.get(name).cloned().unwrap_or_else(|| "0".into());
+                                // Drop the previous field (Rust overwrite) before storing.
+                                *counter += 1;
+                                let old = format!("t{counter}");
+                                instructions.push(IrInst::Extract {
+                                    dest: old.clone(),
+                                    base: base_ssa.clone(),
+                                    struct_name: sn.clone(),
+                                    field_index: idx as u32,
+                                });
+                                if let Some(fd) = sdef.fields.get(idx) {
+                                    emit_owned_value_drop(
+                                        &old,
+                                        &fd.ty,
+                                        strings,
+                                        counter,
+                                        instructions,
+                                    );
+                                }
+                                // `list_get` aliases and `&mut` params share a heap box: write
+                                // in place. Owned locals are rebuilt so scalarize keeps slots.
                                 if writes_box {
                                     *counter += 1;
                                     let idx_ssa = format!("t{counter}");

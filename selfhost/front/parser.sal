@@ -2007,7 +2007,10 @@ fn parse_program_methods(tp: TProgram, errs: &mut List[String], ndots: Int) -> T
             tp
 
 fn parse_program_raw(src: &String, errs: &mut List[String], flags: &mut List[Int]) -> TProgram ! alloc
-    pr = parser_new(&lex(src))
+    # Bind the lexer result: `parser_new(&lex(src))` would leak the temporary `Toks`
+    # (bootstrap does not yet drop temporaries borrowed as `f(&g())`, unlike Rust).
+    toks = lex(src)
+    pr = parser_new(&toks)
     it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[TProtocol](), list_new[String](), list_new[String](), list_new[TConst]())
     _a = p_skip_nls(&mut pr)
     _b = parse_program_go(&mut pr, &mut it)

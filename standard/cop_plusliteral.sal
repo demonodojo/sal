@@ -2,13 +2,12 @@ import lexer
 import patch
 import util
 
-fn CODE_LITERAL() -> String ! alloc
-    d"Style/PlusLiteral"
+CODE_LITERAL = "Style/PlusLiteral"
 
 fn pl_prev_nl(lex: &Lex, i: Int) -> Int ! alloc
     if i <= 0
         0 - 1
-    elsif lex.kind(i - 1) == TK_NL()
+    elsif lex.kind(i - 1) == TK_NL
         pl_prev_nl(lex, i - 1)
     else
         i - 1
@@ -16,7 +15,7 @@ fn pl_prev_nl(lex: &Lex, i: Int) -> Int ! alloc
 fn pl_next_nl(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         n
-    elsif lex.kind(i) == TK_NL()
+    elsif lex.kind(i) == TK_NL
         pl_next_nl(lex, n, i + 1)
     else
         i
@@ -24,7 +23,7 @@ fn pl_next_nl(lex: &Lex, n: Int, i: Int) -> Int ! alloc
 fn pl_skip_rparens(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     if j >= n
         j
-    elsif lex.kind(j) == TK_RPAREN()
+    elsif lex.kind(j) == TK_RPAREN
         pl_skip_rparens(lex, n, pl_next_nl(lex, n, j + 1))
     else
         j
@@ -34,7 +33,7 @@ fn plus_after_dstring(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     j = pl_skip_rparens(lex, n, j)
     if j >= n
         0
-    elsif lex.kind(j) == TK_PLUS()
+    elsif lex.kind(j) == TK_PLUS
         1
     else
         0
@@ -44,9 +43,9 @@ fn pl_plus_before_go(lex: &Lex, j: Int) -> Int ! alloc
         0
     else
         k = lex.kind(j)
-        if k == TK_PLUS()
+        if k == TK_PLUS
             1
-        elsif k == TK_LPAREN()
+        elsif k == TK_LPAREN
             j2 = pl_prev_nl(lex, j)
             pl_plus_before_go(lex, j2)
         else
@@ -57,7 +56,7 @@ fn plus_before_dstring(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     pl_plus_before_go(lex, j)
 
 fn dstring_in_plus(lex: &Lex, n: Int, i: Int) -> Int ! alloc
-    if lex.kind(i) != TK_DSTRING()
+    if lex.kind(i) != TK_DSTRING
         0
     elsif plus_after_dstring(lex, n, i) == 1
         1
@@ -76,8 +75,8 @@ fn cop_pluslit_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int)
         end = lex.end(i)
         fix = src.slice(start + 1, end)
         msg = d"use plain string literal in + expression"
-        o = off_new(CODE_LITERAL(), msg, start, end, 1, fix)
-        _p = offs.push(o)
+        o = off_new(CODE_LITERAL, msg, start, end, 1, fix)
+        offs.push(o)
         cop_pluslit_go(src, lex, offs, i + 1, n)
     else
         cop_pluslit_go(src, lex, offs, i + 1, n)

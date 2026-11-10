@@ -59,7 +59,8 @@ fn ic_build(tp: &TProgram, nres: Int, rec: Int) -> IC ! alloc
     _t = infer_type_names_structs(&mut tnames, &tp.structs, 0, list_len(&tp.structs))
     imports = list_len(&tp.imports)
     vals = list_new[CVal]()
-    _v0 = ce_eval(&tp.consts, &list_new[CVal](), &mut vals)
+    seed = list_new[CVal]()
+    _v0 = ce_eval(&tp.consts, &seed, &mut vals)
     IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals)
 
 # The hash tables of an `IC` (handles, which the glue of the struct does not release). Its lists
@@ -77,6 +78,10 @@ fn ic_free(c: &IC) -> Int ! alloc
     _b = list_free(c.err)
     _c = list_free(c.ret)
     _d = list_free(c.allow)
+    _fns = list_free(c.fns)
+    _en = list_free(c.enums)
+    _al = list_free(c.aliases)
+    _pr = list_free(c.protocols)
     _e = c.sigs.free()
     _f = c.names.free()
     _g = c.tnames.free()
@@ -2433,7 +2438,8 @@ fn infer_program_go(c: &mut IC, i: Int, n: Int) -> Res ! alloc
 # Ok(0), or Err(message) for the first type error.
 fn infer_program(tp: &TProgram) -> Res ! alloc
     vals = list_new[CVal]()
-    err = ce_eval(&tp.consts, &list_new[CVal](), &mut vals)
+    seed = list_new[CVal]()
+    err = ce_eval(&tp.consts, &seed, &mut vals)
     if str_len(err) > 0
         _f = list_free(vals)
         result_err_str(&err)

@@ -5,7 +5,7 @@ Extensión para editar `.sal`. El compilador sigue siendo quien acepta o rechaza
 ## Requisitos
 
 - Binarios del repo: `cargo build --release --bin sal --bin standard` en la raíz del proyecto.
-- La extensión busca, en este orden: `sal.compilerPath` / `sal.standardPath`; `target/release` o `target/debug` del workspace; `bin/<plataforma>/` dentro de la extensión (sal **0.5.0** empaquetado); `sal` / `standard` en el `PATH`.
+- La extensión busca, en este orden: `sal.compilerPath` / `sal.standardPath`; `target/release` o `target/debug` del workspace; `bin/<plataforma>/` dentro de la extensión (sal **0.6.1** empaquetado); `sal` / `standard` en el `PATH`.
 - Para refrescar los binarios del VSIX: `./scripts/copy-toolchain.sh` (desde `editors/vscode/`).
 
 ## Qué hace
@@ -22,10 +22,10 @@ Extensión para editar `.sal`. El compilador sigue siendo quien acepta o rechaza
 
 ```bash
 ./scripts/copy-toolchain.sh   # opcional: sal y standard release en bin/
-npm run package               # genera sal-0.6.0.vsix sin prompts
+npm run package               # genera sal-0.6.1.vsix sin prompts
 ```
 
-Genera `sal-0.6.0.vsix` en este directorio (instalar con *Extensions: Install from VSIX…*). Ejecuta `./scripts/copy-toolchain.sh` antes si quieres incluir `sal` y `standard` release en el paquete.
+Genera `sal-0.6.1.vsix` en este directorio (instalar con *Extensions: Install from VSIX…* o `cursor --install-extension sal-0.6.1.vsix`). Ejecuta `./scripts/copy-toolchain.sh` antes si quieres incluir `sal` y `standard` release en el paquete.
 
 Los tipos (`String`, `Int`, `Lex`, …) se pintan en verde solo en ficheros `.sal`; `fn` / `method` en violeta. Puedes cambiarlo en ajustes con `editor.tokenColorCustomizations` → `[sal]`.
 

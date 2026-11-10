@@ -246,6 +246,20 @@ fn is_fresh_temp(e: &Expr) -> bool {
     !matches!(e, Expr::String { .. }) && (is_fresh_value(e) || is_owned_call(e))
 }
 
+/// A place: local, field of a place, or deref of a place (SPEC «Memoria» / Rust).
+fn is_place(e: &Expr) -> bool {
+    match e {
+        Expr::Ident { .. } => true,
+        Expr::Field { base, .. } => is_place(base),
+        Expr::Unary {
+            op: UnOp::Deref,
+            expr,
+            ..
+        } => is_place(expr),
+        _ => false,
+    }
+}
+
 /// A call to a user fn whose `String` result the caller owns (see `owned_return_fns`).
 fn is_owned_call(e: &Expr) -> bool {
     matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if OWNED_FNS.with(|f| f.borrow().contains(name))))
@@ -345,8 +359,9 @@ fn is_elem_read(e: &Expr) -> bool {
 }
 
 impl Hoist {
-    /// Binds each fresh temporary passed to a reader builtin to its own local, pushed to
-    /// `out` ahead of the statement, so the scope-end release frees it.
+    /// Binds each fresh temporary passed to a reader builtin, and each non-place under
+    /// `&` / `&mut` (`f(&g())`), to its own local ahead of the statement, so the scope-end
+    /// release (or struct glue) frees it — same as Rust (SPEC «Liberación de locales»).
     fn expr(&mut self, e: Expr, out: &mut Vec<Stmt>) -> Expr {
         match e {
             Expr::Call { func, type_args, args, span } => {
@@ -380,6 +395,37 @@ impl Hoist {
                 let left = Box::new(self.expr(*left, out));
                 let right = Box::new(self.expr(*right, out));
                 Expr::Binary { op, left, right, span }
+            }
+            // `&g()` / `&mut g()`: the rvalue is not a place, so bind it (Rust temporary).
+            Expr::Unary { op, expr, span } => {
+                let expr = self.expr(*expr, out);
+                let expr = if matches!(op, UnOp::Ref | UnOp::RefMut) && !is_place(&expr) {
+                    self.n += 1;
+                    let name = format!("__tmp{}", self.n);
+                    let esp = expr.span();
+                    let fake = Span {
+                        start: u32::MAX - self.n,
+                        end: u32::MAX - self.n,
+                        line: 0,
+                        col: 0,
+                    };
+                    out.push(Stmt::Let {
+                        name: name.clone(),
+                        ty: None,
+                        init: expr,
+                        frozen: false,
+                        stack: false,
+                        span: fake,
+                    });
+                    Expr::Ident { name, span: esp }
+                } else {
+                    expr
+                };
+                Expr::Unary {
+                    op,
+                    expr: Box::new(expr),
+                    span,
+                }
             }
             // `list_get(xs, i).f`: the element copy is bound to a local first, so the scope-end
             // release frees it (`struct_copy_kind`).

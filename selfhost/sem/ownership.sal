@@ -29,8 +29,8 @@ fn oc_new(tp: &TProgram, table: HT) -> OC ! alloc
     _b = own_ctor_enums(&mut ctors, &tp.enums, 0, list_len(&tp.enums))
     OC(list_new[String](), list_new[String](), tenv_new(tp), list_new[String](), list_new[String](), list_new[String](), table, ctors)
 
-# The local `OC` is dropped at the end of its scope, which releases these lists.
-# Freeing them here as well is a double free.
+# `drop.OC` releases direct lists and nested `TEnv` fields. Manual `tenv_free` here
+# would double-free with that glue; keep this a no-op.
 fn oc_free(c: &OC) -> Int ! alloc
     0
 

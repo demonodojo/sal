@@ -1022,3 +1022,35 @@ fn top_level_return_releases_its_struct_local_once() {
     let top = fn_ir(&ir, "top");
     assert_eq!(top.matches("func: \"drop.Ctx\"").count(), 1, "{top}");
 }
+
+// `f(&g())`: the temporary from `g()` is bound and released (SPEC / Rust; Hoist Ref/RefMut).
+#[test]
+fn borrowed_call_temporary_is_released() {
+    let ir = ir_full(
+        "borrowed_call_temp",
+        "struct Toks\n    items: List[Int]\n\nfn lex_fake() -> Toks ! alloc\n    Toks(List.new[Int]())\n\nfn take_toks(t: &Toks) -> Int ! alloc\n    list_len(t.items)\n\nfn main() -> Int ! alloc\n    take_toks(&lex_fake())\n",
+    );
+    let main = fn_ir(&ir, "main");
+    assert!(
+        main.contains("func: \"drop.Toks\"") || main.contains("func: \"sal_list_free\""),
+        "temporary under `&lex_fake()` must be released:\n{main}"
+    );
+}
+
+// Field overwrite writes in place and drops the previous field (SPEC / Rust).
+#[test]
+fn field_assign_drops_previous_and_stores_in_place() {
+    let ir = ir_full(
+        "field_overwrite",
+        "struct OC\n    moved: List[String]\n    n: Int\n\nfn reset(c: &mut OC) -> Int ! alloc\n    c.moved = List.new[String]()\n    0\n\nfn main() -> Int ! alloc\n    c = OC(List.new[String](), 1)\n    list_push(&mut c.moved, \"a\")\n    reset(&mut c)\n    list_len(&c.moved)\n",
+    );
+    let reset = fn_ir(&ir, "reset");
+    assert!(
+        reset.contains("func: \"sal_struct_set\""),
+        "field assign through `&mut` must store in place:\n{reset}"
+    );
+    assert!(
+        reset.contains("func: \"sal_list_free\""),
+        "previous list field must be dropped:\n{reset}"
+    );
+}

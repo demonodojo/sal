@@ -594,12 +594,20 @@ impl<'a> Pass<'a> {
             return;
         };
         let mut flat = Vec::new();
+        // Scalarised locals boxed into a plain `i64` for a by-ref / opaque param share that
+        // heap box with the callee (`&mut`). Reload their slots after the call (Rust writeback).
+        let mut sync_back: Vec<(String, String, String)> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             match sig.params.get(i).cloned().flatten() {
                 Some(sn) => flat.extend(self.slots_of(a, &sn, scope, out)),
                 None => {
-                    let p = self.plain(a, scope, out);
-                    flat.push(p);
+                    if let Some(v) = scope.vals.get(a).cloned() {
+                        let p = self.plain(a, scope, out);
+                        sync_back.push((a.clone(), v.name.clone(), p.clone()));
+                        flat.push(p);
+                    } else {
+                        flat.push(self.plain(a, scope, out));
+                    }
                 }
             }
         }
@@ -627,6 +635,23 @@ impl<'a> Pass<'a> {
                 func: func.to_string(),
                 args: flat,
             }),
+        }
+        for (local, sn, handle) in sync_back {
+            let slots = self.unbox(&handle, &sn, out);
+            scope.vals.insert(
+                local.clone(),
+                Val {
+                    name: sn,
+                    slots,
+                },
+            );
+            // The box was only a carrier for the call (`&mut`); fields live in slots again.
+            scope.boxed.remove(&local);
+            out.push(IrInst::Call {
+                dest: None,
+                func: "sal_struct_free_box".into(),
+                args: vec![handle],
+            });
         }
     }
 

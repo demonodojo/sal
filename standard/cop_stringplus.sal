@@ -2,8 +2,7 @@ import lexer
 import patch
 import util
 
-fn CODE_PLUS() -> String ! alloc
-    d"Style/StringPlus"
+CODE_STRINGPLUS = "Style/StringPlus"
 
 struct ScanR
     ok: Int
@@ -35,17 +34,15 @@ struct ChainFix
     fix: String
 
 fn is_str_fun(name: &String) -> Int ! alloc
-    if name.eq("str_concat") == 1
-        1
-    elsif name.eq("str_append") == 1
-        2
-    else
-        0
+    match name
+        "str_concat" => 1
+        "str_append" => 2
+        _ => 0
 
 fn prev_non_nl(lex: &Lex, i: Int) -> Int ! alloc
     if i <= 0
         0 - 1
-    elsif lex.kind(i - 1) == TK_NL()
+    elsif lex.kind(i - 1) == TK_NL
         prev_non_nl(lex, i - 1)
     else
         i - 1
@@ -53,7 +50,7 @@ fn prev_non_nl(lex: &Lex, i: Int) -> Int ! alloc
 fn next_non_nl(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         n
-    elsif lex.kind(i) == TK_NL()
+    elsif lex.kind(i) == TK_NL
         next_non_nl(lex, n, i + 1)
     else
         i
@@ -76,15 +73,15 @@ fn scan_paren(lex: &Lex, n: Int, i: Int, depth: Int, ci: Int) -> ScanR ! alloc
         ScanR(0, 0, 0)
     else
         k = lex.kind(i)
-        if k == TK_LPAREN()
+        if k == TK_LPAREN
             scan_paren(lex, n, i + 1, depth + 1, ci)
-        elsif k == TK_RPAREN()
+        elsif k == TK_RPAREN
             d2 = depth - 1
             if d2 == 0
                 ScanR(1, ci, i)
             else
                 scan_paren(lex, n, i + 1, d2, ci)
-        elsif k == TK_COMMA()
+        elsif k == TK_COMMA
             if depth == 1
                 scan_paren(lex, n, i + 1, depth, i)
             else
@@ -114,7 +111,7 @@ fn parse_two_args(lex: &Lex, n: Int, lp: Int) -> TwoArgs ! alloc
 fn parse_call_at(src: &String, lex: &Lex, n: Int, i: Int) -> StrCall ! alloc
     if i >= n
         StrCall(0, 0, 0, 0, 0, 0, 0, 0)
-    elsif lex.kind(i) != TK_IDENT()
+    elsif lex.kind(i) != TK_IDENT
         StrCall(0, 0, 0, 0, 0, 0, 0, 0)
     else
         name = lex.text(src, i)
@@ -125,7 +122,7 @@ fn parse_call_at(src: &String, lex: &Lex, n: Int, i: Int) -> StrCall ! alloc
             j = skip_nl(lex, n, i + 1)
             if j >= n
                 StrCall(0, 0, 0, 0, 0, 0, 0, 0)
-            elsif lex.kind(j) != TK_LPAREN()
+            elsif lex.kind(j) != TK_LPAREN
                 StrCall(0, 0, 0, 0, 0, 0, 0, 0)
             else
                 parsed = parse_two_args(lex, n, j)
@@ -145,14 +142,14 @@ fn build_call_fix(src: &String, call: StrCall) -> String ! alloc
 fn try_assign_chain(src: &String, lex: &Lex, n: Int, i: Int) -> ChainFix ! alloc
     if i >= n
         ChainFix(0, 0, 0, d"")
-    elsif lex.kind(i) != TK_IDENT()
+    elsif lex.kind(i) != TK_IDENT
         ChainFix(0, 0, 0, d"")
     else
         var = lex.text(src, i)
         j = skip_nl(lex, n, i + 1)
         if j >= n
             ChainFix(0, 0, 0, d"")
-        elsif lex.kind(j) != TK_EQ()
+        elsif lex.kind(j) != TK_EQ
             ChainFix(0, 0, 0, d"")
         else
             k = skip_nl(lex, n, j + 1)
@@ -184,9 +181,9 @@ fn chain_append_lines(src: &String, lex: &Lex, n: Int, i: Int, var: &String, par
     i2 = skip_nl(lex, n, i)
     if i2 >= n
         end_byte
-    elsif lex.kind(i2) == TK_DEDENT()
+    elsif lex.kind(i2) == TK_DEDENT
         end_byte
-    elsif lex.kind(i2) != TK_IDENT()
+    elsif lex.kind(i2) != TK_IDENT
         end_byte
     else
         name = lex.text(src, i2)
@@ -196,7 +193,7 @@ fn chain_append_lines(src: &String, lex: &Lex, n: Int, i: Int, var: &String, par
             j = skip_nl(lex, n, i2 + 1)
             if j >= n
                 end_byte
-            elsif lex.kind(j) != TK_EQ()
+            elsif lex.kind(j) != TK_EQ
                 end_byte
             else
                 k = skip_nl(lex, n, j + 1)
@@ -228,8 +225,8 @@ fn cop_plus_assign_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: 
         ch = try_assign_chain(src, lex, n, i)
         if ch.ok == 1
             msg = d"use + instead of str_concat/str_append"
-            o = off_new(CODE_PLUS(), msg, ch.start, ch.end, 1, ch.fix)
-            _p = offs.push(o)
+            o = off_new(CODE_STRINGPLUS, msg, ch.start, ch.end, 1, ch.fix)
+            offs.push(o)
             next_i = tok_index_at_or_after(lex, n, ch.end, 0)
             cop_plus_assign_go(src, lex, offs, next_i, n)
         else
@@ -245,11 +242,8 @@ fn inside_off_go(offs: &List[Off], i: Int, n: Int, start: Int, end: Int) -> Int 
         o = offs.get(i)
         s0 = o.start
         s1 = o.end
-        if start >= s0
-            if end <= s1
-                1
-            else
-                inside_off_go(offs, i + 1, n, start, end)
+        if start >= s0 && end <= s1
+            1
         else
             inside_off_go(offs, i + 1, n, start, end)
 
@@ -265,6 +259,6 @@ fn cop_plus_call_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: In
         else
             fix = build_call_fix(src, call)
             msg = d"use + instead of str_concat/str_append"
-            o = off_new(CODE_PLUS(), msg, call.start, call.end, 1, fix)
-            _p = offs.push(o)
+            o = off_new(CODE_STRINGPLUS, msg, call.start, call.end, 1, fix)
+            offs.push(o)
             cop_plus_call_go(src, lex, offs, call.end, n)

@@ -95,6 +95,8 @@ Estado de la liberación mientras `insert_drops` siga en su puesto (lo que ya si
 - `List.new[S]()` con `S` un struct con glue se suelta como cualquier lista (`list_glue_arg`; `glue:<S>` en `drop_env_t`). Una lista de listas, igual.
 - El receptor de `push`/`set`/`put` no se mueve: un campo `List` al que se le hace `push` lo sigue soltando su struct.
 - El selfhost ya no usa la marca de «contenedor tainted» para decidir si suelta una lista: lo guardado se movió a ella.
+- Un temporal prestado (`f(&g())` / `&mut g()`) se liga a un local (`Hoist` / `dr_hoist_unary`) y lo suelta la cola o la glue del struct.
+- Sobreescribir un campo suelta el valor viejo; en un parámetro `&mut` o un alias de `list_get` se escribe in situ (`sal_struct_set`); tras llamar con un local scalarizado, `scalarize` repone los slots desde la caja.
 
 Pendiente frente a la SPEC: la caja de un struct local construido con su constructor (`sal_struct_new`) no se suelta al salir del ámbito (`drop.<Struct>` suelta los campos; `drop.elem.<Struct>` solo se usa en listas); un payload `List`/struct de una caja de enum copiada con `sal_enum_copy` se comparte; las reglas nuevas del borrow checker (`get` como `&T`, mover fuera de una referencia, payload de `match`, `&mut`→`&`) no están en `selfhost/sem/` y sus tests llevan `selfhost-xfail`.
 

@@ -23,8 +23,7 @@ struct AndHit
     outer_else_indent: Int
     end_i: Int
 
-fn CODE_AND() -> String ! alloc
-    d"Style/And"
+CODE_AND = "Style/And"
 
 fn and_fail() -> AndHit
     AndHit(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
@@ -32,7 +31,7 @@ fn and_fail() -> AndHit
 fn and_skip_to_indent(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
-    elsif lex.kind(i) == TK_INDENT()
+    elsif lex.kind(i) == TK_INDENT
         i
     else
         and_skip_to_indent(lex, n, i + 1)
@@ -40,7 +39,7 @@ fn and_skip_to_indent(lex: &Lex, n: Int, i: Int) -> Int ! alloc
 fn and_consume_suite(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
-    elsif lex.kind(i) != TK_INDENT()
+    elsif lex.kind(i) != TK_INDENT
         i
     else
         and_consume_suite_go(lex, n, i, 0)
@@ -50,9 +49,9 @@ fn and_consume_suite_go(lex: &Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
         i
     else
         k = lex.kind(i)
-        if k == TK_INDENT()
+        if k == TK_INDENT
             and_consume_suite_go(lex, n, i + 1, depth + 1)
-        elsif k == TK_DEDENT()
+        elsif k == TK_DEDENT
             d2 = depth - 1
             if d2 == 0
                 i + 1
@@ -64,7 +63,7 @@ fn and_consume_suite_go(lex: &Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
 fn and_ends_dedent(lex: &Lex, suite_end: Int) -> Int ! alloc
     if suite_end <= 0
         0
-    elsif lex.kind(suite_end - 1) == TK_DEDENT()
+    elsif lex.kind(suite_end - 1) == TK_DEDENT
         1
     else
         0
@@ -74,17 +73,17 @@ fn and_no_structural(lex: &Lex, i: Int, end: Int) -> Int ! alloc
         1
     else
         k = lex.kind(i)
-        if k == TK_IF()
+        if k == TK_IF
             0
-        elsif k == TK_ELSE()
+        elsif k == TK_ELSE
             0
-        elsif k == TK_ELSIF()
+        elsif k == TK_ELSIF
             0
-        elsif k == TK_INDENT()
+        elsif k == TK_INDENT
             0
-        elsif k == TK_DEDENT()
+        elsif k == TK_DEDENT
             0
-        elsif k == TK_NL()
+        elsif k == TK_NL
             0
         else
             and_no_structural(lex, i + 1, end)
@@ -95,9 +94,9 @@ fn and_cond_ok(lex: &Lex, if_i: Int, indent_i: Int) -> Int ! alloc
         0
     elsif indent_i >= n
         0
-    elsif lex.kind(indent_i) != TK_INDENT()
+    elsif lex.kind(indent_i) != TK_INDENT
         0
-    elsif lex.kind(indent_i - 1) != TK_NL()
+    elsif lex.kind(indent_i - 1) != TK_NL
         0
     else
         and_no_structural(lex, if_i + 1, indent_i - 1)
@@ -135,12 +134,10 @@ fn and_or_at_top(s: &String, i: Int, n: Int, depth: Int, in_str: Int) -> Int ! a
     else
         c = s.char(i)
         if in_str == 1
-            if c == 92
-                and_or_at_top(s, i + 2, n, depth, 1)
-            elsif c == 34
-                and_or_at_top(s, i + 1, n, depth, 0)
-            else
-                and_or_at_top(s, i + 1, n, depth, 1)
+            match c
+                92 => and_or_at_top(s, i + 2, n, depth, 1)
+                34 => and_or_at_top(s, i + 1, n, depth, 0)
+                _ => and_or_at_top(s, i + 1, n, depth, 1)
         elsif c == 34
             and_or_at_top(s, i + 1, n, depth, 1)
         elsif c == 40
@@ -250,12 +247,10 @@ fn and_has_body_go(s: &String, i: Int, n: Int) -> Int ! alloc
         0
     else
         c = s.char(i)
-        if c == 32
-            and_has_body_go(s, i + 1, n)
-        elsif c == 10
-            and_has_body_go(s, i + 1, n)
-        else
-            1
+        match c
+            32 => and_has_body_go(s, i + 1, n)
+            10 => and_has_body_go(s, i + 1, n)
+            _ => 1
 
 fn and_ensure_nl(s: String) -> String ! alloc
     n = s.len()
@@ -278,7 +273,7 @@ fn and_parse(lex: &Lex, n: Int, if_i: Int) -> AndHit ! alloc
     inner = skip_nl(lex, n, then_indent + 1)
     if inner >= then_end
         return and_fail()
-    if lex.kind(inner) != TK_IF()
+    if lex.kind(inner) != TK_IF
         return and_fail()
     inner_then = and_skip_to_indent(lex, n, inner + 1)
     if inner_then >= n
@@ -290,12 +285,12 @@ fn and_parse(lex: &Lex, n: Int, if_i: Int) -> AndHit ! alloc
         return and_fail()
     if inner_then_end >= n
         return and_fail()
-    if lex.kind(inner_then_end) != TK_ELSE()
+    if lex.kind(inner_then_end) != TK_ELSE
         return and_fail()
     inner_else_indent = skip_nl(lex, n, inner_then_end + 1)
     if inner_else_indent >= n
         return and_fail()
-    if lex.kind(inner_else_indent) != TK_INDENT()
+    if lex.kind(inner_else_indent) != TK_INDENT
         return and_fail()
     inner_else_end = and_consume_suite(lex, n, inner_else_indent)
     if and_ends_dedent(lex, inner_else_end) == 0
@@ -304,12 +299,12 @@ fn and_parse(lex: &Lex, n: Int, if_i: Int) -> AndHit ! alloc
         return and_fail()
     if then_end >= n
         return and_fail()
-    if lex.kind(then_end) != TK_ELSE()
+    if lex.kind(then_end) != TK_ELSE
         return and_fail()
     outer_else_indent = skip_nl(lex, n, then_end + 1)
     if outer_else_indent >= n
         return and_fail()
-    if lex.kind(outer_else_indent) != TK_INDENT()
+    if lex.kind(outer_else_indent) != TK_INDENT
         return and_fail()
     end_i = and_consume_suite(lex, n, outer_else_indent)
     if and_ends_dedent(lex, end_i) == 0
@@ -383,13 +378,13 @@ fn and_emit(src: &String, lex: &Lex, offs: &mut List[Off], hit: AndHit) -> Int !
     endb = lex.start(hit.end_i - 1)
     if and_comment_blocks(src, lex, hit) == 1
         msg = d"nested if could be &&; comment blocks auto-fix"
-        o = off_new(CODE_AND(), msg, start, endb, 0, d"")
+        o = off_new(CODE_AND, msg, start, endb, 0, d"")
         offs.push(o)
         0
     else
         fix = and_build(src, lex, hit)
         msg = d"use && instead of nested if"
-        o = off_new(CODE_AND(), msg, start, endb, 1, fix)
+        o = off_new(CODE_AND, msg, start, endb, 1, fix)
         offs.push(o)
         0
 
@@ -399,7 +394,7 @@ fn cop_and(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
 fn cop_and_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif lex.kind(i) == TK_IF()
+    elsif lex.kind(i) == TK_IF
         hit = and_parse(lex, n, i)
         if hit.ok == 0
             cop_and_go(src, lex, offs, i + 1, n)

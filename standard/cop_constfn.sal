@@ -16,8 +16,7 @@ struct Cand
     blo: Int
     bhi: Int
 
-fn CODE_CONST() -> String ! alloc
-    d"Style/ConstFn"
+CODE_CONST = "Style/ConstFn"
 
 fn cop_constfn(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     n = lex.len()
@@ -259,9 +258,9 @@ fn header_end(lex: &Lex, n: Int, j: Int) -> Int ! alloc
         j
     else
         k = lex.kind(j)
-        if k == TK_NL()
+        if k == TK_NL
             j
-        elsif k == TK_INDENT()
+        elsif k == TK_INDENT
             j
         else
             header_end(lex, n, j + 1)
@@ -500,7 +499,7 @@ fn cand_name(src: &String, cs: &List[Cand], i: Int) -> String ! alloc
 fn prev_tok(lex: &Lex, i: Int) -> Int ! alloc
     if i <= 0
         0 - 1
-    elsif lex.kind(i - 1) == TK_NL()
+    elsif lex.kind(i - 1) == TK_NL
         prev_tok(lex, i - 1)
     else
         i - 1
@@ -522,13 +521,13 @@ fn empty_parens(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     j = skip_nl(lex, n, i + 1)
     if j >= n
         0 - 1
-    elsif lex.kind(j) != TK_LPAREN()
+    elsif lex.kind(j) != TK_LPAREN
         0 - 1
     else
         k = skip_nl(lex, n, j + 1)
         if k >= n
             0 - 1
-        elsif lex.kind(k) != TK_RPAREN()
+        elsif lex.kind(k) != TK_RPAREN
             0 - 1
         else
             k
@@ -540,7 +539,7 @@ fn call_is_complex(src: &String, lex: &Lex, n: Int, i: Int) -> Int ! alloc
         p = prev_tok(lex, i)
         if p < 0
             1
-        elsif lex.kind(p) != TK_IDENT()
+        elsif lex.kind(p) != TK_IDENT
             1
         elsif gap_is_dot(src, lex.end(p), lex.start(i)) == 0
             1
@@ -571,7 +570,7 @@ fn has_complex_call(src: &String, lex: &Lex, n: Int, cs: &List[Cand], ci: Int) -
 fn has_complex_go(src: &String, lex: &Lex, n: Int, name: &String, at: Int, i: Int) -> Int ! alloc
     if i >= n
         0
-    elsif lex.kind(i) != TK_IDENT()
+    elsif lex.kind(i) != TK_IDENT
         has_complex_go(src, lex, n, name, at, i + 1)
     elsif i == at
         has_complex_go(src, lex, n, name, at, i + 1)
@@ -623,7 +622,7 @@ fn emit_defs_go(src: &String, offs: &mut List[Off], cs: &List[Cand], mark: &List
         body = src.slice(c.blo, c.bhi)
         fix = name + " = " + fold_body(&body, known)
         msg = "use a module constant instead of " + name
-        o = off_new(CODE_CONST(), msg, c.start, c.endb, 1, fix)
+        o = off_new(CODE_CONST, msg, c.start, c.endb, 1, fix)
         offs.push(o)
         emit_defs_go(src, offs, cs, mark, known, i + 1, n)
 
@@ -662,7 +661,7 @@ fn eligible_names_go(src: &String, cs: &List[Cand], mark: &List[Int], el: &mut L
 fn emit_calls_go(src: &String, lex: &Lex, offs: &mut List[Off], n: Int, cs: &List[Cand], mark: &List[Int], el: &List[String], i: Int) -> Int ! alloc
     if i >= n
         0
-    elsif lex.kind(i) != TK_IDENT()
+    elsif lex.kind(i) != TK_IDENT
         emit_calls_go(src, lex, offs, n, cs, mark, el, i + 1)
     else
         name = lex.text(src, i)
@@ -678,7 +677,7 @@ fn emit_calls_go(src: &String, lex: &Lex, offs: &mut List[Off], n: Int, cs: &Lis
                 emit_recv_call(src, lex, offs, &name, i, rp)
                 emit_calls_go(src, lex, offs, n, cs, mark, el, rp + 1)
             else
-                o = off_new(CODE_CONST(), "call the module constant " + name, lex.start(i), lex.end(rp), 1, name)
+                o = off_new(CODE_CONST, "call the module constant " + name, lex.start(i), lex.end(rp), 1, name)
                 offs.push(o)
                 emit_calls_go(src, lex, offs, n, cs, mark, el, rp + 1)
 
@@ -686,12 +685,12 @@ fn emit_recv_call(src: &String, lex: &Lex, offs: &mut List[Off], name: &String, 
     p = prev_tok(lex, i)
     if p < 0
         0
-    elsif lex.kind(p) != TK_IDENT()
+    elsif lex.kind(p) != TK_IDENT
         0
     elsif gap_is_dot(src, lex.end(p), lex.start(i)) == 0
         0
     else
-        o = off_new(CODE_CONST(), "call the module constant " + name, lex.start(p), lex.end(rp), 1, name.dup())
+        o = off_new(CODE_CONST, "call the module constant " + name, lex.start(p), lex.end(rp), 1, name.dup())
         offs.push(o)
         0
 
@@ -700,13 +699,13 @@ fn scan_items(src: &String, lex: &Lex, i: Int, n: Int, depth: Int, cs: &mut List
         0
     else
         k = lex.kind(i)
-        if k == TK_INDENT()
+        if k == TK_INDENT
             scan_items(src, lex, i + 1, n, depth + 1, cs, known)
-        elsif k == TK_DEDENT()
+        elsif k == TK_DEDENT
             scan_items(src, lex, i + 1, n, depth - 1, cs, known)
         elsif depth != 0
             scan_items(src, lex, i + 1, n, depth, cs, known)
-        elsif k != TK_IDENT()
+        elsif k != TK_IDENT
             scan_items(src, lex, i + 1, n, depth, cs, known)
         else
             scan_ident(src, lex, i, n, cs, known)
@@ -750,9 +749,9 @@ fn looks_like_const_item(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     j = skip_nl(lex, n, i + 1)
     if j >= n
         0
-    elsif lex.kind(j) == TK_LPAREN()
+    elsif lex.kind(j) == TK_LPAREN
         0
-    elsif lex.kind(j) == TK_EQ()
+    elsif lex.kind(j) == TK_EQ
         1
     else
         eq_before_nl(lex, n, j)
@@ -760,11 +759,11 @@ fn looks_like_const_item(lex: &Lex, n: Int, i: Int) -> Int ! alloc
 fn eq_before_nl(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     if j >= n
         0
-    elsif lex.kind(j) == TK_NL()
+    elsif lex.kind(j) == TK_NL
         0
-    elsif lex.kind(j) == TK_LPAREN()
+    elsif lex.kind(j) == TK_LPAREN
         0
-    elsif lex.kind(j) == TK_EQ()
+    elsif lex.kind(j) == TK_EQ
         1
     else
         eq_before_nl(lex, n, j + 1)
@@ -780,7 +779,7 @@ fn try_cand_go(src: &String, lex: &Lex, n: Int, i: Int, kind: Int, cs: &mut List
     j = collect_idents(lex, n, skip_nl(lex, n, i + 1), &mut ids)
     if j >= n
         0 - 1
-    elsif lex.kind(j) != TK_LPAREN()
+    elsif lex.kind(j) != TK_LPAREN
         0 - 1
     elsif idents_ok(src, lex, kind, &ids) == 0
         0 - 1
@@ -790,7 +789,7 @@ fn try_cand_go(src: &String, lex: &Lex, n: Int, i: Int, kind: Int, cs: &mut List
 fn collect_idents(lex: &Lex, n: Int, j: Int, ids: &mut List[Int]) -> Int ! alloc
     if j >= n
         j
-    elsif lex.kind(j) != TK_IDENT()
+    elsif lex.kind(j) != TK_IDENT
         j
     else
         ids.push(j)
@@ -829,9 +828,9 @@ fn trim_params(src: &String, lex: &Lex, lp: Int, rp: Int) -> String ! alloc
 fn match_rparen(lex: &Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
     if j >= n
         0 - 1
-    elsif lex.kind(j) == TK_LPAREN()
+    elsif lex.kind(j) == TK_LPAREN
         match_rparen(lex, n, j + 1, depth + 1)
-    elsif lex.kind(j) == TK_RPAREN()
+    elsif lex.kind(j) == TK_RPAREN
         if depth == 1
             j
         else
@@ -843,7 +842,7 @@ fn try_body(src: &String, lex: &Lex, n: Int, kw: Int, kind: Int, ids: &List[Int]
     j = skip_nl(lex, n, header_end(lex, n, rp + 1))
     if j >= n
         0 - 1
-    elsif lex.kind(j) != TK_INDENT()
+    elsif lex.kind(j) != TK_INDENT
         0 - 1
     else
         close = body_dedent(lex, n, j + 1, 1)
@@ -855,9 +854,9 @@ fn try_body(src: &String, lex: &Lex, n: Int, kw: Int, kind: Int, ids: &List[Int]
 fn body_dedent(lex: &Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
     if j >= n
         0 - 1
-    elsif lex.kind(j) == TK_INDENT()
+    elsif lex.kind(j) == TK_INDENT
         body_dedent(lex, n, j + 1, depth + 1)
-    elsif lex.kind(j) == TK_DEDENT()
+    elsif lex.kind(j) == TK_DEDENT
         if depth == 1
             j
         else

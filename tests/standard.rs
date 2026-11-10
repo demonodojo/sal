@@ -128,10 +128,7 @@ fn standard_fix_dupstring() {
     assert_eq!(got2, want);
 }
 
-// MatchIf / ElsIf rewrites currently double-free inside the sal-built `standard`
-// under Rust-style ownership; keep the fixtures, skip the runs until drops land.
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_elsif() {
     let input = read_fixture("elsif_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -140,7 +137,6 @@ fn standard_fix_elsif() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_elsif_keeps_comparison() {
     let input = read_fixture("elsif_cmp_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -149,7 +145,6 @@ fn standard_fix_elsif_keeps_comparison() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_elsif_two_passes() {
     let input = read_fixture("elsif_two_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -344,7 +339,6 @@ fn standard_fix_and_two_passes() {
 }
 
 #[test]
-#[ignore = "standard And skip path double-frees under Rust ownership"]
 fn standard_and_skip_is_clean() {
     let input = read_fixture("and_skip_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -388,7 +382,6 @@ fn standard_unusedbinding_skip_is_clean() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_matchif_int() {
     let input = read_fixture("matchif_int_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -397,7 +390,6 @@ fn standard_fix_matchif_int() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_matchif_str() {
     let input = read_fixture("matchif_str_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -406,7 +398,6 @@ fn standard_fix_matchif_str() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_matchif_block() {
     let input = read_fixture("matchif_block_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -415,7 +406,6 @@ fn standard_fix_matchif_block() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_matchif_skip_unchanged() {
     let input = read_fixture("matchif_skip_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -424,7 +414,6 @@ fn standard_matchif_skip_unchanged() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_matchif_inner() {
     let input = read_fixture("matchif_inner_in.sal");
     let (_dir, got, out) = fix_in_temp(&input);
@@ -461,7 +450,6 @@ fn standard_fix_range_only_middle() {
 }
 
 #[test]
-#[ignore = "standard MatchIf/ElsIf rewrite double-frees under Rust ownership"]
 fn standard_fix_range_second_pass_stays_inside() {
     let input = "\
 fn keep() -> String ! alloc

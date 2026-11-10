@@ -31,7 +31,7 @@ fn run_lex(src: &String) -> Lex ! alloc
 fn run_all_cops(src: &String) -> CopsResult ! alloc
     lx = run_lex(src)
     offs = List.new[Off]()
-    if lx.status != LEX_OK()
+    if lx.status != LEX_OK
         CopsResult(lx.status, offs)
     else
         cop_dupstring(src, &lx, &mut offs)
@@ -44,7 +44,7 @@ fn run_all_cops(src: &String) -> CopsResult ! alloc
         cop_method(src, &lx, &mut offs)
         cop_stdapi(src, &lx, &mut offs)
         cop_constfn(src, &lx, &mut offs)
-        CopsResult(LEX_OK(), offs)
+        CopsResult(LEX_OK, offs)
 
 fn byte_line_col(src: &String, pos: Int, i: Int, line: Int, col: Int) -> LineCol ! alloc
     if i >= pos
@@ -143,7 +143,7 @@ fn fix_to_point_span(src: &String, pass: Int, max_pass: Int, lo: Int, hi: Int, l
         RangedText(src.dup(), lo, hi)
     else
         pack = run_all_cops(src)
-        if pack.status != LEX_OK()
+        if pack.status != LEX_OK
             RangedText(src.dup(), lo, hi)
         elsif limited == 0
             next = apply_all_fixes(src.dup(), &pack.offs)
@@ -163,7 +163,7 @@ fn fix_to_point_span(src: &String, pass: Int, max_pass: Int, lo: Int, hi: Int, l
 
 fn run_check(path: &String, src: &String, as_json: Int) -> Int ! io, alloc
     pack = run_all_cops(src)
-    if pack.status != LEX_OK()
+    if pack.status != LEX_OK
         eprint_str(d"lex error\n")
         2
     else
@@ -252,7 +252,7 @@ fn fixed_source(src: &String, args: FixArgs) -> String ! alloc
 
 fn report_fixed(path: &String, src: &String) -> Int ! io, alloc
     pack = run_all_cops(src)
-    if pack.status != LEX_OK()
+    if pack.status != LEX_OK
         2
     else
         n = pack.offs.len()
@@ -272,7 +272,7 @@ fn run_fix(path: &String, src: &String) -> Int ! io, alloc
 
 fn run_fix_checked(path: &String, src: &String, args: FixArgs) -> Int ! io, alloc
     pack = run_all_cops(src)
-    if pack.status != LEX_OK()
+    if pack.status != LEX_OK
         eprint_str(d"lex error\n")
         2
     else

@@ -1,0 +1,13 @@
+# exit: 0
+# A temporary under `&g()` is bound and released (SPEC «Liberación de locales» / Rust).
+struct Toks
+    items: List[Int]
+
+fn lex_fake() -> Toks ! alloc
+    Toks(List.new[Int]())
+
+fn take_toks(t: &Toks) -> Int ! alloc
+    list_len(t.items)
+
+fn main() -> Int ! alloc
+    take_toks(&lex_fake())

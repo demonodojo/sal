@@ -15,8 +15,7 @@ struct MiPack
     lead: String
     arms: List[MiArm]
 
-fn CODE_MATCHIF() -> String ! alloc
-    d"Style/MatchIf"
+CODE_MATCHIF = "Style/MatchIf"
 
 fn mi_fail() -> MiPack ! alloc
     MiPack(0, 0, 0, d"", d"", List.new[MiArm]())
@@ -24,7 +23,7 @@ fn mi_fail() -> MiPack ! alloc
 fn mi_skip_to_indent(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
-    elsif lex.kind(i) == TK_INDENT()
+    elsif lex.kind(i) == TK_INDENT
         i
     else
         mi_skip_to_indent(lex, n, i + 1)
@@ -32,7 +31,7 @@ fn mi_skip_to_indent(lex: &Lex, n: Int, i: Int) -> Int ! alloc
 fn mi_consume_suite(lex: &Lex, n: Int, i: Int) -> Int ! alloc
     if i >= n
         i
-    elsif lex.kind(i) != TK_INDENT()
+    elsif lex.kind(i) != TK_INDENT
         i
     else
         mi_consume_suite_go(lex, n, i, 0)
@@ -42,9 +41,9 @@ fn mi_consume_suite_go(lex: &Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
         i
     else
         k = lex.kind(i)
-        if k == TK_INDENT()
+        if k == TK_INDENT
             mi_consume_suite_go(lex, n, i + 1, depth + 1)
-        elsif k == TK_DEDENT()
+        elsif k == TK_DEDENT
             d2 = depth - 1
             if d2 == 0
                 i + 1
@@ -56,7 +55,7 @@ fn mi_consume_suite_go(lex: &Lex, n: Int, i: Int, depth: Int) -> Int ! alloc
 fn mi_trim_nl_suffix(lex: &Lex, j: Int) -> Int ! alloc
     if j <= 0
         0
-    elsif lex.kind(j - 1) == TK_NL()
+    elsif lex.kind(j - 1) == TK_NL
         mi_trim_nl_suffix(lex, j - 1)
     else
         j
@@ -65,7 +64,7 @@ fn cond_text(src: &String, lex: &Lex, n: Int, kw_i: Int) -> String ! alloc
     j = mi_skip_to_indent(lex, n, kw_i + 1)
     if j >= n
         d""
-    elsif lex.kind(j) != TK_INDENT()
+    elsif lex.kind(j) != TK_INDENT
         d""
     else
         start = lex.end(kw_i)
@@ -119,11 +118,8 @@ fn find_eq(s: &String, i: Int, n: Int) -> Int ! alloc
         find_eq(s, i + 1, n)
 
 fn mi_is_digit(c: Int) -> Int
-    if c >= 48
-        if c <= 57
-            1
-        else
-            0
+    if c >= 48 && c <= 57
+        1
     else
         0
 
@@ -189,11 +185,8 @@ fn read_scrut_rest(s: &String, i: Int, n: Int) -> Int ! alloc
             read_scrut_rest(s, i + 1, n)
         elsif c == 46
             j = i + 1
-            if j < n
-                if mi_is_ident_start(s.char(j)) == 1
-                    read_scrut_rest(s, j + 1, n)
-                else
-                    i
+            if j < n && mi_is_ident_start(s.char(j)) == 1
+                read_scrut_rest(s, j + 1, n)
             else
                 i
         else
@@ -203,11 +196,10 @@ fn mi_is_int_lit(s: &String) -> Int ! alloc
     n = s.len()
     if n == 0
         0
+    elsif read_int(s, 0, n) == n
+        1
     else
-        if read_int(s, 0, n) == n
-            1
-        else
-            0
+        0
 
 fn mi_is_scrut_ref(s: &String) -> Int ! alloc
     n = s.len()
@@ -221,11 +213,10 @@ fn mi_is_scrut_ref(s: &String) -> Int ! alloc
         0
     elsif find_char(s, 32, 0, n) >= 0
         0
+    elsif mi_is_ident_start(s.char(0)) == 1
+        1
     else
-        if mi_is_ident_start(s.char(0)) == 1
-            1
-        else
-            0
+        0
 
 fn eq_slice(s: &String, a: Int, b: Int, lit: &String) -> Int ! alloc
     n = b - a
@@ -321,16 +312,10 @@ fn find_char(s: &String, ch: Int, i: Int, n: Int) -> Int ! alloc
 fn mi_match_str_pat(raw: &String) -> String ! alloc
     t = mi_trim(raw)
     n = t.len()
-    if n >= 2
-        if t.char(0) == 34
-            if t.char(n - 1) == 34
-                t
-            else
-                d"\"" + t + d"\""
-        else
-            d"\"" + t + d"\""
+    if n >= 2 && t.char(0) == 34 && t.char(n - 1) == 34
+        t
     else
-        d"\"" + t + d"\""
+        "\"" + t + "\""
 
 fn mi_str_pat(cond: &String, scrut: &String) -> String ! alloc
     c = strip_eq_one(cond)
@@ -356,18 +341,17 @@ fn mi_str_pat(cond: &String, scrut: &String) -> String ! alloc
                     mi_match_str_pat(&a)
                 else
                     d""
+    elsif eq_slice(&c, 0, sn, scrut) != 1
+        d""
+    elsif eq_slice(&c, sn, sn + 4, &d".eq(") != 1
+        d""
     else
-        if eq_slice(&c, 0, sn, scrut) != 1
-            d""
-        elsif eq_slice(&c, sn, sn + 4, &d".eq(") != 1
+        open = sn + 4
+        close = rfind_char(&c, 41, n - 1)
+        if close < open
             d""
         else
-            open = sn + 4
-            close = rfind_char(&c, 41, n - 1)
-            if close < open
-                d""
-            else
-                mi_match_str_pat(&c.slice(open, close))
+            mi_match_str_pat(&c.slice(open, close))
 
 fn mi_dot_eq_scrut(c: &String) -> String ! alloc
     n = c.len()
@@ -572,9 +556,9 @@ fn mi_ident_blocks(src: &String, lex: &Lex, i: Int) -> Int ! alloc
         0
 
 fn mi_tok_blocks(src: &String, lex: &Lex, i: Int) -> Int ! alloc
-    if lex.kind(i) == TK_IF()
+    if lex.kind(i) == TK_IF
         mi_not_after_dot(src, lex.start(i))
-    elsif lex.kind(i) == TK_IDENT()
+    elsif lex.kind(i) == TK_IDENT
         mi_ident_blocks(src, lex, i)
     else
         0
@@ -591,7 +575,8 @@ fn suite_has_return_or_if_go(src: &String, lex: &Lex, i: Int, end: Int) -> Int !
         suite_has_return_or_if_go(src, lex, i + 1, end)
 
 fn mi_arm_new(pat: String, body: String) -> MiArm ! alloc
-    MiArm(pat, body, body_is_block(&body))
+    is_b = body_is_block(&body)
+    MiArm(pat, body, is_b)
 
 fn mi_push_arm(arms: &mut List[MiArm], arm: MiArm) -> Int ! alloc
     _p = arms.push(arm)
@@ -610,7 +595,7 @@ fn mi_consume_elsif_list(lex: &Lex, n: Int, i: Int) -> Int ! alloc
         j = skip_nl(lex, n, i)
         if j >= n
             j
-        elsif lex.kind(j) == TK_ELSIF()
+        elsif lex.kind(j) == TK_ELSIF
             k = mi_skip_to_indent(lex, n, j + 1)
             k2 = mi_consume_suite(lex, n, k)
             mi_consume_elsif_list(lex, n, k2)
@@ -627,7 +612,7 @@ fn mi_consume_if(lex: &Lex, n: Int, if_i: Int) -> Int ! alloc
         j4 = skip_nl(lex, n, j3)
         if j4 >= n
             j4
-        elsif lex.kind(j4) == TK_ELSE()
+        elsif lex.kind(j4) == TK_ELSE
             j5 = skip_nl(lex, n, j4 + 1)
             mi_consume_suite(lex, n, j5)
         else
@@ -642,7 +627,7 @@ fn mi_has_homogeneous_branch(lex: &Lex, n: Int, if_i: Int) -> Int ! alloc
         j = skip_nl(lex, n, suite_end)
         if j >= n
             0
-        elsif lex.kind(j) == TK_ELSIF()
+        elsif lex.kind(j) == TK_ELSIF
             1
         else
             0
@@ -662,7 +647,8 @@ fn mi_try_if_go(src: &String, lex: &Lex, if_i: Int, n: Int, ind: Int) -> MiPack 
         fam = 2
     if s0.eq(d"") == 1
         return mi_fail()
-    p0 = mi_parse_arm(&c0, fam, &(s0 + d""))
+    scrut_ref = s0.dup()
+    p0 = mi_parse_arm(&c0, fam, &scrut_ref)
     if p0.eq(d"") == 1
         return mi_fail()
     suite_end = mi_consume_suite(lex, n, ind)
@@ -674,24 +660,25 @@ fn mi_try_if_go(src: &String, lex: &Lex, if_i: Int, n: Int, ind: Int) -> MiPack 
     j = skip_nl(lex, n, suite_end)
     if j >= n
         return mi_fail()
-    if lex.kind(j) != TK_ELSIF()
+    if lex.kind(j) != TK_ELSIF
         return mi_fail()
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
     arms = List.new[MiArm]()
-    _a0 = mi_push_arm(&mut arms, mi_arm_new(p0, b0))
+    mi_push_arm(&mut arms, mi_arm_new(p0, b0))
     return mi_collect_elsifs(src, lex, n, if_i, fam, s0, lead, start, arms, j)
 
 fn mi_collect_elsifs(src: &String, lex: &Lex, n: Int, if_i: Int, fam: Int, scrut: String, lead: String, start: Int, arms: List[MiArm], i: Int) -> MiPack ! alloc
     if i >= n
         return mi_fail()
-    if lex.kind(i) != TK_ELSIF()
+    if lex.kind(i) != TK_ELSIF
         return mi_fail()
     ind = mi_skip_to_indent(lex, n, i + 1)
     if ind >= n
         return mi_fail()
     c = cond_text(src, lex, n, i)
-    p = mi_parse_arm(&c, fam, &(scrut + d""))
+    scrut_ref = scrut.dup()
+    p = mi_parse_arm(&c, fam, &scrut_ref)
     if p.eq(d"") == 1
         return mi_fail()
     suite_end = mi_consume_suite(lex, n, ind)
@@ -700,13 +687,13 @@ fn mi_collect_elsifs(src: &String, lex: &Lex, n: Int, if_i: Int, fam: Int, scrut
         return mi_fail()
     if suite_has_return_or_if(src, lex, ind, suite_end) == 1
         return mi_fail()
-    _a = mi_push_arm(&mut arms, mi_arm_new(p, b))
+    mi_push_arm(&mut arms, mi_arm_new(p, b))
     j = skip_nl(lex, n, suite_end)
     if j >= n
         return mi_fail()
-    if lex.kind(j) == TK_ELSIF()
+    if lex.kind(j) == TK_ELSIF
         return mi_collect_elsifs(src, lex, n, if_i, fam, scrut, lead, start, arms, j)
-    if lex.kind(j) == TK_ELSE()
+    if lex.kind(j) == TK_ELSE
         return mi_finish_else(src, lex, n, if_i, scrut, arms, j)
     if_end = mi_consume_if(lex, n, if_i)
     return MiPack(1, start, lex.end(if_end - 1), scrut, lead, arms)
@@ -723,7 +710,7 @@ fn mi_finish_else(src: &String, lex: &Lex, n: Int, if_i: Int, scrut: String, arm
         return mi_fail()
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
-    _a = mi_push_arm(&mut arms, mi_arm_new(d"_", b))
+    mi_push_arm(&mut arms, mi_arm_new(d"_", b))
     if_end = mi_consume_if(lex, n, if_i)
     return MiPack(1, start, lex.end(if_end - 1), scrut, lead, arms)
 
@@ -736,7 +723,7 @@ fn indent_block_go(body: &String, i: Int, n: Int, prefix: &String, acc: String) 
     else
         nl = mi_find_first_nl(body, i, n)
         if nl >= n
-            acc + prefix + body.slice(i, n) + d"\n"
+            acc + prefix + body.slice(i, n) + "\n"
         else
             line = body.slice(i, nl)
             acc2 = acc + prefix + line + "\n"
@@ -753,7 +740,7 @@ fn mi_span_blank_tail(src: &String, end: Int) -> Int ! alloc
         1
 
 fn build_match_fix(pack: &MiPack) -> String ! alloc
-    build_match_go(pack, 0, pack.arms.len(), (pack.lead + d"match " + pack.scrut + d"\n"), &d"    ")
+    build_match_go(pack, 0, pack.arms.len(), (pack.lead + "match " + pack.scrut + "\n"), &d"    ")
 
 fn build_match_go(pack: &MiPack, i: Int, n: Int, acc: String, arm_lead: &String) -> String ! alloc
     if i >= n
@@ -762,12 +749,12 @@ fn build_match_go(pack: &MiPack, i: Int, n: Int, acc: String, arm_lead: &String)
         arm = pack.arms.get(i)
         pat = arm.pat.clone()
         if arm.is_block == 1
-            head = acc + pack.lead + arm_lead + pat + d" =>\n"
-            body = indent_block(&arm.body, &(pack.lead + arm_lead + d"    "))
+            head = acc + pack.lead + arm_lead + pat + " =>\n"
+            body = indent_block(&arm.body, &(pack.lead + arm_lead + "    "))
             build_match_go(pack, i + 1, n, (head + body), arm_lead)
         else
             expr = mi_trim(&mi_strip_trailing_nl(arm.body.dup()))
-            line = acc + pack.lead + arm_lead + pat + d" => " + expr + d"\n"
+            line = acc + pack.lead + arm_lead + pat + " => " + expr + "\n"
             build_match_go(pack, i + 1, n, line, arm_lead)
 
 fn cop_matchif(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
@@ -785,17 +772,19 @@ fn tok_at_or_after(lex: &Lex, n: Int, i: Int, byte: Int) -> Int ! alloc
 fn cop_matchif_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif lex.kind(i) == TK_IF()
-        pack = mi_fail()
-        if mi_has_homogeneous_branch(lex, n, i) == 1
-            pack = mi_try_if(src, lex, i, n)
+    elsif lex.kind(i) == TK_IF
+        # Do not reassign a struct that owns a List: dropping the old value double-frees.
+        pack = if mi_has_homogeneous_branch(lex, n, i) == 1
+            mi_try_if(src, lex, i, n)
+        else
+            mi_fail()
         if pack.ok == 1
                 fix = build_match_fix(&pack)
                 if mi_span_blank_tail(src, pack.end) == 1
                     fix = fix + "\n"
                 msg = d"use match instead of if/elsif on the same scrutinee"
-                o = off_new(CODE_MATCHIF(), msg, pack.start, pack.end, 1, fix)
-                _p = offs.push(o)
+                o = off_new(CODE_MATCHIF, msg, pack.start, pack.end, 1, fix)
+                offs.push(o)
                 j = tok_at_or_after(lex, n, i, pack.end)
                 return cop_matchif_go(src, lex, offs, j, n)
         cop_matchif_go(src, lex, offs, i + 1, n)

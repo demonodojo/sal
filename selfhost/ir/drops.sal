@@ -2319,10 +2319,42 @@ fn dr_hoist_arms(h: &mut HC, arms: &mut List[TElsif], i: Int, n: Int) -> Int ! a
         arm.body = dr_hoist_block(h, &mut arm.body)
         dr_hoist_arms(h, arms, i + 1, n)
 
+# A place: local, field of a place, or deref of a place (`is_place` in src/drops.rs).
+fn dr_is_place(e: &Expr) -> Int ! alloc
+    match e
+        XIdent(n) => 1
+        XField(base, field) => dr_is_place(&base)
+        XUnary(op, inner) =>
+            if str_eq(op, "deref") == 1
+                dr_is_place(&inner)
+            else
+                0
+        _ => 0
+
+# `&g()` / `&mut g()`: bind the non-place rvalue so scope-end / struct glue frees it (Rust).
+fn dr_hoist_unary(h: &mut HC, e: &Expr, op: &String, inner: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
+    ni = dr_hoist_expr(h, inner, out)
+    if str_eq(op, "ref") + str_eq(op, "refmut") > 0
+        if dr_is_place(&ni) == 0
+            k = list_get(&h.k, 0) + 1
+            _s = list_set(h.k, 0, k)
+            name = "__tmp" + int_to_str(k)
+            _l = list_push(out, TStmt(1, strdup(name), ni, "", 1, XNone, 0, 0, 0 - k))
+            bound = XIdent(strdup(name))
+            _w = dr_set_expr(e, 1, inner, &bound)
+            dr_ret(e)
+        else
+            _w = dr_set_expr(e, 1, inner, &ni)
+            dr_ret(e)
+    else
+        _w = dr_set_expr(e, 1, inner, &ni)
+        dr_ret(e)
+
 fn dr_hoist_expr(h: &mut HC, e: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
     match e
         XCall(name, args, targs, xp) => dr_hoist_call(h, e, &name, &mut args, out)
         XBin(op, l, r) => dr_hoist_bin(h, e, &l, &r, out)
+        XUnary(op, inner) => dr_hoist_unary(h, e, &op, &inner, out)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_hoist_if(h, e, &mut then_b, &mut else_b, has_else, &mut elsifs)
         XWhile(cond, body) => dr_hoist_while(h, e, &mut body)
         XMatch(scrut, arms) => dr_hoist_match(h, e, &scrut, &mut arms, out)

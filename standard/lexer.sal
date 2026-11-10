@@ -6,65 +6,45 @@ struct Lex
     starts: List[Int]
     ends: List[Int]
 
-fn TK_EOF() -> Int
-    0
+TK_EOF = 0
 
-fn TK_NL() -> Int
-    1
+TK_NL = 1
 
-fn TK_INDENT() -> Int
-    2
+TK_INDENT = 2
 
-fn TK_DEDENT() -> Int
-    3
+TK_DEDENT = 3
 
-fn TK_IDENT() -> Int
-    4
+TK_IDENT = 4
 
-fn TK_STRING() -> Int
-    5
+TK_STRING = 5
 
-fn TK_DSTRING() -> Int
-    6
+TK_DSTRING = 6
 
-fn TK_FSTRING() -> Int
-    15
+TK_FSTRING = 15
 
-fn TK_RSTRING() -> Int
-    16
+TK_RSTRING = 16
 
-fn TK_LPAREN() -> Int
-    7
+TK_LPAREN = 7
 
-fn TK_RPAREN() -> Int
-    8
+TK_RPAREN = 8
 
-fn TK_IF() -> Int
-    9
+TK_IF = 9
 
-fn TK_ELSIF() -> Int
-    10
+TK_ELSIF = 10
 
-fn TK_ELSE() -> Int
-    11
+TK_ELSE = 11
 
-fn TK_EQ() -> Int
-    12
+TK_EQ = 12
 
-fn TK_COMMA() -> Int
-    13
+TK_COMMA = 13
 
-fn TK_PLUS() -> Int
-    14
+TK_PLUS = 14
 
-fn LEX_OK() -> Int
-    0
+LEX_OK = 0
 
-fn LEX_ERR_TAB() -> Int
-    2
+LEX_ERR_TAB = 2
 
-fn LEX_ERR_STRING() -> Int
-    2
+LEX_ERR_STRING = 2
 
 method Lex.len(&self) -> Int ! alloc
     self.kinds.len()
@@ -88,17 +68,14 @@ method Lex.push(&mut self, kind: Int, start: Int, end: Int) -> Int ! alloc
     0
 
 fn lex_empty() -> Lex ! alloc
-    Lex(LEX_OK(), List.new[Int](), List.new[Int](), List.new[Int]())
+    Lex(LEX_OK, List.new[Int](), List.new[Int](), List.new[Int]())
 
 fn kw_kind(text: &String) -> Int ! alloc
-    if text.eq("if") == 1
-        TK_IF()
-    elsif text.eq("elsif") == 1
-        TK_ELSIF()
-    elsif text.eq("else") == 1
-        TK_ELSE()
-    else
-        TK_IDENT()
+    match text
+        "if" => TK_IF
+        "elsif" => TK_ELSIF
+        "else" => TK_ELSE
+        _ => TK_IDENT
 
 fn indent_stack_new() -> List[Int] ! alloc
     st = List.new[Int]()
@@ -147,12 +124,10 @@ fn count_spaces_or_tab(src: &String, i: Int, n: Int) -> Int ! alloc
         0
     else
         c = src.char(i)
-        if c == 32
-            1 + count_spaces_or_tab(src, i + 1, n)
-        elsif c == 9
-            0 - 1
-        else
-            0
+        match c
+            32 => 1 + count_spaces_or_tab(src, i + 1, n)
+            9 => 0 - 1
+            _ => 0
 
 fn string_close_end(src: &String, open_quote: Int, n: Int) -> Int ! alloc
     end = src.skip(open_quote + 1, 7, 0)
@@ -167,7 +142,7 @@ fn dedent_to_col(out: &mut Lex, st: &mut List[Int], col: Int, pos: Int) -> Int !
     top = indent_top(st)
     if col < top
         indent_pop(st)
-        out.push(TK_DEDENT(), pos, pos)
+        out.push(TK_DEDENT, pos, pos)
         dedent_to_col(out, st, col, pos)
     else
         0
@@ -177,21 +152,21 @@ fn lex_fail(err: &mut List[Int]) -> Int ! alloc
     0
 
 fn lex_emit_string(src: &String, i: Int, n: Int, out: &mut Lex, st: &mut List[Int], kind: Int, err: &mut List[Int]) -> Int ! alloc
-    if kind == TK_DSTRING()
+    if kind == TK_DSTRING
         end = string_close_end(src, i + 1, n)
         if end < 0
             lex_fail(err)
         else
             out.push(kind, i, end)
             lex_go(src, end, n, out, st, 0, err)
-    elsif kind == TK_FSTRING()
+    elsif kind == TK_FSTRING
         end = string_close_end(src, i + 1, n)
         if end < 0
             lex_fail(err)
         else
             out.push(kind, i, end)
             lex_go(src, end, n, out, st, 0, err)
-    elsif kind == TK_RSTRING()
+    elsif kind == TK_RSTRING
         end = string_close_end(src, i + 1, n)
         if end < 0
             lex_fail(err)
@@ -211,7 +186,7 @@ fn lex_go(src: &String, i: Int, n: Int, out: &mut Lex, st: &mut List[Int], at_st
         0
     elsif i >= n
         _d = dedent_to_col(out, st, 0, i)
-        out.push(TK_EOF(), i, i)
+        out.push(TK_EOF, i, i)
         0
     else
         c = src.char(i)
@@ -237,68 +212,53 @@ fn lex_go(src: &String, i: Int, n: Int, out: &mut Lex, st: &mut List[Int], at_st
                         top = indent_top(st)
                         if sp > top
                             indent_push(st, sp)
-                            out.push(TK_INDENT(), i, j)
+                            out.push(TK_INDENT, i, j)
                             lex_go(src, j, n, out, st, 0, err)
                         else
                             _d = dedent_to_col(out, st, sp, i)
                             lex_go(src, j, n, out, st, 0, err)
         elsif c == 10
-            out.push(TK_NL(), i, i + 1)
+            out.push(TK_NL, i, i + 1)
             lex_go(src, i + 1, n, out, st, 1, err)
         elsif c == 9
             lex_fail(err)
         elsif c == 34
-            lex_emit_string(src, i, n, out, st, TK_STRING(), err)
+            lex_emit_string(src, i, n, out, st, TK_STRING, err)
         elsif c == 40
-            out.push(TK_LPAREN(), i, i + 1)
+            out.push(TK_LPAREN, i, i + 1)
             lex_go(src, i + 1, n, out, st, 0, err)
         elsif c == 41
-            out.push(TK_RPAREN(), i, i + 1)
+            out.push(TK_RPAREN, i, i + 1)
             lex_go(src, i + 1, n, out, st, 0, err)
         elsif c == 61
-            out.push(TK_EQ(), i, i + 1)
+            out.push(TK_EQ, i, i + 1)
             lex_go(src, i + 1, n, out, st, 0, err)
         elsif c == 44
-            out.push(TK_COMMA(), i, i + 1)
+            out.push(TK_COMMA, i, i + 1)
             lex_go(src, i + 1, n, out, st, 0, err)
         elsif c == 43
-            out.push(TK_PLUS(), i, i + 1)
+            out.push(TK_PLUS, i, i + 1)
             lex_go(src, i + 1, n, out, st, 0, err)
         elsif is_ident_start(c) == 1
             end = src.skip(i, 2, 0)
             text = src.slice(i, end)
             if text.eq("d") == 1
-                if end < n
-                    if src.char(end) == 34
-                        lex_emit_string(src, end - 1, n, out, st, TK_DSTRING(), err)
-                    else
-                        kind = kw_kind(&text)
-                        out.push(kind, i, end)
-                        lex_go(src, end, n, out, st, 0, err)
+                if end < n && src.char(end) == 34
+                    lex_emit_string(src, end - 1, n, out, st, TK_DSTRING, err)
                 else
                     kind = kw_kind(&text)
                     out.push(kind, i, end)
                     lex_go(src, end, n, out, st, 0, err)
             elsif text.eq("f") == 1
-                if end < n
-                    if src.char(end) == 34
-                        lex_emit_string(src, end - 1, n, out, st, TK_FSTRING(), err)
-                    else
-                        kind = kw_kind(&text)
-                        out.push(kind, i, end)
-                        lex_go(src, end, n, out, st, 0, err)
+                if end < n && src.char(end) == 34
+                    lex_emit_string(src, end - 1, n, out, st, TK_FSTRING, err)
                 else
                     kind = kw_kind(&text)
                     out.push(kind, i, end)
                     lex_go(src, end, n, out, st, 0, err)
             elsif text.eq("r") == 1
-                if end < n
-                    if src.char(end) == 34
-                        lex_emit_string(src, end - 1, n, out, st, TK_RSTRING(), err)
-                    else
-                        kind = kw_kind(&text)
-                        out.push(kind, i, end)
-                        lex_go(src, end, n, out, st, 0, err)
+                if end < n && src.char(end) == 34
+                    lex_emit_string(src, end - 1, n, out, st, TK_RSTRING, err)
                 else
                     kind = kw_kind(&text)
                     out.push(kind, i, end)
@@ -339,6 +299,6 @@ fn lex(src: &String) -> Lex ! alloc
     n = src.len()
     lex_go(src, 0, n, &mut out, &mut st, 1, &mut err)
     if err.get(0) == 1
-        Lex(LEX_ERR_TAB(), List.new[Int](), List.new[Int](), List.new[Int]())
+        Lex(LEX_ERR_TAB, List.new[Int](), List.new[Int](), List.new[Int]())
     else
-        Lex(LEX_OK(), out.kinds, out.starts, out.ends)
+        Lex(LEX_OK, out.kinds, out.starts, out.ends)

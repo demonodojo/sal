@@ -2,8 +2,7 @@ import lexer
 import patch
 import util
 
-fn CODE_UNUSED() -> String ! alloc
-    d"Style/UnusedBinding"
+CODE_UNUSED = "Style/UnusedBinding"
 
 fn cop_unusedbinding(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     n = lex.len()
@@ -17,29 +16,26 @@ fn cop_unused_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int) 
         end = lex.start(i + 2)
         msg = d"unused binding: write the call as a statement"
         fix = d""
-        o = off_new(CODE_UNUSED(), msg, start, end, 1, fix)
+        o = off_new(CODE_UNUSED, msg, start, end, 1, fix)
         offs.push(o)
         cop_unused_go(src, lex, offs, i + 1, n)
     else
         cop_unused_go(src, lex, offs, i + 1, n)
 
 fn ub_name_start(src: &String, pos: Int) -> Int ! alloc
-    if pos > 0
-        if src.char(pos - 1) == 95
-            pos - 1
-        else
-            pos
+    if pos > 0 && src.char(pos - 1) == 95
+        pos - 1
     else
         pos
 
 fn ub_offense_at(src: &String, lex: &Lex, n: Int, i: Int) -> Int ! alloc
-    if lex.kind(i) != TK_IDENT()
+    if lex.kind(i) != TK_IDENT
         0
     elsif ub_stmt_start(lex, i) == 0
         0
     elsif i + 3 >= n
         0
-    elsif lex.kind(i + 1) != TK_EQ()
+    elsif lex.kind(i + 1) != TK_EQ
         0
     elsif src.char(lex.start(i + 1) + 1) == 62
         # `No => f(x)` is a match arm, not a binding.
@@ -54,11 +50,11 @@ fn ub_offense_at(src: &String, lex: &Lex, n: Int, i: Int) -> Int ! alloc
 fn ub_rhs_lparen(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     if j >= n
         0 - 1
-    elsif lex.kind(j) != TK_IDENT()
+    elsif lex.kind(j) != TK_IDENT
         0 - 1
     elsif j + 1 >= n
         0 - 1
-    elsif lex.kind(j + 1) == TK_LPAREN()
+    elsif lex.kind(j + 1) == TK_LPAREN
         j + 1
     else
         ub_rhs_lparen(lex, n, j + 1)
@@ -83,9 +79,9 @@ fn ub_matching_rparen(lex: &Lex, n: Int, j: Int, depth: Int) -> Int ! alloc
         0 - 1
     else
         k = lex.kind(j)
-        if k == TK_LPAREN()
+        if k == TK_LPAREN
             ub_matching_rparen(lex, n, j + 1, depth + 1)
-        elsif k == TK_RPAREN()
+        elsif k == TK_RPAREN
             if depth == 1
                 j
             else
@@ -97,7 +93,7 @@ fn ub_last_in_block(lex: &Lex, n: Int, j: Int) -> Int ! alloc
     k = skip_nl(lex, n, j)
     if k >= n
         1
-    elsif lex.kind(k) == TK_DEDENT()
+    elsif lex.kind(k) == TK_DEDENT
         1
     else
         0
@@ -107,17 +103,17 @@ fn ub_stmt_start(lex: &Lex, i: Int) -> Int ! alloc
         1
     else
         k = lex.kind(i - 1)
-        if k == TK_NL()
+        if k == TK_NL
             1
-        elsif k == TK_INDENT()
+        elsif k == TK_INDENT
             1
-        elsif k == TK_DEDENT()
+        elsif k == TK_DEDENT
             1
         else
             0
 
 fn ub_is_item_kw(src: &String, lex: &Lex, i: Int) -> Int ! alloc
-    if lex.kind(i) != TK_IDENT()
+    if lex.kind(i) != TK_IDENT
         0
     else
         w = lex.text(src, i)
@@ -157,18 +153,18 @@ fn ub_reads(src: &String, lex: &Lex, lo: Int, hi: Int, skip: Int, name: &String)
         ub_reads(src, lex, lo + 1, hi, skip, name)
     else
         k = lex.kind(lo)
-        if k == TK_IDENT()
+        if k == TK_IDENT
             if lex.text(src, lo).eq(name) == 1
                 1
             else
                 ub_reads(src, lex, lo + 1, hi, skip, name)
-        elsif k == TK_FSTRING()
+        elsif k == TK_FSTRING
             ub_reads_fstr(src, lex, lo, hi, skip, name)
         else
             ub_reads(src, lex, lo + 1, hi, skip, name)
 
 fn ub_reads_fstr(src: &String, lex: &Lex, lo: Int, hi: Int, skip: Int, name: &String) -> Int ! alloc
-    needle = d"#{" + name + d"}"
+    needle = "#{" + name + "}"
     if lex.text(src, lo).contains(needle) == 1
         1
     else

@@ -1,6 +1,8 @@
 import lexer
 import patch
 
+CODE_STDAPI = "Style/StdApi"
+
 struct StdCall
     rparen: Int
     open: Int
@@ -19,16 +21,12 @@ fn std_call_ok(c: StdCall) -> Int
         1
 
 fn std_is_ws(c: Int) -> Int
-    if c == 32
-        1
-    elsif c == 10
-        1
-    elsif c == 13
-        1
-    elsif c == 9
-        1
-    else
-        0
+    match c
+        32 => 1
+        10 => 1
+        13 => 1
+        9 => 1
+        _ => 0
 
 fn std_skip_ws(src: &String, i: Int, n: Int) -> Int ! alloc
     j = i
@@ -201,7 +199,7 @@ fn stdapi_fix(name: &String, src: &String, call: StdCall) -> String ! alloc
         d""
 
 fn stdapi_consider(src: &String, lex: &Lex, i: Int) -> Off ! alloc
-    if lex.kind(i) != TK_IDENT()
+    if lex.kind(i) != TK_IDENT
         return std_off_skip()
     name = lex.text(src, i)
     if name.eq("read_fd") + name.eq("close_fd") + name.eq("write_str_fd") + name.eq("getcwd_str") == 0
@@ -212,7 +210,7 @@ fn stdapi_consider(src: &String, lex: &Lex, i: Int) -> Off ! alloc
     fix = stdapi_fix(&name, src, call)
     if fix.len() == 0
         return std_off_skip()
-    off_new(d"Style/StdApi", d"use the std method API instead of " + name, lex.start(i), call.rparen + 1, 1, fix)
+    off_new(CODE_STDAPI, "use the std method API instead of " + name, lex.start(i), call.rparen + 1, 1, fix)
 
 fn cop_stdapi(src: &String, lex: &Lex, offs: &mut List[Off]) -> Int ! alloc
     cop_stdapi_go(src, lex, offs, 0, lex.len())

@@ -45,7 +45,9 @@ fn emit_ir_from_prog(tp: &mut TProgram) -> String ! alloc
 
 fn ce_prepare_one(tp: &mut TProgram) -> Int ! alloc
     vals = list_new[CVal]()
-    _e = ce_eval(&tp.consts, &list_new[CVal](), &mut vals)
+    # Bind the empty seed list: `&list_new[…]()` as a call argument leaks the temporary.
+    seed = list_new[CVal]()
+    _e = ce_eval(&tp.consts, &seed, &mut vals)
     n_fns = list_len(&tp.fns)
     _f = ce_fold_fns(&mut tp.fns, 0, n_fns, &vals)
     list_free(vals)
@@ -1524,7 +1526,8 @@ fn emit_c_from_ast(tp: &mut TProgram) -> String ! alloc
     _f = ce_prepare_one(tp)
     user = collect_fn_names_t(&tp.fns, 0, list_len(&tp.fns), vec_new())
     env = tenv_new(tp)
-    emit_c_from_ast_module(tp, user, vec_new(), 1, 0, &list_new[TEnum](), &mut env, &tp.fns)
+    empty_enums = list_new[TEnum]()
+    emit_c_from_ast_module(tp, user, vec_new(), 1, 0, &empty_enums, &mut env, &tp.fns)
 
 fn call_link_objs(obj_list: &String, out_path: &String) -> Int ! io, alloc
     link_objs(obj_list, out_path)

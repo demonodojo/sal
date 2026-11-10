@@ -132,7 +132,7 @@ fn greedy_take(offs: &List[Off], sorted: &List[Int]) -> List[Int] ! alloc
     out = List.new[Int]()
     st = List.new[Int]()
     st.push(0 - 1)
-    _a = greedy_take_go(offs, sorted, &mut out, &mut st, 0, sorted.len())
+    greedy_take_go(offs, sorted, &mut out, &mut st, 0, sorted.len())
     out
 
 fn greedy_take_go(offs: &List[Off], sorted: &List[Int], out: &mut List[Int], st: &mut List[Int], i: Int, n: Int) -> Int ! alloc
@@ -172,7 +172,7 @@ fn apply_ranged_fixes(src: String, offs: &List[Off], lo: Int, hi: Int) -> Ranged
 
 fn fix_indices_in_range(offs: &List[Off], lo: Int, hi: Int) -> List[Int] ! alloc
     v = List.new[Int]()
-    _a = fix_indices_in_range_go(offs, &mut v, lo, hi, 0, offs.len())
+    fix_indices_in_range_go(offs, &mut v, lo, hi, 0, offs.len())
     v
 
 fn fix_indices_in_range_go(offs: &List[Off], v: &mut List[Int], lo: Int, hi: Int, i: Int, n: Int) -> Int ! alloc

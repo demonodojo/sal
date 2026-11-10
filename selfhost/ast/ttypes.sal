@@ -206,6 +206,8 @@ fn tt_index_of(names: &List[String], name: &String, i: Int, n: Int) -> Int ! all
 fn tenv_free(env: &TEnv) -> Int ! alloc
     list_free(env.names)
     list_free(env.tys)
+    # `structs` is freed by the caller when it owns a separate copy (`ic_free`), or left
+    # to `drop.TEnv` when the `TEnv` itself is dropped without a prior `tenv_free`.
     list_free(env.fn_names)
     list_free(env.fn_rets)
     list_free(env.g_names)
