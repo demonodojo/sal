@@ -989,35 +989,48 @@ void *sal_vec_new(void) {
     return v;
 }
 
-int64_t sal_vec_push(void *vp, int64_t x) {
-    SalVec *v = (SalVec *)vp;
+/* Makes room for `extra` more elements (flat lists append a whole element at once).
+ * Returns 0 on success. */
+static int sal_vec_reserve(SalVec *v, size_t extra) {
     if (!v) {
         return 1;
     }
-    if (v->len + 1 > v->cap) {
-        size_t ncap = v->cap ? v->cap * 2 : 8;
-        size_t bytes = ncap * sizeof(int64_t);
-        int64_t *nd;
-        void *anchor = v->data ? (void *)v->data : (void *)v;
-        if (sal_ptr_in_any(anchor)) {
-            nd = (int64_t *)sal_arena_alloc_in(anchor, (int64_t)bytes);
-            if (!nd) {
-                sal_panic("oom");
-            }
-            if (v->data && v->len) {
-                memcpy(nd, v->data, v->len * sizeof(int64_t));
-            }
-        } else {
-            /* Grow in place when the allocator can: `realloc` extends the block
-             * instead of allocating a second one, and never leaves the old
-             * buffer behind (it used to leak on every growth). */
-            nd = (int64_t *)realloc(v->data, bytes);
-            if (!nd) {
-                sal_panic("oom");
-            }
+    if (v->len + extra <= v->cap) {
+        return 0;
+    }
+    size_t ncap = v->cap ? v->cap : 8;
+    while (ncap < v->len + extra) {
+        ncap *= 2;
+    }
+    size_t bytes = ncap * sizeof(int64_t);
+    int64_t *nd;
+    void *anchor = v->data ? (void *)v->data : (void *)v;
+    if (sal_ptr_in_any(anchor)) {
+        nd = (int64_t *)sal_arena_alloc_in(anchor, (int64_t)bytes);
+        if (!nd) {
+            sal_panic("oom");
         }
-        v->data = nd;
-        v->cap = ncap;
+        if (v->data && v->len) {
+            memcpy(nd, v->data, v->len * sizeof(int64_t));
+        }
+    } else {
+        /* Grow in place when the allocator can: `realloc` extends the block
+         * instead of allocating a second one, and never leaves the old
+         * buffer behind (it used to leak on every growth). */
+        nd = (int64_t *)realloc(v->data, bytes);
+        if (!nd) {
+            sal_panic("oom");
+        }
+    }
+    v->data = nd;
+    v->cap = ncap;
+    return 0;
+}
+
+int64_t sal_vec_push(void *vp, int64_t x) {
+    SalVec *v = (SalVec *)vp;
+    if (sal_vec_reserve(v, 1) != 0) {
+        return 1;
     }
     v->data[v->len++] = x;
     return 0;
@@ -2395,6 +2408,12 @@ typedef struct {
     const char *desc;
     int desc_owned;
     int owned;
+    /* Flat struct elements: `S(..)` descriptors store `stride` i64 slots per element
+     * inline in `vec.data`, so a `List[Struct]` needs no block per element. `flat` is set
+     * only for descriptors the compiler passes (`sal_list_new_desc`), never for the legacy
+     * packed kinds of `sal_list_new_typed`. */
+    int32_t stride;
+    int32_t flat;
     /* Element glue (SPEC «Liberación de locales»): set by sal_list_set_drop, it releases
      * one element. NULL keeps the descriptor path (desc_free). */
     void (*elem_drop)(int64_t);
@@ -2402,7 +2421,13 @@ typedef struct {
      * `xs.clone()` copies each element with it, so the copy owns its own elements. */
     int64_t (*elem_clone)(int64_t);
     SalVec vec;
+    /* Elements in the list (`vec.len` counts i64 slots: `stride` per element when flat). */
+    size_t count;
 } SalList;
+
+/* The emitted LLVM reads `count` at offset 64 when it inlines `sal_list_len`
+ * (src/llvm.rs); keep the layout in sync or the inline load reads the wrong slot. */
+_Static_assert(__builtin_offsetof(SalList, count) == 64, "SalList layout feeds the inlined list_len");
 
 /* The descriptor after `d` (which points at one descriptor). */
 static const char *desc_end(const char *d) {
@@ -2414,6 +2439,15 @@ static const char *desc_end(const char *d) {
         return *d ? d + 1 : d;
     }
     return *d ? d + 1 : d;
+}
+
+/* i64 slots of one flat struct element (a struct descriptor always has one). */
+static int desc_stride(const char *d) {
+    int n = 0;
+    for (const char *f = d + 2; *f && *f != ')'; f = desc_end(f)) {
+        n++;
+    }
+    return n > 0 ? n : 1;
 }
 
 static void desc_free(const char *d, int64_t raw) {
@@ -2432,6 +2466,15 @@ static void desc_free(const char *d, int64_t raw) {
             f = desc_end(f);
         }
         sal_xfree(blk);
+    }
+}
+
+/* Releases the fields of a flat struct stored inline at `slots`: the block belongs to the
+ * list, so only the fields it owns go. */
+static void desc_free_fields(const char *d, const int64_t *slots) {
+    const char *f = d + 2;
+    for (int i = 0; *f && *f != ')'; i++, f = desc_end(f)) {
+        desc_free(f, slots[i]);
     }
 }
 
@@ -2608,9 +2651,16 @@ void *sal_list_new_desc(const char *desc) {
     l->desc_owned = 0;
     l->elem_drop = NULL;
     l->elem_clone = NULL;
+    l->stride = 1;
+    l->flat = 0;
+    if (l->desc[0] == 'S') {
+        l->stride = desc_stride(l->desc);
+        l->flat = 1;
+    }
     l->vec.data = NULL;
     l->vec.len = 0;
     l->vec.cap = 0;
+    l->count = 0;
     return l;
 }
 
@@ -2648,6 +2698,9 @@ void *sal_list_new_typed(int64_t elem_kind) {
     if (l) {
         l->desc = desc_from_kind(elem_kind, &l->desc_owned);
         l->owned = 1;
+        /* Legacy packed kinds keep one boxed value per element. */
+        l->stride = 1;
+        l->flat = 0;
     }
     return vp;
 }
@@ -2672,12 +2725,19 @@ void sal_list_free(void *vp) {
         return;
     }
     if (l->owned) {
-        int by_desc = desc_owns_elem(l->desc);
-        for (size_t i = 0; i < l->vec.len; i++) {
-            if (l->elem_drop && !by_desc) {
-                l->elem_drop(l->vec.data[i]);
-            } else {
-                desc_free(l->desc, l->vec.data[i]);
+        if (l->flat) {
+            /* The slots are the element: release the fields it owns in place. */
+            for (size_t e = 0; e < l->count; e++) {
+                desc_free_fields(l->desc, l->vec.data + e * (size_t)l->stride);
+            }
+        } else {
+            int by_desc = desc_owns_elem(l->desc);
+            for (size_t i = 0; i < l->vec.len; i++) {
+                if (l->elem_drop && !by_desc) {
+                    l->elem_drop(l->vec.data[i]);
+                } else {
+                    desc_free(l->desc, l->vec.data[i]);
+                }
             }
         }
     }
@@ -2707,7 +2767,31 @@ void sal_list_free_shell(void *vp) {
     sal_xfree(l);
 }
 
+/* Share an element into the list without taking ownership of the source. For a flat
+ * `List[Struct]`, `x` is a borrow of slots (often an interior `list_get` pointer): copy
+ * the slots and leave the source alone. The boxed path only stores the pointer, same as
+ * before. Freeing both lists that alias those fields is still a double free; callers that
+ * replace a statement vector (see `desugar_break`) leak the old shell on purpose. */
 void *sal_list_push_share(void *vp, int64_t x) {
+    SalList *l = (SalList *)vp;
+    if (!l) {
+        return NULL;
+    }
+    if (l->flat) {
+        if (sal_vec_reserve(&l->vec, (size_t)l->stride) != 0) {
+            return NULL;
+        }
+        int64_t *src = (int64_t *)(uintptr_t)x;
+        int64_t *dst = l->vec.data + l->vec.len;
+        if (src && x >= 4096) {
+            memcpy(dst, src, (size_t)l->stride * sizeof(int64_t));
+        } else {
+            memset(dst, 0, (size_t)l->stride * sizeof(int64_t));
+        }
+        l->vec.len += (size_t)l->stride;
+        l->count++;
+        return l;
+    }
     return sal_list_push(vp, x);
 }
 
@@ -2720,9 +2804,56 @@ void *sal_list_push(void *vp, int64_t x) {
     if (!l) {
         return NULL;
     }
+    if (l->flat) {
+        /* `x` is the box the compiler built for the value: copy its slots into the list
+         * and release the box (the fields now belong to the list). */
+        if (sal_vec_reserve(&l->vec, (size_t)l->stride) != 0) {
+            return NULL;
+        }
+        int64_t *src = (int64_t *)(uintptr_t)x;
+        int64_t *dst = l->vec.data + l->vec.len;
+        if (src && x >= 4096) {
+            memcpy(dst, src, (size_t)l->stride * sizeof(int64_t));
+            sal_xfree(src);
+        } else {
+            memset(dst, 0, (size_t)l->stride * sizeof(int64_t));
+        }
+        l->vec.len += (size_t)l->stride;
+        l->count++;
+        return l;
+    }
     if (sal_vec_push(&l->vec, x) != 0) {
         return NULL;
     }
+    l->count++;
+    return l;
+}
+
+/* `push` of a struct built in place (LLVM fusion): the caller passes the slots and their
+ * count, so a flat element needs no box at all. A list with boxed elements (a struct
+ * without descriptor, kept with its glue) still gets a box from those slots. */
+void *sal_list_push_flat(void *vp, const int64_t *slots, int64_t n) {
+    SalList *l = (SalList *)vp;
+    if (!l || !slots || n <= 0) {
+        return NULL;
+    }
+    if (!l->flat) {
+        int64_t box = sal_struct_new(n);
+        memcpy((void *)(uintptr_t)box, slots, (size_t)n * sizeof(int64_t));
+        return sal_list_push(vp, box);
+    }
+    if (sal_vec_reserve(&l->vec, (size_t)l->stride) != 0) {
+        return NULL;
+    }
+    int64_t *dst = l->vec.data + l->vec.len;
+    size_t stride = (size_t)l->stride;
+    size_t copy = (size_t)n < stride ? (size_t)n : stride;
+    memcpy(dst, slots, copy * sizeof(int64_t));
+    if (copy < stride) {
+        memset(dst + copy, 0, (stride - copy) * sizeof(int64_t));
+    }
+    l->vec.len += stride;
+    l->count++;
     return l;
 }
 
@@ -2732,7 +2863,7 @@ void *sal_list_select(void *in_list, const int8_t *mask, int64_t len) {
     if (!in || !out) {
         return out;
     }
-    int64_t n = (int64_t)in->vec.len;
+    int64_t n = (int64_t)in->count;
     if (len < n) {
         n = len;
     }
@@ -2748,9 +2879,23 @@ void *sal_list_select(void *in_list, const int8_t *mask, int64_t len) {
  * its elements, so the old one is released. */
 void *sal_list_set(void *vp, int64_t i, int64_t x) {
     SalList *l = (SalList *)vp;
-    int64_t len = l ? (int64_t)l->vec.len : 0;
+    int64_t len = l ? (int64_t)l->count : 0;
     if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_set: out of bounds");
+    }
+    if (l->flat) {
+        int64_t *dst = l->vec.data + (size_t)i * (size_t)l->stride;
+        if (l->owned) {
+            desc_free_fields(l->desc, dst);
+        }
+        int64_t *src = (int64_t *)(uintptr_t)x;
+        if (src && x >= 4096) {
+            memcpy(dst, src, (size_t)l->stride * sizeof(int64_t));
+            sal_xfree(src);
+        } else {
+            memset(dst, 0, (size_t)l->stride * sizeof(int64_t));
+        }
+        return l;
     }
     if (l->owned) {
         desc_free(l->desc, l->vec.data[i]);
@@ -2762,15 +2907,24 @@ void *sal_list_set(void *vp, int64_t i, int64_t x) {
 /* Removes and returns the last element; ownership moves to the caller. */
 int64_t sal_list_pop(void *vp) {
     SalList *l = (SalList *)vp;
-    if (!l || l->vec.len == 0) {
+    if (!l || l->count == 0) {
         sal_panic("list_pop: empty list");
     }
+    if (l->flat) {
+        l->vec.len -= (size_t)l->stride;
+        l->count--;
+        int64_t box = sal_struct_new(l->stride);
+        memcpy((void *)(uintptr_t)box, l->vec.data + l->vec.len,
+               (size_t)l->stride * sizeof(int64_t));
+        return box;
+    }
+    l->count--;
     return l->vec.data[--l->vec.len];
 }
 
 int64_t sal_list_len(void *vp) {
     SalList *l = (SalList *)vp;
-    return l ? (int64_t)l->vec.len : 0;
+    return l ? (int64_t)l->count : 0;
 }
 
 int64_t sal_list_get(void *vp, int64_t i) {
@@ -2779,12 +2933,16 @@ int64_t sal_list_get(void *vp, int64_t i) {
 
 int64_t sal_list_get_typed(void *vp, int64_t i) {
     SalList *l = (SalList *)vp;
-    int64_t len = l ? (int64_t)l->vec.len : 0;
+    int64_t len = l ? (int64_t)l->count : 0;
 #ifdef SAL_INSTRUMENT
     sal_instrument_check_index(i, len, "list_get");
 #endif
     if (!l || i < 0 || (size_t)i >= (size_t)len) {
         sal_panic("list_get: out of bounds");
+    }
+    if (l->flat) {
+        /* The element lives in the list's block: the borrow is a pointer to its slots. */
+        return (int64_t)(uintptr_t)(l->vec.data + (size_t)i * (size_t)l->stride);
     }
     return l->vec.data[i];
 }
@@ -2894,6 +3052,8 @@ static void *sal_list_clone(void *vp) {
         return NULL;
     }
     out->owned = 1;
+    out->stride = in->stride;
+    out->flat = in->flat;
     if (in->desc_owned && in->desc) {
         size_t n = strlen(in->desc) + 1;
         char *copy = (char *)malloc(n);
@@ -2903,6 +3063,26 @@ static void *sal_list_clone(void *vp) {
         memcpy(copy, in->desc, n);
         out->desc = copy;
         out->desc_owned = 1;
+    }
+    if (in->flat) {
+        /* Each element is copied through a temporary box: the clone glue takes a struct
+         * value and `push` copies the slots into the new list. */
+        out->elem_drop = in->elem_drop;
+        out->elem_clone = in->elem_clone;
+        for (size_t i = 0; i < in->vec.len; i += (size_t)in->stride) {
+            const int64_t *src = in->vec.data + i;
+            int64_t copy;
+            if (in->elem_clone) {
+                int64_t box = sal_struct_new(in->stride);
+                memcpy((void *)(uintptr_t)box, src, (size_t)in->stride * sizeof(int64_t));
+                copy = in->elem_clone(box);
+                sal_xfree((void *)(uintptr_t)box);
+            } else {
+                copy = desc_copy(in->desc, (int64_t)(uintptr_t)src);
+            }
+            sal_list_push(out, copy);
+        }
+        return outp;
     }
     if (in->elem_drop == sal_list_free_elem) {
         /* A list of lists: each element is copied as a list and released as one. */

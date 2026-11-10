@@ -12,6 +12,7 @@ La autoridad de la superficie es [SPEC.md](../../SPEC.md) («Memoria», «Libera
 | Lifetimes no existen | `'a` en firmas y structs, con la elisión de Rust |
 | Se suelta solo un local «fresco» que no escapa | Se suelta todo valor con dueño al acabar su ámbito, salvo que se haya movido |
 | Copia profunda implícita al tomar un `list_get` | `x.clone()` explícito; sin él, `E_BORROW` |
+| Un bloque por elemento de `List[Struct]` | Los campos de un struct describible van en el bloque de la lista (`S(..)`), con `get` prestando un puntero interior y `push`/`pop` copiando slots |
 | `borrow` / `take` / `keep` | `E_PARSE`. `keep` es `&mut List`/`&mut Dict` de una función `@arena` |
 
 `Copy` sigue implícito: `Int`, `Float`, `Bool`, `Unit` y un struct cuyos campos lo son. `&T` compartida es `Copy`. `&mut T` no. No hay `mut` en los bindings. `panic` aborta: la fuga de un pánico sigue aceptada.

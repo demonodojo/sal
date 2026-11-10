@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Dim, Expr, FnDef, Item, Program, Stmt, StructDef, StructField, TensorElem, Type};
@@ -8,6 +8,11 @@ use crate::layout::{is_transparent_struct, llvm_struct_symbol};
 thread_local! {
     static EMIT_STRUCT_DEFS: RefCell<HashMap<String, StructDef>> = RefCell::new(HashMap::new());
     static EMIT_AGG: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Struct values built only to be pushed: `dest` -> (alloca of its slots, slot count).
+    /// The alloca lives in the entry block, so the element needs no box (see `emit_general_fn`).
+    static FUSED_AGG: RefCell<HashMap<String, (String, usize)>> = RefCell::new(HashMap::new());
+    /// `--instrument`: keep the runtime `list_get` so its OOB probe still runs.
+    static EMIT_INSTRUMENT: Cell<bool> = Cell::new(false);
 }
 
 fn emit_any_vtables(m: &IrModule, user_fns: &HashMap<String, &IrFunction>, s: &mut String) {
@@ -431,6 +436,7 @@ pub fn emit_llvm_with_externs(
         &scalarized
     };
     let mut s = String::new();
+    EMIT_INSTRUMENT.with(|f| f.set(opts.instrument));
     s.push_str(&format!("target triple = \"{}\"\n\n", opts.target.triple()));
     if opts.instrument {
         s.push_str("; instrumented build\n");
@@ -450,6 +456,7 @@ pub fn emit_llvm_with_externs(
     }
     s.push_str("%SalBytes = type { ptr, i64 }\n");
     s.push_str("@sal_bytes_oob = private unnamed_addr constant [20 x i8] c\"bytes: out of bounds\"\n");
+    s.push_str("@sal_list_oob = private unnamed_addr constant [24 x i8] c\"list_get: out of bounds\\00\"\n");
     s.push_str("@sal_tensor_shape_unknown = private unnamed_addr constant [46 x i8] c\"tensor op needs a shape known at compile time\\00\"\n\n");
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare i64 @sal_float_to_int(i64)\n");
@@ -497,6 +504,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_place_free(ptr)\n");
     s.push_str("declare ptr @sal_place_copy(ptr, i64, i32)\n");
     s.push_str("declare void @sal_on_enter(i32)\n");
+    // A null list is read as this page: the inlined `list_len`/`list_get` touch offsets
+    // 40 (data), 64 (count) and 72 at most, so the page covers them.
+    s.push_str("@sal_zero_page = internal global [80 x i8] zeroinitializer, align 8\n");
+    s.push_str("@sal_null_str = internal global [16 x i8] zeroinitializer, align 8\n");
     s.push_str("declare i64 @sal_place_launches(i64)\n");
     s.push_str("declare ptr @malloc(i64)\n");
     s.push_str("declare void @free(ptr)\n");
@@ -591,6 +602,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_list_new_desc(ptr)\n");
     s.push_str("declare ptr @sal_list_push(ptr, i64)\n");
     s.push_str("declare ptr @sal_list_push_share(ptr, i64)\n");
+    s.push_str("declare ptr @sal_list_push_flat(ptr, ptr, i64)\n");
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
     s.push_str("declare i64 @sal_desc_copy(ptr, i64)\n");
@@ -2762,6 +2774,93 @@ fn emit_agg_load(dest: &str, base: &str, index: usize, s: &mut String, tmp: &mut
     s.push_str(&format!("  %{dest} = load i64, ptr %{slot}\n"));
 }
 
+/// Inline `sal_list_get`: bounds check + load of the element at `data + i * stride`.
+/// A flat struct element (stride > 1) is the address of its slots; any other element is the
+/// stored value. `SalList` offsets: stride 16, data 40, count 64 (runtime `_Static_assert`).
+fn emit_inline_list_get(
+    dest: &str,
+    args: &[String],
+    consts: &HashMap<String, i64>,
+    s: &mut String,
+    tmp: &mut u32,
+    label_id: &mut u32,
+    cur_block: &mut String,
+) {
+    let list = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+    let idx = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+    let p = format!("%{dest}_lp");
+    s.push_str(&format!("  {p} = inttoptr i64 {list} to ptr\n"));
+    *tmp += 1;
+    let nz = format!("lnz{tmp}");
+    s.push_str(&format!("  %{nz} = icmp ne ptr {p}, null\n"));
+    *tmp += 1;
+    let pp = format!("lnp{tmp}");
+    s.push_str(&format!(
+        "  %{pp} = select i1 %{nz}, ptr {p}, ptr @sal_zero_page\n"
+    ));
+    *tmp += 1;
+    let lenp = format!("lnl{tmp}");
+    s.push_str(&format!(
+        "  %{lenp} = getelementptr i8, ptr %{pp}, i64 64\n"
+    ));
+    let len = format!("{dest}_len");
+    s.push_str(&format!("  %{len} = load i64, ptr %{lenp}\n"));
+    *tmp += 1;
+    let neg = format!("lng{tmp}");
+    s.push_str(&format!("  %{neg} = icmp slt i64 {idx}, 0\n"));
+    *tmp += 1;
+    let ge = format!("lnge{tmp}");
+    s.push_str(&format!("  %{ge} = icmp sge i64 {idx}, %{len}\n"));
+    *tmp += 1;
+    let bad = format!("lnb{tmp}");
+    s.push_str(&format!("  %{bad} = or i1 %{neg}, %{ge}\n"));
+    *label_id += 1;
+    let lid = *label_id;
+    let bad_l = format!("lbads{lid}");
+    let ok_l = format!("lokl{lid}");
+    s.push_str(&format!("  br i1 %{bad}, label %{bad_l}, label %{ok_l}\n"));
+    s.push_str(&format!("{bad_l}:\n"));
+    s.push_str("  call void @sal_panic(ptr @sal_list_oob)\n");
+    s.push_str("  unreachable\n");
+    s.push_str(&format!("{ok_l}:\n"));
+    *cur_block = ok_l;
+    *tmp += 1;
+    let datap = format!("lnd{tmp}");
+    s.push_str(&format!(
+        "  %{datap} = getelementptr i8, ptr %{pp}, i64 40\n"
+    ));
+    let data = format!("{dest}_data");
+    s.push_str(&format!("  %{data} = load ptr, ptr %{datap}\n"));
+    *tmp += 1;
+    let stridep = format!("lns{tmp}");
+    s.push_str(&format!(
+        "  %{stridep} = getelementptr i8, ptr %{pp}, i64 16\n"
+    ));
+    let stride = format!("{dest}_stride");
+    s.push_str(&format!("  %{stride} = load i32, ptr %{stridep}\n"));
+    *tmp += 1;
+    let stride64 = format!("lns64{tmp}");
+    s.push_str(&format!("  %{stride64} = zext i32 %{stride} to i64\n"));
+    *tmp += 1;
+    let off = format!("lnoff{tmp}");
+    s.push_str(&format!("  %{off} = mul i64 {idx}, %{stride64}\n"));
+    *tmp += 1;
+    let slot = format!("lnslot{tmp}");
+    s.push_str(&format!(
+        "  %{slot} = getelementptr inbounds i64, ptr %{data}, i64 %{off}\n"
+    ));
+    let val = format!("{dest}_val");
+    s.push_str(&format!("  %{val} = load i64, ptr %{slot}\n"));
+    *tmp += 1;
+    let is_flat = format!("lnf{tmp}");
+    s.push_str(&format!("  %{is_flat} = icmp ne i32 %{stride}, 1\n"));
+    let slot_val = format!("{dest}_slot");
+    s.push_str(&format!("  %{slot_val} = ptrtoint ptr %{slot} to i64\n"));
+    s.push_str(&format!(
+        "  %{dest} = select i1 %{is_flat}, i64 %{slot_val}, i64 %{val}\n"
+    ));
+}
+
 fn i64_operand(name: &str, consts: &HashMap<String, i64>) -> String {
     if let Some(v) = consts.get(name) {
         return format!("{v}");
@@ -2967,9 +3066,29 @@ fn emit_runtime_or_user_call(
             }
         }
         "sal_str_len" => {
+            // Inline: the length is the i64 before the bytes. A null String reads the zero
+            // header of `@sal_null_str` (its handle is the global + 8) instead of branching.
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
-                s.push_str(&format!("  %{d} = call i64 @sal_str_len(ptr {a})\n"));
+                *tmp += 1;
+                let nz = format!("snz{tmp}");
+                s.push_str(&format!("  %{nz} = icmp ne ptr {a}, null\n"));
+                *tmp += 1;
+                let nul = format!("snl{tmp}");
+                s.push_str(&format!(
+                    "  %{nul} = getelementptr i8, ptr @sal_null_str, i64 8\n"
+                ));
+                *tmp += 1;
+                let sp = format!("snp{tmp}");
+                s.push_str(&format!(
+                    "  %{sp} = select i1 %{nz}, ptr {a}, ptr %{nul}\n"
+                ));
+                *tmp += 1;
+                let lp = format!("sll{tmp}");
+                s.push_str(&format!(
+                    "  %{lp} = getelementptr i8, ptr %{sp}, i64 -8\n"
+                ));
+                s.push_str(&format!("  %{d} = load i64, ptr %{lp}\n"));
             }
         }
         "sal_str_bytes" => {
@@ -3412,6 +3531,23 @@ fn emit_runtime_or_user_call(
         }
         "sal_list_push" => {
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
+            // A value built only for this push is in an alloca: push its slots, no box.
+            let fused = args
+                .get(1)
+                .and_then(|v| FUSED_AGG.with(|m| m.borrow().get(v).cloned()));
+            if let Some((slots, n)) = fused {
+                if let Some(d) = dest {
+                    s.push_str(&format!(
+                        "  %{d}_p = call ptr @sal_list_push_flat(ptr {a}, ptr %{slots}, i64 {n})\n"
+                    ));
+                    s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+                } else {
+                    s.push_str(&format!(
+                        "  call ptr @sal_list_push_flat(ptr {a}, ptr %{slots}, i64 {n})\n"
+                    ));
+                }
+                return;
+            }
             let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d}_p = call ptr @sal_list_push(ptr {a}, i64 {b})\n"));
@@ -3438,9 +3574,27 @@ fn emit_runtime_or_user_call(
             }
         }
         "sal_list_len" => {
+            // Inline: SalList.count is at offset 64 (see the _Static_assert in the runtime).
+            // A null list yields 0 by pointing at a zeroed page instead of branching.
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
-                s.push_str(&format!("  %{d} = call i64 @sal_list_len(ptr {a})\n"));
+                *tmp += 1;
+                let nz = format!("lnz{tmp}");
+                s.push_str(&format!("  %{nz} = icmp ne ptr {a}, null\n"));
+                *tmp += 1;
+                let sp = format!("lnp{tmp}");
+                s.push_str(&format!(
+                    "  %{sp} = select i1 %{nz}, ptr {a}, ptr @sal_zero_page\n"
+                ));
+                *tmp += 1;
+                let lp = format!("lnl{tmp}");
+                s.push_str(&format!(
+                    "  %{lp} = getelementptr i8, ptr %{sp}, i64 64\n"
+                ));
+                s.push_str(&format!("  %{d}l = load i64, ptr %{lp}\n"));
+                s.push_str(&format!(
+                    "  %{d} = select i1 %{nz}, i64 %{d}l, i64 0\n"
+                ));
             }
         }
         "sal_list_get" => {
@@ -4409,12 +4563,25 @@ fn emit_inst_list(
                 struct_name,
                 fields,
             } => {
-                let ops: Vec<String> = fields.iter().map(|f| i64_operand(f, &consts)).collect();
-                emit_agg_alloc(dest, &ops, s, tmp);
-                EMIT_AGG.with(|a| {
-                    a.borrow_mut()
-                        .insert(dest.clone(), struct_name.clone());
-                });
+                let fused = FUSED_AGG.with(|m| m.borrow().get(dest).cloned());
+                if let Some((slots, n)) = fused {
+                    for (i, f) in fields.iter().enumerate() {
+                        let op = i64_operand(f, &consts);
+                        *tmp += 1;
+                        let p = format!("fzs{tmp}");
+                        s.push_str(&format!(
+                            "  %{p} = getelementptr inbounds [{n} x i64], ptr %{slots}, i64 0, i64 {i}\n"
+                        ));
+                        s.push_str(&format!("  store i64 {op}, ptr %{p}\n"));
+                    }
+                } else {
+                    let ops: Vec<String> = fields.iter().map(|f| i64_operand(f, &consts)).collect();
+                    emit_agg_alloc(dest, &ops, s, tmp);
+                    EMIT_AGG.with(|a| {
+                        a.borrow_mut()
+                            .insert(dest.clone(), struct_name.clone());
+                    });
+                }
             }
             IrInst::Extract {
                 dest,
@@ -4564,7 +4731,20 @@ fn emit_inst_list(
                 }
             }
             IrInst::Call { dest, func, args } => {
-                if func == "sal_where" {
+                if func == "sal_list_get"
+                    && dest.is_some()
+                    && !EMIT_INSTRUMENT.with(|f| f.get())
+                {
+                    emit_inline_list_get(
+                        dest.as_deref().unwrap_or_default(),
+                        args,
+                        &consts,
+                        s,
+                        tmp,
+                        label_id,
+                        cur_block,
+                    );
+                } else if func == "sal_where" {
                     if let Some(d) = dest {
                         if let Some(te) = tensor.as_deref_mut() {
                             emit_where_frame(
@@ -4867,6 +5047,37 @@ fn const_int_map_from(instructions: &[IrInst]) -> HashMap<String, i64> {
     m
 }
 
+/// Marks the struct values of `instructions` that are built only to be pushed (an
+/// `Aggregate` immediately followed by `sal_list_push` of that value): LLVM can store the
+/// fields straight into an alloca and call `sal_list_push_flat`, so no box is allocated.
+fn collect_fused_aggs(instructions: &[IrInst], out: &mut HashMap<String, (String, usize)>) {
+    for w in instructions.windows(2) {
+        let IrInst::Aggregate { dest, fields, .. } = &w[0] else {
+            continue;
+        };
+        let IrInst::Call { func, args, .. } = &w[1] else {
+            continue;
+        };
+        if func == "sal_list_push" && args.get(1).is_some_and(|a| a == dest) {
+            out.insert(dest.clone(), (format!("fz_{dest}"), fields.len()));
+        }
+    }
+    for inst in instructions {
+        match inst {
+            IrInst::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_fused_aggs(then_body, out);
+                collect_fused_aggs(else_body, out);
+            }
+            IrInst::While { body, .. } => collect_fused_aggs(body, out),
+            _ => {}
+        }
+    }
+}
+
 fn emit_general_fn(
     f: &IrFunction,
     opts: &LlvmOptions,
@@ -4887,6 +5098,12 @@ fn emit_general_fn(
         params.join(", ")
     ));
     s.push_str("entry:\n");
+    let mut fused = HashMap::new();
+    collect_fused_aggs(&f.instructions, &mut fused);
+    for (_, (slots, n)) in &fused {
+        s.push_str(&format!("  %{slots} = alloca [{n} x i64]\n"));
+    }
+    FUSED_AGG.with(|m| *m.borrow_mut() = fused);
     emit_layout_scope(struct_defs, || {
         let mut consts = const_int_map(f);
         let floats = const_float_map(f);
@@ -4942,6 +5159,7 @@ fn emit_general_fn(
             s.push_str(&format!("  ret i64 {ret}\n"));
         }
     });
+    FUSED_AGG.with(|m| m.borrow_mut().clear());
     s.push_str("}\n");
 }
 

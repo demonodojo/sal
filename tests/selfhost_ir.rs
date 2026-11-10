@@ -1,6 +1,9 @@
+use std::fs::{self, OpenOptions};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use sal_compiler::compile::compile_file;
 use sal_compiler::CompileOptions;
@@ -9,8 +12,91 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// `compile_file` links to a shared `target/sal-out/a.out`.
+fn sal_out() -> PathBuf {
+    root().join("target").join("sal-out")
+}
+
+/// `compile_file` links to a shared `target/sal-out/a.out` when `output` is unset.
 static LINK_LOCK: Mutex<()> = Mutex::new(());
+
+/// Stage1 compiling `selfhost/main.sal` / `emit.sal` peaks near 5 GB RSS. Without this
+/// lock, `cargo test` on many threads runs several of those at once and OOMs Cursor.
+static STAGE1_LOCK: Mutex<()> = Mutex::new(());
+
+fn stage1_output(mut cmd: std::process::Command) -> std::process::Output {
+    let _guard = STAGE1_LOCK.lock().expect("stage1 lock");
+    cmd.output().expect("run stage1")
+}
+
+/// Cross-process lock so Cursor (one test per process) and CI share the same
+/// `target/sal-out/selfhost-stage{1,2}` builds instead of each recompiling.
+fn with_selfhost_build_lock<T>(f: impl FnOnce() -> T) -> T {
+    let dir = sal_out();
+    fs::create_dir_all(&dir).expect("sal-out");
+    let lock_path = dir.join("selfhost-build.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .expect("selfhost build lock");
+    let fd = file.as_raw_fd();
+    let rc = unsafe { libc::flock(fd, libc::LOCK_EX) };
+    assert_eq!(rc, 0, "flock LOCK_EX failed");
+    let out = f();
+    let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
+    // Keep `file` alive until after unlock.
+    drop(file);
+    out
+}
+
+fn file_mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+fn max_selfhost_source_mtime() -> Option<SystemTime> {
+    let mut newest: Option<SystemTime> = None;
+    fn walk(dir: &Path, newest: &mut Option<SystemTime>) {
+        let Ok(rd) = fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, newest);
+            } else if p.extension().is_some_and(|x| x == "sal") {
+                if let Some(t) = file_mtime(&p) {
+                    *newest = Some(newest.map_or(t, |n| n.max(t)));
+                }
+            }
+        }
+    }
+    walk(&root().join("selfhost"), &mut newest);
+    // Runtime is linked into stage1; a newer runtime must rebuild it.
+    if let Some(t) = file_mtime(&root().join("runtime").join("sal_runtime.c")) {
+        newest = Some(newest.map_or(t, |n| n.max(t)));
+    }
+    newest
+}
+
+/// Reuse a binary if it is at least as new as the bootstrap `sal` and the selfhost sources.
+fn stage_bin_fresh(bin: &Path) -> bool {
+    let Some(bin_t) = file_mtime(bin) else {
+        return false;
+    };
+    if let Some(sal_t) = file_mtime(Path::new(env!("CARGO_BIN_EXE_sal"))) {
+        if bin_t < sal_t {
+            return false;
+        }
+    }
+    if let Some(src_t) = max_selfhost_source_mtime() {
+        if bin_t < src_t {
+            return false;
+        }
+    }
+    true
+}
 
 fn corpus_files() -> Vec<PathBuf> {
     let root = root();
@@ -22,13 +108,8 @@ fn corpus_files() -> Vec<PathBuf> {
         "corpus/drop_list_struct.sal",
         "corpus/drop_temporaries.sal",
         "corpus/enum_match.sal",
-    "corpus/enum_match.sal",
-    "corpus/drop_flags.sal",
-    "corpus/drop_list_struct.sal",
-    "corpus/drop_temporaries.sal",
-    "corpus/enum_match.sal",
-    "corpus/param_modes.sal",
-    "corpus/places.sal",
+        "corpus/param_modes.sal",
+        "corpus/places.sal",
         "corpus/forward_fused.sal",
         "corpus/load_salt.sal",
         "corpus/instrument_oob.sal",
@@ -54,29 +135,50 @@ fn bootstrap_ir(path: &Path) -> String {
         .unwrap_or_else(|d| panic!("bootstrap failed on {}: {:?}", path.display(), d))
 }
 
-/// Stage1 (plain / instrumented) and stage2 are compiled once per process and reused.
+/// Stage1 lives at `target/sal-out/selfhost-stage1{,-inst}`: once per process (OnceLock)
+/// and shared across local Cursor runs / CI processes via the file lock + mtime check.
 fn compile_selfhost(instrument: bool) -> PathBuf {
     static PLAIN: OnceLock<PathBuf> = OnceLock::new();
     static INST: OnceLock<PathBuf> = OnceLock::new();
     let cell = if instrument { &INST } else { &PLAIN };
-    cell.get_or_init(|| {
+    cell.get_or_init(|| ensure_stage1(instrument)).clone()
+}
+
+fn stage1_path(instrument: bool) -> PathBuf {
+    sal_out().join(if instrument {
+        "selfhost-stage1-inst"
+    } else {
+        "selfhost-stage1"
+    })
+}
+
+fn ensure_stage1(instrument: bool) -> PathBuf {
+    let out = stage1_path(instrument);
+    with_selfhost_build_lock(|| {
+        if stage_bin_fresh(&out) {
+            return out.clone();
+        }
+        let dest = out.clone();
         // The debug compile of the selfhost recurses deeper than the default thread stack.
         std::thread::Builder::new()
             .name("sal-selfhost".into())
             .stack_size(256 << 20)
-            .spawn(move || compile_selfhost_here(instrument))
+            .spawn(move || compile_selfhost_to(&dest, instrument))
             .expect("spawn selfhost compile")
             .join()
-            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+        out
     })
-    .clone()
 }
 
-fn compile_selfhost_here(instrument: bool) -> PathBuf {
+fn compile_selfhost_to(out: &Path, instrument: bool) {
     let _guard = LINK_LOCK.lock().expect("link lock");
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent).expect("sal-out");
+    }
     let opts = CompileOptions {
         toolchain: Default::default(),
-        output: None,
+        output: Some(out.to_path_buf()),
         release: false,
         instrument,
         device: "cpu".into(),
@@ -84,14 +186,12 @@ fn compile_selfhost_here(instrument: bool) -> PathBuf {
         skip_link: false,
     };
     let art = compile_file(&root().join("selfhost/main.sal"), &opts).expect("compile selfhost");
-    let bin = art.binary.expect("binary");
-    let copy = PathBuf::from(format!(
-        "/tmp/sal-selfhost-bin-{}-{}",
-        std::process::id(),
-        if instrument { "inst" } else { "plain" }
-    ));
-    std::fs::copy(&bin, &copy).expect("copy binary");
-    copy
+    assert_eq!(
+        art.binary.as_deref(),
+        Some(out),
+        "stage1 must be written to {}",
+        out.display()
+    );
 }
 
 fn run_emit_ir(bin: &Path, input: &Path) -> String {
@@ -99,14 +199,13 @@ fn run_emit_ir(bin: &Path, input: &Path) -> String {
 }
 
 fn run_emit_ir_in(bin: &Path, input: &Path, project: &Path, cache_tag: &str) -> String {
-    let cache = unique_cache_dir(cache_tag);
-    let out = Command::new(bin)
-        .arg(input)
+    let cache = shared_cache_dir(cache_tag);
+    let mut cmd = Command::new(bin);
+    cmd.arg(input)
         .env("SAL_SELFHOST_CACHE", &cache)
         .env("SAL_PROJECT_ROOT", project)
-        .current_dir(project)
-        .output()
-        .expect("run selfhost");
+        .current_dir(project);
+    let out = stage1_output(cmd);
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -121,27 +220,47 @@ fn compile_stage2(stage1: &Path) -> PathBuf {
     static STAGE2: OnceLock<PathBuf> = OnceLock::new();
     let stage1 = stage1.to_path_buf();
     STAGE2
-        .get_or_init(|| compile_stage2_here(&stage1))
+        .get_or_init(|| ensure_stage2(&stage1))
         .clone()
 }
 
-fn compile_stage2_here(stage1: &Path) -> PathBuf {
-    let out = PathBuf::from(format!("/tmp/sal-stage2-{}", std::process::id()));
-    let status = Command::new(stage1)
-        .arg(root().join("selfhost/main.sal"))
+fn stage2_path() -> PathBuf {
+    sal_out().join("selfhost-stage2")
+}
+
+fn ensure_stage2(stage1: &Path) -> PathBuf {
+    let out = stage2_path();
+    with_selfhost_build_lock(|| {
+        // Stage2 must be at least as new as the stage1 that produced it.
+        if stage_bin_fresh(&out) {
+            if let (Some(s2), Some(s1)) = (file_mtime(&out), file_mtime(stage1)) {
+                if s2 >= s1 {
+                    return out;
+                }
+            }
+        }
+        compile_stage2_to(stage1, &out);
+        out
+    })
+}
+
+fn compile_stage2_to(stage1: &Path, out: &Path) {
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent).expect("sal-out");
+    }
+    let mut cmd = Command::new(stage1);
+    cmd.arg(root().join("selfhost/main.sal"))
         .arg("-o")
-        .arg(&out)
-        .current_dir(root())
-        .output()
-        .expect("stage1 -o");
+        .arg(out)
+        .current_dir(root());
+    let status = stage1_output(cmd);
     assert_eq!(
         status.status.code(),
         Some(0),
         "stage1 failed to produce stage2: stderr={}",
         String::from_utf8_lossy(&status.stderr)
     );
-    assert!(out.is_file(), "stage2 binary missing");
-    out
+    assert!(out.is_file(), "stage2 binary missing at {}", out.display());
 }
 
 fn write_temp_sal(body: &str) -> PathBuf {
@@ -157,18 +276,20 @@ fn write_temp_sal(body: &str) -> PathBuf {
     path
 }
 
-fn unique_cache_dir(tag: &str) -> PathBuf {
+/// One cache directory per tag and process. A unique stamp per call used to leave
+/// thousands of dirs on tmpfs (RAM); reuse keeps the footprint flat.
+fn shared_cache_dir(tag: &str) -> PathBuf {
     let dir = PathBuf::from(format!(
-        "/tmp/sal-selfhost-cache-{}-{}-{}",
+        "/tmp/sal-selfhost-cache-{}-{}",
         tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        std::process::id()
     ));
     std::fs::create_dir_all(&dir).expect("cache dir");
     dir
+}
+
+fn unique_cache_dir(tag: &str) -> PathBuf {
+    shared_cache_dir(tag)
 }
 
 #[test]
@@ -191,10 +312,7 @@ fn corpus_ir_matches_bootstrap_stage1_stage2() {
     let stage2 = compile_stage2(&stage1);
 
     // stage1 must not depend on sal_emit_ir (C selfhost removed from link)
-    let nm = Command::new("nm")
-        .arg(&stage1)
-        .output()
-        .expect("nm stage1");
+    let nm = Command::new("nm").arg(&stage1).output().expect("nm stage1");
     let nm_txt = String::from_utf8_lossy(&nm.stdout);
     assert!(
         !nm_txt.contains("sal_emit_ir"),
@@ -214,12 +332,14 @@ fn corpus_ir_matches_bootstrap_stage1_stage2() {
         let ir1 = run_emit_ir(&stage1, &file);
         let ir2 = run_emit_ir(&stage2, &file);
         assert_eq!(
-            boot, ir1,
+            boot,
+            ir1,
             "bootstrap vs stage1 IR mismatch for {}",
             file.display()
         );
         assert_eq!(
-            boot, ir2,
+            boot,
+            ir2,
             "bootstrap vs stage2 IR mismatch for {}",
             file.display()
         );
@@ -266,10 +386,16 @@ fn grouped_newlines_match_bootstrap_ir() {
     let boot = bootstrap_ir(&prog);
     let stage1 = compile_selfhost(false);
     let ir1 = run_emit_ir(&stage1, &prog);
-    assert_eq!(boot, ir1, "bootstrap vs stage1 for a call split inside parentheses");
+    assert_eq!(
+        boot, ir1,
+        "bootstrap vs stage1 for a call split inside parentheses"
+    );
     let stage2 = compile_stage2(&stage1);
     let ir2 = run_emit_ir(&stage2, &prog);
-    assert_eq!(boot, ir2, "bootstrap vs stage2 for a call split inside parentheses");
+    assert_eq!(
+        boot, ir2,
+        "bootstrap vs stage2 for a call split inside parentheses"
+    );
 
     let bin = PathBuf::from(format!(
         "/tmp/sal-grouped-bin-{}-{}",
@@ -279,13 +405,14 @@ fn grouped_newlines_match_bootstrap_ir() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let status = Command::new(&stage1)
-        .arg(&prog)
-        .arg("-o")
-        .arg(&bin)
-        .current_dir(root())
-        .output()
-        .expect("stage1 -o grouped");
+    let status = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&prog);
+        cmd.arg("-o");
+        cmd.arg(&bin);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(
         status.status.code(),
         Some(0),
@@ -315,13 +442,14 @@ fn stage1_c_path_prints_call_inside_concat() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let status = Command::new(&stage1)
-        .arg(&src)
-        .arg("-o")
-        .arg(&bin)
-        .current_dir(root())
-        .output()
-        .expect("stage1 -o concat");
+    let status = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&src);
+        cmd.arg("-o");
+        cmd.arg(&bin);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(
         status.status.code(),
         Some(0),
@@ -329,8 +457,16 @@ fn stage1_c_path_prints_call_inside_concat() {
         String::from_utf8_lossy(&status.stderr)
     );
     let run = Command::new(&bin).output().expect("run concat bin");
-    assert_eq!(run.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&run.stderr));
-    assert_eq!(String::from_utf8_lossy(&run.stdout).trim_end(), "(b == 0LL);");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim_end(),
+        "(b == 0LL);"
+    );
 }
 
 #[test]
@@ -346,13 +482,14 @@ fn stage1_minus_o_compiles_not_copies() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let status = Command::new(&stage1)
-        .arg(root().join("examples/hello.sal"))
-        .arg("-o")
-        .arg(&hello_bin)
-        .current_dir(root())
-        .output()
-        .expect("stage1 -o hello");
+    let status = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(root().join("examples/hello.sal"));
+        cmd.arg("-o");
+        cmd.arg(&hello_bin);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(
         status.status.code(),
         Some(0),
@@ -372,13 +509,14 @@ fn stage1_minus_o_compiles_not_copies() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let status = Command::new(&stage1)
-        .arg(&seven_src)
-        .arg("-o")
-        .arg(&seven_bin)
-        .current_dir(root())
-        .output()
-        .expect("stage1 -o seven");
+    let status = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&seven_src);
+        cmd.arg("-o");
+        cmd.arg(&seven_bin);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(
         status.status.code(),
         Some(0),
@@ -392,8 +530,14 @@ fn stage1_minus_o_compiles_not_copies() {
     let stage1_bytes = std::fs::read(&stage1).unwrap();
     let hello_bytes = std::fs::read(&hello_bin).unwrap();
     let seven_bytes = std::fs::read(&seven_bin).unwrap();
-    assert_ne!(stage1_bytes, hello_bytes, "hello bin must not be copy of stage1");
-    assert_ne!(stage1_bytes, seven_bytes, "seven bin must not be copy of stage1");
+    assert_ne!(
+        stage1_bytes, hello_bytes,
+        "hello bin must not be copy of stage1"
+    );
+    assert_ne!(
+        stage1_bytes, seven_bytes,
+        "seven bin must not be copy of stage1"
+    );
     assert_ne!(hello_bytes, seven_bytes, "hello and seven bins must differ");
 }
 
@@ -420,10 +564,7 @@ fn selfhost_import_two_modules_run() {
 
     let stage1 = compile_selfhost(false);
     let ir1 = run_emit_ir_in(&stage1, &a_path, &project, "import-ir-s1");
-    assert_eq!(
-        boot_ir, ir1,
-        "bootstrap vs stage1 IR for import graph"
-    );
+    assert_eq!(boot_ir, ir1, "bootstrap vs stage1 IR for import graph");
 
     let bin = PathBuf::from(format!(
         "/tmp/sal-import-bin-{}-{}",
@@ -433,14 +574,15 @@ fn selfhost_import_two_modules_run() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let status = Command::new(&stage1)
-        .arg(&a_path)
-        .arg("-o")
-        .arg(&bin)
-        .env("SAL_PROJECT_ROOT", &project)
-        .current_dir(root())
-        .output()
-        .expect("stage1 -o import graph");
+    let status = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&a_path);
+        cmd.arg("-o");
+        cmd.arg(&bin);
+        cmd.env("SAL_PROJECT_ROOT", &project);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(
         status.status.code(),
         Some(0),
@@ -498,14 +640,15 @@ fn selfhost_import_alias_ir_and_run() {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let status = Command::new(&stage1)
-        .arg(&main_path)
-        .arg("-o")
-        .arg(&bin)
-        .env("SAL_PROJECT_ROOT", &project)
-        .current_dir(&project)
-        .output()
-        .expect("stage1 -o import_alias");
+    let status = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&main_path);
+        cmd.arg("-o");
+        cmd.arg(&bin);
+        cmd.env("SAL_PROJECT_ROOT", &project);
+        cmd.current_dir(&project);
+        stage1_output(cmd)
+    };
     assert_eq!(
         status.status.code(),
         Some(0),
@@ -534,12 +677,13 @@ fn selfhost_import_alias_ir_and_run() {
 fn selfhost_instrumented_clean_on_hello() {
     let bin = compile_selfhost(true);
     let hello = root().join("examples/hello.sal");
-    let out = Command::new(&bin)
-        .arg(&hello)
-        .env("SAL_SELFHOST_CACHE", unique_cache_dir("inst"))
-        .current_dir(root())
-        .output()
-        .expect("run instrumented selfhost");
+    let out = {
+        let mut cmd = Command::new(&bin);
+        cmd.arg(&hello);
+        cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("inst"));
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         out.status.code(),
@@ -575,14 +719,19 @@ fn undeclared_effect_is_rejected_like_bootstrap() {
     ];
     for (effect, src) in cases {
         let prog = write_temp_sal(src);
-        let out = Command::new(&stage1)
-            .arg(&prog)
-            .args(["-o", "/tmp/sal-fx-bad.out"])
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("fx-bad"))
-            .current_dir(root())
-            .output()
-            .expect("run stage1");
-        assert_ne!(out.status.code(), Some(0), "`{effect}` use must be rejected");
+        let out = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&prog);
+            cmd.args(["-o", "/tmp/sal-fx-bad.out"]);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("fx-bad"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
+        assert_ne!(
+            out.status.code(),
+            Some(0),
+            "`{effect}` use must be rejected"
+        );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             stderr.contains(&format!("uses effect `{effect}`")),
@@ -590,13 +739,14 @@ fn undeclared_effect_is_rejected_like_bootstrap() {
         );
     }
     let ok = write_temp_sal("fn main() -> Int ! io, alloc\n    print_str(d\"x\")\n    0\n");
-    let out = Command::new(&stage1)
-        .arg(&ok)
-        .args(["-o", "/tmp/sal-fx-ok.out"])
-        .env("SAL_SELFHOST_CACHE", unique_cache_dir("fx-ok"))
-        .current_dir(root())
-        .output()
-        .expect("run stage1");
+    let out = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&ok);
+        cmd.args(["-o", "/tmp/sal-fx-ok.out"]);
+        cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("fx-ok"));
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(out.status.code(), Some(0));
 }
 
@@ -605,12 +755,13 @@ fn parse_failure_returns_result_err_nonzero() {
     let stage1 = compile_selfhost(false);
     let bad = write_temp_sal("this is not a sal program !!!\n");
     let cache = unique_cache_dir("parse-err");
-    let out = Command::new(&stage1)
-        .arg(&bad)
-        .env("SAL_SELFHOST_CACHE", &cache)
-        .current_dir(root())
-        .output()
-        .expect("run bad parse");
+    let out = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&bad);
+        cmd.env("SAL_SELFHOST_CACHE", &cache);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_ne!(
         out.status.code(),
         Some(0),
@@ -628,12 +779,13 @@ fn parse_failure_returns_result_err_nonzero() {
 
     // Valid source still exits 0 and emits IR
     let good = write_temp_sal("fn main() -> Int\n    7\n");
-    let out_ok = Command::new(&stage1)
-        .arg(&good)
-        .env("SAL_SELFHOST_CACHE", unique_cache_dir("parse-ok"))
-        .current_dir(root())
-        .output()
-        .expect("run good");
+    let out_ok = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&good);
+        cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("parse-ok"));
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(out_ok.status.code(), Some(0));
     let ir = String::from_utf8_lossy(&out_ok.stdout);
     assert!(ir.contains("value: 7"), "got: {ir}");
@@ -645,13 +797,19 @@ fn incremental_ir_cache_hit_on_second_emit() {
     let prog = write_temp_sal("fn main() -> Int\n    11\n");
     let cache = unique_cache_dir("inc");
 
-    let out1 = Command::new(&stage1)
-        .arg(&prog)
-        .env("SAL_SELFHOST_CACHE", &cache)
-        .current_dir(root())
-        .output()
-        .expect("emit 1");
-    assert_eq!(out1.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out1.stderr));
+    let out1 = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&prog);
+        cmd.env("SAL_SELFHOST_CACHE", &cache);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
+    assert_eq!(
+        out1.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
     let ir1 = String::from_utf8(out1.stdout).expect("utf8");
     assert!(ir1.contains("value: 11"));
 
@@ -665,12 +823,13 @@ fn incremental_ir_cache_hit_on_second_emit() {
     let meta0 = std::fs::read_to_string(&metas[0]).expect("meta0");
     assert!(meta0.contains("hit=0"), "first emit must be miss: {meta0}");
 
-    let out2 = Command::new(&stage1)
-        .arg(&prog)
-        .env("SAL_SELFHOST_CACHE", &cache)
-        .current_dir(root())
-        .output()
-        .expect("emit 2");
+    let out2 = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&prog);
+        cmd.env("SAL_SELFHOST_CACHE", &cache);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(out2.status.code(), Some(0));
     let ir2 = String::from_utf8(out2.stdout).expect("utf8");
     assert_eq!(ir1, ir2, "cached IR must match");
@@ -679,12 +838,13 @@ fn incremental_ir_cache_hit_on_second_emit() {
 
     // Source change must miss
     std::fs::write(&prog, "fn main() -> Int\n    12\n").expect("rewrite");
-    let out3 = Command::new(&stage1)
-        .arg(&prog)
-        .env("SAL_SELFHOST_CACHE", &cache)
-        .current_dir(root())
-        .output()
-        .expect("emit 3");
+    let out3 = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&prog);
+        cmd.env("SAL_SELFHOST_CACHE", &cache);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(out3.status.code(), Some(0));
     let ir3 = String::from_utf8(out3.stdout).expect("utf8");
     assert!(ir3.contains("value: 12"), "got: {ir3}");
@@ -768,13 +928,19 @@ fn stage2_emit_ir_writes_selfhost_cache() {
 
 #[test]
 fn selfhost_model_package_tests_exit_zero() {
-    let models_src = std::fs::read_to_string(root().join("selfhost/models.sal")).expect("models.sal");
+    let models_src =
+        std::fs::read_to_string(root().join("selfhost/models.sal")).expect("models.sal");
     assert!(
-        models_src.contains("on gpu") && models_src.contains("on tpu") && models_src.contains("matmul"),
+        models_src.contains("on gpu")
+            && models_src.contains("on tpu")
+            && models_src.contains("matmul"),
         "models.sal must run matmul inside on gpu/on tpu"
     );
     assert!(
-        models_src.contains("1.0") && models_src.contains("2.0") && models_src.contains("3.0") && models_src.contains("4.0"),
+        models_src.contains("1.0")
+            && models_src.contains("2.0")
+            && models_src.contains("3.0")
+            && models_src.contains("4.0"),
         "A×I coefficients must live in models.sal, not a C builtin"
     );
     assert!(
@@ -829,13 +995,14 @@ fn selfhost_model_package_tests_exit_zero() {
 
     let stage1 = compile_selfhost(false);
     let bootstrap = env!("CARGO_BIN_EXE_sal");
-    let out = Command::new(&stage1)
-        .arg("test")
-        .env("SAL_SELFHOST_CACHE", unique_cache_dir("models"))
-        .env("SAL_BOOTSTRAP", bootstrap)
-        .current_dir(root())
-        .output()
-        .expect("selfhost test");
+    let out = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg("test");
+        cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("models"));
+        cmd.env("SAL_BOOTSTRAP", bootstrap);
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -913,14 +1080,15 @@ fn selfhost_resolves_git_package_import() {
     sal_compiler::packages::fetch_packages(&project_root, false).expect("fetch");
 
     let stage1 = compile_selfhost(false);
-    let out = Command::new(&stage1)
-        .arg(project_root.join("main.sal"))
-        .env("SAL_SELFHOST_CACHE", unique_cache_dir("pkg-selfhost"))
-        .env("SAL_PROJECT_ROOT", &project_root)
-        .env("SAL_PACKAGES", cache.path())
-        .current_dir(&project_root)
-        .output()
-        .expect("selfhost on package consumer");
+    let out = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(project_root.join("main.sal"));
+        cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("pkg-selfhost"));
+        cmd.env("SAL_PROJECT_ROOT", &project_root);
+        cmd.env("SAL_PACKAGES", cache.path());
+        cmd.current_dir(&project_root);
+        stage1_output(cmd)
+    };
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -1111,13 +1279,14 @@ fn use_after_move_matches_bootstrap_check() {
             .expect("bootstrap check");
         let boot_moved = String::from_utf8_lossy(&boot.stderr).contains("E_MOVED");
         assert_eq!(boot_moved, *moved, "bootstrap verdict for:\n{src}");
-        let out = Command::new(&stage1)
-            .arg(&prog)
-            .args(["-o", "/tmp/sal-own.out"])
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("own"))
-            .current_dir(root())
-            .output()
-            .expect("run stage1");
+        let out = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&prog);
+            cmd.args(["-o", "/tmp/sal-own.out"]);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("own"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
         let self_moved = String::from_utf8_lossy(&out.stderr).contains("use of moved value");
         assert_eq!(self_moved, *moved, "selfhost verdict for:\n{src}");
     }
@@ -1128,17 +1297,32 @@ const TYPE_CASES: &[(&str, bool)] = &[
     ("fn main() -> Int\n    x = y\n    0\n", true),
     ("fn main() -> Int\n    \"a\"\n", true),
     ("fn main() -> Int\n    if true\n        1\n", true),
-    ("fn main() -> Int\n    if true\n        1\n    else\n        2\n", false),
-    ("fn main() -> Int\n    if true\n        1\n    else\n        \"s\"\n", true),
-    ("fn f(a: Int) -> Int\n    a\n\nfn main() -> Int\n    f(1, 2)\n", true),
-    ("fn f(a: Int) -> Int\n    a\n\nfn main() -> Int\n    f(\"s\")\n", true),
+    (
+        "fn main() -> Int\n    if true\n        1\n    else\n        2\n",
+        false,
+    ),
+    (
+        "fn main() -> Int\n    if true\n        1\n    else\n        \"s\"\n",
+        true,
+    ),
+    (
+        "fn f(a: Int) -> Int\n    a\n\nfn main() -> Int\n    f(1, 2)\n",
+        true,
+    ),
+    (
+        "fn f(a: Int) -> Int\n    a\n\nfn main() -> Int\n    f(\"s\")\n",
+        true,
+    ),
     ("fn main() -> Int\n    return \"s\"\n", true),
     ("fn main() -> Int\n    1 + \"s\"\n", true),
     ("fn main() -> Int\n    \"s\" + 1\n", true),
     ("fn main() -> Int\n    1.5 % 2\n", true),
     ("fn main() -> Int\n    let x: String = 1\n    0\n", true),
     ("fn main() -> Int\n    return 1\n    2\n", true),
-    ("fn main() -> Int\n    a = 1\n    b = a + 2 * 3\n    b\n", false),
+    (
+        "fn main() -> Int\n    a = 1\n    b = a + 2 * 3\n    b\n",
+        false,
+    ),
     ("fn main() -> Float\n    1.5 + 2.0\n", false),
 ];
 
@@ -1155,13 +1339,14 @@ fn scalar_type_errors_match_bootstrap_check() {
             .expect("bootstrap check");
         let boot_err = String::from_utf8_lossy(&boot.stderr).contains("E_TYPE");
         assert_eq!(boot_err, *is_err, "bootstrap verdict for:\n{src}");
-        let out = Command::new(&stage1)
-            .arg(&prog)
-            .args(["-o", "/tmp/sal-ty.out"])
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("ty"))
-            .current_dir(root())
-            .output()
-            .expect("run stage1");
+        let out = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&prog);
+            cmd.args(["-o", "/tmp/sal-ty.out"]);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("ty"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
         assert_eq!(
             out.status.code() != Some(0),
             *is_err,
@@ -1213,13 +1398,14 @@ fn device_errors_match_bootstrap_check() {
         let stderr = String::from_utf8_lossy(&boot.stderr);
         let boot_err = stderr.contains("E_PLACE") || stderr.contains("E_DEVICE");
         assert_eq!(boot_err, *is_err, "bootstrap verdict for:\n{src}\n{stderr}");
-        let out = Command::new(&stage1)
-            .arg(&prog)
-            .args(["-o", "/tmp/sal-dev.out"])
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("dev"))
-            .current_dir(root())
-            .output()
-            .expect("run stage1");
+        let out = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&prog);
+            cmd.args(["-o", "/tmp/sal-dev.out"]);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("dev"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
         assert_eq!(
             out.status.code() != Some(0),
             *is_err,
@@ -1235,15 +1421,20 @@ fn multi_field_structs_compile_and_run() {
     let src = "struct P\n    x: Int\n    y: Int\n\nstruct Q\n    a: P\n    z: Int\n\nfn norm(p: P) -> Int\n    p.x * p.x + p.y * p.y\n\nfn main() -> Int\n    p = P(3, 4)\n    q = Q(p, 2)\n    p.x = 6\n    norm(p) + q.z + q.a.y\n";
     let prog = write_temp_sal(src);
     let out_bin = std::env::temp_dir().join(format!("sal-struct-{}.out", std::process::id()));
-    let out = Command::new(&stage1)
-        .arg(&prog)
-        .arg("-o")
-        .arg(&out_bin)
-        .env("SAL_SELFHOST_CACHE", unique_cache_dir("struct"))
-        .current_dir(root())
-        .output()
-        .expect("run stage1");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&prog);
+        cmd.arg("-o");
+        cmd.arg(&out_bin);
+        cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("struct"));
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let run = Command::new(&out_bin).status().expect("run compiled");
     assert_eq!(run.code(), Some(58));
 }
@@ -1274,15 +1465,20 @@ fn shape_errors_match_bootstrap_check() {
             .expect("bootstrap check");
         let boot_bad = String::from_utf8_lossy(&boot.stderr).contains("E_SHAPE");
         assert_eq!(boot_bad, *bad, "bootstrap verdict for:\n{src}");
-        let out = Command::new(&stage1)
-            .arg(&prog)
-            .args(["-o", "/tmp/sal-shape.out"])
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("shape"))
-            .current_dir(root())
-            .output()
-            .expect("run stage1");
+        let out = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&prog);
+            cmd.args(["-o", "/tmp/sal-shape.out"]);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("shape"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
         let err = String::from_utf8_lossy(&out.stderr);
-        let self_bad = err.contains("do not match") || err.contains("matmul element") || err.contains("rank >= 2") || err.contains("volume mismatch") || err.contains("axis out of range");
+        let self_bad = err.contains("do not match")
+            || err.contains("matmul element")
+            || err.contains("rank >= 2")
+            || err.contains("volume mismatch")
+            || err.contains("axis out of range");
         assert_eq!(self_bad, *bad, "selfhost verdict for:\n{src}\n{err}");
     }
 }
@@ -1328,16 +1524,25 @@ fn selfhost_binaries_behave_like_bootstrap_binaries() {
             .current_dir(root())
             .output()
             .expect("bootstrap build");
-        assert!(b.status.success(), "bootstrap build {rel}: {}", String::from_utf8_lossy(&b.stderr));
-        let s = Command::new(&stage1)
-            .arg(&src)
-            .arg("-o")
-            .arg(&self_bin)
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("runpar"))
-            .current_dir(root())
-            .output()
-            .expect("selfhost build");
-        assert!(s.status.success(), "selfhost build {rel}: {}", String::from_utf8_lossy(&s.stderr));
+        assert!(
+            b.status.success(),
+            "bootstrap build {rel}: {}",
+            String::from_utf8_lossy(&b.stderr)
+        );
+        let s = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&src);
+            cmd.arg("-o");
+            cmd.arg(&self_bin);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("runpar"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
+        assert!(
+            s.status.success(),
+            "selfhost build {rel}: {}",
+            String::from_utf8_lossy(&s.stderr)
+        );
         let rb = Command::new(&boot_bin).output().expect("run boot");
         let rs = Command::new(&self_bin).output().expect("run self");
         assert_eq!(rb.status.code(), rs.status.code(), "exit code of {rel}");
@@ -1357,7 +1562,10 @@ fn selfhost_meets_language_conformance() {
         for e in std::fs::read_dir(dir).expect("tests/lang").flatten() {
             let path = e.path();
             if path.is_dir() {
-                if path.file_name().is_some_and(|n| n != "mods" && n != "target") {
+                if path
+                    .file_name()
+                    .is_some_and(|n| n != "mods" && n != "target")
+                {
                     collect(&path, out);
                 }
             } else if path.extension().is_some_and(|x| x == "sal") {
@@ -1373,9 +1581,12 @@ fn selfhost_meets_language_conformance() {
         let src = std::fs::read_to_string(&path).expect("read");
         let header: Vec<&str> = src.lines().take_while(|l| l.starts_with('#')).collect();
         let field = |key: &str| -> Option<String> {
-            header
-                .iter()
-                .find_map(|l| l.trim_start_matches('#').trim().strip_prefix(key).map(|v| v.trim().to_string()))
+            header.iter().find_map(|l| {
+                l.trim_start_matches('#')
+                    .trim()
+                    .strip_prefix(key)
+                    .map(|v| v.trim().to_string())
+            })
         };
         if field("xfail:").is_some() || field("selfhost-xfail:").is_some() {
             continue;
@@ -1383,27 +1594,36 @@ fn selfhost_meets_language_conformance() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let out = std::env::temp_dir().join(format!("sal-lang-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_file(&out);
-        let built = Command::new(&stage1)
-            .arg(&path)
-            .arg("-o")
-            .arg(&out)
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("lang"))
-            .current_dir(root())
-            .output()
-            .expect("run stage1");
+        let built = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&path);
+            cmd.arg("-o");
+            cmd.arg(&out);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("lang"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
         if field("error:").is_some() {
             if built.status.success() && out.is_file() {
-                failures.push(format!("{name}: selfhost compiled a program that must be rejected"));
+                failures.push(format!(
+                    "{name}: selfhost compiled a program that must be rejected"
+                ));
             }
             continue;
         }
         if !built.status.success() || !out.is_file() {
-            failures.push(format!("{name}: selfhost failed to build:\n{}", String::from_utf8_lossy(&built.stderr)));
+            failures.push(format!(
+                "{name}: selfhost failed to build:\n{}",
+                String::from_utf8_lossy(&built.stderr)
+            ));
             continue;
         }
         let run = Command::new(&out).output().expect("run");
         let _ = std::fs::remove_file(&out);
-        let want: i32 = field("exit:").expect("exit header").parse().expect("exit code");
+        let want: i32 = field("exit:")
+            .expect("exit header")
+            .parse()
+            .expect("exit code");
         let got = run.status.code().unwrap_or(-1);
         if got != want & 0xff {
             failures.push(format!("{name}: exit {got}, expected {}", want & 0xff));
@@ -1425,7 +1645,9 @@ fn selfhost_meets_language_conformance() {
 #[test]
 fn selfhost_matches_bootstrap_on_every_repo_program() {
     fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -1437,7 +1659,15 @@ fn selfhost_matches_bootstrap_on_every_repo_program() {
     }
     let stage1 = compile_selfhost(false);
     let mut files = Vec::new();
-    for d in ["examples", "corpus", "tests/fixtures", "tests/sal", "benches", "std", "packages"] {
+    for d in [
+        "examples",
+        "corpus",
+        "tests/fixtures",
+        "tests/sal",
+        "benches",
+        "std",
+        "packages",
+    ] {
         collect(&root().join(d), &mut files);
     }
     files.sort();
@@ -1448,7 +1678,10 @@ fn selfhost_matches_bootstrap_on_every_repo_program() {
     for src in files {
         let rel = src.strip_prefix(root()).unwrap().display().to_string();
         let stem = rel.replace(['/', '.'], "_");
-        if stem.contains("tiny_prefill") || stem.contains("tiny_decode") || rel.contains("/support/") {
+        if stem.contains("tiny_prefill")
+            || stem.contains("tiny_decode")
+            || rel.contains("/support/")
+        {
             continue;
         }
         let boot_bin = dir.join(format!("{stem}.boot"));
@@ -1464,16 +1697,23 @@ fn selfhost_matches_bootstrap_on_every_repo_program() {
         if !b.status.success() {
             continue;
         }
-        let s = Command::new(&stage1)
-            .arg(&src)
-            .arg("-o")
-            .arg(&self_bin)
-            .env("SAL_SELFHOST_CACHE", unique_cache_dir("repopar"))
-            .current_dir(root())
-            .output()
-            .expect("selfhost build");
+        let s = {
+            let mut cmd = Command::new(&stage1);
+            cmd.arg(&src);
+            cmd.arg("-o");
+            cmd.arg(&self_bin);
+            cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("repopar"));
+            cmd.current_dir(root());
+            stage1_output(cmd)
+        };
         if !s.status.success() {
-            failures.push(format!("{rel}: selfhost build failed: {}", String::from_utf8_lossy(&s.stderr).lines().next().unwrap_or("")));
+            failures.push(format!(
+                "{rel}: selfhost build failed: {}",
+                String::from_utf8_lossy(&s.stderr)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+            ));
             continue;
         }
         let run = |bin: &Path| {
@@ -1488,7 +1728,11 @@ fn selfhost_matches_bootstrap_on_every_repo_program() {
         let rs = run(&self_bin);
         compared += 1;
         if rb.status.code() != rs.status.code() || rb.stdout != rs.stdout {
-            failures.push(format!("{rel}: boot={:?} self={:?}", rb.status.code(), rs.status.code()));
+            failures.push(format!(
+                "{rel}: boot={:?} self={:?}",
+                rb.status.code(),
+                rs.status.code()
+            ));
         }
         let _ = std::fs::remove_file(&boot_bin);
         let _ = std::fs::remove_file(&self_bin);
@@ -1529,18 +1773,25 @@ fn selfhost_deprecation_warnings_match_bootstrap() {
         .current_dir(root())
         .output()
         .expect("run sal check");
-    let self_out = Command::new(&stage1)
-        .arg(&file)
-        .arg("-o")
-        .arg(dir.join("out.bin"))
-        .env("SAL_SELFHOST_CACHE", dir.join("cache"))
-        .env("SAL_PROJECT_ROOT", root())
-        .current_dir(root())
-        .output()
-        .expect("run selfhost build");
+    let self_out = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&file);
+        cmd.arg("-o");
+        cmd.arg(dir.join("out.bin"));
+        cmd.env("SAL_SELFHOST_CACHE", dir.join("cache"));
+        cmd.env("SAL_PROJECT_ROOT", root());
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
     let want = deprecation_messages(&String::from_utf8_lossy(&boot.stderr));
     let got = deprecation_messages(&String::from_utf8_lossy(&self_out.stderr));
-    assert!(!want.is_empty(), "bootstrap printed no W_DEPRECATED warning");
-    assert_eq!(got, want, "selfhost warnings differ from the bootstrap's (location included)");
+    assert!(
+        !want.is_empty(),
+        "bootstrap printed no W_DEPRECATED warning"
+    );
+    assert_eq!(
+        got, want,
+        "selfhost warnings differ from the bootstrap's (location included)"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

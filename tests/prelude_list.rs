@@ -116,8 +116,8 @@ fn main() -> Int ! alloc
 #[test]
 fn list_push_growth_does_not_keep_old_buffers() {
     const N: u64 = 4_000_001; // final buffer: 32 MB; exit = N & 255 = 1
-    // Worst case of a copying realloc (old 16 MB + new 32 MB) still fits here;
-    // keeping the old buffers peaks at ~64 MB.
+                              // Worst case of a copying realloc (old 16 MB + new 32 MB) still fits here;
+                              // keeping the old buffers peaks at ~64 MB.
     const CAP_KB: u64 = 56_000;
     let src = r#"
 fn main() -> Int ! alloc
@@ -155,6 +155,67 @@ fn main() -> Int ! alloc
     );
 }
 
+/// `list_push_share` of a flat `list_get` must copy slots without freeing the borrow
+/// (an interior pointer). Freeing it was `free(): invalid pointer` in stage1.
+#[test]
+fn list_push_share_of_flat_get_does_not_free_borrow() {
+    let src = r#"
+struct Pair
+    a: Int
+    b: String
+
+fn main() -> Int ! alloc
+    xs = list_new[Pair]()
+    xs.push(Pair(1, "a"))
+    xs.push(Pair(2, "b"))
+    ys = list_new[Pair]()
+    list_push_share(ys, xs.get(0))
+    list_push_share(ys, xs.get(1))
+    # `ys` aliases the fields; free only its shell so `xs` still owns them.
+    list_free_shell(ys)
+    xs.get(0).a + xs.get(1).a
+"#;
+    let bin = compile_list(src, false);
+    let out = Command::new(&bin).output().expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A `List[Struct]` keeps its slots inline: `set` replaces the element in place, `get_mut`
+/// borrows a pointer into the list, and `pop` hands out an owned copy of the slots.
+#[test]
+fn list_of_structs_is_flat_and_pop_owns_its_copy() {
+    let src = r#"
+struct Pair
+    a: Int
+    b: String
+
+fn main() -> Int ! alloc
+    xs = list_new[Pair]()
+    xs.push(Pair(1, int_to_str(2)))
+    xs.set(0, Pair(7, int_to_str(8)))
+    p = xs.get_mut(0)
+    p.a = 40
+    n = p.a
+    q = xs.pop()
+    n + q.b.len()
+"#;
+    let bin = compile_list(src, false);
+    let out = Command::new(&bin).output().expect("run");
+    assert_eq!(
+        out.status.code(),
+        Some(41),
+        "stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// With `--instrument`, illegal `list_get` emits `OOB` and exits non-zero.
 #[test]
 fn list_get_oob_instrument_emits_oob() {
@@ -169,8 +230,5 @@ fn main() -> Int ! alloc
     let out = Command::new(&bin).output().expect("run");
     assert_ne!(out.status.code(), Some(0), "expected non-zero exit on OOB");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("OOB"),
-        "stderr missing OOB: {stderr}"
-    );
+    assert!(stderr.contains("OOB"), "stderr missing OOB: {stderr}");
 }

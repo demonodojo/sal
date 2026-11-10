@@ -1,4 +1,7 @@
 {
+  "rust-analyzer.runnables.extraTestBinaryArgs": [
+    "--test-threads=1"
+  ],
   "[sal]": {
     "editor.semanticHighlighting.enabled": true
   },
