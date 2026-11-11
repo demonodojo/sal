@@ -1,0 +1,76 @@
+# Module-wide state of the C emitter: the string-literal pool, the enum variant tables, the
+# drop env and the per-function arena / keep flags. One `LitPool` lives for a whole module
+# emit; `Tc` borrows it (`&'a mut`) while it emits one function.
+import cenv
+
+# `globals`: the `static const` declarations of every literal so far. `texts` / `syms`: the
+# literals of the function being emitted and their `sal_lit_N` names, searched from `scope`
+# on (a repeat in the next function must not resolve to a name from the previous one).
+# `variants`: variant name -> (tag + 1) * 2 + nullary, as `EnumMake` tags them (`index + 1`,
+# except a payload-free first variant, which is 0). `variant_fields`: variant name -> its field
+# types, for typing pattern bindings. `drop_env`, `keep` and `arena` are per function.
+struct LitPool
+    globals: String
+    texts: List[String]
+    syms: List[String]
+    scope: Int
+    nid: Int
+    variants: Int
+    variant_fields: Int
+    drop_env: Int
+    arena: Int
+    keep: Int
+
+static LitPool.new() -> LitPool ! alloc
+    LitPool("", List.new[String](), List.new[String](), 0, 0, map_new(), map_new(), 0, 0, vec_new())
+
+# C expression of the literal `s`, declaring it on first use.
+method LitPool.ensure(&mut self, s: &String) -> String ! alloc
+    idx = self.find(s)
+    if idx >= 0
+        lit_ref(&self.syms.get(idx))
+    else
+        sym = self.declare(s)
+        self.texts.push(s.dup())
+        self.syms.push(sym.clone())
+        lit_ref(&sym)
+
+# Index of `s` among the literals of the current function (-1 when absent).
+method LitPool.find(&self, s: &String) -> Int ! alloc
+    pool_find(&self.texts, s, self.scope, self.texts.len())
+
+# Appends the declaration of `s` under a fresh `sal_lit_N` name and returns the name.
+method LitPool.declare(&mut self, s: &String) -> String ! alloc
+    self.nid = self.nid + 1
+    sym = "sal_lit_" + self.nid.to_str()
+    self.globals = self.globals + sal_lit_decl(s, &sym)
+    sym
+
+# The literals registered from now on are searched apart from the earlier ones. Globals and
+# the counter stay.
+method LitPool.free_texts(&mut self) -> Int ! alloc
+    self.scope = self.texts.len()
+    0
+
+method LitPool.set_drop_env(&mut self, denv: Int) -> Int ! alloc
+    self.drop_env = denv
+    0
+
+method LitPool.set_arena(&mut self, v: Int) -> Int ! alloc
+    self.arena = v
+    0
+
+method LitPool.set_keep(&mut self, ks: Int) -> Int ! alloc
+    self.keep = ks
+    0
+
+fn lit_ref(sym: &String) -> String ! alloc
+    "((int64_t)(uintptr_t)" + sym.clone() + ".b)"
+
+fn pool_find(texts: &List[String], s: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif texts.get(i).eq(s) == 1
+        i
+    else
+        pool_find(texts, s, i + 1, n)

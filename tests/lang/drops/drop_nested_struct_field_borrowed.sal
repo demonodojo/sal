@@ -1,0 +1,29 @@
+# exit: 0
+# Borrowing a nested struct field (`&c.table`) does not hand it over: the local still releases
+# its other nested structs (`c.env`) at scope end. A borrow counted as a by-value read and
+# the whole nested glue was skipped, which leaked `env`.
+struct HT
+    keys: List[String]
+    vals: List[String]
+
+struct TE
+    a: List[String]
+    b: List[Int]
+
+struct OC
+    moved: List[String]
+    env: TE
+    table: HT
+
+fn arena(t: &HT) -> Int ! alloc
+    t.keys.len()
+
+fn go(c: &mut OC) -> Int ! alloc
+    c.moved.push("x".dup())
+    c.env.a.push("y".dup())
+    0
+
+fn main() -> Int ! alloc
+    c = OC(List.new[String](), TE(List.new[String](), List.new[Int]()), HT(List.new[String](), List.new[String]()))
+    go(&mut c)
+    arena(&c.table)

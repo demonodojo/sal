@@ -1,0 +1,13 @@
+# exit: 0
+# Same ownership through a free function taking `&mut Pool`.
+struct Pool
+    names: List[String]
+    n: Int
+
+fn add(p: &mut Pool, s: &String) -> Int ! alloc
+    p.names.push(s.dup())
+    0
+
+fn main() -> Int ! alloc
+    p = Pool(List.new[String](), 0)
+    add(&mut p, &"ab")

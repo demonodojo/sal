@@ -1,0 +1,14 @@
+# A `List.new[String]()` inline in a struct constructor is owned by the struct (`+s`); a `&mut`
+# parameter writes its fields in place (`sal_struct_set`).
+struct Pool
+    names: List[String]
+    n: Int
+
+method Pool.add(&mut self, s: &String) -> Int ! alloc
+    self.names.push(s.dup())
+    self.n = self.n + 1
+    self.n
+
+fn main() -> Int ! alloc
+    p = Pool(List.new[String](), 0)
+    p.add(&"ab")

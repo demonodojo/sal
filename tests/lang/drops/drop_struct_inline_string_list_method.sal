@@ -1,0 +1,15 @@
+# exit: 1
+# Same ownership through a `&mut self` method: the string pushed by the callee belongs to the
+# list, which the struct in `main` releases.
+struct Pool
+    names: List[String]
+    n: Int
+
+method Pool.add(&mut self, s: &String) -> Int ! alloc
+    self.names.push(s.dup())
+    self.n = self.n + 1
+    self.n
+
+fn main() -> Int ! alloc
+    p = Pool(List.new[String](), 0)
+    p.add(&"ab")

@@ -1,0 +1,13 @@
+# exit: 7
+# `match d.get(k)` as the tail with an `Int` payload: `Some(v) => v` reads a Copy scalar, so
+# it does not keep the `Option` box alive and the box is released. Used to leak the box.
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = Dict.new[Int, Int]()
+    d.put(5, 7)
+    match d.get(5)
+        Some(v) => v
+        None => 0

@@ -1,0 +1,17 @@
+# exit: 15
+# Same release when the match is bound to a local and the dict has `String` keys.
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = Dict.new[String, Int]()
+    d.put("a", 7)
+    d.put("b", 8)
+    a = match d.get("a")
+        Some(v) => v
+        None => 0
+    b = match d.get("b")
+        Some(v) => v
+        None => 0
+    a + b

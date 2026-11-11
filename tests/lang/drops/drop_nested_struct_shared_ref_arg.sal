@@ -1,0 +1,18 @@
+# exit: 0
+# A struct with a nested struct field passed as `&c`: the carrier box built for the call and the
+# carrier of the nested struct are both released after it. Only the outer box was, which leaked
+# the inner one.
+struct TE
+    a: List[String]
+    b: List[Int]
+
+struct OC
+    moved: List[String]
+    env: TE
+
+fn touch(c: &OC) -> Int ! alloc
+    c.moved.len()
+
+fn main() -> Int ! alloc
+    c = OC(List.new[String](), TE(List.new[String](), List.new[Int]()))
+    touch(&c)

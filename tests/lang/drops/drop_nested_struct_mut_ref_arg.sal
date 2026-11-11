@@ -1,0 +1,22 @@
+# exit: 2
+# Same through `&mut c`, which also writes the fields back after the call.
+struct TE
+    a: List[String]
+    b: List[Int]
+
+struct OC
+    moved: List[String]
+    env: TE
+    ctors: List[String]
+
+fn oc_new() -> OC ! alloc
+    OC(List.new[String](), TE(List.new[String](), List.new[Int]()), List.new[String]())
+
+fn touch(c: &mut OC) -> Int ! alloc
+    c.moved.push("x".dup())
+    c.env.a.push("y".dup())
+    c.moved.len() + c.env.a.len()
+
+fn main() -> Int ! alloc
+    c = oc_new()
+    touch(&mut c)

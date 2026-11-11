@@ -1,0 +1,24 @@
+# exit: 5
+# A `&'a mut` stored in a struct field writes through to the original: `p` is not copied into
+# registers, so `p.n` sees both bumps (1 + 2 + 2). Used to give 3 and leak a block.
+struct Pool
+    n: Int
+    m: Int
+
+method Pool.bump(&mut self) -> Int ! alloc
+    self.n = self.n + 1
+    self.n
+
+struct Tc['a]
+    pool: &'a mut Pool
+    k: Int
+
+fn use_tc(tc: &mut Tc) -> Int ! alloc
+    tc.pool.bump()
+
+fn main() -> Int ! alloc
+    p = Pool(0, 0)
+    tc = Tc(&mut p, 1)
+    a = use_tc(&mut tc)
+    b = use_tc(&mut tc)
+    a + b + p.n

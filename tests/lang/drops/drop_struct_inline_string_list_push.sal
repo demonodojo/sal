@@ -1,0 +1,11 @@
+# exit: 0
+# A `List.new[String]()` written inline in a struct constructor is owned by the struct: its
+# glue releases the pushed strings. Pushing straight from `main` leaked the string.
+struct Pool
+    names: List[String]
+    n: Int
+
+fn main() -> Int ! alloc
+    p = Pool(List.new[String](), 0)
+    p.names.push("q".dup())
+    0
