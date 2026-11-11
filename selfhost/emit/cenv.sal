@@ -1,37 +1,37 @@
 # C emission shared by the AST path and the IR path: mangling, literals, headers.
 import "../ast/tast.sal"
 
-fn arg_at(args: Int, i: Int) -> String ! alloc
-    if i < vec_len(args)
-        str_from_int(vec_get(args, i))
+fn arg_at(args: &List[String], i: Int) -> String ! alloc
+    if i < args.len()
+        args.get(i).clone()
     else
         "0"
 
 # One-field structs are transparent; wider ones are a heap array of int64
 # slots, so a struct value is the pointer to it.
-fn emit_c_struct_ctor(arg_parts: Int) -> String ! alloc
-    n = vec_len(arg_parts)
+fn emit_c_struct_ctor(arg_parts: &List[String]) -> String ! alloc
+    n = arg_parts.len()
     match n
         0 => "0"
-        1 => str_from_int(vec_get(arg_parts, 0))
+        1 => arg_parts.get(0).clone()
         _ =>
             acc = "({ int64_t *__s = (int64_t *)malloc(" + (n * 8).to_str() + "); "
             acc = emit_c_ctor_slots(arg_parts, 0, n, acc)
             acc + "(int64_t)__s; })"
 
-fn emit_c_ctor_slots(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_c_ctor_slots(parts: &List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        acc = acc + "__s[" + int_to_str(i) + "] = " + str_from_int(vec_get(parts, i)) + "; "
+        acc = acc + "__s[" + int_to_str(i) + "] = " + parts.get(i).clone() + "; "
         emit_c_ctor_slots(parts, i + 1, n, acc)
 
 # Bytes handles point at {uint8_t *data; int64_t len}; accesses are checked.
-fn emit_c_bytes_get(args: Int, width: Int) -> String ! alloc
+fn emit_c_bytes_get(args: &List[String], width: Int) -> String ! alloc
     w = int_to_str(width)
     "({ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); uint64_t __v = 0; __builtin_memcpy(&__v, (char *)__b[0] + __i, " + w + "); (int64_t)__v; })"
 
-fn emit_c_bytes_set(args: Int, width: Int) -> String ! alloc
+fn emit_c_bytes_set(args: &List[String], width: Int) -> String ! alloc
     w = int_to_str(width)
     "({ int64_t *__b = (int64_t *)(uintptr_t)(" + arg_at(args, 0) + "); int64_t __i = " + arg_at(args, 1) + "; int64_t __x = " + arg_at(args, 2) + "; extern void sal_bytes_check(); sal_bytes_check(__i, " + w + ", __b[1]); __builtin_memcpy((char *)__b[0] + __i, &__x, " + w + "); (int64_t)0; })"
 
@@ -295,20 +295,20 @@ fn join_comma_piece(i: Int) -> String ! alloc
     else
         ""
 
-fn join_commas(parts: Int, i: Int, n: Int, acc: String) -> String ! alloc
+fn join_commas(parts: &List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         comma = join_comma_piece(i)
         acc = acc + comma
-        acc = acc + str_from_int(vec_get(parts, i))
+        acc = acc + parts.get(i).clone()
         join_commas(parts, i + 1, n, acc)
 
-fn pad_args(v: Int, n: Int) -> Int ! alloc
-    if vec_len(v) >= n
+fn pad_args(v: &mut List[String], n: Int) -> Int ! alloc
+    if v.len() >= n
         0
     else
-        _p = vec_push(v, str_as_int(&"0"))
+        v.push("0")
         pad_args(v, n)
 
 fn emit_params_comma(i: Int) -> String ! alloc

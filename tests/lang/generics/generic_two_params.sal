@@ -1,5 +1,5 @@
 # exit: 9
-# asan-xfail: temporal String (d"…", .dup()) pasado a un builtin o local de main: sal_strdup sin sal_free
+# asan-xfail: String pasado por valor a una función genérica (tipo borrado): ni el llamador ni la callee lo liberan
 fn first[A, B](a: A, b: B) -> A
     a
 

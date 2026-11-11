@@ -1,5 +1,4 @@
 # exit: 4
-# asan-xfail: temporal String (d"…", .dup()) pasado a un builtin o local de main: sal_strdup sin sal_free
 enum Opt
     No
     Yes(String)

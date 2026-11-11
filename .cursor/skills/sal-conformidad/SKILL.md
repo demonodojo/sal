@@ -22,6 +22,7 @@ Solo se leen las líneas `#` iniciales (hasta la primera que no lo sea):
 | `# stdout: TEXTO` | Opcional. El stdout es exactamente `TEXTO` (sin el salto final) |
 | `# error: CODIGO` | El compilador lo rechaza y el stderr contiene `CODIGO` (`E_TYPE`, `E_PARSE`, …) |
 | `# xfail: MOTIVO` | Hueco conocido **del arranque**: tiene que seguir incumpliendo `exit`/`error`. Si pasa, el test falla hasta quitar la marca |
+| `# asan-xfail: MOTIVO` | Fuga o error de memoria conocido bajo `sal --sanitize` (solo `tests/memory_asan.rs`): el programa **tiene que seguir** dando un informe de ASan/LSan; si queda limpio, el test falla hasta quitar la marca. `lang` y el selfhost la ignoran. Ver [sal-memoria-asan](../sal-memoria-asan/SKILL.md) |
 | `# selfhost-xfail: MOTIVO` | Hueco solo del selfhost: el arranque debe cumplirlo; el selfhost se salta el fichero |
 
 Un `exit` o un `error` por fichero. Los diagnósticos usan la lista cerrada de la SPEC; no inventes códigos.

@@ -1,5 +1,5 @@
 # exit: 3
-# asan-xfail: temporal String (d"…", .dup()) pasado a un builtin o local de main: sal_strdup sin sal_free
+# asan-xfail: n = p.name mueve un campo String a un local y ese local no se libera
 struct P
     name: String
     other: String

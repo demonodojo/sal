@@ -1,5 +1,4 @@
 # exit: 7
-# asan-xfail: temporal String (d"…", .dup()) pasado a un builtin o local de main: sal_strdup sin sal_free
 struct P
     name: String
     n: Int

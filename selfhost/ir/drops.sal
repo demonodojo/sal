@@ -719,10 +719,10 @@ fn dr_arg(c: &mut DC, a: &Expr, mov: Int) -> Int ! alloc
 
 # `str_as_int(&s)` stores the handle of `s`: through the reference, `s` still escapes.
 fn dr_arg_unary(c: &mut DC, a: &Expr, op: &String, inner: &Expr, mov: Int) -> Int ! alloc
-    if mov != 2
+    if mov != 2 && mov != 4
         dr_expr(c, a)
     elsif str_eq(op, "ref") + str_eq(op, "refmut") > 0
-        dr_arg(c, inner, 2)
+        dr_arg(c, inner, mov)
     else
         dr_expr(c, a)
 
@@ -792,7 +792,13 @@ fn dr_arg_ident(c: &mut DC, n: &String, mov: Int) -> Int ! alloc
         0
 
 fn dr_arg_escape(c: &mut DC, name: &String, mov: Int) -> Int ! alloc
-    if dr_cell(c, 4) > 0
+    if mov == 4
+        # `str_as_int(&s)` stores the handle: `s` escapes and is never released, no flag
+        # (the bootstrap's `escaped` rule for `str_as_int`).
+        c.take(name)
+        nm_put(&mut c.soft, name, 0)
+        dr_escape(c, name)
+    elsif dr_cell(c, 4) > 0
         c.take(name)
         nm_put(&mut c.soft, name, 0)
         dr_escape(c, name)
@@ -886,7 +892,7 @@ fn dr_call_args(c: &mut DC, callee: &String, args: &List[Expr], i: Int, n: Int, 
             else
                 1
         elsif str_eq(callee, "str_as_int") == 1
-            2
+            4
         elsif borrow == 1
             1
         elsif reads == 1
@@ -2363,7 +2369,7 @@ fn dr_hoist_expr(h: &mut HC, e: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
         XCall(name, args, targs, xp) => dr_hoist_call(h, e, &name, &mut args, out)
         XBin(op, l, r) => dr_hoist_bin(h, e, &l, &r, out)
         XUnary(op, inner) => dr_hoist_unary(h, e, &op, &inner, out)
-        XIf(cond, then_b, else_b, has_else, elsifs) => dr_hoist_if(h, e, &mut then_b, &mut else_b, has_else, &mut elsifs)
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_hoist_if(h, e, &cond, &mut then_b, &mut else_b, has_else, &mut elsifs, out)
         XWhile(cond, body) => dr_hoist_while(h, e, &mut body)
         XMatch(scrut, arms) => dr_hoist_match(h, e, &scrut, &mut arms, out)
         XField(base, field) => dr_hoist_field(h, e, &base, &field, out)
@@ -2372,7 +2378,7 @@ fn dr_hoist_expr(h: &mut HC, e: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
 # `match list_get(xs, i) { … }`: the element read is bound to a local first (`Hoist` in src/drops.rs).
 fn dr_hoist_match(h: &mut HC, e: &Expr, scrut: &Expr, arms: &mut List[TArm], out: &mut List[TStmt]) -> Expr ! alloc
     ns = dr_hoist_expr(h, scrut, out)
-    s2 = if dr_is_elem_read(&ns) == 1
+    s2 = if dr_is_elem_read(&ns) + dr_is_dict_get(&ns) > 0
         k = list_get(&h.k, 0) + 1
         _s = list_set(h.k, 0, k)
         name = "__tmp" + int_to_str(k)
@@ -2510,6 +2516,12 @@ fn dr_is_elem_read(e: &Expr) -> Int ! alloc
         XCall(name, args, targs, xp) => str_eq(name, "list_get") + str_eq(name, "list_pop")
         _ => 0
 
+# `dict_get(..)`: the runtime hands out a fresh `Option` that owns a copy of the value.
+fn dr_is_dict_get(e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => str_eq(name, "dict_get")
+        _ => 0
+
 fn dr_hoist_call(h: &mut HC, e: &Expr, name: &String, args: &mut List[Expr], out: &mut List[TStmt]) -> Expr ! alloc
     _a = dr_hoist_args(h, args, 0, list_len(args), dr_reads_string_arg(name), out)
     dr_ret(e)
@@ -2526,7 +2538,14 @@ fn dr_hoist_while(h: &mut HC, e: &Expr, body: &mut TBlock) -> Expr ! alloc
     _b = enum_set(e, 1, nb)
     dr_ret(e)
 
-fn dr_hoist_if(h: &mut HC, e: &Expr, then_b: &mut TBlock, else_b: &mut TBlock, has_else: Int, elsifs: &mut List[TElsif]) -> Expr ! alloc
+fn dr_hoist_if(h: &mut HC, e: &Expr, cond: &Expr, then_b: &mut TBlock, else_b: &mut TBlock, has_else: Int, elsifs: &mut List[TElsif], out: &mut List[TStmt]) -> Expr ! alloc
+    # The first condition runs once, ahead of the statement: its fresh temporaries are bound
+    # like any call argument. `elsif` conditions run conditionally and stay as they are.
+    before = list_len(out)
+    nc = dr_hoist_expr(h, cond, out)
+    # `dr_hoist_expr` hands back a copy: the condition is only replaced when a temporary was bound.
+    if list_len(out) > before
+        _c = dr_set_expr(e, 0, cond, &nc)
     tb = dr_hoist_block(h, then_b)
     _t = enum_set(e, 1, tb)
     if has_else == 1
@@ -2999,6 +3018,8 @@ fn dr_borrows(name: &String) -> Int ! alloc
         1
     elsif str_eq(name, "str_len") == 1
         1
+    elsif str_eq(name, "strdup") == 1
+        1
     elsif str_eq(name, "dict_keys") + str_eq(name, "dict_values") + str_eq(name, "dict_len") + str_eq(name, "dict_remove") == 1
         1
     elsif str_eq(name, "str_eq") == 1
@@ -3130,6 +3151,8 @@ fn dr_field_owned_t(fty: &String) -> Int ! alloc
 # statement, so the scope-end release frees it. `h` is `[counter]`.
 fn dr_reads_string_arg(name: &String) -> Int ! alloc
     if str_eq(name, "str_len") == 1
+        1
+    elsif str_eq(name, "strdup") == 1
         1
     elsif str_eq(name, "str_eq") == 1
         1

@@ -3,7 +3,7 @@ import cenv
 import cir
 import "../ir/tensorops.sal"
 
-fn emit_c_builtin(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_builtin(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
         "str_as_int" => arg_at(args, 0)
         "str_to_f64_bits" =>
@@ -28,7 +28,7 @@ fn emit_c_builtin(fname: &String, args: Int, stmts: Int) -> String ! alloc
             "((int64_t)(uintptr_t)sal_lex_src((const char *)(uintptr_t)" + a0 + "))"
         _ => emit_c_builtin_skip(fname, args, stmts)
 
-fn emit_c_builtin_skip(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_builtin_skip(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
         "str_skip" =>
             a = arg_at(args, 0)
@@ -42,7 +42,7 @@ fn emit_c_builtin_skip(fname: &String, args: Int, stmts: Int) -> String ! alloc
             "sal_str_hash((const char*)(uintptr_t)" + a + "," + b + ")"
         _ => emit_c_builtin_rest(fname, args, stmts)
 
-fn emit_c_builtin_rest(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_builtin_rest(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
         "vec_new" => "((int64_t)(uintptr_t)sal_vec_new())"
         "argv" =>
@@ -65,7 +65,7 @@ fn emit_c_builtin_rest(fname: &String, args: Int, stmts: Int) -> String ! alloc
             "((int64_t)(uintptr_t)sal_char_to_str(" + a0 + "))"
         _ => emit_c_builtin2(fname, args, stmts)
 
-fn emit_c_builtin2(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_builtin2(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
         "str_append" =>
             a = arg_at(args, 0)
@@ -109,7 +109,7 @@ fn emit_c_builtin2(fname: &String, args: Int, stmts: Int) -> String ! alloc
             "sal_path_readable((const char*)(uintptr_t)" + a + ")"
         _ => emit_c_builtin3(fname, args, stmts)
 
-fn emit_c_builtin3(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_builtin3(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
         "gated_print_str" =>
             a = arg_at(args, 0)
@@ -141,7 +141,7 @@ fn emit_c_builtin3(fname: &String, args: Int, stmts: Int) -> String ! alloc
             "sal_str_len((const char*)(uintptr_t)" + a + ")"
         _ => emit_c_builtin4(fname, args, stmts)
 
-fn emit_c_builtin4(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_builtin4(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
         "str_char" =>
             a = arg_at(args, 0)
@@ -165,7 +165,7 @@ fn emit_c_builtin4(fname: &String, args: Int, stmts: Int) -> String ! alloc
             "sal_vec_len((void*)(uintptr_t)" + a + ")"
         _ => emit_c_builtin5(fname, args, stmts)
 
-fn emit_c_builtin5(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_builtin5(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
         "vec_free" =>
             a0 = arg_at(args, 0)
@@ -258,7 +258,7 @@ fn emit_c_builtin5(fname: &String, args: Int, stmts: Int) -> String ! alloc
             # Any other builtin is the runtime function `sal_<name>`. Values are all
             # int64 (pointers included), which matches the x86-64 calling convention, so a
             # block-scope unprototyped declaration is enough.
-fn emit_c_runtime_call(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_runtime_call(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     if cir_is_stub(&("sal_" + fname).slice(0, 4 + fname.len())) == 1
         "0"
     elsif fname.eq("syscall") == 1
@@ -282,12 +282,12 @@ fn emit_c_runtime_call(fname: &String, args: Int, stmts: Int) -> String ! alloc
     else
         emit_c_plain_runtime_call(fname, args, stmts)
 
-fn emit_c_syscall(args: Int, stmts: Int) -> String ! alloc
+fn emit_c_syscall(args: &List[String], stmts: Int) -> String ! alloc
     vec_push(stmts, "  extern int64_t sal_os_syscall();\n".to_int())
-    padded = vec_copy(args)
-    pad_args(padded, 7)
+    padded = args.clone()
+    pad_args(&mut padded, 7)
     acc = "sal_os_syscall("
-    acc = join_commas(padded, 0, vec_len(padded), acc)
+    acc = join_commas(&padded, 0, padded.len(), acc)
     acc + ")"
 
 # The clone builtins are `sal_<T>_clone_val` (`runtime_call_name` in src/ir.rs), not `sal_<name>`.
@@ -303,9 +303,9 @@ fn emit_c_runtime_name(fname: &String) -> String ! alloc
     else
         "sal_" + fname
 
-fn emit_c_plain_runtime_call(fname: &String, args: Int, stmts: Int) -> String ! alloc
+fn emit_c_plain_runtime_call(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     rname = emit_c_runtime_name(fname)
     vec_push(stmts, ("  extern int64_t " + rname + "();\n").to_int())
     acc = "((int64_t)" + rname + "("
-    acc = join_commas(args, 0, vec_len(args), acc)
+    acc = join_commas(args, 0, args.len(), acc)
     acc + "))"

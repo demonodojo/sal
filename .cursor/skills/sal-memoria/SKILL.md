@@ -8,7 +8,8 @@ description: >-
   selfhost/ir/fuse.sal, emit.sal (cola C), tests/drops.rs, tests/lang/drops, o al
   hablar de free, list_free, dict_free, enum_free, bytes_free, tensor_free,
   fugas, LEAK, uso tras liberar o doble liberación, struct_copy, list_get de
-  struct, struct_free_box o caja de struct.
+  struct, struct_free_box o caja de struct, Hoist, temporales, asan-xfail o
+  --sanitize.
 ---
 
 # Memoria
@@ -56,7 +57,7 @@ Un local se libera si se liga una sola vez a un valor **fresco** (`fresh_kind`) 
 - **`x.clone()`** solo lee su receptor (`borrows_args`, `dr_borrows`). El clon de un struct describible es una caja `struct:<desc>` (`struct_copy_kind`; en el selfhost `dx_clone_desc`, que solo conoce el struct de un parámetro o de un `list_get`); el de un struct con `clone.<Struct>` lo suelta la cola de structs (`value_struct` en `src/ir.rs`; alias en `FRC.alias_call` si es describible).
 - **`Dict`**: valores escalares, `String`, enum sin type params o struct describible (kinds en `sal_dict_new`; ver `dict_val_kind` en `src/ir.rs`).
 - **Enum** (caja de variante), **`Bytes`** (`bytes_new`; **`bytes_view`** / **`bytes_view_mem`**: solo cabecera de vista).
-- **`dict_get`**: `Option` fresco → `enum_free` si no escapa; `match dict_get(…)` descartado como sentencia igual.
+- **`dict_get`**: `Option` fresco → `enum_free` si no escapa; `match dict_get(…)` descartado como sentencia igual. El `Hoist` también liga a un local el scrutinee `match dict_get(…)` (`is_dict_get`), como el de `list_get`/`list_pop`. Con payload `Int`/`Float`/`Bool`, un `Some(v) => v` no cuenta como escape (ver «Escalares» abajo). `sal_enum_free` solo suelta `String` y cajas de enum: la copia de un valor **struct** (`desc_copy`) sigue sin dueño (`asan-xfail` en `dict_owned_values`).
 - **Literal `tensor`**: `tensor_free` → `sal_tensor_free` / `sal_place_free` en programa escalar.
 - **`OWNED_FNS`**: retorno `String` siempre fresco; **`if`/`match` de nivel superior** vale si **cada** rama es fresca; un **`while` de nivel superior** excluye la función.
 
@@ -87,6 +88,25 @@ En **`src/ir.rs`**, tras **`fuse_module`**: `scan_struct_box_shell` registra des
 Runtime: **`sal_list_get_typed`** devuelve el elemento tal cual. **`sal_desc_copy`** es la copia explícita. **`sal_struct_free_box`** libera solo el bloque; **`sal_struct_free(desc)`** recorre campos y la caja.
 
 Al **compilar módulos bajo `selfhost/`**, `src/compile.rs` llama `fuse_module_opts(..., box_shell_drops: false)` para no aplicar ese pase IR al código del autohospedador (mismo motivo de ámbito/SSA en bucles del compilador). `sal emit ir` y tests del arranque siguen usando `fuse_module` con el pase activo.
+
+## `Hoist`: temporales que alguien tiene que soltar
+
+`Hoist::expr` (`src/drops.rs`; espejo `dr_hoist_*` en `selfhost/ir/drops.sal`) liga a un local `__tmpN`, antes de la sentencia, lo que no tiene dueño, para que el fin de ámbito lo suelte (Rust: temporal de la sentencia):
+
+- Un temporal fresco (`is_fresh_temp`: `d"…"`, `int_to_str`, `x + y`, llamada que devuelve `String` dueño) pasado a un builtin de solo lectura (`reads_string_arg` / `dr_reads_string_arg`). **`strdup` está en esa lista**: `d"ab".dup()` es `strdup(strdup("ab"))` y el interno se libera. `strdup` también está en `borrows_args` / `dr_borrows`; si no, el análisis lo toma por consumido y el flag de movido impide liberar.
+- Lo que no es un lugar bajo `&` / `&mut` (`f(&g())`).
+- El scrutinee `list_get`/`list_pop`/`dict_get` de un `match`, y la base de `list_get(..).f`.
+- **La primera condición de un `if`** (corre una vez, antes de la sentencia). No las de `elsif` ni la de `while`: se reevalúan o son condicionales.
+
+Espejo: `dr_hoist_expr` devuelve una **copia** (`dr_alias` = `tc_expr`), así que `dr_moved` siempre ve una caja distinta. Sustituye un hijo solo si el hoist añadió temporales (`list_len(out)` creció, como en `dr_hoist_if`); reemplazarlo siempre cambia la identidad de caja de la que dependen otras tablas.
+
+## Escalares
+
+Una lectura de un `Int`/`Float`/`Bool` no alias nada del heap: no marca `escaped`, `consumed` ni `kept` (`expr_is_copy_scalar`, en `expr` y en `arg` de `src/drops.rs`). Sin esto, `Some(v) => v` sobre `Option[Int]` impedía liberar la caja del `Option`. El selfhost no tiene tipos por expresión en `drops.sal`: esta regla **no está espejada**, y es una divergencia conocida de la IR de programas que la usan.
+
+## `str_as_int(&s)`
+
+Guarda el asa de `s`: `s` escapa y no se libera, **sin flag**. En el arranque es un caso aparte en `expr` (`escaped` + `soft.remove`). En el selfhost es `mov == 4` en `dr_call_args` y la rama `mov == 4` de `dr_arg_escape` (`c.take`, `soft = 0`, `dr_escape`); con `mov == 2` (constructor) salía un flag muerto `if flag == 1 free(..)`.
 
 ## Cola de un struct
 
@@ -124,6 +144,8 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 
 ## Siguen sin liberarse (SPEC)
 
+Huecos medidos con ASan (`# asan-xfail:`; inventario y causas en [sal-memoria-asan](../sal-memoria-asan/SKILL.md)): struct/enum que devuelve una función de usuario y consume `main`; `Dict.get` de valor struct; `n = p.name` (campo `String` movido a un local); `String` por valor a una función genérica; `int_to_str` como clave de `Dict`; `f64_bits_to_str`.
+
 Un struct multi-campo suelta su bloque en `drop.<Struct>` (`sal_struct_free_box`); un valor solo en registros (scalarize) no tiene caja que soltar. Siguen abiertos: el payload `List`/struct de una caja de enum copiada con `sal_enum_copy` (se comparte); campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String` como asa `Int`**; **`z = k`** sobre la misma copia. Tensores en región fusionada: `IrInst::Drop` + `sal_place_free` en bajada LLVM, no el mismo camino que un local escalar.
 
 ## Verificar
@@ -133,6 +155,7 @@ Un struct multi-campo suelta su bloque en `drop.<Struct>` (`sal_struct_free_box`
 | `src/drops.rs`, `src/ir.rs`, `src/fuse.rs`, `tests/drops.rs` | `cargo test --test drops` |
 | `tests/lang/drops/` (p. ej. `drop_list_struct_box_pass_fn.sal`, `drop_struct_list_field.sal`) | `cargo test --test lang` (`# exit:` = retorno de `main`, no “OK = 0”; ver [sal-conformidad](../sal-conformidad/SKILL.md)) |
 | Selfhost drops/fuse/emit | `cargo run -- parity <fichero>`; `cargo test --test selfhost_ir -- --test-threads=1` (paridad IR puede diferir en programas con caja si solo el arranque aplica el pase IR) |
+| Fugas, doble free, uso tras liberar (oráculo independiente) | `cargo test --test memory_asan -- --test-threads=1`; ver [sal-memoria-asan](../sal-memoria-asan/SKILL.md) |
 | Runtime | `tests/instrument_sal.rs` (lectura sin `struct_copy`; la copia que escapa sin `LEAK` ni `DOUBLE_FREE`) + `tests/drops.rs` |
 
 `SAL_INSTRUMENT_STRICT=1` tras `sal build --instrument`: stderr sin `LEAK` ni `struct_copy` residual en programas que el compilador debe cerrar (`USE_AFTER_FREE`, `DOUBLE_FREE` siguen siendo fallo duro).
@@ -141,4 +164,4 @@ Un test que sigue pasando con el código viejo no cuenta. Quita `# xfail:` / `# 
 
 ## Oráculo independiente: ASan/LSan/UBSan
 
-`cargo test --test memory_asan -- --test-threads=1` compila con `sal --sanitize` el corpus de memoria (`tests/lang/<áreas>`, `tests/memory/`) y exige cero informes. Un hueco de liberación conocido lleva `# asan-xfail: motivo`; al cerrarlo, quita la marca. Los controles negativos de `tests/support/asan_neg_*.c` prueban que el sanitizer detecta fuga, doble free y uso tras free.
+`sal --sanitize` y `cargo test --test memory_asan -- --test-threads=1` barren `tests/lang/{drops,ownership,collections,structs,enums,strings,methods,generics}` y `tests/memory/` y exigen cero informes. Un hueco de liberación conocido lleva `# asan-xfail: motivo`; al cerrarlo, **quita la marca en el mismo cambio**. Un cambio de memoria no está hecho hasta que pasa. Flujo completo, inventario de huecos y cómo triar un informe: [sal-memoria-asan](../sal-memoria-asan/SKILL.md).

@@ -22,6 +22,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | IR o fusión (`ColumnBin`, `TensorBin`, `match` escalar, …) | `cargo test --test forward_ir` |
 | Runtime o kernels (matmul, **tensor bin**, …) | `cargo test --test kernels --test exec_matmul --test exec_column --test exec_salt` |
 | LLVM o enlace | `cargo test --test run_hello` |
+| Memoria real: fugas, doble free, uso tras liberar (ASan/LSan/UBSan) | `cargo test --test memory_asan -- --test-threads=1`; criterio en [sal-memoria-asan](../sal-memoria-asan/SKILL.md) |
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
 | CLI, módulos o caché | `cargo test --test toolchain --test run_hello` |
 | Paquetes git, `Sal.lock`, `sal_modules/` | `cargo test --test toolchain fetch_ sal_modules_import import_not install_` y `cargo test --test selfhost_ir selfhost_resolves_git` |
@@ -36,7 +37,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | `standard/` o cops de estilo (`Style/MatchIf`, `TK_RSTRING`, …) | `cargo test --test standard matchif -- --test-threads=1` (suite completa: `cargo test --test standard -- --test-threads=1`; el harness borra `target/sal-out` al compilar `standard/main.sal`) |
 | `selfhost/`, preludio o `corpus/` | `cargo test --test selfhost_ir` y la skill [sal-autohospedaje](../sal-autohospedaje/SKILL.md) |
 
-Atajo: `scripts/test-area.sh <área>` ejecuta la fila correspondiente de esta tabla (`frontend`, `semantics`, `drops`, `ir`, `kernels`, `llvm`, `instrument`, `toolchain`, `lang`, `builtins`, `target`, `std`, `standard`, `selfhost`); sin argumento lista las áreas. Las áreas `standard` y `selfhost` van en serie (`--test-threads=1`).
+Atajo: `scripts/test-area.sh <área>` ejecuta la fila correspondiente de esta tabla (`frontend`, `semantics`, `drops`, `ir`, `kernels`, `llvm`, `instrument`, `memory`, `toolchain`, `lang`, `builtins`, `target`, `std`, `standard`, `selfhost`); sin argumento lista las áreas. Las áreas `memory`, `standard` y `selfhost` van en serie (`--test-threads=1`).
 
 Si el test nuevo afirma un diagnóstico, el código tiene que ser el de la lista cerrada (`E_PARSE`, `E_TYPE`, `E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`; `E_TARGET` solo para destino).
 
@@ -69,7 +70,8 @@ cargo run --bin standard -- fix path/to/file.sal
 - `emit ast` es el JSON que `sal compile --ast` vuelve a aceptar.
 - `--error-format json` es una línea de stderr por diagnóstico, con `code`, `message`, `span` (`start`/`end` en bytes UTF-8; `line` y `col` desde 1) y `hint`.
 - `--instrument` cambia el binario. Un evento (`LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`) se imprime en stderr como JSON (`{"code":"LEAK","site":"…"}`) y el proceso sale con 2. Pero el código de salida también es el resultado del programa (`main` que devuelve 2 sale 2), así que **no** uses el código para detectar fugas: mira stderr.
-- Comprobar fugas de un programa: `sal build --instrument f.sal -o f.bin && SAL_INSTRUMENT_STRICT=1 ./f.bin 2>&1 >/dev/null | grep -o 'LEAK[^}]*'`. Sin salida, limpio. `SAL_INSTRUMENT_STRICT=1` reporta también los sitios que el modo normal deja pasar (cadenas y cajas de structs del AST del selfhost).
+- `--sanitize` (global): compila y enlaza con ASan+LSan+UBSan; `ASAN_OPTIONS=detect_leaks=1 ./f` informa de fugas, doble free y uso tras liberar. No es `--instrument`; los dos se pueden usar por separado. No vale para soso.
+- Comprobar fugas de un programa con la instrumentación propia: `sal build --instrument f.sal -o f.bin && SAL_INSTRUMENT_STRICT=1 ./f.bin 2>&1 >/dev/null | grep -o 'LEAK[^}]*'`. Sin salida, limpio. `SAL_INSTRUMENT_STRICT=1` reporta también los sitios que el modo normal deja pasar (cadenas y cajas de structs del AST del selfhost).
 - `sal check` acepta un programa de GPU o TPU aunque falte el dispositivo. `sal build --device gpu` o `tpu` falla con `E_DEVICE_MISSING` si no está el toolchain.
 - Tras añadir o cambiar dependencias git en `Sal.toml`, ejecutar `sal fetch` desde la raíz del proyecto (donde está el manifiesto). Los tests de paquetes usan repos `file://` y fijan `SAL_PACKAGES` en un tempdir; no dependen de red.
 - `--target linux|soso` (global). `syscall` solo existe en esos dos; en otro destino es `E_TARGET`.

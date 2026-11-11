@@ -1,5 +1,5 @@
 # exit: 18
-# asan-xfail: el Option que devuelve Dict.get (sal_enum_new) no se libera tras el match
+# asan-xfail: Dict.get de un valor struct: el Option libera su caja, pero la copia del struct (desc_copy) no tiene quién la libere (sal_enum_free solo conoce String y enum)
 enum Option[T]
     None
     Some(T)

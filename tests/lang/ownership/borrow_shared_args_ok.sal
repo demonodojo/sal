@@ -1,5 +1,4 @@
 # exit: 4
-# asan-xfail: temporal String (d"…", .dup()) pasado a un builtin o local de main: sal_strdup sin sal_free
 fn two(a: &String, b: &String) -> Int ! alloc
     a.len() + b.len()
 

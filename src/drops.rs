@@ -222,6 +222,7 @@ fn reads_string_arg(name: &str) -> bool {
     matches!(
         name,
         "str_len"
+            | "strdup"
             | "str_eq"
             | "str_char"
             | "str_contains"
@@ -358,6 +359,11 @@ fn is_elem_read(e: &Expr) -> bool {
     matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop"))
 }
 
+/// `dict_get(..)`: the runtime hands out a fresh `Option` that owns a copy of the value.
+fn is_dict_get(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get"))
+}
+
 impl Hoist {
     /// Binds each fresh temporary passed to a reader builtin, and each non-place under
     /// `&` / `&mut` (`f(&g())`), to its own local ahead of the statement, so the scope-end
@@ -457,7 +463,7 @@ impl Hoist {
             // scope-end release frees a copy that owned lists hand out (`candidate`).
             Expr::Match { scrutinee, arms, span } => {
                 let scrutinee = self.expr(*scrutinee, out);
-                let scrutinee = if is_elem_read(&scrutinee) {
+                let scrutinee = if is_elem_read(&scrutinee) || is_dict_get(&scrutinee) {
                     self.n += 1;
                     let name = format!("__tmp{}", self.n);
                     let ssp = scrutinee.span();
@@ -469,8 +475,11 @@ impl Hoist {
                 };
                 Expr::Match { scrutinee: Box::new(scrutinee), arms, span }
             }
+            // The first `if` condition runs once, ahead of the statement: its fresh temporaries are
+            // bound like any other call argument. `elsif` and `while` conditions re-run or run
+            // conditionally, so they are left alone.
             Expr::If { cond, then_block, elsifs, else_block, span } => Expr::If {
-                cond,
+                cond: Box::new(self.expr(*cond, out)),
                 then_block: self.block(then_block),
                 elsifs: elsifs
                     .into_iter()
@@ -833,6 +842,7 @@ pub(crate) fn borrows_args(name: &str) -> bool {
         // `x.clone()` reads its receiver through `&self` (SPEC «Memoria»).
         "struct_clone" | "enum_copy" | "list_clone" | "dict_clone" | "bytes_clone" | "clone_copy"
             | "str_len"
+            | "strdup"
             | "str_eq"
             | "str_char"
             | "str_contains"
@@ -1209,6 +1219,8 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
 fn expr(e: &Expr, f: &mut Facts) {
     match e {
         Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {}
+        // A Copy scalar read aliases nothing on the heap, so it neither escapes nor consumes
+        // (a payload `Some(v) => v` of an `Option[Int]` leaves the box releasable).
         Expr::Ident { name, .. } => {
             f.escaped.insert(name.clone());
             f.consumed.insert(name.clone());

@@ -71,6 +71,8 @@ En `tests/selfhost_ir.rs`:
 | `selfhost_matches_bootstrap_on_every_repo_program` | Compara ambos compiladores en `examples/`, `corpus/`, `tests/`, `std/`, `benches/` |
 | `selfhost_resolves_git_package_import`, `selfhost_import_*`, `selfhost_instrumented_clean_on_hello`, `selfhost_model_package_tests_exit_zero` | Módulos, paquetes, instrumentación, modelos |
 
+Al diagnosticar `assertion left == right` de paridad: `left` es el **arranque** y `right` el selfhost (`assert_eq!(boot, got, …)`); el bucle de `PARITY_FILES` para en el primer fichero que difiere, así que un fallo anterior oculta los siguientes. Para ver la IR del selfhost sin el test: `SAL_SELFHOST_CACHE=<dir> SAL_PROJECT_ROOT=$PWD target/sal-out/selfhost-stage1 f.sal` (el binario lo deja `selfhost_ir`), y compáralo con `target/release/sal emit ir f.sal`. Un cambio en `src/drops.rs` casi siempre pide su espejo en `selfhost/ir/drops.sal`; las reglas que dependen de tipos por expresión (p. ej. escalar copiado) no se pueden espejar ahí. Con el árbol sucio, `git stash -- <ficheros>` para comparar con HEAD **debe terminar con `git stash pop`**: si matas el comando a medias, los ficheros quedan apartados.
+
 Para localizar una divergencia de IR antes de abrir el test: `cargo run -- parity <fichero.sal>` (con `sal selfhost` ejecutado antes) imprime la primera línea que difiere entre el arranque y `target/sal-out/selfhost-stage2`. Acepta `--selfhost <bin>` para otro binario.
 
 Un hueco que solo es del selfhost se marca en el `.sal` de `tests/lang/` con `# selfhost-xfail: motivo`; ver [sal-conformidad](../sal-conformidad/SKILL.md). Quitar el hueco al arreglarlo.
