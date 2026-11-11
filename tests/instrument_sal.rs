@@ -41,7 +41,7 @@ fn instrument_sal_leak() {
     let file = PathBuf::from(format!("/tmp/sal-inst-leak-{}.sal", std::process::id()));
     std::fs::write(
         &file,
-        "fn keep(s: String) -> String\n    s\n\nfn main() -> Int ! alloc\n    s = int_to_str(12345)\n    t = keep(s)\n    str_len(t)\n",
+        "fn main() -> Int ! alloc\n    s = int_to_str(12345)\n    h = str_as_int(&s)\n    h - h\n",
     )
     .expect("write leak source");
     let (llvm, bin) = compile_instrumented(&file);
@@ -163,12 +163,13 @@ fn instrument_strict_arena_pages_are_clean() {
     assert!(!stderr.contains("DOUBLE_FREE"), "arena double free: {stderr}");
 }
 
-/// A string handed to a user function that returns it is not freed by the caller
-/// (the result has unknown provenance), and strict mode reports it.
+/// A string whose handle escapes (`str_as_int(&s)`) is never freed by the pass, and strict
+/// mode reports it. (A string handed to a function that returns it is now freed by the caller
+/// that receives it: `t = keep(s)` owns the block, as in Rust.)
 #[test]
 fn instrument_strict_reports_unfreed_string() {
     let out = run_strict(
-        "fn keep(s: String) -> String\n    s\n\nfn main() -> Int ! alloc\n    s = int_to_str(12345)\n    t = keep(s)\n    str_len(t)\n",
+        "fn main() -> Int ! alloc\n    s = int_to_str(12345)\n    h = str_as_int(&s)\n    h - h\n",
         "leak",
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
