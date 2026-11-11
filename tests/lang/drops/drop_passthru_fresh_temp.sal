@@ -1,0 +1,9 @@
+# exit: 3
+# Una función que devuelve su parámetro por valor y recibe un temporal fresco: el resultado
+# es ese mismo temporal, y quien lo lee lo libera al salir (como el temporal de Rust).
+fn same(x: String) -> String
+    x
+
+fn main() -> Int ! alloc
+    a = str_len(same(d"abc")) + str_len(same(d"abcd")) - 4
+    a

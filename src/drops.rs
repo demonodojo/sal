@@ -39,6 +39,12 @@ thread_local! {
     static VARIANT_CTORS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns whose `String` result is always fresh: the caller owns it (see `owned_return_fns`).
     static OWNED_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// User fns that return a by-value parameter (`fn same[T](x: T) -> T`) -> the indices of
+    /// those parameters. Given a fresh temporary, the result is that same fresh temporary.
+    static PASSTHRU_FNS: std::cell::RefCell<HashMap<String, Vec<usize>>> = std::cell::RefCell::new(HashMap::new());
+    /// Spans of the calls to a pass-through fn whose argument is a fresh local the call
+    /// consumes (`same(s)` with `s = d"…"`): their result is that local's block, owned.
+    static PASSTHRU_CALLS: std::cell::RefCell<HashSet<(u32, u32)>> = std::cell::RefCell::new(HashSet::new());
     /// Locals passed to `list_push_share`: the list borrows the element, so a later
     /// `list_get` is the same pointer and the list must not be released with `list_free`.
     static SHARED_LISTS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
@@ -264,7 +270,50 @@ fn reads_string_arg(name: &str) -> bool {
 
 /// A fresh string that is not a literal: a temporary somebody must release.
 fn is_fresh_temp(e: &Expr) -> bool {
-    !matches!(e, Expr::String { .. }) && (is_fresh_value(e) || is_owned_call(e))
+    !matches!(e, Expr::String { .. }) && (is_fresh_value(e) || is_owned_call(e) || is_passthru_fresh(e))
+}
+
+/// `same(<fresh temporary>)` where `same` returns that by-value parameter: the caller owns
+/// the result, which is the argument it handed over.
+fn is_passthru_fresh(e: &Expr) -> bool {
+    let Expr::Call { func, args, .. } = e else {
+        return false;
+    };
+    let Expr::Ident { name, .. } = func.as_ref() else {
+        return false;
+    };
+    PASSTHRU_FNS.with(|m| {
+        m.borrow()
+            .get(name)
+            .is_some_and(|idx| idx.iter().any(|&i| args.get(i).is_some_and(is_fresh_temp)))
+    }) || PASSTHRU_CALLS.with(|c| {
+        let sp = e.span();
+        c.borrow().contains(&(sp.start, sp.end))
+    })
+}
+
+/// Records the calls of `e` (and nested) to a pass-through fn whose by-value argument is a
+/// fresh local of `fresh`: that local is moved into the call, the result is its block.
+fn note_passthru_calls(e: &Expr, fresh: &HashSet<String>) {
+    match e {
+        Expr::Call { func, args, .. } => {
+            if let Expr::Ident { name, .. } = func.as_ref() {
+                let hit = PASSTHRU_FNS.with(|m| {
+                    m.borrow().get(name).is_some_and(|idx| {
+                        idx.iter().any(|&i| matches!(args.get(i), Some(Expr::Ident { name: a, .. }) if fresh.contains(a)))
+                    })
+                });
+                if hit {
+                    let sp = e.span();
+                    PASSTHRU_CALLS.with(|c| c.borrow_mut().insert((sp.start, sp.end)));
+                }
+            }
+            for a in args {
+                note_passthru_calls(a, fresh);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A place: local, field of a place, or deref of a place (SPEC «Memoria» / Rust).
@@ -555,6 +604,17 @@ pub fn insert_drops(
     collect_ownable(structs, enums);
     collect_enum_types(enums);
     OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog));
+    PASSTHRU_CALLS.with(|c| c.borrow_mut().clear());
+    PASSTHRU_FNS.with(|m| {
+        let mut out = crate::ir::returns_param_map(prog);
+        for f in prog.items.iter().filter_map(|i| if let Item::Fn(f) = i { Some(f) } else { None }) {
+            if let Some(idx) = out.get_mut(&f.name) {
+                idx.retain(|&i| f.params.get(i).is_some_and(|p| !matches!(p.ty, Type::Ref { .. })));
+            }
+        }
+        out.retain(|_, v| !v.is_empty());
+        *m.borrow_mut() = out;
+    });
     let user_fns: HashSet<String> = prog
         .items
         .iter()
@@ -568,6 +628,26 @@ pub fn insert_drops(
             let elems = list_elem_structs(f);
             let span = f.body.span;
             let body = std::mem::replace(&mut f.body, Block { stmts: vec![], tail: None, span });
+            let fresh: HashSet<String> = body.stmts
+                .iter()
+                .filter_map(|st| match st {
+                    Stmt::Let { name, init, .. }
+                    | Stmt::Assign { target: Expr::Ident { name, .. }, value: init, .. }
+                        if (is_fresh_value(init) || is_owned_call(init)) && binds_once(&body.stmts, name) =>
+                    {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            for st in &body.stmts {
+                if let Stmt::Let { init, .. } | Stmt::Assign { value: init, .. } = st {
+                    note_passthru_calls(init, &fresh);
+                }
+            }
+            if let Some(t) = &body.tail {
+                note_passthru_calls(t, &fresh);
+            }
             f.body = Hoist { n: 0, fn_name: f.name.clone(), elems }.block(body);
         }
     }
@@ -625,10 +705,12 @@ fn owned_string_expr(e: &Expr, params: &HashSet<String>, fresh_locals: &HashSet<
         Expr::Block(b) => owned_block_string(b, params, fresh_locals),
         Expr::If {
             then_block,
+            elsifs,
             else_block,
             ..
         } => {
             owned_block_string(then_block, params, fresh_locals)
+                && elsifs.iter().all(|a| owned_block_string(&a.body, params, fresh_locals))
                 && else_block
                     .as_ref()
                     .is_some_and(|eb| owned_block_string(eb, params, fresh_locals))
@@ -942,7 +1024,7 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             let Expr::Ident { name, .. } = func.as_ref() else {
                 return None;
             };
-            if returns_fresh(name) || OWNED_FNS.with(|f| f.borrow().contains(name)) {
+            if returns_fresh(name) || OWNED_FNS.with(|f| f.borrow().contains(name)) || is_passthru_fresh(init) {
                 Some(("free", false))
             } else if variants.get(name.as_str()).is_some_and(|f| !f.is_empty()) {
                 Some(("enum_free", false))

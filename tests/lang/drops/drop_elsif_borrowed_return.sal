@@ -1,0 +1,21 @@
+# exit: 8
+# Una rama `elsif` devuelve un préstamo (`str_from_int` sobre un asa de `keep`): la función no
+# devuelve un String propio, así que quien la llama no lo libera. Si lo liberara, la lectura
+# de `keep` después sería un uso tras liberar.
+fn pick(n: Int, h: Int) -> String ! alloc
+    if n == 0
+        "s"
+    elsif n == 1
+        str_from_int(h)
+    else
+        ""
+
+fn main() -> Int ! alloc
+    keep = d"abcd"
+    h = str_as_int(&keep)
+    a = if h != 0
+        d = pick(1, h)
+        str_len(d)
+    else
+        0
+    a + str_len(&keep)

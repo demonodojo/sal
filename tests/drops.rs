@@ -373,9 +373,10 @@ fn string_passed_to_escaping_user_fn_is_not_freed() {
         "escaping_param",
         "fn id(s: String) -> String\n    s\n\nfn main() -> Int ! alloc\n    s = str_slice(\"hello world\", 0, 5)\n    t = id(s)\n    str_len(t)\n",
     );
-    // `t` is the result of a user call (unknown provenance); `s` moved into `id`, which
-    // clears its flag before the guarded free.
-    assert!(guarded_free(&ir), "{ir}");
+    // `s` moved into `id` (its guarded free never fires) and `id` returns that same block, so
+    // `t` owns it: `t` is released once, unguarded. Two frees in all, one guarded.
+    assert!(ir.contains("op: \"eq\""), "{ir}");
+    assert_eq!(frees(&ir), 2, "{ir}");
 }
 
 #[test]
@@ -1076,4 +1077,15 @@ fn field_assign_drops_previous_and_stores_in_place() {
         reset.contains("func: \"sal_list_free\""),
         "previous list field must be dropped:\n{reset}"
     );
+}
+
+#[test]
+fn elsif_branch_returning_a_borrow_makes_the_result_not_owned() {
+    let ir = ir_of(
+        "elsif_borrowed_return",
+        "fn pick(n: Int, h: Int) -> String ! alloc\n    if n == 0\n        \"s\"\n    elsif n == 1\n        str_from_int(h)\n    else\n        \"\"\n\nfn main() -> Int ! alloc\n    d = pick(1, 7)\n    str_len(d)\n",
+    );
+    // `str_from_int` is a cast of a handle somebody else owns: `pick` does not return a fresh
+    // String, so `main` must not release `d`.
+    assert_eq!(frees(&ir), 0, "{ir}");
 }

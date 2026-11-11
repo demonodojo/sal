@@ -1,0 +1,9 @@
+# exit: 4
+# `same(s)` consume `s` y devuelve su bloque: el resultado, leído por `str_len`, es un
+# temporal que se libera al salir; `s` no se libera otra vez (sin doble free ni fuga).
+fn same(x: String) -> String
+    x
+
+fn main() -> Int ! alloc
+    s = d"abcd"
+    str_len(same(s))

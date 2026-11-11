@@ -181,17 +181,9 @@ fn tp_empty_block() -> TBlock ! alloc
 fn tp_pat_cleared() -> TPat ! alloc
     TPat(0, 0, "", "", List.new[TPat]())
 
-# Takes a block so the caller's drop does not free it. The strings stay with the caller.
-fn tp_keep_block(b: &TBlock) -> Int ! alloc
-    tp_keep_expr(&b.tail)
-    tp_keep_stmts(&b.stmts)
-    0
-
-fn tp_keep_expr(e: &Expr) -> Int ! alloc
-    0
-
-fn tp_keep_stmts(xs: &List[TStmt]) -> Int ! alloc
-    0
+# Releases only the list: its statements are shared into another block, which owns them.
+fn tp_release_shell(xs: List[TStmt]) -> Int ! alloc
+    list_free_shell(xs)
 
 # ---- deep copies ----
 # A copy shares nothing with the original, so either can be released alone.
