@@ -21,6 +21,9 @@ pub struct StringEnv {
     pub lambdas: HashMap<String, (String, Expr)>,
     /// User functions whose return type is a nominal struct (for assign/init typing).
     pub fn_struct_rets: HashMap<String, String>,
+    /// The subset of `fn_struct_rets` whose declared result is a reference (`-> &P`): the
+    /// result borrows from an argument, so the caller's local does not own the struct.
+    pub fn_ref_rets: HashSet<String>,
     /// User functions that return `Tensor[…]` (for IR shape on call results).
     pub fn_tensor_rets: HashMap<String, Type>,
     /// Scalarised signature of every function in the graph (see `scalarize`).
@@ -49,9 +52,11 @@ fn peel_ref_type(ty: &Type) -> &Type {
 impl StringEnv {
     /// Struct defs and struct-returning fns from every module in a linked graph.
     pub fn from_module_graph(progs: &[&Program]) -> Self {
+        crate::scalarize::note_ref_returned(progs);
         let mut structs = HashMap::new();
         let mut fn_struct_rets = HashMap::new();
         let mut struct_ret_candidates: Vec<(String, String)> = Vec::new();
+        let mut fn_ref_rets = HashSet::new();
         let mut fn_tensor_rets = HashMap::new();
         let mut enums = HashMap::new();
         let mut protocols = HashMap::new();
@@ -68,6 +73,9 @@ impl StringEnv {
                 }
                 if let Item::Fn(f) = item {
                     let ret = peel_ref_type(&f.ret);
+                    if matches!(f.ret, Type::Ref { .. }) {
+                        fn_ref_rets.insert(f.name.clone());
+                    }
                     // Checked once every module's structs are known (below): the struct may
                     // be defined by a module that comes later in the graph.
                     if let Type::Named { name, args, .. } = ret {
@@ -117,6 +125,7 @@ impl StringEnv {
             struct_types: HashMap::new(),
             lambdas: HashMap::new(),
             fn_struct_rets,
+            fn_ref_rets,
             fn_tensor_rets,
             accumulate: None,
             protocol_calls: HashMap::new(),

@@ -1,0 +1,25 @@
+# exit: 7
+# Referencias devueltas a un campo (`&w.p`) y elegidas entre dos (`pick`, con lifetime
+# explícito): el struct sigue siendo de `w`, que se libera una vez; `r` y `q` no lo liberan.
+struct P
+    x: Int
+    y: Int
+
+struct W
+    p: P
+    n: Int
+
+fn first(w: &W) -> &P
+    &w.p
+
+fn pick['a](a: &'a P, b: &'a P, c: Int) -> &'a P
+    if c == 0
+        a
+    else
+        b
+
+fn main() -> Int ! alloc
+    w = W(P(3, 4), 1)
+    r = first(&w)
+    q = pick(&w.p, &w.p, 1)
+    r.x + q.y

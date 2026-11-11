@@ -45,6 +45,11 @@ thread_local! {
     /// Spans of the calls to a pass-through fn whose argument is a fresh local the call
     /// consumes (`same(s)` with `s = d"…"`): their result is that local's block, owned.
     static PASSTHRU_CALLS: std::cell::RefCell<HashSet<(u32, u32)>> = std::cell::RefCell::new(HashSet::new());
+    /// Every struct name of the program (constructor calls).
+    static STRUCT_NAMES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// Locals of the function passed directly as an argument of a struct constructor: the
+    /// struct owns them from then on (see `Ctx::moved_clean_list`).
+    static CTOR_ARGS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// Locals passed to `list_push_share`: the list borrows the element, so a later
     /// `list_get` is the same pointer and the list must not be released with `list_free`.
     static SHARED_LISTS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
@@ -602,6 +607,7 @@ pub fn insert_drops(
 ) -> Program {
     EXPR_TYPES.with(|t| *t.borrow_mut() = types.clone());
     collect_ownable(structs, enums);
+    STRUCT_NAMES.with(|n| *n.borrow_mut() = structs.keys().cloned().collect());
     collect_enum_types(enums);
     OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog));
     PASSTHRU_CALLS.with(|c| c.borrow_mut().clear());
@@ -1776,7 +1782,7 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashMa
 }
 
 impl Ctx {
-    /// A local bound once, handed to a new owner (a struct constructor, a call that takes it)
+    /// A local bound once, handed to a struct constructor, which owns it from then on,
     /// and only ever filled with fresh values: the owner's glue releases its elements, so the
     /// list is built owned (`own_inline_string_list`).
     fn moved_clean_list(&self, name: &str) -> bool {
@@ -1784,6 +1790,7 @@ impl Ctx {
             && !self.facts.tainted.contains(name)
             && !self.params.contains(name)
             && self.facts.bindings.get(name) == Some(&1)
+            && CTOR_ARGS.with(|c| c.borrow().contains(name))
     }
 
     /// The release of a value an expression statement discards: a fresh value (see
@@ -2377,6 +2384,15 @@ fn collect_shared_expr(e: &Expr, out: &mut HashSet<String>) {
                     out.insert(xs.clone());
                 }
             }
+            if let Expr::Ident { name, .. } = func.as_ref() {
+                if STRUCT_NAMES.with(|n| n.borrow().contains(name)) {
+                    for a in args {
+                        if let Expr::Ident { name: l, .. } = a {
+                            CTOR_ARGS.with(|c| c.borrow_mut().insert(l.clone()));
+                        }
+                    }
+                }
+            }
             collect_shared_expr(func, out);
             for a in args {
                 collect_shared_expr(a, out);
@@ -2420,6 +2436,7 @@ fn collect_shared_expr(e: &Expr, out: &mut HashSet<String>) {
 }
 
 fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
+    CTOR_ARGS.with(|c| c.borrow_mut().clear());
     SHARED_LISTS.with(|s| *s.borrow_mut() = shared_list_names(f));
     let mut borrows = HashMap::new();
     claim_block(&mut f.body, true, &mut borrows, variants);

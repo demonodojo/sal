@@ -59,7 +59,13 @@ fn agg_struct_rec(ty: &Type, structs: &HashMap<String, StructDef>, depth: u32) -
         0 => None,
         1 => agg_struct_rec(&def.fields[0].ty, structs, depth + 1),
         _ => {
-            if def.fields.iter().any(|f| matches!(f.ty, Type::Tensor { .. })) {
+            // A field that stays a heap block (see `held_by_ref`) is kept by pointer in the
+            // carrier, which would not release it: the whole struct stays a block too.
+            let keeps_block = def.fields.iter().any(|f| {
+                matches!(&f.ty, Type::Named { name: n, args, .. }
+                    if args.is_empty() && structs.contains_key(n) && held_by_ref(n, structs))
+            });
+            if keeps_block || def.fields.iter().any(|f| matches!(f.ty, Type::Tensor { .. })) {
                 None
             } else {
                 Some(name.clone())
@@ -68,10 +74,48 @@ fn agg_struct_rec(ty: &Type, structs: &HashMap<String, StructDef>, depth: u32) -
     }
 }
 
+thread_local! {
+    /// Structs some function returns by reference (`fn first(w: &W) -> &P`). The result points
+    /// into the argument's own block, so a scalarised copy boxed for the call would be freed
+    /// under it: these structs stay heap blocks (see `held_by_ref`).
+    static REF_RETURNED: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Records the structs the functions of `progs` return by reference. Must run before any
+/// `agg_struct` / `fn_sig` of the same graph.
+pub fn note_ref_returned(progs: &[&crate::ast::Program]) {
+    let mut set = std::collections::HashSet::new();
+    for prog in progs {
+        for item in &prog.items {
+            if let crate::ast::Item::Fn(f) = item {
+                let mut t = &f.ret;
+                let mut is_ref = false;
+                while let Type::Ref { inner, .. } = t {
+                    is_ref = true;
+                    t = inner;
+                }
+                if let (true, Type::Named { name, .. }) = (is_ref, t) {
+                    set.insert(name.clone());
+                }
+            }
+        }
+    }
+    REF_RETURNED.with(|r| *r.borrow_mut() = set);
+}
+
+/// Whether the struct is kept as a heap block even though it could be scalarised.
+pub fn stays_block(name: &str, structs: &HashMap<String, StructDef>) -> bool {
+    held_by_ref(name, structs)
+}
+
 /// A struct some other struct keeps a reference to (`pool: &'a mut Pool`) stays a heap
 /// block: its address must stay the one place that holds the value, since a scalarised
 /// copy in registers would never see the writes made through the stored reference.
 fn held_by_ref(name: &str, structs: &HashMap<String, StructDef>) -> bool {
+    if REF_RETURNED.with(|r| r.borrow().contains(name)) {
+        return true;
+    }
     structs.values().any(|d| {
         d.fields.iter().any(|f| {
             let mut t = &f.ty;

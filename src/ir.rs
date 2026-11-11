@@ -1695,6 +1695,12 @@ fn fn_struct_bindings(f: &FnDef, strings: &StringEnv) -> HashMap<String, String>
 /// field of a bound struct local it reads (`q = w.p`). Expression types are not used: their spans
 /// are only unique within one file, and the graph has many.
 fn value_struct(value: &Expr, strings: &StringEnv, out: &HashMap<String, String>) -> Option<String> {
+    // A call whose result is a reference borrows from an argument: nothing to release.
+    if let Expr::Call { func, .. } = value {
+        if matches!(func.as_ref(), Expr::Ident { name, .. } if strings.fn_ref_rets.contains(name)) {
+            return None;
+        }
+    }
     if let Some(sn) = crate::string_expr::struct_name_from_init(value, strings) {
         return Some(sn);
     }
@@ -1989,7 +1995,13 @@ fn field_drop<'a>(
         (_, []) if glue.nested && depth < 8 => strings
             .structs
             .get(name)
-            .filter(|d| d.type_params.is_empty() && struct_has_heap(d, strings, glue, depth + 1))
+            .filter(|d| {
+                d.type_params.is_empty()
+                    // A struct that stays a heap block (returned by reference somewhere) is
+                    // kept by pointer in its owner, which must release the block.
+                    && (struct_has_heap(d, strings, glue, depth + 1)
+                        || crate::scalarize::stays_block(name, &strings.structs))
+            })
             .map(FieldDrop::Struct),
         _ => None,
     }

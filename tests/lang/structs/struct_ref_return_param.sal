@@ -1,0 +1,14 @@
+# exit: 7
+# Una función que devuelve su parámetro por referencia: el resultado apunta al struct del
+# llamador, que lo libera una sola vez al salir. El resultado no es dueño de nada.
+struct P
+    x: Int
+    y: Int
+
+fn first(p: &P) -> &P
+    p
+
+fn main() -> Int ! alloc
+    p = P(3, 4)
+    r = first(&p)
+    r.x + r.y
