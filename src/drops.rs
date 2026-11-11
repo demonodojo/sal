@@ -1776,6 +1776,16 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashMa
 }
 
 impl Ctx {
+    /// A local bound once, handed to a new owner (a struct constructor, a call that takes it)
+    /// and only ever filled with fresh values: the owner's glue releases its elements, so the
+    /// list is built owned (`own_inline_string_list`).
+    fn moved_clean_list(&self, name: &str) -> bool {
+        self.facts.moved.as_ref().is_some_and(|m| m.contains(name))
+            && !self.facts.tainted.contains(name)
+            && !self.params.contains(name)
+            && self.facts.bindings.get(name) == Some(&1)
+    }
+
     /// The release of a value an expression statement discards: a fresh value (see
     /// `fresh_kind`), a copy `list_get` hands out, or an element an owned list gives up
     /// (`list_pop`). `None` when the statement keeps nothing to release.
@@ -2659,6 +2669,11 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                 }
                 let mut init = init;
                 own_enum_list(&name, matches!(cand, Some((k, _)) if k == "list_free"), &mut init, &mut cx.owned_elems);
+                if cand.is_none() && cx.moved_clean_list(&name) {
+                    if let Some(o) = own_inline_string_list(&init) {
+                        init = o;
+                    }
+                }
                 let init = xform_expr(init, cx);
                 stmts.push(Stmt::Let { name: name.clone(), ty, init, frozen, stack, span });
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
@@ -2687,6 +2702,13 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                 let mut value = value;
                 if let (Some((n, k, _)), Expr::Ident { .. }) = (&decl, &target) {
                     own_enum_list(n, *k == "list_free", &mut value, &mut cx.owned_elems);
+                }
+                if let (None, Expr::Ident { name: n, .. }) = (&decl, &target) {
+                    if cx.moved_clean_list(n) {
+                        if let Some(o) = own_inline_string_list(&value) {
+                            value = o;
+                        }
+                    }
                 }
                 let value = xform_expr(value, cx);
                 stmts.push(Stmt::Assign { target, value, span });

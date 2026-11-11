@@ -42,6 +42,13 @@ fn ic_new(tp: &TProgram) -> IC ! alloc
 
 # `rec` = 1 records the resolution of every dotted call in `res` (see `infer_record`); `nres` sizes it.
 fn ic_build(tp: &TProgram, nres: Int, rec: Int) -> IC ! alloc
+    vals = List.new[CVal]()
+    seed = List.new[CVal]()
+    _v0 = ce_eval(&tp.consts, &seed, &mut vals)
+    ic_build_vals(tp, nres, rec, vals)
+
+# The same, with the evaluated constants given: the `IC` owns `vals` from the start.
+fn ic_build_vals(tp: &TProgram, nres: Int, rec: Int, vals: List[CVal]) -> IC ! alloc
     n = list_len(&tp.fns) + list_len(&tp.structs) + list_len(&tp.enums) + 4
     nv = ic_count_variants(&tp.enums, 0, list_len(&tp.enums), 0)
     ret = list_new[String]()
@@ -58,9 +65,6 @@ fn ic_build(tp: &TProgram, nres: Int, rec: Int) -> IC ! alloc
     _e = infer_names_enums(&mut names, &mut arity, &mut vtab, &mut tnames, &tp.enums, 0, list_len(&tp.enums))
     _t = infer_type_names_structs(&mut tnames, &tp.structs, 0, list_len(&tp.structs))
     imports = list_len(&tp.imports)
-    vals = list_new[CVal]()
-    seed = list_new[CVal]()
-    _v0 = ce_eval(&tp.consts, &seed, &mut vals)
     IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals)
 
 # Kept for call sites that used to drain an `IC` by hand. `drop.IC` (and nested
@@ -2435,9 +2439,7 @@ fn infer_program(tp: &TProgram) -> Res ! alloc
 # `vals` already holds the constants visible in `tp` (its own and, when the caller
 # evaluated the graph, the imported ones).
 fn infer_with_vals(tp: &TProgram, vals: List[CVal]) -> Res ! alloc
-    c = ic_new(tp)
-    # Assignment drops the empty `cvals` from `ic_new` (Rust field overwrite).
-    c.cvals = vals
+    c = ic_build_vals(tp, 0, 0, vals)
     r = infer_program_go(&mut c, 0, list_len(&tp.fns))
     _f = ic_free(&c)
     r

@@ -710,6 +710,32 @@ fn selfhost_instrumented_clean_on_hello() {
     assert_eq!(boot, got, "instrumented emit IR must still match bootstrap");
 }
 
+/// The passes that rewrite the body of every function (`desugar_break`, `qualify`, `lower_fns`)
+/// must release the old body instead of leaving it behind by the overwrite. Several functions,
+/// a `while` and a `break` exercise them.
+#[test]
+#[ignore = "known gap: lower_fns (selfhost/ir/fuse.sal) overwrites `f.body` with the result of drops_body, which shares structure with the old body; the old tree of each function leaks (LEAK enum_new). Same cause as selfhost_instrumented_clean_on_hello"]
+fn selfhost_instrumented_releases_rewritten_fn_bodies() {
+    let bin = compile_selfhost(true);
+    let program = write_temp_sal(
+        "fn first(n: Int) -> Int\n    n + 1\n\nfn second(n: Int) -> Int\n    i = 0\n    while i < n\n        if i == 3\n            break\n        i = i + 1\n    i\n\nfn main() -> Int\n    first(second(5))\n",
+    );
+    let out = {
+        let mut cmd = Command::new(&bin);
+        cmd.arg(&program);
+        cmd.env("SAL_SELFHOST_CACHE", unique_cache_dir("inst-bodies"));
+        cmd.current_dir(root());
+        stage1_output(cmd)
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "instrumented selfhost exit != 0: stderr={stderr}");
+    assert!(!stderr.contains("LEAK"), "rewritten bodies leak: {stderr}");
+    let boot = bootstrap_ir(&program);
+    let got = String::from_utf8(out.stdout).expect("utf8");
+    assert_eq!(boot, got, "instrumented emit IR must still match bootstrap");
+    let _ = fs::remove_file(&program);
+}
+
 #[test]
 fn undeclared_effect_is_rejected_like_bootstrap() {
     let stage1 = compile_selfhost(false);

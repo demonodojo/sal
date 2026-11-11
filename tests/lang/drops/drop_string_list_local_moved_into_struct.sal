@@ -1,0 +1,19 @@
+# exit: 2
+# Una lista `List[String]` local, llena de textos frescos, que se mueve al constructor de un
+# struct: el glue del struct libera los textos, así que la lista se construye propietaria.
+struct Names
+    first: List[String]
+    second: List[String]
+    n: Int
+
+fn build() -> Names ! alloc
+    a = List.new[String]()
+    a.push(d"uno")
+    b = List.new[String]()
+    b.push(d"dos")
+    b.push(d"tres")
+    Names(a, b, 2)
+
+fn main() -> Int ! alloc
+    ns = build()
+    ns.n
