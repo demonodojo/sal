@@ -1,0 +1,11 @@
+# exit: 42
+# `a + b` presta los dos operandos: ninguno cambia y el resultado es otro String.
+fn main() -> Int ! alloc
+    a = d"ab"
+    b = d"cde"
+    c = a + b
+    d = c + a
+    if a.eq("ab") + b.eq("cde") + c.eq("abcde") + d.eq("abcdeab") == 4
+        42
+    else
+        1

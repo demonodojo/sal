@@ -1,0 +1,9 @@
+# exit: 23
+# selfhost-xfail: el infer del selfhost tipa `get` como `T`, no como `&T`, y el acumulador escribe en el elemento de la lista
+# `t` presta el elemento; `t = t + …` liga `t` a un String nuevo y la lista no cambia.
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(d"ab")
+    t = xs.get(0)
+    t = t + "x"
+    xs.get(0).len() * 10 + t.len()

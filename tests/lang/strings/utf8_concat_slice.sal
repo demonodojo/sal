@@ -1,0 +1,11 @@
+# exit: 46
+# Longitudes en bytes: é y ñ ocupan dos bytes; el trozo [2, 4) es la ñ entera.
+fn main() -> Int ! alloc
+    a = d"é"
+    b = d"ñ"
+    s = a + b + a
+    t = s.slice(2, 4)
+    if t.eq("ñ") == 1
+        s.len() * 7 + t.len() * 2
+    else
+        0

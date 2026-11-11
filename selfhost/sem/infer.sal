@@ -813,8 +813,6 @@ fn mth_builtin(base: &String, fld: &String) -> String ! alloc
         "str_hash"
     elsif str_eq(base, "String") + str_eq(fld, "concat") == 2
         "str_concat"
-    elsif str_eq(base, "String") + str_eq(fld, "append") == 2
-        "str_append"
     elsif str_eq(base, "String") + str_eq(fld, "skip") == 2
         "str_skip"
     elsif str_eq(base, "String") + str_eq(fld, "to_int") == 2
@@ -965,9 +963,21 @@ fn infer_call_go(c: &mut IC, name: &String, args: &List[Expr], tys: &mut List[St
         if list_len(args) != 1
             _f = ic_fail(c, &("`" + name + "` expects 1 argument(s), found " + int_to_str(list_len(args))))
         "Unknown"
+    elsif lowering_only_runtime_fn(name) == 1
+        _f = ic_fail(c, &("unknown function `" + name + "`"))
+        "Unknown"
     else
         _a = infer_args(c, args, 0, list_len(args), tys)
         infer_builtin_call(c, name, args, tys, targs)
+
+# Runtime symbols only the lowering calls, never sal source (SPEC «Métodos»: there is no
+# `str_append`). Mirror of `lowering_only_runtime_fn` (`src/infer.rs`).
+fn lowering_only_runtime_fn(name: &String) -> Int ! alloc
+    match name
+        "str_append" => 1
+        "str_append_n" => 1
+        "str_concat_n" => 1
+        _ => 0
 
 # ---- typed builtins ----
 # The result of the builtins whose signature matters to methods: the containers, the string and float helpers.

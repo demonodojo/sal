@@ -1,0 +1,12 @@
+# Acumulador de varias partes: `acc = acc + piece + sep`.
+# Misma carga que benches/strings/accumulate_multi.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    acc = d""
+    piece = d"item"
+    sep = d","
+    i = 0
+    while i < 1000000
+        acc = acc + piece + sep
+        i = i + 1
+    acc.len() & 255

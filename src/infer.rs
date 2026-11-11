@@ -2182,7 +2182,7 @@ fn infer_call(
                 span,
             })
         }
-        "argv" | "read_file" | "str_concat" | "str_append" | "str_slice" | "int_to_str"
+        "argv" | "read_file" | "str_concat" | "str_slice" | "int_to_str"
         | "char_to_str" | "strdup" | "str_share" | "select_str" | "tmp_path" | "exec_capture" | "getenv"
         | "realpath" | "ir_text" => {
             for a in args {
@@ -2677,7 +2677,13 @@ fn is_runtime_builtin(name: &str) -> bool {
         set
     });
     // Language-level builtins that lower without a `sal_*` runtime symbol.
-    names.contains(name) || matches!(name, "index")
+    (names.contains(name) && !lowering_only_runtime_fn(name)) || matches!(name, "index")
+}
+
+/// Runtime symbols that only the lowering calls, never sal source (SPEC «Métodos»: there is no
+/// `str_append`). They consume or reuse a `String` block, which only a moved accumulator may do.
+fn lowering_only_runtime_fn(name: &str) -> bool {
+    matches!(name, "str_append" | "str_append_n" | "str_concat_n")
 }
 
 /// One-parameter lambda `x => body`.

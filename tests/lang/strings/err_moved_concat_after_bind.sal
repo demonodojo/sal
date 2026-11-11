@@ -1,0 +1,6 @@
+# error: E_MOVED
+fn main() -> Int ! alloc
+    s = d"ab"
+    t = s
+    u = s + "x"
+    t.len() + u.len()

@@ -1,0 +1,7 @@
+# exit: 25
+# `clone` copia: acumular sobre la copia no toca el original.
+fn main() -> Int ! alloc
+    s = d"ab"
+    t = s.clone()
+    t = t + "cde"
+    s.len() * 10 + t.len()

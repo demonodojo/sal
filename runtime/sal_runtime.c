@@ -276,14 +276,33 @@ static inline char *sal_str_base(const char *p) {
     return (char *)((unsigned char *)p - SAL_STR_HDR);
 }
 
+/* Longest String content: len, cap and the 16-byte header must fit in i64 (SPEC «String»). */
+#define SAL_STR_MAX_LEN ((size_t)INT64_MAX - SAL_STR_HDR - 1)
+
+/* a + b for String lengths; panics instead of wrapping (SPEC «String»: no shorter block). */
+static size_t sal_str_len_add(size_t a, size_t b) {
+    if (a > SAL_STR_MAX_LEN || b > SAL_STR_MAX_LEN - a) {
+        sal_panic("string length overflow");
+    }
+    return a + b;
+}
+
+/* A new, private String block with room for `cap_bytes` (>= content_len + 1). Nobody else
+ * sees it until the caller returns it: that is the only place String bytes are written. */
 static char *sal_str_alloc_size(size_t content_len, size_t cap_bytes) {
+    if (content_len > SAL_STR_MAX_LEN) {
+        sal_panic("string length overflow");
+    }
     if (cap_bytes < content_len + 1) {
         cap_bytes = content_len + 1;
+    }
+    if (cap_bytes > SAL_STR_MAX_LEN + 1) {
+        sal_panic("string length overflow");
     }
     size_t total = (size_t)SAL_STR_HDR + cap_bytes;
     char *base = (char *)sal_xmalloc(total, "strdup");
     if (!base) {
-        return NULL;
+        sal_panic("oom");
     }
     int64_t *h = (int64_t *)base;
     h[0] = (int64_t)cap_bytes;
@@ -624,61 +643,96 @@ int64_t sal_str_bytes(const char *s) {
     return (int64_t)(uintptr_t)p;
 }
 
+/* a + b: a new String; neither operand changes (SPEC «String» is immutable). */
 char *sal_str_concat(const char *a, const char *b) {
-    if (!a) {
-        a = g_sal_empty;
+    const char *parts[2] = {a, b};
+    return sal_str_concat_n(2, parts);
+}
+
+/* a0 + a1 + … in one exact reservation (the lowering of a `+` chain of three or more
+ * leaves). The result is built privately and only then returned; no part changes. */
+char *sal_str_concat_n(int64_t n, const char *const *parts) {
+    size_t total = 0;
+    for (int64_t i = 0; i < n; i++) {
+        total = sal_str_len_add(total, (size_t)sal_str_len_raw(parts[i]));
     }
-    if (!b) {
-        b = g_sal_empty;
+    if (total == 0) {
+        return (char *)g_sal_empty;
     }
-    size_t na = (size_t)sal_str_len_raw(a);
-    size_t nb = (size_t)sal_str_len_raw(b);
-    char *out = sal_str_alloc_size(na + nb, na + nb + 1);
-    if (!out) {
-        return NULL;
+    char *out = sal_str_alloc_size(total, total + 1);
+    size_t w = 0;
+    for (int64_t i = 0; i < n; i++) {
+        size_t k = (size_t)sal_str_len_raw(parts[i]);
+        if (k > 0) {
+            memcpy(out + w, parts[i], k);
+        }
+        w += k;
     }
-    memcpy(out, a, na);
-    memcpy(out + na, b, nb + 1);
-    *(int64_t *)((unsigned char *)out - 8) = (int64_t)(na + nb);
+    out[w] = 0;
+    *(int64_t *)((unsigned char *)out - 8) = (int64_t)w;
     return out;
 }
 
+/* `x = x + b` (SPEC «Expresiones», acumulador): consumes `a`, which the compiler has
+ * moved, so no one else can see it. Not reachable from sal source. */
 char *sal_str_append(char *a, const char *b) {
-    if (!b) {
-        b = (char *)g_sal_empty;
+    const char *parts[1] = {b};
+    return sal_str_append_n(a, 1, parts);
+}
+
+/* `x = x + b + c + …`: consumes `acc` and returns acc + parts. The block of `acc` is reused
+ * only when it is heap (`cap > 0`, never a literal), the result fits, and no part lies inside
+ * it (`x = x + a + x` reads the old `x`). Otherwise it reserves once (doubling, at least 16),
+ * copies, and only then frees `acc`. */
+char *sal_str_append_n(char *acc, int64_t n, const char *const *parts) {
+    if (!acc) {
+        acc = (char *)g_sal_empty;
     }
-    if (!a) {
-        return sal_strdup(b);
+    size_t na = (size_t)sal_str_len_raw(acc);
+    size_t total = na;
+    for (int64_t i = 0; i < n; i++) {
+        total = sal_str_len_add(total, (size_t)sal_str_len_raw(parts[i]));
     }
-    size_t nb = (size_t)sal_str_len_raw(b);
-    size_t na = (size_t)sal_str_len_raw(a);
-    size_t need = na + nb + 1;
-    int64_t cap_i = sal_str_cap(a);
+    size_t need = total + 1;
+    int64_t cap_i = sal_str_cap(acc);
     size_t cap = cap_i > 0 ? (size_t)cap_i : 0;
-    int overlap = cap_i > 0 && b >= a && b < a + cap;
-    if (cap_i > 0 && cap >= need && !overlap) {
-        memcpy(a + na, b, nb + 1);
-        *(int64_t *)((unsigned char *)a - 8) = (int64_t)(na + nb);
-        return a;
-    }
-    if (cap < 16) {
-        cap = 16;
-    }
-    while (cap < need) {
-        if (cap > SIZE_MAX / 2) {
-            cap = need;
-            break;
+    int overlap = 0;
+    if (cap_i > 0) {
+        for (int64_t i = 0; i < n; i++) {
+            const char *p = parts[i];
+            if (p && p >= sal_str_base(acc) && p < acc + cap) {
+                overlap = 1;
+            }
         }
-        cap *= 2;
     }
-    char *out = sal_str_alloc_size(na + nb, cap);
-    if (!out) {
-        return NULL;
+    char *out;
+    if (cap_i > 0 && cap >= need && !overlap) {
+        out = acc;
+    } else {
+        if (cap < 16) {
+            cap = 16;
+        }
+        while (cap < need) {
+            cap = cap > (SAL_STR_MAX_LEN + 1) / 2 ? need : cap * 2;
+        }
+        out = sal_str_alloc_size(na, cap);
+        if (na > 0) {
+            memcpy(out, acc, na);
+        }
     }
-    memcpy(out, a, na);
-    memcpy(out + na, b, nb + 1);
-    *(int64_t *)((unsigned char *)out - 8) = (int64_t)(na + nb);
-    sal_free(a);
+    size_t w = na;
+    for (int64_t i = 0; i < n; i++) {
+        size_t k = (size_t)sal_str_len_raw(parts[i]);
+        if (k > 0) {
+            memcpy(out + w, parts[i], k);
+        }
+        w += k;
+    }
+    out[w] = 0;
+    *(int64_t *)((unsigned char *)out - 8) = (int64_t)w;
+    if (out != acc) {
+        sal_free(acc);
+    }
     return out;
 }
 
@@ -1160,7 +1214,7 @@ int64_t sal_bytes_copy(void *dst_vp, int64_t dst_off, void *src_vp, int64_t src_
 int64_t sal_str_bytes_copy(void *dst_vp, int64_t dst_off, const char *src) {
     SalBytes *dst = bytes_from_handle(dst_vp);
     if (!src) {
-        src = "";
+        src = g_sal_empty;
     }
     int64_t n = sal_str_len_raw(src);
     bytes_check_range(dst, dst_off, n);
@@ -1173,8 +1227,9 @@ int64_t sal_str_bytes_copy(void *dst_vp, int64_t dst_off, const char *src) {
 char *sal_bytes_to_str(void *vp) {
     SalBytes *b = bytes_from_handle(vp);
     if (!b) {
-        return sal_strdup("");
+        return (char *)g_sal_empty;
     }
+    /* A copy: the String never shares the Bytes buffer (SPEC «Bytes»). */
     char *out = sal_str_alloc_size((size_t)b->len, (size_t)b->len + 1);
     if (b->len > 0) {
         memcpy(out, b->data, (size_t)b->len);
@@ -1789,10 +1844,10 @@ static void lex_push_number(SalVec *out, const char *src, int64_t i, int64_t end
             char nbuf[68];
             nbuf[0] = '-';
             memcpy(nbuf + 1, tmp, len + 1);
-            int64_t text = (int64_t)(uintptr_t)sal_strdup(nbuf);
+            int64_t text = (int64_t)(uintptr_t)sal_str_from_cstr(nbuf);
             lex_push(out, 6, text, sal_str_to_f64_bits(nbuf));
         } else {
-            int64_t text = (int64_t)(uintptr_t)sal_strdup(tmp);
+            int64_t text = (int64_t)(uintptr_t)sal_str_from_cstr(tmp);
             lex_push(out, 6, text, sal_str_to_f64_bits(tmp));
         }
     } else {
@@ -1803,6 +1858,9 @@ static void lex_push_number(SalVec *out, const char *src, int64_t i, int64_t end
 
 static char *lex_unescape(const char *s, size_t n) {
     char *raw = (char *)sal_xmalloc(n + 1, "lex");
+    if (!raw) {
+        sal_panic("oom");
+    }
     size_t w = 0;
     for (size_t i = 0; i < n;) {
         unsigned char c = (unsigned char)s[i];
@@ -1820,6 +1878,9 @@ static char *lex_unescape(const char *s, size_t n) {
     }
     raw[w] = 0;
     char *out = (char *)sal_xmalloc(w + 1, "lex");
+    if (!out) {
+        sal_panic("oom");
+    }
     size_t o = 0;
     for (size_t i = 0; i < w;) {
         if (raw[i] == '{' && i + 1 < w && raw[i + 1] == '{') {
@@ -2175,7 +2236,7 @@ int64_t sal_enum_copy(int64_t v) {
         int64_t x = b[2 + i];
         if (k == 1) {
             const char *str = (const char *)(intptr_t)x;
-            c[2 + i] = (int64_t)(intptr_t)sal_strdup(str ? str : "");
+            c[2 + i] = (int64_t)(intptr_t)sal_strdup(str);
         } else if (k == 2) {
             c[2 + i] = sal_enum_copy(x);
         } else {
@@ -2577,7 +2638,7 @@ static int64_t desc_copy(const char *d, int64_t raw) {
     }
     if (*d == 's') {
         const char *str = (const char *)(uintptr_t)raw;
-        return (int64_t)(uintptr_t)sal_strdup(str ? str : "");
+        return (int64_t)(uintptr_t)sal_strdup(str);
     }
     if (*d == 'S') {
         int64_t *src = (int64_t *)(uintptr_t)raw;

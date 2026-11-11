@@ -1,0 +1,18 @@
+# Partes de 4 KiB: `p + q + p + q` en cada vuelta (16 KiB por resultado).
+# Misma carga que benches/strings/large.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    p = d""
+    q = d""
+    i = 0
+    while i < 4096
+        p = p + "x"
+        q = q + "y"
+        i = i + 1
+    total = 0
+    i = 0
+    while i < 20000
+        s = p + q + p + q
+        total = total + s.len()
+        i = i + 1
+    total & 255

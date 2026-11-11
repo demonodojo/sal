@@ -682,6 +682,29 @@ fn dr_fresh_dict(targs: &String) -> Int ! alloc
     else
         0
 
+# `x = x + ...` is the same binding (the `+` consumes `x`), unless `x` is a reference parameter:
+# then it binds `x` to a new value (mirror of `is_accumulate`; the selfhost only knows the types
+# of the parameters).
+fn dr_acc(c: &DC, name: &String, value: &Expr) -> Int ! alloc
+    if dr_named_param_is_ref(&c.ps, name, 0, c.ps.len()) == 1
+        0
+    else
+        dr_is_accumulate(name, value)
+
+fn dr_named_param_is_ref(ps: &List[TParam], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif ps.get(i).name.eq(name) == 1
+        dr_ty_is_ref(&ps.get(i).ty)
+    else
+        dr_named_param_is_ref(ps, name, i + 1, n)
+
+fn dr_ty_is_ref(ty: &String) -> Int ! alloc
+    if ty.len() > 0
+        ty.char(0) == 38
+    else
+        0
+
 # `x = x + ...`: appends in place, not a new binding.
 fn dr_is_accumulate(name: &String, value: &Expr) -> Int ! alloc
     match value
@@ -1330,7 +1353,7 @@ fn dr_stmt_bind(c: &mut DC, st: &TStmt) -> Int ! alloc
         _b = dr_bind(c, &st.name)
         _k = dr_rebind_note(c, &st.name, &st.expr)
         dr_top(c, &st.expr, 3)
-    elsif dr_is_accumulate(&st.name, &st.expr) == 0
+    elsif dr_acc(c, &st.name, &st.expr) == 0
         _b = dr_bind(c, &st.name)
         _k = dr_rebind_note(c, &st.name, &st.expr)
         dr_stmt_assign(c, st)
@@ -1790,7 +1813,7 @@ fn dr_xform_bind_new(c: &mut DC, st: &mut TStmt, cand: Int, out: &mut List[TStmt
 fn dr_bind_candidate(c: &mut DC, st: &TStmt) -> Int ! alloc
     if st.is_let == 1
         dr_candidate(c, &st.name, &st.ty, &st.expr)
-    elsif dr_is_accumulate(&st.name, &st.expr) == 0
+    elsif dr_acc(c, &st.name, &st.expr) == 0
         dr_candidate(c, &st.name, &"", &st.expr)
     else
         0
@@ -3102,6 +3125,9 @@ fn dr_borrows(name: &String) -> Int ! alloc
         1
     elsif str_eq(name, "str_bytes_copy") == 1
         1
+    elsif name.eq("bytes_to_str") == 1
+        # `b.to_str()` copies the bytes into a new String: it only reads `b` (SPEC «Bytes»).
+        1
     else
         0
 
@@ -3118,6 +3144,9 @@ fn dr_returns_fresh(name: &String) -> Int ! alloc
     elsif str_eq(name, "read_file") == 1
         1
     elsif str_eq(name, "str_concat") == 1
+        1
+    elsif name.eq("f64_bits_to_str") + name.eq("bytes_to_str") == 1
+        # `Float.to_str` and `Bytes.to_str` build a new String too (SPEC «String», «Bytes»).
         1
     else
         0

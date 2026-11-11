@@ -85,6 +85,8 @@ El origen de una referencia es el lugar prestado. Un retorno `&'a T` solo es vá
 
 El bloque de una lista guarda el puntero a la glue del elemento (`sal_list_set_drop`), no un bit de dueño. Un `Dict` posee sus claves `String` y las suelta. `list_get` presta (`&T`); `list_get_mut` es `&mut T`; `pop` mueve; `push`/`set`/`put` toman `&mut` del contenedor, mueven el valor y devuelven `Unit`.
 
+`x = x + …` con `x` un `String` con dueño (no una referencia) mueve `x` al `+` y lo reinicializa (SPEC «Expresiones»): `check_borrows` lo trata como una mutación de `x` (`E_BORROW` si hay un préstamo vivo), y ni la bajada ni `is_accumulate` (`src/drops.rs`) lo aplican cuando la hoja izquierda es una referencia. Así la reutilización del bloque en `sal_str_append`/`sal_str_append_n` no la ve nadie ([immutable-strings.md](immutable-strings.md)).
+
 `x.clone()` copia: `strdup`, `sal_list_clone`, `sal_dict_clone`, `sal_bytes_clone`, `sal_enum_copy`, `sal_desc_copy` (struct describible) o `clone.<Struct>` (struct con glue y sin descriptor: `struct_clone_fn` en `src/ir.rs`, `struct_clone_fn` en `selfhost/ir/fuse.sal`). El receptor de `clone` solo se lee (`borrows_args`, `dr_borrows`). Efecto `alloc`. `Tensor.clone` es `E_TYPE`. Una lista de structs con `clone.<Struct>` la registra con `sal_list_set_clone`, y `sal_list_clone` la usa por elemento; una lista de listas clona cada lista interior.
 
 Estado de la liberación mientras `insert_drops` siga en su puesto (lo que ya sigue la SPEC en los dos compiladores, con `corpus/drop_rebind.sal` en la paridad):

@@ -14,7 +14,6 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::span::Span;
-use crate::string_expr::add_chain_leftmost;
 
 /// Variant name -> per-field "may own heap memory" flags (a field typed `Int`,
 /// `Float` or `Bool` is Copy; anything else, including a type parameter, may not be).
@@ -997,6 +996,8 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "bytes_fill_u32"
             | "bytes_copy"
             | "str_bytes_copy"
+            // `b.to_str()` copies the bytes into a new String: it only reads `b` (SPEC «Bytes»).
+            | "bytes_to_str"
             | "matmul"
             | "qmatmul"
             | "attention"
@@ -1013,7 +1014,15 @@ pub(crate) fn borrows_args(name: &str) -> bool {
 fn returns_fresh(name: &str) -> bool {
     matches!(
         name,
-        "int_to_str" | "char_to_str" | "str_slice" | "strdup" | "read_file" | "str_concat"
+        "int_to_str"
+            | "char_to_str"
+            | "str_slice"
+            | "strdup"
+            | "read_file"
+            | "str_concat"
+            // `Float.to_str` and `Bytes.to_str` build a new String too (SPEC «String», «Bytes»).
+            | "f64_bits_to_str"
+            | "bytes_to_str"
     )
 }
 
@@ -1180,13 +1189,13 @@ fn dict_args(type_args: &[TypeArg]) -> bool {
     matches!(type_args, [k, v] if key_ok(k) && val_ok(v))
 }
 
-/// A `+` chain is a string concatenation (so its result is a fresh string) when
-/// some operand is syntactically a string: a literal or a fresh-string call.
-/// A string right operand forces a string left operand (`E_TYPE` otherwise).
+/// A `+` chain is a string concatenation, so its result is a new `String` the binding owns,
+/// when infer typed its left operand `String` (SPEC «Expresiones»: the type decides, not the
+/// syntax), or, without types, when some operand is a literal or a fresh-string call.
 fn add_is_string_chain(e: &Expr) -> bool {
     match e {
         Expr::Binary { op: BinOp::Add, left, right, .. } => {
-            add_is_string_chain(left) || is_string_operand(right)
+            expr_is_string(left) || add_is_string_chain(left) || is_string_operand(right)
         }
         other => is_string_operand(other),
     }
@@ -1665,10 +1674,23 @@ fn is_call_tail(e: &Expr) -> bool {
         if name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_')))
 }
 
-/// `x = x + …`: appends in place, not a new binding.
+/// `x = x + …` with `x` the leftmost leaf: the same binding, which the `+` consumes and
+/// replaces (an owned `String` accumulator, or a numeric update). Not when `x` holds a
+/// reference: then the assignment binds `x` to a new value (SPEC «Expresiones»).
 fn is_accumulate(name: &str, value: &Expr) -> bool {
-    matches!(value, Expr::Binary { op: BinOp::Add, .. })
-        && matches!(add_chain_leftmost(value), Expr::Ident { name: l, .. } if l == name)
+    crate::string_expr::accumulates_into(name, value, expr_is_ref)
+}
+
+/// The expression's inferred type is a reference (`&T` / `&mut T`).
+fn expr_is_ref(e: &Expr) -> bool {
+    let sp = e.span();
+    EXPR_TYPES.with(|t| matches!(t.borrow().get(&(sp.start, sp.end)), Some(Type::Ref { .. })))
+}
+
+/// The expression's inferred type is `String` (also behind a reference).
+fn expr_is_string(e: &Expr) -> bool {
+    let sp = e.span();
+    EXPR_TYPES.with(|t| t.borrow().get(&(sp.start, sp.end)).is_some_and(crate::string_expr::is_string_type))
 }
 
 struct Ctx {

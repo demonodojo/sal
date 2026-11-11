@@ -100,7 +100,7 @@ El cuerpo no puede hacer un efecto que la firma no declara (`E_EFFECT`).
 | `load` | `io`, `alloc` |
 | literal `tensor`, `String`, `List`, `+` con izquierdo `String` | `alloc` |
 
-`+` con el izquierdo `String` devuelve `String`. El derecho puede no ser `String`: se pasa como el segundo argumento de `str_concat` (primer `+`) o `str_append` (los siguientes de la misma cadena). Si el derecho es `String` y el izquierdo no, `E_TYPE`.
+`+` con el izquierdo `String` devuelve `String` y exige `String` a la derecha (`E_TYPE` si no lo es, y también si el derecho es `String` y el izquierdo no). Presta los dos operandos: ninguno cambia. El acumulador `x = x + …` mueve `x` (SPEC «Expresiones»); la bajada está en [04-ir-runtime.md](04-ir-runtime.md) y en [immutable-strings.md](immutable-strings.md).
 | `on gpu`, `to gpu` | `gpu` |
 | `on tpu`, `to tpu` | `tpu` |
 | `panic` | `panic` |

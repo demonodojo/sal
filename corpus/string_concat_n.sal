@@ -1,0 +1,31 @@
+# Corpus: a string `+` chain is one call (SPEC «Expresiones»). Two leaves are `str_concat`, more
+# are one `str_concat_n`, and adjacent literals fold into one. The accumulator `x = x + …` moves
+# `x` into `str_append` / `str_append_n`, also when `x` comes back as a later leaf; through a
+# `&String` it is a plain concatenation.
+
+fn many(a: &String, b: &String) -> String ! alloc
+    a + "-" + "-" + b + a
+
+fn lits() -> String ! alloc
+    "a" + "b" + "c"
+
+fn grow(acc: String, piece: &String) -> String ! alloc
+    acc = acc + piece + "," + acc
+    acc
+
+fn by_ref(s: &String) -> Int ! alloc
+    s = s + "x"
+    s.len()
+
+fn interp(a: &String, b: &String) -> String ! alloc
+    f"#{a}=#{b}!"
+
+fn main() -> Int ! alloc
+    x = d"ab"
+    y = many(&x, &x)
+    z = grow(d"q", &x)
+    w = d"q"
+    w = w + x
+    n = by_ref(&x)
+    i = interp(&x, &y)
+    y.len() + z.len() + w.len() + n + i.len() + lits().len()

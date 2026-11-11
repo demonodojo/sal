@@ -1,0 +1,13 @@
+# Dos cadenas dinámicas concatenadas en cada vuelta: una reserva por resultado.
+# Misma carga que benches/strings/concat2.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    a = d"abcdefghijklmnop"
+    b = d"qrstuvwxyz012345"
+    total = 0
+    i = 0
+    while i < 2000000
+        s = a + b
+        total = total + s.len()
+        i = i + 1
+    total & 255

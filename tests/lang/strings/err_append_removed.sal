@@ -1,0 +1,6 @@
+# error: E_TYPE
+# Un String no cambia (SPEC «Métodos»): no hay `append`; se escribe `s = s + t`.
+fn main() -> Int ! alloc
+    s = d"ab"
+    t = s.append(d"c")
+    t.len()

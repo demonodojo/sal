@@ -274,7 +274,7 @@ place        → "cpu" | "gpu" | "tpu" | IDENT
 
 En `add`, si el operando izquierdo es `String`, `+` concatena con efecto `alloc` y el resultado es `String`. El operando derecho también tiene que ser `String`; si no lo es, es `E_TYPE` (con la pista de usar `str_from_int(...)` o `int_to_str(...)`). Si el derecho es `String` y el izquierdo no, es `E_TYPE`. Un asa `Int` que en realidad es un puntero a cadena se tiende con `str_from_int` (identidad sin coste, como `str_as_int` en sentido contrario). La decisión «es concatenación» la toma el tipo inferido del operando izquierdo —literal, variable, parámetro, campo de `struct`, resultado de una función con `-> String` o de un `if`—, no la forma sintáctica del árbol. La cadena asocia a la izquierda.
 
-Bajada: el **primer** `+` de la cadena es `str_concat` (copia exacta) y los **siguientes** —cuando el hijo izquierdo del AST es otro `+` de cadenas— son `str_append` sobre ese acumulador temporal. Excepción de acumulador: en `x = x + ...`, cuando el destino de la asignación es la hoja más a la izquierda de la cadena, **todos** los pasos bajan a `str_append` sobre `x` (mutación in situ, sin copia); para la propiedad, esa asignación mueve `x` (un parámetro pasa a `take`). En cualquier otro `+` los dos operandos se toman prestados: `+` no consume. Si el operando derecho es un temporal fresco —resultado directo de `int_to_str`, `char_to_str`, `str_slice`, `strdup` o `read_file`— se libera con `sal_free` justo después del `str_concat`/`str_append`; un `str_from_int` o el resultado de una función de usuario nunca se libera ahí. `-` en cadenas no está definido; los demás operadores binarios siguen siendo numéricos.
+`+` presta sus dos operandos y da un `String` nuevo: ningún operando cambia (ver «`String`» en «Memoria»). Las hojas de la espina izquierda de una cadena (`((a + b) + c) + d` tiene las hojas `a`, `b`, `c`, `d`) se evalúan de izquierda a derecha, y dos `STRING` seguidos se pliegan en uno al compilar (`x + "a" + "b"` es `x + "ab"`). Bajada: con dos hojas, `str_concat`; con tres o más, una sola `str_concat_n`, que reserva una vez el tamaño total (la suma se comprueba: desbordar es un pánico). Acumulador: en `x = x + …`, cuando el destino es la hoja más a la izquierda y `x` es un `String` con dueño (un local o un parámetro por valor; no una referencia), la asignación **mueve** `x` al `+` y lo reinicializa con el resultado, como `s = s + t` en Rust. Como nadie más puede ver el valor movido, la bajada (`str_append` con una hoja a la derecha, `str_append_n` con varias) puede reutilizar su bloque. Si `x` es una referencia, `x = x + …` es una concatenación normal que liga `x` a un `String` nuevo. Un temporal con dueño de la cadena (un `+` anidado a la derecha, o `int_to_str`, `char_to_str`, `str_slice`, `strdup` o `read_file`) se suelta después de copiarlo («Liberación de locales»); un `str_from_int` o el resultado de una función de usuario no se suelta ahí. `-` en cadenas no está definido; los demás operadores binarios siguen siendo numéricos.
 
 ### Derivación de `1 - 2 - 3`
 
@@ -358,7 +358,7 @@ Los tipos básicos tienen métodos que son el builtin con el receptor como prime
 
 | Tipo | Métodos (builtin) |
 |------|-------------------|
-| `String` | `len` (`str_len`), `eq`, `contains`, `slice`, `char`, `hash`, `concat`, `append`, `skip`, `dup` (`strdup`), `to_int` (`str_as_int`), `index_of` (`str_index_of`), `index_from` (`str_index_from`) (`str_*`) |
+| `String` | `len` (`str_len`), `eq`, `contains`, `slice`, `char`, `hash`, `concat`, `skip`, `dup` (`strdup`), `to_int` (`str_as_int`), `index_of` (`str_index_of`), `index_from` (`str_index_from`) (`str_*`) |
 | `List[T]` | `len`, `push`, `get`, `set`, `pop` (`list_*`) |
 | `Dict[K, V]` | `get`, `put`, `has`, `len`, `remove`, `keys`, `values` (`dict_*`) |
 | `Bytes` | `len`, `get_u8`, `get_u16`, `get_u32`, `get_i64`, `set_u8`, `set_u16`, `set_u32`, `set_i64`, `fill`, `copy`, `ptr` (`bytes_ptr`), `to_str` (`bytes_to_str`), `write_str` (`str_bytes_copy`) (`bytes_*`) |
@@ -380,6 +380,8 @@ Faltar argumentos de tipo (`List.new()`), sobrar o faltar alguno (`Dict.new[Int]
 Las funciones matemáticas de `Float` (`float_sqrt`, `float_abs`, `float_floor`, `float_ceil`, `float_sin`, `float_cos`, `float_exp`, `float_log`, `float_pow`) toman y devuelven `Float` (`Int` como argumento es `E_TYPE`) y usan libm, que el destino `soso` no tiene: ahí son `E_TARGET`.
 
 Un método que no está en la tabla es `E_TYPE` (`type String has no method nope`). Las funciones `str_len`, `list_push`… siguen existiendo y generan el mismo IR.
+
+Ningún método de `String` escribe en sus bytes («`String`» en «Memoria»). `concat` es `+` de dos hojas: presta los dos y da uno nuevo. `slice` copia el trozo: el resultado no presta de `s`, no lleva lifetime y sobrevive a `s`. `dup` y `clone` copian entero. No hay `append`: `s.append(t)` es `E_TYPE` (`type String has no method append`) y `str_append(s, t)` también (`unknown function`); se escribe `s = s + t`.
 
 Lugar: `cpu`, `gpu`, `tpu` o parámetro `p`.
 
@@ -446,16 +448,34 @@ El compilador inserta esa llamada al salir del ámbito, antes de cada `return` (
 
 Los `String` que viajan como asas `Int` (`str_as_int`, `vec_push`, `map_put`) quedan fuera de este modelo: no se sueltan. Un programa que termina sin pánico no fuga; un pánico puede fugar.
 
+#### Frontera de asas
+
+Estas operaciones trabajan con direcciones y quedan fuera de las garantías de propiedad, préstamo e inmutabilidad de esta sección. El compilador no comprueba que su uso sea correcto, y no se usan para alterar un valor que tiene dueño:
+
+| Operación | Qué deja fuera del modelo |
+|-----------|----------------------------|
+| `str_as_int(s)`, `s.to_int()` | La dirección de los bytes de `s` como `Int`. `s` escapa y no se suelta |
+| `str_from_int(h)` | Un `String` que es esa dirección, sin copia y sin dueño propio |
+| `str_share(s)`, `list_push_share` | Un segundo nombre para el mismo bloque |
+| `select_str(c, a, b)` | Devuelve uno y suelta el otro, aunque alguien lo siga nombrando |
+| `bytes_ptr(b)`, `bytes_view_mem(p, n)` | La dirección de un búfer como `Int`, y una vista escribible sobre cualquier dirección |
+| `vec_*`, `map_*` | Contenedores de asas `Int` sin glue |
+| `syscall` | Llamada al sistema con argumentos `Int` |
+
+Un programa que solo usa el resto del lenguaje no puede crear dos dueños de un bloque, ni escribir en los bytes de un `String`, ni usar un valor ya liberado.
+
 ### `String`
+
+Un `String` es inmutable: una vez construido, su contenido no cambia. Reasignar la variable está permitido (liga el nombre a otro valor y suelta el viejo); ninguna operación fuera de la «Frontera de asas» escribe en los bytes de un `String` que alguien puede leer. Un `String` se construye entero en un bloque que todavía no tiene dueño (`+`, `strdup`, `str_slice`, `int_to_str`, `bytes_to_str`, `read_file`…) y solo después se entrega. Un préstamo `&String` ve siempre el mismo contenido mientras vive.
 
 Bloque alineado a 16: `[cap: i64][len: i64][bytes…][0]`. El valor `String` es un puntero a `bytes` (terminado en NUL, como `char*` en C).
 
 | `cap` | Significado |
 |-------|-------------|
-| `0` | Literal estático en rodata: inmutable, compartible entre hilos, no se libera; `append` copia. |
-| `> 0` | Heap: un solo dueño (`move`); la base del bloque es `bytes - 16`; `append` in situ si cabe. |
+| `0` | Literal estático en rodata: nunca se escribe ni se libera; se comparte entre hilos y entre dueños. |
+| `> 0` | Heap: un solo dueño (`move`); la base del bloque es `bytes - 16`. El bloque solo se reutiliza para el resultado de un acumulador `x = x + …` («Expresiones»), que mueve `x`: sin otro dueño ni préstamo vivo, el valor viejo ya no lo ve nadie. |
 
-`len` es `*(bytes - 8)` (longitud en bytes, sin contar el NUL). La cadena vacía es un único estático compartido.
+`len` es `*(bytes - 8)` (longitud en bytes, sin contar el NUL). La cadena vacía es un único estático compartido. Una longitud o una capacidad que no cabe en `i64` es un pánico, no un bloque más corto.
 
 `String` vive en `cpu`. `to gpu` / `to tpu` sobre un `String`, o un `String` usado dentro de `on gpu` / `on tpu`, es `E_PLACE`. Para usar bytes en dispositivo: `str_bytes(s) -> Tensor[I8, ?] on cpu` y después `to gpu` (única transferencia).
 
@@ -470,6 +490,8 @@ Bloque `{ data: ptr, len: i64 }` en heap. El valor `Bytes` es un puntero al bloq
 - `bytes_to_str -> String ! alloc`, `bytes_view -> Bytes ! alloc`, `bytes_view_mem -> Bytes ! alloc`
 
 Una vista (`bytes_view`, `bytes_view_mem`) es una cabecera en heap cuyo `data` apunta fuera; liberar la vista no libera ese buffer (solo la cabecera).
+
+`Bytes` es mutable, pero nunca comparte bloque con un `String`: `bytes_to_str` (`b.to_str()`) copia los bytes a un `String` nuevo, y `str_bytes_copy` (`b.write_str(off, s)`) copia los de `s` al búfer de `b`. Escribir después en `b` no cambia ningún `String`. La única forma de apuntar un `Bytes` a los bytes de un `String` es `bytes_view_mem` sobre `str_as_int`, que está en la «Frontera de asas».
 
 `Bytes` vive en `cpu` (misma regla de lugar que `String`).
 

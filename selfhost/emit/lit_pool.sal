@@ -1,28 +1,39 @@
 # Module-wide state of the C emitter: the string-literal pool, the enum variant tables, the
 # drop env and the per-function arena / keep flags. One `LitPool` lives for a whole module
 # emit; `Tc` borrows it (`&'a mut`) while it emits one function.
+import "../ast/tast.sal"
+import "../ast/thash.sal"
 import cenv
 
 # `globals`: the `static const` declarations of every literal so far. `texts` / `syms`: the
 # literals of the function being emitted and their `sal_lit_N` names, searched from `scope`
 # on (a repeat in the next function must not resolve to a name from the previous one).
 # `variants`: variant name -> (tag + 1) * 2 + nullary, as `EnumMake` tags them (`index + 1`,
-# except a payload-free first variant, which is 0). `variant_fields`: variant name -> its field
-# types, for typing pattern bindings. `drop_env`, `keep` and `arena` are per function.
+# except a payload-free first variant, which is 0); a missing name reads as 0.
+# `variant_fields`: variant name -> its slot in `sites` plus one (0 when absent), where the
+# declaration says its field types, for typing pattern bindings. `keep`: the names of the
+# `keep` parameters and of the locals that alias them. `drop_env` and `arena` are per function.
+
+# Where an enum variant is declared: the enum's index and the variant's index in it.
+struct VariantSite
+    enum_index: Int
+    index: Int
+
 struct LitPool
     globals: String
     texts: List[String]
     syms: List[String]
     scope: Int
     nid: Int
-    variants: Int
-    variant_fields: Int
+    variants: HT
+    variant_fields: HT
+    sites: List[VariantSite]
     drop_env: Int
     arena: Int
-    keep: Int
+    keep: List[String]
 
 static LitPool.new() -> LitPool ! alloc
-    LitPool("", List.new[String](), List.new[String](), 0, 0, map_new(), map_new(), 0, 0, vec_new())
+    LitPool("", List.new[String](), List.new[String](), 0, 0, HT.new(256), HT.new(256), List.new[VariantSite](), 0, 0, List.new[String]())
 
 # C expression of the literal `s`, declaring it on first use.
 method LitPool.ensure(&mut self, s: &String) -> String ! alloc
@@ -60,9 +71,56 @@ method LitPool.set_arena(&mut self, v: Int) -> Int ! alloc
     self.arena = v
     0
 
-method LitPool.set_keep(&mut self, ks: Int) -> Int ! alloc
-    self.keep = ks
+# Starts the `keep` names of one function from its `keep` parameters.
+method LitPool.reset_keep(&mut self, params: &List[TParam]) -> Int ! alloc
+    self.keep = List.new[String]()
+    pool_seed_keep(&mut self.keep, params, 0, params.len())
+
+method LitPool.keep_add(&mut self, name: &String) -> Int ! alloc
+    self.keep.push(name.dup())
     0
+
+method LitPool.keep_has(&self, name: &String) -> Int ! alloc
+    pool_has(&self.keep, name, 0, self.keep.len())
+
+# Registers every variant of `enums` (its code, and where it is declared); a later definition
+# of a name replaces an earlier one.
+method LitPool.register_variants(&mut self, enums: &List[TEnum]) -> Int ! alloc
+    self.register_enum(enums, 0, enums.len())
+
+method LitPool.register_enum(&mut self, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ed = enums.get(i)
+        self.register_variant(i, &ed.variants, 0, ed.variants.len())
+        self.register_enum(enums, i + 1, n)
+
+method LitPool.register_variant(&mut self, ei: Int, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = vs.get(i)
+        nullary = if v.fields.len() == 0
+            1
+        else
+            0
+        tag = if nullary == 1 && i == 0
+            0
+        else
+            i + 1
+        self.variants.put(&v.name, &((tag + 1) * 2 + nullary).to_str())
+        self.sites.push(VariantSite(ei, i))
+        self.variant_fields.put(&v.name, &self.sites.len().to_str())
+        self.register_variant(ei, vs, i + 1, n)
+
+# The code of variant `name` (see `variants`), or 0 when `name` is not a variant.
+method LitPool.variant_code(&self, name: &String) -> Int ! alloc
+    self.variants.get(name).to_int()
+
+# Slot of `name` in `sites`, or -1 when `name` is not a variant.
+method LitPool.variant_slot(&self, name: &String) -> Int ! alloc
+    self.variant_fields.get(name).to_int() - 1
 
 fn lit_ref(sym: &String) -> String ! alloc
     "((int64_t)(uintptr_t)" + sym.clone() + ".b)"
@@ -74,3 +132,20 @@ fn pool_find(texts: &List[String], s: &String, i: Int, n: Int) -> Int ! alloc
         i
     else
         pool_find(texts, s, i + 1, n)
+
+fn pool_seed_keep(keep: &mut List[String], params: &List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        pm = params.get(i)
+        if pm.mode == 3
+            keep.push(pm.name.dup())
+        pool_seed_keep(keep, params, i + 1, n)
+
+fn pool_has(names: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif names.get(i).eq(name) == 1
+        1
+    else
+        pool_has(names, name, i + 1, n)

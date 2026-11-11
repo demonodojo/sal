@@ -1,0 +1,15 @@
+# Cadena de ocho partes: `a + b + c + d + a + b + c + d` en cada vuelta.
+# Misma carga que benches/strings/concat_many.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    a = d"alpha-"
+    b = d"beta-"
+    c = d"gamma-"
+    d = d"delta-"
+    total = 0
+    i = 0
+    while i < 500000
+        s = a + b + c + d + a + b + c + d
+        total = total + s.len()
+        i = i + 1
+    total & 255

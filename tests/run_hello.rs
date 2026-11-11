@@ -190,7 +190,7 @@ fn main() -> Int ! alloc
     lit = "ab"
     n0 = str_len(lit)
     heap = strdup("ab")
-    chain = "ab" + "c" + "d"
+    chain = heap + "c" + "d"
     if str_len(chain) != 4
         10
     else
@@ -200,12 +200,15 @@ fn main() -> Int ! alloc
             if str_len(lit) != 2
                 12
             else
-                _tail = str_append(heap, "z")
+                heap = heap + "z"
                 if str_len(lit) != 2
                     13
                 else
                     if str_eq(str_slice(chain, 0, 2), lit) == 1
-                        0
+                        if str_len(heap) == 3
+                            0
+                        else
+                            15
                     else
                         14
 "#;

@@ -45,7 +45,7 @@ Contador `sal_str_find`: eliminado con la tabla (fase 2).
 
 ## Contrato
 
-Ver [SPEC.md](../../SPEC.md) sección Memoria (`String`).
+Ver [SPEC.md](../../SPEC.md) sección Memoria (`String`). La inmutabilidad de `String` (sin `append`, acumulador como movimiento, `str_concat_n` / `str_append_n`) y la frontera de asas están en [immutable-strings.md](immutable-strings.md).
 
 ## Parallel (fase 3)
 

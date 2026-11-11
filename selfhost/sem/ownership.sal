@@ -1059,8 +1059,6 @@ fn ar_mut_builtin(name: &String) -> Int ! alloc
         1
     elsif str_eq(name, "dict_remove") == 1
         1
-    elsif str_eq(name, "str_append") == 1
-        1
     elsif str_eq(name, "bytes_set_u8") == 1
         1
     elsif str_eq(name, "bytes_set_u32") == 1

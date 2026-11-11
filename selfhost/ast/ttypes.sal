@@ -411,3 +411,56 @@ fn tt_add_is_string(env: &TEnv, op: &String, l: &Expr) -> Int ! alloc
         "add" => texpr_is_string(env, l)
         _ => 0
 
+# A reference type (`&T`, `&'a T`, `&mut T`).
+fn tt_is_ref(ty: &String) -> Int ! alloc
+    if ty.len() > 0
+        ty.char(0) == 38
+    else
+        0
+
+# The leaves of the string `+` chain `left + right`, in evaluation order (`((a + b) + c)` gives
+# `a`, `b`, `c`), with adjacent literals folded into one. A `+` on the right is one leaf.
+# Mirror of `StringEnv::string_chain_leaves` (`src/string_expr.rs`).
+fn tchain_leaves(env: &TEnv, left: &Expr, right: &Expr) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    tchain_collect(env, left, &mut out)
+    tchain_push(&mut out, right)
+    out
+
+fn tchain_collect(env: &TEnv, e: &Expr, out: &mut List[Expr]) -> Int ! alloc
+    if tbinary_is_string_concat(env, e) == 1
+        match e
+            XBin(op, l, r) => tchain_collect_bin(env, &l, &r, out)
+            _ => tchain_push(out, e)
+    else
+        tchain_push(out, e)
+
+fn tchain_collect_bin(env: &TEnv, l: &Expr, r: &Expr, out: &mut List[Expr]) -> Int ! alloc
+    tchain_collect(env, l, out)
+    tchain_push(out, r)
+
+# Appends a copy of `e`; a literal right after another literal joins it.
+fn tchain_push(out: &mut List[Expr], e: &Expr) -> Int ! alloc
+    n = out.len()
+    joins = if n > 0
+        tchain_is_lit(e) + tchain_is_lit(&out.get(n - 1))
+    else
+        0
+    if joins == 2
+        joined = tchain_lit(&out.get(n - 1)) + tchain_lit(e)
+        out.pop()
+        out.push(XStr(joined))
+    else
+        out.push(tc_expr(e))
+    0
+
+fn tchain_is_lit(e: &Expr) -> Int ! alloc
+    match e
+        XStr(s) => 1
+        _ => 0
+
+fn tchain_lit(e: &Expr) -> String ! alloc
+    match e
+        XStr(s) => s.dup()
+        _ => ""
+

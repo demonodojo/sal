@@ -1,0 +1,13 @@
+# exit: 160
+# 100 000 bytes por acumulación y una cadena de cuatro hojas de 400 000 bytes.
+fn main() -> Int ! alloc
+    s = d""
+    i = 0
+    while i < 100000
+        s = s + "x"
+        i = i + 1
+    t = s + s + s + s
+    if s.len() == 100000
+        t.len() / 2500
+    else
+        0

@@ -1,0 +1,7 @@
+# error: E_TYPE
+# Antes escribía en el elemento de la lista (o lo liberaba al crecer); ahora no existe.
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(d"ab")
+    str_append(xs.get_mut(0), d"cdefghijklmnopqrstuvwxyz")
+    xs.get(0).len()

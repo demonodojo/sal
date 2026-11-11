@@ -1,0 +1,8 @@
+# error: E_BORROW
+# selfhost-xfail: el selfhost todavía no ejecuta check_borrows
+# El acumulador mueve `s`: con un préstamo vivo de `s` es un conflicto, no una escritura que `r` vería.
+fn main() -> Int ! alloc
+    s = d"ab"
+    r = &s
+    s = s + "x"
+    r.len()

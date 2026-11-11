@@ -532,6 +532,8 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_str_bytes(ptr)\n");
     s.push_str("declare ptr @sal_str_concat(ptr, ptr)\n");
     s.push_str("declare ptr @sal_str_append(ptr, ptr)\n");
+    s.push_str("declare ptr @sal_str_concat_n(i64, ptr)\n");
+    s.push_str("declare ptr @sal_str_append_n(ptr, i64, ptr)\n");
     s.push_str("declare ptr @sal_strdup(ptr)\n");
     s.push_str("declare ptr @sal_str_share(ptr)\n");
     s.push_str("declare ptr @sal_select_str(i64, ptr, ptr)\n");
@@ -3110,6 +3112,32 @@ fn emit_runtime_or_user_call(
             let b = args.get(1).map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d}_p = call ptr @sal_str_append(ptr {a}, ptr {b})\n"));
+                s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+            }
+        }
+        "sal_str_concat_n" | "sal_str_append_n" => {
+            // The parts go in a stack array (hoisted to the entry block, so a loop does not
+            // grow the stack); `append_n` takes the accumulator first, outside the array.
+            let append = func == "sal_str_append_n";
+            let ptrs: Vec<String> = args.iter().map(|x| ptr_arg(x, s, tmp)).collect();
+            if let Some(d) = dest {
+                let (head, parts) = if append { (ptrs.first().cloned(), &ptrs[1..]) } else { (None, &ptrs[..]) };
+                let k = parts.len();
+                s.push_str(&format!("  %{d}_arr = alloca [{k} x ptr] ;;hoist\n"));
+                for (i, p) in parts.iter().enumerate() {
+                    s.push_str(&format!(
+                        "  %{d}_g{i} = getelementptr [{k} x ptr], ptr %{d}_arr, i64 0, i64 {i}\n"
+                    ));
+                    s.push_str(&format!("  store ptr {p}, ptr %{d}_g{i}\n"));
+                }
+                match head {
+                    Some(h) => s.push_str(&format!(
+                        "  %{d}_p = call ptr @sal_str_append_n(ptr {h}, i64 {k}, ptr %{d}_arr)\n"
+                    )),
+                    None => s.push_str(&format!(
+                        "  %{d}_p = call ptr @sal_str_concat_n(i64 {k}, ptr %{d}_arr)\n"
+                    )),
+                }
                 s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
             }
         }

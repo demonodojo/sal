@@ -127,8 +127,6 @@ fn fx_call_is_io(name: &String) -> Int ! alloc
 fn fx_call_is_alloc(name: &String) -> Int ! alloc
     if str_eq(name, "str_concat") == 1
         1
-    elsif str_eq(name, "str_append") == 1
-        1
     elsif str_eq(name, "strdup") == 1
         1
     elsif str_eq(name, "list_clone") == 1

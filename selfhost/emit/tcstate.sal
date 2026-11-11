@@ -79,8 +79,8 @@ fn tmp_fresh(tc: &mut Tc) -> String ! alloc
     tc.ctr.set(0, n)
     "__t" + n.to_str()
 
-fn variant_code(tc: &Tc, name: Int) -> Int ! alloc
-    map_get(tc.pool.variants, name)
+fn variant_code(tc: &Tc, name: &String) -> Int ! alloc
+    tc.pool.variant_code(name)
 
 fn variant_tag(code: Int) -> Int ! alloc
     code / 2 - 1

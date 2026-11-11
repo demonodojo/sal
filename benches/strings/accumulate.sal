@@ -1,0 +1,11 @@
+# Acumulador `acc = acc + piece`: crece in situ porque `acc` se mueve al `+`.
+# Misma carga que benches/strings/accumulate.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    acc = d""
+    piece = d"ab"
+    i = 0
+    while i < 2000000
+        acc = acc + piece
+        i = i + 1
+    acc.len() & 255

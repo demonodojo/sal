@@ -1,0 +1,11 @@
+# exit: 22
+# El trozo es una copia: sobrevive a acumular y a reasignar el origen.
+fn main() -> Int ! alloc
+    s = d"abcdef"
+    t = s.slice(1, 3)
+    s = s + "ghi"
+    s = d"zz"
+    if t.eq("bc") == 1
+        t.len() * 10 + s.len()
+    else
+        0

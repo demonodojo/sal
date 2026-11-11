@@ -1,0 +1,13 @@
+# Trozo de 16 bytes de una cadena de 64 (el resultado es una copia).
+# Misma carga que benches/strings/slice.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    s = d"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    total = 0
+    i = 0
+    while i < 2000000
+        k = i & 31
+        t = s.slice(k, k + 16)
+        total = total + t.len()
+        i = i + 1
+    total & 255

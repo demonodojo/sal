@@ -106,9 +106,14 @@ int64_t sal_str_index_from(const char *hay, const char *needle, int64_t start);
 int64_t sal_str_len(const char *s);
 /* Heap copy of string bytes on cpu; returns data pointer as i64 (length = str_len(s)). */
 int64_t sal_str_bytes(const char *s);
+/* a + b: a new String; the operands do not change. */
 char *sal_str_concat(const char *a, const char *b);
-/* Like concat but frees heap-owned `a` (b is borrowed). */
+/* parts[0] + … + parts[n-1] in one exact reservation. */
+char *sal_str_concat_n(int64_t n, const char *const *parts);
+/* Lowering of `x = x + b` only: consumes `a` (moved by the compiler), may reuse its block. */
 char *sal_str_append(char *a, const char *b);
+/* `x = x + b + c + …`: consumes `acc`, one reservation at most. */
+char *sal_str_append_n(char *acc, int64_t n, const char *const *parts);
 char *sal_strdup(const char *s);
 /* Both a and b must be heap-owned; frees the non-selected and returns the other. */
 char *sal_select_str(int64_t cond, char *a, char *b);

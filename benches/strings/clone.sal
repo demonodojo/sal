@@ -1,0 +1,12 @@
+# Copia profunda de una cadena de 64 bytes en cada vuelta.
+# Misma carga que benches/strings/clone.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    s = d"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    total = 0
+    i = 0
+    while i < 2000000
+        t = s.clone()
+        total = total + t.len()
+        i = i + 1
+    total & 255

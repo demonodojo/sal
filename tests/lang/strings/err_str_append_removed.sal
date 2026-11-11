@@ -1,0 +1,6 @@
+# error: E_TYPE
+# `str_append` no es un builtin (SPEC «Métodos»): solo la bajada del acumulador usa su primitiva.
+fn main() -> Int ! alloc
+    s = d"ab"
+    t = str_append(s, d"c")
+    t.len()

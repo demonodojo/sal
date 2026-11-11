@@ -28,10 +28,7 @@ fn main() -> Int ! io, alloc, gpu
     let out: Tensor[F32, 2, 2] on gpu = on gpu
         matmul(h, w2)
     g = place_launches(1)
-    msg = strdup("sum=")
-    msg = str_append(msg, int_to_str(out))
-    msg = str_append(msg, strdup(" gpu="))
-    msg = str_append(msg, int_to_str(g))
-    msg = str_append(msg, strdup("\n"))
+    msg = d"sum="
+    msg = msg + int_to_str(out) + " gpu=" + g.to_str() + "\n"
     _p = print_str(msg)
     0

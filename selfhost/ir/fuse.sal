@@ -22,28 +22,28 @@ fn lower_args(cx: &mut Cx, args: &List[Expr], i: Int, n: Int, out: Int) -> Int !
         _p = vec_push(out, v)
         lower_args(cx, args, i + 1, n, out)
 
-# `left` is the left operand of a string `+`; its own left chain makes the append form.
-fn str_add_name(env: &TEnv, left: &Expr, into_acc: Int) -> Int ! alloc
+# The call that builds a string `+` chain of `n` leaves (SPEC «Expresiones»): a new String with
+# `sal_str_concat` / `sal_str_concat_n`, or, for the accumulator `x = x + …`, the moved `x`
+# with `sal_str_append` / `sal_str_append_n`. Mirror of `lower_string_chain` (`src/ir.rs`).
+fn str_chain_name(into_acc: Int, n: Int) -> String ! alloc
     if into_acc == 1
-        str_as_int(&"sal_str_append")
-    elsif tbinary_is_string_concat(env, left) == 1
-        str_as_int(&"sal_str_append")
+        if n == 2
+            "sal_str_append"
+        else
+            "sal_str_append_n"
+    elsif n == 2
+        "sal_str_concat"
     else
-        str_as_int(&"sal_str_concat")
+        "sal_str_concat_n"
 
-# `left` is the accumulator of an `x = x + ...` chain being lowered.
-fn tadd_left_is_acc(left: &Expr, acc: Int) -> Int ! alloc
+# The first leaf of the chain is the accumulator of an `x = x + ...` being lowered.
+fn tchain_first_is_acc(leaves: &List[Expr], acc: Int) -> Int ! alloc
     if acc == 0
         0
     else
-        match left
+        match leaves.get(0)
             XIdent(name) => str_eq(str_own(&name), acc)
             _ => 0
-
-fn tspine_acc(left: &Expr, acc: Int) -> Int ! alloc
-    match left
-        XBin(op, l, r) => acc
-        _ => 0
 
 # The right operand of a string `+` is a temporary this expression owns.
 fn tadd_right_is_fresh_temp(env: &TEnv, right: &Expr) -> Int ! alloc
@@ -60,30 +60,46 @@ fn tadd_left_is_fresh_call(left: &Expr) -> Int ! alloc
         _ => 0
 
 fn lower_str_add(cx: &mut Cx, left: &Expr, right: &Expr) -> Int ! alloc
-    # Only the left spine of the chain may see the accumulator.
+    # Only the leftmost leaf may be the accumulator; the leaves are lowered left to right.
     acc = cx_acc(cx)
-    _s = cx_set_acc(cx, tspine_acc(left, acc))
-    l = lower_expr(cx, left)
-    _z = cx_set_acc(cx, 0)
-    r = lower_expr(cx, right)
-    d = fresh(cx)
-    args = vec_new()
-    _a = vec_push(args, l)
-    _b = vec_push(args, r)
-    fnm = str_add_name(&cx.env, left, tadd_left_is_acc(left, acc))
-    _p = ir_push(cx, ir_call(d, fnm, args, 1))
-    if tadd_right_is_fresh_temp(&cx.env, right) == 1
-        fargs = vec_new()
-        _f = vec_push(fargs, r)
-        _q = ir_push(cx, ir_call(0, str_as_int(&"sal_free"), fargs, 0))
+    cx_set_acc(cx, 0)
+    leaves = tchain_leaves(&cx.env, left, right)
+    into_acc = tchain_first_is_acc(&leaves, acc)
+    ssas = vec_new()
+    lower_chain_leaves(cx, &leaves, 0, leaves.len(), ssas)
+    if leaves.len() == 1
+        # Every leaf was a literal: the chain folded into one.
+        vec_get(ssas, 0)
     else
-        _q = 0
-    if str_eq(fnm, "sal_str_concat") == 1
-        if tadd_left_is_fresh_call(left) == 1
-            largs = vec_new()
-            _g = vec_push(largs, l)
-            _h = ir_push(cx, ir_call(0, str_as_int(&"sal_free"), largs, 0))
-    d
+        d = fresh(cx)
+        ir_push(cx, ir_call(d, str_as_int(&str_chain_name(into_acc, leaves.len())), ssas, 1))
+        free_chain_temps(cx, &leaves, ssas, into_acc, 0, leaves.len())
+        d
+
+fn lower_chain_leaves(cx: &mut Cx, leaves: &List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        vec_push(out, lower_expr(cx, &leaves.get(i)))
+        lower_chain_leaves(cx, leaves, i + 1, n, out)
+
+# The owned temporaries among the leaves are released after the call (same rules as before).
+fn free_chain_temps(cx: &mut Cx, leaves: &List[Expr], ssas: Int, into_acc: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        fresh_leaf = if i == 0
+            if into_acc == 1
+                0
+            else
+                tadd_left_is_fresh_call(&leaves.get(0))
+        else
+            tadd_right_is_fresh_temp(&cx.env, &leaves.get(i))
+        if fresh_leaf == 1
+            fargs = vec_new()
+            vec_push(fargs, vec_get(ssas, i))
+            ir_push(cx, ir_call(0, str_as_int(&"sal_free"), fargs, 0))
+        free_chain_temps(cx, leaves, ssas, into_acc, i + 1, n)
 
 fn lower_expr(cx: &mut Cx, e: &Expr) -> Int ! alloc
     match e
@@ -1630,9 +1646,12 @@ fn lower_assign_declared(cx: &Cx, name: Int, st: &TStmt) -> Int ! alloc
     else
         bind_load_tensor(cx, name, &st.expr)
 
-# `name = name + ...` with a string chain starting at `name`.
+# `name = name + ...` with a string chain starting at `name`, and `name` not a reference: the
+# assignment moves `name` into the `+` (mirror of `string_expr::accumulates_into`).
 fn tassign_accumulates_string(cx: &Cx, name: &String, value: &Expr) -> Int ! alloc
     if tbinary_is_string_concat(&cx.env, value) == 0
+        0
+    elsif tt_is_ref(&tenv_type(&cx.env, name)) == 1
         0
     else
         str_eq(dx_leftmost(value), name)

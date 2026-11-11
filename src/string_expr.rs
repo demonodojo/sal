@@ -236,19 +236,83 @@ impl StringEnv {
         }
     }
 
-    /// Left-assoc string `+`: the first pair is `str_concat`; later pairs, whose
-    /// left child is itself a string `+`, are `str_append` on that accumulator.
-    pub fn add_uses_append(&self, e: &Expr) -> bool {
-        let Expr::Binary {
-            op: BinOp::Add,
-            left,
-            ..
-        } = e
-        else {
-            return false;
-        };
-        self.add_is_string_concat(e) && self.add_is_string_concat(left)
+    /// The type infer recorded for `e` is a reference (`&T` / `&mut T`).
+    pub fn expr_is_ref(&self, e: &Expr) -> bool {
+        matches!(self.expr_type(e), Some(Type::Ref { .. }))
     }
+
+    /// The leaves of the left spine of the string `+` chain `e`, in evaluation order
+    /// (`((a + b) + c)` -> `a`, `b`, `c`), with adjacent plain literals folded into one
+    /// (SPEC «Expresiones»). A `+` on the right is one leaf: its own chain.
+    pub fn string_chain_leaves<'a>(&self, e: &'a Expr) -> Vec<ChainLeaf<'a>> {
+        let mut spine = Vec::new();
+        let mut cur = e;
+        while let Expr::Binary { op: BinOp::Add, left, right, .. } = cur {
+            if !self.add_is_string_concat(cur) {
+                break;
+            }
+            spine.push(right.as_ref());
+            cur = left.as_ref();
+        }
+        spine.push(cur);
+        spine.reverse();
+        let mut out: Vec<ChainLeaf<'a>> = Vec::new();
+        for leaf in spine {
+            let lit = match leaf {
+                Expr::String { value, parts, .. } if parts.is_empty() => Some(value),
+                _ => None,
+            };
+            if let (Some(v), Some(prev)) = (lit, out.last_mut()) {
+                if let Some(merged) = prev.literal_text() {
+                    let span = prev.span();
+                    *prev = ChainLeaf::Lit(Expr::String {
+                        value: format!("{merged}{v}"),
+                        parts: Vec::new(),
+                        span: Span::merge(span, leaf.span()),
+                    });
+                    continue;
+                }
+            }
+            out.push(ChainLeaf::Expr(leaf));
+        }
+        out
+    }
+}
+
+/// One leaf of a string `+` chain: an operand of the source, or literals folded together.
+#[derive(Debug)]
+pub enum ChainLeaf<'a> {
+    Expr(&'a Expr),
+    Lit(Expr),
+}
+
+impl ChainLeaf<'_> {
+    pub fn expr(&self) -> &Expr {
+        match self {
+            ChainLeaf::Expr(e) => e,
+            ChainLeaf::Lit(e) => e,
+        }
+    }
+
+    fn literal_text(&self) -> Option<String> {
+        match self.expr() {
+            Expr::String { value, parts, .. } if parts.is_empty() => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    fn span(&self) -> Span {
+        self.expr().span()
+    }
+}
+
+/// `x = x + …` accumulates into `x` (SPEC «Expresiones»): `x` is the leftmost leaf of the
+/// `+` chain and is not a reference (`leaf_is_ref` says what infer recorded). The assignment
+/// moves `x` into the `+`, so the lowering may reuse its block; through a reference it is a
+/// plain concatenation that binds `x` to a new `String`.
+pub fn accumulates_into(target: &str, value: &Expr, leaf_is_ref: impl Fn(&Expr) -> bool) -> bool {
+    matches!(value, Expr::Binary { op: BinOp::Add, .. })
+        && matches!(add_chain_leftmost(value), leaf @ Expr::Ident { name, .. } if name == target && !leaf_is_ref(leaf))
 }
 
 pub(crate) fn struct_name_from_init(init: &Expr, env: &StringEnv) -> Option<String> {
@@ -287,7 +351,7 @@ pub fn add_chain_leftmost(e: &Expr) -> &Expr {
 pub fn call_allocates_fresh_string(name: &str) -> bool {
     matches!(
         name,
-        "int_to_str" | "char_to_str" | "str_slice" | "strdup" | "read_file"
+        "int_to_str" | "char_to_str" | "str_slice" | "strdup" | "read_file" | "f64_bits_to_str" | "bytes_to_str"
     )
 }
 

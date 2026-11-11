@@ -1,0 +1,14 @@
+# Interpolación: `f"#{a}-#{b}-#{c}"` es una cadena de `+` de cinco partes.
+# Misma carga que benches/strings/interp.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    a = d"user"
+    b = d"42"
+    c = d"ok"
+    total = 0
+    i = 0
+    while i < 1000000
+        s = f"#{a}-#{b}-#{c}"
+        total = total + s.len()
+        i = i + 1
+    total & 255

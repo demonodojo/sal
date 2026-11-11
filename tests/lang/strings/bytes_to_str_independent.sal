@@ -1,0 +1,16 @@
+# exit: 97
+# `to_str` y `write_str` copian: escribir después en el Bytes no cambia ningún String.
+fn main() -> Int ! alloc
+    b = Bytes.new(3)
+    b.set_u8(0, 97)
+    b.set_u8(1, 98)
+    b.set_u8(2, 99)
+    s = b.to_str()
+    b.set_u8(0, 122)
+    src = d"xyz"
+    b.write_str(0, src)
+    b.set_u8(0, 65)
+    if src.char(0) == 120
+        s.char(0)
+    else
+        0

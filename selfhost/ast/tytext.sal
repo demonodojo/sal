@@ -11,7 +11,6 @@ fn call_returns_string(name: &String) -> Int ! alloc
         "argv" => 1
         "read_file" => 1
         "str_concat" => 1
-        "str_append" => 1
         "str_from_int" => 1
         "realpath" => 1
         _ => call_returns_string2(name)
@@ -32,6 +31,7 @@ fn call_returns_string3(name: &String) -> Int ! alloc
         "exec_capture" => 1
         "getenv" => 1
         "ir_text" => 1
+        "bytes_to_str" => 1
         _ =>
             0
 
@@ -42,6 +42,8 @@ fn call_allocates_fresh_string(name: &String) -> Int ! alloc
         "char_to_str" => 1
         "str_slice" => 1
         "strdup" => 1
+        "f64_bits_to_str" => 1
+        "bytes_to_str" => 1
         _ =>
             name.eq("read_file")
 

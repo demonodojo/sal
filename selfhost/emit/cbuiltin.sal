@@ -67,6 +67,12 @@ fn emit_c_builtin_rest(fname: &String, args: &List[String], stmts: Int) -> Strin
 
 fn emit_c_builtin2(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     match fname
+        "str_concat_n" =>
+            "((int64_t)(uintptr_t)sal_str_concat_n(" + args.len().to_str() + ",(const char*[]){" + c_str_parts(args, 0, "") + "}))"
+        "str_append_n" =>
+            a = arg_at(args, 0)
+            n = args.len() - 1
+            "((int64_t)(uintptr_t)sal_str_append_n((char*)(uintptr_t)" + a + "," + n.to_str() + ",(const char*[]){" + c_str_parts(args, 1, "") + "}))"
         "str_append" =>
             a = arg_at(args, 0)
             b = arg_at(args, 1)
@@ -309,3 +315,14 @@ fn emit_c_plain_runtime_call(fname: &String, args: &List[String], stmts: Int) ->
     acc = "((int64_t)" + rname + "("
     acc = join_commas(args, 0, args.len(), acc)
     acc + "))"
+
+# `(const char*)(uintptr_t)a, …` for the parts of a string chain, from `args[i]` on.
+fn c_str_parts(args: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= args.len()
+        acc
+    else
+        sep = if acc.len() == 0
+            ""
+        else
+            ","
+        c_str_parts(args, i + 1, acc + sep + "(const char*)(uintptr_t)" + args.get(i).clone())

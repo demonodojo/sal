@@ -1090,7 +1090,6 @@ pub(crate) fn mutates_container(name: &str) -> bool {
             | "list_pop"
             | "dict_put"
             | "dict_remove"
-            | "str_append"
             | "bytes_set_u8"
             | "bytes_set_u32"
             | "bytes_fill"

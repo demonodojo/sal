@@ -1,0 +1,13 @@
+# exit: 50
+# Acumulador de dos partes en un bucle: `piece` no cambia.
+fn main() -> Int ! alloc
+    acc = d""
+    piece = d"abc"
+    i = 0
+    while i < 10
+        acc = acc + piece + ","
+        i = i + 1
+    if piece.eq("abc") == 1
+        acc.len() + 10
+    else
+        0

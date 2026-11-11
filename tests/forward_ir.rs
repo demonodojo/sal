@@ -89,8 +89,26 @@ fn forward_single_fused_region() {
     assert_eq!(mm[2], "x_d0", "batch `?` must be the named dim arg");
 }
 
+/// The arguments of every IR call to `func`, in order (`Call { …, func: "f", args: [..] }`).
+fn call_args(text: &str, func: &str) -> Vec<Vec<String>> {
+    let key = format!("func: \"{func}\", args: [");
+    text.match_indices(&key)
+        .map(|(i, _)| {
+            let rest = &text[i + key.len()..];
+            let inner = &rest[..rest.find(']').unwrap_or(0)];
+            inner
+                .split(", ")
+                .filter(|a| !a.is_empty())
+                .map(|a| a.trim_matches('"').to_string())
+                .collect()
+        })
+        .collect()
+}
+
 #[test]
-fn string_plus_lowers_concat_then_append() {
+fn string_plus_chain_lowers_to_one_concat_n() {
+    // SPEC «Expresiones»: a chain of three or more leaves is one `str_concat_n` (a single
+    // reservation); `+` borrows its operands, so nothing is appended or freed.
     let src = r#"
 fn join(s: String, n: String, m: String) -> String ! alloc
     s + n + m
@@ -98,26 +116,37 @@ fn join(s: String, n: String, m: String) -> String ! alloc
     let p = parse(src).expect("parse");
     let ir = lower_program(&p);
     let text = ir_to_text(&ir);
-    let join = text
-        .split("fn main:")
-        .next()
-        .unwrap_or(&text);
+    let join = text.split("fn main:").next().unwrap_or(&text);
+    let calls = call_args(join, "sal_str_concat_n");
+    assert_eq!(calls.len(), 1, "one str_concat_n for the chain:\n{text}");
+    assert_eq!(calls[0].len(), 3, "the three leaves are its parts:\n{text}");
     assert!(
-        join.contains("sal_str_concat"),
-        "first + of a String variable must be str_concat:\n{text}"
+        !join.contains("sal_str_append") && !join.contains("\"sal_str_concat\""),
+        "no pairwise concat/append on a temporary:\n{text}"
     );
-    assert!(
-        join.contains("sal_str_append"),
-        "later + must be str_append on the temporary:\n{text}"
+    assert!(!join.contains("Binary"), "string + must not lower to integer add:\n{text}");
+    assert!(!join.contains("sal_free"), "operands owned by bindings are not freed by +:\n{text}");
+
+    // Two leaves stay a plain `str_concat`.
+    let two = lower_text("fn two(a: String, b: String) -> String ! alloc\n    a + b\n");
+    assert_eq!(call_args(&two, "sal_str_concat").len(), 1, "{two}");
+    assert!(!two.contains("sal_str_concat_n"), "{two}");
+}
+
+#[test]
+fn string_plus_folds_adjacent_literals() {
+    // `x + "a" + "b"` is `x + "ab"`: two leaves, one concat, one literal.
+    let text = lower_text(
+        "fn f(x: String) -> String ! alloc\n    x + \"a\" + \"b\"\n",
     );
-    assert!(
-        !join.contains("Binary"),
-        "string + must not lower to integer add:\n{text}"
-    );
-    assert!(
-        !join.contains("sal_free"),
-        "operands owned by bindings are not freed by +:\n{text}"
-    );
+    let calls = call_args(&text, "sal_str_concat");
+    assert_eq!(calls.len(), 1, "{text}");
+    assert!(text.contains("value: \"ab\""), "the literals fold into \"ab\":\n{text}");
+    assert!(!text.contains("value: \"a\""), "{text}");
+    // Only literals: the chain is the folded literal, with no call.
+    let only = lower_text("fn g() -> String ! alloc\n    \"a\" + \"b\" + \"c\"\n");
+    assert!(only.contains("value: \"abc\""), "{only}");
+    assert!(!only.contains("sal_str_concat"), "{only}");
 }
 
 fn lower_text(src: &str) -> String {
@@ -169,6 +198,8 @@ fn show(m: Msg) -> String ! alloc
 
 #[test]
 fn string_accumulator_appends_in_place() {
+    // SPEC «Expresiones»: `acc = acc + …` moves `acc` into the `+`; the parts go to one
+    // `str_append_n` whose first argument is `acc` (it may reuse that block).
     let text = lower_text(
         r#"
 fn go(acc: String, piece: String) -> String ! alloc
@@ -176,14 +207,12 @@ fn go(acc: String, piece: String) -> String ! alloc
     acc
 "#,
     );
-    assert!(
-        text.contains("sal_str_append"),
-        "acc = acc + ... must append:\n{text}"
-    );
-    assert!(
-        !text.contains("sal_str_concat"),
-        "acc = acc + ... must not copy acc:\n{text}"
-    );
+    let calls = call_args(&text, "sal_str_append_n");
+    assert_eq!(calls.len(), 1, "acc = acc + a + b is one str_append_n:\n{text}");
+    assert_eq!(calls[0].len(), 3, "acc and its two parts:\n{text}");
+    assert!(!text.contains("sal_str_concat"), "acc = acc + ... must not copy acc:\n{text}");
+    let one = lower_text("fn go(acc: String, p: String) -> String ! alloc\n    acc = acc + p\n    acc\n");
+    assert_eq!(call_args(&one, "sal_str_append").len(), 1, "{one}");
     // Not the accumulator pattern: `x = y + ...` copies `y`.
     let copy = lower_text(
         r#"
@@ -192,10 +221,23 @@ fn go(a: String, b: String) -> String ! alloc
     a
 "#,
     );
-    assert!(
-        copy.contains("sal_str_concat"),
-        "a = b + a must start with a copy of b:\n{copy}"
+    assert!(copy.contains("sal_str_concat"), "a = b + a must start with a copy of b:\n{copy}");
+    assert!(!copy.contains("sal_str_append"), "{copy}");
+}
+
+#[test]
+fn string_accumulator_through_reference_copies() {
+    // `s = s + …` with `s: &String` binds `s` to a new String: it must never write into (or
+    // free) the referent, so it is a concat, not an append.
+    let text = lower_text(
+        r#"
+fn f(s: &String) -> Int ! alloc
+    s = s + "x"
+    s.len()
+"#,
     );
+    assert_eq!(call_args(&text, "sal_str_concat").len(), 1, "{text}");
+    assert!(!text.contains("sal_str_append"), "{text}");
 }
 
 #[test]

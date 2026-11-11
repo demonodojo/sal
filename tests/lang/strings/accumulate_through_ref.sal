@@ -1,0 +1,10 @@
+# exit: 52
+# `s = s + …` con `s: &String` liga `s` a un String nuevo: el referente no cambia ni se libera.
+fn grow(s: &String) -> Int ! alloc
+    s = s + "xyz"
+    s.len()
+
+fn main() -> Int ! alloc
+    a = d"ab"
+    n = grow(&a)
+    n * 10 + a.len()

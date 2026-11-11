@@ -28,7 +28,6 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("String", "char") => "str_char",
         ("String", "hash") => "str_hash",
         ("String", "concat") => "str_concat",
-        ("String", "append") => "str_append",
         ("String", "skip") => "str_skip",
         ("String", "to_int") => "str_as_int",
         ("String", "index_of") => "str_index_of",

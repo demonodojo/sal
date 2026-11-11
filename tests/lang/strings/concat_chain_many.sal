@@ -1,0 +1,10 @@
+# exit: 17
+# Cadena de nueve hojas con literales seguidos ("-" "-", "x" "y" "z") que se pliegan.
+fn main() -> Int ! alloc
+    a = d"ab"
+    b = d"c"
+    s = a + "-" + "-" + b + a + "x" + "y" + "z" + b
+    if s.eq("ab--cabxyzc") == 1
+        s.len() + a.len() * 3
+    else
+        0

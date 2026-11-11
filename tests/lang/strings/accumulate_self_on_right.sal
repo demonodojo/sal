@@ -1,0 +1,9 @@
+# exit: 5
+# `x = x + a + x`: la última hoja es el `x` viejo; el resultado sale entero aunque el bloque crezca.
+fn main() -> Int ! alloc
+    x = d"ab"
+    x = x + "a" + x
+    if x.eq("abaab") == 1
+        x.len()
+    else
+        0

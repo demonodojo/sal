@@ -502,56 +502,61 @@ fn emit_c_unary(op: &String, operand: &Expr, user: Int, stmts: Int, tc: &mut Tc)
         # `&x`, `&mut x` and `*x` share the handle of `x`.
         inner
 
-# `left` is the left operand of a string `+`; its own left chain makes the append form.
-fn c_str_add_fname(env: &TEnv, left: &Expr, into_acc: Int) -> String ! alloc
+# The builtin that builds a string `+` chain of `n` leaves (same choice as `str_chain_name`).
+fn c_str_chain_fname(into_acc: Int, n: Int) -> String ! alloc
     if into_acc == 1
-        "str_append"
-    elsif tbinary_is_string_concat(env, left) == 1
-        "str_append"
-    else
+        if n == 2
+            "str_append"
+        else
+            "str_append_n"
+    elsif n == 2
         "str_concat"
+    else
+        "str_concat_n"
 
+# A string `+` chain (SPEC «Expresiones»): each leaf goes to a temporary, left to right (C does
+# not order the arguments of a call), then one call builds the result and the owned temporaries
+# among the leaves are released.
 fn emit_c_str_add(left: &Expr, right: &Expr, user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
-    # Only the left spine of the chain may see the accumulator.
     acc = tc_acc(tc)
-    _s = tc_set_acc(tc, tspine_acc(left, acc))
-    l = emit_c_expr(left, user, stmts, tc)
-    _z = tc_set_acc(tc, 0)
-    r = emit_c_expr(right, user, stmts, tc)
-    fname = c_str_add_fname(&tc.env, left, tadd_left_is_acc(left, acc))
+    tc_set_acc(tc, 0)
+    leaves = tchain_leaves(&tc.env, left, right)
+    into_acc = tchain_first_is_acc(&leaves, acc)
     args = List.new[String]()
-    free_left = 0
-    if str_eq(fname, "str_concat") == 1
-        free_left = tadd_left_is_fresh_call(left)
-    if free_left == 1
-        # Materialize the left temp so it can be freed after the copy.
-        lt = tmp_fresh(tc)
-        _lp = vec_push(stmts, str_as_int(&("  int64_t " + lt + " = " + l + ";\n")))
-        args.push(lt)
+    emit_c_chain_leaves(&leaves, 0, leaves.len(), user, stmts, tc, &mut args)
+    if leaves.len() == 1
+        args.get(0).clone()
     else
-        args.push(l)
-    if tadd_right_is_fresh_temp(&tc.env, right) == 1
-        # Materialize the temp so it can be freed after the copy.
-        rt = tmp_fresh(tc)
-        args.push(rt.clone())
-        _p = vec_push(stmts, str_as_int(&("  int64_t " + rt + " = " + r + ";\n")))
-        call = emit_c_builtin2(&fname, &args, stmts)
+        call = emit_c_builtin2(&c_str_chain_fname(into_acc, leaves.len()), &args, stmts)
         dt = tmp_fresh(tc)
-        _q = vec_push(stmts, str_as_int(&("  int64_t " + dt + " = " + call + ";\n")))
-        _f = vec_push(stmts, str_as_int(&("  sal_free((void*)(uintptr_t)" + rt + ");\n")))
-        if free_left == 1
-            _fl = vec_push(stmts, str_as_int(&("  sal_free((void*)(uintptr_t)" + args.get(0).clone() + ");\n")))
+        vec_push(stmts, str_as_int(&("  int64_t " + dt + " = " + call + ";\n")))
+        emit_c_free_chain_temps(&leaves, &args, into_acc, 0, leaves.len(), stmts, tc)
         dt
-    elsif free_left == 1
-        args.push(r)
-        call = emit_c_builtin2(&fname, &args, stmts)
-        dt = tmp_fresh(tc)
-        _q = vec_push(stmts, str_as_int(&("  int64_t " + dt + " = " + call + ";\n")))
-        _fl = vec_push(stmts, str_as_int(&("  sal_free((void*)(uintptr_t)" + args.get(0).clone() + ");\n")))
-        dt
+
+fn emit_c_chain_leaves(leaves: &List[Expr], i: Int, n: Int, user: Int, stmts: Int, tc: &mut Tc, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
     else
-        args.push(r)
-        emit_c_builtin2(&fname, &args, stmts)
+        v = emit_c_expr(&leaves.get(i), user, stmts, tc)
+        t = tmp_fresh(tc)
+        vec_push(stmts, str_as_int(&("  int64_t " + t + " = " + v + ";\n")))
+        out.push(t)
+        emit_c_chain_leaves(leaves, i + 1, n, user, stmts, tc, out)
+
+fn emit_c_free_chain_temps(leaves: &List[Expr], args: &List[String], into_acc: Int, i: Int, n: Int, stmts: Int, tc: &Tc) -> Int ! alloc
+    if i >= n
+        0
+    else
+        fresh_leaf = if i == 0
+            if into_acc == 1
+                0
+            else
+                tadd_left_is_fresh_call(&leaves.get(0))
+        else
+            tadd_right_is_fresh_temp(&tc.env, &leaves.get(i))
+        if fresh_leaf == 1
+            vec_push(stmts, str_as_int(&("  sal_free((void*)(uintptr_t)" + args.get(i).clone() + ");\n")))
+        emit_c_free_chain_temps(leaves, args, into_acc, i + 1, n, stmts, tc)
 
 fn emit_c_binary(op: &String, l: &Expr, r: &Expr, user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
     if str_eq(op, "and") + str_eq(op, "or") > 0
@@ -603,7 +608,7 @@ fn emit_c_binary_num(op: &String, left: &Expr, right: &Expr, user: Int, stmts: I
 
 # A payload-free enum variant used as a value is its tag.
 fn emit_c_ident(name: &String, tc: &Tc) -> String ! alloc
-    code = variant_code(tc, str_as_int(name))
+    code = variant_code(tc, name)
     if code != 0
         if str_len(tenv_type(&tc.env, name)) == 0
             if code % 2 == 1
@@ -816,25 +821,13 @@ fn emit_c_export_tag(ty: &String) -> Int ! alloc
         0
 
 fn emit_c_keep_has(pool: &LitPool, name: &String) -> Int ! alloc
-    ks = pool.keep
-    names_has(ks, str_as_int(name), 0, vec_len(ks))
+    pool.keep_has(name)
 
-fn emit_c_seed_keep(params: &List[TParam], i: Int, n: Int, ks: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        pm = list_get(params, i)
-        if pm.mode == 3
-            _p = vec_push(ks, str_as_int(&pm.name))
-            emit_c_seed_keep(params, i + 1, n, ks)
-        else
-            emit_c_seed_keep(params, i + 1, n, ks)
-
-fn emit_c_keep_alias(tc: &Tc, name: &String, expr: &Expr) -> Int ! alloc
+fn emit_c_keep_alias(tc: &mut Tc, name: &String, expr: &Expr) -> Int ! alloc
     match expr
         XIdent(rhs) =>
             if emit_c_keep_has(&tc.pool, &rhs) == 1
-                _p = vec_push(tc.pool.keep, str_as_int(name))
+                _p = tc.pool.keep_add(name)
                 0
             else
                 0
@@ -894,8 +887,8 @@ fn emit_c_call(fname: &String, args_e: &List[Expr], targs: &String, user: Int, s
         emit_c_struct_ctor(&arg_parts)
     elsif tc_lam_find(tc, fname, list_len(&tc.lam_names) - 1) >= 0
         emit_c_lambda_call(tc_lam_find(tc, fname, list_len(&tc.lam_names) - 1), &arg_parts, user, stmts, tc)
-    elsif variant_code(tc, hname) != 0
-        emit_c_variant_make(variant_tag(variant_code(tc, hname)) + emit_c_owned_mask(tc, args_e, 0, list_len(args_e), 0, 1) * 256, &arg_parts)
+    elsif variant_code(tc, fname) != 0
+        emit_c_variant_make(variant_tag(variant_code(tc, fname)) + emit_c_owned_mask(tc, args_e, 0, list_len(args_e), 0, 1) * 256, &arg_parts)
     elsif str_eq(fname, "dict_new") == 1
         emit_c_dict_new(targs)
     elsif str_eq(fname, "list_new") == 1
@@ -954,8 +947,8 @@ fn emit_c_try(operand: &Expr, user: Int, stmts: Int, tc: &mut Tc) -> String ! al
     inner = emit_c_expr(operand, user, stmts, tc)
     tname = tmp_fresh(tc)
     _a = vec_push(stmts, str_as_int(&("  int64_t " + tname + " = " + inner + ";\n")))
-    err = variant_code(tc, str_as_int(&"Err"))
-    none = variant_code(tc, str_as_int(&"None"))
+    err = variant_code(tc, &"Err")
+    none = variant_code(tc, &"None")
     code = if err != 0
         err
     else
@@ -987,7 +980,7 @@ fn emit_c_owned_kind(tc: &Tc, a: &Expr) -> Int ! alloc
 
 fn emit_c_owned_variant_kind(tc: &Tc, name: &String, cargs: &List[Expr]) -> Int ! alloc
     if list_len(cargs) > 0
-        if variant_code(tc, str_as_int(name)) != 0
+        if variant_code(tc, name) != 0
             2
         else
             0
@@ -1202,7 +1195,7 @@ fn emit_c_match_arms(arms: &List[TArm], i: Int, n: Int, sname: &String, sty: &St
             _e = vec_push(stmts, str_as_int(&"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif kind == 3
-            code = variant_code(tc, str_as_int(&arm.pat.name))
+            code = variant_code(tc, &arm.pat.name)
             cond = if code == 0
                 "0"
             else
@@ -1213,7 +1206,7 @@ fn emit_c_match_arms(arms: &List[TArm], i: Int, n: Int, sname: &String, sty: &St
             _e = vec_push(stmts, str_as_int(&"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif ident_pat_is_variant(&arm.pat, tc) == 1
-            code = variant_code(tc, str_as_int(&arm.pat.name))
+            code = variant_code(tc, &arm.pat.name)
             _h = vec_push(stmts, str_as_int(&("  if (sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL) {\n")))
             _x = emit_c_arm_body(&arm, tname, user, stmts, tc, slen)
             _e = vec_push(stmts, str_as_int(&"  } else {\n"))
@@ -1230,7 +1223,7 @@ fn emit_c_match_arms(arms: &List[TArm], i: Int, n: Int, sname: &String, sty: &St
 
 fn ident_pat_is_variant(pat: &TPat, tc: &Tc) -> Int ! alloc
     if pat.kind == 1
-        if variant_code(tc, str_as_int(&pat.name)) != 0
+        if variant_code(tc, &pat.name) != 0
             1
         else
             0
@@ -1240,12 +1233,13 @@ fn ident_pat_is_variant(pat: &TPat, tc: &Tc) -> Int ! alloc
 # Type of field `i` of variant `vname`; a type parameter of its enum is replaced
 # by the matching argument of the scrutinee type `sty` (`Option[P]` -> `P`).
 fn variant_field_type(tc: &Tc, vname: &String, i: Int, sty: &String) -> String ! alloc
-    entry = map_get(tc.pool.variant_fields, str_as_int(vname))
-    if entry == 0
+    slot = tc.pool.variant_slot(vname)
+    if slot < 0
         ""
     else
-        ed = list_get(&tc.enums, vec_get(entry, 0))
-        v = list_get(&ed.variants, vec_get(entry, 1))
+        site = tc.pool.sites.get(slot)
+        ed = list_get(&tc.enums, site.enum_index)
+        v = list_get(&ed.variants, site.index)
         if i < list_len(&v.fields)
             fty = list_get(&v.fields, i)
             pi = type_param_index(&ed.tparams, &trim_spaces(fty.dup()), 0)
@@ -1298,6 +1292,8 @@ fn emit_c_block(b: &TBlock, user: Int, stmts: Int, tc: &mut Tc) -> String ! allo
 
 fn tc_assign_accumulates(env: &TEnv, name: &String, value: &Expr) -> Int ! alloc
     if tbinary_is_string_concat(env, value) == 0
+        0
+    elsif tt_is_ref(&tenv_type(env, name)) == 1
         0
     else
         str_eq(dx_leftmost(value), name)
@@ -1377,9 +1373,7 @@ fn emit_c_fn(tf: &TFn, user: Int, linkable: Int, allow_main: Int, pool: &mut Lit
 
 fn emit_c_fn_body(tf: &TFn, user: Int, is_main: Int, acc: String, pool: &mut LitPool, env: &mut TEnv, enums: &List[TEnum]) -> String ! alloc
     _af = pool.set_arena(tf.arena)
-    ks = vec_new()
-    _sk = emit_c_seed_keep(&tf.params, 0, list_len(&tf.params), ks)
-    _ak = pool.set_keep(ks)
+    _ak = pool.reset_keep(&tf.params)
     body = tf.body.clone()
     names = vec_new()
     _c = collect_assigns_block(&body, names)
@@ -1478,7 +1472,7 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     enums = list_new[TEnum]()
     _e1 = enums_push(&mut enums, genums, 0, list_len(genums))
     _e2 = enums_push(&mut enums, &tp.enums, 0, list_len(&tp.enums))
-    _vr = variants_register(pool.variants, pool.variant_fields, &enums, 0, list_len(&enums))
+    _vr = pool.register_variants(&enums)
     _dv = pool.set_drop_env(drop_env_t(tp, &env.structs, &enums, seen))
     acc = runtime_decls()
     acc = acc + "#include <stdint.h>\n"

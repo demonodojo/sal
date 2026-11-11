@@ -1,0 +1,6 @@
+# exit: 3
+fn main() -> Int ! alloc
+    e = d""
+    s = e + e
+    t = e + "abc" + e
+    s.len() + t.len()

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::*;
 use crate::layout::{enum_variant_index, is_transparent_struct, struct_field_index};
 use crate::string_expr::{
-    add_chain_leftmost, add_left_is_fresh_call, add_right_is_fresh_temp, StringEnv,
+    add_left_is_fresh_call, add_right_is_fresh_temp, StringEnv,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -269,10 +269,83 @@ pub fn lower_program_with_callables(
     lower_program_with_callables_env(prog, callable_fns, StringEnv::from_program_inferred(prog), &[])
 }
 
-/// `x = x + ...` where the chain is a string concatenation starting at `x`.
+/// `x = x + ...` where the chain is a string concatenation starting at `x` and `x` owns its
+/// `String` (not a reference): the assignment moves `x`, so its block may be reused.
 fn assign_accumulates_string(target: &str, value: &Expr, strings: &StringEnv) -> bool {
     strings.add_is_string_concat(value)
-        && matches!(add_chain_leftmost(value), Expr::Ident { name, .. } if name == target)
+        && crate::string_expr::accumulates_into(target, value, |leaf| strings.expr_is_ref(leaf))
+}
+
+/// A string `+` chain (SPEC «Expresiones»): its leaves are lowered left to right, then one
+/// call builds the result: `sal_str_concat` (two leaves) or `sal_str_concat_n` (more), each a
+/// new `String` that leaves its operands unchanged. In the accumulator `x = x + …` (`acc` is
+/// `x`, the leftmost leaf) the call is `sal_str_append` / `sal_str_append_n`, which consume
+/// the moved `x` and may reuse its block. Owned temporaries among the leaves are released
+/// after the call, with the same rules as before (`add_left_is_fresh_call`,
+/// `add_right_is_fresh_temp`).
+#[allow(clippy::too_many_arguments)]
+fn lower_string_chain(
+    e: &Expr,
+    acc: Option<String>,
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+    tensors: &mut HashMap<String, TensorInfo>,
+    fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
+    strings: &mut StringEnv,
+) -> String {
+    let leaves = strings.string_chain_leaves(e);
+    let into_acc = matches!(
+        (leaves.first().map(|l| l.expr()), &acc),
+        (Some(Expr::Ident { name, .. }), Some(a)) if name == a
+    );
+    let mut ssas = Vec::with_capacity(leaves.len());
+    for leaf in &leaves {
+        strings.accumulate = None;
+        ssas.push(lower_expr_simple(
+            leaf.expr(),
+            instructions,
+            env,
+            counter,
+            tensors,
+            fn_names,
+            host_literals,
+            strings,
+        ));
+    }
+    if ssas.len() == 1 {
+        // Every leaf was a literal: the chain folded into one.
+        return ssas.pop().unwrap_or_default();
+    }
+    let func = match (into_acc, ssas.len()) {
+        (true, 2) => "sal_str_append",
+        (true, _) => "sal_str_append_n",
+        (false, 2) => "sal_str_concat",
+        (false, _) => "sal_str_concat_n",
+    };
+    *counter += 1;
+    let dest = format!("t{counter}");
+    instructions.push(IrInst::Call {
+        dest: Some(dest.clone()),
+        func: func.into(),
+        args: ssas.clone(),
+    });
+    for (i, leaf) in leaves.iter().enumerate() {
+        let fresh = if i == 0 {
+            !into_acc && add_left_is_fresh_call(leaf.expr())
+        } else {
+            add_right_is_fresh_temp(leaf.expr(), strings)
+        };
+        if fresh {
+            instructions.push(IrInst::Call {
+                dest: None,
+                func: "sal_free".into(),
+                args: vec![ssas[i].clone()],
+            });
+        }
+    }
+    dest
 }
 
 /// The per-type glue of each non-generic struct of this module that frees something
@@ -3507,7 +3580,6 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "str_index_of"
             | "str_index_from"
             | "str_concat"
-            | "str_append"
             | "str_len"
             | "str_bytes"
             | "str_char"
@@ -3774,50 +3846,25 @@ fn lower_expr(
             right,
             ..
         } => {
-            // `x = x + ...`: only the left spine of the chain may see the accumulator.
+            // `x = x + ...`: only the leftmost leaf of the chain may be the accumulator.
             let acc = strings.accumulate.take();
-            let is_concat = *op == BinOp::Add && strings.add_is_string_concat(e);
-            if is_concat && matches!(left.as_ref(), Expr::Binary { op: BinOp::Add, .. }) {
-                strings.accumulate = acc.clone();
+            if *op == BinOp::Add && strings.add_is_string_concat(e) {
+                return lower_string_chain(
+                    e,
+                    acc,
+                    instructions,
+                    env,
+                    counter,
+                    tensors,
+                    fn_names,
+                    host_literals,
+                    strings,
+                );
             }
             let l = lower_expr_simple(left, instructions, env, counter, tensors, fn_names, host_literals, strings);
-            strings.accumulate = None;
             let r = lower_expr_simple(right, instructions, env, counter, tensors, fn_names, host_literals, strings);
             *counter += 1;
             let dest = format!("t{counter}");
-            if is_concat {
-                let into_acc = matches!(
-                    (left.as_ref(), &acc),
-                    (Expr::Ident { name, .. }, Some(a)) if name == a
-                );
-                let func = if into_acc || strings.add_uses_append(e) {
-                    "sal_str_append"
-                } else {
-                    "sal_str_concat"
-                };
-                instructions.push(IrInst::Call {
-                    dest: Some(dest.clone()),
-                    func: func.into(),
-                    args: vec![l.clone(), r.clone()],
-                });
-                if add_right_is_fresh_temp(right, strings) {
-                    instructions.push(IrInst::Call {
-                        dest: None,
-                        func: "sal_free".into(),
-                        args: vec![r],
-                    });
-                }
-                // `str_concat` copies both operands into a new buffer; `str_append` keeps
-                // the left one as the result.
-                if func == "sal_str_concat" && add_left_is_fresh_call(left) {
-                    instructions.push(IrInst::Call {
-                        dest: None,
-                        func: "sal_free".into(),
-                        args: vec![l],
-                    });
-                }
-                return dest;
-            }
             if let Some(tb) = try_tensor_bin(
                 op,
                 &l,

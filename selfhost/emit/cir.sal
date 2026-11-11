@@ -134,7 +134,27 @@ fn cir_cname(name: &String) -> String ! alloc
 fn cir_rt(cc: Int, name: &String, ops: &List[String]) -> String ! alloc
     cir_decl(cc, name)
     acc = "R_" + cir_cname(name) + "("
-    join_commas(ops, 0, ops.len(), acc) + ")"
+    # A string chain passes its parts as a count and an array (`sal_str_concat_n(n, parts)`,
+    # `sal_str_append_n(acc, n, parts)`); the IR lists them as plain arguments.
+    match name
+        "sal_str_concat_n" => acc + cir_str_parts(ops, 0) + ")"
+        "sal_str_append_n" => acc + ops.get(0).clone() + ", " + cir_str_parts(ops, 1) + ")"
+        _ => join_commas(ops, 0, ops.len(), acc) + ")"
+
+# `<n>LL, (const char*[]){…}` for the operands from `ops[from]` on (64-bit count: `R_*` has no
+# prototype).
+fn cir_str_parts(ops: &List[String], from: Int) -> String ! alloc
+    (ops.len() - from).to_str() + "LL, (const char*[]){" + cir_str_casts(ops, from, "") + "}"
+
+fn cir_str_casts(ops: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= ops.len()
+        acc
+    else
+        sep = if acc.len() == 0
+            ""
+        else
+            ", "
+        cir_str_casts(ops, i + 1, acc + sep + "(const char*)(uintptr_t)" + ops.get(i).clone())
 
 fn cir_set(cc: Int, dest: Int, rhs: &String) -> Int ! alloc
     cc_line(cc, &("  " + str_from_int(dest) + " = " + rhs + ";\n"))
