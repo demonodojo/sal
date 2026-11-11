@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -889,6 +889,10 @@ thread_local! {
     static BOX_PLACE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Parameters typed `&mut Struct`: field assigns write through the shared box.
     static MUT_REF_PLACE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Drop the previous field value on `p.x = v` (Rust overwrite). Off when compiling
+    /// `selfhost/`: its AST shares enum/list boxes across statements, so a deep drop of
+    /// the old field frees structure still reachable elsewhere.
+    static FIELD_OVERWRITE_DROPS: Cell<bool> = const { Cell::new(true) };
 }
 
 fn arena_leave() -> IrInst {
@@ -1974,6 +1978,16 @@ fn field_drop<'a>(
     }
 }
 
+/// Run `f` with field-overwrite drops enabled or disabled (see `FIELD_OVERWRITE_DROPS`).
+pub fn with_field_overwrite_drops<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    FIELD_OVERWRITE_DROPS.with(|c| {
+        let prev = c.replace(enabled);
+        let out = f();
+        c.set(prev);
+        out
+    })
+}
+
 /// Drop an owned SSA value of type `ty` that a field overwrite replaces (Rust: the
 /// previous value is dropped before the store).
 fn emit_owned_value_drop(
@@ -1983,6 +1997,9 @@ fn emit_owned_value_drop(
     counter: &mut u32,
     instructions: &mut Vec<IrInst>,
 ) {
+    if !FIELD_OVERWRITE_DROPS.with(|c| c.get()) {
+        return;
+    }
     let glue = Glue {
         nested: true,
         containers: true,
@@ -4165,7 +4182,7 @@ fn lower_expr(
                     enum_name: edef.name.clone(),
                     variant_index: vidx,
                     payload: arg_names.clone(),
-                    owned: enum_owned_mask(args, &strings.enums),
+                    owned: enum_owned_mask(args, vdef, &strings.enums),
                 });
                 return dest;
             }
@@ -4884,13 +4901,30 @@ fn lower_expr(
     }
 }
 
-/// Fields of a variant constructor that the new box owns: fresh strings and fresh
-/// boxes of enums with fields. Anything else (names, user calls) may be someone
-/// else's value, so the box leaves it alone.
-fn enum_owned_mask(args: &[Expr], enums: &HashMap<String, crate::ast::EnumDef>) -> u64 {
+/// Fields of a variant constructor that the new box owns: fresh strings, moved
+/// `String` locals (the drops pass `hard_move`s constructor args, so the local is
+/// not freed again), and fresh boxes of enums with fields.
+///
+/// An `Ident` whose field type is `String` is treated as moved ownership: without
+/// the kinds bit, `sal_enum_copy` shares the pointer and any later free of an
+/// alias leaves a dangling name in the box (stage1 SEGV in `strdup` / `str_slice`
+/// on `XCall` names). A field / call that only borrows stays at kind 0.
+fn enum_owned_mask(
+    args: &[Expr],
+    vdef: &crate::ast::EnumVariant,
+    enums: &HashMap<String, crate::ast::EnumDef>,
+) -> u64 {
     let mut mask = 0u64;
     for (i, a) in args.iter().enumerate().take(28) {
+        let field_ty = vdef.fields.get(i);
+        let is_string_field = matches!(
+            field_ty,
+            Some(crate::ast::Type::Named { name, args: ta, .. })
+                if name == "String" && ta.is_empty()
+        );
         let kind = if crate::drops::is_fresh_value(a) {
+            1
+        } else if is_string_field && matches!(a, Expr::Ident { .. }) {
             1
         } else if let Expr::Call { func, args: inner, .. } = a {
             match func.as_ref() {

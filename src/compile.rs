@@ -325,8 +325,12 @@ fn compile_single_module(
     let cache_hit = is_cache_hit(&meta_file, key);
     let prev_meta = load_cached_meta(&meta_file);
 
-    let mut ir = lower_program_with_callables_env(program, callables, strings_env.clone(), callees);
-    let box_shell = !module_path.components().any(|c| c.as_os_str() == "selfhost");
+    let is_selfhost = module_path.components().any(|c| c.as_os_str() == "selfhost");
+    // Selfhost AST shares enum/list boxes; Rust field-overwrite drops would free them twice.
+    let mut ir = crate::ir::with_field_overwrite_drops(!is_selfhost, || {
+        lower_program_with_callables_env(program, callables, strings_env.clone(), callees)
+    });
+    let box_shell = !is_selfhost;
     fuse_module_opts(&mut ir, box_shell);
     let ir_text = ir_to_text(&ir);
 

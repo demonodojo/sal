@@ -177,13 +177,14 @@ fn mr_match(scrut: &Expr, arms: &List[TArm], res: &HT) -> Int ! alloc
     _s = mr_expr(scrut, res)
     mr_arms(arms, 0, list_len(arms), res)
 
-# A changed string replaces the slot. The previous text is released; the same pointer stays.
+# A changed string replaces the slot. The previous text is released; the slot gets its own
+# copy, so a caller's temporary (`&str_slice(..)`) can be released at the end of the statement.
 fn mr_set_str(e: &Expr, i: Int, old: &String, neu: &String) -> Int ! alloc
     if str_as_int(old) == str_as_int(neu)
         0
     else
         _f = free(old)
-        _s = enum_set(e, i, neu)
+        _s = enum_set(e, i, neu.dup())
         0
 
 # `args` are already rewritten. The resolution is `kind` + target: `i` the receiver is already the first

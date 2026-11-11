@@ -864,7 +864,6 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "dict_values"
             | "enum_owns"
             | "enum_box_id"
-            | "enum_set"
             | "list_push_share"
             | "str_share"
             | "bytes_len"
@@ -1256,9 +1255,23 @@ fn expr(e: &Expr, f: &mut Facts) {
                 let reads = ro.as_ref().and_then(|r| r.get(i)).copied().unwrap_or(false);
                 let user_fn = f.cons.contains_key(callee);
                 let user_takes = f.cons.get(callee).and_then(|c| c.get(i)).copied().unwrap_or(false);
-                f.consume_arg = if user_fn { user_takes } else { !borrow };
+                // `enum_set(e, i, v)` borrows the box and moves `v` into a slot (runtime
+                // stores the handle; freeing `v` afterwards is use-after-free).
+                let enum_set_take = callee == "enum_set" && i == 2;
+                let enum_set_borrow = callee == "enum_set" && i != 2;
+                f.consume_arg = if enum_set_take {
+                    true
+                } else if enum_set_borrow {
+                    false
+                } else if user_fn {
+                    user_takes
+                } else {
+                    !borrow
+                };
                 f.user_take = user_fn && user_takes;
-                let mov = if borrow || reads {
+                let mov = if enum_set_take {
+                    ArgMove::TransferBox
+                } else if enum_set_borrow || borrow || reads {
                     ArgMove::Read
                 } else if hard || callee_transfers_struct_box(callee) {
                     ArgMove::TransferBox

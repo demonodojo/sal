@@ -121,7 +121,7 @@ fn ty_deref_word(t: &String, i: Int, n: Int) -> Int ! alloc
 
 fn ty_deref_mut(t: &String, i: Int, n: Int) -> Int ! alloc
     if i + 4 <= n
-        if str_eq(str_slice(t, i, i + 4), "mut ") == 1
+        if t.slice(i, i + 4).eq("mut ") == 1
             i + 4
         else
             i
@@ -177,4 +177,4 @@ fn ty_nominal(t: &String) -> String ! alloc
 # released. Literals are static and keep `str_as_int(&"...")`.
 fn str_own(s: &String) -> Int ! alloc
     owned = s.dup()
-    str_as_int(&owned)
+    (&owned).to_int()

@@ -98,7 +98,7 @@ method HT.get(&self, key: &String) -> String ! alloc
     i = self.probe(key, self.home(key))
     self.vals.get(i).clone()
 
-method HT.free(&self) -> Int ! alloc
-    list_free(self.keys)
-    list_free(self.fill)
-    list_free(self.vals)
+# No-op: `drop.HT` already frees `keys`/`vals`/`fill` when the owned table ends.
+# A manual `list_free` here plus that glue is a double free (Rust field drop).
+method HT.free(&self) -> Int
+    0

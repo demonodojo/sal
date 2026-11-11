@@ -31,6 +31,7 @@ extern FILE *sal_os_stdout, *sal_os_stderr;
 #define getpid sal_os_getpid
 #define exit sal_os_exit
 #define strtod sal_os_strtod
+#define strtoll sal_os_strtoll
 struct stat { uint64_t st_mode; };
 #define S_ISDIR(m) ((m) == 2)
 void *malloc(size_t);
@@ -50,6 +51,7 @@ int access(const char *, int);
 int getpid(void);
 _Noreturn void exit(int);
 double strtod(const char *, char **);
+long long strtoll(const char *, char **, int);
 float expf(float);
 double sqrt(double);
 double pow(double, double);

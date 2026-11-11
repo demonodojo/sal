@@ -879,7 +879,13 @@ fn dr_call_args(c: &mut DC, callee: &String, args: &List[Expr], i: Int, n: Int, 
         reads = dr_ro_at(ro, i)
         # `str_own(&s)` stores the string as a handle the IR reads later: the local escapes
         # (the bootstrap's `escaped` rule for `str_as_int`), so nothing releases it here.
-        mov = if str_eq(callee, "str_as_int") == 1
+        # `enum_set(e, i, v)`: borrow the box and the index; move `v` into the slot.
+        mov = if str_eq(callee, "enum_set") == 1
+            if i == 2
+                2
+            else
+                1
+        elsif str_eq(callee, "str_as_int") == 1
             2
         elsif borrow == 1
             1
@@ -2373,20 +2379,11 @@ fn dr_hoist_match(h: &mut HC, e: &Expr, scrut: &Expr, arms: &mut List[TArm], out
     else
         ns
     _w = dr_set_expr(e, 0, scrut, &s2)
-    _a = dr_hoist_match_arms(h, arms, 0, list_len(arms), out)
+    # The arms are not hoisted: their temporaries belong to the arm scope, and the
+    # bootstrap (`Hoist::expr` in `src/drops.rs`) does not descend into match arms.
+    # Hoisting `&f(x)` from an arm to before the `switch` leaves pattern binders
+    # out of scope and passes `0` for them to the callee.
     dr_ret(e)
-
-fn dr_hoist_match_arms(h: &mut HC, arms: &mut List[TArm], i: Int, n: Int, out: &mut List[TStmt]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        arm = list_get(&mut arms, i)
-        nb = dr_hoist_expr(h, &arm.body, out)
-        if dr_moved(&arm.body, &nb) == 1
-            arm.body = nb
-        if arm.has_suite == 1
-            arm.suite = dr_hoist_block(h, &mut arm.suite)
-        dr_hoist_match_arms(h, arms, i + 1, n, out)
 
 # `list_get(xs, i).f` of a list whose element struct a copy can release: the copy is bound to a
 # temporary ahead of the statement (`Hoist` in src/drops.rs).
@@ -2990,7 +2987,8 @@ fn drops_body_tc(f: &mut TFn, denv: Int) -> TBlock ! alloc
 # ---- legacy handle helpers (callers in fuse.sal and emit.sal) ----
 # Builtins whose String arguments are only read.
 fn dr_borrows(name: &String) -> Int ! alloc
-    if str_eq(name, "str_share") + str_eq(name, "list_push_share") + str_eq(name, "enum_set") == 1
+    # `enum_set(e, i, v)` is not a whole-call borrow: it moves `v` (see `dr_call_args`).
+    if str_eq(name, "str_share") + str_eq(name, "list_push_share") == 1
         1
     elsif dr_is_clone(name) == 1
         # `x.clone()` reads its receiver through `&self` (SPEC «Memoria»).

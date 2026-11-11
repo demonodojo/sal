@@ -203,15 +203,9 @@ fn tt_index_of(names: &List[String], name: &String, i: Int, n: Int) -> Int ! all
     else
         tt_index_of(names, name, i + 1, n)
 
-fn tenv_free(env: &TEnv) -> Int ! alloc
-    list_free(env.names)
-    list_free(env.tys)
-    # `structs` is freed by the caller when it owns a separate copy (`ic_free`), or left
-    # to `drop.TEnv` when the `TEnv` itself is dropped without a prior `tenv_free`.
-    list_free(env.fn_names)
-    list_free(env.fn_rets)
-    list_free(env.g_names)
-    _f = list_free(env.g_idx)
+# No-op: `drop.TEnv` already frees the lists when the owned env ends. Manual
+# `list_free` here plus that glue is a double free (and must not `free_box` a borrow).
+fn tenv_free(env: &TEnv) -> Int
     0
 
 fn tenv_len(env: &TEnv) -> Int ! alloc

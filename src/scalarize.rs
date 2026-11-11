@@ -26,6 +26,10 @@ use crate::ir::{IfCarry, IrFunction, IrInst, IrModule, SwitchArm, WhileCarry};
 pub struct FnSig {
     pub params: Vec<Option<String>>,
     pub ret: Option<String>,
+    /// Per parameter: exclusive borrow (`&mut`), so a boxed scalarised arg must write back.
+    pub mut_ref: Vec<bool>,
+    /// Per parameter: shared borrow (`&T`).
+    pub shared_ref: Vec<bool>,
 }
 
 /// Name of the struct that `ty` is passed as, when it is scalarised.
@@ -68,6 +72,16 @@ pub fn fn_sig(f: &FnDef, structs: &HashMap<String, StructDef>) -> FnSig {
     FnSig {
         params: f.params.iter().map(|p| agg_struct(&p.ty, structs)).collect(),
         ret: agg_struct(&f.ret, structs),
+        mut_ref: f
+            .params
+            .iter()
+            .map(|p| matches!(p.ty, Type::Ref { mutable: true, .. }))
+            .collect(),
+        shared_ref: f
+            .params
+            .iter()
+            .map(|p| matches!(p.ty, Type::Ref { mutable: false, .. }))
+            .collect(),
     }
 }
 
@@ -162,6 +176,8 @@ fn scalarize_fn(
         _ => FnSig {
             params: vec![None; f.params.len()],
             ret: None,
+            mut_ref: vec![false; f.params.len()],
+            shared_ref: vec![false; f.params.len()],
         },
     };
     let mut p = Pass {
@@ -600,16 +616,29 @@ impl<'a> Pass<'a> {
             return;
         };
         let mut flat = Vec::new();
-        // Scalarised locals boxed into a plain `i64` for a by-ref / opaque param share that
-        // heap box with the callee (`&mut`). Reload their slots after the call (Rust writeback).
+        // Scalarised locals boxed for an `&mut` param share that heap box with the callee.
+        // Reload slots after the call (Rust writeback). By-value moves must not free the box.
         let mut sync_back: Vec<(String, String, String)> = Vec::new();
+        let mut free_temp: Vec<String> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             match sig.params.get(i).cloned().flatten() {
                 Some(sn) => flat.extend(self.slots_of(a, &sn, scope, out)),
                 None => {
                     if let Some(v) = scope.vals.get(a).cloned() {
                         let p = self.plain(a, scope, out);
-                        sync_back.push((a.clone(), v.name.clone(), p.clone()));
+                        if sig.mut_ref.get(i) == Some(&true) {
+                            sync_back.push((a.clone(), v.name.clone(), p.clone()));
+                        } else if sig.shared_ref.get(i) == Some(&true) {
+                            // Borrow only: free the temporary carrier box after the call.
+                            // Drop the cached handle too, or a later use of `a` passes the
+                            // freed box to the callee instead of a fresh carrier.
+                            scope.boxed.remove(a);
+                            free_temp.push(p.clone());
+                        } else {
+                            // By-value move: ownership left with the callee (or its return).
+                            scope.vals.remove(a);
+                            scope.boxed.remove(a);
+                        }
                         flat.push(p);
                     } else {
                         flat.push(self.plain(a, scope, out));
@@ -653,6 +682,13 @@ impl<'a> Pass<'a> {
             );
             // The box was only a carrier for the call (`&mut`); fields live in slots again.
             scope.boxed.remove(&local);
+            out.push(IrInst::Call {
+                dest: None,
+                func: "sal_struct_free_box".into(),
+                args: vec![handle],
+            });
+        }
+        for handle in free_temp {
             out.push(IrInst::Call {
                 dest: None,
                 func: "sal_struct_free_box".into(),

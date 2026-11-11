@@ -116,7 +116,10 @@ fn lp_guard(stmts: &List[TStmt], i: Int, n: Int, flag: &String, cx: &mut List[In
     rest = List.new[TStmt]()
     _c = lp_share_stmts(stmts, i, n, &rest)
     _t = lp_move_tail(&mut rest, hold)
-    rb = lp_block(&TBlock(rest, XNone), flag, cx, errs)
+    tb = TBlock(rest, XNone)
+    _ks = tp_keep_stmts(&tb.stmts)
+    _ke = tp_keep_expr(&tb.tail)
+    rb = lp_block(&tb, flag, cx, errs)
     _p = out.push(lp_if_stmt(lp_flag_clear(flag), rb, lp_empty(), 0))
     1
 
@@ -188,7 +191,10 @@ fn lp_while_go(e: &Expr, cond: &Expr, body: &TBlock, out: &mut List[TStmt], cx: 
     _n = cx.set(0, n)
     f = "__brk" + n.to_str()
     # The tail of a loop body is discarded: make it a statement.
-    b2 = lp_block(&lp_unit(tc_block(body)), &f, cx, errs)
+    tb = lp_unit(tc_block(body))
+    _ks = tp_keep_stmts(&tb.stmts)
+    _ke = tp_keep_expr(&tb.tail)
+    b2 = lp_block(&tb, &f, cx, errs)
     if cx.get(1) == 1
         _p = out.push(TStmt(1, f.dup(), XInt(0), "", 1, XNone, 0, 0, 0))
         stop = TBlock(lp_one(lp_set_flag(&f, 1)), XNone)

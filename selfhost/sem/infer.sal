@@ -63,34 +63,15 @@ fn ic_build(tp: &TProgram, nres: Int, rec: Int) -> IC ! alloc
     _v0 = ce_eval(&tp.consts, &seed, &mut vals)
     IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals)
 
-# The hash tables of an `IC` (handles, which the glue of the struct does not release). Its lists
-# are released by the glue of the struct where the local ends.
-fn ic_free_tables(c: &IC) -> Int ! alloc
-    _e = c.sigs.free()
-    _f = c.names.free()
-    _g = c.tnames.free()
-    _h = c.res.free()
-    _v = c.vtab.free()
-    c.arity.free()
+# Kept for call sites that used to drain an `IC` by hand. `drop.IC` (and nested
+# `drop.HT` / `drop.TEnv`) already releases every list and heap box when the owned
+# local ends. Calling `HT.free` / `tenv_free` / `list_free` here as well is a
+# double free under the Rust field-drop model.
+fn ic_free_tables(c: &IC) -> Int
+    0
 
-fn ic_free(c: &IC) -> Int ! alloc
-    _a = tenv_free(&c.env)
-    _b = list_free(c.err)
-    _c = list_free(c.ret)
-    _d = list_free(c.allow)
-    _fns = list_free(c.fns)
-    _en = list_free(c.enums)
-    _al = list_free(c.aliases)
-    _pr = list_free(c.protocols)
-    _e = c.sigs.free()
-    _f = c.names.free()
-    _g = c.tnames.free()
-    _h = c.res.free()
-    _v = c.vtab.free()
-    _cv = list_free(c.cvals)
-    _fx = list_free(c.cur_fx)
-    _sh = list_free(c.structs)
-    c.arity.free()
+fn ic_free(c: &IC) -> Int
+    0
 
 fn ic_count_variants(enums: &List[TEnum], i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -112,13 +93,13 @@ fn ic_fail(c: &mut IC, msg: &String) -> Int ! alloc
         0
 
 fn ic_fx_empty() -> List[Int] ! alloc
-    fx = list_new[Int]()
-    _a = list_push(&mut fx, 0)
-    _b = list_push(&mut fx, 0)
-    _c = list_push(&mut fx, 0)
-    _d = list_push(&mut fx, 0)
-    _e = list_push(&mut fx, 0)
-    _f = list_push(&mut fx, 0)
+    fx = List.new[Int]()
+    (&mut fx).push(0)
+    (&mut fx).push(0)
+    (&mut fx).push(0)
+    (&mut fx).push(0)
+    (&mut fx).push(0)
+    (&mut fx).push(0)
     fx
 
 fn ic_load_fx(c: &mut IC, fx: &List[Int]) -> Int ! alloc
@@ -379,35 +360,24 @@ fn infer_skip_mut(s: &String, i: Int, n: Int) -> Int ! alloc
         i
 
 fn infer_builtin_type(b: &String) -> Int ! alloc
-    if str_eq(b, "Int") == 1
-        1
-    elsif str_eq(b, "Float") == 1
-        1
-    elsif str_eq(b, "Bool") == 1
-        1
-    elsif str_eq(b, "String") == 1
-        1
-    elsif str_eq(b, "Bytes") == 1
-        1
-    elsif str_eq(b, "Unit") == 1
-        1
-    elsif str_eq(b, "List") == 1
-        1
-    elsif str_eq(b, "Dict") == 1
-        1
-    elsif str_eq(b, "Tensor") == 1
-        1
-    elsif str_eq(b, "Option") == 1
-        1
-    elsif str_eq(b, "Result") == 1
-        1
-    elsif str_eq(b, "Unknown") == 1
-        1
-    else
-        0
+    match b
+        "Int" => 1
+        "Float" => 1
+        "Bool" => 1
+        "String" => 1
+        "Bytes" => 1
+        "Unit" => 1
+        "List" => 1
+        "Dict" => 1
+        "Tensor" => 1
+        "Option" => 1
+        "Result" => 1
+        "Unknown" => 1
+        _ =>
+            0
 
-# `E_TYPE` for a parameter or return type that names nothing declared.
-# Single-letter names (type parameters) and qualified names are not checked.
+            # `E_TYPE` for a parameter or return type that names nothing declared.
+            # Single-letter names (type parameters) and qualified names are not checked.
 fn infer_check_known(c: &mut IC, t: &String) -> Int ! alloc
     if str_len(t) == 0
         0
@@ -471,18 +441,13 @@ fn infer_check_targs(c: &mut IC, base: &String, txt: &String, want: Int) -> Int 
         ic_fail(c, &("`" + base + "` expects " + int_to_str(want) + " type argument(s), found " + int_to_str(got)))
 
 fn infer_check_builtin_targs(c: &mut IC, base: &String, txt: &String) -> Int ! alloc
-    if str_eq(base, "Int") == 1
-        infer_check_not_generic(c, base, txt)
-    elsif str_eq(base, "Float") == 1
-        infer_check_not_generic(c, base, txt)
-    elsif str_eq(base, "Bool") == 1
-        infer_check_not_generic(c, base, txt)
-    elsif str_eq(base, "String") == 1
-        infer_check_not_generic(c, base, txt)
-    elsif str_eq(base, "Unit") == 1
-        infer_check_not_generic(c, base, txt)
-    else
-        0
+    match base
+        "Int" => infer_check_not_generic(c, base, txt)
+        "Float" => infer_check_not_generic(c, base, txt)
+        "Bool" => infer_check_not_generic(c, base, txt)
+        "String" => infer_check_not_generic(c, base, txt)
+        "Unit" => infer_check_not_generic(c, base, txt)
+        _ => 0
 
 fn infer_check_not_generic(c: &mut IC, base: &String, txt: &String) -> Int ! alloc
     if infer_targ_count(txt, 0, str_len(txt), 0, 0, 0) > 0
@@ -2450,7 +2415,7 @@ fn infer_program(tp: &TProgram) -> Res ! alloc
 # evaluated the graph, the imported ones).
 fn infer_with_vals(tp: &TProgram, vals: List[CVal]) -> Res ! alloc
     c = ic_new(tp)
-    _s = list_free(c.cvals)
+    # Assignment drops the empty `cvals` from `ic_new` (Rust field overwrite).
     c.cvals = vals
     r = infer_program_go(&mut c, 0, list_len(&tp.fns))
     _f = ic_free(&c)

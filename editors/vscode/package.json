@@ -2,7 +2,7 @@
   "name": "sal",
   "displayName": "sal",
   "description": "Editar programas sal: resaltado (method/static/init, protocol/impl, lifetimes, @arena, constantes, @deprecated, break), diagnósticos E_* y W_DEPRECATED, avisos Style/*, formato e ir a definiciones.",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "publisher": "sal",
   "license": "SEE LICENSE IN LICENSE",

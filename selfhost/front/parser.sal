@@ -710,6 +710,7 @@ fn parse_primary(pr: &mut Parser) -> Expr ! alloc
         _b = list_push(&mut args, XStr(tok_own(pr, t)))
         XCall("strdup", args, "", 0)
     elsif k == TK_RSTRING()
+        _a = p_advance(pr)
         _e = p_set_err(pr, "parse error: regex literal is only allowed in a match pattern")
         XNone
     elsif k == TK_IF()
