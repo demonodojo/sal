@@ -1666,7 +1666,9 @@ fn dr_xform_stmts(c: &mut DC, stmts: &mut List[TStmt], i: Int, n: Int, out: &mut
     if i >= n
         0
     else
-        st = list_get(&mut stmts, i)
+        # The list keeps its own statement: mutating the copy would free the `Expr` the
+        # element still points at. Take an owned copy before `st.expr = ne`.
+        st = tc_stmt(&list_get(&mut stmts, i))
         if st.kind == 2
             _r = dr_xform_return(c, &st, out)
             1
@@ -2537,7 +2539,8 @@ fn dr_hoist_stmts(h: &mut HC, stmts: &mut List[TStmt], i: Int, n: Int, out: &mut
     if i >= n
         0
     else
-        st = list_get(&mut stmts, i)
+        # An owned copy: the list keeps the statement this one came from.
+        st = tc_stmt(&list_get(&mut stmts, i))
         ne = dr_hoist_expr(h, &st.expr, out)
         if dr_moved(&st.expr, &ne) == 1
             st.expr = ne
@@ -2926,7 +2929,8 @@ fn dr_claim_stmts(stmts: &mut List[TStmt], i: Int, n: Int, variants: Int, elems:
     if i >= n
         0
     else
-        st = list_get(&mut stmts, i)
+        # An owned copy: the list keeps the statement this one came from.
+        st = tc_stmt(&list_get(&mut stmts, i))
         ne = dr_claim_stmt_expr(&st, variants, elems, borrows, lists, sns, took)
         if dr_moved(&st.expr, &ne) == 1
             st.expr = ne

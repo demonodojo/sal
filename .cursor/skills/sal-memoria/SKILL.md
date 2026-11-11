@@ -138,3 +138,7 @@ Un struct multi-campo suelta su bloque en `drop.<Struct>` (`sal_struct_free_box`
 `SAL_INSTRUMENT_STRICT=1` tras `sal build --instrument`: stderr sin `LEAK` ni `struct_copy` residual en programas que el compilador debe cerrar (`USE_AFTER_FREE`, `DOUBLE_FREE` siguen siendo fallo duro).
 
 Un test que sigue pasando con el código viejo no cuenta. Quita `# xfail:` / `# selfhost-xfail:` al cerrar un hueco en el mismo cambio.
+
+## Oráculo independiente: ASan/LSan/UBSan
+
+`cargo test --test memory_asan -- --test-threads=1` compila con `sal --sanitize` el corpus de memoria (`tests/lang/<áreas>`, `tests/memory/`) y exige cero informes. Un hueco de liberación conocido lleva `# asan-xfail: motivo`; al cerrarlo, quita la marca. Los controles negativos de `tests/support/asan_neg_*.c` prueban que el sanitizer detecta fuga, doble free y uso tras free.

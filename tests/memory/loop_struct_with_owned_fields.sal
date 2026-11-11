@@ -1,0 +1,25 @@
+# exit: 0
+# A struct that owns a String, a List and a Dict is built and dropped 10 000 times.
+struct Rec
+    name: String
+    xs: List[Int]
+    d: Dict[String, Int]
+
+fn round(i: Int) -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(i)
+    d = Dict.new[String, Int]()
+    d.put("k", i)
+    r = Rec(int_to_str(i) + "!", xs, d)
+    r.name.len() + r.xs.len()
+
+fn main() -> Int ! alloc
+    total = 0
+    i = 0
+    while i < 10000
+        total = total + round(i)
+        i = i + 1
+    if total > 0
+        0
+    else
+        1

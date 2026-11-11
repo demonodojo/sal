@@ -27,6 +27,7 @@ jobs:
           - kernels
           - llvm
           - instrument
+          - memory
           - toolchain
           - lang
           - builtins

@@ -187,7 +187,9 @@ pub fn ll_cache_path(base: &Path, key: &str) -> PathBuf {
 }
 
 pub fn obj_cache_path(base: &Path, key: &str) -> PathBuf {
-    cache_dir(base, key).join("module.o")
+    // `--sanitize` objects carry ASan instrumentation: never mix them with plain ones.
+    let name = if crate::compile::sanitize_enabled() { "module.asan.o" } else { "module.o" };
+    cache_dir(base, key).join(name)
 }
 
 pub fn load_cached_meta(path: &Path) -> Option<CacheMeta> {

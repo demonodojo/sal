@@ -22,17 +22,19 @@ fn fo_column(op: &String, lhs: &String, rhs: &String, dest: &String, scalar: &St
     FOp(FO_COLUMN(), op.dup(), lhs.dup(), rhs.dup(), dest.dup(), scalar.dup(), 6)
 
 # Pack a typed op back to the Int-vec layout Cx/region still store (until oleada E).
+# The region outlives the `List[FOp]` it came from: each text is an owned copy (`str_own`),
+# not a pointer into a `FOp` that is released as soon as the list dies.
 fn fop_pack(op: &FOp) -> Int ! alloc
     o = vec_new()
     _a = vec_push(o, op.kind)
-    _b = vec_push(o, str_as_int(&op.a))
-    _c = vec_push(o, str_as_int(&op.b))
-    _d = vec_push(o, str_as_int(&op.c))
+    _b = vec_push(o, str_own(&op.a))
+    _c = vec_push(o, str_own(&op.b))
+    _d = vec_push(o, str_own(&op.c))
     if op.nslots >= 5
-        _e = vec_push(o, str_as_int(&op.d))
+        _e = vec_push(o, str_own(&op.d))
     if op.nslots >= 6
         if op.scalar.len() != 0
-            _f = vec_push(o, str_as_int(&op.scalar))
+            _f = vec_push(o, str_own(&op.scalar))
     o
 
 fn fops_pack(ops: &List[FOp]) -> Int ! alloc

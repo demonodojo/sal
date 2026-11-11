@@ -38,6 +38,7 @@ Orden de pases (objetivo, subplan 13): `parse` → `expand_interpolation` → `i
 - Un diagnóstico nuevo se afirma con su código `E_*` exacto; un programa válido, con el árbol, tipo, IR o ejecución exactos.
 - Si la construcción vive en los dos compiladores, el test del arranque no sustituye al del selfhost. Un pase nuevo de `src/<x>.rs` debería tener su `selfhost/<x>.sal`.
 - Hueco conocido de conformidad: se marca en la cabecera de `tests/lang/*/*.sal` (`# xfail: motivo` para el arranque, `# selfhost-xfail: motivo` para el selfhost) con motivo concreto. Al arreglarlo, **quita la marca** en el mismo cambio. Antes de afirmar que algo está soportado, mira si su test la lleva (`grep -rl xfail tests/lang`).
+- `tests/memory_asan.rs` compila con `sal --sanitize` los programas de `tests/lang/{drops,ownership,collections,structs,enums,strings,methods,generics}` y `tests/memory/` y exige cero informes de ASan/LSan/UBSan. Una fuga conocida se marca `# asan-xfail: motivo` (como `xfail`); al arreglarla, quita la marca. Un cambio de memoria no está hecho hasta pasar este test.
 - Los resultados esperados de `tests/lang` se escriben a mano según la SPEC; no se copian de la salida de un compilador.
 - No describas el selfhost como equivalente al arranque en lo que el subplan lista como pendiente.
 - Los métodos (`method`/`static`/`init`, los de tipos básicos como `s.len()`, `xs.push(v)`, y `List.new[T]()`) están en los dos compiladores: los cubren `tests/lang/methods` y `selfhost_meets_language_conformance`.
@@ -61,7 +62,7 @@ cargo run -- selfhost          # stage1 (arranque) y stage2 (stage1 compila self
 cargo run --bin standard -- check|fix <fichero.sal>
 ```
 
-Flags: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `--target linux|soso`, `--error-format json`.
+Flags: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `--sanitize` (ASan+LSan+UBSan; no vale para soso), `--target linux|soso`, `--error-format json`.
 
 ## Verificar (el test del pase tocado, no la suite entera por costumbre)
 
@@ -69,10 +70,11 @@ Flags: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `--target linux|soso
 |---------|---------|
 | Lexer / parser | `cargo test --test frontend --test parse_and_fmt` |
 | Tipos, ownership, efectos, lugares | `cargo test --test semantics` |
-| Drops | `cargo test --test drops` |
+| Drops | `cargo test --test drops --test memory_asan -- --test-threads=1` |
 | IR / fusión | `cargo test --test forward_ir` |
 | Runtime / kernels | `cargo test --test kernels --test exec_matmul --test exec_column --test exec_salt` |
 | LLVM / enlace | `cargo test --test run_hello` |
+| Memoria real (fugas, doble free, uso tras free) | `cargo test --test memory_asan -- --test-threads=1` |
 | Instrumentación | `cargo test --test instrument_events --test instrument_leak --test instrument_sal` |
 | CLI / módulos / caché / paquetes | `cargo test --test toolchain --test run_hello` |
 | Comportamiento del lenguaje | `cargo test --test lang` (+ `selfhost_meets_language_conformance` si el selfhost lo implementa) |

@@ -15,6 +15,7 @@ usage() {
   kernels      runtime / kernels
   llvm         LLVM / enlace           cargo test --test run_hello
   instrument   instrumentación
+  memory       memoria bajo ASan/LSan/UBSan  (serie)
   toolchain    CLI / módulos / caché / paquetes
   lang         comportamiento del lenguaje (tests/lang)
   builtins     builtins mal usados
@@ -38,6 +39,7 @@ case "$1" in
     kernels)    cargo test --test kernels --test exec_matmul --test exec_column --test exec_salt ;;
     llvm)       cargo test --test run_hello ;;
     instrument) cargo test --test instrument_events --test instrument_leak --test instrument_sal ;;
+    memory)     cargo test --test memory_asan -- --test-threads=1 ;;
     toolchain)  cargo test --test toolchain --test run_hello ;;
     lang)       cargo test --test lang ;;
     builtins)   cargo test --test builtin_errors ;;

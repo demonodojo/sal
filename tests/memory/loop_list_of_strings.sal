@@ -1,0 +1,16 @@
+# exit: 0
+# A List[String] built, read and dropped 10 000 times: the list frees every element once.
+fn round(i: Int) -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(int_to_str(i))
+    xs.push("a" + "b")
+    xs.push(int_to_str(i + 1))
+    xs.len()
+
+fn main() -> Int ! alloc
+    total = 0
+    i = 0
+    while i < 10000
+        total = total + round(i)
+        i = i + 1
+    total - 30000

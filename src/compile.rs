@@ -79,6 +79,9 @@ fn compile_program_at(
     if opts.toolchain.target == crate::target::Target::Soso && (opts.instrument || opts.device != "cpu") {
         return Err(vec![internal_diag("soso admite CPU sin instrumentación".into())]);
     }
+    if opts.toolchain.target == crate::target::Target::Soso && sanitize_enabled() {
+        return Err(vec![Diagnostic::new(ErrorCode::ETarget, "--sanitize no existe para el destino soso", Default::default())]);
+    }
     if let Some(path) = source_path {
         return compile_file_with_imports(program, path, opts);
     }
@@ -407,7 +410,7 @@ fn compile_obj_from_ll(
     if let Some(parent) = obj_path.parent() {
         fs::create_dir_all(parent).map_err(|e| vec![internal_diag(e.to_string())])?;
     }
-    let opt_flag = if opts.release { "-O3" } else { "-O0" };
+    let opt_flag = if opts.release && !sanitize_enabled() { "-O3" } else { "-O0" };
     let mut clang = Command::new(&opts.toolchain.cc);
     if opts.toolchain.target == crate::target::Target::Soso {
         clang.args(["--target=x86_64-unknown-none-elf", "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-fno-pic"]);
@@ -420,10 +423,26 @@ fn compile_obj_from_ll(
         .arg("-o")
         .arg(obj_path);
     clang.arg(opt_flag);
-    if opts.instrument || !opts.release {
+    if opts.instrument || !opts.release || sanitize_enabled() {
         clang.arg("-g");
     }
+    clang.args(sanitize_flags());
     run_cmd(clang)
+}
+
+/// `sal build --sanitize` (or `SAL_SANITIZE=1`): compile and link with ASan + UBSan (LSan comes
+/// with ASan on Linux), so leaks, double frees, use-after-free and overflows are reported by clang's
+/// runtime independently of `--instrument`. Objects are cached apart (`module.asan.o`).
+pub fn sanitize_enabled() -> bool {
+    std::env::var_os("SAL_SANITIZE").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+fn sanitize_flags() -> Vec<&'static str> {
+    if sanitize_enabled() {
+        vec!["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-sanitize-recover=undefined"]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Whether a physical device / native toolchain is present (no network).
@@ -497,7 +516,7 @@ fn link_binary_multi(
         run_cmd(link)?;
         return Ok(bin);
     }
-    let opt_flag = if opts.release { "-O3" } else { "-O0" };
+    let opt_flag = if opts.release && !sanitize_enabled() { "-O3" } else { "-O0" };
 
     let runtime = runtime_dir(root);
     let use_cuda = opts.device == "gpu" && device_toolchain_present("gpu") && command_exists("nvcc");
@@ -522,7 +541,7 @@ fn link_binary_multi(
 
     // Runtime C sources are compiled once per (source, flags) into cached
     // objects, so linking a program does not recompile ~3.5k lines of C.
-    let mut defs: Vec<&str> = Vec::new();
+    let mut defs: Vec<&str> = sanitize_flags();
     if gpu_obj.is_some() {
         defs.push("-DSAL_USE_CUDA=1");
     }
@@ -551,6 +570,7 @@ fn link_binary_multi(
         }
         link.arg("-lcudart");
     }
+    link.args(sanitize_flags());
     link.arg("-o").arg(&bin).arg(opt_flag).arg("-lm");
     run_cmd(link)?;
     Ok(bin)

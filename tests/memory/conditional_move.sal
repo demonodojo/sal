@@ -1,0 +1,18 @@
+# exit: 0
+# The String moves into the list on one branch only; the other branch must free it, never both.
+fn route(n: Int, sink: &mut List[String]) -> Int ! alloc
+    s = n.to_str()
+    if n % 2 == 0
+        sink.push(s)
+        1
+    else
+        s.len()
+
+fn main() -> Int ! alloc
+    sink = List.new[String]()
+    total = 0
+    i = 0
+    while i < 1000
+        total = total + route(i, &mut sink)
+        i = i + 1
+    sink.len() - 500 + total - total

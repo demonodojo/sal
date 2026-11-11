@@ -42,7 +42,7 @@ fn c_escape_go(s: &String, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
-        c = str_char(s, i)
+        c = s.char(i)
         if c == 92
             acc = acc + "\\\\"
             c_escape_go(s, i + 1, n, acc)
@@ -65,7 +65,7 @@ fn c_escape_go(s: &String, i: Int, n: Int, acc: String) -> String ! alloc
             acc = acc + c_octal(c)
             c_escape_go(s, i + 1, n, acc)
         else
-            piece = char_to_str(c)
+            piece = String.from_char(c)
             acc = acc + piece
             # free(piece)
             c_escape_go(s, i + 1, n, acc)

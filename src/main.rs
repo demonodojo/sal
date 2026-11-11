@@ -23,6 +23,9 @@ struct Cli {
     target: Option<Target>,
     #[arg(short = 'o', long, global = true)]
     output: Option<PathBuf>,
+    /// Build and link with ASan + UBSan (leaks, double free, use-after-free).
+    #[arg(long, global = true)]
+    sanitize: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -132,6 +135,9 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+    if cli.sanitize {
+        std::env::set_var("SAL_SANITIZE", "1");
+    }
     let toolchain = Toolchain::new(cli.target.unwrap_or_else(Target::host));
     let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     match cli.command {
