@@ -138,10 +138,9 @@ fn cmap_op(op: &String) -> String ! alloc
         "bor" => "|"
         "shl" => "<<"
         "shr" => ">>"
-        _ =>
-            "+"
+        _ => "+"
 
-            # Code understood by `sal_fop` in the C prelude (`op` without the `f` prefix).
+# Code understood by `sal_fop` in the C prelude (`op` without the `f` prefix).
 fn float_op_code(op: &String) -> Int ! alloc
     match op
         "add" => 0

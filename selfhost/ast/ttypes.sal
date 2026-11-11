@@ -86,7 +86,7 @@ fn tstructs_copy_go(xs: &List[TStruct], i: Int, n: Int, out: List[TStruct]) -> L
     if i >= n
         out
     else
-        _a = out.push(tstruct_copy(&xs.get(i)))
+        out.push(tstruct_copy(&xs.get(i)))
         tstructs_copy_go(xs, i + 1, n, out)
 
 fn tfields_copy(xs: &List[TField], i: Int, n: Int, out: List[TField]) -> List[TField] ! alloc
@@ -94,12 +94,12 @@ fn tfields_copy(xs: &List[TField], i: Int, n: Int, out: List[TField]) -> List[TF
         out
     else
         f = xs.get(i)
-        _a = out.push(TField(f.name.dup(), f.ty.dup()))
+        out.push(TField(f.name.dup(), f.ty.dup()))
         tfields_copy(xs, i + 1, n, out)
 
 fn strs_copy(xs: &List[String]) -> List[String] ! alloc
     out = List.new[String]()
-    _a = list_clone_str(xs, 0, xs.len(), &mut out)
+    list_clone_str(xs, 0, xs.len(), &mut out)
     out
 
 # ---- environment ----
@@ -339,12 +339,12 @@ fn tt_call_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) ->
 # The clone builtins of the containers and of the Copy scalars (`infer_typed_builtin` in
 # selfhost/sem/infer.sal): their result has the type of the receiver.
 fn tt_is_container_clone(name: &String) -> Int ! alloc
-    if name.eq("list_clone") + name.eq("dict_clone") + name.eq("bytes_clone") > 0
-        1
-    elsif name.eq("clone_copy") == 1
-        1
-    else
-        0
+    match name
+        "list_clone" => 1
+        "dict_clone" => 1
+        "bytes_clone" => 1
+        "clone_copy" => 1
+        _ => 0
 
 fn tt_block_tail_type(env: &TEnv, b: &TBlock) -> String ! alloc
     texpr_type(env, &b.tail)
@@ -375,13 +375,12 @@ fn tt_binary_type(env: &TEnv, op: &String, l: &Expr, r: &Expr) -> String ! alloc
         ""
 
 fn tt_unary_type(env: &TEnv, op: &String, inner: &Expr) -> String ! alloc
-    if op.eq("neg") == 1
-        texpr_type(env, inner)
-    elsif op.eq("not") == 1
-        ""
-    else
-        # `&x`, `&mut x`, `*x`: the C emitter erases references.
-        ty_deref(&texpr_type(env, inner))
+    match op
+        "neg" => texpr_type(env, inner)
+        "not" => ""
+        _ =>
+            # `&x`, `&mut x`, `*x`: the C emitter erases references.
+            ty_deref(&texpr_type(env, inner))
 
 # Type text of `e` under `env`, "" when unknown.
 fn texpr_type(env: &TEnv, e: &Expr) -> String ! alloc

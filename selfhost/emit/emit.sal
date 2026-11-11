@@ -1442,17 +1442,17 @@ fn emit_c_one_ir_fn(tf: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: 
 
 # One function at a time. The IR copies the strings it keeps, then C is emitted
 # (tensor C reads that IR), then the body is freed before the next function.
-fn emit_c_owned(tp: &mut TProgram, user: Int, denv: Int, names: Int, fm: Int, env: &mut TEnv, enums: &List[TEnum], seen: &List[TFn], allow_main: Int, linkable: Int, pool: &mut LitPool, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_c_owned(tp: &mut TProgram, user: Int, denv: Int, names: Int, fm: Int, env: &mut TEnv, enums: &List[TEnum], allow_main: Int, linkable: Int, pool: &mut LitPool, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         f = list_get(&mut tp.fns, i).clone()
         f.body = drops_body(&mut f, denv)
-        irf = lower_fn(&f, names, fm, env, enums, denv, &tp.fns, &tp.protocols, seen)
+        irf = lower_fn(&f, names, fm, env, enums, denv, &tp.fns, &tp.protocols)
         piece = emit_c_one_fn(&f, &irf, user, linkable, allow_main, pool, env, enums)
         old = f.body
         f.body = TBlock(list_new[TStmt](), XNone)
-        emit_c_owned(tp, user, denv, names, fm, env, enums, seen, allow_main, linkable, pool, i + 1, n, (acc + piece))
+        emit_c_owned(tp, user, denv, names, fm, env, enums, allow_main, linkable, pool, i + 1, n, (acc + piece))
 
 # The per-type glue of the module's structs, emitted after the user fns.
 fn emit_c_glue(tp: &TProgram, enums: &List[TEnum], user: Int, pool: &mut LitPool, i: Int, acc: String) -> String ! alloc
@@ -1487,7 +1487,7 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     denv = pool.drop_env
-    body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, seen, allow_main, linkable, &mut pool, 0, list_len(&tp.fns), "")
+    body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, allow_main, linkable, &mut pool, 0, list_len(&tp.fns), "")
     body = emit_c_glue(tp, &enums, callables, &mut pool, 0, body)
     _fe = list_free_shell(enums)
     lits = pool.globals.clone()
@@ -1571,9 +1571,9 @@ fn emit_c(src: &String) -> Res ! alloc
     emit_c_from_prog_result(src)
 
 # Struct scope-end field releases (espejo de `emit_struct_drops` en fuse.sal).
-fn emit_c_struct_scope_frees(tf: &TFn, body: &TBlock, denv: Int, user: Int, stmts: Int, tc: &mut Tc, fns: &List[TFn]) -> Int ! alloc
+fn emit_c_struct_scope_frees(tf: &TFn, body: &TBlock, denv: Int, user: Int, stmts: Int, tc: &mut Tc) -> Int ! alloc
     md = vec_get(denv, 1)
-    fr = fr_new(&tc.env, &tc.enums, md, &tf.params, fns)
+    fr = fr_new(&tc.env, &tc.enums, md, &tf.params, vec_get(denv, 4))
     _w = fr_blk(&fr, body)
     moved = vec_new()
     _m = mv_block(body, moved, md)

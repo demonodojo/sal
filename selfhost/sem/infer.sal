@@ -377,11 +377,10 @@ fn infer_builtin_type(b: &String) -> Int ! alloc
         "Option" => 1
         "Result" => 1
         "Unknown" => 1
-        _ =>
-            0
+        _ => 0
 
-            # `E_TYPE` for a parameter or return type that names nothing declared.
-            # Single-letter names (type parameters) and qualified names are not checked.
+# `E_TYPE` for a parameter or return type that names nothing declared.
+# Single-letter names (type parameters) and qualified names are not checked.
 fn infer_check_known(c: &mut IC, t: &String) -> Int ! alloc
     if str_len(t) == 0
         0

@@ -1,0 +1,12 @@
+fn unary(op: &String, v: Int) -> Int
+    if op.eq("neg") == 1
+        0 - v
+    elsif op.eq("not") == 1
+        0
+    else
+        # Any other operator keeps the value.
+        v
+
+# The next function keeps its comment.
+fn main() -> Int
+    unary(&"neg", 1)

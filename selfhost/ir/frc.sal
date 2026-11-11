@@ -27,7 +27,9 @@ fn assigned_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
 # The lists of the environment the walk needs, not the TEnv itself: a struct local's glue would
 # release the flat lists of a TEnv it only borrows. `bparams` is a fresh list of dup'd names: the
 # glue must not see the `TFn` being lowered, whose body is the same pointer the later `tc_block`
-# still copies.
+# still copies. `fsum` is the callee summary of the module graph (`fr_summary`), not the fns
+# themselves: an `FRC` is made per fn and per `if` branch, and a copy of every fn each time
+# would cost too much.
 struct FRC
     structs: List[TStruct]
     enums: List[TEnum]
@@ -40,10 +42,10 @@ struct FRC
     sm: Int
     ct: Int
     bparams: List[String]
-    fns: List[TFn]
+    fsum: Int
 
-fn fr_new(env: &TEnv, enums: &List[TEnum], md: Int, params: &List[TParam], fns: &List[TFn]) -> FRC ! alloc
-    FRC(tstructs_copy(&env.structs), enums.clone(), env.names.clone(), env.tys.clone(), md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fns.clone())
+fn fr_new(env: &TEnv, enums: &List[TEnum], md: Int, params: &List[TParam], fsum: Int) -> FRC ! alloc
+    FRC(tstructs_copy(&env.structs), enums.clone(), env.names.clone(), env.tys.clone(), md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fsum)
 
 # Names of parameters whose mode is not take. Each name is dup'd, so freeing this list does not
 # free the function the caller still owns.
@@ -70,7 +72,7 @@ method FRC.alias(&self, name: &String, e: &Expr) -> Int ! alloc
         _ => 0
 
 method FRC.alias_call(&self, name: &String, fname: &String, args: &List[Expr]) -> Int ! alloc
-    if self.returns_borrowed(args, &fr_returned_params(&self.fns, fname), 0) == 1
+    if self.returns_borrowed(args, &fr_returned_params(self.fsum, fname), 0) == 1
         fr_add(self.al, name)
     elsif fname.eq("list_get") == 1
         t = trim_type_piece(&self.type_of(name))
@@ -140,73 +142,54 @@ method FRC.call_shares_arg(&self, fname: &String, args: &List[Expr], i: Int, n: 
         0
     elsif self.arg_is_alias(&args.get(i)) == 0
         self.call_shares_arg(fname, args, i + 1, n)
-    elsif fr_keeps_param(&self.fns, fname, i) == 1
+    elsif fr_keeps_param(self.fsum, fname, i) == 1
         self.call_shares_arg(fname, args, i + 1, n)
     else
         1
 
-# The parameter indices `fname` returns as the value of some branch tail (`returns_param_map`).
-# `fns` is every function of the module graph: the callee may be imported.
-fn fr_returned_params(fns: &List[TFn], fname: &String) -> List[Int] ! alloc
-    fr_returned_go(fns, fname, 0, fns.len())
+# What the field reads need of the callees, computed once per module graph (the callee may be
+# imported; the first fn of a name wins): `r:<fn>:<i>` when `fn` returns parameter `i` as the
+# value of some branch tail (`returns_param_map`), `k:<fn>:<i>` when its body uses parameter `i`
+# whole, and `n:<fn>` its parameter count.
+fn fr_summary(fns: &List[TFn]) -> Int ! alloc
+    m = map_new()
+    fr_summary_go(m, fns, 0, fns.len())
+    m
 
-fn fr_returned_go(fns: &List[TFn], fname: &String, i: Int, n: Int) -> List[Int] ! alloc
+fn fr_summary_go(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
-        List.new[Int]()
+        0
     else
         f = fns.get(i)
-        if f.name.eq(fname) == 1
-            fr_returned_idx(&f.params, &f.body, 0, f.params.len(), List.new[Int]())
-        else
-            fr_returned_go(fns, fname, i + 1, n)
+        if map_get(m, str_own(&("n:" + f.name))) == 0
+            map_put(m, str_own(&("n:" + f.name)), f.params.len() + 1)
+            fr_summary_params(m, &f, 0, f.params.len())
+        fr_summary_go(m, fns, i + 1, n)
 
-fn fr_returned_idx(params: &List[TParam], body: &TBlock, i: Int, n: Int, out: List[Int]) -> List[Int] ! alloc
-    if i >= n
-        out
-    else
-        fr_returned_push(&mut out, body, &params.get(i).name, i)
-        fr_returned_idx(params, body, i + 1, n, out)
-
-fn fr_returned_push(out: &mut List[Int], body: &TBlock, name: &String, i: Int) -> Int ! alloc
-    if fr_tail_is_param(&body.tail, name) == 1
-        out.push(i)
+fn fr_summary_params(m: Int, f: &TFn, j: Int, n: Int) -> Int ! alloc
+    if j >= n
         0
     else
-        0
+        name = f.params.get(j).name.dup()
+        if tail_is_param(&f.body.tail, &name) == 1
+            map_put(m, str_own(&("r:" + f.name + ":" + j.to_str())), 1)
+        if fr_block_uses(&f.body, &name) == 1
+            map_put(m, str_own(&("k:" + f.name + ":" + j.to_str())), 1)
+        fr_summary_params(m, f, j + 1, n)
 
-# 1 when `e` is `name`, or an `if`/`match` whose value is `name` in some branch.
-fn fr_tail_is_param(e: &Expr, name: &String) -> Int ! alloc
-    match e
-        XIdent(nm) => nm.eq(name)
-        XIf(cond, then_b, else_b, has_else, elsifs) => fr_if_returns(&then_b, &else_b, has_else, &elsifs, name)
-        XMatch(scrut, arms) => fr_arms_return(&arms, name, 0, arms.len())
-        _ => 0
+# The parameter indices `fname` returns as the value of some branch tail (`returns_param_map`).
+fn fr_returned_params(fsum: Int, fname: &String) -> List[Int] ! alloc
+    out = List.new[Int]()
+    fr_returned_go(fsum, fname, 0, map_get(fsum, str_own(&("n:" + fname))) - 1, &mut out)
+    out
 
-fn fr_if_returns(then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], name: &String) -> Int ! alloc
-    if fr_tail_is_param(&then_b.tail, name) == 1
-        1
-    elsif fr_elsifs_return(elsifs, name, 0, elsifs.len()) == 1
-        1
-    elsif has_else == 1
-        fr_tail_is_param(&else_b.tail, name)
-    else
-        0
-
-fn fr_elsifs_return(elsifs: &List[TElsif], name: &String, i: Int, n: Int) -> Int ! alloc
+fn fr_returned_go(fsum: Int, fname: &String, i: Int, n: Int, out: &mut List[Int]) -> Int ! alloc
     if i >= n
         0
-    elsif fr_tail_is_param(&elsifs.get(i).body.tail, name) == 1
-        1
     else
-        fr_elsifs_return(elsifs, name, i + 1, n)
-
-fn fr_arms_return(arms: &List[TArm], name: &String, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    elsif fr_tail_is_param(&tarm_value(&arms.get(i)), name) == 1
-        1
-    else
-        fr_arms_return(arms, name, i + 1, n)
+        if map_get(fsum, str_own(&("r:" + fname + ":" + i.to_str()))) == 1
+            out.push(i)
+        fr_returned_go(fsum, fname, i + 1, n, out)
 
 # 1 when the argument at one of `idx` is a borrowed parameter of the function being lowered, or a
 # field read off a value (`call_aliases_borrowed_arg`).
@@ -262,20 +245,8 @@ fn fr_add(set: Int, name: &String) -> Int ! alloc
         0
 
 # 1 when `fname`'s parameter `index` is stored or returned as a whole, not only through a field.
-fn fr_keeps_param(fns: &List[TFn], fname: &String, index: Int) -> Int ! alloc
-    fr_keeps_go(fns, fname, index, 0, fns.len())
-
-fn fr_keeps_go(fns: &List[TFn], fname: &String, index: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        f = fns.get(i)
-        if f.name.eq(fname) == 0
-            fr_keeps_go(fns, fname, index, i + 1, n)
-        elsif index >= f.params.len()
-            0
-        else
-            fr_block_uses(&f.body, &f.params.get(index).name)
+fn fr_keeps_param(fsum: Int, fname: &String, index: Int) -> Int ! alloc
+    map_get(fsum, str_own(&("k:" + fname + ":" + index.to_str())))
 
 fn fr_block_uses(b: &TBlock, name: &String) -> Int ! alloc
     if fr_stmts_use(&b.stmts, name, 0, b.stmts.len()) == 1

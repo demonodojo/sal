@@ -17,7 +17,7 @@ fn copy_into(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
         copy_into(src, dst, i + 1, n)
 
 # Register the shape of SSA value `ssa`; dims use -1 for a dynamic axis.
-fn reg_tensor(cx: &Cx, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) -> Int ! alloc
+fn reg_tensor(cx: &mut Cx, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) -> Int ! alloc
     b = bind_new(ssa, ssa)
     _t = bind_set_tensor(b, 1)
     _e = bind_set_elem(b, elem)
@@ -29,7 +29,7 @@ fn reg_tensor(cx: &Cx, ssa: Int, elem: Int, place: Int, dims: Int, conc: Int) ->
     0
 
 # Same shape as `src`, for results that keep their operand's type.
-fn reg_like(cx: &Cx, ssa: Int, src: Int) -> Int ! alloc
+fn reg_like(cx: &mut Cx, ssa: Int, src: Int) -> Int ! alloc
     if src == 0
         0
     else
@@ -37,7 +37,7 @@ fn reg_like(cx: &Cx, ssa: Int, src: Int) -> Int ! alloc
 
 # `ir_rebind` lives in ir.sal (returns `Inst`).
 
-fn push_call(cx: &Cx, dest: Int, fname: &String, args: Int, has_dest: Int) -> Int ! alloc
+fn push_call(cx: &mut Cx, dest: Int, fname: &String, args: Int, has_dest: Int) -> Int ! alloc
     ir_push(cx, ir_call(dest, str_own(fname), args, has_dest))
 
 fn const_dim(cx: &mut Cx, n: Int) -> Int ! alloc
@@ -115,7 +115,7 @@ fn lower_matmul_op(cx: &mut Cx, arg_names: Int) -> Int ! alloc
     _rg = lower_matmul_register(cx, d, lb, rb)
     d
 
-fn lower_matmul_register(cx: &Cx, d: Int, lb: Int, rb: Int) -> Int ! alloc
+fn lower_matmul_register(cx: &mut Cx, d: Int, lb: Int, rb: Int) -> Int ! alloc
     if lb != 0
         if rb != 0
             if bind_ndims(lb) >= 2
@@ -164,7 +164,7 @@ fn int_args(args: &List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
         _p = int_arg_push(&list_get(args, i), out)
         int_args(args, i + 1, n, out)
 
-fn lower_reshape_op(cx: &Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_reshape_op(cx: &mut Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
     src = vec_get(arg_names, 0)
     b = find_tensor(cx, src)
     if b != 0
@@ -226,7 +226,7 @@ fn lower_transpose_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     else
         lower_transpose_view(cx, d, src, b)
 
-fn lower_transpose_view(cx: &Cx, d: Int, src: Int, b: Int) -> Int ! alloc
+fn lower_transpose_view(cx: &mut Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     if b != 0
         dims = vec_copy(bind_dims(b))
         n = vec_len(dims)
@@ -242,18 +242,18 @@ fn lower_transpose_view(cx: &Cx, d: Int, src: Int, b: Int) -> Int ! alloc
     ir_push(cx, ir_rebind(d, src))
 
 # softmax(x, axis) with a literal axis; the shape is registered either way.
-fn lower_softmax_axis_op(cx: &Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_softmax_axis_op(cx: &mut Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     _r = reg_like(cx, d, b)
     softmax_axis_call(cx, d, input, b, &list_get(args, 1))
 
-fn softmax_axis_call(cx: &Cx, d: Int, input: Int, b: Int, ax: &Expr) -> Int ! alloc
+fn softmax_axis_call(cx: &mut Cx, d: Int, input: Int, b: Int, ax: &Expr) -> Int ! alloc
     match ax
         XInt(v) => softmax_axis_emit(cx, d, input, b, v)
         _ => 0
 
-fn softmax_axis_emit(cx: &Cx, d: Int, input: Int, b: Int, axis: Int) -> Int ! alloc
+fn softmax_axis_emit(cx: &mut Cx, d: Int, input: Int, b: Int, axis: Int) -> Int ! alloc
     argv = vec_new()
     _a = vec_push(argv, input)
     _b = vec_push(argv, int_text(axis))
@@ -284,7 +284,7 @@ fn conc_at(b: Int, i: Int) -> Int ! alloc
         0 - 1
 
 # `reduce(x, axis)` with a literal axis: the runtime reduces the rows or the columns of the matrix.
-fn lower_reduce_op(cx: &Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
+fn lower_reduce_op(cx: &mut Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     argv = vec_new()
@@ -295,7 +295,7 @@ fn lower_reduce_op(cx: &Cx, d: Int, args: &List[Expr], arg_names: Int) -> Int ! 
     1
 
 # `relu(x)`: the runtime maps the buffer; a shape not known at compile time is a runtime panic.
-fn lower_relu_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_relu_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     b = find_tensor(cx, input)
     argv = vec_new()
@@ -324,7 +324,7 @@ fn dim_lit_or_name(b: Int, name: Int, idx: Int, fallback: &String) -> Int ! allo
         else
             axis_len_dim(name, idx)
 
-fn lower_attention_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_attention_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     q = vec_get(arg_names, 0)
     k = vec_get(arg_names, 1)
     qb = find_tensor(cx, q)
@@ -384,7 +384,7 @@ fn lower_rope_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     _p = push_call(cx, d, &"sal_rope", args, 1)
     reg_like(cx, d, b)
 
-fn lower_silu_op(cx: &Cx, d: Int, arg_names: Int) -> Int ! alloc
+fn lower_silu_op(cx: &mut Cx, d: Int, arg_names: Int) -> Int ! alloc
     input = vec_get(arg_names, 0)
     args = vec_new()
     _a = vec_push(args, input)

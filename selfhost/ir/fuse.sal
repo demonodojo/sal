@@ -143,18 +143,18 @@ fn lower_str_lit(cx: &mut Cx, s: &String) -> Int ! alloc
 
 fn lower_tensor_lit(cx: &mut Cx, data: &List[String]) -> Int ! alloc
     d = fresh(cx)
-    lit = vec_new()
-    _l0 = vec_push(lit, d)
-    _l1 = vec_push(lit, strs_vec(data, 0, list_len(data), vec_new()))
-    _l2 = vec_push(cx_literals(cx), lit)
+    parts = List.new[String]()
+    _l1 = strs_list(data, 0, list_len(data), &mut parts)
+    lits = cx_literals(cx)
+    lits.push(Lit(ir_s(d), parts))
     d
 
-fn strs_vec(xs: &List[String], i: Int, n: Int, out: Int) -> Int ! alloc
+fn strs_list(xs: &List[String], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
     if i >= n
-        out
+        0
     else
-        _p = vec_push(out, str_own(&list_get(xs, i)))
-        strs_vec(xs, i + 1, n, out)
+        out.push(list_get(xs, i).dup())
+        strs_list(xs, i + 1, n, out)
 
 # `a && b` is `if a then (b != 0) else false`; `a || b` is `if a then true else (b != 0)`. The
 # right operand runs only on the branch that needs it, as in the bootstrap (`ir.rs`).
@@ -298,7 +298,7 @@ fn ctor_rename_owned(a: &Expr) -> Expr ! alloc
         _ => tc_expr(a)
 
 # The result of `to <place> x` is a tensor of x's shape on that place.
-fn register_to_tensor(cx: &Cx, d: Int, src: Int, place: Int) -> Int ! alloc
+fn register_to_tensor(cx: &mut Cx, d: Int, src: Int, place: Int) -> Int ! alloc
     b = find_tensor(cx, src)
     if b == 0
         0
@@ -359,17 +359,17 @@ fn lower_on(cx: &mut Cx, place: &String, body: &TBlock) -> Int ! alloc
     _e = estimate_peak(reg, cx)
     if has_col == 0
         if has_mm == 0
-            _r = vec_push(cx_regions(cx), reg)
+            _r = cx_regions(cx).push(ti_region(reg))
             lower_block_value(cx, body)
         else
             d = lower_on_matmul(cx, ops, 0, vec_len(ops))
-            _r = vec_push(cx_regions(cx), reg)
+            _r = cx_regions(cx).push(ti_region(reg))
             if has_ep == 1
                 lower_fused_epilogue_out(cx, ops, d, 0, vec_len(ops))
             else
                 d
     else
-        _r = vec_push(cx_regions(cx), reg)
+        _r = cx_regions(cx).push(ti_region(reg))
         lower_block_value(cx, body)
 
 fn ops_has_kind(ops: Int, kind: Int, i: Int, n: Int) -> Int ! alloc
@@ -600,9 +600,9 @@ fn lower_try(cx: &mut Cx, inner: &Expr) -> Int ! alloc
         cond = fresh(cx)
         _c = ir_push(cx, ir_bin(cond, str_as_int(&"eq"), low, tagc))
         join = fresh(cx)
-        then_body = vec_new()
-        _d = vec_push(then_body, inst_pack(&ir_ret(v)))
-        _p = ir_push(cx, ir_if(join, cond, then_body, vec_new(), v, v, vec_new()))
+        then_body = List.new[Inst]()
+        _d = then_body.push(ir_ret(v))
+        _p = ir_push(cx, ir_if(join, cond, then_body, List.new[Inst](), v, v, List.new[Inst]()))
         payload = fresh(cx)
         _q = ir_push(cx, ir_efield(payload, v, 0))
         payload
@@ -673,18 +673,18 @@ fn lower_map_lambda_go(cx: &mut Cx, src: Int, arg: Int, param_name: &String, bod
 
 # `load("path")` with a literal path becomes `sal_load("path", cpu)`; 0 when the first
 # argument is not a string literal.
-fn lower_load_literal(cx: &Cx, d: Int, args: &List[Expr]) -> Int ! alloc
+fn lower_load_literal(cx: &mut Cx, d: Int, args: &List[Expr]) -> Int ! alloc
     if list_len(args) == 0
         0
     else
         load_literal_of(cx, d, &list_get(args, 0))
 
-fn load_literal_of(cx: &Cx, d: Int, a0: &Expr) -> Int ! alloc
+fn load_literal_of(cx: &mut Cx, d: Int, a0: &Expr) -> Int ! alloc
     match a0
         XStr(s) => load_literal_emit(cx, d, &s)
         _ => 0
 
-fn load_literal_emit(cx: &Cx, d: Int, s: &String) -> Int ! alloc
+fn load_literal_emit(cx: &mut Cx, d: Int, s: &String) -> Int ! alloc
     q1 = "\""
     q2 = q1 + s
     qe = "\""
@@ -774,20 +774,13 @@ fn struct_clone_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -
     cx = cx_new(0, map_new(), env, enums, &fns0, &prots0)
     fields = vec_new()
     _c = clone_fields(&mut cx, sd, 0, sd.fields.len(), fields)
-    insts = cx_insts(&cx)
+    insts = cx_end_body(&mut cx)
     if sd.fields.len() == 1
-        _t = vec_push(insts, inst_pack(&ir_ret(vec_get(fields, 0))))
+        _t = insts.push(ir_ret(vec_get(fields, 0)))
     else
-        _g = vec_push(insts, inst_pack(&ir_agg(str_as_int(&"r"), str_own(&sd.name), fields)))
-        _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
-    out = vec_new()
-    _a = vec_push(out, str_own(&("clone." + sd.name)))
-    _b = vec_push(out, vec_new())
-    _d = vec_push(out, insts)
-    _e = vec_push(out, vec_new())
-    _h = vec_push(out, vec_new())
-    ir_own_fn(out)
-    ti_fn(out)
+        _g = insts.push(ir_agg(str_as_int(&"r"), str_own(&sd.name), fields))
+        _t = insts.push(ir_ret(str_as_int(&"r")))
+    IrFn("clone." + sd.name, List.new[String](), insts, List.new[Region](), List.new[Lit]())
 
 fn clone_fields(cx: &mut Cx, sd: &TStruct, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
@@ -930,12 +923,13 @@ fn lower_variant_ctor(cx: &mut Cx, fname: Int, args: &List[Expr]) -> Int ! alloc
     rec = variant_rec(cx, fname)
     arg_names = lower_args(cx, args, 0, list_len(args), vec_new())
     d = fresh(cx)
-    mask = enum_owned_mask(cx, args, 0, list_len(args), 1, 0)
+    mask = enum_owned_mask(cx, &str_from_int(fname), args, 0, list_len(args), 1, 0)
     _p = ir_push(cx, ir_emake(d, vec_get(rec, 0), vec_get(rec, 1), arg_names, mask))
     d
 
-# Two bits per field (first 28): 1 a fresh value, 2 a nested variant with fields.
-fn enum_owned_mask(cx: &Cx, args: &List[Expr], i: Int, n: Int, scale: Int, acc: Int) -> Int ! alloc
+# Two bits per field (first 28): 1 a fresh value or a local moved into a `String` field, 2 a
+# nested variant with fields (`enum_owned_mask` in src/ir.rs).
+fn enum_owned_mask(cx: &Cx, vname: &String, args: &List[Expr], i: Int, n: Int, scale: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
     elsif i >= 28
@@ -944,9 +938,23 @@ fn enum_owned_mask(cx: &Cx, args: &List[Expr], i: Int, n: Int, scale: Int, acc: 
         a = list_get(args, i)
         kind = if dx_is_fresh_value(&a) == 1
             1
+        elsif dx_is_ident(&a) == 1 && variant_field_is_string(cx, vname, i) == 1
+            1
         else
             nested_variant_kind(cx, &a)
-        enum_owned_mask(cx, args, i + 1, n, scale * 4, acc + kind * scale)
+        enum_owned_mask(cx, vname, args, i + 1, n, scale * 4, acc + kind * scale)
+
+# Field `i` of the variant `vname` is declared `String`.
+fn variant_field_is_string(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
+    rec = variant_rec(cx, str_own(vname))
+    if rec == 0
+        0
+    else
+        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
+        if en < 0
+            0
+        else
+            trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0)).eq("String")
 
 fn nested_variant_kind(cx: &Cx, a: &Expr) -> Int ! alloc
     match a
@@ -987,12 +995,11 @@ fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int 
     arm = arms.get(i)
     pat = arm.pat.clone()
     cond = match_arm_cond(cx, scrut, &pat)
-    saved = cx_insts(cx)
     binds = cx_binds(cx)
     n0 = vec_len(binds)
     base_snap = snap_binds(binds, 0, n0, vec_new())
     slen = tenv_len(&cx.env)
-    _a = cx_set_insts(cx, vec_new())
+    _a = cx_begin_body(cx)
     if pat.kind == 1
         _bd = cx_bind(cx, str_own(&pat.name), scrut)
     else
@@ -1001,27 +1008,27 @@ fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int 
         lower_block_value(cx, &arm.suite)
     else
         lower_expr(cx, &arm.body)
-    then_body = cx_insts(cx)
+    then_body = cx_end_body(cx)
     then_snap = snap_binds(binds, 0, n0, vec_new())
     _k1 = kill_new_binds(cx, n0)
     _r1 = restore_binds(binds, base_snap, 0, n0)
     _rs = tenv_truncate(&mut cx.env, slen)
-    _b = cx_set_insts(cx, vec_new())
+    _b = cx_begin_body(cx)
     else_val = if i + 1 >= arms.len()
         str_as_int(&"0")
     elsif match_tail_switch(arms, i + 1) == 1 && arms_assign_outer(cx, arms, i + 1) == 0
         lower_match_switch(cx, scrut, arms, i + 1)
     else
         lower_match_chain(cx, scrut, arms, i + 1)
-    else_body = cx_insts(cx)
+    else_body = cx_end_body(cx)
     else_snap = snap_binds(binds, 0, n0, vec_new())
     _k2 = kill_new_binds(cx, n0)
     _r2 = restore_binds(binds, base_snap, 0, n0)
     _rs2 = tenv_truncate(&mut cx.env, slen)
-    _c = cx_set_insts(cx, saved)
     d = fresh(cx)
     order = sorted_live_binds(cx, n0)
-    carried = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, vec_new())
+    carried = List.new[Inst]()
+    _mc = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, &mut carried)
     _p = ir_push(cx, ir_if(d, cond, then_body, else_body, then_val, else_val, carried))
     d
 
@@ -1079,50 +1086,45 @@ fn match_switchable(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
         match_switchable(arms, i + 1, n)
 
 fn lower_match_switch(cx: &mut Cx, scrut: Int, arms: &List[TArm], start: Int) -> Int ! alloc
-    saved = cx_insts(cx)
     binds = cx_binds(cx)
     n0 = vec_len(binds)
     base_snap = snap_binds(binds, 0, n0, vec_new())
     slen = tenv_len(&cx.env)
-    sw = vec_new()
-    dflt = vec_new()
-    _a = vec_push(dflt, vec_new())
-    _b = vec_push(dflt, str_as_int(&"0"))
-    _c = lower_switch_arms(cx, scrut, arms, start, list_len(arms), n0, base_snap, slen, sw, dflt)
-    _d = cx_set_insts(cx, saved)
+    sw = List.new[Inst]()
+    dflt = List.new[List[Inst]]()
+    _a = dflt.push(List.new[Inst]())
+    dv = List.new[Int]()
+    _b = dv.push(str_as_int(&"0"))
+    _c = lower_switch_arms(cx, scrut, arms, start, list_len(arms), n0, base_snap, slen, &mut sw, &mut dflt, &mut dv)
     d = fresh(cx)
-    _p = ir_push(cx, ir_switch(d, scrut, sw, vec_get(dflt, 0), vec_get(dflt, 1)))
+    _p = ir_push(cx, ir_switch(d, scrut, sw, dflt.pop(), dv.get(0)))
     d
 
-fn lower_switch_arms(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int, n0: Int, snap: Int, slen: Int, sw: Int, dflt: Int) -> Int ! alloc
+fn lower_switch_arms(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int, n0: Int, snap: Int, slen: Int, sw: &mut List[Inst], dflt: &mut List[List[Inst]], dv: &mut List[Int]) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
         pat = arm.pat.clone()
         k = pat.kind
-        _i = cx_set_insts(cx, vec_new())
+        _i = cx_begin_body(cx)
         tag = switch_pattern_tag(cx, &pat)
         _p = bind_variant_payloads(cx, scrut, &pat.name, &pat.args, 0, list_len(&pat.args), k)
         val = if arm.has_suite == 1
             lower_block_value(cx, &arm.suite)
         else
             lower_expr(cx, &arm.body)
-        body = cx_insts(cx)
+        body = cx_end_body(cx)
         _k = kill_new_binds(cx, n0)
         _r = restore_binds(cx_binds(cx), snap, 0, n0)
         _s = tenv_truncate(&mut cx.env, slen)
         if k == 0
-            _x = vec_set(dflt, 0, body)
-            _y = vec_set(dflt, 1, val)
-            lower_switch_arms(cx, scrut, arms, i + 1, n, n0, snap, slen, sw, dflt)
+            _x = dflt.set(0, body)
+            _y = dv.set(0, val)
+            lower_switch_arms(cx, scrut, arms, i + 1, n, n0, snap, slen, sw, dflt, dv)
         else
-            rec = vec_new()
-            _t1 = vec_push(rec, tag)
-            _t2 = vec_push(rec, body)
-            _t3 = vec_push(rec, val)
-            _t4 = vec_push(sw, rec)
-            lower_switch_arms(cx, scrut, arms, i + 1, n, n0, snap, slen, sw, dflt)
+            _t4 = sw.push(ir_arm(tag, body, val))
+            lower_switch_arms(cx, scrut, arms, i + 1, n, n0, snap, slen, sw, dflt, dv)
 
 # Low tag byte of the variant a pattern names; a bare binding or `_` is 0.
 fn switch_pattern_tag(cx: &Cx, pat: &TPat) -> Int ! alloc
@@ -1219,33 +1221,225 @@ fn variant_field_text(vs: &List[TVariant], vname: &String, i: Int, j: Int) -> St
 
 fn lower_if(cx: &mut Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs: &List[TElsif]) -> Int ! alloc
     c = lower_expr(cx, cond)
-    saved = cx_insts(cx)
     binds = cx_binds(cx)
     n0 = vec_len(binds)
     base_snap = snap_binds(binds, 0, n0, vec_new())
     slen = tenv_len(&cx.env)
-    _a = cx_set_insts(cx, vec_new())
-    then_val = lower_block_value(cx, then_b)
-    then_body = cx_insts(cx)
+    _a = cx_begin_body(cx)
+    then_val = lower_if_branch(cx, then_b)
+    then_body = cx_end_body(cx)
     then_snap = snap_binds(binds, 0, n0, vec_new())
     _k1 = kill_new_binds(cx, n0)
     _r1 = restore_binds(binds, base_snap, 0, n0)
     _rs = tenv_truncate(&mut cx.env, slen)
-    _b = cx_set_insts(cx, vec_new())
+    _b = cx_begin_body(cx)
     else_b = elsifs_else_block(else_b0, elsifs)
-    else_val = lower_block_value(cx, &else_b)
+    else_val = lower_if_branch(cx, &else_b)
     keep_block(&else_b)
-    else_body = cx_insts(cx)
+    else_body = cx_end_body(cx)
     else_snap = snap_binds(binds, 0, n0, vec_new())
     _k2 = kill_new_binds(cx, n0)
     _r2 = restore_binds(binds, base_snap, 0, n0)
     _rs2 = tenv_truncate(&mut cx.env, slen)
-    _c = cx_set_insts(cx, saved)
     d = fresh(cx)
     order = sorted_live_binds(cx, n0)
-    carried = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, vec_new())
+    carried = List.new[Inst]()
+    _mc = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, &mut carried)
     _p = ir_push(cx, ir_if(d, c, then_body, else_body, then_val, else_val, carried))
     d
+
+# ---- struct locals of an `if` branch (`block_struct_drops`, `return_struct_drops` in src/ir.rs) ----
+# One branch of an `if`. The struct locals it binds at its top level are released when it ends;
+# a branch that ends in `return` released them at the `return` (`lower_stmt_return`).
+fn lower_if_branch(cx: &mut Cx, b: &TBlock) -> Int ! alloc
+    slen = tenv_len(&cx.env)
+    tracked = block_has_return(b)
+    if tracked == 1
+        cx.open_idx.push(cx.open.len())
+        cx.open.push(tc_block(b))
+        cx.open_len.push(slen)
+    stopped = lower_stmts(cx, &b.stmts, 0, b.stmts.len())
+    v = if stopped == 1
+        fresh(cx)
+    else
+        lower_value_tail(cx, &b.tail)
+    if tracked == 1
+        _i = cx.open_idx.pop()
+        _l = cx.open_len.pop()
+    if stopped == 0
+        scope_struct_drops(cx, b, slen, tenv_len(&cx.env), slen)
+    v
+
+# A `return` inside open branches leaves each of them (innermost first) and the fn body: their
+# struct locals are released before the value goes out. The `return` is part of every scope, so a
+# local it moves stays. A `return` outside every branch is left to the end of the fn.
+fn return_struct_drops(cx: &mut Cx, st: &TStmt) -> Int ! alloc
+    depth = cx.open_idx.len()
+    if depth == 0
+        0
+    else
+        rs = List.new[TStmt]()
+        rs.push(tc_stmt(st))
+        return_drops_open(cx, &rs, depth - 1, tenv_len(&cx.env))
+        body = tc_block(&cx.fn_scope.get(0))
+        return_drops_scope(cx, &body, &rs, cx.nparams, cx.open_len.get(0), 0)
+
+fn return_drops_open(cx: &mut Cx, rs: &List[TStmt], k: Int, hi: Int) -> Int ! alloc
+    if k < 0
+        0
+    else
+        b = tc_block(&cx.open.get(cx.open_idx.get(k)))
+        lo = cx.open_len.get(k)
+        return_drops_scope(cx, &b, rs, lo, hi, lo)
+        return_drops_open(cx, rs, k - 1, lo)
+
+# The scope `b` with the `return` appended, over the locals `env` bound in it (`lo`..`hi`).
+fn return_drops_scope(cx: &mut Cx, b: &TBlock, rs: &List[TStmt], lo: Int, hi: Int, outer: Int) -> Int ! alloc
+    stmts = List.new[TStmt]()
+    stmts_copy_into(&b.stmts, 0, b.stmts.len(), &mut stmts)
+    stmts_copy_into(rs, 0, rs.len(), &mut stmts)
+    synth = TBlock(stmts, tc_expr(&b.tail))
+    scope_struct_drops(cx, &synth, lo, hi, outer)
+
+fn stmts_copy_into(xs: &List[TStmt], i: Int, n: Int, out: &mut List[TStmt]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        out.push(tc_stmt(&xs.get(i)))
+        stmts_copy_into(xs, i + 1, n, out)
+
+# Releases the struct locals of `env` from `lo` to `hi` that the scope `b` neither moves nor
+# aliases (`emit_struct_string_drops` over the scope alone, with no parameters). The names of
+# `env` before `outer` were bound outside the scope: one the scope only reassigns (no `let`)
+# keeps its new value past it, so it is not released here (0 for a fn body).
+fn scope_struct_drops(cx: &mut Cx, b: &TBlock, lo: Int, hi: Int, outer: Int) -> Int ! alloc
+    no_params = List.new[TParam]()
+    all = drop_candidates_env(&cx.env, &no_params, vec_new(), lo, hi, vec_new())
+    names = scope_owned_names(cx, b, all, 0, vec_len(all), outer, vec_new())
+    if vec_len(names) == 0
+        0
+    else
+        moved = vec_new()
+        _m = mv_block(b, moved, cx.md)
+        fr = fr_new(&cx.env, &cx.enums, cx.md, &no_params, cx.fsum)
+        _r = fr_blk(&fr, b)
+        drop_locals(cx, &fr, names, moved, 0, vec_len(names))
+
+# The candidates whose value is a struct the local owns (`value_struct` in src/ir.rs): a field
+# read off something that is not a local (`list_get(xs, i).f`, a hoisted temporary) is not.
+fn scope_owned_names(cx: &Cx, b: &TBlock, names: Int, i: Int, n: Int, outer: Int, out: Int) -> Int ! alloc
+    if i >= n
+        out
+    else
+        nm = vec_get(names, i)
+        name = str_from_int(nm)
+        if scope_binds_foreign_field(&b.stmts, &name, 0, b.stmts.len()) == 1
+            0
+        elsif scope_names_has(&cx.env.names, &name, 0, outer) == 1 && block_lets(b, &name) == 0
+            0
+        else
+            vec_push(out, nm)
+        scope_owned_names(cx, b, names, i + 1, n, outer, out)
+
+fn scope_names_has(xs: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif xs.get(i).eq(name) == 1
+        1
+    else
+        scope_names_has(xs, name, i + 1, n)
+
+# `b` binds `name` with `let` at its top level or in a `while` body (`let_bound_names`).
+fn block_lets(b: &TBlock, name: &String) -> Int ! alloc
+    stmts_let(&b.stmts, name, 0, b.stmts.len())
+
+fn stmts_let(xs: &List[TStmt], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = xs.get(i)
+        hit = if st.kind == 1 && st.is_let == 1 && st.name.eq(name) == 1
+            1
+        else
+            match st.expr
+                XWhile(c, body) => block_lets(&body, name)
+                _ => 0
+        if hit == 1
+            1
+        else
+            stmts_let(xs, name, i + 1, n)
+
+fn scope_binds_foreign_field(xs: &List[TStmt], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = xs.get(i)
+        if st.kind == 1 && st.name.eq(name) == 1 && expr_is_foreign_field(&st.expr) == 1
+            1
+        else
+            scope_binds_foreign_field(xs, name, i + 1, n)
+
+fn expr_is_foreign_field(e: &Expr) -> Int ! alloc
+    match e
+        XField(base, field) => 1 - dx_is_ident(&base)
+        _ => 0
+
+# 1 when a `return` appears anywhere in `b` (nested blocks included).
+fn block_has_return(b: &TBlock) -> Int ! alloc
+    if stmts_have_return(&b.stmts, 0, b.stmts.len()) == 1
+        1
+    else
+        expr_has_return(&b.tail)
+
+fn stmts_have_return(xs: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = xs.get(i)
+        if st.kind == 2
+            1
+        elsif expr_has_return(&st.expr) == 1
+            1
+        else
+            stmts_have_return(xs, i + 1, n)
+
+fn expr_has_return(e: &Expr) -> Int ! alloc
+    match e
+        XIf(c, t, el, has_else, elsifs) => if_has_return(&t, &el, &elsifs)
+        XWhile(c, body) => block_has_return(&body)
+        XMatch(scrut, arms) => arms_have_return(&arms, 0, arms.len())
+        XOn(place, body, kern, idx) => block_has_return(&body)
+        _ => 0
+
+fn if_has_return(t: &TBlock, el: &TBlock, elsifs: &List[TElsif]) -> Int ! alloc
+    if block_has_return(t) == 1
+        1
+    elsif block_has_return(el) == 1
+        1
+    else
+        elsifs_have_return(elsifs, 0, elsifs.len())
+
+fn elsifs_have_return(xs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif block_has_return(&xs.get(i).body) == 1
+        1
+    else
+        elsifs_have_return(xs, i + 1, n)
+
+fn arms_have_return(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = arms.get(i)
+        hit = if a.has_suite == 1
+            block_has_return(&a.suite)
+        else
+            expr_has_return(&a.body)
+        if hit == 1
+            1
+        else
+            arms_have_return(arms, i + 1, n)
 
 fn snap_binds(binds: Int, i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
@@ -1328,9 +1522,9 @@ fn sorted_bubble(binds: Int, out: Int, j: Int) -> Int ! alloc
         else
             0
 
-fn merge_if_carries(cx: &mut Cx, order: Int, k: Int, base: Int, ts: Int, es: Int, out: Int) -> Int ! alloc
+fn merge_if_carries(cx: &mut Cx, order: Int, k: Int, base: Int, ts: Int, es: Int, out: &mut List[Inst]) -> Int ! alloc
     if k >= vec_len(order)
-        out
+        0
     else
         i = vec_get(order, k)
         b = vec_get(cx_binds(cx), i)
@@ -1346,17 +1540,14 @@ fn merge_if_carries(cx: &mut Cx, order: Int, k: Int, base: Int, ts: Int, es: Int
             _s = carry_one(cx, b, t, e, out)
         merge_if_carries(cx, order, k + 1, base, ts, es, out)
 
-fn carry_one(cx: &mut Cx, b: Int, t: Int, e: Int, out: Int) -> Int ! alloc
+fn carry_one(cx: &mut Cx, b: Int, t: Int, e: Int, out: &mut List[Inst]) -> Int ! alloc
     if str_eq(t, e) == 1
         bind_set_ssa(b, t)
     else
         dest = fresh(cx)
         _s = bind_set_ssa(b, dest)
-        c = vec_new()
-        _a = vec_push(c, dest)
-        _b = vec_push(c, t)
-        _c = vec_push(c, e)
-        vec_push(out, c)
+        _p = out.push(ir_carry(dest, t, e))
+        0
 
 # ---- while ----
 # Names assigned (not `let`) anywhere in a block, as the bootstrap's collect_assigned_*.
@@ -1491,9 +1682,9 @@ fn while_specs(cx: &mut Cx, names: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         _e = vec_push(out, spec)
         while_specs(cx, names, i + 1, n, out)
 
-fn while_carries(cx: &Cx, specs: Int, i: Int, n: Int, out: Int) -> Int ! alloc
+fn while_carries(cx: &Cx, specs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
     if i >= n
-        out
+        0
     else
         spec = vec_get(specs, i)
         b = cx_find(cx, vec_get(spec, 0))
@@ -1505,11 +1696,7 @@ fn while_carries(cx: &Cx, specs: Int, i: Int, n: Int, out: Int) -> Int ! alloc
         else
             updated = updated
         _s = bind_set_ssa(b, dest)
-        c = vec_new()
-        _a = vec_push(c, dest)
-        _b = vec_push(c, incoming)
-        _c = vec_push(c, updated)
-        _d = vec_push(out, c)
+        _p = out.push(ir_carry(dest, incoming, updated))
         while_carries(cx, specs, i + 1, n, out)
 
 fn lower_while(cx: &mut Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
@@ -1517,20 +1704,19 @@ fn lower_while(cx: &mut Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
     _a = assigned_block(body, assigned)
     names = while_carried_names(cx, assigned, 0, vec_len(assigned), vec_new())
     specs = while_specs(cx, names, 0, vec_len(names), vec_new())
-    saved = cx_insts(cx)
     binds = cx_binds(cx)
     n0 = vec_len(binds)
     slen = tenv_len(&cx.env)
-    _b = cx_set_insts(cx, vec_new())
+    _b = cx_begin_body(cx)
     c = lower_expr(cx, cond)
-    cond_insts = cx_insts(cx)
-    _c = cx_set_insts(cx, vec_new())
+    cond_insts = cx_end_body(cx)
+    _c = cx_begin_body(cx)
     _v = lower_block_effects(cx, body)
-    body_insts = cx_insts(cx)
+    body_insts = cx_end_body(cx)
     _k = kill_new_binds(cx, n0)
     _rs = tenv_truncate(&mut cx.env, slen)
-    _d = cx_set_insts(cx, saved)
-    carried = while_carries(cx, specs, 0, vec_len(specs), vec_new())
+    carried = List.new[Inst]()
+    _wc = while_carries(cx, specs, 0, vec_len(specs), &mut carried)
     _p = ir_push(cx, ir_while(cond_insts, c, body_insts, carried))
     0
 
@@ -1784,14 +1970,20 @@ fn lower_field_store(cx: &mut Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! allo
     ir_push(cx, ir_call(0, str_as_int(&"sal_struct_set"), args, 0))
 
 fn lower_stmt_return(cx: &mut Cx, st: &TStmt) -> Int ! alloc
+    v = lower_return_value(cx, st)
+    return_struct_drops(cx, st)
+    ir_push(cx, ir_ret(v))
+
+# The value a `return` hands back; a bare `return` gives 0.
+fn lower_return_value(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.expr
         XNone => lower_return_unit(cx)
-        _ => ir_push(cx, ir_ret(lower_expr(cx, &st.expr)))
+        _ => lower_expr(cx, &st.expr)
 
 fn lower_return_unit(cx: &mut Cx) -> Int ! alloc
     d = fresh(cx)
     _p = push_const_int(cx, d, 0)
-    ir_push(cx, ir_ret(d))
+    d
 
 fn lower_stmts(cx: &mut Cx, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -2007,7 +2199,7 @@ fn drop_local_clean(fr: &FRC, nm: Int) -> Int ! alloc
     else
         1
 
-fn drop_glue_call(cx: &Cx, sname: &String, base: Int) -> Int ! alloc
+fn drop_glue_call(cx: &mut Cx, sname: &String, base: Int) -> Int ! alloc
     args = vec_new()
     _a = vec_push(args, base)
     ir_push(cx, ir_call(0, str_own(&("drop." + sname)), args, 0))
@@ -2019,81 +2211,60 @@ fn fn_modes_of(md: Int, name: &String) -> Int ! alloc
     else
         ms
 
-fn emit_struct_drops(cx: &mut Cx, f: &TFn, body: &TBlock, md: Int, seen: &List[TFn]) -> Int ! alloc
+fn emit_struct_drops(cx: &mut Cx, f: &TFn, body: &TBlock, md: Int) -> Int ! alloc
     moved = vec_new()
     _m = mv_block(body, moved, md)
     name = f.name.dup()
-    fr = fr_new(&cx.env, &cx.enums, md, &f.params, seen)
+    fr = fr_new(&cx.env, &cx.enums, md, &f.params, cx.fsum)
     _r = fr_blk(&fr, body)
     names = drop_candidates(cx, &f.params, fn_modes_of(md, &name), 0, tenv_len(&cx.env), vec_new())
     drop_locals(cx, &fr, names, moved, 0, vec_len(names))
 
-# Instructions without a trailing Return, which is returned separately (0 when none).
-fn pop_final_ret(cx: &mut Cx) -> Int ! alloc
-    insts = cx_insts(cx)
-    n = vec_len(insts)
-    if n == 0
-        0
-    elsif vec_get(vec_get(insts, n - 1), 0) == II_RET()
-        keep = vec_new()
-        _c = copy_insts(insts, keep, 0, n - 1)
-        ret = vec_get(insts, n - 1)
-        _s = cx_set_insts(cx, keep)
-        ret
-    else
-        0
-
-fn ir_prepend(cx: &mut Cx, inst: Inst) -> Int ! alloc
-    old = cx_insts(cx)
-    keep = vec_new()
-    _a = vec_push(keep, inst_pack(&inst))
-    _b = copy_insts(old, keep, 0, vec_len(old))
-    cx_set_insts(cx, keep)
-
-fn copy_insts(src: Int, dst: Int, i: Int, n: Int) -> Int ! alloc
+# The function's own statements. A `return` among them ends the body: its value comes back,
+# and `lower_fn` pushes the Return after the drops and the arena exit. -1 when there is none.
+fn lower_fn_stmts(cx: &mut Cx, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
-        0
+        0 - 1
     else
-        _p = vec_push(dst, vec_get(src, i))
-        copy_insts(src, dst, i + 1, n)
+        st = stmts.get(i)
+        if st.kind == 2
+            lower_return_value(cx, &st)
+        else
+            lower_stmts(cx, stmts, i, i + 1)
+            lower_fn_stmts(cx, stmts, i + 1, n)
 
-# `drops_body` moved this body once. `ir_own_fn` copies every string the instructions keep,
+# `drops_body` moved this body once. Every string the instructions keep is an owned copy,
 # so the caller can `tp_free_block` after the C for this function is emitted.
-fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn]) -> IrFn ! alloc
+fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol]) -> IrFn ! alloc
     env = tenv_clone(env_tpl)
     _t = tenv_truncate(&mut env, 0)
     cx = cx_new(fn_names, fm, env, enums, prog_fns, prog_protocols)
-    _a = lower_params(&mut cx, &f.params, 0, list_len(&f.params))
-    stopped = lower_stmts(&mut cx, &f.body.stmts, 0, list_len(&f.body.stmts))
-    if stopped == 0
-        _c = lower_fn_tail(&mut cx, &f.body.tail)
-    else
-        _c = 0
-    ret = pop_final_ret(&mut cx)
-    name = f.name.dup()
-    _dr = emit_struct_drops(&mut cx, f, &f.body, vec_get(denv, 1), seen)
+    cx.md = vec_get(denv, 1)
+    cx.fsum = vec_get(denv, 4)
+    cx.nparams = f.params.len()
+    if block_has_return(&f.body) == 1
+        cx.fn_scope.push(tc_block(&f.body))
     if f.arena == 1
-        _lv = ir_push(&cx, ir_call(0, str_as_int(&"sal_arena_leave"), vec_new(), 0))
-    else
-        _lv = 0
-    if ret != 0
-        _rr = ir_push_raw(&cx, ret)
-    else
-        _rr = 0
-    if f.arena == 1
-        _en = ir_prepend(&mut cx, ir_call(0, str_as_int(&"sal_arena_enter"), vec_new(), 0))
+        _en = ir_push(&mut cx, ir_call(0, str_as_int(&"sal_arena_enter"), vec_new(), 0))
     else
         _en = 0
-    out = vec_new()
-    _d = vec_push(out, str_own(&name))
-    _e = vec_push(out, cx_dim_params(&cx))
-    _f = vec_push(out, cx_insts(&cx))
-    _g = vec_push(out, cx_regions(&cx))
-    _h = vec_push(out, cx_literals(&cx))
-    _z = cx_free(&cx)
+    _a = lower_params(&mut cx, &f.params, 0, list_len(&f.params))
+    stopped = lower_fn_stmts(&mut cx, &f.body.stmts, 0, f.body.stmts.len())
+    ret = if stopped == 0 - 1
+        lower_fn_tail(&mut cx, &f.body.tail)
+    else
+        stopped
+    name = f.name.dup()
+    _dr = emit_struct_drops(&mut cx, f, &f.body, vec_get(denv, 1))
+    if f.arena == 1
+        _lv = ir_push(&mut cx, ir_call(0, str_as_int(&"sal_arena_leave"), vec_new(), 0))
+    else
+        _lv = 0
+    if ret != 0 - 1
+        ir_push(&mut cx, ir_ret(ret))
+    insts = cx_end_body(&mut cx)
     keep_block(&f.body)
-    ir_own_fn(out)
-    ti_fn(out)
+    IrFn(name, cx.dim_params.pop(), insts, cx.regions.pop(), cx.literals.pop())
 
 # Hands a block to no one. The IR already holds its own copies; the caller frees the block.
 fn keep_block(b: &TBlock) -> Int ! alloc
@@ -2107,10 +2278,11 @@ fn keep_expr(e: &Expr) -> Int ! alloc
 fn keep_stmts(xs: &List[TStmt]) -> Int ! alloc
     0
 
+# The value of the body's tail, -1 when it has none.
 fn lower_fn_tail(cx: &mut Cx, tail: &Expr) -> Int ! alloc
     match tail
-        XNone => 0
-        _ => ir_push(cx, ir_ret(lower_expr(cx, tail)))
+        XNone => 0 - 1
+        _ => lower_expr(cx, tail)
 
 fn try_lower_tensor_bin(cx: &mut Cx, op: &String, left_e: &Expr, right_e: &Expr, l: Int, r: Int, d: Int) -> Int ! alloc
     if expr_is_tensor(cx, left_e) == 0
@@ -2225,7 +2397,7 @@ fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[
     denv = drop_env_t(tp, &env_tpl.structs, em, seen)
     n_fns = list_len(&tp.fns)
     h2112_3 = tp.fns.clone()
-    lower_fns(&mut tp.fns, names, fm, env_tpl, em, denv, &h2112_3, &tp.protocols, seen, 0, n_fns, &mut out)
+    lower_fns(&mut tp.fns, names, fm, env_tpl, em, denv, &h2112_3, &tp.protocols, 0, n_fns, &mut out)
     _g = struct_glue_all(&tp.structs, em, &mut out)
     out
 
@@ -2300,29 +2472,22 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
     prots0 = List.new[TProtocol]()
     params0 = List.new[TParam]()
     env = TEnv(List.new[String](), List.new[String](), tstructs_copy(structs), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
-    fr = fr_new(&env, enums, map_new(), &params0, &fns0)
+    fr = fr_new(&env, enums, map_new(), &params0, map_new())
     cx = cx_new(0, map_new(), env, enums, &fns0, &prots0)
     _d = drop_fields(&mut cx, str_as_int(&"v"), sd, &sd.fields, 0, sd.fields.len(), 0, 3, &fr, &sd.name, &"")
-    insts = cx_insts(&cx)
-    if vec_len(insts) == 0
+    insts = cx_end_body(&mut cx)
+    if insts.len() == 0
         ir_fn_empty()
     else
         if struct_is_boxed_t(sd) == 1
             args_b = vec_new()
             _fb = vec_push(args_b, str_as_int(&"v"))
-            _sb = vec_push(insts, inst_pack(&ir_call(0, str_as_int(&"sal_struct_free_box"), args_b, 0)))
+            _sb = insts.push(ir_call(0, str_as_int(&"sal_struct_free_box"), args_b, 0))
         else
             _nb = 0
-        _r = vec_push(insts, inst_pack(&ir_ci(str_as_int(&"r"), 0)))
-        _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
-        out = vec_new()
-        _a = vec_push(out, str_own(&("drop." + sd.name)))
-        _b = vec_push(out, vec_new())
-        _c = vec_push(out, insts)
-        _e = vec_push(out, vec_new())
-        _h = vec_push(out, vec_new())
-        ir_own_fn(out)
-        ti_fn(out)
+        _r = insts.push(ir_ci(str_as_int(&"r"), 0))
+        _t = insts.push(ir_ret(str_as_int(&"r")))
+        IrFn("drop." + sd.name, List.new[String](), insts, List.new[Region](), List.new[Lit]())
 
 # A struct of two or more fields is a block on the heap (`struct_is_boxed` in src/ir.rs).
 fn struct_is_boxed_t(sd: &TStruct) -> Int
@@ -2334,25 +2499,18 @@ fn struct_is_boxed_t(sd: &TStruct) -> Int
 # `drop.elem.<Struct>(v)`: same as `drop.<Struct>` (fields + block). Kept as a distinct
 # symbol so lists can hold element glue without special-casing transparent structs.
 fn struct_elem_glue_fn(name: &String) -> IrFn ! alloc
-    insts = vec_new()
+    insts = List.new[Inst]()
     args = vec_new()
     _a = vec_push(args, str_as_int(&"v"))
-    _b = vec_push(insts, inst_pack(&ir_call(0, str_own(&("drop." + name)), args, 0)))
-    _r = vec_push(insts, inst_pack(&ir_ci(str_as_int(&"r"), 0)))
-    _t = vec_push(insts, inst_pack(&ir_ret(str_as_int(&"r"))))
-    out = vec_new()
-    _n = vec_push(out, str_own(&("drop.elem." + name)))
-    _p = vec_push(out, vec_new())
-    _q = vec_push(out, insts)
-    _e = vec_push(out, vec_new())
-    _h = vec_push(out, vec_new())
-    ir_own_fn(out)
-    ti_fn(out)
+    _b = insts.push(ir_call(0, str_own(&("drop." + name)), args, 0))
+    _r = insts.push(ir_ci(str_as_int(&"r"), 0))
+    _t = insts.push(ir_ret(str_as_int(&"r")))
+    IrFn("drop.elem." + name, List.new[String](), insts, List.new[Region](), List.new[Lit]())
 
 # `list_new[T]()` with `T` a list or a struct with glue: `sal_list_set_drop` (`set_drop` in
 # `list_new` in src/ir.rs). `T` = `List[..]` releases each element with `sal_list_free_elem`;
 # `T` a struct releases each element with `drop.<T>` (or `drop.elem.<T>` when boxed).
-fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
+fn lower_list_new_drop(cx: &mut Cx, txt: &String, d: Int) -> Int ! alloc
     if find_char(txt, 91, 0, str_len(txt)) >= 0
         if ty_base(txt).eq("List") == 1
             list_set_drop_call(cx, d, &"sal_list_free_elem")
@@ -2377,7 +2535,7 @@ fn lower_list_new_drop(cx: &Cx, txt: &String, d: Int) -> Int ! alloc
                 list_set_clone_call(cx, &structs, d, &t)
 
 # `xs.clone()` copies each element with the glue of its type (`sal_list_set_clone`).
-fn list_set_clone_call(cx: &Cx, structs: &List[TStruct], d: Int, t: &String) -> Int ! alloc
+fn list_set_clone_call(cx: &mut Cx, structs: &List[TStruct], d: Int, t: &String) -> Int ! alloc
     if struct_clone_glue_t(structs, &cx.enums, t) == 0
         0
     else
@@ -2386,7 +2544,7 @@ fn list_set_clone_call(cx: &Cx, structs: &List[TStruct], d: Int, t: &String) -> 
         _b = vec_push(args, str_own(&("clone." + t)))
         ir_push(cx, ir_call(0, str_as_int(&"sal_list_set_clone"), args, 0))
 
-fn list_set_drop_call(cx: &Cx, d: Int, fname: &String) -> Int ! alloc
+fn list_set_drop_call(cx: &mut Cx, d: Int, fname: &String) -> Int ! alloc
     args = vec_new()
     _a = vec_push(args, d)
     _b = vec_push(args, str_own(fname))
@@ -2423,14 +2581,16 @@ fn min_int(a: Int, b: Int) -> Int
     else
         b
 
-# `[variants, modes, read-only params]`: the variant table, per fn name the effective mode of
-# each parameter (0 copy, 1 borrow, 2 take), and the read-only flags.
+# `[variants, modes, read-only params, took, callee summary]`: the variant table, per fn name the
+# effective mode of each parameter (0 copy, 1 borrow, 2 take), the read-only flags, the params each
+# fn takes, and `fr_summary` of the module graph for the field reads.
 # `structs`/`enums` are the whole module graph's (the imported ones included), as the drops pass
 # of src/drops.rs sees them; the variants are the module's own.
 fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen: &List[TFn]) -> Int ! alloc
     denv = vec_new()
     _a = vec_push(denv, variant_map_t(tp, structs, enums, seen))
     _o = owned_fns_put(vec_get(denv, 0), &tp.fns, 0, list_len(&tp.fns))
+    _pf = passthru_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
     _rk = ret_kinds_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
     _rs = ret_kinds_put(vec_get(denv, 0), seen, 0, seen.len())
     cons = dr_cons_list(&tp.fns)
@@ -2444,6 +2604,7 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     took = map_new()
     _t = dr_took_map(took, &tp.fns, &cons, 0, tp.fns.len())
     _k = vec_push(denv, took)
+    _s = vec_push(denv, fr_summary(seen))
     denv
 
 fn modes_fill_t(m: Int, table: &HT, cons: &List[Int], fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
@@ -2768,12 +2929,12 @@ fn variant_field_flags_t(fields: &List[String], i: Int, n: Int, out: Int) -> Int
         _p = vec_push(out, dr_field_owned_t(&list_get(fields, i)))
         variant_field_flags_t(fields, i + 1, n, out)
 
-fn lower_fns(fns: &mut List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], seen: &List[TFn], i: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
+fn lower_fns(fns: &mut List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], i: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(&mut fns, i)
         f.body = drops_body(&mut f, denv)
-        irf = lower_fn(&f, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen)
+        irf = lower_fn(&f, names, fm, env_tpl, em, denv, prog_fns, prog_protocols)
         _p = out.push(irf)
-        lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, seen, i + 1, n, out)
+        lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, i + 1, n, out)

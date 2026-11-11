@@ -32,10 +32,9 @@ fn call_returns_string3(name: &String) -> Int ! alloc
         "getenv" => 1
         "ir_text" => 1
         "bytes_to_str" => 1
-        _ =>
-            0
+        _ => 0
 
-            # Builtins whose String result is a fresh heap temporary nobody else owns.
+# Builtins whose String result is a fresh heap temporary nobody else owns.
 fn call_allocates_fresh_string(name: &String) -> Int ! alloc
     match name
         "int_to_str" => 1
@@ -44,10 +43,9 @@ fn call_allocates_fresh_string(name: &String) -> Int ! alloc
         "strdup" => 1
         "f64_bits_to_str" => 1
         "bytes_to_str" => 1
-        _ =>
-            name.eq("read_file")
+        _ => name.eq("read_file")
 
-            # `i`-th top-level type argument of `Name[A, B]`, or 0. Nested brackets are kept whole.
+# `i`-th top-level type argument of `Name[A, B]`, or 0. Nested brackets are kept whole.
 fn nth_type_arg(t: &String, i: Int) -> Int ! alloc
     open = ty_find_open(t, 0)
     if open < 0

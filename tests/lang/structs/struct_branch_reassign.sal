@@ -1,0 +1,23 @@
+# exit: 9
+# A struct local reassigned inside an `if` branch keeps its new value past the branch: the
+# branch does not release it (Rust: only the locals a scope declares are dropped at its end).
+struct W
+    name: String
+    n: Int
+
+fn bump(w: W, s: &String) -> W ! alloc
+    W(w.name + s, w.n + 1)
+
+fn total(w: W) -> Int ! alloc
+    w.n + w.name.len()
+
+fn main() -> Int ! alloc
+    acc = W("a".dup(), 0)
+    i = 0
+    while i < 4
+        if i % 2 == 0
+            acc = bump(acc, &"!")
+        else
+            acc = bump(acc, &"?")
+        i = i + 1
+    total(acc)

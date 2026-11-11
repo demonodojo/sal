@@ -17,12 +17,12 @@ struct NM
     vals: List[Int]
 
 fn nm_new() -> NM ! alloc
-    NM(list_new[String](), list_new[Int]())
+    NM(List.new[String](), List.new[Int]())
 
 fn nm_find(m: &NM, name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0 - 1
-    elsif str_eq(list_get(&m.names, i), name) == 1
+    elsif (&m.names).get(i).eq(name) == 1
         i
     else
         nm_find(m, name, i + 1, n)
@@ -153,7 +153,7 @@ fn dr_soft(c: &mut DC, st: Int, name: &String) -> Int ! alloc
         0
 
 # A tail that moves `name` clears its flag before it runs, as a statement does: the tail is
-# identified by its Expr box (cell 5).
+# identified by `dr_tail_key` (cell 5).
 fn dr_tail_site(c: &mut DC, name: &String) -> Int ! alloc
     t = dr_cell(c, 5)
     if t == 0
@@ -280,6 +280,8 @@ fn dx_is_fresh_temp_v(vm: Int, e: &Expr) -> Int ! alloc
 
 fn dx_is_fresh_call_v(vm: Int, e: &Expr, name: &String) -> Int ! alloc
     if dr_owned_name(vm, name) == 1
+        1
+    elsif dx_is_passthru_fresh(vm, e) == 1
         1
     else
         dx_is_fresh_value(e)
@@ -452,6 +454,149 @@ fn owned_fns_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         else
             0
         owned_fns_put(m, fns, i + 1, n)
+
+# `pass:<fn>:<i>` for every by-value parameter `i` that `fn` returns as the value of a branch tail
+# (`PASSTHRU_FNS` in src/drops.rs): given a fresh temporary, the result is that temporary.
+fn passthru_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = fns.get(i)
+        passthru_params(m, &f, 0, f.params.len())
+        passthru_put(m, fns, i + 1, n)
+
+fn passthru_params(m: Int, f: &TFn, j: Int, n: Int) -> Int ! alloc
+    if j >= n
+        0
+    else
+        p = f.params.get(j)
+        if dr_ty_is_ref(&p.ty) == 0 && tail_is_param(&f.body.tail, &p.name) == 1
+            map_put(m, str_own(&("pass:" + f.name + ":" + j.to_str())), 1)
+        passthru_params(m, f, j + 1, n)
+
+# 1 when `e` is `name`, or an `if`/`match` whose value is `name` in some branch
+# (`expr_value_is_param_tail`).
+fn tail_is_param(e: &Expr, name: &String) -> Int ! alloc
+    match e
+        XIdent(nm) => nm.eq(name)
+        XIf(cond, then_b, else_b, has_else, elsifs) => tail_if_returns(&then_b, &else_b, has_else, &elsifs, name)
+        XMatch(scrut, arms) => tail_arms_return(&arms, name, 0, arms.len())
+        _ => 0
+
+fn tail_if_returns(then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], name: &String) -> Int ! alloc
+    if tail_is_param(&then_b.tail, name) == 1
+        1
+    elsif tail_elsifs_return(elsifs, name, 0, elsifs.len()) == 1
+        1
+    elsif has_else == 1
+        tail_is_param(&else_b.tail, name)
+    else
+        0
+
+fn tail_elsifs_return(elsifs: &List[TElsif], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif tail_is_param(&elsifs.get(i).body.tail, name) == 1
+        1
+    else
+        tail_elsifs_return(elsifs, name, i + 1, n)
+
+fn tail_arms_return(arms: &List[TArm], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif tail_is_param(&tarm_value(&arms.get(i)), name) == 1
+        1
+    else
+        tail_arms_return(arms, name, i + 1, n)
+
+# `same(<fresh temporary>)` with `same` a pass-through fn, or a call `note_passthru_calls`
+# marked: the caller owns the result (`is_passthru_fresh` in src/drops.rs).
+fn dx_is_passthru_fresh(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dx_passthru_call(vm, &name, &args, xp)
+        _ => 0
+
+fn dx_passthru_call(vm: Int, name: &String, args: &List[Expr], xp: Int) -> Int ! alloc
+    if dx_passthru_arg(vm, name, args, 0, args.len()) == 1
+        1
+    elsif xp > 0
+        map_get(vm, str_own(&("ptc:" + xp.to_str())))
+    else
+        0
+
+fn dx_passthru_arg(vm: Int, name: &String, args: &List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif map_get(vm, str_own(&("pass:" + name + ":" + i.to_str()))) == 1 && dx_is_fresh_temp_v(vm, &args.get(i)) == 1
+        1
+    else
+        dx_passthru_arg(vm, name, args, i + 1, n)
+
+# The calls (and nested ones) to a pass-through fn whose by-value argument is a fresh local
+# bound once: that local moves into the call, the result is its block (`note_passthru_calls`).
+# The mark is `ptc:<position of the call>`.
+fn note_passthru_body(vm: Int, b: &TBlock) -> Int ! alloc
+    fresh = List.new[String]()
+    passthru_fresh_locals(vm, &b.stmts, 0, b.stmts.len(), &mut fresh)
+    note_passthru_stmts(vm, &b.stmts, 0, b.stmts.len(), &fresh)
+    note_passthru_calls(vm, &b.tail, &fresh)
+
+fn passthru_fresh_locals(vm: Int, stmts: &List[TStmt], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = stmts.get(i)
+        if st.kind == 1 && passthru_fresh_init(vm, &st.expr) == 1 && owned_binds(stmts, 0, n, &st.name) == 1
+            out.push(st.name.dup())
+        passthru_fresh_locals(vm, stmts, i + 1, n, out)
+
+# `is_fresh_value(init) || is_owned_call(init)`.
+fn passthru_fresh_init(vm: Int, e: &Expr) -> Int ! alloc
+    if dx_is_fresh_value(e) == 1
+        1
+    else
+        match e
+            XCall(name, args, targs, xp) => dr_owned_name(vm, &name)
+            _ => 0
+
+fn note_passthru_stmts(vm: Int, stmts: &List[TStmt], i: Int, n: Int, fresh: &List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = stmts.get(i)
+        if st.kind == 1 || st.kind == 3
+            note_passthru_calls(vm, &st.expr, fresh)
+        note_passthru_stmts(vm, stmts, i + 1, n, fresh)
+
+fn note_passthru_calls(vm: Int, e: &Expr, fresh: &List[String]) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => note_passthru_call(vm, &name, &args, xp, fresh)
+        _ => 0
+
+fn note_passthru_call(vm: Int, name: &String, args: &List[Expr], xp: Int, fresh: &List[String]) -> Int ! alloc
+    if xp > 0 && note_passthru_hit(vm, name, args, fresh, 0, args.len()) == 1
+        map_put(vm, str_own(&("ptc:" + xp.to_str())), 1)
+    note_passthru_args(vm, args, fresh, 0, args.len())
+
+fn note_passthru_hit(vm: Int, name: &String, args: &List[Expr], fresh: &List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif map_get(vm, str_own(&("pass:" + name + ":" + i.to_str()))) == 1 && note_passthru_fresh_arg(&args.get(i), fresh) == 1
+        1
+    else
+        note_passthru_hit(vm, name, args, fresh, i + 1, n)
+
+fn note_passthru_fresh_arg(a: &Expr, fresh: &List[String]) -> Int ! alloc
+    match a
+        XIdent(nm) => dr_in_live(fresh, &nm, 0, fresh.len())
+        _ => 0
+
+fn note_passthru_args(vm: Int, args: &List[Expr], fresh: &List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        note_passthru_calls(vm, &args.get(i), fresh)
+        note_passthru_args(vm, args, fresh, i + 1, n)
 
 # `retk:<name>` for every fn that returns a container by value: the caller owns and releases it
 # (`user_call_kind` in src/drops.rs). The kind is 2 `List`, 3 `Bytes`, 4 `Dict`.
@@ -650,7 +795,7 @@ fn dr_fresh_kind(c: &DC, e: &Expr) -> Int ! alloc
     match e
         XStr(s) => 1
         XTensor(nr, nc, data) => 10
-        XCall(name, args, targs, xp) => dr_fresh_call(c, &name, &targs)
+        XCall(name, args, targs, xp) => dr_fresh_call(c, e, &name, &targs)
         XBin(op, l, r) => dr_fresh_bin(&op, e)
         _ => 0
 
@@ -660,10 +805,12 @@ fn dr_fresh_bin(op: &String, e: &Expr) -> Int ! alloc
     else
         0
 
-fn dr_fresh_call(c: &DC, name: &String, targs: &String) -> Int ! alloc
+fn dr_fresh_call(c: &DC, e: &Expr, name: &String, targs: &String) -> Int ! alloc
     if dr_returns_fresh(name) == 1
         1
     elsif dr_owned_name(c.variants, name) == 1
+        1
+    elsif dx_is_passthru_fresh(c.variants, e) == 1
         1
     elsif dr_variant_has_fields(c, name) == 1
         5
@@ -1478,7 +1625,7 @@ fn dr_block(c: &mut DC, b: &TBlock) -> Int ! alloc
     outer = dr_cell(c, 1)
     _n = dr_set(c, 1, 0)
     tail_outer = dr_cell(c, 5)
-    _i = dr_set(c, 5, enum_box_id(b.tail))
+    _i = dr_set(c, 5, dr_tail_key(&b.tail))
     call_outer = dr_cell(c, 7)
     _k = dr_set(c, 7, dr_is_call_tail(&b.tail))
     r = dr_top(c, &b.tail, 3)
@@ -1983,8 +2130,21 @@ fn dr_param_generic_kind(head: String) -> Int ! alloc
         0
 
 # A tail with a box (not a unit tag, whose id is 0) clears the flags of the locals it moves.
+# The key that identifies a block tail between the facts walk and the transform. The transform
+# works on a copy of each statement (`tc_stmt`), so an `if` statement's branch tails are new
+# boxes there: a call tail is keyed by its source position, which the copy keeps (negative and
+# far from the statement ids, which are small). Any other tail keeps its box id (0 for a unit tag).
+fn dr_tail_key(e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            if xp > 0
+                0 - 1000000000 - xp
+            else
+                enum_box_id(e)
+        _ => enum_box_id(e)
+
 fn dr_clear_tail_moved(c: &DC, b: &TBlock, out: &mut List[TStmt]) -> Int ! alloc
-    t = enum_box_id(b.tail)
+    t = dr_tail_key(&b.tail)
     if t == 0
         0
     else
@@ -3069,6 +3229,7 @@ fn dr_claim_fn(f: &TFn, body: &mut TBlock, variants: Int, lists: &NM, took: Int)
 
 # One body, moved. Hoist, claim and xform reuse the nodes and drop the previous list vector.
 fn drops_body(f: &mut TFn, denv: Int) -> TBlock ! alloc
+    note_passthru_body(vec_get(denv, 0), &f.body)
     h = HC(list_new[Int](), dr_lists_of(&f.params, &f.body, vec_get(denv, 0)), vec_get(denv, 0))
     _h = list_push(&mut h.k, 0)
     hoisted = dr_hoist_block(&mut h, &mut f.body)

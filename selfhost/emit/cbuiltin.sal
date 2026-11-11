@@ -258,12 +258,11 @@ fn emit_c_builtin5(fname: &String, args: &List[String], stmts: Int) -> String ! 
             c = arg_at(args, 2)
             d = arg_at(args, 3)
             "sal_write_png((const char*)(uintptr_t)" + a + "," + b + "," + c + ",(void*)(uintptr_t)" + d + ")"
-        _ =>
-            emit_c_runtime_call(fname, args, stmts)
+        _ => emit_c_runtime_call(fname, args, stmts)
 
-            # Any other builtin is the runtime function `sal_<name>`. Values are all
-            # int64 (pointers included), which matches the x86-64 calling convention, so a
-            # block-scope unprototyped declaration is enough.
+# Any other builtin is the runtime function `sal_<name>`. Values are all
+# int64 (pointers included), which matches the x86-64 calling convention, so a
+# block-scope unprototyped declaration is enough.
 fn emit_c_runtime_call(fname: &String, args: &List[String], stmts: Int) -> String ! alloc
     if cir_is_stub(&("sal_" + fname).slice(0, 4 + fname.len())) == 1
         "0"

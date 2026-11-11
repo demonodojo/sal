@@ -476,17 +476,53 @@ fn mi_unindent_go(s: &String, i: Int, n: Int, spaces: Int, acc: String) -> Strin
             acc2 = acc + body2 + "\n"
             mi_unindent_go(s, nl + 1, n, spaces, acc2)
 
-fn suite_body(src: &String, lex: &Lex, indent_i: Int, suite_end: Int) -> String ! alloc
+# The text of a suite, from the start of its first line (a leading comment is part of it). With
+# `keep_tail` 1 it runs up to the token that closes it, so the comments before the next
+# `elsif`/`else` stay in it; with 0 it ends at its last line of code, because what follows the
+# last suite (blank lines, the comment of the next item) belongs after the `if`.
+fn suite_body(src: &String, lex: &Lex, indent_i: Int, suite_end: Int, keep_tail: Int) -> String ! alloc
     if suite_end <= indent_i + 1
         d""
     else
-        a = lex.end(indent_i)
-        b = lex.start(suite_end)
+        a = mi_suite_start(lex, indent_i)
+        b = if keep_tail == 1
+            lex.start(suite_end)
+        else
+            mi_suite_code_end(src, lex, indent_i, suite_end)
         raw = src.slice(a, b)
         col = mi_min_line_indent_raw(&raw)
         if col == 0
             col = 4
         mi_strip_trailing_blank_lines(mi_unindent_text(&raw, col))
+
+# The INDENT token starts at the first line of code; the suite starts after the header's newline.
+fn mi_suite_start(lex: &Lex, indent_i: Int) -> Int ! alloc
+    if indent_i > 0 && lex.kind(indent_i - 1) == TK_NL
+        lex.end(indent_i - 1)
+    else
+        lex.end(indent_i)
+
+# The last token of the suite that is not a newline, an INDENT or a DEDENT.
+fn mi_last_code(lex: &Lex, lo: Int, i: Int) -> Int ! alloc
+    if i <= lo
+        lo
+    elsif lex.kind(i) == TK_NL || lex.kind(i) == TK_INDENT || lex.kind(i) == TK_DEDENT
+        mi_last_code(lex, lo, i - 1)
+    else
+        i
+
+# The end of the suite's last line of code (its newline excluded; a trailing comment included).
+fn mi_suite_code_end(src: &String, lex: &Lex, indent_i: Int, suite_end: Int) -> Int ! alloc
+    last = mi_last_code(lex, indent_i, suite_end - 1)
+    mi_find_first_nl(src, lex.end(last), src.len())
+
+# The end of the `if` that becomes a `match`: the newline of its last line of code.
+fn mi_if_end(src: &String, lex: &Lex, indent_i: Int, suite_end: Int) -> Int ! alloc
+    e = mi_suite_code_end(src, lex, indent_i, suite_end)
+    if e < src.len()
+        e + 1
+    else
+        e
 
 fn mi_strip_trailing_nl(s: String) -> String ! alloc
     n = s.len()
@@ -588,36 +624,6 @@ fn mi_parse_arm(cond: &String, fam: Int, scrut: &String) -> String ! alloc
     else
         mi_str_pat(cond, scrut)
 
-fn mi_consume_elsif_list(lex: &Lex, n: Int, i: Int) -> Int ! alloc
-    if i >= n
-        i
-    else
-        j = skip_nl(lex, n, i)
-        if j >= n
-            j
-        elsif lex.kind(j) == TK_ELSIF
-            k = mi_skip_to_indent(lex, n, j + 1)
-            k2 = mi_consume_suite(lex, n, k)
-            mi_consume_elsif_list(lex, n, k2)
-        else
-            j
-
-fn mi_consume_if(lex: &Lex, n: Int, if_i: Int) -> Int ! alloc
-    j = mi_skip_to_indent(lex, n, if_i + 1)
-    j2 = mi_consume_suite(lex, n, j)
-    j3 = mi_consume_elsif_list(lex, n, j2)
-    if j3 >= n
-        j3
-    else
-        j4 = skip_nl(lex, n, j3)
-        if j4 >= n
-            j4
-        elsif lex.kind(j4) == TK_ELSE
-            j5 = skip_nl(lex, n, j4 + 1)
-            mi_consume_suite(lex, n, j5)
-        else
-            j4
-
 fn mi_has_homogeneous_branch(lex: &Lex, n: Int, if_i: Int) -> Int ! alloc
     ind = mi_skip_to_indent(lex, n, if_i + 1)
     if ind >= n
@@ -652,7 +658,7 @@ fn mi_try_if_go(src: &String, lex: &Lex, if_i: Int, n: Int, ind: Int) -> MiPack 
     if p0.eq(d"") == 1
         return mi_fail()
     suite_end = mi_consume_suite(lex, n, ind)
-    b0 = suite_body(src, lex, ind, suite_end)
+    b0 = suite_body(src, lex, ind, suite_end, 1)
     if body_has_break(&b0) == 1
         return mi_fail()
     if suite_has_return_or_if(src, lex, ind, suite_end) == 1
@@ -682,28 +688,31 @@ fn mi_collect_elsifs(src: &String, lex: &Lex, n: Int, if_i: Int, fam: Int, scrut
     if p.eq(d"") == 1
         return mi_fail()
     suite_end = mi_consume_suite(lex, n, ind)
-    b = suite_body(src, lex, ind, suite_end)
+    j = skip_nl(lex, n, suite_end)
+    if j >= n
+        return mi_fail()
+    more = if lex.kind(j) == TK_ELSIF || lex.kind(j) == TK_ELSE
+        1
+    else
+        0
+    b = suite_body(src, lex, ind, suite_end, more)
     if body_has_break(&b) == 1
         return mi_fail()
     if suite_has_return_or_if(src, lex, ind, suite_end) == 1
         return mi_fail()
     mi_push_arm(&mut arms, mi_arm_new(p, b))
-    j = skip_nl(lex, n, suite_end)
-    if j >= n
-        return mi_fail()
     if lex.kind(j) == TK_ELSIF
         return mi_collect_elsifs(src, lex, n, if_i, fam, scrut, lead, start, arms, j)
     if lex.kind(j) == TK_ELSE
         return mi_finish_else(src, lex, n, if_i, scrut, arms, j)
-    if_end = mi_consume_if(lex, n, if_i)
-    return MiPack(1, start, lex.end(if_end - 1), scrut, lead, arms)
+    return MiPack(1, start, mi_if_end(src, lex, ind, suite_end), scrut, lead, arms)
 
 fn mi_finish_else(src: &String, lex: &Lex, n: Int, if_i: Int, scrut: String, arms: List[MiArm], else_i: Int) -> MiPack ! alloc
     ind = mi_skip_to_indent(lex, n, else_i + 1)
     if ind >= n
         return mi_fail()
     suite_end = mi_consume_suite(lex, n, ind)
-    b = suite_body(src, lex, ind, suite_end)
+    b = suite_body(src, lex, ind, suite_end, 0)
     if body_has_break(&b) == 1
         return mi_fail()
     if suite_has_return_or_if(src, lex, ind, suite_end) == 1
@@ -711,8 +720,7 @@ fn mi_finish_else(src: &String, lex: &Lex, n: Int, if_i: Int, scrut: String, arm
     lead = mi_line_leading(src, lex.start(if_i))
     start = mi_find_line_start(src, lex.start(if_i) - 1)
     mi_push_arm(&mut arms, mi_arm_new(d"_", b))
-    if_end = mi_consume_if(lex, n, if_i)
-    return MiPack(1, start, lex.end(if_end - 1), scrut, lead, arms)
+    return MiPack(1, start, mi_if_end(src, lex, ind, suite_end), scrut, lead, arms)
 
 fn indent_block(body: &String, prefix: &String) -> String ! alloc
     indent_block_go(body, 0, body.len(), prefix, d"")
@@ -728,16 +736,6 @@ fn indent_block_go(body: &String, i: Int, n: Int, prefix: &String, acc: String) 
             line = body.slice(i, nl)
             acc2 = acc + prefix + line + "\n"
             indent_block_go(body, nl + 1, n, prefix, acc2)
-
-fn mi_span_blank_tail(src: &String, end: Int) -> Int ! alloc
-    if end < 2
-        0
-    elsif src.char(end - 1) != 10
-        0
-    elsif src.char(end - 2) != 10
-        0
-    else
-        1
 
 fn build_match_fix(pack: &MiPack) -> String ! alloc
     build_match_go(pack, 0, pack.arms.len(), (pack.lead + "match " + pack.scrut + "\n"), &d"    ")
@@ -780,8 +778,6 @@ fn cop_matchif_go(src: &String, lex: &Lex, offs: &mut List[Off], i: Int, n: Int)
             mi_fail()
         if pack.ok == 1
                 fix = build_match_fix(&pack)
-                if mi_span_blank_tail(src, pack.end) == 1
-                    fix = fix + "\n"
                 msg = d"use match instead of if/elsif on the same scrutinee"
                 o = off_new(CODE_MATCHIF, msg, pack.start, pack.end, 1, fix)
                 offs.push(o)

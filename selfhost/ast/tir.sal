@@ -1,5 +1,5 @@
-# Handle→typed bridge helpers (`ti_fn` still used while `lower_fn` packs Cx asas).
-# `ti_module` is unused after oleada F (`lower_program_*` returns `List[IrFn]`).
+# Handle→typed bridge: `region_new` and `estimate_peak` still build a region as a handle;
+# `ti_region` turns it into the `Region` that `Cx.regions` keeps.
 import "../ir/ir.sal"
 import tast
 
@@ -8,109 +8,6 @@ fn ti_s(h: Int) -> String ! alloc
 
 fn ti_slot_s(v: Int, i: Int) -> String ! alloc
     ti_s(tt_slot(v, i))
-
-fn ti_mk(kind: Int, dest: String, s1: String, s2: String, s3: String, s4: String, s5: String, n1: Int, n2: Int, n3: Int, strs: List[String], b1: List[Inst], b2: List[Inst], rows: List[Inst]) -> Inst ! alloc
-    Inst(kind, dest, s1, s2, s3, s4, s5, n1, n2, n3, strs, b1, b2, rows)
-
-# The shape handle of a call (0 when the call carries none); it travels in `n2`.
-fn ti_call_shape(h: Int) -> Int ! alloc
-    if vec_len(h) > 5
-        vec_get(h, 5)
-    else
-        0
-
-fn ti_no_insts() -> List[Inst] ! alloc
-    List.new[Inst]()
-
-fn ti_insts(hs: Int, out: &mut List[Inst]) -> Int ! alloc
-    ti_insts_go(hs, 0, vec_len(hs), out)
-
-fn ti_insts_go(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        out.push(ti_inst(vec_get(hs, i)))
-        ti_insts_go(hs, i + 1, n, out)
-
-fn ti_insts_of(hs: Int) -> List[Inst] ! alloc
-    out = List.new[Inst]()
-    ti_insts(hs, &mut out)
-    out
-
-# Carried rows `[dest, a, b]`.
-fn ti_carries(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        c = vec_get(hs, i)
-        out.push(ti_mk(0, ti_slot_s(c, 0), ti_slot_s(c, 1), ti_slot_s(c, 2), "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts()))
-        ti_carries(hs, i + 1, n, out)
-
-fn ti_carries_of(hs: Int) -> List[Inst] ! alloc
-    out = List.new[Inst]()
-    ti_carries(hs, 0, vec_len(hs), &mut out)
-    out
-
-# Switch arms `[tag, body, value]`.
-fn ti_arms(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        a = vec_get(hs, i)
-        _a = out.push(ti_mk(0, "", ti_slot_s(a, 2), "", "", "", "", vec_get(a, 0), 0, 0, List.new[String](), ti_insts_of(vec_get(a, 1)), ti_no_insts(), ti_no_insts()))
-        ti_arms(hs, i + 1, n, out)
-
-fn ti_arms_of(hs: Int) -> List[Inst] ! alloc
-    out = List.new[Inst]()
-    ti_arms(hs, 0, vec_len(hs), &mut out)
-    out
-
-fn ti_inst(h: Int) -> Inst ! alloc
-    k = vec_get(h, 0)
-    if k == II_CI()
-        ti_mk(k, ti_slot_s(h, 1), "", "", "", "", "", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_CS()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_BIN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), ti_slot_s(h, 4), "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_CF()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 3), "", "", "", "", vec_get(h, 2), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_TBIN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), ti_slot_s(h, 6), ti_slot_s(h, 7), vec_get(h, 3), vec_get(h, 8), 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_TUN()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 4), ti_slot_s(h, 5), "", ti_slot_s(h, 6), vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_CALL()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 4), ti_call_shape(h), 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_PLACE()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_RET()
-        ti_mk(k, "", ti_slot_s(h, 1), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_DROP()
-        ti_mk(k, "", ti_slot_s(h, 1), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_IF()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), ti_slot_s(h, 6), "", "", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 3)), ti_insts_of(vec_get(h, 4)), ti_carries_of(vec_get(h, 7)))
-    elsif k == II_WHILE()
-        ti_mk(k, "", ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 1)), ti_insts_of(vec_get(h, 3)), ti_carries_of(vec_get(h, 4)))
-    elsif k == II_AGG()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, tt_str_list(vec_get(h, 3)), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_EXTRACT()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), "", "", "", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_REBIND()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_EMAKE()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), vec_get(h, 5), 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_EFIELD()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_ETAG()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_SWITCH()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 5), "", "", "", 0, 0, 0, List.new[String](), ti_insts_of(vec_get(h, 4)), ti_no_insts(), ti_arms_of(vec_get(h, 3)))
-    elsif k == II_ANYBOX()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), ti_slot_s(h, 3), "", "", "", vec_get(h, 4), 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    elsif k == II_ANYCALL()
-        ti_mk(k, ti_slot_s(h, 1), ti_slot_s(h, 2), "", "", "", "", vec_get(h, 3), 0, 0, tt_str_list(vec_get(h, 4)), ti_no_insts(), ti_no_insts(), ti_no_insts())
-    else
-        ti_mk(k, "", "", "", "", "", "", 0, 0, 0, List.new[String](), ti_no_insts(), ti_no_insts(), ti_no_insts())
 
 # ---- regions ----
 fn ti_ops(hs: Int, i: Int, n: Int, out: &mut List[FOp]) -> Int ! alloc
@@ -121,70 +18,13 @@ fn ti_ops(hs: Int, i: Int, n: Int, out: &mut List[FOp]) -> Int ! alloc
         out.push(FOp(vec_get(o, 0), ti_slot_s(o, 1), ti_slot_s(o, 2), ti_slot_s(o, 3), ti_slot_s(o, 4), ti_slot_s(o, 5), vec_len(o)))
         ti_ops(hs, i + 1, n, out)
 
-fn ti_regions(hs: Int, i: Int, n: Int, out: &mut List[Region]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        r = vec_get(hs, i)
-        ops = List.new[FOp]()
-        ti_ops(vec_get(r, 1), 0, vec_len(vec_get(r, 1)), &mut ops)
-        out.push(Region(ti_slot_s(r, 0), vec_get(r, 2), vec_get(r, 3), vec_get(r, 4), vec_get(r, 5), ti_slot_s(r, 6), ops))
-        ti_regions(hs, i + 1, n, out)
+# `[place, ops, fused, has_peak, has_sym, peak, peak_sym]` → `Region`. The texts are copies.
+fn ti_region(r: Int) -> Region ! alloc
+    ops = List.new[FOp]()
+    ti_ops(vec_get(r, 1), 0, vec_len(vec_get(r, 1)), &mut ops)
+    Region(ti_slot_s(r, 0), vec_get(r, 2), vec_get(r, 3), vec_get(r, 4), vec_get(r, 5), ti_slot_s(r, 6), ops)
 
-fn ti_lits(hs: Int, i: Int, n: Int, out: &mut List[Lit]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        l = vec_get(hs, i)
-        out.push(Lit(ti_slot_s(l, 0), tt_str_list(vec_get(l, 1))))
-        ti_lits(hs, i + 1, n, out)
-
-fn ti_fn(f: Int) -> IrFn ! alloc
-    regions = List.new[Region]()
-    ti_regions(vec_get(f, 3), 0, vec_len(vec_get(f, 3)), &mut regions)
-    lits = List.new[Lit]()
-    if tt_slot(f, 4) != 0
-        _l = ti_lits(vec_get(f, 4), 0, vec_len(vec_get(f, 4)), &mut lits)
-    IrFn(ti_s(vec_get(f, 0)), tt_str_list(vec_get(f, 1)), ti_insts_of(vec_get(f, 2)), regions, lits)
-
-fn ti_fns(m: Int, i: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        out.push(ti_fn(vec_get(m, i)))
-        ti_fns(m, i + 1, n, out)
-
-# The typed form of an IR module (a vec of function handles).
-fn ti_module(m: Int) -> List[IrFn] ! alloc
-    out = List.new[IrFn]()
-    ti_fns(m, 0, vec_len(m), &mut out)
-    out
-
-# ---- release ----
-# The typed copy is owned by its holder: the glue of each list releases what it holds, so these
-# helpers release nothing (a manual release here would free what the owner still releases).
-fn ti_free_insts(xs: &List[Inst]) -> Int ! alloc
-    0
-
-fn ti_free_each(xs: &List[Inst], i: Int, n: Int) -> Int ! alloc
-    0
-
-fn ti_free_regions(rs: &List[Region], i: Int, n: Int) -> Int ! alloc
-    0
-
-fn ti_free_lits(ls: &List[Lit], i: Int, n: Int) -> Int ! alloc
-    0
-
-fn ti_free_fn_parts(f: &IrFn) -> Int ! alloc
-    0
-
-fn ti_free_fns(fs: &List[IrFn], i: Int, n: Int) -> Int ! alloc
-    0
-
-fn ti_free_module(fs: &List[IrFn]) -> Int ! alloc
-    0
-
-# ---- handle text helpers (the IR is still built from handles) ----
+# ---- handle text helpers ----
 # Slot `i` of a handle, 0 when the vec is shorter.
 fn tt_slot(h: Int, i: Int) -> Int ! alloc
     if i < vec_len(h)
@@ -197,15 +37,3 @@ fn tt_str(h: Int) -> String ! alloc
         ""
     else
         str_from_int(h)
-
-fn tt_strs(hs: Int, i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        out.push(tt_str(vec_get(hs, i)).dup())
-        tt_strs(hs, i + 1, n, out)
-
-fn tt_str_list(hs: Int) -> List[String] ! alloc
-    out = List.new[String]()
-    tt_strs(hs, 0, vec_len(hs), &mut out)
-    out

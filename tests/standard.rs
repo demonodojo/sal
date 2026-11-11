@@ -405,6 +405,16 @@ fn standard_fix_matchif_block() {
     assert_eq!(got, read_fixture("matchif_block_out.sal"));
 }
 
+// A comment at the head of the last branch stays in it; the comment of the next item stays
+// outside the `match`.
+#[test]
+fn standard_fix_matchif_keeps_comments() {
+    let input = read_fixture("matchif_comments_in.sal");
+    let (_dir, got, out) = fix_in_temp(&input);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(got, read_fixture("matchif_comments_out.sal"));
+}
+
 #[test]
 fn standard_matchif_skip_unchanged() {
     let input = read_fixture("matchif_skip_in.sal");

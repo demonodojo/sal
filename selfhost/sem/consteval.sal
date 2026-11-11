@@ -28,11 +28,10 @@ fn ce_ty(v: &CVal) -> String ! alloc
         1 => "Bool"
         2 => "Float"
         3 => "String"
-        _ =>
-            "Int"
-            
-            # Own constants of `cs`, looked up in `env` (already evaluated) and appended to `out`.
-            # "" when it succeeds.
+        _ => "Int"
+
+# Own constants of `cs`, looked up in `env` (already evaluated) and appended to `out`.
+# "" when it succeeds.
 fn ce_eval(cs: &List[TConst], env: &List[CVal], out: &mut List[CVal]) -> String ! alloc
     dup = ce_dup_name(cs, 0, cs.len())
     if dup.len() > 0

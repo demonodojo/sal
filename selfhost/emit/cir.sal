@@ -210,10 +210,9 @@ fn cir_shaped(cc: Int, dest: &String, fname: &String, ops: &List[String], shape:
     match fname
         "sal_softmax_axis_f32" => cir_softmax_axis(cc, dest, ops, shape)
         "sal_relu" => cir_relu(cc, dest, ops, shape)
-        _ =>
-            cir_reduce(cc, dest, ops, shape)
+        _ => cir_reduce(cc, dest, ops, shape)
 
-            # `relu` of a buffer whose shape is not known at compile time panics, as the bootstrap does.
+# `relu` of a buffer whose shape is not known at compile time panics, as the bootstrap does.
 fn cir_relu(cc: Int, dest: &String, ops: &List[String], shape: Int) -> Int ! alloc
     input = cir_arg(ops, 0)
     if vec_get(shape, 0) < 0
@@ -952,10 +951,9 @@ fn cir_is_stub(f: &String) -> Int ! alloc
         "sal_map" => 1
         "sal_relu" => 1
         "sal_where" => 1
-        _ =>
-            0
+        _ => 0
 
-            # Integer ops are C operators; `f`-prefixed ops (Float) go through `sal_fop`.
+# Integer ops are C operators; `f`-prefixed ops (Float) go through `sal_fop`.
 fn cir_binary(cc: Int, dest: Int, op: &String, l: &String, r: &String) -> Int ! alloc
     if op.eq("neg") == 1
         cir_set(cc, dest, &("(0 - " + l + ")"))

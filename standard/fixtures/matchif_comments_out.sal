@@ -1,0 +1,11 @@
+fn unary(op: &String, v: Int) -> Int
+    match op
+        "neg" => 0 - v
+        "not" => 0
+        _ =>
+            # Any other operator keeps the value.
+            v
+
+# The next function keeps its comment.
+fn main() -> Int
+    unary(&"neg", 1)

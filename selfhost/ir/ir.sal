@@ -127,42 +127,62 @@ struct IrFn
     lits: List[Lit]
 
 # ---- Lower / IR ----
-# Lowering state of one function. The counter, the instruction list and the accumulator name live in
-# one-slot lists so a callee can update them; the rest are handle vecs/maps (the IR stays in handles).
+# Lowering state of one function. The counter and the accumulator name live in one-slot lists so a
+# callee can update them; `bodies` is the stack of instruction bodies (the last one is the block
+# being lowered). `dim_params` (the dynamic dimensions of tensor parameters), `regions` (the fused
+# regions) and `literals` (the tensor literals) are one-slot lists too, so `lower_fn` takes them
+# with `pop` and `cx` is still released whole: moving a field out would leave the rest of `cx`
+# unreleased (`tests/lang/ownership/partial_move_ok.sal`, asan-xfail). `binds`, `bind_map`,
+# `fn_map` and `variants` are still handle vecs/maps.
 # `env` is the typed local environment (`ttypes.sal`), shared by every function of a program.
+# The struct locals of an `if` branch are released when the branch ends (`block_struct_drops` in
+# src/ir.rs); a `return` inside branches releases those of every open branch and of the fn body
+# (`return_struct_drops`). For that: `md` the parameter modes and `fsum` the callee summary
+# (`fr_summary`) of the drops env, `nparams` the parameters bound first in `env`, `fn_scope` the
+# fn body, and the open branches that hold a `return`: `open` keeps a copy of each (it only
+# grows: a struct taken back with `pop` would not be released), `open_idx` the ones still open
+# and `open_len` the length of `env` when each one began.
 struct Cx
     ctr: List[Int]
-    insts: List[Int]
+    bodies: List[List[Inst]]
     acc: List[Int]
     binds: Int
     fn_names: Int
-    dim_params: Int
-    regions: Int
+    dim_params: List[List[String]]
+    regions: List[List[Region]]
     bind_map: Int
     fn_map: Int
-    literals: Int
+    literals: List[List[Lit]]
     variants: Int
     env: TEnv
     enums: List[TEnum]
     fns: List[TFn]
     protocols: List[TProtocol]
     lams: List[Lam]
+    md: Int
+    fsum: Int
+    nparams: Int
+    fn_scope: List[TBlock]
+    open: List[TBlock]
+    open_idx: List[Int]
+    open_len: List[Int]
 
 fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn], protocols: &List[TProtocol]) -> Cx ! alloc
     ctr = list_new[Int]()
     _a = list_push(&mut ctr, 0)
-    insts = list_new[Int]()
-    _b = list_push(&mut insts, vec_new())
+    bodies = List.new[List[Inst]]()
+    _b = bodies.push(List.new[Inst]())
     acc = list_new[Int]()
     _c = list_push(&mut acc, 0)
     vm = map_new()
     _m = variants_fill(vm, enums, 0, list_len(enums))
-    Cx(ctr, insts, acc, vec_new(), fn_names, vec_new(), vec_new(), map_new(), fm, vec_new(), vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam]())
-
-# `cx` is dropped at the end of its scope, which releases these lists.
-# Freeing them here as well is a double free.
-fn cx_free(cx: &Cx) -> Int ! alloc
-    0
+    dps = List.new[List[String]]()
+    dps.push(List.new[String]())
+    regions = List.new[List[Region]]()
+    regions.push(List.new[Region]())
+    lits = List.new[List[Lit]]()
+    lits.push(List.new[Lit]())
+    Cx(ctr, bodies, acc, vec_new(), fn_names, dps, regions, map_new(), fm, lits, vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam](), 0, 0, 0, List.new[TBlock](), List.new[TBlock](), List.new[Int](), List.new[Int]())
 
 # Variant name -> `[enum name, variant index, field count, tag]`; the first definition wins.
 fn cx_variants(cx: &Cx) -> Int ! alloc
@@ -202,11 +222,6 @@ fn variants_fill_go(m: Int, ename: Int, vs: &List[TVariant], i: Int, n: Int) -> 
         else
             variants_fill_go(m, ename, vs, i + 1, n)
 
-# Tensor literals `[ssa, element texts]` seen while lowering; the IR text has no
-# instruction for them, the C backend needs the data.
-fn cx_literals(cx: &Cx) -> Int ! alloc
-    cx.literals
-
 fn cx_structs(cx: &Cx) -> List[TStruct] ! alloc
     cx.env.structs.clone()
 
@@ -238,24 +253,34 @@ fn cx_set_counter(cx: &mut Cx, v: Int) -> Int ! alloc
     _s = list_set(cx.ctr, 0, v)
     0
 
-fn cx_insts(cx: &Cx) -> Int ! alloc
-    list_get(&cx.insts, 0)
+# The body being lowered (the top of the stack; `ir_push` appends to it).
+fn cx_insts(cx: &mut Cx) -> &mut List[Inst] ! alloc
+    n = cx.bodies.len()
+    cx.bodies.get_mut(n - 1)
 
-fn cx_set_insts(cx: &mut Cx, v: Int) -> Int ! alloc
-    _s = list_set(cx.insts, 0, v)
+fn cx_dim_params(cx: &mut Cx) -> &mut List[String] ! alloc
+    cx.dim_params.get_mut(0)
+
+fn cx_regions(cx: &mut Cx) -> &mut List[Region] ! alloc
+    cx.regions.get_mut(0)
+
+fn cx_literals(cx: &mut Cx) -> &mut List[Lit] ! alloc
+    cx.literals.get_mut(0)
+
+# Nested body (an `if`/`while`/`switch` arm): the instructions pushed from here on go to it.
+fn cx_begin_body(cx: &mut Cx) -> Int ! alloc
+    _p = cx.bodies.push(List.new[Inst]())
     0
+
+# Ends the nested body and moves its instructions to the caller.
+fn cx_end_body(cx: &mut Cx) -> List[Inst] ! alloc
+    cx.bodies.pop()
 
 fn cx_binds(cx: &Cx) -> Int ! alloc
     cx.binds
 
 fn cx_fn_names(cx: &Cx) -> Int ! alloc
     cx.fn_names
-
-fn cx_dim_params(cx: &Cx) -> Int ! alloc
-    cx.dim_params
-
-fn cx_regions(cx: &Cx) -> Int ! alloc
-    cx.regions
 
 fn fresh(cx: &mut Cx) -> Int ! alloc
     n = cx_counter(cx) + 1
@@ -295,324 +320,6 @@ fn ir_strs_go(hs: Int, i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
 fn ir_mk(kind: Int, dest: String, s1: String, s2: String, s3: String, s4: String, s5: String, n1: Int, n2: Int, n3: Int, strs: List[String], b1: List[Inst], b2: List[Inst], rows: List[Inst]) -> Inst ! alloc
     Inst(kind, dest, s1, s2, s3, s4, s5, n1, n2, n3, strs, b1, b2, rows)
 
-# Nested handle bodies (IF/WHILE/SWITCH still collect asas until Cx.insts is List[Inst]).
-fn ir_insts_of(hs: Int) -> List[Inst] ! alloc
-    out = List.new[Inst]()
-    ir_insts_go(hs, 0, vec_len(hs), &mut out)
-    out
-
-fn ir_insts_go(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        out.push(ir_inst_of(vec_get(hs, i)))
-        ir_insts_go(hs, i + 1, n, out)
-
-fn ir_carries_of(hs: Int) -> List[Inst] ! alloc
-    out = List.new[Inst]()
-    ir_carries_go(hs, 0, vec_len(hs), &mut out)
-    out
-
-fn ir_carries_go(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        c = vec_get(hs, i)
-        out.push(ir_mk(0, ir_s(vec_get(c, 0)), ir_s(vec_get(c, 1)), ir_s(vec_get(c, 2)), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts()))
-        ir_carries_go(hs, i + 1, n, out)
-
-fn ir_arms_of(hs: Int) -> List[Inst] ! alloc
-    out = List.new[Inst]()
-    ir_arms_go(hs, 0, vec_len(hs), &mut out)
-    out
-
-fn ir_arms_go(hs: Int, i: Int, n: Int, out: &mut List[Inst]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        a = vec_get(hs, i)
-        out.push(ir_mk(0, "".dup(), ir_s(vec_get(a, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(a, 0), 0, 0, ir_no_strs(), ir_insts_of(vec_get(a, 1)), ir_no_insts(), ir_no_insts()))
-        ir_arms_go(hs, i + 1, n, out)
-
-fn ir_call_shape_of(h: Int) -> Int ! alloc
-    if vec_len(h) > 5
-        vec_get(h, 5)
-    else
-        0
-
-# Handle row → Inst (used when a nested body is still an asa).
-fn ir_inst_of(h: Int) -> Inst ! alloc
-    k = vec_get(h, 0)
-    if k == II_CI()
-        ir_mk(k, ir_s(vec_get(h, 1)), "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 2), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_CS()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_BIN()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), ir_s(vec_get(h, 4)), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_CF()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 2), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_TBIN()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 4)), ir_s(vec_get(h, 5)), ir_s(vec_get(h, 6)), ir_s(vec_get(h, 7)), vec_get(h, 3), vec_get(h, 8), 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_TUN()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 4)), ir_s(vec_get(h, 5)), "".dup(), ir_s(vec_get(h, 6)), vec_get(h, 3), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_CALL()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 4), ir_call_shape_of(h), 0, ir_strs_of(vec_get(h, 3)), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_PLACE()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_RET()
-        ir_mk(k, "".dup(), ir_s(vec_get(h, 1)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_DROP()
-        ir_mk(k, "".dup(), ir_s(vec_get(h, 1)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_IF()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 5)), ir_s(vec_get(h, 6)), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(vec_get(h, 3)), ir_insts_of(vec_get(h, 4)), ir_carries_of(vec_get(h, 7)))
-    elsif k == II_WHILE()
-        ir_mk(k, "".dup(), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(vec_get(h, 1)), ir_insts_of(vec_get(h, 3)), ir_carries_of(vec_get(h, 4)))
-    elsif k == II_AGG()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_strs_of(vec_get(h, 3)), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_EXTRACT()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), vec_get(h, 4), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_REBIND()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_EMAKE()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 3), vec_get(h, 5), 0, ir_strs_of(vec_get(h, 4)), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_EFIELD()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 3), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_ETAG()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_SWITCH()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 5)), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(vec_get(h, 4)), ir_no_insts(), ir_arms_of(vec_get(h, 3)))
-    elsif k == II_ANYBOX()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), ir_s(vec_get(h, 3)), "".dup(), "".dup(), "".dup(), vec_get(h, 4), 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    elsif k == II_ANYCALL()
-        ir_mk(k, ir_s(vec_get(h, 1)), ir_s(vec_get(h, 2)), "".dup(), "".dup(), "".dup(), "".dup(), vec_get(h, 3), 0, 0, ir_strs_of(vec_get(h, 4)), ir_no_insts(), ir_no_insts(), ir_no_insts())
-    else
-        ir_mk(k, "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
-
-# Pack Inst → asa (owned string handles). Inverse of ir_inst_of / ti_inst.
-fn ir_pack_strs(xs: &List[String]) -> Int ! alloc
-    v = vec_new()
-    ir_pack_strs_go(xs, 0, xs.len(), v)
-
-fn ir_pack_strs_go(xs: &List[String], i: Int, n: Int, v: Int) -> Int ! alloc
-    if i >= n
-        v
-    else
-        _p = vec_push(v, str_own(&xs.get(i)))
-        ir_pack_strs_go(xs, i + 1, n, v)
-
-fn ir_pack_carries(xs: &List[Inst]) -> Int ! alloc
-    v = vec_new()
-    ir_pack_carries_go(xs, 0, xs.len(), v)
-
-fn ir_pack_carries_go(xs: &List[Inst], i: Int, n: Int, v: Int) -> Int ! alloc
-    if i >= n
-        v
-    else
-        c = xs.get(i)
-        row = vec_new()
-        _a = vec_push(row, str_own(&c.dest))
-        _b = vec_push(row, str_own(&c.s1))
-        _c = vec_push(row, str_own(&c.s2))
-        _p = vec_push(v, row)
-        ir_pack_carries_go(xs, i + 1, n, v)
-
-fn ir_pack_arms(xs: &List[Inst]) -> Int ! alloc
-    v = vec_new()
-    ir_pack_arms_go(xs, 0, xs.len(), v)
-
-fn ir_pack_arms_go(xs: &List[Inst], i: Int, n: Int, v: Int) -> Int ! alloc
-    if i >= n
-        v
-    else
-        a = xs.get(i)
-        row = vec_new()
-        _t = vec_push(row, a.n1)
-        _b = vec_push(row, insts_pack(&a.b1))
-        _v = vec_push(row, str_own(&a.s1))
-        _p = vec_push(v, row)
-        ir_pack_arms_go(xs, i + 1, n, v)
-
-fn inst_pack(op: &Inst) -> Int ! alloc
-    k = op.kind
-    if k == II_CI()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, op.n1)
-        h
-    elsif k == II_CS()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        h
-    elsif k == II_BIN()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, str_own(&op.s2))
-        _e = vec_push(h, str_own(&op.s3))
-        h
-    elsif k == II_CF()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, op.n1)
-        _d = vec_push(h, str_own(&op.s1))
-        h
-    elsif k == II_TBIN()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, op.n1)
-        _e = vec_push(h, str_own(&op.s2))
-        _f = vec_push(h, str_own(&op.s3))
-        _g = vec_push(h, str_own(&op.s4))
-        _i = vec_push(h, str_own(&op.s5))
-        _j = vec_push(h, op.n2)
-        h
-    elsif k == II_TUN()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, op.n1)
-        _e = vec_push(h, str_own(&op.s2))
-        _f = vec_push(h, str_own(&op.s3))
-        _g = vec_push(h, str_own(&op.s5))
-        h
-    elsif k == II_CALL()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, ir_pack_strs(&op.strs))
-        _e = vec_push(h, op.n1)
-        if op.n2 != 0
-            _f = vec_push(h, op.n2)
-        h
-    elsif k == II_PLACE()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, str_own(&op.s2))
-        h
-    elsif k == II_RET()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.s1))
-        h
-    elsif k == II_DROP()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.s1))
-        h
-    elsif k == II_IF()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, insts_pack(&op.b1))
-        _e = vec_push(h, insts_pack(&op.b2))
-        _f = vec_push(h, str_own(&op.s2))
-        _g = vec_push(h, str_own(&op.s3))
-        _i = vec_push(h, ir_pack_carries(&op.rows))
-        h
-    elsif k == II_WHILE()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, insts_pack(&op.b1))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, insts_pack(&op.b2))
-        _e = vec_push(h, ir_pack_carries(&op.rows))
-        h
-    elsif k == II_AGG()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, ir_pack_strs(&op.strs))
-        h
-    elsif k == II_EXTRACT()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, str_own(&op.s2))
-        _e = vec_push(h, op.n1)
-        h
-    elsif k == II_REBIND()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        h
-    elsif k == II_EMAKE()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, op.n1)
-        _e = vec_push(h, ir_pack_strs(&op.strs))
-        _f = vec_push(h, op.n2)
-        h
-    elsif k == II_EFIELD()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, op.n1)
-        h
-    elsif k == II_ETAG()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        h
-    elsif k == II_SWITCH()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, ir_pack_arms(&op.rows))
-        _e = vec_push(h, insts_pack(&op.b1))
-        _f = vec_push(h, str_own(&op.s2))
-        h
-    elsif k == II_ANYBOX()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, str_own(&op.s2))
-        _e = vec_push(h, op.n1)
-        h
-    elsif k == II_ANYCALL()
-        h = vec_new()
-        _a = vec_push(h, k)
-        _b = vec_push(h, str_own(&op.dest))
-        _c = vec_push(h, str_own(&op.s1))
-        _d = vec_push(h, op.n1)
-        _e = vec_push(h, ir_pack_strs(&op.strs))
-        h
-    else
-        h = vec_new()
-        _a = vec_push(h, k)
-        h
-
-fn insts_pack(ops: &List[Inst]) -> Int ! alloc
-    v = vec_new()
-    insts_pack_go(ops, 0, ops.len(), v)
-
-fn insts_pack_go(ops: &List[Inst], i: Int, n: Int, v: Int) -> Int ! alloc
-    if i >= n
-        v
-    else
-        _p = vec_push(v, inst_pack(&ops.get(i)))
-        insts_pack_go(ops, i + 1, n, v)
-
 fn ir_ci(dest: Int, v: Int) -> Inst ! alloc
     ir_mk(II_CI(), ir_s(dest), "".dup(), "".dup(), "".dup(), "".dup(), "".dup(), v, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
@@ -648,9 +355,16 @@ fn ir_efield(dest: Int, value: Int, idx: Int) -> Inst ! alloc
 fn ir_etag(dest: Int, value: Int) -> Inst ! alloc
     ir_mk(II_ETAG(), ir_s(dest), ir_s(value), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-# `arms` are `[tag, body, value]` asas; converted to typed rows.
-fn ir_switch(dest: Int, scrut: Int, arms: Int, default_body: Int, default_val: Int) -> Inst ! alloc
-    ir_mk(II_SWITCH(), ir_s(dest), ir_s(scrut), ir_s(default_val), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(default_body), ir_no_insts(), ir_arms_of(arms))
+# A `Switch` arm: the tag, its body and the value it yields.
+fn ir_arm(tag: Int, body: List[Inst], value: Int) -> Inst ! alloc
+    ir_mk(0, "".dup(), ir_s(value), "".dup(), "".dup(), "".dup(), "".dup(), tag, 0, 0, ir_no_strs(), body, ir_no_insts(), ir_no_insts())
+
+# A carried binding: `dest` takes `then_val`/`else_val` (or `incoming`/`updated` in a while).
+fn ir_carry(dest: Int, a: Int, b: Int) -> Inst ! alloc
+    ir_mk(0, ir_s(dest), ir_s(a), ir_s(b), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
+
+fn ir_switch(dest: Int, scrut: Int, arms: List[Inst], default_body: List[Inst], default_val: Int) -> Inst ! alloc
+    ir_mk(II_SWITCH(), ir_s(dest), ir_s(scrut), ir_s(default_val), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), default_body, ir_no_insts(), arms)
 
 fn ir_anybox(dest: Int, vtable: Int, payload: Int, drop_slot: Int) -> Inst ! alloc
     ir_mk(II_ANYBOX(), ir_s(dest), ir_s(vtable), ir_s(payload), "".dup(), "".dup(), "".dup(), drop_slot, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
@@ -687,251 +401,16 @@ fn ir_drop(name: Int) -> Inst ! alloc
 fn ir_rebind(dest: Int, src: Int) -> Inst ! alloc
     ir_mk(II_REBIND(), ir_s(dest), ir_s(src), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_no_insts(), ir_no_insts(), ir_no_insts())
 
-# IF built from handle bodies (match/try/while still collect asas into Cx.insts).
-fn ir_if(dest: Int, cond: Int, then_body: Int, else_body: Int, then_val: Int, else_val: Int, carried: Int) -> Inst ! alloc
-    ir_mk(II_IF(), ir_s(dest), ir_s(cond), ir_s(then_val), ir_s(else_val), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(then_body), ir_insts_of(else_body), ir_carries_of(carried))
+fn ir_if(dest: Int, cond: Int, then_body: List[Inst], else_body: List[Inst], then_val: Int, else_val: Int, carried: List[Inst]) -> Inst ! alloc
+    ir_mk(II_IF(), ir_s(dest), ir_s(cond), ir_s(then_val), ir_s(else_val), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), then_body, else_body, carried)
 
-fn ir_while(cond_insts: Int, cond: Int, body: Int, carried: Int) -> Inst ! alloc
-    ir_mk(II_WHILE(), "".dup(), ir_s(cond), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), ir_insts_of(cond_insts), ir_insts_of(body), ir_carries_of(carried))
+fn ir_while(cond_insts: List[Inst], cond: Int, body: List[Inst], carried: List[Inst]) -> Inst ! alloc
+    ir_mk(II_WHILE(), "".dup(), ir_s(cond), "".dup(), "".dup(), "".dup(), "".dup(), 0, 0, 0, ir_no_strs(), cond_insts, body, carried)
 
-# A string the instruction keeps. Small integers (opcodes, lengths, tags) stay as they are.
-# The IR keeps its own copy of the text: the copy is bound to a local that `str_as_int` hands
-# to the IR (escapes), so no release frees it. A temporary here would be freed at the statement.
-fn ir_text(p: Int) -> Int ! alloc
-    if p < 4096
-        p
-    else
-        copy = strdup(str_from_int(p))
-        str_own(&copy)
-
-fn ir_set_text(h: Int, i: Int) -> Int ! alloc
-    if i >= vec_len(h)
-        0
-    else
-        _s = vec_set(h, i, ir_text(vec_get(h, i)))
-        0
-
-fn ir_own_strvec(hs: Int) -> Int ! alloc
-    if hs == 0
-        0
-    else
-        ir_own_strvec_go(hs, 0, vec_len(hs))
-
-fn ir_own_strvec_go(hs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _s = ir_set_text(hs, i)
-        ir_own_strvec_go(hs, i + 1, n)
-
-fn ir_own_rows(hs: Int, nslots: Int) -> Int ! alloc
-    if hs == 0
-        0
-    else
-        ir_own_rows_go(hs, nslots, 0, vec_len(hs))
-
-fn ir_own_rows_go(hs: Int, nslots: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        row = vec_get(hs, i)
-        _a = ir_own_row_slots(row, 0, nslots)
-        ir_own_rows_go(hs, nslots, i + 1, n)
-
-fn ir_own_row_slots(row: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _s = ir_set_text(row, i)
-        ir_own_row_slots(row, i + 1, n)
-
-# Switch arms are `[tag, body, value]`: the tag stays, the body is instructions, the value is text.
-fn ir_own_arms(hs: Int) -> Int ! alloc
-    if hs == 0
-        0
-    else
-        ir_own_arms_go(hs, 0, vec_len(hs))
-
-fn ir_own_arms_go(hs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        a = vec_get(hs, i)
-        _b = ir_own_insts(vec_get(a, 1))
-        _v = ir_set_text(a, 2)
-        ir_own_arms_go(hs, i + 1, n)
-
-fn ir_own_ops(hs: Int) -> Int ! alloc
-    if hs == 0
-        0
-    else
-        ir_own_ops_go(hs, 0, vec_len(hs))
-
-fn ir_own_ops_go(hs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        op = vec_get(hs, i)
-        _a = ir_own_row_slots(op, 1, vec_len(op))
-        ir_own_ops_go(hs, i + 1, n)
-
-fn ir_own_insts(hs: Int) -> Int ! alloc
-    if hs == 0
-        0
-    else
-        ir_own_insts_go(hs, 0, vec_len(hs))
-
-fn ir_own_insts_go(hs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = ir_own_inst(vec_get(hs, i))
-        ir_own_insts_go(hs, i + 1, n)
-
-# Copies the text slots `ti_inst` reads. Integer slots (tags, lengths, elem codes) stay.
-fn ir_own_inst(h: Int) -> Int ! alloc
-    if h == 0
-        0
-    else
-        ir_own_inst_go(h, vec_get(h, 0))
-
-fn ir_own_inst_go(h: Int, k: Int) -> Int ! alloc
-    if k == II_CI()
-        ir_set_text(h, 1)
-    elsif k == II_CS()
-        _a = ir_set_text(h, 1)
-        ir_set_text(h, 2)
-    elsif k == II_BIN()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        _c = ir_set_text(h, 3)
-        ir_set_text(h, 4)
-    elsif k == II_CF()
-        _a = ir_set_text(h, 1)
-        ir_set_text(h, 3)
-    elsif k == II_TBIN()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        _c = ir_set_text(h, 4)
-        _d = ir_set_text(h, 5)
-        _e = ir_set_text(h, 6)
-        ir_set_text(h, 7)
-    elsif k == II_TUN()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        _c = ir_set_text(h, 4)
-        _d = ir_set_text(h, 5)
-        ir_set_text(h, 6)
-    elsif k == II_CALL()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        ir_own_strvec(vec_get(h, 3))
-    elsif k == II_PLACE()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        ir_set_text(h, 3)
-    elsif k == II_RET()
-        ir_set_text(h, 1)
-    elsif k == II_DROP()
-        ir_set_text(h, 1)
-    elsif k == II_IF()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        _c = ir_own_insts(vec_get(h, 3))
-        _d = ir_own_insts(vec_get(h, 4))
-        _e = ir_set_text(h, 5)
-        _f = ir_set_text(h, 6)
-        ir_own_rows(vec_get(h, 7), 3)
-    elsif k == II_WHILE()
-        _a = ir_own_insts(vec_get(h, 1))
-        _b = ir_set_text(h, 2)
-        _c = ir_own_insts(vec_get(h, 3))
-        ir_own_rows(vec_get(h, 4), 3)
-    elsif k == II_AGG()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        ir_own_strvec(vec_get(h, 3))
-    elsif k == II_EXTRACT()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        ir_set_text(h, 3)
-    elsif k == II_REBIND()
-        _a = ir_set_text(h, 1)
-        ir_set_text(h, 2)
-    elsif k == II_EMAKE()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        ir_own_strvec(vec_get(h, 4))
-    elsif k == II_EFIELD()
-        _a = ir_set_text(h, 1)
-        ir_set_text(h, 2)
-    elsif k == II_ETAG()
-        _a = ir_set_text(h, 1)
-        ir_set_text(h, 2)
-    elsif k == II_SWITCH()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        _c = ir_own_arms(vec_get(h, 3))
-        _d = ir_own_insts(vec_get(h, 4))
-        ir_set_text(h, 5)
-    elsif k == II_ANYBOX()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        ir_set_text(h, 3)
-    elsif k == II_ANYCALL()
-        _a = ir_set_text(h, 1)
-        _b = ir_set_text(h, 2)
-        ir_own_strvec(vec_get(h, 4))
-    else
-        0
-
-fn ir_own_regions(hs: Int) -> Int ! alloc
-    if hs == 0
-        0
-    else
-        ir_own_regions_go(hs, 0, vec_len(hs))
-
-fn ir_own_regions_go(hs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        r = vec_get(hs, i)
-        _p = ir_set_text(r, 0)
-        _o = ir_own_ops(vec_get(r, 1))
-        _s = ir_set_text(r, 6)
-        ir_own_regions_go(hs, i + 1, n)
-
-fn ir_own_lits(hs: Int) -> Int ! alloc
-    if hs == 0
-        0
-    else
-        ir_own_lits_go(hs, 0, vec_len(hs))
-
-fn ir_own_lits_go(hs: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        lit = vec_get(hs, i)
-        _n = ir_set_text(lit, 0)
-        _d = ir_own_strvec(vec_get(lit, 1))
-        ir_own_lits_go(hs, i + 1, n)
-
-# `[name, dim params, insts, regions, literals]`. Each text slot becomes a copy.
-fn ir_own_fn(f: Int) -> Int ! alloc
-    _n = ir_set_text(f, 0)
-    _d = ir_own_strvec(vec_get(f, 1))
-    _i = ir_own_insts(vec_get(f, 2))
-    _r = ir_own_regions(vec_get(f, 3))
-    ir_own_lits(vec_get(f, 4))
-
-# Push a typed instruction; packs to the handle list Cx still stores (until List[Inst]).
-fn ir_push(cx: &Cx, inst: Inst) -> Int ! alloc
-    _p = vec_push(cx_insts(cx), inst_pack(&inst))
-    0
-
-# Push an already-packed handle (nested IF bodies assembled as asas).
-fn ir_push_raw(cx: &Cx, inst: Int) -> Int ! alloc
-    _p = vec_push(cx_insts(cx), inst)
+# Push a typed instruction onto the body being lowered.
+fn ir_push(cx: &mut Cx, inst: Inst) -> Int ! alloc
+    body = cx_insts(cx)
+    _p = body.push(inst)
     0
 
 fn bind_new(name: Int, ssa: Int) -> Int ! alloc
@@ -1079,7 +558,7 @@ fn ir_call_unary(cx: &mut Cx, rname: Int, src: Int) -> Int ! alloc
     _p = ir_push(cx, ir_call(out, rname, argv, 1))
     out
 
-fn push_const_int(cx: &Cx, dest: Int, v: Int) -> Int ! alloc
+fn push_const_int(cx: &mut Cx, dest: Int, v: Int) -> Int ! alloc
     ir_push(cx, ir_ci(dest, v))
 
 fn str_contains_tensor(ty: &String) -> Int ! alloc
@@ -1527,19 +1006,14 @@ fn lower_params(cx: &mut Cx, params: &List[TParam], i: Int, n: Int) -> Int ! all
         _s = tenv_bind(&mut cx.env, &pm.name, &pm.ty)
         lower_params(cx, params, i + 1, n)
 
-fn add_dim_params(cx: &Cx, b: Int, d: Int, nd: Int) -> Int ! alloc
+fn add_dim_params(cx: &mut Cx, b: Int, d: Int, nd: Int) -> Int ! alloc
     if d >= nd
         0
     else
         dims = bind_dims(b)
         dv = dim_at(dims, d)
         if dv < 0
-            mid = "_d"
-            ds = int_to_str(d)
-            bn = str_from_int(bind_name(b))
-            a = bn + mid
-            nm = a + ds
-            _p = vec_push(cx_dim_params(cx), str_own(&nm))
+            cx_dim_params(cx).push(str_from_int(bind_name(b)) + "_d" + d.to_str())
         else
             _p = 0
         add_dim_params(cx, b, d + 1, nd)

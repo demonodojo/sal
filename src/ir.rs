@@ -1259,8 +1259,9 @@ struct ScopeCtx {
 
 thread_local! {
     static SCOPE_CTX: RefCell<Option<ScopeCtx>> = const { RefCell::new(None) };
-    /// The `if` branches being lowered, outermost first. A `return` releases their struct locals.
-    static OPEN_BRANCHES: RefCell<Vec<Block>> = const { RefCell::new(Vec::new()) };
+    /// The `if` branches being lowered, outermost first, each with the names bound before it.
+    /// A `return` releases their struct locals.
+    static OPEN_BRANCHES: RefCell<Vec<(Block, HashSet<String>)>> = const { RefCell::new(Vec::new()) };
 }
 
 fn lower_fn(
@@ -1386,6 +1387,7 @@ fn lower_fn(
         &strings,
         param_modes,
         caller_modes,
+        &HashSet::new(),
     );
     if let Some(r) = ret {
         instructions.push(r);
@@ -1765,6 +1767,25 @@ fn fn_struct_bindings(f: &FnDef, strings: &StringEnv) -> HashMap<String, String>
     out
 }
 
+/// The names a block binds with `let` at its top level (and in its `while` bodies, as
+/// `fn_struct_bindings` walks them).
+fn let_bound_names(b: &Block) -> HashSet<String> {
+    fn walk(b: &Block, out: &mut HashSet<String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, .. } => {
+                    out.insert(name.clone());
+                }
+                Stmt::While { body, .. } => walk(body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    walk(b, &mut out);
+    out
+}
+
 /// The struct a bound value has: its initializer's struct, a bound struct local it copies, or the
 /// field of a bound struct local it reads (`q = w.p`). Expression types are not used: their spans
 /// are only unique within one file, and the graph has many.
@@ -1830,7 +1851,8 @@ fn return_struct_drops(
     counter: &mut u32,
     strings: &StringEnv,
 ) {
-    let scopes: Vec<(Block, FnDef, HashMap<String, Vec<ParamMode>>, HashMap<String, Vec<ParamMode>>)> =
+    #[allow(clippy::type_complexity)]
+    let scopes: Vec<(FnDef, HashSet<String>, HashMap<String, Vec<ParamMode>>, HashMap<String, Vec<ParamMode>>)> =
         SCOPE_CTX.with(|c| {
             let c = c.borrow();
             let Some(ctx) = c.as_ref() else {
@@ -1838,8 +1860,8 @@ fn return_struct_drops(
             };
             let mut out = Vec::new();
             OPEN_BRANCHES.with(|b| {
-                for block in b.borrow().iter().rev() {
-                    out.push(block.clone());
+                for scope in b.borrow().iter().rev() {
+                    out.push(scope.clone());
                 }
             });
             // A `return` outside every branch is the last statement of the fn body: the glue
@@ -1847,30 +1869,33 @@ fn return_struct_drops(
             if out.is_empty() {
                 return Vec::new();
             }
-            out.push(ctx.f.body.clone());
+            out.push((ctx.f.body.clone(), HashSet::new()));
             out.into_iter()
-                .map(|mut block| {
+                .map(|(mut block, outer)| {
                     block.stmts.push(ret.clone());
                     let mut synth = ctx.f.clone();
                     synth.params = Vec::new();
-                    synth.body = block.clone();
-                    (block, synth, ctx.param_modes.clone(), ctx.caller_modes.clone())
+                    synth.body = block;
+                    (synth, outer, ctx.param_modes.clone(), ctx.caller_modes.clone())
                 })
                 .collect()
         });
-    for (_block, synth, param_modes, caller_modes) in scopes {
-        emit_struct_string_drops(&synth, instructions, env, counter, strings, &param_modes, &caller_modes);
+    for (synth, outer, param_modes, caller_modes) in scopes {
+        emit_struct_string_drops(&synth, instructions, env, counter, strings, &param_modes, &caller_modes, &outer);
     }
 }
 
 /// Releases the struct locals declared in `block` when the block ends. Its moves are those of
-/// the whole fn, read from the block alone: a local bound elsewhere is not in `env`.
+/// the whole fn, read from the block alone: a local bound elsewhere is not in `env`. `outer` are
+/// the names bound before the block: one the block only reassigns is not its own (Rust: the
+/// outer local keeps the new value past the branch).
 fn block_struct_drops(
     block: &Block,
     instructions: &mut Vec<IrInst>,
     env: &HashMap<String, String>,
     counter: &mut u32,
     strings: &StringEnv,
+    outer: &HashSet<String>,
 ) {
     let scoped = SCOPE_CTX.with(|c| {
         c.borrow().as_ref().map(|ctx| {
@@ -1883,9 +1908,12 @@ fn block_struct_drops(
     let Some((synth, param_modes, caller_modes)) = scoped else {
         return;
     };
-    emit_struct_string_drops(&synth, instructions, env, counter, strings, &param_modes, &caller_modes);
+    emit_struct_string_drops(&synth, instructions, env, counter, strings, &param_modes, &caller_modes, outer);
 }
 
+/// `outer`: names bound before the scope `f.body` (empty for a fn body). A struct local of the
+/// scope that is one of them and is only reassigned there (no `let`) belongs to the outer scope.
+#[allow(clippy::too_many_arguments)]
 fn emit_struct_string_drops(
     f: &FnDef,
     instructions: &mut Vec<IrInst>,
@@ -1894,6 +1922,7 @@ fn emit_struct_string_drops(
     strings: &StringEnv,
     param_modes: &HashMap<String, Vec<ParamMode>>,
     caller_modes: &HashMap<String, Vec<ParamMode>>,
+    outer: &HashSet<String>,
 ) {
     let moved = moved_bindings(f, caller_modes);
     let alias = list_alias_locals(f, strings);
@@ -1911,10 +1940,14 @@ fn emit_struct_string_drops(
     // The struct bindings of this fn only: `struct_types` is keyed by name across the program,
     // so a local named like another fn's struct binding is not a struct here.
     let fn_structs = fn_struct_bindings(f, strings);
+    let lets = let_bound_names(&f.body);
     let mut names: Vec<String> = fn_structs.keys().cloned().collect();
     names.sort();
     for name in names {
         if moved.contains(&name) || alias.contains(&name) {
+            continue;
+        }
+        if outer.contains(&name) && !lets.contains(&name) {
             continue;
         }
         if let Some(mode) = own_mode.get(name.as_str()) {
@@ -4714,7 +4747,8 @@ fn lower_expr(
             let mut then_strings = strings.clone();
             let mut else_strings = strings.clone();
             let mut then_diverged = false;
-            OPEN_BRANCHES.with(|b| b.borrow_mut().push((*then_block).clone()));
+            let outer: HashSet<String> = env.keys().cloned().collect();
+            OPEN_BRANCHES.with(|b| b.borrow_mut().push(((*then_block).clone(), outer.clone())));
             for st in &then_block.stmts {
                 if lower_stmt(
                     st,
@@ -4759,11 +4793,11 @@ fn lower_expr(
             };
             OPEN_BRANCHES.with(|b| b.borrow_mut().pop());
             if !then_diverged {
-                block_struct_drops(&then_block, &mut then_body, &then_env, counter, &then_strings);
+                block_struct_drops(&then_block, &mut then_body, &then_env, counter, &then_strings, &outer);
             }
             let else_scope = else_block.clone();
             if let Some(eb) = &else_block {
-                OPEN_BRANCHES.with(|b| b.borrow_mut().push(eb.clone()));
+                OPEN_BRANCHES.with(|b| b.borrow_mut().push((eb.clone(), outer.clone())));
             }
             let mut else_diverged = false;
             let else_val = if let Some(else_block) = else_block {
@@ -4823,7 +4857,7 @@ fn lower_expr(
             }
             if let Some(eb) = &else_scope {
                 if !else_diverged {
-                    block_struct_drops(eb, &mut else_body, &else_env, counter, &else_strings);
+                    block_struct_drops(eb, &mut else_body, &else_env, counter, &else_strings, &outer);
                 }
             }
             *counter += 1;
