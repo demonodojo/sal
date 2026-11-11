@@ -10,6 +10,7 @@ import tensorops
 import drops
 import "../sem/ownership.sal"
 import "../sem/protocols.sal"
+import stradd
 import fused
 import desc
 import frc
@@ -172,11 +173,11 @@ fn short_circuit(op: &String, left: &Expr, right: &Expr) -> Expr ! alloc
 fn lower_binary(cx: &mut Cx, op: &String, left: &Expr, right: &Expr) -> Int ! alloc
     if str_eq(op, "and") + str_eq(op, "or") > 0
         lower_expr(cx, &short_circuit(op, left, right))
-    elsif str_eq(op, "add") == 1
+    elsif tt_op_is_add(op) == 1
         if texpr_is_string(&cx.env, left) == 1
             lower_str_add(cx, left, right)
         else
-            lower_binary_plain(cx, op, left, right)
+            lower_binary_plain(cx, &"add", left, right)
     else
         lower_binary_plain(cx, op, left, right)
 
@@ -2220,6 +2221,7 @@ fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = List.new[IrFn]()
+    stradd_fns(&tp.fns, env_tpl, 0, tp.fns.len())
     denv = drop_env_t(tp, &env_tpl.structs, em, seen)
     n_fns = list_len(&tp.fns)
     h2112_3 = tp.fns.clone()

@@ -3071,14 +3071,15 @@ void sal_dict_free(void *dp) {
     for (size_t i = 0; i < d->map.nslots; i++) {
         if (d->map.slots[i].key) {
             dict_val_release(d->val_kind, d->map.slots[i].val);
-            if (!sal_dict_str_keys(d)) {
-                sal_free((void *)(uintptr_t)d->map.slots[i].key);
-            }
+            /* The dict owns every key: its own copy (`sal_dict_put`), or the text of an Int key. */
+            sal_free((void *)(uintptr_t)d->map.slots[i].key);
         }
     }
     sal_xfree(d->map.slots);
     sal_xfree(d);
 }
+
+static const char *sal_key_export(const char *k);
 
 void *sal_dict_put(void *dp, const char *key, int64_t val) {
     SalDict *d = (SalDict *)dp;
@@ -3091,9 +3092,11 @@ void *sal_dict_put(void *dp, const char *key, int64_t val) {
     if (present) {
         dict_val_release(d->val_kind, (int64_t)(intptr_t)sal_map_get(&d->map, k));
     }
-    if (!present && !sal_dict_str_keys(d)) {
+    if (!present) {
+        /* SPEC «Memoria»: a Dict owns its String keys. `put` borrows the caller's key and stores
+         * its own copy, in the dict's allocator (a literal is shared: it is never freed). */
         SalArena *prev = sal_arena_hold(d);
-        k = sal_str_from_cstr(k);
+        k = sal_dict_str_keys(d) ? sal_key_export(k) : sal_str_from_cstr(k);
         sal_arena_restore(prev);
     }
     (void)sal_map_put(&d->map, k, val);
@@ -3368,9 +3371,7 @@ int64_t sal_dict_remove(void *dp, const char *key) {
         return 0;
     }
     dict_val_release(d->val_kind, d->map.slots[i].val);
-    if (!sal_dict_str_keys(d)) {
-        sal_free((void *)(uintptr_t)d->map.slots[i].key);
-    }
+    sal_free((void *)(uintptr_t)d->map.slots[i].key);
     size_t j = i;
     for (;;) {
         j = (j + 1) & mask;

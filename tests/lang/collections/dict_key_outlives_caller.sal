@@ -1,0 +1,26 @@
+# exit: 9
+# `put` presta la clave: el Dict guarda su propia copia, que sobrevive a la clave del llamante
+# (con `&` y sin él), y una clave repetida no cambia la guardada.
+enum Option[T]
+    None
+    Some(T)
+
+fn fill(d: &mut Dict[String, Int], n: Int) -> Int ! alloc
+    k = "alpha" + n.to_str()
+    d.put(&k, 7)
+    j = "beta" + (n + 1).to_str()
+    d.put(j, 1)
+    again = "alpha" + n.to_str()
+    d.put(again, 8)
+    0
+
+fn main() -> Int ! alloc
+    d = Dict.new[String, Int]()
+    fill(&mut d, 1)
+    a = match d.get("alpha1")
+        Some(v) => v
+        None => 0
+    b = match d.get("beta2")
+        Some(v) => v
+        None => 0
+    a + b

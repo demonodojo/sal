@@ -272,6 +272,12 @@ fn reads_string_arg(name: &str) -> bool {
     )
 }
 
+/// The key of `dict_put` / `dict_get` / `dict_has` / `dict_remove` is only read: the dict keeps
+/// its own copy (SPEC «Memoria»: a `Dict` owns its `String` keys), so the caller still owns it.
+fn reads_key_arg(name: &str, i: usize) -> bool {
+    i == 1 && matches!(name, "dict_put" | "dict_get" | "dict_has" | "dict_remove")
+}
+
 /// A fresh string that is not a literal: a temporary somebody must release.
 fn is_fresh_temp(e: &Expr) -> bool {
     !matches!(e, Expr::String { .. }) && (is_fresh_value(e) || is_owned_call(e) || is_passthru_fresh(e))
@@ -444,12 +450,17 @@ impl Hoist {
     fn expr(&mut self, e: Expr, out: &mut Vec<Stmt>) -> Expr {
         match e {
             Expr::Call { func, type_args, args, span } => {
-                let reads = matches!(func.as_ref(), Expr::Ident { name, .. } if reads_string_arg(name));
+                let callee = match func.as_ref() {
+                    Expr::Ident { name, .. } => name.clone(),
+                    _ => String::new(),
+                };
+                let reads = reads_string_arg(&callee);
                 let args = args
                     .into_iter()
-                    .map(|a| {
+                    .enumerate()
+                    .map(|(i, a)| {
                         let a = self.expr(a, out);
-                        if reads && is_fresh_temp(&a) {
+                        if (reads || reads_key_arg(&callee, i)) && is_fresh_temp(&a) {
                             self.n += 1;
                             let name = format!("__tmp{}", self.n);
                             let asp = a.span();
@@ -1390,9 +1401,11 @@ fn expr(e: &Expr, f: &mut Facts) {
                 // stores the handle; freeing `v` afterwards is use-after-free).
                 let enum_set_take = callee == "enum_set" && i == 2;
                 let enum_set_borrow = callee == "enum_set" && i != 2;
+                // `dict_put(d, k, v)` reads the key (the dict stores its own copy) and moves `v`.
+                let dict_key = reads_key_arg(callee, i);
                 f.consume_arg = if enum_set_take {
                     true
-                } else if enum_set_borrow {
+                } else if enum_set_borrow || dict_key {
                     false
                 } else if user_fn {
                     user_takes
@@ -1402,7 +1415,7 @@ fn expr(e: &Expr, f: &mut Facts) {
                 f.user_take = user_fn && user_takes;
                 let mov = if enum_set_take {
                     ArgMove::TransferBox
-                } else if enum_set_borrow || borrow || reads {
+                } else if enum_set_borrow || dict_key || borrow || reads {
                     ArgMove::Read
                 } else if hard || callee_transfers_struct_box(callee) {
                     ArgMove::TransferBox
@@ -1594,8 +1607,14 @@ fn push_stmt(e: &Expr, f: &mut Facts) -> bool {
             f.tainted.insert(container.clone());
         }
     }
-    for a in &args[1..] {
-        arg(a, ArgMove::TransferBox, f);
+    let callee = match func.as_ref() {
+        Expr::Ident { name, .. } => name.as_str(),
+        _ => "",
+    };
+    for (i, a) in args.iter().enumerate().skip(1) {
+        // The key of `dict_put` is only read: the dict stores its own copy.
+        let mov = if reads_key_arg(callee, i) { ArgMove::Read } else { ArgMove::TransferBox };
+        arg(a, mov, f);
     }
     true
 }

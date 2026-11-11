@@ -1,5 +1,4 @@
 # exit: 21
-# asan-xfail: insert_drops no suelta un local `String` pasado a `d.has(k)` (también sin `+`; hueco del pase heredado)
 # La clave guardada es una copia: acumular sobre `k` no cambia la clave del Dict.
 fn main() -> Int ! alloc
     d = Dict.new[String, Int]()

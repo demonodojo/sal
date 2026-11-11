@@ -253,7 +253,10 @@ fn dx_add_is_string_chain(e: &Expr) -> Int ! alloc
         _ => dx_is_string_operand(e)
 
 fn dx_chain_bin(op: &String, l: &Expr, r: &Expr) -> Int ! alloc
-    if str_eq(op, "add") == 1
+    if dx_op_typed_string_add(op) == 1
+        # Marked by `ir/stradd.sal`: the left operand types as String.
+        1
+    elsif str_eq(op, "add") == 1
         if dx_add_is_string_chain(l) == 1
             1
         else
@@ -542,14 +545,54 @@ fn owned_returns_ok(stmts: &List[TStmt], i: Int, n: Int, locals: &List[String], 
 fn owned_return_ok(v: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     match v
         XNone => 1
-        _ => if owned_branches(v) == 1
-            0
-        elsif owned_fresh_builtin(v) == 1
+        XIf(cond, then_b, else_b, has_else, elsifs) => owned_if_ok(&then_b, &else_b, has_else, &elsifs, locals, params)
+        XMatch(scrut, arms) => owned_arms_ok(&arms, 0, arms.len(), locals, params)
+        _ => if owned_fresh_builtin(v) == 1
             1
         elsif owned_param_string_field(v, params) == 1
             1
         else
             owned_local(v, locals)
+
+# Every branch hands out an owned String (`owned_string_expr` in src/drops.rs); an `if` needs
+# its `else`.
+fn owned_if_ok(then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    if has_else == 0
+        0
+    elsif owned_block_ok(then_b, locals, params) == 0
+        0
+    elsif owned_block_ok(else_b, locals, params) == 0
+        0
+    else
+        owned_elsifs_ok(elsifs, 0, elsifs.len(), locals, params)
+
+fn owned_block_ok(b: &TBlock, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    if owned_returns_ok(&b.stmts, 0, b.stmts.len(), locals, params) == 0
+        0
+    else
+        owned_tail_ok(&b.tail, locals, params)
+
+fn owned_elsifs_ok(xs: &List[TElsif], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    if i >= n
+        1
+    elsif owned_block_ok(&xs.get(i).body, locals, params) == 0
+        0
+    else
+        owned_elsifs_ok(xs, i + 1, n, locals, params)
+
+fn owned_arms_ok(arms: &List[TArm], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    if i >= n
+        1
+    else
+        a = arms.get(i)
+        ok = if a.has_suite == 1
+            owned_block_ok(&a.suite, locals, params)
+        else
+            owned_return_ok(&a.body, locals, params)
+        if ok == 0
+            0
+        else
+            owned_arms_ok(arms, i + 1, n, locals, params)
 
 fn owned_param_string_field(v: &Expr, params: &List[TParam]) -> Int ! alloc
     match v
@@ -612,7 +655,7 @@ fn dr_fresh_kind(c: &DC, e: &Expr) -> Int ! alloc
         _ => 0
 
 fn dr_fresh_bin(op: &String, e: &Expr) -> Int ! alloc
-    if str_eq(op, "add") == 1
+    if str_eq(op, "add") + dx_op_typed_string_add(op) > 0
         dx_add_is_string_chain(e)
     else
         0
@@ -712,7 +755,7 @@ fn dr_is_accumulate(name: &String, value: &Expr) -> Int ! alloc
         _ => 0
 
 fn dr_accumulates(name: &String, op: &String, l: &Expr) -> Int ! alloc
-    if str_eq(op, "add") == 1
+    if str_eq(op, "add") + str_eq(op, "sadd") > 0
         str_eq(dx_leftmost(l), name)
     else
         0
@@ -724,11 +767,19 @@ fn dx_leftmost(e: &Expr) -> String ! alloc
         XIdent(s) => s.dup()
         _ => ""
 
+# A `radd` (`ir/stradd.sal`) starts at a reference: no accumulator can start there.
 fn dx_leftmost_bin(op: &String, l: &Expr, e: &Expr) -> String ! alloc
-    if str_eq(op, "add") == 1
+    if str_eq(op, "add") + str_eq(op, "sadd") > 0
         dx_leftmost(l)
     else
         ""
+
+# A string `+` that `ir/stradd.sal` marked from the types of the lowering.
+fn dx_op_typed_string_add(op: &String) -> Int ! alloc
+    match op
+        "sadd" => 1
+        "radd" => 1
+        _ => 0
 
 # ---- escape facts ----
 # `mov`: 1 read, 2 transfer box, 3 take fields only.
@@ -916,6 +967,9 @@ fn dr_call_args(c: &mut DC, callee: &String, args: &List[Expr], i: Int, n: Int, 
                 1
         elsif str_eq(callee, "str_as_int") == 1
             4
+        elsif dr_reads_key_arg(callee, i) == 1
+            # `dict_put(d, k, v)` reads the key: the dict stores its own copy.
+            1
         elsif borrow == 1
             1
         elsif reads == 1
@@ -1266,14 +1320,14 @@ fn dr_push_call(c: &mut DC, name: &String, args: &List[Expr]) -> Int ! alloc
         first = list_get(args, 0)
         if dx_is_ident(&first) == 1
             _t = dr_push_taint(c, &dx_ident(&first), args)
-            _r = dr_args_from(c, args, 1, list_len(args))
+            _r = dr_args_from(c, name, args, 1, list_len(args))
             1
         elsif dr_push_stmt(c, &first) == 0
             _a = dr_expr(c, &first)
-            _r = dr_args_from(c, args, 1, list_len(args))
+            _r = dr_args_from(c, name, args, 1, list_len(args))
             1
         else
-            _r = dr_args_from(c, args, 1, list_len(args))
+            _r = dr_args_from(c, name, args, 1, list_len(args))
             1
 
 fn dr_push_taint(c: &mut DC, name: &String, args: &List[Expr]) -> Int ! alloc
@@ -1309,12 +1363,17 @@ fn dr_owned_param_ty(c: &DC, ty: &String) -> Int ! alloc
     else
         0
 
-fn dr_args_from(c: &mut DC, args: &List[Expr], i: Int, n: Int) -> Int ! alloc
+fn dr_args_from(c: &mut DC, callee: &String, args: &List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = dr_arg(c, &list_get(args, i), 2)
-        dr_args_from(c, args, i + 1, n)
+        # The key of `dict_put` is only read: the dict stores its own copy.
+        mov = if dr_reads_key_arg(callee, i) == 1
+            1
+        else
+            2
+        dr_arg(c, &list_get(args, i), mov)
+        dr_args_from(c, callee, args, i + 1, n)
 
 # Statements whose escapes a transform step can follow up with a flag clear.
 fn dr_stmt(c: &mut DC, st: &TStmt) -> Int ! alloc
@@ -2327,26 +2386,26 @@ struct HC
     lists: NM
     vm: Int
 
-fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, reads: Int, out: &mut List[TStmt]) -> Int ! alloc
+fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &String, out: &mut List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
         old = list_get(args, i)
         a = dr_hoist_expr(h, &old, out)
-        if reads == 1
+        if dr_reads_string_arg(callee) + dr_reads_key_arg(callee, i) > 0
             if dx_is_fresh_temp_v(h.vm, &a) == 1
                 k = list_get(&h.k, 0) + 1
                 _s = list_set(h.k, 0, k)
                 name = "__tmp" + int_to_str(k)
                 _l = list_push(out, TStmt(1, strdup(name), a, "", 1, XNone, 0, 0, 0 - k))
                 _r = list_set(args, i, XIdent(strdup(name)))
-                dr_hoist_args(h, args, i + 1, n, reads, out)
+                dr_hoist_args(h, args, i + 1, n, callee, out)
             else
                 _r = dr_set_arg(args, i, &old, a)
-                dr_hoist_args(h, args, i + 1, n, reads, out)
+                dr_hoist_args(h, args, i + 1, n, callee, out)
         else
             _r = dr_set_arg(args, i, &old, a)
-            dr_hoist_args(h, args, i + 1, n, reads, out)
+            dr_hoist_args(h, args, i + 1, n, callee, out)
 
 fn dr_hoist_arms(h: &mut HC, arms: &mut List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -2546,7 +2605,7 @@ fn dr_is_dict_get(e: &Expr) -> Int ! alloc
         _ => 0
 
 fn dr_hoist_call(h: &mut HC, e: &Expr, name: &String, args: &mut List[Expr], out: &mut List[TStmt]) -> Expr ! alloc
-    _a = dr_hoist_args(h, args, 0, list_len(args), dr_reads_string_arg(name), out)
+    _a = dr_hoist_args(h, args, 0, list_len(args), name, out)
     dr_ret(e)
 
 fn dr_hoist_bin(h: &mut HC, e: &Expr, l: &Expr, r: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
@@ -3178,6 +3237,19 @@ fn dr_field_owned_t(fty: &String) -> Int ! alloc
 # ---- temporaries ----
 # A fresh string passed to a builtin that only reads it is bound to a local ahead of the
 # statement, so the scope-end release frees it. `h` is `[counter]`.
+# The key of `dict_put` / `dict_get` / `dict_has` / `dict_remove` is only read: the dict keeps its
+# own copy (mirror of `reads_key_arg` in src/drops.rs).
+fn dr_reads_key_arg(name: &String, i: Int) -> Int ! alloc
+    if i != 1
+        0
+    else
+        match name
+            "dict_put" => 1
+            "dict_get" => 1
+            "dict_has" => 1
+            "dict_remove" => 1
+            _ => 0
+
 fn dr_reads_string_arg(name: &String) -> Int ! alloc
     if str_eq(name, "str_len") == 1
         1

@@ -359,7 +359,7 @@ fn tt_arith_is_float(env: &TEnv, op: &String, l: &Expr, r: &Expr) -> Int ! alloc
         tt_is_float(&texpr_type(env, r))
 
 fn tt_binary_type(env: &TEnv, op: &String, l: &Expr, r: &Expr) -> String ! alloc
-    if op.eq("add") == 1
+    if tt_op_is_add(op) == 1
         lt = texpr_type(env, l)
         if tt_is_string(&lt) == 1
             "String"
@@ -407,8 +407,17 @@ fn tbinary_is_string_concat(env: &TEnv, e: &Expr) -> Int ! alloc
         _ => 0
 
 fn tt_add_is_string(env: &TEnv, op: &String, l: &Expr) -> Int ! alloc
+    if tt_op_is_add(op) == 1
+        texpr_is_string(env, l)
+    else
+        0
+
+# `+`: `add`, or a string `+` that `ir/stradd.sal` marked (`sadd`, `radd`).
+fn tt_op_is_add(op: &String) -> Int ! alloc
     match op
-        "add" => texpr_is_string(env, l)
+        "add" => 1
+        "sadd" => 1
+        "radd" => 1
         _ => 0
 
 # A reference type (`&T`, `&'a T`, `&mut T`).

@@ -27,6 +27,7 @@ import cir
 import cbuiltin
 import "../ir/desc.sal"
 import "../ir/frc.sal"
+import "../ir/stradd.sal"
 
 fn resolve_module_graph_qualified(source_path: &String, proot: &String, order: &mut Graph) -> Res ! io, alloc
     g = resolve_module_graph(source_path, proot, order)
@@ -561,11 +562,11 @@ fn emit_c_free_chain_temps(leaves: &List[Expr], args: &List[String], into_acc: I
 fn emit_c_binary(op: &String, l: &Expr, r: &Expr, user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
     if str_eq(op, "and") + str_eq(op, "or") > 0
         emit_c_logic(op, l, r, user, stmts, tc)
-    elsif str_eq(op, "add") == 1
+    elsif tt_op_is_add(op) == 1
         if texpr_is_string(&tc.env, l) == 1
             emit_c_str_add(l, r, user, stmts, tc)
         else
-            emit_c_binary_num(op, l, r, user, stmts, tc)
+            emit_c_binary_num(&"add", l, r, user, stmts, tc)
     else
         emit_c_binary_num(op, l, r, user, stmts, tc)
 
@@ -867,7 +868,7 @@ fn emit_c_keep_export(fname: &String, args_e: &List[Expr], arg_parts: &mut List[
                     elsif str_eq(fname, "list_set") == 1
                         emit_c_export_one(args_e, arg_parts, 2, &owner, stmts, tc)
                     else
-                        _a = emit_c_export_one(args_e, arg_parts, 1, &owner, stmts, tc)
+                        # The key is copied by `sal_dict_put` itself, into the dict's allocator.
                         emit_c_export_one(args_e, arg_parts, 2, &owner, stmts, tc)
             _ => 0
 
@@ -1473,6 +1474,7 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     _e1 = enums_push(&mut enums, genums, 0, list_len(genums))
     _e2 = enums_push(&mut enums, &tp.enums, 0, list_len(&tp.enums))
     _vr = pool.register_variants(&enums)
+    stradd_fns(&tp.fns, env, 0, tp.fns.len())
     _dv = pool.set_drop_env(drop_env_t(tp, &env.structs, &enums, seen))
     acc = runtime_decls()
     acc = acc + "#include <stdint.h>\n"

@@ -456,6 +456,10 @@ impl Cx {
         if i == 0 && crate::ownership::mutates_container(n) {
             return ParamKind::Mut;
         }
+        // The key of a dict operation is lent: the dict keeps its own copy (SPEC «Memoria»).
+        if i == 1 && matches!(n, "dict_put" | "dict_get" | "dict_has" | "dict_remove") {
+            return ParamKind::Shared;
+        }
         if i == 0 && matches!(n, "list_get" | "dict_get") {
             return ParamKind::Shared;
         }

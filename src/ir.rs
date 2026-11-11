@@ -1202,7 +1202,8 @@ fn export_keep_args(
     let idxs: &[usize] = match fname {
         "list_push" => &[1],
         "list_set" => &[2],
-        "dict_put" => &[1, 2],
+        // The key is copied by `sal_dict_put` itself, into the dict's allocator.
+        "dict_put" => &[2],
         _ => return,
     };
     let Some(root) = args.first().and_then(|e| match e {

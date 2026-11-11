@@ -166,4 +166,74 @@ No espeja:
 
 ## Medidas
 
-Pendiente de la fase 5 (`BENCH_LABEL=antes` / `despues` en `benches/strings.sh`).
+### Cargas de cadenas
+
+`benches/strings.sh`: cada carga de `benches/strings/*.sal` frente a su `.rs` (`-O3`). Se compiló con `--release`, se tomó la mediana de 5 ejecuciones y las reservas y los bytes los cuenta `valgrind --tool=dhat` en todo el proceso. «antes» es el compilador y el runtime de `HEAD`; «después», este cambio. Para repetirlo: `BENCH_LABEL=… ./benches/strings.sh` y `BENCH_COMPARE=antes,despues ./benches/strings.sh`.
+
+| Carga | ms antes | ms después | Reservas antes | Reservas después | MB reservados antes → después | RSS pico antes → después |
+|---|---:|---:|---:|---:|---:|---:|
+| `concat2` (`a + b`, 2·10⁶) | 114,6 | 32,0 | 2 000 002 | 2 000 002 | 128,0 → 128,0 | 154,5 MB → 2,1 MB |
+| `concat_many` (8 hojas, 5·10⁵) | 64,1 | 16,0 | 1 500 004 | 500 004 | 80,0 → 32,0 | 47,8 MB → 2,0 MB |
+| `accumulate` (`acc = acc + p`, 2·10⁶) | 16,0 | 15,7 | 21 | 21 | 8,4 → 8,4 | 6,1 MB → 5,8 MB |
+| `accumulate_multi` (`acc = acc + p + s`, 10⁶) | 15,9 | 15,7 | 23 | 23 | 16,8 → 16,8 | 9,9 MB → 10,0 MB |
+| `large` (4 partes de 4 KiB, 2·10⁴) | 164,6 | 7,5 | 40 022 | 20 022 | 492,8 → 328,4 | 315,5 MB → 1,8 MB |
+| `interp` (`f"#{a}-#{b}-#{c}"`, 10⁶) | 32,0 | 32,0 | 2 000 003 | 1 000 003 | 64,0 → 32,0 | 1,9 MB → 2,0 MB |
+| `clone` (64 B, 2·10⁶) | 16,0 | 16,0 | 2 000 001 | 2 000 001 | 192,0 → 192,0 | 2,0 MB → 2,0 MB |
+| `slice` (16 B, 2·10⁶) | 15,6 | 16,0 | 2 000 001 | 2 000 001 | 96,0 → 96,0 | 2,1 MB → 2,1 MB |
+
+**Qué explica cada cambio**
+
+| Efecto | Por qué |
+|---|---|
+| Menos reservas en `concat_many`, `interp` y `large` | Una cadena de hojas reserva una vez (`str_concat_n`), en lugar de un `concat` seguido de `append` que crecen por duplicación |
+| RSS de `concat2` y `large` | El valor de `s = a + b` de cada vuelta antes no se soltaba (`add_is_string_chain` era sintáctico); ahora se suelta en la reasignación |
+| Sin cambio en `accumulate*` | Ya reutilizaban su bloque (amortizado, ~20 reservas), y lo siguen haciendo con el acumulador como movimiento |
+
+Bytes copiados por iteración, calculados a partir de las longitudes:
+
+- **`concat_many`**: antes, la parte de `concat` más cada `append` que crecía volvía a copiar el acumulado. Ahora se copian solo los 44 bytes del resultado.
+- **`large`**: antes, 8 KiB + 16 KiB (realloc) + lo añadido. Ahora, 16 KiB exactos.
+
+Los tiempos salen cuantizados en múltiplos de unos 16 ms en esta máquina: las reservas, los bytes y el RSS son más fiables que el tiempo.
+
+### Proceso de texto del compilador
+
+Se emitió la IR de los 42 `.sal` de `selfhost/` con el stage1 de cada árbol, sobre las mismas fuentes y con una caché vacía:
+
+| Compilador | Tiempo | RSS pico |
+|---|---:|---:|
+| Stage1 de `HEAD` | 10,51 s | 568 668 KB |
+| Stage1 de este cambio | 10,48 s | 567 160 KB |
+
+Sin regresión.
+
+## Validación
+
+| Comando | Resultado |
+|---|---|
+| `cargo test --test frontend --test parse_and_fmt --test semantics --test lang --test builtin_errors --test forward_ir --test run_hello --test kernels --test runtime_str_immutable --test runtime_str_threads` | Todo pasa |
+| `cargo test --test drops --test memory_asan --test standard --test bins -- --test-threads=1` | Todo pasa |
+| `cargo run -- test` | Pasa |
+| `cargo run -- selfhost` | Construye stage2 |
+| `cargo test --test selfhost_ir -- --test-threads=1` | 21 pasan, 1 ignorado; los mismos 3 fallos que en el baseline: `drop_ro_params` (dos tests) y `LEAK enum_new` |
+| Paridad fichero a fichero de `PARITY_FILES` y `corpus_files()`, con caché vacía (`sal parity`) | `HEAD`: 46 difieren. Este cambio: 45, ninguna nueva; `std/text/strutil.sal` pasa a coincidir. `corpus/string_plus.sal` y `corpus/string_concat_n.sal` coinciden |
+
+Una caché vieja del selfhost (`SAL_SELFHOST_CACHE` por defecto) da diferencias falsas (`std/io/fs.sal`): la caché no se invalida cuando cambia el compilador.
+
+## Riesgos y pendientes
+
+- **Frontera de asas.** Sigue permitiendo alias y escrituras (`str_as_int` → `bytes_view_mem`, `str_from_int`, `str_share`, `select_str`). Está documentada. El selfhost la usa unas 200 veces, así que todavía no se puede sacar de la superficie.
+- **`String.to_int()`.** Es un cast de puntero (`str_as_int`), no un parseo.
+- **Selfhost:**
+  - `drops.sal` no tiene tipos por expresión, así que `s = a + b` de variables no se suelta.
+  - Un local que viene de `get` puede acumular sobre el elemento de la lista (`get_alias_accumulate`, marcado `selfhost-xfail`).
+- **Fuga previa con `d.has(k)`** cuando `k` es local (`dict_key_unchanged`, `asan-xfail`).
+- **Fallos que se reportan y no se tocan:** `sal_list_select` comparte punteros entre dos listas dueñas, `sal_ir_text` no suelta su búfer y `sal_char_to_str(0)` devuelve `""`.
+- **Linter.** `Style/Method` reescribe `int_to_str(t)` como `t.to_str()` aunque `t` sea un `Tensor`, y eso es `E_TYPE` (visto en `examples/transformer_gpu.sal`).
+- **Divergencia sin cerrar.** `list_get` en «Tipos» (SPEC) frente a «Memoria»: no es de cadenas, y queda para el subplan 13.
+
+## Mejoras posibles
+
+- Plegar constantes de módulo `String` junto con los literales de la cadena.
+- Sacar `str_share`, `select_str` y `str_as_int` de la superficie segura cuando el AST del selfhost deje de usar asas.
+- Que la caché del selfhost incluya la versión del compilador en su clave.
