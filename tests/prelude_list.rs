@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
 
 use sal_compiler::compile::compile_source;
 use sal_compiler::CompileOptions;
@@ -9,13 +8,11 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// `compile_source` links to a shared out path; serialize parallel list tests.
-static LINK_LOCK: Mutex<()> = Mutex::new(());
 
-fn link_lock() -> std::sync::MutexGuard<'static, ()> {
-    LINK_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+fn link_lock() {
+    // Each link gets its own `a.out.<pid>.<n>`, so the tests need no lock to run in parallel.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe { std::env::set_var("SAL_OUT_UNIQUE", "1") });
 }
 
 fn compile_list(src: &str, instrument: bool) -> PathBuf {
@@ -23,7 +20,7 @@ fn compile_list(src: &str, instrument: bool) -> PathBuf {
 }
 
 fn compile_list_opts(src: &str, instrument: bool, release: bool) -> PathBuf {
-    let _guard = link_lock();
+    link_lock();
     let opts = CompileOptions {
         toolchain: Default::default(),
         output: None,
@@ -35,17 +32,7 @@ fn compile_list_opts(src: &str, instrument: bool, release: bool) -> PathBuf {
     };
     let art = compile_source(src, &opts).expect("compile list program");
     let bin = art.binary.expect("binary");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let copy = PathBuf::from(format!(
-        "/tmp/sal-list-run-{}-{}",
-        std::process::id(),
-        stamp
-    ));
-    std::fs::copy(&bin, &copy).expect("copy binary");
-    copy
+    bin
 }
 
 /// Build a two-element `List[Int]` and return `list_len` (must be 2, not a hardcoded 2).

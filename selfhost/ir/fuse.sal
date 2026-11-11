@@ -243,13 +243,42 @@ fn lower_field_of(cx: &mut Cx, base: Int, sd: &TStruct, field: &String) -> Int !
 
 # `S(a, b)`: a single field is the field itself (newtype); more become an Aggregate.
 fn lower_struct_ctor(cx: &mut Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
-    arg_names = lower_args(cx, args, 0, list_len(args), vec_new())
+    owned_args = ctor_own_args(args, 0, List.new[Expr]())
+    arg_names = lower_args(cx, &owned_args, 0, list_len(&owned_args), vec_new())
     d = fresh(cx)
     if vec_len(arg_names) == 1
         vec_get(arg_names, 0)
     else
         _p = ir_push(cx, ir_agg(d, str_own(fname), arg_names))
         d
+
+# A `List.new[String]()` written inline as a constructor argument is owned by the struct, whose
+# glue releases the strings: it is built as `list_new_owned` (the bootstrap does the same).
+fn ctor_own_args(args: &List[Expr], i: Int, acc: List[Expr]) -> List[Expr] ! alloc
+    if i >= args.len()
+        acc
+    else
+        acc.push(ctor_own_arg(&args.get(i)))
+        ctor_own_args(args, i + 1, acc)
+
+fn ctor_own_arg(a: &Expr) -> Expr ! alloc
+    match a
+        XCall(fname, cargs, targs, xp) => ctor_own_call(a, &fname, &targs)
+        _ => tc_expr(a)
+
+fn ctor_own_call(a: &Expr, fname: &String, targs: &String) -> Expr ! alloc
+    if fname.eq("list_new") == 1
+        if str_eq(trim_spaces(targs.dup()), "String") == 1
+            ctor_rename_owned(a)
+        else
+            tc_expr(a)
+    else
+        tc_expr(a)
+
+fn ctor_rename_owned(a: &Expr) -> Expr ! alloc
+    match a
+        XCall(fname, cargs, targs, xp) => XCall("list_new_owned", cargs.clone(), targs.dup(), xp)
+        _ => tc_expr(a)
 
 # The result of `to <place> x` is a tensor of x's shape on that place.
 fn register_to_tensor(cx: &Cx, d: Int, src: Int, place: Int) -> Int ! alloc
@@ -1652,12 +1681,13 @@ fn is_list_get(fname: &String) -> Int ! alloc
     else
         0
 
+# A local bound to `list_get`, or a `&mut` parameter: the value lives in a shared heap box.
 fn is_box_place(cx: &Cx, name: &String) -> Int ! alloc
     mark = tenv_type(&cx.env, &("box:" + name))
     if str_eq(&mark, "box") == 1
         1
     else
-        0
+        ty_is_mut_ref(&tenv_type(&cx.env, name))
 
 # `p.f = v`, as the bootstrap: a one-field struct is the field itself; multi-field values are
 # heap boxes written in place (`sal_struct_set`), dropping the previous field (Rust).

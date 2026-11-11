@@ -2,14 +2,17 @@
 import "../ast/tast.sal"
 import "../ast/tir.sal"
 import cenv
+import lit_pool
 import "../ir/tensorops.sal"
 import "../pkg/qualify.sal"
 
 # ---- IR -> C (functions that touch tensors) ----
-# Context: [pool.raw, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main]
+# Context: [literals, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main,
+# fills, first literal id]. `literals` are the string literals this function asked for, in order;
+# `cir_commit_lits` declares them in the pool once the function is done.
 fn cc_new(pool: &LitPool, user: Int, is_main: Int) -> Int ! alloc
     c = vec_new()
-    vec_push(c, pool.raw)
+    vec_push(c, vec_new())
     vec_push(c, user)
     _c = vec_push(c, vec_new())
     vec_push(c, map_new())
@@ -21,6 +24,7 @@ fn cc_new(pool: &LitPool, user: Int, is_main: Int) -> Int ! alloc
     vec_push(c, 0)
     vec_push(c, is_main)
     vec_push(c, map_new())
+    vec_push(c, pool.nid)
     c
 
 fn cc_line(cc: Int, s: &String) -> Int ! alloc
@@ -50,8 +54,43 @@ fn cir_is_num(s: &String) -> Int ! alloc
         else
             0
 
-fn cc_pool(cc: Int) -> LitPool ! alloc
-    LitPool(vec_get(cc, 0))
+# C expression of the literal `s` in this function. The name is the pool's next free
+# `sal_lit_N` after the ones this function already asked for, so `cir_commit_lits` declares
+# it under that same name.
+fn cir_lit(cc: Int, s: &String) -> String ! alloc
+    lits = vec_get(cc, 0)
+    idx = cir_lit_find(lits, s, 0, vec_len(lits))
+    if idx >= 0
+        lit_ref(&cir_lit_sym(cc, idx))
+    else
+        vec_push(lits, str_as_int(&s.dup()))
+        lit_ref(&cir_lit_sym(cc, vec_len(lits) - 1))
+
+fn cir_lit_sym(cc: Int, idx: Int) -> String ! alloc
+    "sal_lit_" + (vec_get(cc, 12) + idx + 1).to_str()
+
+fn cir_lit_find(lits: Int, s: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif str_eq(vec_get(lits, i), str_as_int(s)) == 1
+        i
+    else
+        cir_lit_find(lits, s, i + 1, n)
+
+# Declares the literals of `cc` in the pool and frees their copies.
+fn cir_commit_lits(cc: Int, pool: &mut LitPool) -> Int ! alloc
+    lits = vec_get(cc, 0)
+    cir_commit_lits_go(lits, pool, 0, vec_len(lits))
+
+fn cir_commit_lits_go(lits: Int, pool: &mut LitPool, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        s = str_from_int(vec_get(lits, i))
+        pool.declare(&s)
+        if s.len() > 0
+            _f = free(s)
+        cir_commit_lits_go(lits, pool, i + 1, n)
 
 # An IR operand as a C int64 expression.
 fn cir_op(cc: Int, a: Int) -> String ! alloc
@@ -60,12 +99,11 @@ fn cir_op(cc: Int, a: Int) -> String ! alloc
         "0"
     elsif s.char(0) == 34
         inner = s.slice(1, s.len() - 1)
-        pool = cc_pool(cc)
-        pool.ensure(inner.to_int())
+        cir_lit(cc, &inner)
     elsif cir_is_num(&s) == 1
         s + "LL"
     elsif names_has(vec_get(cc, 2), a, 0, vec_len(vec_get(cc, 2))) == 1
-        s
+        s.dup()
     else
         "0"
 
@@ -124,7 +162,7 @@ fn cir_call(cc: Int, inst: &Inst) -> Int ! alloc
     fname = inst.s1.clone()
     args = ih_vec(&inst.strs, 0, inst.strs.len(), vec_new())
     ops = List.new[String]()
-    _co = cir_ops(cc, args, 0, vec_len(args), &mut ops)
+    cir_ops(cc, args, 0, vec_len(args), &mut ops)
     if inst.n1 == 0
         if cir_is_list_glue_call(&fname) == 1
             cir_list_glue_call(cc, &fname, args)
@@ -164,7 +202,8 @@ fn cir_relu(cc: Int, dest: &String, ops: &List[String], shape: Int) -> Int ! all
     else
         n = "sal_tn_len(" + input + ")"
         cc_line(cc, &("  " + dest + " = " + cir_tn_alloc(&n) + ";\n"))
-        _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_relu_f32", &cir_vec3(dest, &input, &n)) + ";\n"))
+        vv = cir_vec3(dest, &input, &n)
+        _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_relu_f32", &vv) + ";\n"))
         0
 
 # `softmax` over the last axis of a matrix, in place: the kernel takes (rows, row length). Unknown
@@ -272,12 +311,14 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: &String, args: Int, ops: &List[Stri
     if fname.eq("sal_silu") == 1
         n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
         _a = cc_line(cc, &("  " + d + " = " + cir_tn_alloc(&n) + ";\n"))
-        _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_silu_f32", &cir_vec3(&d, &cir_arg(ops, 0), &n)) + ";\n"))
+        vv = cir_vec3(&d, &cir_arg(ops, 0), &n)
+        _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_silu_f32", &vv) + ";\n"))
         0
     elsif fname.eq("sal_relu") == 1
         n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
         _a = cc_line(cc, &("  " + d + " = " + cir_tn_alloc(&n) + ";\n"))
-        _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_relu_f32", &cir_vec3(&d, &cir_arg(ops, 0), &n)) + ";\n"))
+        vv = cir_vec3(&d, &cir_arg(ops, 0), &n)
+        _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_relu_f32", &vv) + ";\n"))
         0
     elsif fname.eq("sal_rms_norm") == 1
         # The epsilon is the bootstrap's literal (1e-5), passed as a double.
@@ -295,14 +336,17 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: &String, args: Int, ops: &List[Stri
         0
     elsif fname.eq("sal_softmax") == 1
         n = "sal_tn_len(" + cir_arg(ops, 0) + ")"
-        _a = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_softmax_f32", &cir_vec2(&cir_arg(ops, 0), &n)) + ";\n"))
+        vv = cir_vec2(&cir_arg(ops, 0), &n)
+        _a = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_softmax_f32", &vv) + ";\n"))
         cir_set(cc, dest, &cir_arg(ops, 0))
     elsif fname.eq("sal_argmax") == 1
-        cir_set(cc, dest, &cir_call_expr(cc, &"sal_argmax_axis_f32", &cir_vec2(&cir_arg(ops, 0), &cir_arg(ops, 1))))
+        vv = cir_vec2(&cir_arg(ops, 0), &cir_arg(ops, 1))
+        cir_set(cc, dest, &cir_call_expr(cc, &"sal_argmax_axis_f32", &vv))
     elsif fname.eq("sal_attention_f32") == 1
         cir_attention(cc, dest, ops)
     elsif fname.eq("sal_load") == 1
-        _a = cc_line(cc, &("  { int64_t __n = 0; int64_t __b = " + cir_rt(cc, &"sal_load_f32", &cir_vec2(&cir_arg(ops, 0), &"(int64_t)&__n")) + "; " + d + " = (int64_t)(uintptr_t)sal_tn_from(__b, __n); }\n"))
+        vv = cir_vec2(&cir_arg(ops, 0), &"(int64_t)&__n")
+        _a = cc_line(cc, &("  { int64_t __n = 0; int64_t __b = " + cir_rt(cc, &"sal_load_f32", &vv) + "; " + d + " = (int64_t)(uintptr_t)sal_tn_from(__b, __n); }\n"))
         0
     elsif cir_is_stub(fname) == 1
         cir_set(cc, dest, &"0")
@@ -313,7 +357,8 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: &String, args: Int, ops: &List[Stri
     elsif fname.eq("sal_print") == 1
         cir_print(cc, dest, args, ops)
     elsif fname.eq("sal_syscall") == 1
-        cir_set(cc, dest, &cir_rt(cc, &"sal_os_syscall", &cir_pad7(ops)))
+        vv = cir_pad7(ops)
+        cir_set(cc, dest, &cir_rt(cc, &"sal_os_syscall", &vv))
     elsif fname.eq("sal_bytes_get_u8") == 1
         cir_set(cc, dest, &emit_c_bytes_get(ops, 1))
     elsif fname.eq("sal_bytes_get_u16") == 1
@@ -371,7 +416,7 @@ fn cir_matmul(cc: Int, dest: Int, args: Int, ops: &List[String]) -> Int ! alloc
     argv = List.new[String]()
     argv.push(cir_arg(ops, 0))
     argv.push(cir_arg(ops, 1))
-    argv.push(d)
+    argv.push(d.clone())
     argv.push(m)
     argv.push(k)
     argv.push(n)
@@ -389,7 +434,7 @@ fn cir_attention(cc: Int, dest: Int, ops: &List[String]) -> Int ! alloc
     n = "(" + cir_arg(ops, 3) + ") * (" + cir_arg(ops, 4) + ") * (" + cir_arg(ops, 6) + ")"
     cc_line(cc, &("  " + d + " = " + cir_tn_alloc(&n) + ";\n"))
     argv = List.new[String]()
-    argv.push(d)
+    argv.push(d.clone())
     argv.push(cir_arg(ops, 0))
     argv.push(cir_arg(ops, 1))
     argv.push(cir_arg(ops, 2))
@@ -487,8 +532,7 @@ fn cir_inst(cc: Int, inst: &Inst) -> Int ! alloc
         cir_set(cc, dest, &inst.n1.to_str())
     elsif k == II_CS()
         _m = map_put(vec_get(cc, 5), dest, 1)
-        pool = cc_pool(cc)
-        cir_set(cc, dest, &pool.ensure(inst.s1.dup().to_int()))
+        cir_set(cc, dest, &cir_lit(cc, &inst.s1))
     elsif k == II_CF()
         _m = map_put(vec_get(cc, 4), dest, inst.s1.dup().to_int())
         cir_set(cc, dest, &("(int64_t)" + inst.n1.to_str() + "LL"))
@@ -542,7 +586,7 @@ fn cir_anycall(cc: Int, dest: Int, inst: &Inst) -> Int ! alloc
     argc = inst.strs.len()
     args = ih_vec(&inst.strs, 0, argc, vec_new())
     ops = List.new[String]()
-    _co = cir_ops(cc, args, 0, vec_len(args), &mut ops)
+    cir_ops(cc, args, 0, vec_len(args), &mut ops)
     a0 = cir_arg(&ops, 0)
     a1 = cir_arg(&ops, 1)
     a2 = cir_arg(&ops, 2)
@@ -556,7 +600,7 @@ fn cir_anycall(cc: Int, dest: Int, inst: &Inst) -> Int ! alloc
 fn cir_agg(cc: Int, inst: &Inst) -> Int ! alloc
     fields = ih_vec(&inst.strs, 0, inst.strs.len(), vec_new())
     ops = List.new[String]()
-    _co = cir_ops(cc, fields, 0, vec_len(fields), &mut ops)
+    cir_ops(cc, fields, 0, vec_len(fields), &mut ops)
     cir_set(cc, ih(&inst.dest), &emit_c_struct_ctor(&ops))
 
 fn cir_ret(cc: Int, v: Int) -> Int ! alloc
@@ -733,7 +777,7 @@ fn cir_decl_locals(cc: Int, params: Int, acc: String) -> String ! alloc
     out
 
 # An IR function `[name, dim_params, insts, regions]` as C; params come from the AST fn.
-fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: &LitPool) -> String ! alloc
+fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: &mut LitPool) -> String ! alloc
     header = emit_c_fn_header(f, linkable, allow_main)
     if header.len() == 0
         ""
@@ -749,11 +793,12 @@ fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: 
         acc = cir_decl_locals(cc, pnames, header)
         lines = vec_get(cc, 6)
         acc = append_stmt_strings(acc, lines, 0, vec_len(lines))
+        cir_commit_lits(cc, pool)
         acc + "  return 0;\n}\n\n"
 
 # A glue function (`drop.<Struct>`, `drop.elem.<Struct>`) as C: one `v` parameter, symbol
 # `drop.<...>` set by an asm label (the name is not a C identifier).
-fn cir_glue(irf: &IrFn, user: Int, pool: &LitPool) -> String ! alloc
+fn cir_glue(irf: &IrFn, user: Int, pool: &mut LitPool) -> String ! alloc
     c = "G_" + cir_cname(&irf.name)
     pnames = vec_new()
     _p = vec_push(pnames, str_as_int(&"v"))
@@ -768,6 +813,7 @@ fn cir_glue(irf: &IrFn, user: Int, pool: &LitPool) -> String ! alloc
     acc = cir_decl_locals(cc, pnames, header)
     lines = vec_get(cc, 6)
     acc = append_stmt_strings(acc, lines, 0, vec_len(lines))
+    cir_commit_lits(cc, pool)
     acc + "  return 0;\n}\n\n"
 
 fn select_main(f: &TFn, allow_main: Int) -> Int ! alloc

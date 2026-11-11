@@ -433,8 +433,29 @@ fn infer_check_any(c: &mut IC, txt: &String) -> Int ! alloc
         else
             0
 
+# Lifetime arguments (`Tc['a]`, `Pool['a, Int]`) in a type text: top-level arguments that start
+# with `'`. They are not type arguments.
+fn infer_lifetime_arg_count(txt: &String, i: Int, n: Int, depth: Int, prev: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        ch = str_char(txt, i)
+        if ch == 32
+            infer_lifetime_arg_count(txt, i + 1, n, depth, prev, acc)
+        elsif ch == 39
+            if depth == 1 && (prev == 91 || prev == 44)
+                infer_lifetime_arg_count(txt, i + 1, n, depth, ch, acc + 1)
+            else
+                infer_lifetime_arg_count(txt, i + 1, n, depth, ch, acc)
+        elsif ch == 91
+            infer_lifetime_arg_count(txt, i + 1, n, depth + 1, ch, acc)
+        elsif ch == 93
+            infer_lifetime_arg_count(txt, i + 1, n, depth - 1, ch, acc)
+        else
+            infer_lifetime_arg_count(txt, i + 1, n, depth, ch, acc)
+
 fn infer_check_targs(c: &mut IC, base: &String, txt: &String, want: Int) -> Int ! alloc
-    got = infer_targ_count(txt, 0, str_len(txt), 0, 0, 0)
+    got = infer_targ_count(txt, 0, str_len(txt), 0, 0, 0) - infer_lifetime_arg_count(txt, 0, str_len(txt), 0, 0, 0)
     if got == want
         0
     else

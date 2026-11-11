@@ -102,7 +102,7 @@ Espejo: `dr_hoist_expr` devuelve una **copia** (`dr_alias` = `tc_expr`), así qu
 
 ## Escalares
 
-Una lectura de un `Int`/`Float`/`Bool` no alias nada del heap: no marca `escaped`, `consumed` ni `kept` (`expr_is_copy_scalar`, en `expr` y en `arg` de `src/drops.rs`). Sin esto, `Some(v) => v` sobre `Option[Int]` impedía liberar la caja del `Option`. El selfhost no tiene tipos por expresión en `drops.sal`: esta regla **no está espejada**, y es una divergencia conocida de la IR de programas que la usan.
+Una lectura de un `Int`/`Float`/`Bool` no alias nada del heap: no marca `escaped`, `consumed` ni `kept` (`expr_is_copy_scalar`, en `expr` y en `arg` de `src/drops.rs`). Sin esto, `Some(v) => v` sobre `Option[Int]` impedía liberar la caja del `Option`. El selfhost no tiene tipos por expresión en `drops.sal`: esta regla **no está espejada**, y es una divergencia conocida de la IR de programas que la usan. Sin ella el `Option` de `match d.get(k) { Some(v) => v … }` con payload `Int` se fuga en el selfhost; en el arranque la cubren `tests/lang/drops/drop_dict_get_int_payload_*.sal`.
 
 ## `str_as_int(&s)`
 

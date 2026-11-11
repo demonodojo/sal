@@ -91,6 +91,26 @@ fn list_string_arg(type_args: &[TypeArg]) -> bool {
     matches!(type_args, [TypeArg::Type(Type::Named { name, args, .. })] if args.is_empty() && name == "String")
 }
 
+/// `list_new[String]()` written inline as an argument of a struct constructor: the struct
+/// owns the list and its glue releases the strings, so the list is built owned (`+s`).
+/// A list bound to a local first goes through `own_enum_list` instead.
+pub(crate) fn own_inline_string_list(e: &Expr) -> Option<Expr> {
+    let Expr::Call { func, type_args, .. } = e else {
+        return None;
+    };
+    let Expr::Ident { name, span: fspan } = func.as_ref() else {
+        return None;
+    };
+    if name != "list_new" || !list_string_arg(type_args) {
+        return None;
+    }
+    let mut out = e.clone();
+    if let Expr::Call { func, .. } = &mut out {
+        *func = Box::new(Expr::Ident { name: "list_new_owned".into(), span: *fspan });
+    }
+    Some(out)
+}
+
 /// A variant constructor call `V(..)` builds a new box, and a unit variant `V` is a
 /// tag: both are fresh values for a list to own (a box owns the fresh fields it was
 /// built with, see `enum_owned_mask`).
@@ -1178,7 +1198,7 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
         }
     }
     if let Expr::Ident { name, .. } = a {
-        if !safe {
+        if !safe && !expr_is_copy_scalar(a) {
             f.kept.insert(name.clone());
             if f.hard_move > 0 {
                 f.escaped.insert(name.clone());
@@ -1222,8 +1242,10 @@ fn expr(e: &Expr, f: &mut Facts) {
         // A Copy scalar read aliases nothing on the heap, so it neither escapes nor consumes
         // (a payload `Some(v) => v` of an `Option[Int]` leaves the box releasable).
         Expr::Ident { name, .. } => {
-            f.escaped.insert(name.clone());
-            f.consumed.insert(name.clone());
+            if !expr_is_copy_scalar(e) {
+                f.escaped.insert(name.clone());
+                f.consumed.insert(name.clone());
+            }
         }
         Expr::Call { func, args, .. } => {
             let borrow = matches!(func.as_ref(), Expr::Ident { name, .. } if borrows_args(name));

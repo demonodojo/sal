@@ -21,6 +21,7 @@ import "../sem/deprecation.sal"
 import "../sem/protocols.sal"
 import irtext
 import cenv
+import lit_pool
 import tcstate
 import cir
 import cbuiltin
@@ -473,7 +474,7 @@ fn emit_c_expr(e: &Expr, user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
         XNone => "0"
         XInt(v) => int_to_str(v) + "LL"
         XFloat(bits, txt) => int_to_str(bits) + "LL"
-        XStr(s) => tc.pool.ensure(str_as_int(&s))
+        XStr(s) => tc.pool.ensure(&s)
         XIdent(name) => emit_c_ident(&name, tc)
         XField(base, field) => emit_c_field(&base, &field, user, stmts, tc)
         XBin(op, l, r) => emit_c_binary(&op, &l, &r, user, stmts, tc)
@@ -815,7 +816,7 @@ fn emit_c_export_tag(ty: &String) -> Int ! alloc
         0
 
 fn emit_c_keep_has(pool: &LitPool, name: &String) -> Int ! alloc
-    ks = pool.keep()
+    ks = pool.keep
     names_has(ks, str_as_int(name), 0, vec_len(ks))
 
 fn emit_c_seed_keep(params: &List[TParam], i: Int, n: Int, ks: Int) -> Int ! alloc
@@ -833,7 +834,7 @@ fn emit_c_keep_alias(tc: &Tc, name: &String, expr: &Expr) -> Int ! alloc
     match expr
         XIdent(rhs) =>
             if emit_c_keep_has(&tc.pool, &rhs) == 1
-                _p = vec_push(tc.pool.keep(), str_as_int(name))
+                _p = vec_push(tc.pool.keep, str_as_int(name))
                 0
             else
                 0
@@ -880,7 +881,7 @@ fn emit_c_keep_export(fname: &String, args_e: &List[Expr], arg_parts: &mut List[
 fn emit_c_call(fname: &String, args_e: &List[Expr], targs: &String, user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
     hname = str_as_int(fname)
     arg_parts = List.new[String]()
-    _ka = emit_c_args(args_e, 0, list_len(args_e), user, stmts, tc, &mut arg_parts)
+    emit_c_args(args_e, 0, list_len(args_e), user, stmts, tc, &mut arg_parts)
     _kx = emit_c_keep_export(fname, args_e, &mut arg_parts, stmts, tc)
     if names_has(user, hname, 0, vec_len(user)) == 1
         m = mangled(fname)
@@ -1187,14 +1188,14 @@ fn emit_c_match_arms(arms: &List[TArm], i: Int, n: Int, sname: &String, sty: &St
             _e = vec_push(stmts, str_as_int(&"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif kind == 4
-            plit = tc.pool.ensure(str_as_int(&arm.pat.name))
+            plit = tc.pool.ensure(&arm.pat.name)
             cond = "sal_str_eq((const char*)(uintptr_t)" + sname + ", (const char*)(uintptr_t)" + plit + ") == 1LL"
             _h = vec_push(stmts, str_as_int(&("  if (" + cond + ") {\n")))
             _x = emit_c_arm_body(&arm, tname, user, stmts, tc, slen)
             _e = vec_push(stmts, str_as_int(&"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif kind == 5
-            plit = tc.pool.ensure(str_as_int(&arm.pat.name))
+            plit = tc.pool.ensure(&arm.pat.name)
             cond = "sal_regex_match((const char*)(uintptr_t)" + sname + ", (const char*)(uintptr_t)" + plit + ") == 1LL"
             _h = vec_push(stmts, str_as_int(&("  if (" + cond + ") {\n")))
             _x = emit_c_arm_body(&arm, tname, user, stmts, tc, slen)
@@ -1239,7 +1240,7 @@ fn ident_pat_is_variant(pat: &TPat, tc: &Tc) -> Int ! alloc
 # Type of field `i` of variant `vname`; a type parameter of its enum is replaced
 # by the matching argument of the scrutinee type `sty` (`Option[P]` -> `P`).
 fn variant_field_type(tc: &Tc, vname: &String, i: Int, sty: &String) -> String ! alloc
-    entry = map_get(tc.pool.variant_fields(), str_as_int(vname))
+    entry = map_get(tc.pool.variant_fields, str_as_int(vname))
     if entry == 0
         ""
     else
@@ -1327,7 +1328,7 @@ fn emit_c_stmts(sts: &List[TStmt], i: Int, n: Int, user: Int, stmts: Int, tc: &m
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
         elsif st.kind == 2
             val0 = emit_c_expr(&st.expr, user, stmts, tc)
-            leave = if tc.pool.arena() == 1
+            leave = if tc.pool.arena == 1
                 "  sal_arena_leave();\n"
             else
                 ""
@@ -1400,8 +1401,8 @@ fn emit_c_fn_body(tf: &TFn, user: Int, is_main: Int, acc: String, pool: &mut Lit
         acc = acc
     foot = emit_c_fn_footer(is_main, &val)
     acc = acc + foot
-    _lt = pool.free_texts()
     _fc = tc_free(&tc, &body)
+    _lt = pool.free_texts()
     _ks = tp_keep_stmts(&body.stmts)
     _ke = tp_keep_expr(&body.tail)
     acc
@@ -1482,7 +1483,7 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     enums = list_new[TEnum]()
     _e1 = enums_push(&mut enums, genums, 0, list_len(genums))
     _e2 = enums_push(&mut enums, &tp.enums, 0, list_len(&tp.enums))
-    _vr = variants_register(pool.variants(), pool.variant_fields(), &enums, 0, list_len(&enums))
+    _vr = variants_register(pool.variants, pool.variant_fields, &enums, 0, list_len(&enums))
     _dv = pool.set_drop_env(drop_env_t(tp, &env.structs, &enums, seen))
     acc = runtime_decls()
     acc = acc + "#include <stdint.h>\n"
@@ -1494,11 +1495,11 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     names = merge_callable_names(callables, names)
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
-    denv = pool.drop_env()
+    denv = pool.drop_env
     body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, seen, allow_main, linkable, &mut pool, 0, list_len(&tp.fns), "")
     body = emit_c_glue(tp, &enums, callables, &mut pool, 0, body)
     _fe = list_free_shell(enums)
-    lits = pool.globals()
+    lits = pool.globals.clone()
     if str_len(lits) > 0
         acc = acc + lits
         acc = acc + "\n"

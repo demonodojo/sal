@@ -3933,9 +3933,11 @@ fn lower_expr(
                 _ => "unknown".into(),
             };
             let mut arg_names = Vec::new();
+            let is_ctor = strings.structs.contains_key(&fname);
             for a in args {
+                let owned_list = if is_ctor { crate::drops::own_inline_string_list(a) } else { None };
                 let mut n = lower_expr_simple(
-                    a,
+                    owned_list.as_ref().unwrap_or(a),
                     instructions,
                     env,
                     counter,

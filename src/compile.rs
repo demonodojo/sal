@@ -487,6 +487,18 @@ fn runtime_dir(root: &Path) -> PathBuf {
     }
 }
 
+/// `a.out`, or `a.out.<pid>.<n>` when `SAL_OUT_UNIQUE` is set: tests that compile on many
+/// threads (or in many processes) opt in so they do not overwrite each other's binary.
+fn default_bin_name() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if std::env::var_os("SAL_OUT_UNIQUE").is_some() {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("a.out.{}.{n}", std::process::id())
+    } else {
+        "a.out".to_string()
+    }
+}
+
 fn link_binary_multi(
     root: &Path,
     obj_paths: &[PathBuf],
@@ -494,7 +506,7 @@ fn link_binary_multi(
 ) -> Result<PathBuf, Vec<Diagnostic>> {
     let out_dir = root.join("target").join("sal-out");
     fs::create_dir_all(&out_dir).map_err(|e| vec![internal_diag(e.to_string())])?;
-    let bin = opts.output.clone().unwrap_or_else(|| out_dir.join("a.out"));
+    let bin = opts.output.clone().unwrap_or_else(|| out_dir.join(default_bin_name()));
     if let Some(parent) = bin.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|e| vec![internal_diag(e.to_string())])?;
     }

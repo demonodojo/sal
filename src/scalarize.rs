@@ -52,7 +52,7 @@ fn agg_struct_rec(ty: &Type, structs: &HashMap<String, StructDef>, depth: u32) -
         return None;
     }
     let def = structs.get(name)?;
-    if !def.type_params.is_empty() {
+    if !def.type_params.is_empty() || held_by_ref(name, structs) {
         return None;
     }
     match def.fields.len() {
@@ -66,6 +66,23 @@ fn agg_struct_rec(ty: &Type, structs: &HashMap<String, StructDef>, depth: u32) -
             }
         }
     }
+}
+
+/// A struct some other struct keeps a reference to (`pool: &'a mut Pool`) stays a heap
+/// block: its address must stay the one place that holds the value, since a scalarised
+/// copy in registers would never see the writes made through the stored reference.
+fn held_by_ref(name: &str, structs: &HashMap<String, StructDef>) -> bool {
+    structs.values().any(|d| {
+        d.fields.iter().any(|f| {
+            let mut t = &f.ty;
+            let mut is_ref = false;
+            while let Type::Ref { inner, .. } = t {
+                is_ref = true;
+                t = inner;
+            }
+            is_ref && matches!(t, Type::Named { name: n, .. } if n == name)
+        })
+    })
 }
 
 pub fn fn_sig(f: &FnDef, structs: &HashMap<String, StructDef>) -> FnSig {

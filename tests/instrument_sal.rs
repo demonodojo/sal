@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 
 use sal_compiler::compile::compile_file;
 use sal_compiler::CompileOptions;
@@ -9,9 +8,6 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// `compile_file` always links to `target/sal-out/a.out`; serialize + copy so
-/// parallel instrument tests do not race on that path (ETXTBSY / wrong binary).
-static LINK_LOCK: Mutex<()> = Mutex::new(());
 
 fn instrument_opts() -> CompileOptions {
     CompileOptions {
@@ -25,28 +21,17 @@ fn instrument_opts() -> CompileOptions {
     }
 }
 
-fn link_lock() -> std::sync::MutexGuard<'static, ()> {
-    // A prior panic while holding the lock must not poison the rest of the suite.
-    LINK_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+fn link_lock() {
+    // Each link gets its own `a.out.<pid>.<n>`, so the tests need no lock to run in parallel.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe { std::env::set_var("SAL_OUT_UNIQUE", "1") });
 }
 
 fn compile_instrumented(file: &Path) -> (String, PathBuf) {
-    let _guard = link_lock();
+    link_lock();
     let art = compile_file(file, &instrument_opts()).expect("compile instrumented");
     let bin = art.binary.expect("binary");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let copy = PathBuf::from(format!(
-        "/tmp/sal-inst-run-{}-{}",
-        std::process::id(),
-        stamp
-    ));
-    std::fs::copy(&bin, &copy).expect("copy binary");
-    (art.llvm, copy)
+    (art.llvm, bin)
 }
 
 /// A String handed to a user fn that returns it keeps unknown provenance: the caller
@@ -79,7 +64,7 @@ fn instrument_sal_leak() {
     // Also exercise CLI `--instrument-out` via `sal run`.
     let out_path = PathBuf::from("/tmp/sal-instrument-out-wiring.json");
     let sal = env!("CARGO_BIN_EXE_sal");
-    let _guard = link_lock();
+    link_lock();
     let status = Command::new(sal)
         .arg("run")
         .arg(&file)
@@ -90,7 +75,6 @@ fn instrument_sal_leak() {
         .current_dir(root())
         .output()
         .expect("sal run");
-    drop(_guard);
     assert_ne!(status.status.code(), Some(0));
     let saved = std::fs::read_to_string(&out_path).expect("read instrument-out");
     assert!(

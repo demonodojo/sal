@@ -90,88 +90,6 @@ fn c_string_init(s: &String) -> String ! alloc
         acc2 = c_escape_go(s, 0, str_len(s), acc)
         acc2 + "\""
 
-# Module-wide pool for string literals, enum variants, arena/keep flags and the
-# drop env. Slots stay in a vec (`raw`) so `&mut LitPool` does not trip List glue
-# LEAK under `--instrument` (same reason `TyCur.offs` stays an Int vec).
-# Layout: [0 globals, 1 texts, 2 syms, 3 nid, 4..5 reserved, 6 variants,
-# 7 variant_fields, 8 drop_env, 9 arena, 10 keep].
-struct LitPool
-    raw: Int
-
-static LitPool.new() -> LitPool ! alloc
-    v = vec_new()
-    _a = vec_push(v, str_as_int(&""))
-    _b = vec_push(v, vec_new())
-    _c = vec_push(v, vec_new())
-    _d = vec_push(v, 0)
-    _e = vec_push(v, 0)
-    _f = vec_push(v, 0)
-    _g = vec_push(v, map_new())
-    _h = vec_push(v, map_new())
-    _i = vec_push(v, map_new())
-    _j = vec_push(v, 0)
-    _k = vec_push(v, vec_new())
-    LitPool(v)
-
-# Variant name -> (tag + 1) * 2 + nullary, as `EnumMake` tags them: `index + 1`,
-# except a payload-free first variant, which is 0.
-method LitPool.variants(&self) -> Int ! alloc
-    vec_get(self.raw, 6)
-
-# Variant name -> its field types, for typing pattern bindings.
-method LitPool.variant_fields(&self) -> Int ! alloc
-    vec_get(self.raw, 7)
-
-method LitPool.globals(&self) -> String ! alloc
-    str_from_int(vec_get(self.raw, 0))
-
-method LitPool.drop_env(&self) -> Int ! alloc
-    vec_get(self.raw, 8)
-
-method LitPool.set_drop_env(&mut self, denv: Int) -> Int ! alloc
-    vec_set(self.raw, 8, denv)
-
-method LitPool.arena(&self) -> Int ! alloc
-    vec_get(self.raw, 9)
-
-method LitPool.set_arena(&mut self, v: Int) -> Int ! alloc
-    vec_set(self.raw, 9, v)
-
-method LitPool.keep(&self) -> Int ! alloc
-    vec_get(self.raw, 10)
-
-method LitPool.set_keep(&mut self, ks: Int) -> Int ! alloc
-    vec_set(self.raw, 10, ks)
-
-method LitPool.ensure(&mut self, s: Int) -> String ! alloc
-    texts = vec_get(self.raw, 1)
-    idx = lit_pool_find(s, texts, 0, vec_len(texts))
-    if idx >= 0
-        sym = vec_get(vec_get(self.raw, 2), idx)
-        "((int64_t)(uintptr_t)" + str_from_int(sym) + ".b)"
-    else
-        nid = vec_get(self.raw, 3) + 1
-        _u = vec_set(self.raw, 3, nid)
-        decl = sal_lit_decl(&str_from_int(s), &("sal_lit_" + int_to_str(nid)))
-        gacc = self.globals()
-        _g = vec_set(self.raw, 0, str_as_int(&(gacc + decl)))
-        _t = vec_push(texts, str_as_int(&strdup(str_from_int(s))))
-        _sy = vec_push(vec_get(self.raw, 2), str_as_int(&("sal_lit_" + int_to_str(nid))))
-        cast = "((int64_t)(uintptr_t)" + "sal_lit_" + int_to_str(nid)
-        cast + ".b)"
-
-# Dup'd literal strings and their `sal_lit_N` names, registered during one function.
-# `ensure` indexes both lists together, so a repeat in the next function must not
-# resolve to a name from the previous one. Pool globals and the counter stay.
-method LitPool.free_texts(&mut self) -> Int ! alloc
-    texts = vec_get(self.raw, 1)
-    lit_pool_free_texts_go(texts, 0, vec_len(texts))
-    vec_set(self.raw, 1, vec_new())
-    syms = vec_get(self.raw, 2)
-    lit_pool_free_texts_go(syms, 0, vec_len(syms))
-    vec_set(self.raw, 2, vec_new())
-    0
-
 # Registers every variant of `enums` (an entry per name: its code in `m`, `[enum index, variant
 # index]` in `ft`); a later definition of a name replaces an earlier one.
 fn variants_register(m: Int, ft: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
@@ -206,14 +124,6 @@ fn variants_register_go(m: Int, ft: Int, ei: Int, vs: &List[TVariant], i: Int, n
         _q = map_put(ft, key, entry)
         variants_register_go(m, ft, ei, vs, i + 1, n)
 
-fn lit_pool_find(s: Int, texts: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0 - 1
-    elsif str_eq(vec_get(texts, i), s) == 1
-        i
-    else
-        lit_pool_find(s, texts, i + 1, n)
-
 fn sal_lit_decl_n(s: &String, name: &String, n: Int) -> String ! alloc
     init = select_str(str_len(s) == 0, "\"\"", c_string_init(s))
     arr = n + 1
@@ -243,15 +153,6 @@ fn names_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
         1
     else
         names_has(names, name, i + 1, n)
-
-fn lit_pool_free_texts_go(texts: Int, i: Int, n: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        s = str_from_int(vec_get(texts, i))
-        if str_len(s) > 0
-            _f = free(s)
-        lit_pool_free_texts_go(texts, i + 1, n)
 
 fn cmap_op(op: &String) -> String ! alloc
     match op

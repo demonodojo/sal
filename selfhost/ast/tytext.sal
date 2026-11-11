@@ -94,6 +94,21 @@ fn ty_deref(t: &String) -> String ! alloc
     i = ty_deref_skip(t, 0, n)
     trim_spaces(t.slice(i, n))
 
+# `&mut T` / `&'a mut T`: an exclusive reference (not `&T`, not a plain type).
+fn ty_is_mut_ref(t: &String) -> Int ! alloc
+    n = t.len()
+    if n > 0
+        if t.char(0) == 38
+            at = ty_deref_life(t, 1, n)
+            if ty_deref_mut(t, at, n) > at
+                1
+            else
+                0
+        else
+            0
+    else
+        0
+
 # Past a leading `&`, its lifetime and `mut`, repeated for `&&T`.
 fn ty_deref_skip(t: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
