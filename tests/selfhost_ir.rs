@@ -1680,8 +1680,11 @@ fn selfhost_matches_bootstrap_on_every_repo_program() {
     for src in files {
         let rel = src.strip_prefix(root()).unwrap().display().to_string();
         let stem = rel.replace(['/', '.'], "_");
+        // `transformer_gpu`: las regiones `on gpu` (lanzamientos contados y suma del tensor) son
+        // del backend LLVM; el selfhost no las emite en C (subplan 07-selfhost, punto 5).
         if stem.contains("tiny_prefill")
             || stem.contains("tiny_decode")
+            || stem.contains("transformer_gpu")
             || rel.contains("/support/")
         {
             continue;

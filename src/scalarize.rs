@@ -635,22 +635,24 @@ impl<'a> Pass<'a> {
         let mut flat = Vec::new();
         // Scalarised locals boxed for an `&mut` param share that heap box with the callee.
         // Reload slots after the call (Rust writeback). By-value moves must not free the box.
-        let mut sync_back: Vec<(String, String, String)> = Vec::new();
-        let mut free_temp: Vec<String> = Vec::new();
+        let mut sync_back: Vec<(String, String, String, bool)> = Vec::new();
+        let mut free_temp: Vec<(String, String, bool)> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             match sig.params.get(i).cloned().flatten() {
                 Some(sn) => flat.extend(self.slots_of(a, &sn, scope, out)),
                 None => {
                     if let Some(v) = scope.vals.get(a).cloned() {
+                        // A carrier made for this call owns its nested carriers too.
+                        let fresh_box = !scope.boxed.contains_key(a);
                         let p = self.plain(a, scope, out);
                         if sig.mut_ref.get(i) == Some(&true) {
-                            sync_back.push((a.clone(), v.name.clone(), p.clone()));
+                            sync_back.push((a.clone(), v.name.clone(), p.clone(), fresh_box));
                         } else if sig.shared_ref.get(i) == Some(&true) {
                             // Borrow only: free the temporary carrier box after the call.
                             // Drop the cached handle too, or a later use of `a` passes the
                             // freed box to the callee instead of a fresh carrier.
                             scope.boxed.remove(a);
-                            free_temp.push(p.clone());
+                            free_temp.push((p.clone(), v.name.clone(), fresh_box));
                         } else {
                             // By-value move: ownership left with the callee (or its return).
                             scope.vals.remove(a);
@@ -688,30 +690,46 @@ impl<'a> Pass<'a> {
                 args: flat,
             }),
         }
-        for (local, sn, handle) in sync_back {
+        for (local, sn, handle, fresh_box) in sync_back {
             let slots = self.unbox(&handle, &sn, out);
             scope.vals.insert(
                 local.clone(),
                 Val {
-                    name: sn,
+                    name: sn.clone(),
                     slots,
                 },
             );
             // The box was only a carrier for the call (`&mut`); fields live in slots again.
             scope.boxed.remove(&local);
-            out.push(IrInst::Call {
-                dest: None,
-                func: "sal_struct_free_box".into(),
-                args: vec![handle],
-            });
+            self.free_carrier(&sn, &handle, fresh_box, out);
         }
-        for handle in free_temp {
-            out.push(IrInst::Call {
-                dest: None,
-                func: "sal_struct_free_box".into(),
-                args: vec![handle],
-            });
+        for (handle, sn, fresh_box) in free_temp {
+            self.free_carrier(&sn, &handle, fresh_box, out);
         }
+    }
+
+    /// Releases a carrier box built by `box_slots`; when it was made for one call (`nested`),
+    /// the boxes of its nested structs go with it.
+    fn free_carrier(&mut self, sn: &str, handle: &str, nested: bool, out: &mut Vec<IrInst>) {
+        if nested {
+            for (i, k) in self.field_kinds(sn).iter().enumerate() {
+                if let Some(inner) = k {
+                    let d = self.fresh();
+                    out.push(IrInst::Extract {
+                        dest: d.clone(),
+                        base: handle.to_string(),
+                        struct_name: sn.to_string(),
+                        field_index: i as u32,
+                    });
+                    self.free_carrier(inner, &d, true, out);
+                }
+            }
+        }
+        out.push(IrInst::Call {
+            dest: None,
+            func: "sal_struct_free_box".into(),
+            args: vec![handle.to_string()],
+        });
     }
 
     /// Struct both branches agree on, if any.

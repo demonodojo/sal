@@ -588,6 +588,23 @@ pub fn lower_program_with_callables_env(
             );
         }
     }
+    // Functions of other modules: a reference parameter is only borrowed, whatever the callee
+    // does; any other parameter is taken (the Rust model). Without this, `table.free()` on an
+    // imported method looks like an unknown callee that keeps its arguments.
+    for f in callees {
+        param_modes.entry(f.name.clone()).or_insert_with(|| {
+            f.params
+                .iter()
+                .map(|p| {
+                    if matches!(p.ty, Type::Ref { .. }) {
+                        ParamMode::Borrow
+                    } else {
+                        ParamMode::Take
+                    }
+                })
+                .collect()
+        });
+    }
     let caller_modes = caller_param_modes(prog, &param_modes, &declared, &consumed);
     let mut functions = Vec::new();
     for item in &prog.items {
@@ -2202,7 +2219,9 @@ fn field_reads(
                         }
                     }
                     if let Some(next) = strings.structs.get(name).filter(|_| args.is_empty()) {
-                        if last {
+                        // Only a struct handed over by value leaves its fields to someone else;
+                        // reading or borrowing it (`&c.table`, `c.table.len`) keeps the owner.
+                        if last && moving {
                             self.out.struct_valued.insert(root.to_string());
                         }
                         cur = next;
@@ -2264,6 +2283,9 @@ fn field_reads(
                 Expr::Binary { left, right, .. } => {
                     self.ex(left, false);
                     self.ex(right, false);
+                }
+                Expr::Unary { op: crate::ast::UnOp::Ref | crate::ast::UnOp::RefMut, expr, .. } => {
+                    self.ex(expr, false)
                 }
                 Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => {
                     self.ex(expr, moving)

@@ -51,6 +51,7 @@ impl StringEnv {
     pub fn from_module_graph(progs: &[&Program]) -> Self {
         let mut structs = HashMap::new();
         let mut fn_struct_rets = HashMap::new();
+        let mut struct_ret_candidates: Vec<(String, String)> = Vec::new();
         let mut fn_tensor_rets = HashMap::new();
         let mut enums = HashMap::new();
         let mut protocols = HashMap::new();
@@ -67,15 +68,22 @@ impl StringEnv {
                 }
                 if let Item::Fn(f) = item {
                     let ret = peel_ref_type(&f.ret);
+                    // Checked once every module's structs are known (below): the struct may
+                    // be defined by a module that comes later in the graph.
                     if let Type::Named { name, args, .. } = ret {
-                        if args.is_empty() && structs.contains_key(name) {
-                            fn_struct_rets.insert(f.name.clone(), name.clone());
+                        if args.is_empty() {
+                            struct_ret_candidates.push((f.name.clone(), name.clone()));
                         }
                     }
                     if let Type::Tensor { .. } = ret {
                         fn_tensor_rets.insert(f.name.clone(), ret.clone());
                     }
                 }
+            }
+        }
+        for (f, sn) in struct_ret_candidates {
+            if structs.contains_key(&sn) {
+                fn_struct_rets.insert(f, sn);
             }
         }
         let fn_sigs = crate::scalarize::sigs_for_programs(progs, &structs);
