@@ -1,7 +1,9 @@
 # exit: 8
 # Una rama `elsif` devuelve un préstamo (`str_from_int` sobre un asa de `keep`): la función no
-# devuelve un String propio, así que quien la llama no lo libera. Si lo liberara, la lectura
-# de `keep` después sería un uso tras liberar.
+# devuelve un String propio, así que quien la llama no lo libera. Si lo liberara, liberaría los
+# bytes del literal `keep`, que no son de nadie. `keep` es un literal y no `d"…"`: un `String`
+# que pasa por `str_as_int` escapa y no se suelta nunca («Frontera de asas»), y esa fuga no es
+# lo que se prueba aquí.
 fn pick(n: Int, h: Int) -> String ! alloc
     if n == 0
         "s"
@@ -11,11 +13,11 @@ fn pick(n: Int, h: Int) -> String ! alloc
         ""
 
 fn main() -> Int ! alloc
-    keep = d"abcd"
-    h = str_as_int(&keep)
+    keep = "abcd"
+    h = keep.to_int()
     a = if h != 0
         d = pick(1, h)
-        str_len(d)
+        d.len()
     else
         0
-    a + str_len(&keep)
+    a + keep.len()
