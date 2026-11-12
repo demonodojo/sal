@@ -21,7 +21,8 @@ fn fo_new(kind: Int, a: &String, b: &String, c: &String) -> FOp ! alloc
 fn fo_column(op: &String, lhs: &String, rhs: &String, dest: &String, scalar: &String) -> FOp ! alloc
     FOp(FO_COLUMN(), op.dup(), lhs.dup(), rhs.dup(), dest.dup(), scalar.dup(), 6)
 
-# Pack a typed op back to the Int-vec layout Cx/region still store (until oleada E).
+# Pack a typed op back to the Int-vec layout `region_new`/`estimate_peak` still store
+# (a `Region` is built from these handles, not from `FOp`).
 # The region outlives the `List[FOp]` it came from: each text is an owned copy (`str_own`),
 # not a pointer into a `FOp` that is released as soon as the list dies.
 fn fop_pack(op: &FOp) -> Int ! alloc

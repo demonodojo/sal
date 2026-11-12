@@ -499,7 +499,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_tensor_select_f32(ptr, ptr, ptr, i64)\n");
     s.push_str("declare void @sal_tensor_select_i8(ptr, ptr, ptr, i64)\n");
     s.push_str("declare ptr @sal_list_select(ptr, ptr, i64)\n");
-    s.push_str("declare ptr @sal_load_f32(ptr, ptr)\n");
+    s.push_str("declare ptr @sal_load_f32_checked(ptr, ptr)\n");
     s.push_str("declare ptr @sal_place_malloc(i64, i32)\n");
     s.push_str("declare void @sal_place_free(ptr)\n");
     s.push_str("declare ptr @sal_place_copy(ptr, i64, i32)\n");
@@ -2496,7 +2496,7 @@ fn emit_load(
     *uid += 1;
     let buf = format!("load_buf_{uid}");
     s.push_str(&format!(
-        "  %{buf} = call ptr @sal_load_f32(ptr {path_ptr}, ptr %{elems})\n"
+        "  %{buf} = call ptr @sal_load_f32_checked(ptr {path_ptr}, ptr %{elems})\n"
     ));
     if opts.instrument {
         s.push_str(&format!(

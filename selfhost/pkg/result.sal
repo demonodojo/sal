@@ -11,7 +11,7 @@ fn result_ok(v: Int) -> Res ! alloc
     Res(0, v, "".dup())
 
 fn result_ok_str(v: String) -> Res ! alloc
-    Res(0, str_as_int(&v), "".dup())
+    Res(0, v.to_int(), "".dup())
 
 fn result_err(e: Int) -> Res ! alloc
     Res(1, 0, str_from_int(e).dup())
@@ -24,19 +24,6 @@ fn result_is_err(r: &Res) -> Int
 
 fn result_unwrap(r: &Res) -> Int
     r.val
-
-fn result_payload(r: &Res) -> Int
-    r.val
-
-# Legacy: some callers stuffed a raw vec that looked like Result; keep the unwrap.
-fn module_order_vec(x: Int) -> Int ! alloc
-    if vec_len(x) == 2
-        if vec_get(x, 0) == 0
-            vec_get(x, 1)
-        else
-            x
-    else
-        x
 
 fn result_format_err(r: &Res) -> String ! alloc
     acc = "Err("

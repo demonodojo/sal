@@ -1030,8 +1030,8 @@ fn emit_c_tensor_cells(data: &List[String], i: Int, n: Int, acc: String) -> Stri
         emit_c_tensor_cells(data, i + 1, n, acc)
 
 fn emit_c_load(arg_parts: &List[String], stmts: Int) -> String ! alloc
-    _p = vec_push(stmts, str_as_int(&"  extern int64_t sal_load_f32();\n"))
-    "({ int64_t __n = 0; (int64_t)(uintptr_t)sal_load_f32((const char *)(uintptr_t)(" + arg_at(arg_parts, 0) + "), &__n); })"
+    vec_push(stmts, "  extern int64_t sal_load_f32_checked();\n".to_int())
+    "({ int64_t __n = 0; (int64_t)(uintptr_t)sal_load_f32_checked((const char *)(uintptr_t)(" + arg_at(arg_parts, 0) + "), &__n); })"
 
 fn emit_c_matmul(args_e: &List[Expr], arg_parts: &List[String], stmts: Int, tc: &mut Tc) -> String ! alloc
     ta = texpr_type(&tc.env, &list_get(args_e, 0))

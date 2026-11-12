@@ -143,11 +143,40 @@ Orden (fácil → difícil): A deprecation/`FRC` sets → B `LitPool` → C qual
 
 **Oleada D (cerrada):** en `fused.sal`, `fo_new`/`fo_column` producen `FOp` y `collect_fused*` acumula `List[FOp]`; `fops_pack` baja a asas para `region_new`/`estimate_peak`/`lower_on_*`.
 
-**Oleada E (cerrada):** `Inst`/`FOp`/`Region`/`Lit`/`IrFn` viven en `ir.sal` (sin ciclo con `tir`). Los builders `ir_*`/`ir_if`/`ir_while`/`ir_rebind` construyen `Inst`; `ir_push` empaqueta con `inst_pack` hacia el vec de asas que `Cx.insts` aún guarda. `Cx.binds`/`regions`/`literals`/`variants`/`fn_map` siguen asas (el contador/acc siguen listas de una celda).
+**Oleada E (cerrada):** `Inst`/`FOp`/`Region`/`Lit`/`IrFn` viven en `ir.sal` (sin ciclo con `tir`). Los builders `ir_*`/`ir_if`/`ir_while`/`ir_rebind` construyen `Inst` y `ir_push` los pushea en `cx_insts` (`Cx.bodies`, un `List[List[Inst]]`): `inst_pack` ya no existe. Siguen en asas `Cx.binds`/`bind_map`/`fn_map`/`fn_names`/`variants`/`md`/`fsum`/`nparams`; `regions`/`literals`/`dps` son listas tipadas y el contador/acc, listas de una celda.
 
-**Oleada F (cerrada):** `lower_fn` → `IrFn`, `lower_program_*` → `List[IrFn]`; `ir_to_text`/`emit_c_*` consumen `IrFn` tipado. `ti_module` ya no se llama (queda `ti_fn` solo para el pack interno de `lower_fn`/glue mientras Cx.insts sea asa).
+**Oleada F (cerrada):** `lower_fn` → `IrFn`, `lower_program_*` → `List[IrFn]`; `ir_to_text`/`emit_c_*` consumen `IrFn` tipado. `ti_module`, `ti_fn` e `inst_pack` ya no existen: el único puente que queda es `tir.sal` (`ti_region`, `ti_slot_s`, `tt_slot`, `tt_str`) para las regiones que `region_new`/`estimate_peak` todavía guardan como asas.
 
 **Oleada G (cerrada):** el camino de error del selfhost es `struct Res { tag, val, err: String }` en `result.sal` (Ok=`tag=0`/`val`, Err=`tag=1`/`err` sin `str_as_int` en el mensaje). El `enum Result[T, E]` del lenguaje no unifica entre módulos (`ModA__Result` ≠ `ModB__Result` → `E_TYPE`); por eso el selfhost no lo usa en firmas cruzadas. El arranque no inyecta `Result` en ficheros que importan `result.sal` (`with_prelude_enums`).
+
+## Residual de asas (inventario, nov 2026)
+
+Las oleadas A–G están cerradas, pero el código sigue guardando asas `Int` (punteros a vec/mapa o a texto) en un puñado de focos grandes. Un asa se reconoce por el trío `vec_new`/`vec_get`/`vec_push`, `str_as_int`/`str_from_int` y `map_*` sobre un `Int`, y por las firmas que lo arrastran. Recuento por fichero (`vec` = `vec_new|get|push|len|set`, `int` = `str_as_int|str_from_int`, `firmas` = firmas con `Int` en parámetro o retorno):
+
+| Fichero | vec / int / map | firmas | Qué es el asa | Sustituto |
+|---|---|---|---|---|
+| `ir/fuse.sal` | 242 / 42 / 13 | 204 | `arg_names` (vec de SSA), `d` (dest SSA), `out` acumuladores, `b` (bind de tensor) | `List[String]` para operandos, `String` para SSA, `&mut Region` |
+| `ir/drops.sal` | 25 / 16 / 39 | 165 | `DC.variants`/`DC.ro` (mapas-asa de `fuse`) | `NM`/`HT` (el resto de `DC` ya es tipado) |
+| `ir/ir.sal` | 90 / 24 / 5 | 102 | `bind_new` = vec de 8 slots con accesores `bind_*`; `Cx.binds`/`bind_map`/`fn_map`/`variants` | `struct Bind` plano + `HT`/`NM` |
+| `emit/emit.sal` | 99 / 78 / 1 | 92 | buffers de líneas C (`stmts`, `body_stmts`, `cond_stmts`, `sub`, `lines`) como vec de handles de texto; `user`, `callables`, `extra` | `List[String]` + `join`; mapas tipados |
+| `pkg/qualify.sal` | 31 / 38 / 4 | 76 | `QualCtx.errs`/`own`/`alias_deps`/`flat` | `List[String]` (los cuatro) |
+| `emit/cir.sal` | 79 / 18 / 8 | 66 | `cc` = vec de 13 slots (lits, user, locals, consts, floats, strs, lines, quirk, uid, is_main, fills, primer literal) | `struct Cc['a]` con campos tipados y `pool: &'a mut LitPool` |
+| `pkg/modules.sal` | 48 / 18 / 0 | 60 | `visited`/`stack` (vec de handles de texto), `bases` (pares `i*2`/`i*2+1`) | `List[String]` y `List[DepBase]` |
+| `ir/frc.sal` | 19 / 3 / 6 | 43 | `FRC.sv`/`hm`/`al`/`sm`/`ct` (conjuntos) | `List[String]` **bloqueado**: mutar `List[String]` vía `&mut FRC` deja `LEAK` con `--instrument` (bug de glue, oleada A) |
+| `ir/tensorops.sal` | 107 / 11 / 0 | 36 | `arg_names`, forma `b`, nombres devueltos como asa (`int_text`, `const_dim`) | `List[String]`, tipo de forma, retorno `String` |
+| `ir/fused.sal` | 78 / 21 / 0 | 19 | `fop_pack`/`fops_pack` (bajan `FOp` a asas), `estimate_peak(r: Int)` | `region_new`/`estimate_peak` sobre `Region`/`&mut Region` |
+| `emit/cenv.sal` | 7 / 3 / 1 | 21 | `tparam_names(..., out: Int)`, `append_stmt_strings(acc, stmts: Int, i, n)`, `externs` (vec de pares nombre/aridad, `emit_extern_decl(pair)`) y `names` (vec de handles, `names_has`) | `List[String]` y `List[ExternDecl]`/`List[String]` |
+| `emit/cbuiltin.sal` | 20 / 2 / 3 | 11 | `stmts: Int` (buffer de líneas) en `emit_c_builtin*`/`emit_c_runtime_call`/`emit_c_syscall` | `List[String]` |
+| `sem/deprecation.sal` | 11 / 2 / 0 | 39 | `TyCur.offs` (vec `Int`) y `out` (vec de handles de línea) | `List[Int]`/`List[String]`; `offs` se dejó así a propósito (oleada A) |
+| `ast/tir.sal` | 6 / 1 / 0 | 6 | puente entero (`ti_region`, `ti_slot_s`, `tt_slot`, `tt_str`) | desaparece al cerrar `ir/fused.sal` |
+| `sem/device.sal` | 0 / 1 / 0 | — | mensaje de error guardado en `Res` como asa (línea ~451) | `Res.err` real; hoy no se libera (fuga conocida) |
+| `sem/methods.sal` | 0 / 1 / 0 | — | `str_as_int(old) == str_as_int(neu)` decide «misma cadena» | comparación de identidad de `String` |
+
+Orden recomendado (por superficie y riesgo): (1) `Cc` + buffers de líneas a `List[String]` en `cir.sal`/`emit.sal`/`cbuiltin.sal`/`cenv.sal`; (2) conjuntos y mensajes de `modules.sal`/`qualify.sal`; (3) `Bind` y `Cx.binds`/`bind_map`/`fn_map`, que arrastran `fuse.sal`, `tensorops.sal`, `fused.sal` y `ast/tir.sal`; (4) `FRC` y `Result` cuando se cierren sus bloqueos (glue tras `&mut`, identidad de `enum` entre módulos). Cada corte se mide con `tests/selfhost_ir.rs` (IR idéntica), `selfhost_instrumented_clean_on_hello` y el pico de memoria de stage1.
+
+No son asas: `TStmt.id` (contador del parser), `MRSet`/`NM`/`HT` (mapas tipados) y las listas de una celda del contador/acumulador.
+
+**Código muerto retirado:** `result_payload` y `module_order_vec` (`pkg/result.sal`) no tenían llamantes.
 
 **Espejo de tres arreglos de memoria del arranque:** (1) un campo asignado a través de un parámetro `&mut T` se escribe en su sitio (`sal_struct_set`), como `MUT_REF_PLACE` en `src/ir.rs` (`is_box_place` + `ty_is_mut_ref` en `fuse.sal`/`tytext.sal`); (2) un `List.new[String]()` escrito inline como argumento de un constructor de struct se baja como `list_new_owned` (`ctor_own_args` en `fuse.sal`; `own_inline_string_list` en `src/drops.rs`); ambos con `corpus/drop_struct_inline_list.sal` y `tests/lang/structs/struct_ref_field_mut_write_through.sal`. (3) **Pendiente:** el arranque ya no cuenta como escape la lectura de un escalar `Copy` (`Some(v) => v` sobre `Option[Int]`, `expr_is_copy_scalar` en `src/drops.rs`), así que suelta el `Option` de `dict_get`; `selfhost/ir/drops.sal` no tiene tipos por expresión y sigue contándola, de modo que ahí esa caja se fuga (`tests/lang/drops/drop_dict_get_int_payload_*.sal` los cubre solo el arranque). El selfhost no reparte structs en registros, por lo que `held_by_ref` de `scalarize` no tiene espejo.
 

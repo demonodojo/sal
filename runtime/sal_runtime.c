@@ -3761,6 +3761,17 @@ void *sal_load_f32(const char *path, int64_t *out_elems) {
     return buf;
 }
 
+/* `load[...]("p.salt")` in a program: a file that does not exist or is not a `.salt` is a panic,
+ * never a null tensor (SPEC «Contenedor `.salt`»). Both compilers call this one. */
+void *sal_load_f32_checked(const char *path, int64_t *out_elems) {
+    void *buf = sal_load_f32(path, out_elems);
+    if (!buf) {
+        fprintf(stderr, "sal panic: cannot load tensor from %s\n", path);
+        exit(1);
+    }
+    return buf;
+}
+
 void *sal_load_salt(const char *path, int64_t *out_elems, int64_t *out_elem_bytes) {
     FILE *f = fopen(path, "rb");
     if (!f) {

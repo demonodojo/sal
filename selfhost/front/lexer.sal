@@ -187,9 +187,7 @@ fn TK_TICK() -> Int
     61
 
 fn is_digit(c: Int) -> Int
-    if c < 48
-        0
-    elsif c > 57
+    if c < 48 || c > 57
         0
     else
         1

@@ -94,7 +94,7 @@ struct TBlock
     tail: Expr
 
 # `kind` 0 expression, 1 binding or assignment (`is_let` tells them apart), 2 `return`, 3 field assignment.
-# `id` names the statement across a pass (the handle it came from, 0 for one a pass creates).
+# `id` names the statement across a pass (a parser counter, 0 for one a pass creates).
 struct TStmt
     kind: Int
     name: String

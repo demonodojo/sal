@@ -57,6 +57,7 @@ int sal_mem_place(const void *p);
 void sal_gpu_sync(void);
 
 void *sal_load_f32(const char *path, int64_t *out_elems);
+void *sal_load_f32_checked(const char *path, int64_t *out_elems);
 
 /* Per-actor heaps: place 0=cpu, 1=gpu, 2=tpu. With SAL_USE_CUDA, gpu uses device memory. */
 void *sal_place_malloc(int64_t size, int place);

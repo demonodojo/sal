@@ -365,7 +365,7 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: &String, args: Int, ops: &List[Stri
         cir_attention(cc, dest, ops)
     elsif fname.eq("sal_load") == 1
         vv = cir_vec2(&cir_arg(ops, 0), &"(int64_t)&__n")
-        _a = cc_line(cc, &("  { int64_t __n = 0; int64_t __b = " + cir_rt(cc, &"sal_load_f32", &vv) + "; " + d + " = (int64_t)(uintptr_t)sal_tn_from(__b, __n); }\n"))
+        _a = cc_line(cc, &("  { int64_t __n = 0; int64_t __b = " + cir_rt(cc, &"sal_load_f32_checked", &vv) + "; " + d + " = (int64_t)(uintptr_t)sal_tn_from(__b, __n); }\n"))
         0
     elsif cir_is_stub(fname) == 1
         cir_set(cc, dest, &"0")

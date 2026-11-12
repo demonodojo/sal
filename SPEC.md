@@ -544,6 +544,8 @@ Fusión en bloque `on`; IR publica `peak_bytes` por lugar.
 
 Little-endian: magic `SALT`, versión u16, elem u8, rank u8, dims u64[], payload.
 
+`load[...]("p.salt")` de un fichero que no existe o que no es un `.salt` legible es un pánico: el programa escribe `sal panic: cannot load tensor from p.salt` en stderr y sale con 1. Nunca da un tensor nulo.
+
 ## Errores de compilación
 
 `E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`, `E_PARSE`, `E_TYPE`, `E_TARGET`.

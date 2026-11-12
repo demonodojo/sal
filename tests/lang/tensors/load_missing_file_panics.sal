@@ -1,0 +1,8 @@
+# exit: 1
+# `load` de un fichero que no existe es un pánico (sale con 1), no un tensor nulo: el matmul de
+# después no llega a leer memoria que no es suya (SPEC «Contenedor `.salt`»).
+fn main() -> Int ! io, alloc
+    let a = load[Tensor[F32, 2, 2] on cpu]("target/no_such_dir/missing.salt")
+    on cpu
+        matmul(a, a)
+    0
