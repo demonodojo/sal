@@ -306,6 +306,53 @@ fn import_change_invalidates_importer_cache() {
     assert!(!is_cache_hit(&cache_path(&project, &key1), &key2));
 }
 
+/// The layout of `Pool` (in `p.sal`) depends on a module that imports it: once `main.sal`
+/// stores a `&'a mut Pool` in a struct, `Pool` stays a heap block. `p.sal` imports nothing, so
+/// only that graph-wide fact in its cache key keeps its old (scalarised) object from being
+/// reused with the new layout (it gave 1 instead of 5).
+#[test]
+fn importer_held_by_ref_invalidates_imported_layout() {
+    let tmp = isolated_root();
+    let project = tmp.path().to_path_buf();
+    fs::write(
+        project.join("p.sal"),
+        "struct Pool\n    n: Int\n    m: Int\n\nfn pool_make() -> Pool ! alloc\n    Pool(0, 0)\n\n\
+         fn pool_bump(p: &mut Pool) -> Int ! alloc\n    p.n = p.n + 1\n    p.n\n\n\
+         fn pool_n(p: &Pool) -> Int\n    p.n\n",
+    )
+    .expect("write p");
+    let main = project.join("main.sal");
+    fs::write(
+        &main,
+        "import \"./p.sal\"\n\nfn main() -> Int ! alloc\n    p = pool_make()\n    pool_bump(&mut p)\n    pool_n(&p)\n",
+    )
+    .expect("write main v1");
+    let opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: false,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: project.clone(),
+        skip_link: false,
+    };
+    let first = compile_file(&main, &opts).expect("first build");
+    let st = Command::new(first.binary.as_ref().expect("binary")).status().expect("run v1");
+    assert_eq!(st.code(), Some(1));
+
+    fs::write(
+        &main,
+        "import \"./p.sal\"\n\nstruct Tc['a]\n    pool: &'a mut Pool\n    k: Int\n\n\
+         fn use_tc(tc: &mut Tc) -> Int ! alloc\n    pool_bump(tc.pool)\n\n\
+         fn main() -> Int ! alloc\n    p = pool_make()\n    tc = Tc(&mut p, 1)\n    a = use_tc(&mut tc)\n    \
+         b = use_tc(&mut tc)\n    a + b + pool_n(&p)\n",
+    )
+    .expect("write main v2");
+    let second = compile_file(&main, &opts).expect("second build");
+    let st = Command::new(second.binary.as_ref().expect("binary")).status().expect("run v2");
+    assert_eq!(st.code(), Some(5), "a stale scalarised `Pool` object was reused");
+}
+
 #[test]
 fn import_as_two_modules_run() {
     let tmp = isolated_root();

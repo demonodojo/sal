@@ -1,0 +1,17 @@
+# exit: 193
+# Una referencia local a un struct (`s = &w`) o a un campo struct (`r = &w.p`) lee los campos
+# del struct al que apunta: `r.x` es el campo `x` de `P`, no `P` entero. `w` sigue siendo el
+# dueño y se libera una vez, con su `P`.
+struct P
+    x: Int
+    y: Int
+
+struct W
+    p: P
+    n: Int
+
+fn main() -> Int ! alloc
+    w = W(P(3, 4), 1)
+    r = &w.p
+    s = &w
+    r.x + r.y * 10 + s.p.x * 50

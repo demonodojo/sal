@@ -190,7 +190,10 @@ fn compile_file_with_imports(
         let graph_progs: Vec<&Program> = graph.order.iter().map(|x| &x.program).collect();
         let strings_env = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_m);
         let typed_m = TypedProgram::from_program(m.program.clone(), infer_m.expr_types_by_fn);
-        let deps_m = import_graph_digest(&m.program, &m.path, &graph.project_root);
+        let mut deps_m = import_graph_digest(&m.program, &m.path, &graph.project_root);
+        // The layout of this module's structs also depends on modules that import it (a field
+        // `&'a mut Pool` there keeps `Pool` a heap block): the key carries those facts too.
+        deps_m.extend(crate::scalarize::layout_digest(&strings_env.structs));
         let is_root = fs::canonicalize(&m.path).unwrap_or_else(|_| m.path.clone())
             == fs::canonicalize(&root.path).unwrap_or_else(|_| root.path.clone());
         let flags_m = CompileFlags {

@@ -104,6 +104,24 @@ pub fn note_ref_returned(progs: &[&crate::ast::Program]) {
     REF_RETURNED.with(|r| *r.borrow_mut() = set);
 }
 
+/// The structs of the module graph that stay heap blocks (`stays_block`), in name order. A
+/// module's layout depends on them even when the reason lives in a module that imports it (a
+/// field `&'a mut Pool`, a fn returning `&Pool`), so they go in every module's cache key.
+/// Empty when no struct stays a block, so the key of such a graph does not move.
+pub fn layout_digest(structs: &HashMap<String, StructDef>) -> Vec<u8> {
+    let mut names: Vec<&String> = structs.keys().filter(|n| stays_block(n, structs)).collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    names.sort();
+    let mut out = b"blocks:".to_vec();
+    for n in names {
+        out.extend(n.as_bytes());
+        out.push(0);
+    }
+    out
+}
+
 /// Whether the struct is kept as a heap block even though it could be scalarised.
 pub fn stays_block(name: &str, structs: &HashMap<String, StructDef>) -> bool {
     held_by_ref(name, structs)

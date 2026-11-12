@@ -105,9 +105,11 @@ fn format_struct(s: &StructDef) -> String {
         out.push_str("@layout(c)\n");
     }
     out.push_str(&format!("struct {}", s.name));
-    if !s.type_params.is_empty() {
+    // The lifetimes (`struct V['a]`) are kept apart from the type parameters; they go first.
+    let params: Vec<&str> = s.lifetimes.iter().chain(&s.type_params).map(String::as_str).collect();
+    if !params.is_empty() {
         out.push('[');
-        out.push_str(&s.type_params.join(", "));
+        out.push_str(&params.join(", "));
         out.push(']');
     }
     out.push_str(&format_impl_clause(&s.protocols));

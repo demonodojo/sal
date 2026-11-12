@@ -869,12 +869,12 @@ Expr::Int { .. } => Type::Named {
             }
         }
         Expr::Unary { op, expr, span } => {
-            if matches!(op, UnOp::Ref | UnOp::RefMut | UnOp::Deref) {
-                let inner = check_expr(expr, env, ctx, types, entries)?;
-                return Ok(infer_ref_unary(*op, inner, *span));
-            }
             let inner = check_expr(expr, env, ctx, types, entries)?;
-            if let Some((dims, elem, place)) = tensor_dims(&inner) {
+            // `&x`, `&mut x` and `*r` are recorded like any other expression: the lowering reads
+            // the struct a local reference points at from that type (`r = &w.p; r.x`).
+            if matches!(op, UnOp::Ref | UnOp::RefMut | UnOp::Deref) {
+                infer_ref_unary(*op, inner, *span)
+            } else if let Some((dims, elem, place)) = tensor_dims(&inner) {
                 match op {
                     UnOp::Neg => Type::Tensor {
                         elem,
