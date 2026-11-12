@@ -384,7 +384,8 @@ fn fr_note(c: &FRC, e: &Expr, moving: Int) -> Int ! alloc
     if str_len(root) == 0
         0
     else
-        si = tt_struct_find(&c.structs, &c.type_of(&root))
+        # A reference parameter reads the struct it points at (`struct_types` keys the struct).
+        si = tt_struct_find(&c.structs, &trim_spaces(ty_deref(&c.type_of(&root))))
         if si < 0
             0
         else
@@ -423,7 +424,9 @@ fn fr_walk_fields(c: &FRC, cur: &TStruct, root: &String, fl: &List[String], k: I
             elsif list_len(&list_get(&c.structs, si).tparams) > 0
                 0
             else
-                _s = fr_mark_struct(c, root, last)
+                # Only a struct handed over by value leaves its fields to someone else; reading or
+                # borrowing it (`&c.table`, `c.table.len`) keeps the owner (`field_reads`).
+                _s = fr_mark_struct(c, root, last * moving)
                 fr_walk_fields(c, &list_get(&c.structs, si), root, fl, k + 1, n, moving)
 
 # A List/Dict/Bytes field handed on (the last link of a moving chain): the local is not released.
@@ -501,7 +504,7 @@ fn fr_ex(c: &FRC, e: &Expr, moving: Int) -> Int ! alloc
         XField(base, field) => fr_field(c, e, &base, moving)
         XCall(name, args, targs, xp) => fr_call(c, &name, &args, 0, list_len(&args))
         XBin(op, l, r) => fr_pair(c, &l, &r)
-        XUnary(op, inner) => fr_ex(c, &inner, moving)
+        XUnary(op, inner) => fr_unary(c, &op, &inner, moving)
         XTo(place, inner) => fr_ex(c, &inner, moving)
         XTry(inner) => fr_ex(c, &inner, moving)
         XOn(place, body, is_kern, has_index) => fr_blk(c, &body)
@@ -510,6 +513,13 @@ fn fr_ex(c: &FRC, e: &Expr, moving: Int) -> Int ! alloc
         XMatch(scrut, arms) => fr_match(c, &scrut, &arms)
         XLambda(param, body) => fr_ex(c, &body, 1)
         _ => 0
+
+# `&x` / `&mut x` borrow: whatever `x` is, it is not handed on.
+fn fr_unary(c: &FRC, op: &String, inner: &Expr, moving: Int) -> Int ! alloc
+    if op.eq("ref") + op.eq("refmut") > 0
+        fr_ex(c, inner, 0)
+    else
+        fr_ex(c, inner, moving)
 
 fn fr_field(c: &FRC, e: &Expr, base: &Expr, moving: Int) -> Int ! alloc
     _n = fr_note(c, e, moving)

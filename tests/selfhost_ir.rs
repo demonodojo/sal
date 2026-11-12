@@ -715,7 +715,7 @@ fn selfhost_instrumented_clean_on_hello() {
 /// must release the old body instead of leaving it behind by the overwrite. Several functions,
 /// a `while` and a `break` exercise them.
 #[test]
-#[ignore = "known gap: lower_fns (selfhost/ir/fuse.sal) overwrites `f.body` with the result of drops_body, which shares structure with the old body; the old tree of each function leaks (LEAK enum_new). Same cause as selfhost_instrumented_clean_on_hello"]
+#[ignore = "known gap: the drops pass of the selfhost (selfhost/ir/drops.sal) rewrites nested blocks with field overwrites (`st.expr = ne`, ...), which do not release the old copy when the bootstrap builds the selfhost (field-overwrite drops are off there); a `while`/`break` body leaks its intermediate copies (LEAK enum_new). `lp_fns` and `lower_fns` already release the bodies they replace"]
 fn selfhost_instrumented_releases_rewritten_fn_bodies() {
     let bin = compile_selfhost(true);
     let program = write_temp_sal(
@@ -1258,6 +1258,15 @@ const PARITY_FILES: &[&str] = &[
     "tests/glue_escape/ctor.sal",
     "tests/import_graph/a.sal",
     "tests/import_graph/b.sal",
+    "tests/lang/collections/dict_int_keys.sal",
+    "tests/lang/collections/dict_key_outlives_caller.sal",
+    "tests/lang/collections/dict_keys_values.sal",
+    "tests/lang/collections/dict_len_remove.sal",
+    "tests/lang/drops/drop_dict_get_int_payload_let.sal",
+    "tests/lang/drops/drop_dict_get_int_payload_tail.sal",
+    "tests/lang/ownership/match_arm_without_binding_keeps_value_ok.sal",
+    "tests/lang/strings/get_alias_accumulate.sal",
+    "tests/lang/structs/struct_ref_return_field.sal",
     "tests/sal/support/assert.sal",
     "tests/sal/test_glob.sal",
     "tests/sal/test_http_chunk.sal",

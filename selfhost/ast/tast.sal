@@ -40,6 +40,10 @@ struct TStruct
     tyat: String
     # Lifetime parameters (`struct V['a]`), apart from `tparams`: a lifetime is not a type.
     lifetimes: List[String]
+    # 1 when the struct stays a heap block that its owner releases: some fn returns it by
+    # reference, or some struct holds it by reference (`stays_block` in src/scalarize.rs). Set by
+    # `tstructs_marked`; 0 straight from the parser.
+    stays: Int
 
 struct TVariant
     name: String

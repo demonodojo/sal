@@ -1715,6 +1715,10 @@ fn expr_is_string(e: &Expr) -> bool {
 struct Ctx {
     facts: Facts,
     params: HashSet<String>,
+    /// Names first bound to a reference (a `&` parameter, `t = xs.get(0)`) and then, once, to
+    /// an owned value at the top level of the fn: that value is the fn's, released at the end.
+    /// Their reference bindings do not count as bindings of an owned value.
+    ref_then_owned: HashMap<String, u32>,
     live: Vec<(String, &'static str, bool)>,
     tmp: u32,
     /// Locals built as `list_new_owned[E]()`: enum lists the pass releases (see `own_enum_list`).
@@ -1724,6 +1728,47 @@ struct Ctx {
     /// Locals bound more than once whose every binding is a fresh value of one kind: a
     /// reassignment releases the old value first (SPEC «Liberación»).
     rebound: HashSet<String>,
+}
+
+/// Names bound first to references and then exactly once to an owned value, every binding a
+/// statement of the fn body itself (none nested, so the owned value lives to the end of the fn):
+/// name -> how many of its bindings (the parameter's own included) are references.
+fn ref_then_owned(f: &FnDef) -> HashMap<String, u32> {
+    let mut all: HashMap<String, Vec<&Expr>> = HashMap::new();
+    binding_inits(&f.body, &mut all);
+    let mut refs: HashMap<String, u32> = HashMap::new();
+    for p in &f.params {
+        if matches!(p.ty, Type::Ref { .. }) {
+            refs.insert(p.name.clone(), 1);
+        }
+    }
+    let mut owned: HashMap<String, u32> = HashMap::new();
+    let mut top: HashMap<String, usize> = HashMap::new();
+    let mut bad: HashSet<String> = HashSet::new();
+    for st in &f.body.stmts {
+        let (name, init) = match st {
+            Stmt::Let { name, init, .. } => (name, init),
+            Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } if !is_accumulate(name, value) => (name, value),
+            _ => continue,
+        };
+        *top.entry(name.clone()).or_default() += 1;
+        if expr_is_ref(init) {
+            // A reference after the owned value would leave it unreleased or released twice.
+            if owned.contains_key(name) {
+                bad.insert(name.clone());
+            }
+            *refs.entry(name.clone()).or_default() += 1;
+        } else {
+            *owned.entry(name.clone()).or_default() += 1;
+        }
+    }
+    refs.into_iter()
+        .filter(|(n, _)| {
+            !bad.contains(n)
+                && owned.get(n) == Some(&1)
+                && all.get(n).map_or(0, Vec::len) == top.get(n).copied().unwrap_or(0)
+        })
+        .collect()
 }
 
 /// Every `name = init` of `b` (declarations and reassignments, not the in-place `x = x + …`).
@@ -1927,9 +1972,15 @@ impl Ctx {
             }
         }
         let ok = !self.params.contains(name)
-            && (self.facts.bindings.get(name) == Some(&1) || self.rebound.contains(name))
+            && (self.binds_once(name) || self.rebound.contains(name))
             && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
         ok.then_some((kind, self.facts.soft.contains(name)))
+    }
+
+    /// Bound once in the body (see `ref_then_owned` for names first bound to a reference).
+    fn binds_once(&self, name: &str) -> bool {
+        let refs = self.ref_then_owned.get(name).copied().unwrap_or(0);
+        self.facts.bindings.get(name).copied() == Some(1 + refs)
     }
 }
 
@@ -2488,7 +2539,15 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
     mark_box_shell_calls(&f.body, &copy_locals, &mut facts);
     let mut cx = Ctx {
         facts,
-        params: f.params.iter().map(|p| p.name.clone()).collect(),
+        // A reference parameter owns nothing: `s = s + "x"` with `s: &String` binds `s` to a new
+        // String the fn owns and releases, like any local (SPEC «Memoria»).
+        params: f
+            .params
+            .iter()
+            .filter(|p| !matches!(p.ty, Type::Ref { .. }))
+            .map(|p| p.name.clone())
+            .collect(),
+        ref_then_owned: ref_then_owned(f),
         live: Vec::new(),
         tmp: 0,
         owned_elems: HashMap::new(),

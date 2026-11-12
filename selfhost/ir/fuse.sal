@@ -1025,10 +1025,11 @@ fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int 
     _k2 = kill_new_binds(cx, n0)
     _r2 = restore_binds(binds, base_snap, 0, n0)
     _rs2 = tenv_truncate(&mut cx.env, slen)
-    d = fresh(cx)
+    # The carried names come before the `If`'s own (`lower_match_chain` in src/ir.rs).
     order = sorted_live_binds(cx, n0)
     carried = List.new[Inst]()
     _mc = merge_if_carries(cx, order, 0, base_snap, then_snap, else_snap, &mut carried)
+    d = fresh(cx)
     _p = ir_push(cx, ir_if(d, cond, then_body, else_body, then_val, else_val, carried))
     d
 
@@ -1171,6 +1172,11 @@ fn bind_variant_payloads(cx: &mut Cx, scrut: Int, vname: &String, args: &List[TP
             h1061_1 = fuse_variant_field_type(cx, vname, i)
             _t = tenv_bind(&mut cx.env, &a.name, &h1061_1)
             bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
+        elsif a.kind == 0
+            # `_` still reads its field, as the bootstrap's `EnumField` per payload slot does.
+            d = fresh(cx)
+            ir_push(cx, ir_efield(d, scrut, i))
+            bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
         else
             bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
 
@@ -1248,12 +1254,172 @@ fn lower_if(cx: &mut Cx, cond: &Expr, then_b: &TBlock, else_b0: &TBlock, elsifs:
     _p = ir_push(cx, ir_if(d, c, then_body, else_body, then_val, else_val, carried))
     d
 
+# ---- struct bindings of a scope (`fn_struct_bindings`, `value_struct` in src/ir.rs) ----
+# A local is a struct of its scope by the value it is bound to, not by its type: a constructor,
+# a fn that returns a struct by value, a bound struct local, its clone, or a field of one. A
+# field read off something else (`list_get(xs, i).f`, a hoisted temporary) is not.
+struct VS
+    names: List[String]
+    sns: List[String]
+
+method VS.get(&self, name: &String) -> String ! alloc
+    i = vs_index(&self.names, name, 0, self.names.len())
+    if i < 0
+        ""
+    else
+        self.sns.get(i).dup()
+
+method VS.put(&mut self, name: &String, sn: &String) -> Int ! alloc
+    i = vs_index(&self.names, name, 0, self.names.len())
+    if i < 0
+        self.names.push(name.dup())
+        self.sns.push(sn.dup())
+    else
+        self.sns.set(i, sn.dup())
+    0
+
+# A `let` whose value is not a struct unbinds the name (kept as an empty struct name).
+method VS.unset(&mut self, name: &String) -> Int ! alloc
+    i = vs_index(&self.names, name, 0, self.names.len())
+    if i >= 0
+        self.sns.set(i, "".dup())
+    0
+
+fn vs_index(xs: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif xs.get(i).eq(name) == 1
+        i
+    else
+        vs_index(xs, name, i + 1, n)
+
+fn vs_bindings(cx: &Cx, params: &List[TParam], b: &TBlock) -> VS ! alloc
+    vs = VS(List.new[String](), List.new[String]())
+    vs_params(cx, params, 0, params.len(), &mut vs)
+    vs_walk(cx, b, &mut vs)
+    vs
+
+fn vs_params(cx: &Cx, params: &List[TParam], i: Int, n: Int, vs: &mut VS) -> Int ! alloc
+    if i >= n
+        0
+    else
+        sn = vs_struct_of_type(cx, &params.get(i).ty)
+        if sn.len() > 0
+            vs.put(&params.get(i).name, &sn)
+        vs_params(cx, params, i + 1, n, vs)
+
+fn vs_walk(cx: &Cx, b: &TBlock, vs: &mut VS) -> Int ! alloc
+    vs_stmts(cx, &b.stmts, 0, b.stmts.len(), vs)
+
+fn vs_stmts(cx: &Cx, xs: &List[TStmt], i: Int, n: Int, vs: &mut VS) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = xs.get(i)
+        if st.kind == 1
+            vs_bind(cx, &st, vs)
+        else
+            match st.expr
+                XWhile(c, body) => vs_walk(cx, &body, vs)
+                _ => 0
+        vs_stmts(cx, xs, i + 1, n, vs)
+
+fn vs_bind(cx: &Cx, st: &TStmt, vs: &mut VS) -> Int ! alloc
+    if st.is_let == 1
+        sn = if st.ty.len() > 0
+            vs_struct_of_type(cx, &st.ty)
+        else
+            vs_value_struct(cx, &st.expr, vs)
+        if sn.len() > 0
+            vs.put(&st.name, &sn)
+        else
+            vs.unset(&st.name)
+    else
+        sn = vs_value_struct(cx, &st.expr, vs)
+        if sn.len() > 0
+            vs.put(&st.name, &sn)
+        else
+            0
+
+# The struct a type names through references, when it is a non-generic struct.
+fn vs_struct_of_type(cx: &Cx, ty: &String) -> String ! alloc
+    t = tt_strip_lifetimes(&trim_spaces(ty_deref(ty)))
+    if find_char(&t, 91, 0, t.len()) >= 0
+        ""
+    elsif tt_struct_find(&cx.env.structs, &t) >= 0
+        t
+    else
+        ""
+
+fn vs_value_struct(cx: &Cx, e: &Expr, vs: &VS) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) => vs_call_struct(cx, &name, &args, vs)
+        XIdent(src) => vs.get(&src)
+        XField(base, field) => vs_field_struct(cx, &base, &field, vs)
+        _ => ""
+
+fn vs_call_struct(cx: &Cx, name: &String, args: &List[Expr], vs: &VS) -> String ! alloc
+    ret = vs_fn_ret(cx, name)
+    if ret.len() > 0 && ret.char(0) == 38
+        # A call whose result is a reference borrows from an argument: nothing to release.
+        ""
+    elsif tt_struct_find(&cx.env.structs, name) >= 0 && args.len() > 0
+        name.dup()
+    elsif ret.len() > 0 && vs_struct_of_type(cx, &ret).len() > 0
+        vs_struct_of_type(cx, &ret)
+    elsif name.eq("struct_clone") == 1 && args.len() == 1
+        sn = vs_value_struct(cx, &vs_unref(&args.get(0)), vs)
+        if sn.len() > 0 && struct_clone_glue_t(&cx.env.structs, &cx.enums, &sn) == 1
+            sn
+        else
+            ""
+    else
+        ""
+
+fn vs_unref(e: &Expr) -> Expr ! alloc
+    match e
+        XUnary(op, inner) => vs_unref(&inner)
+        _ => tc_expr(e)
+
+fn vs_fn_ret(cx: &Cx, name: &String) -> String ! alloc
+    i = vs_index(&cx.env.fn_names, name, 0, cx.env.fn_names.len())
+    if i < 0
+        ""
+    else
+        cx.env.fn_rets.get(i).dup()
+
+fn vs_field_struct(cx: &Cx, base: &Expr, field: &String, vs: &VS) -> String ! alloc
+    match base
+        XIdent(b) => vs_field_of(cx, &vs.get(&b), field)
+        _ => ""
+
+fn vs_field_of(cx: &Cx, sn: &String, field: &String) -> String ! alloc
+    if sn.len() == 0
+        ""
+    else
+        si = tt_struct_find(&cx.env.structs, sn)
+        if si < 0
+            ""
+        else
+            vs_struct_of_type(cx, &tt_field_type_of(&cx.env.structs.get(si).fields, field, 0))
+
+fn tt_field_type_of(fields: &List[TField], field: &String, i: Int) -> String ! alloc
+    if i >= fields.len()
+        ""
+    elsif fields.get(i).name.eq(field) == 1
+        fields.get(i).ty.dup()
+    else
+        tt_field_type_of(fields, field, i + 1)
+
 # ---- struct locals of an `if` branch (`block_struct_drops`, `return_struct_drops` in src/ir.rs) ----
 # One branch of an `if`. The struct locals it binds at its top level are released when it ends;
 # a branch that ends in `return` released them at the `return` (`lower_stmt_return`).
 fn lower_if_branch(cx: &mut Cx, b: &TBlock) -> Int ! alloc
     slen = tenv_len(&cx.env)
-    tracked = block_has_return(b)
+    tracked = if block_has_return(b) == 1
+        1
+    else
+        block_rebinds(b)
     if tracked == 1
         cx.open_idx.push(cx.open.len())
         cx.open.push(tc_block(b))
@@ -1315,7 +1481,8 @@ fn stmts_copy_into(xs: &List[TStmt], i: Int, n: Int, out: &mut List[TStmt]) -> I
 fn scope_struct_drops(cx: &mut Cx, b: &TBlock, lo: Int, hi: Int, outer: Int) -> Int ! alloc
     no_params = List.new[TParam]()
     all = drop_candidates_env(&cx.env, &no_params, vec_new(), lo, hi, vec_new())
-    names = scope_owned_names(cx, b, all, 0, vec_len(all), outer, vec_new())
+    vs = vs_bindings(cx, &no_params, b)
+    names = scope_owned_names(cx, b, &vs, all, 0, vec_len(all), outer, vec_new())
     if vec_len(names) == 0
         0
     else
@@ -1325,21 +1492,21 @@ fn scope_struct_drops(cx: &mut Cx, b: &TBlock, lo: Int, hi: Int, outer: Int) -> 
         _r = fr_blk(&fr, b)
         drop_locals(cx, &fr, names, moved, 0, vec_len(names))
 
-# The candidates whose value is a struct the local owns (`value_struct` in src/ir.rs): a field
-# read off something that is not a local (`list_get(xs, i).f`, a hoisted temporary) is not.
-fn scope_owned_names(cx: &Cx, b: &TBlock, names: Int, i: Int, n: Int, outer: Int, out: Int) -> Int ! alloc
+# The candidates that are struct bindings of the scope (`vs`, by their bound value) and, when
+# `outer` is set, not a name of an enclosing scope the block only reassigns.
+fn scope_owned_names(cx: &Cx, b: &TBlock, vs: &VS, names: Int, i: Int, n: Int, outer: Int, out: Int) -> Int ! alloc
     if i >= n
         out
     else
         nm = vec_get(names, i)
         name = str_from_int(nm)
-        if scope_binds_foreign_field(&b.stmts, &name, 0, b.stmts.len()) == 1
+        if vs.get(&name).len() == 0
             0
         elsif scope_names_has(&cx.env.names, &name, 0, outer) == 1 && block_lets(b, &name) == 0
             0
         else
             vec_push(out, nm)
-        scope_owned_names(cx, b, names, i + 1, n, outer, out)
+        scope_owned_names(cx, b, vs, names, i + 1, n, outer, out)
 
 fn scope_names_has(xs: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1369,20 +1536,73 @@ fn stmts_let(xs: &List[TStmt], name: &String, i: Int, n: Int) -> Int ! alloc
         else
             stmts_let(xs, name, i + 1, n)
 
-fn scope_binds_foreign_field(xs: &List[TStmt], name: &String, i: Int, n: Int) -> Int ! alloc
-    if i >= n
+# ---- rebinding a struct local (`reassign_struct_drop` in src/ir.rs) ----
+fn reassign_old(cx: &mut Cx, sname: &String, name: Int, v: Int) -> Int ! alloc
+    b = cx_find(cx, name)
+    if b == 0 || cx.fn_self.len() == 0
+        0
+    elsif str_eq(bind_ssa(b), v) == 1
         0
     else
-        st = xs.get(i)
-        if st.kind == 1 && st.name.eq(name) == 1 && expr_is_foreign_field(&st.expr) == 1
-            1
-        else
-            scope_binds_foreign_field(xs, name, i + 1, n)
+        reassign_struct_drop(cx, sname, name)
 
-fn expr_is_foreign_field(e: &Expr) -> Int ! alloc
-    match e
-        XField(base, field) => 1 - dx_is_ident(&base)
-        _ => 0
+# Over the innermost open branch that binds the local, or the fn body: the same rules as at scope
+# end. A local moved anywhere in that scope is left alone (a leak, never a double free).
+fn reassign_struct_drop(cx: &mut Cx, sname: &String, name: Int) -> Int ! alloc
+    k = reassign_branch(cx, sname, cx.open_idx.len() - 1)
+    if k >= 0
+        blk = tc_block(&cx.open.get(cx.open_idx.get(k)))
+        no_params = List.new[TParam]()
+        reassign_in_scope(cx, &blk, &no_params, vec_new(), &no_params, name)
+    else
+        # Copies of the parts it reads: a whole `TFn` copied out of the list is not released.
+        body = tc_block(&cx.fn_self.get(0).body)
+        params = tparams_copy(&cx.fn_self.get(0).params)
+        fname = cx.fn_self.get(0).name.dup()
+        ps = params_inferred_named(cx.md, &fname, &params)
+        reassign_in_scope(cx, &body, &params, fn_modes_of(cx.md, &fname), &ps, name)
+
+fn reassign_branch(cx: &Cx, sname: &String, k: Int) -> Int ! alloc
+    if k < 0
+        0 - 1
+    else
+        no_params = List.new[TParam]()
+        vs = vs_bindings(cx, &no_params, &cx.open.get(cx.open_idx.get(k)))
+        if vs.get(sname).len() > 0
+            k
+        else
+            reassign_branch(cx, sname, k - 1)
+
+fn reassign_in_scope(cx: &mut Cx, b: &TBlock, params: &List[TParam], modes: Int, frps: &List[TParam], name: Int) -> Int ! alloc
+    sname = str_from_int(name)
+    vs = vs_bindings(cx, params, b)
+    if vs.get(&sname).len() == 0
+        0
+    elsif param_not_taken(params, modes, &sname, 0, params.len()) == 1
+        0
+    elsif tt_struct_find(&cx.env.structs, &trim_spaces(ty_deref(&tenv_type(&cx.env, &sname)))) < 0
+        0
+    else
+        moved = vec_new()
+        _m = mv_block(b, moved, cx.md)
+        fr = fr_new(&cx.env, &cx.enums, cx.md, frps, cx.fsum)
+        _r = fr_blk(&fr, b)
+        names = vec_new()
+        vec_push(names, name)
+        drop_locals(cx, &fr, names, moved, 0, 1)
+
+# A block with an assignment at its top level: a rebinding there releases the old value over the
+# innermost open branch that binds the local (`OPEN_BRANCHES`), so it is tracked as one.
+fn block_rebinds(b: &TBlock) -> Int ! alloc
+    block_rebinds_go(&b.stmts, 0, b.stmts.len())
+
+fn block_rebinds_go(xs: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif xs.get(i).kind == 1 && xs.get(i).is_let == 0
+        1
+    else
+        block_rebinds_go(xs, i + 1, n)
 
 # 1 when a `return` appears anywhere in `b` (nested blocks included).
 fn block_has_return(b: &TBlock) -> Int ! alloc
@@ -1852,6 +2072,10 @@ fn lower_stmt_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     _lm = note_lambda(cx, &st.name, &st.expr)
     v = lower_expr(cx, &st.expr)
     _za = cx_set_acc(cx, 0)
+    # Rebinding a struct local releases its previous value first (`reassign_struct_drop` in
+    # src/ir.rs): the new value was computed above, so it may read the old one.
+    if st.is_let == 0
+        reassign_old(cx, &st.name, name, v)
     _b = cx_bind(cx, name, v)
     h1574_2 = texpr_type(&cx.env, &st.expr)
     _ns = tenv_bind(&mut cx.env, &st.name, &h1574_2)
@@ -1920,14 +2144,16 @@ fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruc
     v = lower_expr(cx, &st.expr)
     if nf == 1
         old = cx_lookup(cx, h)
-        _d = lower_field_drop_old(cx, &list_get(&sd.fields, 0).ty, old)
+        if cx.keep_old == 0
+            lower_field_drop_old(cx, &list_get(&sd.fields, 0).ty, old)
         cx_bind(cx, h, v)
     else
         idx = tt_field_index(&sd.fields, field, 0, nf)
         base_ssa = cx_lookup(cx, h)
         old = fresh(cx)
         _e = ir_push(cx, ir_extract(old, base_ssa, str_own(&sd.name), idx))
-        _d = lower_field_drop_old(cx, &list_get(&sd.fields, idx).ty, old)
+        if cx.keep_old == 0
+            lower_field_drop_old(cx, &list_get(&sd.fields, idx).ty, old)
         # `list_get` alias: write in place. Owned locals rebuild (scalarize slots).
         if is_box_place(cx, name) == 1
             lower_field_store(cx, base_ssa, idx, v)
@@ -2147,7 +2373,7 @@ fn drop_candidates_env(env: &TEnv, params: &List[TParam], modes: Int, i: Int, n:
         nm = list_get(&env.names, i)
         if param_not_taken(params, modes, &nm, 0, list_len(params)) == 0
             if assigned_has(out, str_own(&nm), 0, vec_len(out)) == 0
-                if tt_struct_find(&env.structs, &tenv_type(env, &nm)) >= 0
+                if tt_struct_find(&env.structs, &trim_spaces(ty_deref(&tenv_type(env, &nm)))) >= 0
                     _p = vec_push(out, str_own(&nm))
                     _s = names_bubble(out, vec_len(out) - 1)
                 else
@@ -2175,7 +2401,7 @@ fn drop_local_one(cx: &mut Cx, fr: &FRC, moved: Int, nm: Int) -> Int ! alloc
     else
         b = cx_find(cx, nm)
         if b != 0
-            si = tt_struct_find(&cx_structs(cx), &tenv_type(&cx.env, &str_from_int(nm)))
+            si = tt_struct_find(&cx_structs(cx), &trim_spaces(ty_deref(&tenv_type(&cx.env, &str_from_int(nm)))))
             sd = list_get(&cx_structs(cx), si)
             # A clean local is released by the glue of its struct: one call, the same releases.
             if drop_local_clean(fr, nm) == 1 && struct_glue_fn(&sd, &cx_structs(cx), &cx.enums).name.len() != 0
@@ -2211,13 +2437,38 @@ fn fn_modes_of(md: Int, name: &String) -> Int ! alloc
     else
         ms
 
+# The parameters of `f` with their inferred modes (0 when the fn has none recorded).
+fn params_inferred(md: Int, f: &TFn) -> List[TParam] ! alloc
+    params_inferred_named(md, &f.name, &f.params)
+
+fn params_inferred_named(md: Int, name: &String, params: &List[TParam]) -> List[TParam] ! alloc
+    ms = map_get(md, str_own(&("inferred:" + name)))
+    out = List.new[TParam]()
+    params_inferred_go(params, ms, 0, params.len(), &mut out)
+    out
+
+fn params_inferred_go(ps: &List[TParam], ms: Int, i: Int, n: Int, out: &mut List[TParam]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = ps.get(i)
+        mode = if ms != 0 && i < vec_len(ms)
+            vec_get(ms, i)
+        else
+            p.mode
+        out.push(TParam(p.name.dup(), p.ty.dup(), mode))
+        params_inferred_go(ps, ms, i + 1, n, out)
+
 fn emit_struct_drops(cx: &mut Cx, f: &TFn, body: &TBlock, md: Int) -> Int ! alloc
     moved = vec_new()
     _m = mv_block(body, moved, md)
     name = f.name.dup()
-    fr = fr_new(&cx.env, &cx.enums, md, &f.params, cx.fsum)
+    ps = params_inferred(md, f)
+    fr = fr_new(&cx.env, &cx.enums, md, &ps, cx.fsum)
     _r = fr_blk(&fr, body)
-    names = drop_candidates(cx, &f.params, fn_modes_of(md, &name), 0, tenv_len(&cx.env), vec_new())
+    all = drop_candidates(cx, &f.params, fn_modes_of(md, &name), 0, tenv_len(&cx.env), vec_new())
+    vs = vs_bindings(cx, &f.params, body)
+    names = scope_owned_names(cx, body, &vs, all, 0, vec_len(all), 0, vec_new())
     drop_locals(cx, &fr, names, moved, 0, vec_len(names))
 
 # The function's own statements. A `return` among them ends the body: its value comes back,
@@ -2241,7 +2492,12 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
     cx = cx_new(fn_names, fm, env, enums, prog_fns, prog_protocols)
     cx.md = vec_get(denv, 1)
     cx.fsum = vec_get(denv, 4)
+    cx.keep_old = if vec_len(denv) > 5
+        vec_get(denv, 5)
+    else
+        0
     cx.nparams = f.params.len()
+    cx.fn_self.push(f.clone())
     if block_has_return(&f.body) == 1
         cx.fn_scope.push(tc_block(&f.body))
     if f.arena == 1
@@ -2398,15 +2654,17 @@ fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[
     n_fns = list_len(&tp.fns)
     h2112_3 = tp.fns.clone()
     lower_fns(&mut tp.fns, names, fm, env_tpl, em, denv, &h2112_3, &tp.protocols, 0, n_fns, &mut out)
-    _g = struct_glue_all(&tp.structs, em, &mut out)
+    _g = struct_glue_all(&tp.structs, &env_tpl.structs, em, &mut out)
     out
 
 # Per-type glue (`struct_glue_fns` in src/ir.rs): one `drop.<Struct>` per non-generic struct of
 # this module with a `String` or `List` field, after the user fns, in name order. It releases those fields
 # in declaration order. The text is the bootstrap's, so the two IRs stay identical.
-fn struct_glue_all(structs: &List[TStruct], enums: &List[TEnum], out: &mut List[IrFn]) -> Int ! alloc
+# `structs` are the module's own (each gets its glue); `all` are the module graph's, which the
+# glue of a field reads (a field may be a struct of another module).
+fn struct_glue_all(structs: &List[TStruct], all: &List[TStruct], enums: &List[TEnum], out: &mut List[IrFn]) -> Int ! alloc
     cand = struct_glue_candidates(structs, 0, structs.len(), List.new[Int]())
-    struct_glue_emit(structs, enums, &cand, 0, cand.len(), out)
+    struct_glue_emit(structs, all, enums, &cand, 0, cand.len(), out)
 
 # The non-generic structs of the module (their glue is empty or not, `struct_glue_emit` decides).
 fn struct_glue_candidates(structs: &List[TStruct], i: Int, n: Int, acc: List[Int]) -> List[Int] ! alloc
@@ -2414,7 +2672,8 @@ fn struct_glue_candidates(structs: &List[TStruct], i: Int, n: Int, acc: List[Int
         acc
     else
         st = structs.get(i)
-        if st.tparams.len() == 0
+        # A `frame` (a struct of tensors) is left out of the per-type glue, as in the bootstrap.
+        if st.tparams.len() == 0 && st.is_frame == 0
             _p = acc.push(i)
         else
             _q = 0
@@ -2422,25 +2681,25 @@ fn struct_glue_candidates(structs: &List[TStruct], i: Int, n: Int, acc: List[Int
 
 # Emits in name order: the p-th struct is the one with exactly p candidates before it. A struct
 # that frees nothing has no glue.
-fn struct_glue_emit(structs: &List[TStruct], enums: &List[TEnum], cand: &List[Int], p: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
+fn struct_glue_emit(structs: &List[TStruct], all: &List[TStruct], enums: &List[TEnum], cand: &List[Int], p: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
     if p >= n
         0
     else
         idx = struct_glue_rank(structs, cand, p, 0, n)
-        body = struct_glue_fn(&structs.get(idx), structs, enums)
+        body = struct_glue_fn(&structs.get(idx), all, enums)
         if body.name.len() != 0
             _f = out.push(body)
             if struct_is_boxed_t(&structs.get(idx)) == 1
                 _e = out.push(struct_elem_glue_fn(&structs.get(idx).name))
             else
                 _k = 0
-            if struct_clone_glue_t(structs, enums, &structs.get(idx).name) == 1
-                _cl = out.push(struct_clone_fn(&structs.get(idx), structs, enums))
+            if struct_clone_glue_t(all, enums, &structs.get(idx).name) == 1
+                _cl = out.push(struct_clone_fn(&structs.get(idx), all, enums))
             else
                 _k2 = 0
         else
             _g = 0
-        struct_glue_emit(structs, enums, cand, p + 1, n, out)
+        struct_glue_emit(structs, all, enums, cand, p + 1, n, out)
 
 fn struct_glue_rank(structs: &List[TStruct], cand: &List[Int], p: Int, k: Int, n: Int) -> Int ! alloc
     if k >= n
@@ -2597,7 +2856,8 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     ro = dr_read_only_t(tp, vec_get(denv, 0), &cons)
     modes = map_new()
     table = own_mode_table(tp)
-    _m = modes_fill_t(modes, &table, &cons, &tp.fns, 0, tp.fns.len())
+    _m = modes_fill_t(modes, &table, &cons, &tp.fns, structs, 0, tp.fns.len())
+    callee_modes_put(modes, seen, 0, seen.len())
     _h = table.free()
     _b = vec_push(denv, modes)
     _c = vec_push(denv, ro)
@@ -2607,7 +2867,7 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     _s = vec_push(denv, fr_summary(seen))
     denv
 
-fn modes_fill_t(m: Int, table: &HT, cons: &List[Int], fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+fn modes_fill_t(m: Int, table: &HT, cons: &List[Int], fns: &List[TFn], structs: &List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -2615,6 +2875,15 @@ fn modes_fill_t(m: Int, table: &HT, cons: &List[Int], fns: &List[TFn], i: Int, n
         ms = vec_new()
         owned = table.get(&f.name)
         _k = modes_vec(ms, &owned, 0, f.params.len())
+        # The inferred modes alone (`infer_param_modes`): the field reads tell a borrowed
+        # parameter by them (`call_aliases_borrowed_arg` reads `p.mode`).
+        inferred = vec_new()
+        modes_vec(inferred, &owned, 0, f.params.len())
+        map_put(m, str_own(&("inferred:" + f.name)), inferred)
+        # A fn that releases the fields of a struct parameter, or hands out a `String` field of
+        # it, owns them from then on: it takes that parameter (`param_modes` in src/ir.rs).
+        mark_released_params(ms, &f, releases_param_names(&f))
+        mark_released_params(ms, &f, handed_param_names(&f, structs))
         nk = f.name.dup()
         map_put(m, nk.to_int(), ms)
         # Callers' view (`caller_param_modes`): an inferred borrow that the fn consumes is taken.
@@ -2626,7 +2895,107 @@ fn modes_fill_t(m: Int, table: &HT, cons: &List[Int], fns: &List[TFn], i: Int, n
         _p = pin_tail_take(caller, &f.params, &f.body.tail, 0, f.params.len())
         ck = ("caller:" + f.name).dup()
         map_put(m, ck.to_int(), caller)
-        modes_fill_t(m, table, cons, fns, i + 1, n)
+        modes_fill_t(m, table, cons, fns, structs, i + 1, n)
+
+# The by-value struct parameters whose `String` field (through a chain of fields) the fn
+# returns or has as its tail (`params_string_field_hand_out` in src/ir.rs).
+fn handed_param_names(f: &TFn, structs: &List[TStruct]) -> Int ! alloc
+    out = vec_new()
+    handed_returns(f, structs, &f.body.stmts, 0, f.body.stmts.len(), out)
+    handed_note(f, structs, &f.body.tail, out)
+    out
+
+fn handed_returns(f: &TFn, structs: &List[TStruct], xs: &List[TStmt], i: Int, n: Int, out: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = xs.get(i)
+        if st.kind == 2
+            handed_note(f, structs, &st.expr, out)
+        handed_returns(f, structs, xs, i + 1, n, out)
+
+fn handed_note(f: &TFn, structs: &List[TStruct], e: &Expr, out: Int) -> Int ! alloc
+    match e
+        XField(base, field) => handed_chain(f, structs, e, out)
+        _ => 0
+
+fn handed_chain(f: &TFn, structs: &List[TStruct], e: &Expr, out: Int) -> Int ! alloc
+    fields = List.new[String]()
+    root = handed_root(e, &mut fields)
+    if root.len() == 0
+        0
+    else
+        ty = handed_param_ty(&f.params, &root, 0)
+        if ty.len() == 0
+            0
+        else
+            t = handed_walk(structs, ty, &fields, fields.len() - 1)
+            if t.eq("String") == 1
+                assigned_add(out, str_own(&root))
+            else
+                0
+
+# The root parameter of a field chain; `fields` gets the field names, outermost first.
+fn handed_root(e: &Expr, fields: &mut List[String]) -> String ! alloc
+    match e
+        XField(base, field) =>
+            fields.push(field.dup())
+            handed_root(&base, fields)
+        XIdent(name) => name.dup()
+        _ => ""
+
+fn handed_param_ty(ps: &List[TParam], name: &String, i: Int) -> String ! alloc
+    if i >= ps.len()
+        ""
+    elsif ps.get(i).name.eq(name) == 1
+        ps.get(i).ty.dup()
+    else
+        handed_param_ty(ps, name, i + 1)
+
+# The type reached through `fields` (innermost first, from index `k` down), "" when a step is
+# not a field of a non-generic struct (a reference type is not one).
+fn handed_walk(structs: &List[TStruct], ty: String, fields: &List[String], k: Int) -> String ! alloc
+    if k < 0
+        trim_spaces(ty)
+    else
+        t = trim_spaces(ty)
+        si = tt_struct_find(structs, &t)
+        if si < 0
+            ""
+        else
+            ft = tt_field_type_of(&structs.get(si).fields, &fields.get(k), 0)
+            if ft.len() == 0
+                ""
+            else
+                handed_walk(structs, ft, fields, k - 1)
+
+# Functions of other modules: a reference parameter is only borrowed, whatever the callee does;
+# any other parameter is taken (the Rust model; `param_modes` in src/ir.rs). The module's own
+# fns keep the modes `modes_fill_t` gave them.
+fn callee_modes_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = fns.get(i)
+        if map_get(m, str_own(&f.name)) == 0
+            own = vec_new()
+            callee_modes_vec(own, &f.params, 0, f.params.len())
+            map_put(m, str_own(&f.name), own)
+            caller = vec_new()
+            callee_modes_vec(caller, &f.params, 0, f.params.len())
+            map_put(m, str_own(&("caller:" + f.name)), caller)
+        callee_modes_put(m, fns, i + 1, n)
+
+fn callee_modes_vec(out: Int, ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        mode = if dr_ty_is_ref(&ps.get(i).ty) == 1
+            1
+        else
+            2
+        vec_push(out, mode)
+        callee_modes_vec(out, ps, i + 1, n)
 
 # Sets to take (2) the modes of the parameters named in `names`.
 fn mark_released_params(modes: Int, f: &TFn, names: Int) -> Int ! alloc
@@ -2929,12 +3298,22 @@ fn variant_field_flags_t(fields: &List[String], i: Int, n: Int, out: Int) -> Int
         _p = vec_push(out, dr_field_owned_t(&list_get(fields, i)))
         variant_field_flags_t(fields, i + 1, n, out)
 
+# A body nothing shares any more: its statements, its tail and its block.
+fn free_old_body(b: &TBlock) -> Int ! alloc
+    list_free(b.stmts)
+    enum_free(b.tail)
+    0
+
 fn lower_fns(fns: &mut List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], i: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(&mut fns, i)
-        f.body = drops_body(&mut f, denv)
+        # `drops_body` builds the new body out of copies; a field overwrite does not release the
+        # old value when the compiler builds the selfhost, so the old body is released here.
+        nb = drops_body(&mut f, denv)
+        free_old_body(&f.body)
+        f.body = nb
         irf = lower_fn(&f, names, fm, env_tpl, em, denv, prog_fns, prog_protocols)
         _p = out.push(irf)
         lower_fns(fns, names, fm, env_tpl, em, denv, prog_fns, prog_protocols, i + 1, n, out)

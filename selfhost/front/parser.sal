@@ -1475,10 +1475,10 @@ fn parse_struct(pr: &mut Parser, layout_c: Int) -> TStruct ! alloc
             _d = p_accept(pr, TK_DEDENT())
         else
             _d = 0
-        TStruct(name, fields, layout_c, sparams, is_frame, impls, "", tyat_since(pr, start), lifetimes)
+        TStruct(name, fields, layout_c, sparams, is_frame, impls, "", tyat_since(pr, start), lifetimes, 0)
     else
         _e = p_set_err(pr, "parse error: expected struct name")
-        TStruct("_bad", list_new[TField](), 0, list_new[String](), 0, list_new[String](), "", "", list_new[String]())
+        TStruct("_bad", List.new[TField](), 0, List.new[String](), 0, List.new[String](), "", "", List.new[String](), 0)
 
 fn parse_impl_clause(pr: &mut Parser) -> List[String] ! alloc
     if tok_kind(pr, p_peek(pr)) != TK_IDENT()
@@ -1847,7 +1847,7 @@ fn fn_with_attrs(f: &TFn, nh: Int, dep: &String, ar: Int) -> TFn ! alloc
     TFn(f.name.clone(), f.params.clone(), f.body.clone(), f.ret.clone(), nh, ar, f.fx.clone(), f.tparams.clone(), f.recv.clone(), f.mkind, dep.dup(), f.tyat.clone())
 
 fn struct_with_dep(s: &TStruct, dep: &String) -> TStruct ! alloc
-    TStruct(s.name.clone(), s.fields.clone(), s.layout_c, s.tparams.clone(), s.is_frame, s.protocols.clone(), dep.dup(), s.tyat.clone(), s.lifetimes.clone())
+    TStruct(s.name.clone(), s.fields.clone(), s.layout_c, s.tparams.clone(), s.is_frame, s.protocols.clone(), dep.dup(), s.tyat.clone(), s.lifetimes.clone(), s.stays)
 
 fn enum_with_dep(e: &TEnum, dep: &String) -> TEnum ! alloc
     TEnum(e.name.clone(), e.variants.clone(), e.tparams.clone(), e.protocols.clone(), dep.dup(), e.tyat.clone())

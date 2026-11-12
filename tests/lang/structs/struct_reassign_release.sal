@@ -1,0 +1,15 @@
+# exit: 18
+# Rebinding a struct local releases its previous value (the new one is computed first, so it may
+# read the old one), also inside a loop.
+struct W
+    name: String
+    n: Int
+
+fn main() -> Int ! alloc
+    acc = W("a".dup(), 0)
+    acc = W(acc.name + "!", acc.n + 10)
+    i = 0
+    while i < 3
+        acc = W(acc.name + "?", acc.n + 1)
+        i = i + 1
+    acc.n + acc.name.len()

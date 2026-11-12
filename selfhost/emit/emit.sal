@@ -72,17 +72,29 @@ fn emit_ir_from_prog_with_types(tp: &mut TProgram, extra: Int, enums: &List[TEnu
 # The typed environment of a module graph: every module's structs and fn results, as
 # `graph_types` collects them for the handle typers.
 fn tenv_for_graph(order: &Graph) -> TEnv ! alloc
-    env = TEnv(list_new[String](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[String](), list_new[String](), list_new[Int]())
-    _a = tenv_graph_fill(&mut env, order, 0, list_len(&order.progs))
+    all = List.new[TStruct]()
+    refret = List.new[String]()
+    tenv_graph_structs(&mut all, &mut refret, order, 0, order.progs.len())
+    env = TEnv(List.new[String](), List.new[String](), tstructs_marked(&all, &refret), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
+    tenv_graph_fill(&mut env, order, 0, order.progs.len())
     env
+
+# Every module's structs, and the structs their fns return by reference.
+fn tenv_graph_structs(all: &mut List[TStruct], refret: &mut List[String], order: &Graph, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        tp = order.progs.get(i)
+        tenv_push_structs(all, &tp.structs, 0, tp.structs.len())
+        tt_ref_returned(&tp.fns, 0, tp.fns.len(), refret)
+        tenv_graph_structs(all, refret, order, i + 1, n)
 
 fn tenv_graph_fill(env: &mut TEnv, order: &Graph, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        tp = list_get(&order.progs, i)
-        _a = tenv_push_structs(&mut env.structs, &tp.structs, 0, list_len(&tp.structs))
-        _b = tenv_fill(env, &tp.fns, 0, list_len(&tp.fns))
+        tp = order.progs.get(i)
+        tenv_fill(env, &tp.fns, 0, tp.fns.len())
         tenv_graph_fill(env, order, i + 1, n)
 
 fn tenv_push_structs(out: &mut List[TStruct], src: &List[TStruct], i: Int, n: Int) -> Int ! alloc
@@ -1454,10 +1466,11 @@ fn emit_c_owned(tp: &mut TProgram, user: Int, denv: Int, names: Int, fm: Int, en
         f.body = TBlock(list_new[TStmt](), XNone)
         emit_c_owned(tp, user, denv, names, fm, env, enums, allow_main, linkable, pool, i + 1, n, (acc + piece))
 
-# The per-type glue of the module's structs, emitted after the user fns.
-fn emit_c_glue(tp: &TProgram, enums: &List[TEnum], user: Int, pool: &mut LitPool, i: Int, acc: String) -> String ! alloc
+# The per-type glue of the module's structs, emitted after the user fns. `all` are the module
+# graph's structs, which the glue of a field reads.
+fn emit_c_glue(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], user: Int, pool: &mut LitPool, i: Int, acc: String) -> String ! alloc
     out = List.new[IrFn]()
-    _g = struct_glue_all(&tp.structs, enums, &mut out)
+    _g = struct_glue_all(&tp.structs, all, enums, &mut out)
     emit_c_glue_go(&out, user, pool, 0, acc)
 
 fn emit_c_glue_go(out: &List[IrFn], user: Int, pool: &mut LitPool, i: Int, acc: String) -> String ! alloc
@@ -1467,8 +1480,10 @@ fn emit_c_glue_go(out: &List[IrFn], user: Int, pool: &mut LitPool, i: Int, acc: 
         piece = cir_glue(&out.get(i), user, pool)
         emit_c_glue_go(out, user, pool, i + 1, (acc + piece))
 
-# `genums`: the enums of the whole module graph (empty for a single file).
-fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow_main: Int, linkable: Int, genums: &List[TEnum], env: &mut TEnv, seen: &List[TFn]) -> String ! alloc
+# `genums`: the enums of the whole module graph (empty for a single file). `keep_old` is 1 for a
+# module of the selfhost: a field overwrite there does not release the old value, as in the
+# bootstrap's build of the selfhost (`with_field_overwrite_drops` in src/compile.rs).
+fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow_main: Int, linkable: Int, genums: &List[TEnum], env: &mut TEnv, seen: &List[TFn], keep_old: Int) -> String ! alloc
     pool = LitPool.new()
     enums = list_new[TEnum]()
     _e1 = enums_push(&mut enums, genums, 0, list_len(genums))
@@ -1487,8 +1502,9 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     denv = pool.drop_env
+    vec_push(denv, keep_old)
     body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, allow_main, linkable, &mut pool, 0, list_len(&tp.fns), "")
-    body = emit_c_glue(tp, &enums, callables, &mut pool, 0, body)
+    body = emit_c_glue(tp, &env.structs, &enums, callables, &mut pool, 0, body)
     _fe = list_free_shell(enums)
     lits = pool.globals.clone()
     if str_len(lits) > 0
@@ -1517,7 +1533,7 @@ fn emit_c_from_ast(tp: &mut TProgram) -> String ! alloc
     user = collect_fn_names_t(&tp.fns, 0, list_len(&tp.fns), vec_new())
     env = tenv_new(tp)
     empty_enums = list_new[TEnum]()
-    emit_c_from_ast_module(tp, user, vec_new(), 1, 0, &empty_enums, &mut env, &tp.fns)
+    emit_c_from_ast_module(tp, user, vec_new(), 1, 0, &empty_enums, &mut env, &tp.fns, 0)
 
 fn call_link_objs(obj_list: &String, out_path: &String) -> Int ! io, alloc
     link_objs(obj_list, out_path)
@@ -1547,7 +1563,8 @@ fn emit_c_compile_graph_go(graph: &mut Graph, i: Int, n: Int, root_key: &String,
         else
             callables = result_unwrap(&cstep)
             externs = extern_fn_arity(graph, i, callables)
-            ccode = emit_c_from_ast_module(&mut list_get(&mut graph.progs, i), callables, externs, allow_main, 1, genums, env, seen)
+            keep_old = path_in_selfhost(&mod_path_at(graph, i))
+            ccode = emit_c_from_ast_module(&mut list_get(&mut graph.progs, i), callables, externs, allow_main, 1, genums, env, seen, keep_old)
             cpath = tmp_path("m" + int_to_str(i) + ".c")
             opath = tmp_path("m" + int_to_str(i) + ".o")
             _w = write_file(cpath, ccode)
@@ -1557,6 +1574,13 @@ fn emit_c_compile_graph_go(graph: &mut Graph, i: Int, n: Int, root_key: &String,
                 prefix = obj_list_prefix(obj_list)
                 objs2 = prefix + opath
                 emit_c_compile_graph_go(graph, i + 1, n, root_key, proot, out_path, &objs2, genums, env, seen)
+
+# A path with a `selfhost` component (`module_path.components()` in src/compile.rs).
+fn path_in_selfhost(p: &String) -> Int ! alloc
+    if p.len() >= 9 && p.slice(0, 9).eq("selfhost/") == 1
+        1
+    else
+        p.contains("/selfhost/")
 
 fn emit_c_compile_graph(order: &mut Graph, root_key: &String, out_path: &String, proot: &String) -> Res ! io, alloc
     _c = ce_prepare_graph(order)

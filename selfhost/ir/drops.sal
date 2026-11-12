@@ -83,6 +83,15 @@ struct DC
     ps: List[TParam]
     scalars: List[String]
     copy_ok: List[Int]
+    # Locals passed whole to a struct constructor (`CTOR_ARGS` in src/drops.rs).
+    ctor_args: List[String]
+    # Names first bound to references, then once to an owned value (`ref_then_owned`): name -> how
+    # many of their bindings are references.
+    rto: NM
+    rtop: NM
+    # Locals whose `Option` payload is a Copy scalar: 1 a dict with `Int`/`Float`/`Bool` values,
+    # 2 what `dict_get` hands out of one. A payload bound from it aliases nothing on the heap.
+    copy_pay: NM
 
 # An owned copy of the parameter list: the `TFn` it comes from keeps its own.
 fn tparams_copy(xs: &List[TParam]) -> List[TParam] ! alloc
@@ -106,7 +115,7 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
     _f = list_push(&mut cells, 0)
     _g = list_push(&mut cells, 0)
     _h = list_push(&mut cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, List.new[String](), nm_new(), nm_new(), nm_new())
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -627,34 +636,42 @@ fn dr_ret_kind(ret: &String) -> Int ! alloc
 # `match` or `while` sits at its top level, and so do the returns and the tail.
 fn owned_fn_body(f: &TFn) -> Int ! alloc
     locals = list_new[String]()
-    if owned_scan(&f.body.stmts, 0, list_len(&f.body.stmts), &mut locals) == 0
+    if owned_scan(&f.body.stmts, 0, list_len(&f.body.stmts), &mut locals, &f.params) == 0
         0
     elsif owned_tail_ok(&f.body.tail, &locals, &f.params) == 0
         0
     else
         owned_returns_ok(&f.body.stmts, 0, list_len(&f.body.stmts), &locals, &f.params)
 
-fn owned_scan(stmts: &List[TStmt], i: Int, n: Int, locals: &mut List[String]) -> Int ! alloc
+fn owned_scan(stmts: &List[TStmt], i: Int, n: Int, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
     if i >= n
         1
     else
         st = list_get(stmts, i)
-        ok = owned_stmt(stmts, &st, locals)
+        ok = owned_stmt(stmts, &st, locals, params)
         if ok == 0
             0
         else
-            owned_scan(stmts, i + 1, n, locals)
+            owned_scan(stmts, i + 1, n, locals, params)
 
-fn owned_stmt(stmts: &List[TStmt], st: &TStmt, locals: &mut List[String]) -> Int ! alloc
+# A `while` hides what it returns; an `if`/`match` statement does not. A binding to an
+# `if`/`match` must hand out an owned String on every branch (`owned_return_body`).
+fn owned_stmt(stmts: &List[TStmt], st: &TStmt, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
     if st.kind == 2
         1
-    elsif owned_branches(&st.expr) == 1
-        0
     elsif st.kind == 0
         1 - dx_is_while(&st.expr)
     elsif st.kind == 1
-        _b = owned_bind_local(stmts, st, locals)
-        1
+        if owned_branches(&st.expr) == 1
+            if owned_return_ok(&st.expr, locals, params) == 0
+                0
+            else
+                if owned_binds(stmts, 0, stmts.len(), &st.name) == 1
+                    locals.push(st.name.dup())
+                1
+        else
+            owned_bind_local(stmts, st, locals)
+            1
     else
         1
 
@@ -872,6 +889,41 @@ fn dr_fresh_dict(targs: &String) -> Int ! alloc
     else
         0
 
+# Records `d = dict_new[K, Int]()` (1) and `o = dict_get(d, k)` of such a `d` (2), the cases the
+# bootstrap settles with the inferred type of the payload (`expr_is_copy_scalar`).
+fn dr_note_copy_payload(c: &mut DC, name: &String, e: &Expr) -> Int ! alloc
+    k = match e
+        XCall(callee, args, targs, xp) => dr_copy_payload_of(c, &callee, &args, &targs)
+        _ => 0
+    nm_put(&mut c.copy_pay, name, k)
+
+fn dr_copy_payload_of(c: &DC, callee: &String, args: &List[Expr], targs: &String) -> Int ! alloc
+    match callee
+        "dict_new" => dx_dict_args(targs) * dr_copy_scalar(&dr_dict_val(targs))
+        "dict_get" => dr_copy_dict_arg(c, args) * 2
+        _ => 0
+
+fn dr_copy_dict_arg(c: &DC, args: &List[Expr]) -> Int ! alloc
+    if args.len() == 0
+        0
+    elsif nm_get(&c.copy_pay, &dr_ref_root(args.get(0))) == 1
+        1
+    else
+        0
+
+fn dr_dict_val(targs: &String) -> String ! alloc
+    trim_spaces(targs.slice(dx_find_comma(targs, 0) + 1, targs.len()))
+
+fn dr_copy_scalar(ty: &String) -> Int ! alloc
+    ty.eq("Int") + ty.eq("Float") + ty.eq("Bool")
+
+# The local behind `x` or `&x`, "" otherwise.
+fn dr_ref_root(e: &Expr) -> String ! alloc
+    match e
+        XIdent(n) => n.dup()
+        XUnary(op, inner) => dx_ident(&inner)
+        _ => ""
+
 # `x = x + ...` is the same binding (the `+` consumes `x`), unless `x` is a reference parameter:
 # then it binds `x` to a new value (mirror of `is_accumulate`; the selfhost only knows the types
 # of the parameters).
@@ -942,10 +994,24 @@ fn dr_arg(c: &mut DC, a: &Expr, mov: Int) -> Int ! alloc
 fn dr_arg_unary(c: &mut DC, a: &Expr, op: &String, inner: &Expr, mov: Int) -> Int ! alloc
     if mov != 2 && mov != 4
         dr_expr(c, a)
-    elsif str_eq(op, "ref") + str_eq(op, "refmut") > 0
-        dr_arg(c, inner, mov)
-    else
+    elsif str_eq(op, "ref") + str_eq(op, "refmut") == 0
         dr_expr(c, a)
+    elsif mov == 4
+        dr_str_handle_ref(c, inner)
+    else
+        dr_arg(c, inner, mov)
+
+# `str_as_int(&s)`: the handle of `s` is stored, so `s` escapes and is never released; through
+# the reference it is only read, so no flag either.
+fn dr_str_handle_ref(c: &mut DC, inner: &Expr) -> Int ! alloc
+    match inner
+        XIdent(name) => dr_str_handle_escape(c, &name)
+        _ => dr_expr(c, inner)
+
+fn dr_str_handle_escape(c: &mut DC, name: &String) -> Int ! alloc
+    c.take(name)
+    nm_put(&mut c.soft, name, 0)
+    dr_escape(c, name)
 
 # A field read in a moving position hands out a value that aliases its base: the base escapes
 # so this function does not release it. It is not `take`: the caller clones only when the
@@ -1014,11 +1080,11 @@ fn dr_arg_ident(c: &mut DC, n: &String, mov: Int) -> Int ! alloc
 
 fn dr_arg_escape(c: &mut DC, name: &String, mov: Int) -> Int ! alloc
     if mov == 4
-        # `str_as_int(&s)` stores the handle: `s` escapes and is never released, no flag
-        # (the bootstrap's `escaped` rule for `str_as_int`).
-        c.take(name)
+        # `str_as_int(&s)` stores the handle: `s` escapes, so nothing releases it; the argument
+        # is then a move like any other (`TakeFields`), which may flag it (src/drops.rs).
         nm_put(&mut c.soft, name, 0)
         dr_escape(c, name)
+        dr_arg_escape(c, name, 3)
     elsif dr_cell(c, 4) > 0
         c.take(name)
         nm_put(&mut c.soft, name, 0)
@@ -1327,7 +1393,8 @@ fn dr_while(c: &mut DC, cond: &Expr, body: &TBlock) -> Int ! alloc
 
 fn dr_match(c: &mut DC, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
     # Variant patterns only read the box; a bare binding aliases the whole value.
-    if dx_is_ident(scrut) == 1
+    # A Copy payload (`Some(v) => v` of an `Option[Int]`) leaves the box releasable.
+    if dx_is_ident(scrut) == 1 && nm_get(&c.copy_pay, &dx_ident(scrut)) != 2
         _a = list_push(&mut c.m_scrut, strdup(dx_ident(scrut)))
         h996_3 = dr_arms_bound(c, arms, 0, list_len(arms), "")
         _b = list_push(&mut c.m_bound, h996_3)
@@ -1420,6 +1487,119 @@ fn dx_elem_release_call(c: &DC, name: &String, args: &List[Expr]) -> Int ! alloc
             0
         else
             nm_get(&c.owned_enums, &dx_ident(&first))
+
+# A local bound once, handed whole to a struct constructor (which owns it from then on) and only
+# filled with fresh values: the owner's glue releases its elements, so the list is built owned
+# (`moved_clean_list` in src/drops.rs).
+fn dr_moved_clean_list(c: &DC, name: &String) -> Int ! alloc
+    if nm_get(&c.took, name) == 0
+        0
+    elsif nm_get(&c.tainted, name) != 0
+        0
+    elsif nm_get(&c.params, name) != 0
+        0
+    elsif nm_get(&c.defs, name) != 1
+        0
+    else
+        dr_in_live(&c.ctor_args, name, 0, c.ctor_args.len())
+
+# `list_new[String]()` becomes `list_new_owned[String]()` (`own_inline_string_list`).
+fn dr_own_inline_string_list(e: Expr) -> Expr ! alloc
+    match e
+        XCall(fname, args, targs, xp) =>
+            if fname.eq("list_new") == 1 && dx_list_string(&targs) == 1
+                XCall("list_new_owned", args, targs, xp)
+            else
+                XCall(fname, args, targs, xp)
+        _ => e
+
+# ---- locals passed whole to a struct constructor (`collect_shared_expr` in src/drops.rs) ----
+fn ca_is_struct(vm: Int, name: &String) -> Int ! alloc
+    if map_get(vm, str_own(&("struct:" + name))) != 0
+        1
+    elsif map_get(vm, str_own(&("glue:" + name))) != 0
+        1
+    else
+        0
+
+fn ca_block(vm: Int, b: &TBlock, out: &mut List[String]) -> Int ! alloc
+    ca_stmts(vm, &b.stmts, 0, b.stmts.len(), out)
+    ca_expr(vm, &b.tail, out)
+
+fn ca_stmts(vm: Int, xs: &List[TStmt], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = xs.get(i)
+        ca_expr(vm, &st.target, out)
+        ca_expr(vm, &st.expr, out)
+        ca_stmts(vm, xs, i + 1, n, out)
+
+fn ca_expr(vm: Int, e: &Expr, out: &mut List[String]) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => ca_call(vm, &name, &args, out)
+        XBin(op, l, r) => ca_pair(vm, &l, &r, out)
+        XUnary(op, inner) => ca_expr(vm, &inner, out)
+        XField(base, field) => ca_expr(vm, &base, out)
+        XTo(place, inner) => ca_expr(vm, &inner, out)
+        XTry(inner) => ca_expr(vm, &inner, out)
+        XLambda(param, body) => ca_expr(vm, &body, out)
+        XOn(place, body, kern, idx) => ca_block(vm, &body, out)
+        XWhile(cond, body) => ca_cond_block(vm, &cond, &body, out)
+        XIf(cond, t, el, has_else, elsifs) => ca_if(vm, &cond, &t, &el, &elsifs, out)
+        XMatch(scrut, arms) => ca_match(vm, &scrut, &arms, 0, arms.len(), out)
+        _ => 0
+
+fn ca_pair(vm: Int, l: &Expr, r: &Expr, out: &mut List[String]) -> Int ! alloc
+    ca_expr(vm, l, out)
+    ca_expr(vm, r, out)
+
+fn ca_cond_block(vm: Int, cond: &Expr, b: &TBlock, out: &mut List[String]) -> Int ! alloc
+    ca_expr(vm, cond, out)
+    ca_block(vm, b, out)
+
+fn ca_if(vm: Int, cond: &Expr, t: &TBlock, el: &TBlock, elsifs: &List[TElsif], out: &mut List[String]) -> Int ! alloc
+    ca_cond_block(vm, cond, t, out)
+    ca_block(vm, el, out)
+    ca_elsifs(vm, elsifs, 0, elsifs.len(), out)
+
+fn ca_elsifs(vm: Int, xs: &List[TElsif], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = xs.get(i)
+        ca_cond_block(vm, &a.cond, &a.body, out)
+        ca_elsifs(vm, xs, i + 1, n, out)
+
+fn ca_match(vm: Int, scrut: &Expr, arms: &List[TArm], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        ca_expr(vm, scrut, out)
+    else
+        a = arms.get(i)
+        ca_expr(vm, &a.body, out)
+        ca_block(vm, &a.suite, out)
+        ca_match(vm, scrut, arms, i + 1, n, out)
+
+fn ca_call(vm: Int, name: &String, args: &List[Expr], out: &mut List[String]) -> Int ! alloc
+    if ca_is_struct(vm, name) == 1
+        ca_idents(args, 0, args.len(), out)
+    ca_args(vm, args, 0, args.len(), out)
+
+fn ca_idents(args: &List[Expr], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        match args.get(i)
+            XIdent(l) => out.push(l.dup())
+            _ => 0
+        ca_idents(args, i + 1, n, out)
+
+fn ca_args(vm: Int, args: &List[Expr], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ca_expr(vm, &args.get(i), out)
+        ca_args(vm, args, i + 1, n, out)
 
 # An enum list the pass releases (kind 6) is built as `list_new_owned[E]()`: the lowering
 # stores the element descriptor `E` and the list frees its boxes. Other enum lists keep
@@ -1555,6 +1735,7 @@ fn dr_stmt_expr(c: &mut DC, ex: &Expr) -> Int ! alloc
         dr_expr(c, ex)
 
 fn dr_stmt_bind(c: &mut DC, st: &TStmt) -> Int ! alloc
+    dr_note_copy_payload(c, &st.name, &st.expr)
     if st.is_let == 1
         _b = dr_bind(c, &st.name)
         _k = dr_rebind_note(c, &st.name, &st.expr)
@@ -1591,9 +1772,10 @@ fn dr_plain_kind(k: Int) -> Int
     else
         k
 
-# Bound more than once, every time to a fresh value of one kind (`rebound_locals` in src/drops.rs).
+# Bound more than once in the body, every time to a fresh value of one kind (`rebound_locals` in
+# src/drops.rs); a parameter is not a body binding.
 fn dr_rebound(c: &DC, name: &String) -> Int ! alloc
-    if nm_get(&c.defs, name) < 2
+    if nm_get(&c.defs, name) - param_named(&c.ps, name, 0, c.ps.len()) < 2
         0
     else
         k = nm_get(&c.rbk, name)
@@ -1636,6 +1818,118 @@ fn dr_block(c: &mut DC, b: &TBlock) -> Int ! alloc
 
 # ---- transform ----
 fn dr_candidate(c: &mut DC, name: &String, ty: &String, init: &Expr) -> Int ! alloc
+    src = dr_live_source(c, init)
+    if src.len() > 0
+        dr_candidate_move(c, name, &src)
+    else
+        dr_candidate_value(c, name, ty, init)
+
+# ---- names bound to references, then once to an owned value (`ref_then_owned`) ----
+# `rto` gets each candidate's reference bindings and `rtop` its top-level bindings; the
+# candidate holds only when those are all its bindings (`dr_rto_refs`), so the owned value lives
+# to the end of the fn. A reference binding after it would leave it unreleased.
+fn dr_ref_then_owned(params: &List[TParam], body: &TBlock, out: &mut NM, top: &mut NM) -> Int ! alloc
+    refs = nm_new()
+    rto_params(params, 0, params.len(), &mut refs)
+    owned = nm_new()
+    bad = nm_new()
+    rto_stmts(params, &body.stmts, 0, body.stmts.len(), &mut refs, &mut owned, &mut bad, top)
+    rto_pick(&refs, &owned, &bad, 0, refs.names.len(), out)
+
+fn rto_params(ps: &List[TParam], i: Int, n: Int, refs: &mut NM) -> Int ! alloc
+    if i >= n
+        0
+    else
+        rto_param(ps.get(i), refs)
+        rto_params(ps, i + 1, n, refs)
+
+fn rto_param(p: &TParam, refs: &mut NM) -> Int ! alloc
+    if dr_ty_is_ref(&p.ty) == 1
+        nm_put(refs, &p.name, 1)
+    else
+        0
+
+fn rto_stmts(ps: &List[TParam], xs: &List[TStmt], i: Int, n: Int, refs: &mut NM, owned: &mut NM, bad: &mut NM, top: &mut NM) -> Int ! alloc
+    if i >= n
+        0
+    else
+        st = xs.get(i)
+        if st.kind == 1 && rto_accumulates(ps, &st) == 0
+            t = nm_get(top, &st.name) + 1
+            nm_put(top, &st.name, t)
+            if rto_is_ref(&st.expr) == 1
+                if nm_get(owned, &st.name) != 0
+                    nm_put(bad, &st.name, 1)
+                r = nm_get(refs, &st.name) + 1
+                nm_put(refs, &st.name, r)
+            else
+                o = nm_get(owned, &st.name) + 1
+                nm_put(owned, &st.name, o)
+        rto_stmts(ps, xs, i + 1, n, refs, owned, bad, top)
+
+# `x = x + ...` appends in place, except through a reference parameter (`dr_acc`).
+fn rto_accumulates(ps: &List[TParam], st: &TStmt) -> Int ! alloc
+    if st.is_let == 1 || dr_named_param_is_ref(ps, &st.name, 0, ps.len()) == 1
+        0
+    else
+        dr_is_accumulate(&st.name, &st.expr)
+
+# A value that is a reference: `&x`, `&mut x`, or what `list_get` lends (`dict_get` hands out a
+# fresh `Option`).
+fn rto_is_ref(e: &Expr) -> Int ! alloc
+    match e
+        XUnary(op, inner) => op.eq("ref") + op.eq("refmut")
+        XCall(name, args, targs, xp) => name.eq("list_get")
+        _ => 0
+
+fn rto_pick(refs: &NM, owned: &NM, bad: &NM, i: Int, n: Int, out: &mut NM) -> Int ! alloc
+    if i >= n
+        0
+    else
+        name = refs.names.get(i).dup()
+        if nm_get(bad, &name) == 0 && nm_get(owned, &name) == 1
+            nm_put(out, &name, nm_get(refs, &name))
+        rto_pick(refs, owned, bad, i + 1, n, out)
+
+# The reference bindings of `name` when it is a `ref_then_owned` name, else 0: every binding
+# (`defs`, which counts the parameter too) must be a top-level statement of the fn.
+fn dr_rto_refs(c: &DC, name: &String) -> Int ! alloc
+    refs = nm_get(&c.rto, name)
+    if refs == 0
+        0
+    elsif nm_get(&c.defs, name) - param_named(&c.ps, name, 0, c.ps.len()) == nm_get(&c.rtop, name)
+        refs
+    else
+        0
+
+# `t = s` with `s` an owned live local moves it into `t`: `t` is the new owner of what `s`
+# released (the move clears `s`'s flag). `candidate` in src/drops.rs.
+fn dr_live_source(c: &DC, init: &Expr) -> String ! alloc
+    match init
+        XIdent(src) =>
+            if dr_in_live(&c.live, &src, 0, c.live.len()) == 1
+                src.dup()
+            else
+                ""
+        _ => ""
+
+fn dr_candidate_move(c: &mut DC, name: &String, src: &String) -> Int ! alloc
+    if nm_get(&c.params, name) != 0
+        0
+    elsif nm_get(&c.defs, name) != 1
+        0
+    elsif nm_get(&c.esc, name) != 0 && nm_get(&c.box_shell, name) == 0
+        0
+    elsif nm_get(&c.took, name) != 0 && nm_get(&c.soft, name) == 0
+        0
+    else
+        k = nm_get(&c.kinds, src)
+        if k == 8
+            d = nm_get(&c.copy_desc, src)
+            nm_put(&mut c.copy_desc, name, d)
+        k
+
+fn dr_candidate_value(c: &mut DC, name: &String, ty: &String, init: &Expr) -> Int ! alloc
     er = dx_elem_release(c, init)
     sd = if er == 0
         dx_struct_copy(c, init)
@@ -1741,12 +2035,16 @@ fn dr_kind_owned(kind: Int) -> Int ! alloc
     else
         0
 
+# A reference parameter owns nothing: `s = s + "x"` with `s: &String` binds `s` to a new String
+# the fn owns and releases, like any local; its reference bindings do not count (`candidate`).
 fn dr_candidate_go2(c: &DC, name: &String, kind: Int) -> Int ! alloc
-    if nm_get(&c.params, name) != 0
+    refs = dr_rto_refs(c, name)
+    defs = nm_get(&c.defs, name) - refs
+    if nm_get(&c.params, name) != 0 && dr_named_param_is_ref(&c.ps, name, 0, c.ps.len()) == 0
         0
-    elsif nm_get(&c.defs, name) == 0
+    elsif defs <= 0
         0
-    elsif nm_get(&c.defs, name) > 1 && dr_rebound(c, name) == 0
+    elsif defs > 1 && dr_rebound(c, name) == 0
         0
     elsif nm_get(&c.esc, name) != 0
         if nm_get(&c.box_shell, name) != 0
@@ -1863,11 +2161,15 @@ fn dr_clear_go(c: &DC, st: Int, out: &mut List[TStmt], i: Int, n: Int) -> Int ! 
             dr_clear_go(c, st, out, i + 1, n)
 
 # Releases live[from..] in reverse order.
+# A local that escaped (handed out whole on some path) is not released here: its new owner
+# does (`!escaped` in `xform_block_scope`, src/drops.rs).
 fn dr_push_frees(c: &DC, out: &mut List[TStmt], from: Int, i: Int) -> Int ! alloc
     if i < from
         0
     else
-        _p = list_push(out, dr_release_stmt(c, &list_get(&c.live, i)))
+        name = list_get(&c.live, i)
+        if nm_get(&c.esc, &name) == 0
+            out.push(dr_release_stmt(c, &name))
         dr_push_frees(c, out, from, i - 1)
 
 fn dr_xform_if_arms(c: &mut DC, arms: &mut List[TElsif], i: Int, n: Int) -> Int ! alloc
@@ -1875,7 +2177,9 @@ fn dr_xform_if_arms(c: &mut DC, arms: &mut List[TElsif], i: Int, n: Int) -> Int 
         0
     else
         arm = list_get(&mut arms, i)
-        arm.body = dr_xform_block(c, &mut arm.body)
+        nb = dr_xform_block(c, &mut arm.body)
+        dr_free_block(&arm.body)
+        arm.body = nb
         dr_xform_if_arms(c, arms, i + 1, n)
 
 fn dr_xform_expr(c: &mut DC, e: &Expr) -> Expr ! alloc
@@ -1918,18 +2222,14 @@ fn dr_xform_stmt(c: &mut DC, st: &mut TStmt, out: &mut List[TStmt]) -> Int ! all
         _d = dr_discard(c, &st.expr, out)
         if _d == 0
             ne = dr_xform_expr(c, &st.expr)
-            if dr_moved(&st.expr, &ne) == 1
-                st.expr = ne
-            _p = dr_share_stmt(out, st)
+            dr_push_with_expr(out, st, ne)
             0
         else
             0
         dr_clear_moved(c, st.id, out)
     else
         ne = dr_xform_expr(c, &st.expr)
-        if dr_moved(&st.expr, &ne) == 1
-            st.expr = ne
-        _p = dr_share_stmt(out, st)
+        dr_push_with_expr(out, st, ne)
         dr_clear_moved(c, st.id, out)
 
 # A fresh value discarded as a statement is bound to a `__dis` temporary and released there
@@ -1998,11 +2298,13 @@ fn dr_rebind(c: &mut DC, st: &TStmt, out: &mut List[TStmt]) -> Int ! alloc
     0
 
 fn dr_xform_bind_new(c: &mut DC, st: &mut TStmt, cand: Int, out: &mut List[TStmt]) -> Int ! alloc
-    init = dr_own_enum_list(c, &st.name, cand, st.expr.clone())
+    init0 = dr_own_enum_list(c, &st.name, cand, st.expr.clone())
+    init = if cand == 0 && dr_moved_clean_list(c, &st.name) == 1
+        dr_own_inline_string_list(init0)
+    else
+        init0
     ne = dr_xform_expr(c, &init)
-    if dr_moved(&st.expr, &ne) == 1
-        st.expr = ne
-    _p = dr_share_stmt(out, st)
+    dr_push_with_expr(out, st, ne)
     _m = dr_clear_moved(c, st.id, out)
     if cand != 0
         _k = nm_put(&mut c.kinds, &st.name, cand)
@@ -2093,8 +2395,6 @@ fn dr_seed_one_param(c: &mut DC, out: &mut List[TStmt], name: &String, ty: &Stri
     k = dr_param_kind(c, ty)
     if k == 0
         0
-    elsif nm_get(&c.defs, name) != 1
-        0
     elsif nm_get(&c.esc, name) != 0 && nm_get(&c.soft, name) == 0 && nm_get(&c.box_shell, name) == 0
         0
     else
@@ -2106,9 +2406,9 @@ fn dr_seed_one_param(c: &mut DC, out: &mut List[TStmt], name: &String, ty: &Stri
         _l = list_push(&mut c.live, strdup(name))
         0
 
-# The release of a by-value parameter of this type. Enum parameters are not released by the
-# callee yet (subplan 07): the selfhost still passes aliases of an `Expr` to by-value
-# parameters, which the callee would free.
+# The release of a by-value parameter of this type (`owned_param_release` in src/drops.rs):
+# `String`, `List`, `Dict` and enum parameters move into the fn, which releases them unless it
+# moves them on.
 fn dr_param_kind(c: &DC, ty: &String) -> Int ! alloc
     if dr_param_is_ref(ty) == 1
         0
@@ -2117,7 +2417,11 @@ fn dr_param_kind(c: &DC, ty: &String) -> Int ! alloc
     else
         open = ty_find_open(ty, 0)
         if open < 0
-            0
+            # An enum parameter (`owned_param_release` in src/drops.rs): `enum_free`.
+            if map_get(c.variants, str_own(&("enum:" + trim_spaces(ty.dup())))) != 0
+                5
+            else
+                0
         else
             dr_param_generic_kind(trim_spaces(ty.slice(0, open)))
 
@@ -2143,9 +2447,12 @@ fn dr_tail_key(e: &Expr) -> Int ! alloc
                 enum_box_id(e)
         _ => enum_box_id(e)
 
+# Only a call tail is a statement of its own for the moves it makes (`is_call_tail`).
 fn dr_clear_tail_moved(c: &DC, b: &TBlock, out: &mut List[TStmt]) -> Int ! alloc
     t = dr_tail_key(&b.tail)
     if t == 0
+        0
+    elsif dr_is_call_tail(&b.tail) == 0
         0
     else
         dr_clear_moved(c, t, out)
@@ -2194,6 +2501,8 @@ fn dr_seed_params(c: &mut DC, i: Int, n: Int) -> Int ! alloc
 # Escape facts of a fn body under the read-only assumptions `ro`.
 fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
     c = dr_new(variants, ro, lists, params, scalars, copy_ok)
+    ca_block(variants, body, &mut c.ctor_args)
+    dr_ref_then_owned(params, body, &mut c.rto, &mut c.rtop)
     n = c.ps.len()
     _s = dr_seed_params(&mut c, 0, n)
     _w = dr_block(&mut c, body)
@@ -2206,7 +2515,7 @@ fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists:
 # (the fn must not release the struct) without setting consumed. Optimistic fixpoint, as `drops.rs`.
 fn dr_read_only_t(tp: &TProgram, variants: Int, cons: &List[Int]) -> Int ! alloc
     ro = map_new()
-    _i = dr_ro_init(ro, &tp.fns, 0, tp.fns.len())
+    _i = dr_ro_init(ro, &tp.fns, variants, 0, tp.fns.len())
     scalars = list_new[String]()
     oks = list_new[Int]()
     _s = dr_scalar_structs(&mut scalars, &mut oks, &tp.structs, 0, tp.structs.len())
@@ -2345,28 +2654,29 @@ fn dr_cons_fill(out: List[Int], fns: &List[TFn], i: Int, n: Int) -> List[Int] ! 
         _p = out.push(took)
         dr_cons_fill(out, fns, i + 1, n)
 
-fn dr_ro_init(ro: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+fn dr_ro_init(ro: Int, fns: &List[TFn], variants: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = fns.get(i)
         flags = vec_new()
-        _o = dr_ro_ref_flags(flags, &f.params, 0, f.params.len())
+        _o = dr_ro_ref_flags(flags, &f.params, variants, 0, f.params.len())
         nk = f.name.dup()
         map_put(ro, nk.to_int(), flags)
-        dr_ro_init(ro, fns, i + 1, n)
+        dr_ro_init(ro, fns, variants, i + 1, n)
 
 # A by-value parameter is owned by the fn (SPEC «Memoria»): the caller gave it up, so it is
 # never read-only. Only `&T` leaves the caller the release.
-fn dr_ro_ref_flags(flags: Int, ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
+fn dr_ro_ref_flags(flags: Int, ps: &List[TParam], variants: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _p = vec_push(flags, dr_param_caller_keeps(&ps.get(i).ty))
-        dr_ro_ref_flags(flags, ps, i + 1, n)
+        _p = vec_push(flags, dr_param_caller_keeps(&ps.get(i).ty, variants))
+        dr_ro_ref_flags(flags, ps, variants, i + 1, n)
 
-# 1 when the caller keeps the release: a reference, or a type the callee does not release.
-fn dr_param_caller_keeps(ty: &String) -> Int ! alloc
+# 1 when the caller keeps the release: a reference, or a type the callee does not release
+# (`dr_param_kind` says which ones it does, enums among them).
+fn dr_param_caller_keeps(ty: &String, variants: Int) -> Int ! alloc
     if dr_param_is_ref(ty) == 1
         1
     elsif ty_is_string(ty) == 1
@@ -2374,7 +2684,10 @@ fn dr_param_caller_keeps(ty: &String) -> Int ! alloc
     else
         open = ty_find_open(ty, 0)
         if open < 0
-            1
+            if map_get(variants, str_own(&("enum:" + trim_spaces(ty.dup())))) != 0
+                0
+            else
+                1
         elsif dr_param_generic_kind(trim_spaces(ty.slice(0, open))) == 0
             1
         else
@@ -2502,6 +2815,7 @@ fn dr_moved(old: &Expr, neu: &Expr) -> Int ! alloc
         1
 
 # A changed child is written into the box that already exists. The string stays put.
+# `neu` is the result of a step of the pass, which nothing else releases: the slot owns it.
 fn dr_set_expr(e: &Expr, i: Int, old: &Expr, neu: &Expr) -> Int ! alloc
     if dr_moved(old, neu) == 0
         0
@@ -2515,6 +2829,12 @@ fn dr_set_arg(args: &mut List[Expr], i: Int, old: &Expr, neu: Expr) -> Int ! all
         _s = list_set(args, i, neu)
         0
 
+# The statement `st` with the expression `e` (the transform's new copy), pushed as a new
+# statement. `st` itself is not written: it is the caller's, which releases its old expression.
+fn dr_push_with_expr(out: &mut List[TStmt], st: &TStmt, e: Expr) -> Int ! alloc
+    out.push(TStmt(st.kind, st.name.dup(), e, st.ty.dup(), st.is_let, tc_expr(&st.target), st.frozen, st.stack, st.id))
+    0
+
 # An owned copy of the statement (`clone`): the block it came from is borrowed and keeps its own.
 fn dr_share_stmt(out: &mut List[TStmt], st: &TStmt) -> Int ! alloc
     _p = list_push(out, tc_stmt(st))
@@ -2522,6 +2842,21 @@ fn dr_share_stmt(out: &mut List[TStmt], st: &TStmt) -> Int ! alloc
 
 # The block is borrowed: its owner releases it. Nothing to release here.
 fn dr_free_stmts(xs: &List[TStmt]) -> Int ! alloc
+    0
+
+# An expression the pass replaced with a copy of its own. Released through this helper, not on
+# the field directly: releasing a parameter's field makes the fn take that parameter, which then
+# frees its block (`releases_param_fields`).
+fn dr_drop_expr(e: &Expr) -> Int ! alloc
+    enum_free(e)
+    0
+
+# A block the pass rebuilt out of copies (hoist, claim, xform): nothing shares it, so it is
+# released before the new one takes its place (a field overwrite does not release it when the
+# compiler builds the selfhost).
+fn dr_free_block(b: &TBlock) -> Int ! alloc
+    list_free(b.stmts)
+    enum_free(b.tail)
     0
 
 # Taking the field marks it moved, so the struct glue leaves it alone. The list vector
@@ -2572,7 +2907,9 @@ fn dr_hoist_arms(h: &mut HC, arms: &mut List[TElsif], i: Int, n: Int) -> Int ! a
         0
     else
         arm = list_get(&mut arms, i)
-        arm.body = dr_hoist_block(h, &mut arm.body)
+        nb = dr_hoist_block(h, &mut arm.body)
+        dr_free_block(&arm.body)
+        arm.body = nb
         dr_hoist_arms(h, arms, i + 1, n)
 
 # A place: local, field of a place, or deref of a place (`is_place` in src/drops.rs).
@@ -2596,8 +2933,8 @@ fn dr_hoist_unary(h: &mut HC, e: &Expr, op: &String, inner: &Expr, out: &mut Lis
             _s = list_set(h.k, 0, k)
             name = "__tmp" + int_to_str(k)
             _l = list_push(out, TStmt(1, strdup(name), ni, "", 1, XNone, 0, 0, 0 - k))
-            bound = XIdent(strdup(name))
-            _w = dr_set_expr(e, 1, inner, &bound)
+            # The slot takes a value of its own: a local built here is released at scope end.
+            enum_set(e, 1, XIdent(strdup(name)))
             dr_ret(e)
         else
             _w = dr_set_expr(e, 1, inner, &ni)
@@ -2804,6 +3141,7 @@ fn dr_hoist_stmts(h: &mut HC, stmts: &mut List[TStmt], i: Int, n: Int, out: &mut
         st = tc_stmt(&list_get(&mut stmts, i))
         ne = dr_hoist_expr(h, &st.expr, out)
         if dr_moved(&st.expr, &ne) == 1
+            dr_drop_expr(&st.expr)
             st.expr = ne
         _p = dr_share_stmt(out, &st)
         dr_hoist_stmts(h, stmts, i + 1, n, out)
@@ -3124,8 +3462,11 @@ fn dr_claim_elsifs_in(elsifs: &mut List[TElsif], i: Int, n: Int, own: Int, varia
         a = list_get(&mut elsifs, i)
         c = dr_claim_expr(&a.cond, 0, variants, elems, borrows, lists, sns, took)
         if dr_moved(&a.cond, &c) == 1
+            dr_drop_expr(&a.cond)
             a.cond = c
-        a.body = dr_claim_block(&mut a.body, own, variants, elems, borrows, lists, sns, took)
+        nb = dr_claim_block(&mut a.body, own, variants, elems, borrows, lists, sns, took)
+        dr_free_block(&a.body)
+        a.body = nb
         dr_claim_elsifs_in(elsifs, i + 1, n, own, variants, elems, borrows, lists, sns, took)
 
 fn dr_claim_arms_in(arms: &mut List[TArm], i: Int, n: Int, own: Int, variants: Int, elems: &mut NM, borrows: &mut NM, lists: &NM, sns: &mut NM, took: Int) -> Int ! alloc
@@ -3135,9 +3476,12 @@ fn dr_claim_arms_in(arms: &mut List[TArm], i: Int, n: Int, own: Int, variants: I
         a = list_get(&mut arms, i)
         b = dr_claim_expr(&a.body, own, variants, elems, borrows, lists, sns, took)
         if dr_moved(&a.body, &b) == 1
+            dr_drop_expr(&a.body)
             a.body = b
         if a.has_suite == 1
-            a.suite = dr_claim_block(&mut a.suite, own, variants, elems, borrows, lists, sns, took)
+            ns = dr_claim_block(&mut a.suite, own, variants, elems, borrows, lists, sns, took)
+            dr_free_block(&a.suite)
+            a.suite = ns
         dr_claim_arms_in(arms, i + 1, n, own, variants, elems, borrows, lists, sns, took)
 
 # A struct constructor of only borrowed fields shares them. Any other borrowed argument is copied.
@@ -3194,6 +3538,7 @@ fn dr_claim_stmts(stmts: &mut List[TStmt], i: Int, n: Int, variants: Int, elems:
         st = tc_stmt(&list_get(&mut stmts, i))
         ne = dr_claim_stmt_expr(&st, variants, elems, borrows, lists, sns, took)
         if dr_moved(&st.expr, &ne) == 1
+            dr_drop_expr(&st.expr)
             st.expr = ne
         _p = dr_share_stmt(out, &st)
         dr_claim_stmts(stmts, i + 1, n, variants, elems, borrows, lists, sns, took, out)

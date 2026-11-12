@@ -162,6 +162,11 @@ struct Cx
     md: Int
     fsum: Int
     nparams: Int
+    # 1 when a field overwrite keeps the old value (a module of the selfhost; see `lower_fn`).
+    keep_old: Int
+    # The fn being lowered (one slot): a rebinding of a struct local reads its moves and field
+    # reads (`reassign_struct_drop`).
+    fn_self: List[TFn]
     fn_scope: List[TBlock]
     open: List[TBlock]
     open_idx: List[Int]
@@ -182,7 +187,7 @@ fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn
     regions.push(List.new[Region]())
     lits = List.new[List[Lit]]()
     lits.push(List.new[Lit]())
-    Cx(ctr, bodies, acc, vec_new(), fn_names, dps, regions, map_new(), fm, lits, vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam](), 0, 0, 0, List.new[TBlock](), List.new[TBlock](), List.new[Int](), List.new[Int]())
+    Cx(ctr, bodies, acc, vec_new(), fn_names, dps, regions, map_new(), fm, lits, vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam](), 0, 0, 0, 0, List.new[TFn](), List.new[TBlock](), List.new[TBlock](), List.new[Int](), List.new[Int]())
 
 # Variant name -> `[enum name, variant index, field count, tag]`; the first definition wins.
 fn cx_variants(cx: &Cx) -> Int ! alloc

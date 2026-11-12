@@ -1885,6 +1885,41 @@ fn return_struct_drops(
     }
 }
 
+/// `name = value` over a struct local that still owns its previous value: that value is released
+/// with the same rules as at scope end (`emit_struct_string_drops`), over the innermost open
+/// branch that binds the local, or the fn body. A local moved anywhere is left alone (a leak,
+/// never a double free).
+fn reassign_struct_drop(
+    name: &str,
+    old: &str,
+    instructions: &mut Vec<IrInst>,
+    counter: &mut u32,
+    strings: &StringEnv,
+) {
+    let scoped = SCOPE_CTX.with(|c| {
+        c.borrow().as_ref().map(|ctx| {
+            let mut synth = ctx.f.clone();
+            let branch = OPEN_BRANCHES.with(|b| {
+                b.borrow().iter().rev().find_map(|(block, _)| {
+                    let mut probe = ctx.f.clone();
+                    probe.params = Vec::new();
+                    probe.body = block.clone();
+                    fn_struct_bindings(&probe, strings).contains_key(name).then_some(probe)
+                })
+            });
+            if let Some(b) = branch {
+                synth = b;
+            }
+            (synth, ctx.param_modes.clone(), ctx.caller_modes.clone())
+        })
+    });
+    let Some((synth, param_modes, caller_modes)) = scoped else {
+        return;
+    };
+    let env: HashMap<String, String> = [(name.to_string(), old.to_string())].into_iter().collect();
+    emit_struct_string_drops(&synth, instructions, &env, counter, strings, &param_modes, &caller_modes, &HashSet::new());
+}
+
 /// Releases the struct locals declared in `block` when the block ends. Its moves are those of
 /// the whole fn, read from the block alone: a local bound elsewhere is not in `env`. `outer` are
 /// the names bound before the block: one the block only reassigns is not its own (Rust: the
@@ -2946,6 +2981,13 @@ fn lower_stmt(
                     strings,
                 );
                 strings.accumulate = None;
+                // Rebinding a struct local releases its previous value first (SPEC «Memoria»:
+                // the new value is computed first, then the old one is released).
+                if let Some(old) = env.get(name).cloned() {
+                    if old != v {
+                        reassign_struct_drop(name, &old, instructions, counter, strings);
+                    }
+                }
                 register_let_tensor(name, None, value, &v, strings, tensors);
                 env.insert(name.clone(), v);
                 strings.note_init(name, None, value);
@@ -5095,7 +5137,8 @@ fn struct_name_of_base(base: &Expr, strings: &StringEnv) -> Option<String> {
             let outer = struct_name_of_base(inner, strings)?;
             let sdef = strings.structs.get(&outer)?;
             let f = sdef.fields.iter().find(|f| &f.name == field)?;
-            match &f.ty {
+            // A reference field (`pool: &'a mut Pool`) reads the struct it points at.
+            match peel_ref_ty(&f.ty) {
                 crate::ast::Type::Named { name, args, .. }
                     if args.is_empty() && strings.structs.contains_key(name) =>
                 {

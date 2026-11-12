@@ -1,0 +1,22 @@
+# exit: 42
+# A field read through a reference field (`t.pool.sites`, `pool: &'a mut Pool`) reaches the
+# field of the struct it points at.
+struct Pool
+    name: String
+    k: Int
+    sites: List[Int]
+
+struct T['a]
+    n: Int
+    pool: &'a mut Pool
+
+fn pick(t: &T, i: Int) -> Int ! alloc
+    t.pool.sites.get(i)
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(40)
+    xs.push(2)
+    p = Pool("a".dup(), 1, xs)
+    t = T(0, &mut p)
+    pick(&t, 0) + pick(&t, 1)

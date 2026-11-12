@@ -338,5 +338,25 @@ fn lp_fns(xs: &mut List[TFn], i: Int, n: Int, errs: &mut List[String]) -> Int ! 
         cx.push(0)
         cx.push(0)
         cx.push(0)
-        f.body = lp_block(&f.body, &"", &mut cx, errs)
+        # `lp_block` shares the statements of the block it rewrites, and a field overwrite does not
+        # release the old value when the compiler builds the selfhost: rewrite a copy, release the
+        # copy's shell and the original body, then store the new one.
+        old = tc_block(&f.body)
+        nb = lp_block(&old, &"", &mut cx, errs)
+        lp_release_shell_block(old)
+        lp_free_body(&f.body)
+        f.body = nb
         lp_fns(xs, i + 1, n, errs)
+
+# The block `lp_block` rewrote: its statements now belong to the new block and its tail was
+# copied, so the statement list is released without its elements.
+fn lp_release_shell_block(b: TBlock) -> Int ! alloc
+    list_free_shell(b.stmts)
+    enum_free(b.tail)
+    0
+
+# The original body, which nothing shares any more.
+fn lp_free_body(b: &TBlock) -> Int ! alloc
+    list_free(b.stmts)
+    enum_free(b.tail)
+    0

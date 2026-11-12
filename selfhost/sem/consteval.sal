@@ -452,11 +452,53 @@ fn ce_fold_expr(e: Expr, vals: &List[CVal], bound: &mut List[String]) -> Expr ! 
         XCall(nm, args, targs, xp) => XCall(nm, ce_fold_exprs(&args, vals, bound), targs, xp)
         XTo(place, inner) => XTo(place, ce_fold_expr(inner, vals, bound))
         XField(base, fld) => XField(ce_fold_expr(base, vals, bound), fld)
-        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(ce_fold_expr(cond, vals, bound), ce_fold_block(&then_b, vals, bound), ce_fold_block(&else_b, vals, bound), has_else, elsifs)
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(ce_fold_expr(cond, vals, bound), ce_fold_block(&then_b, vals, bound), ce_fold_block(&else_b, vals, bound), has_else, ce_fold_elsifs(&elsifs, vals, bound))
+        XMatch(scrut, arms) => XMatch(ce_fold_expr(scrut, vals, bound), ce_fold_arms(&arms, vals, bound))
+        XOn(place, body, kern, idx) => XOn(place, ce_fold_block(&body, vals, bound), kern, idx)
         XWhile(cond, body) => XWhile(ce_fold_expr(cond, vals, bound), ce_fold_block(&body, vals, bound))
         XTry(inner) => XTry(ce_fold_expr(inner, vals, bound))
         XLambda(nm, body) => ce_fold_lambda(&nm, body, vals, bound)
         _ => e
+
+fn ce_fold_elsifs(xs: &List[TElsif], vals: &List[CVal], bound: &mut List[String]) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    ce_fold_elsifs_go(xs, 0, xs.len(), vals, bound, &mut out)
+    out
+
+fn ce_fold_elsifs_go(xs: &List[TElsif], i: Int, n: Int, vals: &List[CVal], bound: &mut List[String], out: &mut List[TElsif]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = xs.get(i)
+        out.push(TElsif(ce_fold_expr(a.cond.clone(), vals, bound), ce_fold_block(&a.body, vals, bound)))
+        ce_fold_elsifs_go(xs, i + 1, n, vals, bound, out)
+
+# A name a pattern binds shadows a constant in its arm.
+fn ce_fold_arms(xs: &List[TArm], vals: &List[CVal], bound: &mut List[String]) -> List[TArm] ! alloc
+    out = List.new[TArm]()
+    ce_fold_arms_go(xs, 0, xs.len(), vals, bound, &mut out)
+    out
+
+fn ce_fold_arms_go(xs: &List[TArm], i: Int, n: Int, vals: &List[CVal], bound: &mut List[String], out: &mut List[TArm]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        a = xs.get(i)
+        ce_pat_bind(&a.pat, bound)
+        out.push(TArm(a.pat.clone(), ce_fold_expr(a.body.clone(), vals, bound), ce_fold_block(&a.suite, vals, bound), a.has_suite))
+        ce_fold_arms_go(xs, i + 1, n, vals, bound, out)
+
+fn ce_pat_bind(p: &TPat, bound: &mut List[String]) -> Int ! alloc
+    if p.kind == 1
+        bound.push(p.name.dup())
+    ce_pat_bind_args(&p.args, 0, p.args.len(), bound)
+
+fn ce_pat_bind_args(xs: &List[TPat], i: Int, n: Int, bound: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ce_pat_bind(&xs.get(i), bound)
+        ce_pat_bind_args(xs, i + 1, n, bound)
 
 fn ce_fold_exprs(xs: &List[Expr], vals: &List[CVal], bound: &mut List[String]) -> List[Expr] ! alloc
     out = List.new[Expr]()
