@@ -1,0 +1,10 @@
+# exit: 7
+fn id[T](x: T) -> T
+    x
+
+fn twice[T](x: T) -> T
+    id(id(x))
+
+fn main() -> Int ! alloc
+    s = twice(d"hello")
+    s.len() + twice(2)

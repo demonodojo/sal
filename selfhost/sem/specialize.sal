@@ -1,0 +1,670 @@
+# Monomorphization (SPEC «Genéricos»). Mirror of src/specialize.rs.
+#
+# A call to a generic `fn g[T, …]` whose arguments fix every type parameter to a concrete type calls
+# its own copy `g__<tipos>`, with the types substituted. Copies may call other generics, so the pass
+# repeats until no call changes; then the generic originals go. All or nothing per generic: a call
+# that does not fix the types, or a call from another module, leaves that generic erased.
+#
+# Inference records each generic call as `caller \t offset \t callee \t type…` (`ic_record_generic`).
+# The calls are handled in the order of src/specialize.rs (caller name, then offset), so both
+# compilers create the copies, and place them, in the same order.
+import "../ast/tast.sal"
+import "../ast/tygeneric.sal"
+import "../ast/tytext.sal"
+import "../pkg/result.sal"
+import infer
+
+# Single program: `ext` is empty.
+fn monomorphize(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
+    ext = sp_empty_program()
+    keep = List.new[String]()
+    monomorphize_ext(tp, &ext, &keep, errs)
+
+fn sp_empty_program() -> TProgram ! alloc
+    TProgram(List.new[TFn](), List.new[String](), List.new[TStruct](), List.new[String](), List.new[TEnum](), List.new[TProtocol](), List.new[TConst]())
+
+# `ext` holds the items of the other modules (inference needs them); `keep` the generics that stay
+# erased whatever their calls.
+fn monomorphize_ext(tp: TProgram, ext: &TProgram, keep: &List[String], errs: &mut List[String]) -> TProgram ! alloc
+    if sp_count_generic(&tp.fns, keep, 0, tp.fns.len(), 0) == 0
+        tp
+    elsif errs.len() > 0
+        tp
+    elsif sp_infer_ok(&tp, ext) == 0
+        # A program that does not type-check as written keeps its errors for the regular inference.
+        tp
+    else
+        erased = tc_strs(keep)
+        sp_attempts(tp, ext, &mut erased, errs, 0)
+
+fn sp_attempts(tp: TProgram, ext: &TProgram, erased: &mut List[String], errs: &mut List[String], k: Int) -> TProgram ! alloc
+    if k > 64
+        tp
+    else
+        out = List.new[String]()
+        # A copy field by field (as `sp_union` makes it): the whole-struct `clone` of a
+        # `TProgram` leaves one enum box behind under `--instrument`.
+        none = sp_empty_program()
+        p = sp_run(sp_union(&tp, &none), ext, erased, errs, &mut out)
+        if errs.len() > 0
+            tp
+        elsif out.len() == 0
+            p
+        elsif sp_has(erased, &out.get(0)) == 1
+            tp
+        else
+            erased.push(out.get(0).dup())
+            sp_attempts(tp, ext, erased, errs, k + 1)
+
+fn sp_count_generic(fns: &List[TFn], erased: &List[String], i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    elsif sp_is_generic(&fns.get(i), erased) == 1
+        sp_count_generic(fns, erased, i + 1, n, acc + 1)
+    else
+        sp_count_generic(fns, erased, i + 1, n, acc)
+
+fn sp_is_generic(f: &TFn, erased: &List[String]) -> Int ! alloc
+    tps = tg_type_params(&f.tparams)
+    if tps.len() == 0
+        0
+    elsif sp_has(erased, &f.name) == 1
+        0
+    else
+        1
+
+fn sp_has(xs: &List[String], s: &String) -> Int ! alloc
+    sp_has_go(xs, s, 0, xs.len())
+
+fn sp_has_go(xs: &List[String], s: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif xs.get(i).eq(s) == 1
+        1
+    else
+        sp_has_go(xs, s, i + 1, n)
+
+# ---- inference ----
+# The program seen by inference: the other modules' items first, then this module's.
+fn sp_union(tp: &TProgram, ext: &TProgram) -> TProgram ! alloc
+    fns = ext.fns.clone()
+    sp_append_fns(&mut fns, &tp.fns, 0, tp.fns.len())
+    structs = ext.structs.clone()
+    sp_append_structs(&mut structs, &tp.structs, 0, tp.structs.len())
+    enums = ext.enums.clone()
+    sp_append_enums(&mut enums, &tp.enums, 0, tp.enums.len())
+    imports = ext.imports.clone()
+    sp_append_strs(&mut imports, &tp.imports, 0, tp.imports.len())
+    TProgram(fns, imports, structs, tp.aliases.clone(), enums, tp.protocols.clone(), tp.consts.clone())
+
+fn sp_append_fns(dst: &mut List[TFn], src: &List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        x = src.get(i)
+        dst.push(x.clone())
+        sp_append_fns(dst, src, i + 1, n)
+
+fn sp_append_structs(dst: &mut List[TStruct], src: &List[TStruct], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        x = src.get(i)
+        dst.push(x.clone())
+        sp_append_structs(dst, src, i + 1, n)
+
+fn sp_append_enums(dst: &mut List[TEnum], src: &List[TEnum], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        x = src.get(i)
+        dst.push(x.clone())
+        sp_append_enums(dst, src, i + 1, n)
+
+fn sp_append_strs(dst: &mut List[String], src: &List[String], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        dst.push(src.get(i).dup())
+        sp_append_strs(dst, src, i + 1, n)
+
+fn sp_infer_ok(tp: &TProgram, ext: &TProgram) -> Int ! alloc
+    u = sp_union(tp, ext)
+    c = ic_build(&u, 0, 0)
+    start = ext.fns.len()
+    r = infer_program_go(&mut c, start, start + tp.fns.len())
+    if result_is_err(&r) == 1
+        0
+    else
+        1
+
+# ---- one attempt ----
+# Returns the specialized program, or puts in `erase` the generic that has to stay erased.
+fn sp_run(tp: TProgram, ext: &TProgram, erased: &List[String], errs: &mut List[String], erase: &mut List[String]) -> TProgram ! alloc
+    copies = List.new[String]()
+    sp_rounds(tp, ext, erased, &mut copies, errs, erase, 0)
+
+# `copies` holds `callee \t type… \t name` for each copy made.
+fn sp_rounds(tp: TProgram, ext: &TProgram, erased: &List[String], copies: &mut List[String], errs: &mut List[String], erase: &mut List[String], k: Int) -> TProgram ! alloc
+    if k > 256
+        tp
+    else
+        u = sp_union(&tp, ext)
+        c = ic_build(&u, 0, 0)
+        start = ext.fns.len()
+        r = infer_program_go(&mut c, start, start + tp.fns.len())
+        if result_is_err(&r) == 1
+            # A copy that does not type-check is an error of that instantiation.
+            errs.push(result_err_text(&r))
+            tp
+        else
+            recs = sp_sorted(&c.gcalls)
+            renames = List.new[String]()
+            news = List.new[TFn]()
+            bad = sp_collect(&tp, erased, &recs, 0, recs.len(), copies, &mut renames, &mut news)
+            if bad.len() > 0
+                erase.push(bad)
+                tp
+            elsif renames.len() == 0 && news.len() == 0
+                sp_drop_generics(tp, erased)
+            else
+                tp2 = sp_rename_program(tp, &renames)
+                tp3 = sp_place_copies(tp2, &news, 0, news.len())
+                sp_rounds(tp3, ext, erased, copies, errs, erase, k + 1)
+
+fn result_err_text(r: &Res) -> String ! alloc
+    r.err.dup()
+
+# Goes through the records; returns the name of a generic with an unspecializable call, or "".
+fn sp_collect(tp: &TProgram, erased: &List[String], recs: &List[String], i: Int, n: Int, copies: &mut List[String], renames: &mut List[String], news: &mut List[TFn]) -> String ! alloc
+    if i >= n
+        ""
+    else
+        fields = sp_split_tabs(&recs.get(i))
+        caller = fields.get(0)
+        callee = fields.get(2)
+        gi = sp_fn_index(&tp.fns, &callee, 0, tp.fns.len())
+        if gi < 0
+            sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
+        elsif sp_is_generic(&tp.fns.get(gi), erased) == 0
+            sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
+        elsif sp_caller_is_generic(tp, &caller, erased) == 1
+            # Inside a generic original, which goes away.
+            sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
+        else
+            vals = sp_tail(&fields, 3)
+            if sp_any_empty(&vals, 0) == 1
+                callee.dup()
+            else
+                name = sp_copy_for(tp, &tp.fns.get(gi), &vals, copies, news)
+                renames.push(caller + "\t" + fields.get(1) + "\t" + callee + "\t" + name)
+                sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
+
+fn sp_caller_is_generic(tp: &TProgram, caller: &String, erased: &List[String]) -> Int ! alloc
+    fi = sp_fn_index(&tp.fns, caller, 0, tp.fns.len())
+    if fi < 0
+        0
+    else
+        sp_is_generic(&tp.fns.get(fi), erased)
+
+fn sp_fn_index(fns: &List[TFn], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif fns.get(i).name.eq(name) == 1
+        i
+    else
+        sp_fn_index(fns, name, i + 1, n)
+
+fn sp_any_empty(xs: &List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif xs.get(i).len() == 0
+        1
+    else
+        sp_any_empty(xs, i + 1)
+
+# The name of the copy of `g` for `vals`, making it when it does not exist yet.
+fn sp_copy_for(tp: &TProgram, g: &TFn, vals: &List[String], copies: &mut List[String], news: &mut List[TFn]) -> String ! alloc
+    key = sp_join(vals, 0, g.name.dup())
+    found = sp_copy_lookup(copies, &key, 0, copies.len())
+    if found.len() > 0
+        found
+    else
+        name = sp_free_name(tp, news, tg_copy_name(&g.name, vals))
+        copies.push(key + "\t" + name)
+        news.push(sp_instantiate(g, &name, vals))
+        name
+
+fn sp_join(xs: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= xs.len()
+        acc
+    else
+        sp_join(xs, i + 1, acc + "\t" + tg_mangle(&xs.get(i)))
+
+fn sp_copy_lookup(copies: &List[String], key: &String, i: Int, n: Int) -> String ! alloc
+    if i >= n
+        ""
+    else
+        e = copies.get(i)
+        k = key.len()
+        head = e.slice(0, sp_min(k, e.len()))
+        if e.len() > k && head.eq(key) == 1 && e.char(k) == 9
+            e.slice(k + 1, e.len())
+        else
+            sp_copy_lookup(copies, key, i + 1, n)
+
+# `name`, with `_` appended while some fn (or a copy about to be added) already has it.
+fn sp_free_name(tp: &TProgram, news: &List[TFn], name: String) -> String ! alloc
+    if sp_fn_index(&tp.fns, &name, 0, tp.fns.len()) >= 0 || sp_fn_index(news, &name, 0, news.len()) >= 0
+        sp_free_name(tp, news, name + "_")
+    else
+        name
+
+# ---- copies ----
+fn sp_instantiate(g: &TFn, name: &String, vals: &List[String]) -> TFn ! alloc
+    tps = tg_type_params(&g.tparams)
+    TFn(name.dup(), sp_params(&g.params, &tps, vals), sp_block(&g.body, &tps, vals, 0, &"", &""), tg_subst(&g.ret, &tps, vals), g.no_heap, g.arena, g.fx.clone(), sp_lifetimes(&g.tparams), g.recv.dup(), g.mkind, g.deprecated.dup(), g.tyat.dup())
+
+fn sp_lifetimes(tparams: &List[String]) -> List[String] ! alloc
+    out = List.new[String]()
+    sp_lifetimes_go(tparams, 0, &mut out)
+    out
+
+fn sp_lifetimes_go(xs: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        t = xs.get(i)
+        if t.len() > 0 && t.char(0) == 39
+            out.push(t.dup())
+        sp_lifetimes_go(xs, i + 1, out)
+
+fn sp_params(ps: &List[TParam], tps: &List[String], vals: &List[String]) -> List[TParam] ! alloc
+    out = List.new[TParam]()
+    sp_params_go(ps, 0, tps, vals, &mut out)
+    out
+
+fn sp_params_go(ps: &List[TParam], i: Int, tps: &List[String], vals: &List[String], out: &mut List[TParam]) -> Int ! alloc
+    if i >= ps.len()
+        0
+    else
+        p = ps.get(i)
+        out.push(TParam(p.name.dup(), tg_subst(&p.ty, tps, vals), p.mode))
+        sp_params_go(ps, i + 1, tps, vals, out)
+
+# ---- the tree walk ----
+# A deep copy of a body that substitutes the type parameters `tps` (in `let` types and type
+# arguments) and renames the call at offset `at` from `from` to `to` (`at` 0: no rename).
+fn sp_block(b: &TBlock, tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String) -> TBlock ! alloc
+    out = List.new[TStmt]()
+    sp_stmts(&b.stmts, 0, tps, vals, at, from, dst, &mut out)
+    TBlock(out, sp_expr(&b.tail, tps, vals, at, from, dst))
+
+fn sp_stmts(xs: &List[TStmt], i: Int, tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String, out: &mut List[TStmt]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        out.push(TStmt(s.kind, s.name.dup(), sp_expr(&s.expr, tps, vals, at, from, dst), sp_ty(&s.ty, tps, vals), s.is_let, sp_expr(&s.target, tps, vals, at, from, dst), s.frozen, s.stack, s.id))
+        sp_stmts(xs, i + 1, tps, vals, at, from, dst, out)
+
+fn sp_ty(t: &String, tps: &List[String], vals: &List[String]) -> String ! alloc
+    if tps.len() == 0 || t.len() == 0
+        t.dup()
+    else
+        tg_subst(t, tps, vals)
+
+fn sp_exprs(xs: &List[Expr], i: Int, tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String, out: &mut List[Expr]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(sp_expr(&xs.get(i), tps, vals, at, from, dst))
+        sp_exprs(xs, i + 1, tps, vals, at, from, dst, out)
+
+fn sp_expr(e: &Expr, tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String) -> Expr ! alloc
+    match e
+        XCall(name, args, targs, xp) => sp_call(&name, &args, &targs, xp, tps, vals, at, from, dst)
+        XBin(op, l, r) => XBin(op.dup(), sp_expr(&l, tps, vals, at, from, dst), sp_expr(&r, tps, vals, at, from, dst))
+        XTo(place, inner) => XTo(place.dup(), sp_expr(&inner, tps, vals, at, from, dst))
+        XOn(place, body, kern, idx) => XOn(place.dup(), sp_block(&body, tps, vals, at, from, dst), kern, idx)
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(sp_expr(&cond, tps, vals, at, from, dst), sp_block(&then_b, tps, vals, at, from, dst), sp_block(&else_b, tps, vals, at, from, dst), has_else, sp_elsifs(&elsifs, tps, vals, at, from, dst))
+        XWhile(cond, body) => XWhile(sp_expr(&cond, tps, vals, at, from, dst), sp_block(&body, tps, vals, at, from, dst))
+        XField(base, field) => XField(sp_expr(&base, tps, vals, at, from, dst), field.dup())
+        XLambda(param, body) => XLambda(param.dup(), sp_expr(&body, tps, vals, at, from, dst))
+        XUnary(op, inner) => XUnary(op.dup(), sp_expr(&inner, tps, vals, at, from, dst))
+        XMatch(scrut, arms) => XMatch(sp_expr(&scrut, tps, vals, at, from, dst), sp_arms(&arms, tps, vals, at, from, dst))
+        XTry(inner) => XTry(sp_expr(&inner, tps, vals, at, from, dst))
+        _ => tc_expr(e)
+
+fn sp_call(name: &String, args: &List[Expr], targs: &String, xp: Int, tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String) -> Expr ! alloc
+    nargs = List.new[Expr]()
+    sp_exprs(args, 0, tps, vals, at, from, dst, &mut nargs)
+    if at > 0 && xp == at && name.eq(from) == 1
+        XCall(dst.dup(), nargs, sp_ty(targs, tps, vals), xp)
+    else
+        XCall(name.dup(), nargs, sp_ty(targs, tps, vals), xp)
+
+fn sp_elsifs(xs: &List[TElsif], tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    sp_elsifs_go(xs, 0, tps, vals, at, from, dst, &mut out)
+    out
+
+fn sp_elsifs_go(xs: &List[TElsif], i: Int, tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String, out: &mut List[TElsif]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        out.push(TElsif(sp_expr(&a.cond, tps, vals, at, from, dst), sp_block(&a.body, tps, vals, at, from, dst)))
+        sp_elsifs_go(xs, i + 1, tps, vals, at, from, dst, out)
+
+fn sp_arms(xs: &List[TArm], tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String) -> List[TArm] ! alloc
+    out = List.new[TArm]()
+    sp_arms_go(xs, 0, tps, vals, at, from, dst, &mut out)
+    out
+
+fn sp_arms_go(xs: &List[TArm], i: Int, tps: &List[String], vals: &List[String], at: Int, from: &String, dst: &String, out: &mut List[TArm]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        out.push(TArm(tc_pat(&a.pat), sp_expr(&a.body, tps, vals, at, from, dst), sp_block(&a.suite, tps, vals, at, from, dst), a.has_suite))
+        sp_arms_go(xs, i + 1, tps, vals, at, from, dst, out)
+
+# ---- renames and placement ----
+# Each rename is `caller \t offset \t callee \t copy`; they apply one after the other.
+fn sp_rename_program(tp: TProgram, renames: &List[String]) -> TProgram ! alloc
+    fns = List.new[TFn]()
+    sp_rename_fns(&tp.fns, 0, renames, &mut fns)
+    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+
+fn sp_rename_fns(xs: &List[TFn], i: Int, renames: &List[String], out: &mut List[TFn]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        x = xs.get(i)
+        out.push(sp_rename_fn(x.clone(), renames, 0))
+        sp_rename_fns(xs, i + 1, renames, out)
+
+fn sp_rename_fn(f: TFn, renames: &List[String], k: Int) -> TFn ! alloc
+    if k >= renames.len()
+        f
+    else
+        r = sp_split_tabs(&renames.get(k))
+        if r.get(0).eq(&f.name) == 1
+            none = List.new[String]()
+            body = sp_block(&f.body, &none, &none, sp_atoi(&r.get(1), 0, 0), &r.get(2), &r.get(3))
+            g = TFn(f.name.dup(), f.params.clone(), body, f.ret.dup(), f.no_heap, f.arena, f.fx.clone(), f.tparams.clone(), f.recv.dup(), f.mkind, f.deprecated.dup(), f.tyat.dup())
+            sp_rename_fn(g, renames, k + 1)
+        else
+            sp_rename_fn(f, renames, k + 1)
+
+# Each copy goes right after its generic and the copies of it made before.
+fn sp_place_copies(tp: TProgram, news: &List[TFn], i: Int, n: Int) -> TProgram ! alloc
+    if i >= n
+        tp
+    else
+        nf = news.get(i)
+        callee = sp_copy_base(&nf.name)
+        pos = sp_last_of(&tp.fns, &callee, 0, tp.fns.len(), 0 - 1)
+        at = sp_after(pos, tp.fns.len())
+        fns = List.new[TFn]()
+        sp_insert(&tp.fns, 0, at, &nf, &mut fns)
+        tp2 = TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+        sp_place_copies(tp2, news, i + 1, n)
+
+fn sp_after(pos: Int, n: Int) -> Int ! alloc
+    if pos < 0
+        n
+    else
+        pos + 1
+
+# The generic a copy comes from: its name up to the last `__`.
+fn sp_copy_base(name: &String) -> String ! alloc
+    sp_copy_base_go(name, name.len() - 2)
+
+fn sp_copy_base_go(name: &String, i: Int) -> String ! alloc
+    if i < 0
+        name.dup()
+    elsif name.char(i) == 95 && name.char(i + 1) == 95
+        name.slice(0, i)
+    else
+        sp_copy_base_go(name, i - 1)
+
+fn sp_last_of(fns: &List[TFn], callee: &String, i: Int, n: Int, acc: Int) -> Int ! alloc
+    if i >= n
+        acc
+    else
+        nm = fns.get(i).name.dup()
+        prefix = callee + "__"
+        head = nm.slice(0, sp_min(prefix.len(), nm.len()))
+        if nm.eq(callee) == 1 || (nm.len() > prefix.len() && head.eq(&prefix) == 1)
+            sp_last_of(fns, callee, i + 1, n, i)
+        else
+            sp_last_of(fns, callee, i + 1, n, acc)
+
+fn sp_insert(xs: &List[TFn], i: Int, at: Int, nf: &TFn, out: &mut List[TFn]) -> Int ! alloc
+    if i == at
+        out.push(nf.clone())
+    if i >= xs.len()
+        0
+    else
+        out.push(xs.get(i).clone())
+        sp_insert(xs, i + 1, at, nf, out)
+
+fn sp_drop_generics(tp: TProgram, erased: &List[String]) -> TProgram ! alloc
+    fns = List.new[TFn]()
+    sp_keep_fns(&tp.fns, 0, erased, &mut fns)
+    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+
+fn sp_keep_fns(xs: &List[TFn], i: Int, erased: &List[String], out: &mut List[TFn]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        f = xs.get(i)
+        if sp_is_generic(&f, erased) == 0
+            out.push(f.clone())
+        sp_keep_fns(xs, i + 1, erased, out)
+
+# ---- records ----
+fn sp_split_tabs(s: &String) -> List[String] ! alloc
+    out = List.new[String]()
+    sp_split_go(s, 0, 0, &mut out)
+    out
+
+fn sp_split_go(s: &String, i: Int, start: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= s.len()
+        out.push(s.slice(start, s.len()))
+        0
+    elsif s.char(i) == 9
+        out.push(s.slice(start, i))
+        sp_split_go(s, i + 1, i + 1, out)
+    else
+        sp_split_go(s, i + 1, start, out)
+
+fn sp_tail(xs: &List[String], from: Int) -> List[String] ! alloc
+    out = List.new[String]()
+    sp_tail_go(xs, from, &mut out)
+    out
+
+fn sp_tail_go(xs: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(xs.get(i).dup())
+        sp_tail_go(xs, i + 1, out)
+
+# The records ordered by caller (bytewise) and then by offset, as src/specialize.rs orders its keys.
+fn sp_sorted(recs: &List[String]) -> List[String] ! alloc
+    out = List.new[String]()
+    sp_sort_go(recs, 0, &mut out)
+    out
+
+fn sp_sort_go(recs: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= recs.len()
+        0
+    else
+        r = recs.get(i).dup()
+        pos = sp_sort_pos(out, &r, 0, out.len())
+        rest = List.new[String]()
+        sp_move_from(out, pos, &mut rest)
+        out.push(r)
+        sp_append_strs(out, &rest, 0, rest.len())
+        sp_sort_go(recs, i + 1, out)
+
+# The first position whose record goes after `r`.
+fn sp_sort_pos(xs: &List[String], r: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        n
+    elsif sp_rec_less(r, &xs.get(i)) == 1
+        i
+    else
+        sp_sort_pos(xs, r, i + 1, n)
+
+# Pops the records from `pos` on into `rest`, keeping their order.
+fn sp_move_from(xs: &mut List[String], pos: Int, rest: &mut List[String]) -> Int ! alloc
+    tmp = List.new[String]()
+    sp_pop_into(xs, pos, &mut tmp)
+    sp_reverse_into(&tmp, tmp.len() - 1, rest)
+
+fn sp_pop_into(xs: &mut List[String], pos: Int, tmp: &mut List[String]) -> Int ! alloc
+    if xs.len() <= pos
+        0
+    else
+        tmp.push(xs.pop())
+        sp_pop_into(xs, pos, tmp)
+
+fn sp_reverse_into(tmp: &List[String], i: Int, rest: &mut List[String]) -> Int ! alloc
+    if i < 0
+        0
+    else
+        rest.push(tmp.get(i).dup())
+        sp_reverse_into(tmp, i - 1, rest)
+
+fn sp_rec_less(a: &String, b: &String) -> Int ! alloc
+    fa = sp_split_tabs(a)
+    fb = sp_split_tabs(b)
+    c = sp_str_cmp(&fa.get(0), &fb.get(0), 0)
+    if c != 0
+        if c < 0
+            1
+        else
+            0
+    elsif sp_atoi(&fa.get(1), 0, 0) < sp_atoi(&fb.get(1), 0, 0)
+        1
+    else
+        0
+
+# Bytewise comparison: negative, zero or positive.
+fn sp_str_cmp(a: &String, b: &String, i: Int) -> Int ! alloc
+    if i >= a.len() && i >= b.len()
+        0
+    elsif i >= a.len()
+        0 - 1
+    elsif i >= b.len()
+        1
+    elsif a.char(i) != b.char(i)
+        a.char(i) - b.char(i)
+    else
+        sp_str_cmp(a, b, i + 1)
+
+# ---- module graph ----
+# Names called directly anywhere in the functions `fns`.
+fn sp_called_names(fns: &List[TFn], out: &mut List[String]) -> Int ! alloc
+    sp_called_fns(fns, 0, out)
+
+fn sp_called_fns(fns: &List[TFn], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        sp_called_block(&fns.get(i).body, out)
+        sp_called_fns(fns, i + 1, out)
+
+fn sp_called_block(b: &TBlock, out: &mut List[String]) -> Int ! alloc
+    sp_called_stmts(&b.stmts, 0, out)
+    sp_called_expr(&b.tail, out)
+
+fn sp_called_stmts(xs: &List[TStmt], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        st = xs.get(i)
+        sp_called_expr(&st.expr, out)
+        sp_called_expr(&st.target, out)
+        sp_called_stmts(xs, i + 1, out)
+
+fn sp_called_exprs(xs: &List[Expr], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        sp_called_expr(&xs.get(i), out)
+        sp_called_exprs(xs, i + 1, out)
+
+fn sp_called_expr(e: &Expr, out: &mut List[String]) -> Int ! alloc
+    match e
+        XCall(name, args, _, _) => sp_called_call(&name, &args, out)
+        XBin(_, l, r) => sp_called_pair(&l, &r, out)
+        XTo(_, inner) => sp_called_expr(&inner, out)
+        XOn(_, body, _, _) => sp_called_block(&body, out)
+        XIf(cond, then_b, else_b, _, elsifs) => sp_called_if(&cond, &then_b, &else_b, &elsifs, out)
+        XWhile(cond, body) => sp_called_while(&cond, &body, out)
+        XField(base, _) => sp_called_expr(&base, out)
+        XLambda(_, body) => sp_called_expr(&body, out)
+        XUnary(_, inner) => sp_called_expr(&inner, out)
+        XMatch(scrut, arms) => sp_called_match(&scrut, &arms, out)
+        XTry(inner) => sp_called_expr(&inner, out)
+        _ => 0
+
+fn sp_called_call(name: &String, args: &List[Expr], out: &mut List[String]) -> Int ! alloc
+    if sp_has(out, name) == 0
+        out.push(name.dup())
+    sp_called_exprs(args, 0, out)
+
+fn sp_called_pair(l: &Expr, r: &Expr, out: &mut List[String]) -> Int ! alloc
+    sp_called_expr(l, out)
+    sp_called_expr(r, out)
+
+fn sp_called_while(cond: &Expr, body: &TBlock, out: &mut List[String]) -> Int ! alloc
+    sp_called_expr(cond, out)
+    sp_called_block(body, out)
+
+fn sp_called_if(cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], out: &mut List[String]) -> Int ! alloc
+    sp_called_expr(cond, out)
+    sp_called_block(then_b, out)
+    sp_called_block(else_b, out)
+    sp_called_elsifs(elsifs, 0, out)
+
+fn sp_called_elsifs(xs: &List[TElsif], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        sp_called_expr(&a.cond, out)
+        sp_called_block(&a.body, out)
+        sp_called_elsifs(xs, i + 1, out)
+
+fn sp_called_match(scrut: &Expr, arms: &List[TArm], out: &mut List[String]) -> Int ! alloc
+    sp_called_expr(scrut, out)
+    sp_called_arms(arms, 0, out)
+
+fn sp_called_arms(xs: &List[TArm], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        sp_called_expr(&a.body, out)
+        if a.has_suite == 1
+            sp_called_block(&a.suite, out)
+        sp_called_arms(xs, i + 1, out)
+
+fn sp_min(a: Int, b: Int) -> Int ! alloc
+    if a < b
+        a
+    else
+        b
+
+# Decimal digits of `s` from `i` on.
+fn sp_atoi(s: &String, i: Int, acc: Int) -> Int ! alloc
+    if i >= s.len()
+        acc
+    else
+        sp_atoi(s, i + 1, acc * 10 + s.char(i) - 48)

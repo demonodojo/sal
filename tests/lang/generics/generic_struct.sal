@@ -1,5 +1,4 @@
 # exit: 6
-# asan-xfail: struct/enum devuelto por una función de usuario y consumido en main no se libera
 struct P
     a: Int
     b: Int

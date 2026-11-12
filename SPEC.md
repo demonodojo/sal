@@ -328,7 +328,13 @@ parallel_expr → "parallel" suite
 | `Tensor[Elem, dims…] on lugar` | `Elem` ∈ F32, F16, BF16, I8; `?` eje dinámico |
 | structs, enums | |
 | `any[P]` | heap; `P` es un protocolo; despacho dinámico solo a través de este tipo |
-| genéricos | monomorfización |
+| genéricos | monomorfización («Genéricos») |
+
+### Genéricos
+
+Una `fn` con parámetros de tipo (`fn f[T](x: T) -> T`) se comprueba una vez con los parámetros de tipo borrados, y además se **monomorfiza**. Cada llamada cuyos argumentos fijan todos los parámetros de tipo a tipos concretos llama a una copia propia, `f__<tipos>`, con los tipos sustituidos en la firma, en las anotaciones de `let` y en los argumentos de tipo del cuerpo (`List.new[T]()`). Los tipos de la copia van en el orden de los parámetros de tipo y unidos por `_`: `first[A, B]` con `Int` y `String` es `first__Int_String`; `List[Int]` se escribe `List_Int`, `&T` `ref_T` y `&mut T` `mut_T`. El tipo de la llamada es el retorno con los tipos fijados (`pair(d"a", d"b")` con `-> List[T]` es `List[String]`). Una genérica que llama a otra fija los tipos de la segunda en cada copia. La copia se comprueba como cualquier función: si el cuerpo no vale para esos tipos, es el error de esa copia (`x + 1` con `T` = `String` es `E_TYPE`). La genérica original no se baja.
+
+Sigue borrada, con un solo cuerpo para todos los tipos, la genérica que tiene alguna llamada sin todos los tipos fijados (un argumento de tipo desconocido, un tensor) o que se llama desde otro módulo. Los `struct` y `enum` genéricos no se monomorfizan en este corte.
 
 ### Protocolos
 

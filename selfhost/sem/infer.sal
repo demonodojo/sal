@@ -10,6 +10,7 @@ import "../ast/thash.sal"
 import "../ast/tytext.sal"
 import protocols
 import consteval
+import "../ast/tygeneric.sal"
 
 # `env` binds names to type texts; `err` is empty or holds the first message; `ret` and `allow`
 # are one-slot cells (the fn's declared return type and whether `return` is allowed); `sigs`
@@ -36,6 +37,11 @@ struct IC
     structs: List[TStruct]
     cur_fx: List[Int]
     cvals: List[CVal]
+    # Calls to a generic fn (see `ic_record_generic`), for `specialize.sal`.
+    gcalls: List[String]
+    # One-slot cells: the fn being inferred and the byte offset of the call being inferred.
+    cur: List[String]
+    xp: List[Int]
 
 fn ic_new(tp: &TProgram) -> IC ! alloc
     ic_build(tp, 0, 0)
@@ -65,7 +71,17 @@ fn ic_build_vals(tp: &TProgram, nres: Int, rec: Int, vals: List[CVal]) -> IC ! a
     _e = infer_names_enums(&mut names, &mut arity, &mut vtab, &mut tnames, &tp.enums, 0, list_len(&tp.enums))
     _t = infer_type_names_structs(&mut tnames, &tp.structs, 0, list_len(&tp.structs))
     imports = list_len(&tp.imports)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals)
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals, List.new[String](), ic_cell_str(), ic_cell_int())
+
+fn ic_cell_str() -> List[String] ! alloc
+    xs = List.new[String]()
+    xs.push("")
+    xs
+
+fn ic_cell_int() -> List[Int] ! alloc
+    xs = List.new[Int]()
+    xs.push(0)
+    xs
 
 # Kept for call sites that used to drain an `IC` by hand. `drop.IC` (and nested
 # `drop.HT` / `drop.TEnv`) already releases every list and heap box when the owned
@@ -550,6 +566,11 @@ fn infer_record(c: &mut IC, id: &String, val: &String) -> Int ! alloc
         0
     else
         c.res.put(id, val)
+
+# Notes where the call is, for the record of a generic call (`ic_record_generic`).
+fn infer_call_at(c: &mut IC, name: &String, args: &List[Expr], targs: &String, xp: Int) -> String ! alloc
+    c.xp.set(0, xp)
+    infer_call_t(c, name, args, targs)
 
 fn infer_call_t(c: &mut IC, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
     p = mth_dot(name, 0, str_len(name))
@@ -1179,6 +1200,7 @@ fn infer_t_dict_val_ok(c: &mut IC, tys: &List[String], v: &String) -> Int ! allo
         0
 
 fn infer_user_call(c: &mut IC, name: &String, f: &TFn, args: &List[Expr], tys: &mut List[String]) -> String ! alloc
+    at = c.xp.get(0)
     if list_len(args) != list_len(&f.params)
         _a = infer_args(c, args, 0, list_len(args), tys)
         _f = ic_fail(c, &("function `" + name + "` expects " + int_to_str(list_len(&f.params)) + " argument(s), found " + int_to_str(list_len(args))))
@@ -1186,10 +1208,45 @@ fn infer_user_call(c: &mut IC, name: &String, f: &TFn, args: &List[Expr], tys: &
     else
         _a = infer_args(c, args, 0, list_len(args), tys)
         _b = infer_user_args(c, name, &f.params, tys, 0, list_len(args))
+        tps = tg_type_params(&f.tparams)
         if str_len(f.ret) == 0
             "Unknown"
+        elsif tps.len() > 0
+            ic_record_generic(c, f, &tps, tys, at)
         else
             f.ret.dup()
+
+# A call to a generic fn: records `caller \t offset \t callee \t type…` (a type is "" when the
+# arguments do not fix it to a concrete one) and returns the result with the bound types.
+fn ic_record_generic(c: &mut IC, f: &TFn, tps: &List[String], tys: &List[String], at: Int) -> String ! alloc
+    vals = List.new[String]()
+    ic_fill_empty(&mut vals, tps.len())
+    ic_bind_params(&f.params, tys, 0, f.params.len(), tps, &mut vals)
+    rec = c.cur.get(0) + "\t" + at.to_str() + "\t" + f.name
+    c.gcalls.push(ic_join_concrete(&vals, 0, rec))
+    tg_subst(&f.ret, tps, &vals)
+
+fn ic_fill_empty(xs: &mut List[String], n: Int) -> Int ! alloc
+    if n <= 0
+        0
+    else
+        xs.push("")
+        ic_fill_empty(xs, n - 1)
+
+fn ic_bind_params(ps: &List[TParam], tys: &List[String], i: Int, n: Int, tps: &List[String], vals: &mut List[String]) -> Int ! alloc
+    if i >= n || i >= tys.len()
+        0
+    else
+        tg_bind(&ps.get(i).ty, &tys.get(i), tps, vals)
+        ic_bind_params(ps, tys, i + 1, n, tps, vals)
+
+fn ic_join_concrete(vals: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= vals.len()
+        acc
+    elsif tg_concrete(&vals.get(i)) == 1
+        ic_join_concrete(vals, i + 1, acc + "\t" + vals.get(i))
+    else
+        ic_join_concrete(vals, i + 1, acc + "\t")
 
 # Builtins typed here take priority over the older cases below.
 fn infer_builtin_call(c: &mut IC, name: &String, args: &List[Expr], tys: &List[String], targs: &String) -> String ! alloc
@@ -2056,7 +2113,7 @@ fn infer_expr_go(c: &mut IC, e: &Expr) -> String ! alloc
         XIdent(name) => infer_ident(c, &name)
         XBin(op, l, r) => infer_binary(c, &op, &l, &r)
         XUnary(op, inner) => infer_unary(c, &op, &inner)
-        XCall(name, args, targs, xp) => infer_call_t(c, &name, &args, &targs)
+        XCall(name, args, targs, xp) => infer_call_at(c, &name, &args, &targs, xp)
         XField(base, field) => infer_field(c, &base, &field)
         XIf(cond, then_b, else_b, has_else, elsifs) => infer_if(c, &cond, &then_b, &else_b, has_else, &elsifs)
         XTo(place, inner) => infer_expr(c, &inner)
@@ -2374,6 +2431,7 @@ fn infer_missing_value(c: &mut IC, ret: &String) -> Int ! alloc
 
 fn infer_fn(c: &mut IC, f: &TFn) -> Res ! alloc
     _r = ic_reset(c)
+    c.cur.set(0, f.name.dup())
     _fx = ic_load_fx(c, &f.fx)
     _s = infer_seed(c, &f.params, 0, list_len(&f.params))
     _e = infer_check_elem(c, &f.ret)

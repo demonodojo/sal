@@ -1,0 +1,7 @@
+# error: E_TYPE
+fn inc[T](x: T) -> T
+    x + 1
+
+fn main() -> Int ! alloc
+    s = inc(d"a")
+    0

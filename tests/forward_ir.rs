@@ -348,3 +348,23 @@ fn f(s: String) -> Int
         "regex arms use sal_regex_match:\n{text}"
     );
 }
+
+/// SPEC «Genéricos»: each call that fixes the type parameters calls its own copy,
+/// `pair__String` / `pair__Int`, with the element type known inside (`"+s"`: the list owns its `String`s; `"i"`).
+/// The generic original is not lowered.
+#[test]
+fn generic_fn_is_monomorphized_per_type() {
+    let src = "fn pair[T](a: T, b: T) -> List[T] ! alloc\n    xs = List.new[T]()\n    xs.push(a)\n    xs.push(b)\n    xs\n\nfn main() -> Int ! alloc\n    ys = pair(d\"ab\", d\"cde\")\n    ns = pair(1, 10)\n    ys.len() + ns.len()\n";
+    let mut p = parse(src).expect("parse");
+    sal_compiler::methods::prepare_program(&mut p).expect("prepare");
+    let text = ir_to_text(&lower_program(&p));
+    let fns: Vec<&str> = text.lines().filter(|l| l.starts_with("fn ")).collect();
+    assert_eq!(fns, vec!["fn pair__String:", "fn pair__Int:", "fn main:"], "{text}");
+    let body = |name: &str| -> String {
+        text.split(&format!("fn {name}:\n")).nth(1).unwrap().split("\nfn ").next().unwrap().to_string()
+    };
+    assert!(body("pair__String").contains(r#"ConstString { dest: "t2", value: "+s" }"#), "{text}");
+    assert!(body("pair__Int").contains(r#"ConstString { dest: "t2", value: "i" }"#), "{text}");
+    assert!(body("main").contains(r#"func: "pair__String""#), "{text}");
+    assert!(body("main").contains(r#"func: "pair__Int""#), "{text}");
+}

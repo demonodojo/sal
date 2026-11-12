@@ -114,7 +114,33 @@ pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGr
     };
     crate::qualify::qualify_module_graph(&mut graph)?;
     resolve_graph_methods(&mut graph)?;
+    monomorphize_graph(&mut graph)?;
     Ok(graph)
+}
+
+/// `specialize::monomorphize` per module. A generic called from another module stays
+/// erased: its copies would have to live in the caller's module.
+fn monomorphize_graph(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnostic>> {
+    let called: Vec<HashSet<String>> =
+        graph.order.iter().map(|m| crate::specialize::called_names(&m.program)).collect();
+    for i in 0..graph.order.len() {
+        let mut external: HashSet<String> = HashSet::new();
+        for (j, names) in called.iter().enumerate() {
+            if j != i {
+                external.extend(names.iter().cloned());
+            }
+        }
+        let mut prog = graph.order[i].program.clone();
+        let path = graph.order[i].path.clone();
+        let has_methods = graph.order[i].has_methods;
+        let g: &ModuleGraph = graph;
+        crate::specialize::monomorphize(&mut prog, &external, &|p: &Program| {
+            let m = LoadedModule { path: path.clone(), program: p.clone(), has_methods };
+            type_env_for_module(&m, g).ok()
+        })?;
+        graph.order[i].program = prog;
+    }
+    Ok(())
 }
 
 /// Rewrite `p.m(args)` to `T__m(p, args)` (or to the builtin, for `xs.push(v)`)

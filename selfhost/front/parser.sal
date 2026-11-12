@@ -5,6 +5,7 @@ import "../ast/tast.sal"
 import loops
 import "../sem/methods.sal"
 import "../sem/protocols.sal"
+import "../sem/specialize.sal"
 
 # Parser state: the token lists plus `st = [index, has_err, group depth, last statement id]` and `msg = [error text]`.
 # The lists are shared by every copy of the struct, so `list_set` on them is the mutation.
@@ -2003,9 +2004,9 @@ fn parse_program_methods(tp: TProgram, errs: &mut List[String], ndots: Int) -> T
         if list_len(errs) > 0
             tp
         elsif ndots > 0
-            prepare_methods(tp, ndots, errs)
+            monomorphize(prepare_methods(tp, ndots, errs), errs)
         else
-            tp
+            monomorphize(tp, errs)
 
 fn parse_program_raw(src: &String, errs: &mut List[String], flags: &mut List[Int]) -> TProgram ! alloc
     # Bind the lexer result: `parser_new(&lex(src))` would leak the temporary `Toks`

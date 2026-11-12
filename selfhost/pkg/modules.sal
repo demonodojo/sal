@@ -4,6 +4,7 @@ import "../front/lexer.sal"
 import "../front/parser.sal"
 import "../sem/methods.sal"
 import "../sem/infer.sal"
+import "../sem/specialize.sal"
 import "../sem/checks.sal"
 import "../ast/tast.sal"
 
@@ -775,3 +776,42 @@ fn union_enums(dst: &mut List[TEnum], src: &List[TEnum], i: Int, n: Int) -> Int 
     else
         _a = list_push(dst, list_get(src, i).clone())
         union_enums(dst, src, i + 1, n)
+
+# ---- monomorphization ----
+# `monomorphize_ext` per module, against the items of the other modules. A generic called from
+# another module stays erased: its copies would have to live in the caller's module. Mirror of
+# `monomorphize_graph` in src/modules.rs.
+fn monomorphize_graph(order: &mut Graph) -> Res ! alloc
+    errs = List.new[String]()
+    mono_modules(order, 0, order.progs.len(), &mut errs)
+    if errs.len() > 0
+        result_err_str(&errs.get(0))
+    else
+        result_ok(0)
+
+fn mono_modules(order: &mut Graph, i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= n || errs.len() > 0
+        0
+    else
+        keep = List.new[String]()
+        ext = sp_empty_program()
+        mono_others(&order.progs, i, 0, n, &mut keep, &mut ext)
+        none = sp_empty_program()
+        own = sp_union(&order.progs.get(i), &none)
+        tp = monomorphize_ext(own, &ext, &keep, errs)
+        order.progs.set(i, tp)
+        mono_modules(order, i + 1, n, errs)
+
+fn mono_others(progs: &List[TProgram], i: Int, k: Int, n: Int, keep: &mut List[String], ext: &mut TProgram) -> Int ! alloc
+    if k >= n
+        0
+    elsif k == i
+        mono_others(progs, i, k + 1, n, keep, ext)
+    else
+        tp = progs.get(k)
+        sp_called_names(&tp.fns, keep)
+        sp_append_fns(&mut ext.fns, &tp.fns, 0, tp.fns.len())
+        sp_append_structs(&mut ext.structs, &tp.structs, 0, tp.structs.len())
+        sp_append_enums(&mut ext.enums, &tp.enums, 0, tp.enums.len())
+        sp_append_strs(&mut ext.imports, &tp.imports, 0, tp.imports.len())
+        mono_others(progs, i, k + 1, n, keep, ext)

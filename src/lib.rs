@@ -27,6 +27,7 @@ pub mod parser;
 pub mod qualify;
 pub mod scalarize;
 pub mod span;
+pub mod specialize;
 pub mod som_export;
 pub mod string_expr;
 pub mod typed;

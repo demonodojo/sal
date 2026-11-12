@@ -39,7 +39,7 @@ fn resolve_module_graph_qualified(source_path: &String, proot: &String, order: &
             q
         else
             _m = methods_resolve_graph(order)
-            result_ok(0)
+            monomorphize_graph(order)
 
 fn emit_ir_from_prog(tp: &mut TProgram) -> String ! alloc
     _f = ce_prepare_one(tp)

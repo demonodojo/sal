@@ -44,6 +44,12 @@ pub struct TypeEnv {
     pub any_coercions: std::cell::RefCell<HashMap<(u32, u32), (String, String)>>,
     /// Constants visible in this module (own and imported), after qualify.
     pub consts: HashMap<String, crate::consteval::ConstValue>,
+    /// Calls to a generic fn seen while inferring, for `specialize::monomorphize`:
+    /// (calling fn, call span) → (callee, its type arguments in `type_params` order, or
+    /// `None` when some argument type is not concrete).
+    pub generic_calls: std::cell::RefCell<crate::specialize::GenericCalls>,
+    /// Name of the fn being inferred (the key of `generic_calls`).
+    pub current_fn: std::cell::RefCell<String>,
 }
 
 impl TypeEnv {
@@ -72,6 +78,8 @@ impl Default for TypeEnv {
             protocol_calls: Default::default(),
             any_coercions: Default::default(),
             consts: HashMap::new(),
+            generic_calls: Default::default(),
+            current_fn: Default::default(),
         }
     }
 }
@@ -269,6 +277,7 @@ pub fn infer_program_with_env(prog: &Program, types: &TypeEnv) -> DiagResult<Inf
     let mut out = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
+            *types.current_fn.borrow_mut() = f.name.clone();
             let entries = infer_fn(f, types)?;
             out.push((f.clone(), entries));
         }
@@ -331,6 +340,15 @@ pub fn fn_signature(f: &FnDef) -> (Vec<Type>, Type) {
 }
 
 fn infer_fn(f: &FnDef, types: &TypeEnv) -> DiagResult<Vec<ExprTypeEntry>> {
+    // A generic body is checked once with its type parameters erased, also where
+    // the body names them (`let xs: List[T]`, `List.new[T]()`).
+    let erased;
+    let f = if crate::specialize::type_params_of(f).is_empty() {
+        f
+    } else {
+        erased = crate::specialize::erase_body(f);
+        &erased
+    };
     check_lifetime_elision(f)?;
     let mut env: HashMap<String, Type> = HashMap::new();
     let (ptys, ret) = fn_signature(f);
@@ -2607,7 +2625,15 @@ fn infer_call(
                     }
                 }
                 if let Some(i) = types.generic_ret.get(name) {
+                    if let Some(fd) = types.fn_defs.get(name) {
+                        crate::specialize::record_generic_call(types, fd, &arg_tys, span);
+                    }
                     return Ok(arg_tys[*i].clone());
+                }
+                if let Some(fd) = types.fn_defs.get(name) {
+                    if let Some(r) = crate::specialize::record_generic_call(types, fd, &arg_tys, span) {
+                        return Ok(r);
+                    }
                 }
                 Ok(ret.clone())
             } else if let Some(Type::Fn { ret, params, .. }) = env.get(name).cloned() {

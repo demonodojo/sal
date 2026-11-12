@@ -1,0 +1,202 @@
+# Type texts of generic functions: binding type parameters from argument types, substituting them
+# and naming a copy. Mirror of `bind`, `subst` and `mangle_ty` in src/specialize.rs (SPEC «Genéricos»).
+import tytext
+
+# The type parameters of a fn that are types (a lifetime `'a` is not).
+fn tg_type_params(tparams: &List[String]) -> List[String] ! alloc
+    out = List.new[String]()
+    tg_type_params_go(tparams, 0, tparams.len(), &mut out)
+    out
+
+fn tg_type_params_go(xs: &List[String], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        t = xs.get(i)
+        if t.len() > 0 && t.char(0) != 39
+            out.push(t.dup())
+        tg_type_params_go(xs, i + 1, n, out)
+
+fn tg_index(names: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif names.get(i).eq(name) == 1
+        i
+    else
+        tg_index(names, name, i + 1, n)
+
+fn tg_is_ref(t: &String) -> Int ! alloc
+    s = trim_spaces(t.dup())
+    if s.len() > 0 && s.char(0) == 38
+        1
+    else
+        0
+
+# The arguments of `Name[a, b[c]]`, trimmed; empty when there are no brackets.
+fn tg_args(t: &String) -> List[String] ! alloc
+    out = List.new[String]()
+    open = ty_find_open(t, 0)
+    if open >= 0
+        close = tg_last_close(t, t.len() - 1)
+        if close > open
+            tg_args_go(t, open + 1, open + 1, close, 0, &mut out)
+    out
+
+fn tg_last_close(t: &String, i: Int) -> Int ! alloc
+    if i < 0
+        0 - 1
+    elsif t.char(i) == 93
+        i
+    else
+        tg_last_close(t, i - 1)
+
+fn tg_args_go(t: &String, i: Int, start: Int, end: Int, depth: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= end
+        piece = trim_spaces(t.slice(start, end))
+        if piece.len() > 0
+            out.push(piece)
+        0
+    else
+        c = t.char(i)
+        if c == 91
+            tg_args_go(t, i + 1, start, end, depth + 1, out)
+        elsif c == 93
+            tg_args_go(t, i + 1, start, end, depth - 1, out)
+        elsif c == 44 && depth == 0
+            out.push(trim_spaces(t.slice(start, i)))
+            tg_args_go(t, i + 1, i + 1, end, depth, out)
+        else
+            tg_args_go(t, i + 1, start, end, depth, out)
+
+# Binds the type parameters `tps` that `decl` names to the matching parts of `actual`. `vals` runs
+# parallel to `tps`; "" is unbound, and the first binding wins.
+fn tg_bind(decl: &String, actual: &String, tps: &List[String], vals: &mut List[String]) -> Int ! alloc
+    d = trim_spaces(decl.dup())
+    a = trim_spaces(actual.dup())
+    k = tg_index(tps, &d, 0, tps.len())
+    if k >= 0
+        if vals.get(k).len() == 0 && a.len() > 0 && a.contains("Unknown") == 0
+            vals.set(k, a.dup())
+        0
+    elsif tg_is_ref(&d) == 1
+        di = ty_deref(&d)
+        if tg_is_ref(&a) == 1
+            ai = ty_deref(&a)
+            tg_bind(&di, &ai, tps, vals)
+        else
+            # `&T` receiving a value (auto-reference of a receiver): bind through it.
+            tg_bind(&di, &a, tps, vals)
+    else
+        tg_bind_named(&d, &a, tps, vals)
+
+fn tg_bind_named(d: &String, a: &String, tps: &List[String], vals: &mut List[String]) -> Int ! alloc
+    db = ty_base(d)
+    ab = ty_base(a)
+    if ty_find_open(d, 0) >= 0 && db.eq(&ab) == 1
+        da = tg_args(d)
+        aa = tg_args(a)
+        if da.len() == aa.len()
+            tg_bind_args(&da, &aa, 0, da.len(), tps, vals)
+        0
+    else
+        0
+
+fn tg_bind_args(da: &List[String], aa: &List[String], i: Int, n: Int, tps: &List[String], vals: &mut List[String]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        tg_bind(&da.get(i), &aa.get(i), tps, vals)
+        tg_bind_args(da, aa, i + 1, n, tps, vals)
+
+# A type that can name a copy: nothing unknown, no tensor or function.
+fn tg_concrete(t: &String) -> Int ! alloc
+    if t.len() == 0
+        0
+    elsif t.contains("Unknown") + t.contains("Tensor") + t.contains("fn ") + t.contains("fn(") > 0
+        0
+    else
+        1
+
+fn tg_ident_char(c: Int) -> Int ! alloc
+    if c >= 65 && c <= 90
+        1
+    elsif c >= 97 && c <= 122
+        1
+    elsif c >= 48 && c <= 57
+        1
+    elsif c == 95
+        1
+    else
+        0
+
+# `t` with every identifier in `tps` replaced by its value in `vals` ("" becomes `Unknown`).
+fn tg_subst(t: &String, tps: &List[String], vals: &List[String]) -> String ! alloc
+    tg_subst_go(t, tps, vals, 0, t.len(), "")
+
+fn tg_subst_go(t: &String, tps: &List[String], vals: &List[String], i: Int, n: Int, acc: String) -> String ! alloc
+    if i >= n
+        acc
+    elsif tg_ident_char(t.char(i)) == 1
+        j = tg_ident_end(t, i, n)
+        word = t.slice(i, j)
+        k = tg_index(tps, &word, 0, tps.len())
+        lifetime = i > 0 && t.char(i - 1) == 39
+        if k >= 0 && !lifetime
+            v = vals.get(k)
+            if v.len() == 0
+                tg_subst_go(t, tps, vals, j, n, acc + "Unknown")
+            else
+                tg_subst_go(t, tps, vals, j, n, acc + v)
+        else
+            tg_subst_go(t, tps, vals, j, n, acc + word)
+    else
+        tg_subst_go(t, tps, vals, i + 1, n, acc + t.slice(i, i + 1))
+
+fn tg_ident_end(t: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        i
+    elsif tg_ident_char(t.char(i)) == 1
+        tg_ident_end(t, i + 1, n)
+    else
+        i
+
+# `List[Int]` → `List_Int`, `&String` → `ref_String`, `&mut P` → `mut_P`, `q.N` → `q_N`.
+fn tg_mangle(t0: &String) -> String ! alloc
+    t = trim_spaces(t0.dup())
+    if tg_is_ref(&t) == 1
+        inner = ty_deref(&t)
+        if ty_is_mut_ref(&t) == 1
+            "mut_" + tg_mangle(&inner)
+        else
+            "ref_" + tg_mangle(&inner)
+    else
+        b = ty_base(&t)
+        base = tg_dots(&b, 0, "")
+        args = tg_args(&t)
+        tg_mangle_args(&args, 0, base)
+
+fn tg_mangle_args(xs: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= xs.len()
+        acc
+    else
+        tg_mangle_args(xs, i + 1, acc + "_" + tg_mangle(&xs.get(i)))
+
+fn tg_dots(s: &String, i: Int, acc: String) -> String ! alloc
+    if i >= s.len()
+        acc
+    elsif s.char(i) == 46
+        tg_dots(s, i + 1, acc + "_")
+    else
+        tg_dots(s, i + 1, acc + s.slice(i, i + 1))
+
+# Copy name: `g__Int_String`.
+fn tg_copy_name(callee: &String, vals: &List[String]) -> String ! alloc
+    tg_copy_name_go(vals, 0, callee + "__")
+
+fn tg_copy_name_go(vals: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= vals.len()
+        acc
+    elsif i == 0
+        tg_copy_name_go(vals, i + 1, acc + tg_mangle(&vals.get(i)))
+    else
+        tg_copy_name_go(vals, i + 1, acc + "_" + tg_mangle(&vals.get(i)))

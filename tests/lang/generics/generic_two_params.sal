@@ -1,5 +1,4 @@
 # exit: 9
-# asan-xfail: String pasado por valor a una función genérica (tipo borrado): ni el llamador ni la callee lo liberan
 fn first[A, B](a: A, b: B) -> A
     a
 
