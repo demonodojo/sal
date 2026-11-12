@@ -42,6 +42,8 @@ struct IC
     # One-slot cells: the fn being inferred and the byte offset of the call being inferred.
     cur: List[String]
     xp: List[Int]
+    # Constructions of a generic struct (`Box(d"a", 2)`), recorded like `gcalls`.
+    gctors: List[String]
 
 fn ic_new(tp: &TProgram) -> IC ! alloc
     ic_build(tp, 0, 0)
@@ -71,7 +73,7 @@ fn ic_build_vals(tp: &TProgram, nres: Int, rec: Int, vals: List[CVal]) -> IC ! a
     _e = infer_names_enums(&mut names, &mut arity, &mut vtab, &mut tnames, &tp.enums, 0, list_len(&tp.enums))
     _t = infer_type_names_structs(&mut tnames, &tp.structs, 0, list_len(&tp.structs))
     imports = list_len(&tp.imports)
-    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals, List.new[String](), ic_cell_str(), ic_cell_int())
+    IC(tenv_new(tp), list_new[String](), ret, allow, tp.fns.clone(), sigs, names, tnames, arity, imports, HT.new(nres + 4), rec, vtab, tp.enums.clone(), tp.aliases.clone(), tp.protocols.clone(), tstructs_copy(&tp.structs), ic_fx_empty(), vals, List.new[String](), ic_cell_str(), ic_cell_int(), List.new[String]())
 
 fn ic_cell_str() -> List[String] ! alloc
     xs = List.new[String]()
@@ -290,35 +292,57 @@ fn infer_names_variants(names: &mut HT, arity: &mut HT, vtab: &mut HT, vs: &List
         _r = infer_vtab_put(vtab, &v.name, ei, i, generic)
         infer_names_variants(names, arity, vtab, vs, i + 1, n, ei, generic)
 
+# Every variant goes in, generic enums' too: a pattern types the payload of a generic one with the
+# scrutinee's type arguments (`infer_variant_field_ty`).
 fn infer_vtab_put(vtab: &mut HT, name: &String, ei: Int, vi: Int, generic: Int) -> Int ! alloc
-    if generic > 0
-        0
-    else
-        _a = vtab.put(name, &int_to_str(ei + 1))
-        vtab.put(&(name + "#"), &int_to_str(vi + 1))
+    _a = vtab.put(name, &int_to_str(ei + 1))
+    vtab.put(&(name + "#"), &int_to_str(vi + 1))
 
 # The enum a variant of a non-generic enum builds ("Unknown" for any other).
 fn infer_variant_ty(c: &IC, name: &String) -> String ! alloc
     ei = ic_get(&c.vtab, name) - 1
     if ei < 0
         "Unknown"
+    elsif list_get(&c.enums, ei).tparams.len() > 0
+        "Unknown"
     else
         list_get(&c.enums, ei).name
 
-# The type of payload field `j` of that variant ("Unknown" when it is not known).
-fn infer_variant_field_ty(c: &IC, name: &String, j: Int) -> String ! alloc
+# The type of payload field `j` of that variant, matched against a value of type `sty` ("Unknown"
+# when it is not known). A generic enum's field takes the type arguments of `sty` (`Tree[String]`
+# makes `T` a `String`; mirror of `subst_type_params` in src/infer.rs).
+fn infer_variant_field_ty(c: &IC, name: &String, j: Int, sty: &String) -> String ! alloc
     ei = ic_get(&c.vtab, name) - 1
     if ei < 0
         "Unknown"
     else
         vi = ic_get(&c.vtab, &(name + "#")) - 1
-        fields = list_get(&list_get(&c.enums, ei).variants, vi).fields
-        if j >= list_len(&fields)
+        e = c.enums.get(ei)
+        fields = e.variants.get(vi).fields
+        if j >= fields.len()
             "Unknown"
-        elsif str_len(list_get(&fields, j)) == 0
+        elsif fields.get(j).len() == 0
             "Unknown"
+        elsif e.tparams.len() == 0
+            fields.get(j).clone()
         else
-            list_get(&fields, j).clone()
+            infer_payload_subst(&fields.get(j), &e.tparams, sty)
+
+fn infer_payload_subst(field: &String, tparams: &List[String], sty: &String) -> String ! alloc
+    vals = List.new[String]()
+    args = tg_args(&ty_deref(sty))
+    infer_payload_vals(tparams, &args, 0, &mut vals)
+    tg_subst(field, tparams, &vals)
+
+fn infer_payload_vals(tparams: &List[String], args: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= tparams.len()
+        0
+    elsif i < args.len()
+        out.push(args.get(i).dup())
+        infer_payload_vals(tparams, args, i + 1, out)
+    else
+        out.push("")
+        infer_payload_vals(tparams, args, i + 1, out)
 
 fn infer_type_names_structs(m: &mut HT, v: &List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -976,6 +1000,7 @@ fn infer_call_ta(c: &mut IC, name: &String, args: &List[Expr], targs: &String) -
 
 fn infer_call_go(c: &mut IC, name: &String, args: &List[Expr], tys: &mut List[String], targs: &String) -> String ! alloc
     si = ic_get(&c.sigs, name)
+    at = c.xp.get(0)
     if si != 0
         infer_user_call(c, name, &list_get(&c.fns, si - 1), args, tys)
     elsif str_eq(tenv_type(&c.env, name), "fn 1") == 1
@@ -988,6 +1013,8 @@ fn infer_call_go(c: &mut IC, name: &String, args: &List[Expr], tys: &mut List[St
         "Unknown"
     else
         _a = infer_args(c, args, 0, list_len(args), tys)
+        # The arguments may hold calls of their own: the offset of this one comes back.
+        c.xp.set(0, at)
         infer_builtin_call(c, name, args, tys, targs)
 
 # Runtime symbols only the lowering calls, never sal source (SPEC «Métodos»: there is no
@@ -1314,9 +1341,71 @@ fn infer_struct_call(c: &mut IC, name: &String, sd: &TStruct, args: &List[Expr],
             _f = infer_struct_fields(c, sd, tys, 0, list_len(tys))
             name.dup()
         else
-            name.dup()
+            infer_generic_struct(c, name, sd, tys)
     else
         name.dup()
+
+# `Box(d"a", 2)` with `struct Box[T]`: the arguments fix the type parameters through the field types
+# and the value is a `Box[String]`; the construction is recorded for `specialize.sal`. An argument of
+# unknown type (a generic body checked erased) leaves the parameter `Unknown`; with every argument
+# known, an unfixed parameter is an error. Mirror of `infer_generic_struct_constructor` (src/infer.rs).
+fn infer_generic_struct(c: &mut IC, name: &String, sd: &TStruct, tys: &List[String]) -> String ! alloc
+    vals = List.new[String]()
+    ic_fill_empty(&mut vals, sd.tparams.len())
+    infer_bind_fields(&sd.fields, tys, 0, &sd.tparams, &mut vals)
+    if infer_all_concrete(&vals, 0) == 1
+        rec = c.cur.get(0) + "\t" + c.xp.get(0).to_str() + "\t" + name
+        c.gctors.push(ic_join_concrete(&vals, 0, rec))
+        infer_type_with_args(name, &vals)
+    elsif infer_any_unknown(tys, 0) == 1
+        unknown = List.new[String]()
+        ic_fill_text(&mut unknown, sd.tparams.len(), &"Unknown")
+        infer_type_with_args(name, &unknown)
+    else
+        ic_fail(c, &("struct `" + name + "` requires type arguments"))
+        name.dup()
+
+fn infer_bind_fields(fields: &List[TField], tys: &List[String], i: Int, tps: &List[String], vals: &mut List[String]) -> Int ! alloc
+    if i >= fields.len() || i >= tys.len()
+        0
+    else
+        tg_bind(&fields.get(i).ty, &tys.get(i), tps, vals)
+        infer_bind_fields(fields, tys, i + 1, tps, vals)
+
+fn infer_all_concrete(vals: &List[String], i: Int) -> Int ! alloc
+    if i >= vals.len()
+        1
+    elsif tg_concrete(&vals.get(i)) == 0
+        0
+    else
+        infer_all_concrete(vals, i + 1)
+
+fn infer_any_unknown(tys: &List[String], i: Int) -> Int ! alloc
+    if i >= tys.len()
+        0
+    elsif tys.get(i).contains("Unknown") == 1
+        1
+    else
+        infer_any_unknown(tys, i + 1)
+
+fn ic_fill_text(xs: &mut List[String], n: Int, t: &String) -> Int ! alloc
+    if n <= 0
+        0
+    else
+        xs.push(t.dup())
+        ic_fill_text(xs, n - 1, t)
+
+# `Box` with `[String, Int]`: `Box[String, Int]`.
+fn infer_type_with_args(name: &String, vals: &List[String]) -> String ! alloc
+    infer_type_args_go(vals, 0, name + "[") + "]"
+
+fn infer_type_args_go(vals: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= vals.len()
+        acc
+    elsif i == 0
+        infer_type_args_go(vals, i + 1, acc + vals.get(i))
+    else
+        infer_type_args_go(vals, i + 1, acc + ", " + vals.get(i))
 
 fn infer_variant_call(c: &mut IC, name: &String, args: &List[Expr]) -> String ! alloc
     want = ic_get(&c.arity, name) - 1
@@ -1383,9 +1472,10 @@ fn infer_rank(t: &String) -> Int ! alloc
 # First part of a tensor type: its element.
 fn infer_elem(t: &String) -> String ! alloc
     ps = ts_split(t)
-    e = list_get(&ps, 0)
+    # The list owns its strings: copy the element before the list goes.
+    e = list_get(&ps, 0).clone()
     _f = list_free(ps)
-    e.clone()
+    e
 
 fn infer_same_elem(a: &String, b: &String) -> Int ! alloc
     str_eq(infer_elem(a), infer_elem(b))
@@ -1950,16 +2040,22 @@ fn infer_field(c: &mut IC, base: &Expr, field: &String) -> String ! alloc
         _f = ic_fail(c, &("type `" + ty_msg(&bt) + "` has no field `" + field + "`"))
         "Unknown"
     else
-        si = tt_struct_find(&c.env.structs, &bt)
+        # A generic struct value (`Box[String]`) is found by its name; its field takes the type
+        # arguments (`subst_type_params` in src/infer.rs).
+        bn = ty_base(&bt)
+        si = tt_struct_find(&c.env.structs, &bn)
         if si < 0
             "Unknown"
         else
-            ft = tt_field_type(&c.env.structs, &bt, field)
+            ft = tt_field_type(&c.env.structs, &bn, field)
+            sd = c.env.structs.get(si)
             if str_len(ft) == 0
                 _f = ic_fail(c, &("struct `" + ty_msg(&bt) + "` has no field `" + field + "`"))
                 "Unknown"
-            else
+            elsif sd.tparams.len() == 0
                 ft
+            else
+                infer_payload_subst(&ft, &sd.tparams, &bt)
 
 # A branch block in its own scope: its type, or "<diverged>" when it diverged.
 fn infer_branch(c: &mut IC, b: &TBlock) -> String ! alloc
@@ -2275,7 +2371,7 @@ fn infer_pattern_binds_ty(c: &mut IC, p: &TPat, ty: &String) -> Int ! alloc
     elsif p.kind == 3
         want = ic_get(&c.arity, &p.name)
         _f = infer_pattern_arity(c, p, want)
-        infer_pattern_list(c, p, 0, list_len(&p.args))
+        infer_pattern_list(c, p, ty, 0, list_len(&p.args))
     else
         0
 
@@ -2288,12 +2384,13 @@ fn infer_pattern_arity(c: &mut IC, p: &TPat, want: Int) -> Int ! alloc
     else
         0
 
-fn infer_pattern_list(c: &mut IC, p: &TPat, i: Int, n: Int) -> Int ! alloc
+fn infer_pattern_list(c: &mut IC, p: &TPat, sty: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = infer_pattern_binds_ty(c, &list_get(&p.args, i), &infer_variant_field_ty(c, &p.name, i))
-        infer_pattern_list(c, p, i + 1, n)
+        fty = infer_variant_field_ty(c, &p.name, i, sty)
+        _a = infer_pattern_binds_ty(c, &list_get(&p.args, i), &fty)
+        infer_pattern_list(c, p, sty, i + 1, n)
 
 fn infer_match_arms(c: &mut IC, arms: &List[TArm], i: Int, n: Int, sty: &String) -> Int ! alloc
     if i >= n

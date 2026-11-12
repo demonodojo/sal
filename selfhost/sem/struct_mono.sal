@@ -1,0 +1,368 @@
+# Instances of generic structs (SPEC «Genéricos»): `Box[String]` becomes the struct `Box__String`.
+# Mirror of `Instancer` and `monomorphize_structs` in src/specialize.rs. `rw` rewrites a type text
+# and makes the instances it names, nested ones too, as it goes. `gens` holds the generic structs in
+# view: this module's first, then the other modules'.
+import "../ast/tast.sal"
+import "../ast/tygeneric.sal"
+import "../ast/tytext.sal"
+
+struct StructMono
+    gens: List[TStruct]
+    # How many of `gens` belong to this module.
+    nown: Int
+    # `G \t type… \t name` of each instance made or reused here.
+    insts: List[String]
+    # The instances made here, in order, and the generic each one comes from.
+    news: List[TStruct]
+    news_from: List[String]
+    # Type names already taken in the graph (instances included).
+    taken: List[String]
+    # Instances the defining modules already made (`MonoCtx.existing`).
+    existing: List[String]
+    # Instances made here of this module's own generic structs.
+    made: List[String]
+
+# The instance of generic `gi` for the concrete types `vals`, made when it does not exist yet.
+method StructMono.instance(&mut self, gi: Int, vals: &List[String]) -> String ! alloc
+    g = self.gens.get(gi)
+    key = sm_join(vals, 0, g.name.dup())
+    found = sm_lookup(&self.insts, &key, 0)
+    there = self.reuse(gi, &key)
+    if found.len() > 0
+        found
+    elsif there.len() > 0
+        self.insts.push(key + "\t" + there)
+        there
+    else
+        name = self.free_name(tg_copy_name(&g.name, vals))
+        self.taken.push(name.dup())
+        self.insts.push(key + "\t" + name)
+        if gi < self.nown
+            self.made.push(key + "\t" + name)
+        fields = List.new[TField]()
+        self.instance_fields(&g, vals, 0, &mut fields)
+        self.news.push(TStruct(name.dup(), fields, g.layout_c, List.new[String](), g.is_frame, g.protocols.clone(), g.deprecated.dup(), g.tyat.dup(), g.lifetimes.clone(), g.stays))
+        self.news_from.push(g.name.dup())
+        name
+
+# An instance of another module's generic that the defining module made.
+method StructMono.reuse(&self, gi: Int, key: &String) -> String ! alloc
+    if gi < self.nown
+        ""
+    else
+        sm_lookup(&self.existing, key, 0)
+
+method StructMono.free_name(&self, name: String) -> String ! alloc
+    if sm_has(&self.taken, &name) == 1
+        self.free_name(name + "_")
+    else
+        name
+
+method StructMono.instance_fields(&mut self, g: &TStruct, vals: &List[String], i: Int, out: &mut List[TField]) -> Int ! alloc
+    if i >= g.fields.len()
+        0
+    else
+        f = g.fields.get(i)
+        t = tg_subst(&f.ty, &g.tparams, vals)
+        out.push(TField(f.name.dup(), self.rw(&t)))
+        self.instance_fields(g, vals, i + 1, out)
+
+# `t` with every `G[tipos concretos]` replaced by its instance; any other text stays as it is.
+method StructMono.rw(&mut self, t0: &String) -> String ! alloc
+    t = trim_spaces(t0.dup())
+    if t.len() == 0
+        t
+    elsif tg_is_ref(&t) == 1
+        inner = ty_deref(&t)
+        prefix = t.slice(0, t.len() - inner.len())
+        prefix + self.rw(&inner)
+    elsif ty_find_open(&t, 0) < 0
+        t
+    else
+        base = ty_base(&t)
+        args = tg_args(&t)
+        gi = sm_struct_index(&self.gens, &base, 0)
+        if gi >= 0 && sm_all_concrete(&args, 0) == 1
+            self.instance(gi, &args)
+        else
+            nargs = List.new[String]()
+            self.rw_list(&args, 0, &mut nargs)
+            if sm_same(&args, &nargs, 0) == 1
+                t
+            else
+                base + "[" + sm_join_comma(&nargs, 0, "") + "]"
+
+method StructMono.rw_list(&mut self, xs: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(self.rw(&xs.get(i)))
+        self.rw_list(xs, i + 1, out)
+
+# ---- the program ----
+# The types of the program, rewritten: the non-generic functions (parameters, result, `let` types
+# and type arguments), structs, enums and constants, in that order.
+method StructMono.rw_program(&mut self, tp: &TProgram) -> TProgram ! alloc
+    fns = List.new[TFn]()
+    self.rw_fns(&tp.fns, 0, &mut fns)
+    structs = List.new[TStruct]()
+    self.rw_structs(&tp.structs, 0, &mut structs)
+    enums = List.new[TEnum]()
+    self.rw_enums(&tp.enums, 0, &mut enums)
+    consts = List.new[TConst]()
+    self.rw_consts(&tp.consts, 0, &mut consts)
+    TProgram(fns, tp.imports.clone(), structs, tp.aliases.clone(), enums, tp.protocols.clone(), consts)
+
+method StructMono.rw_fns(&mut self, xs: &List[TFn], i: Int, out: &mut List[TFn]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        f = xs.get(i)
+        if tg_type_params(&f.tparams).len() > 0
+            out.push(f.clone())
+        else
+            params = List.new[TParam]()
+            self.rw_params(&f.params, 0, &mut params)
+            ret = self.rw(&f.ret)
+            body = self.rw_block(&f.body)
+            out.push(TFn(f.name.dup(), params, body, ret, f.no_heap, f.arena, f.fx.clone(), f.tparams.clone(), f.recv.dup(), f.mkind, f.deprecated.dup(), f.tyat.dup()))
+        self.rw_fns(xs, i + 1, out)
+
+method StructMono.rw_params(&mut self, xs: &List[TParam], i: Int, out: &mut List[TParam]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        p = xs.get(i)
+        out.push(TParam(p.name.dup(), self.rw(&p.ty), p.mode))
+        self.rw_params(xs, i + 1, out)
+
+method StructMono.rw_structs(&mut self, xs: &List[TStruct], i: Int, out: &mut List[TStruct]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        if s.tparams.len() > 0
+            out.push(s.clone())
+        else
+            fields = List.new[TField]()
+            self.rw_fields(&s.fields, 0, &mut fields)
+            out.push(TStruct(s.name.dup(), fields, s.layout_c, s.tparams.clone(), s.is_frame, s.protocols.clone(), s.deprecated.dup(), s.tyat.dup(), s.lifetimes.clone(), s.stays))
+        self.rw_structs(xs, i + 1, out)
+
+method StructMono.rw_fields(&mut self, xs: &List[TField], i: Int, out: &mut List[TField]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        f = xs.get(i)
+        out.push(TField(f.name.dup(), self.rw(&f.ty)))
+        self.rw_fields(xs, i + 1, out)
+
+method StructMono.rw_enums(&mut self, xs: &List[TEnum], i: Int, out: &mut List[TEnum]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        e = xs.get(i)
+        if e.tparams.len() > 0
+            out.push(e.clone())
+        else
+            vs = List.new[TVariant]()
+            self.rw_variants(&e.variants, 0, &mut vs)
+            out.push(TEnum(e.name.dup(), vs, e.tparams.clone(), e.protocols.clone(), e.deprecated.dup(), e.tyat.dup()))
+        self.rw_enums(xs, i + 1, out)
+
+method StructMono.rw_variants(&mut self, xs: &List[TVariant], i: Int, out: &mut List[TVariant]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        v = xs.get(i)
+        fields = List.new[String]()
+        self.rw_list(&v.fields, 0, &mut fields)
+        out.push(TVariant(v.name.dup(), fields))
+        self.rw_variants(xs, i + 1, out)
+
+method StructMono.rw_consts(&mut self, xs: &List[TConst], i: Int, out: &mut List[TConst]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        k = xs.get(i)
+        out.push(TConst(k.name.dup(), self.rw(&k.ty), tc_expr(&k.expr), k.deprecated.dup()))
+        self.rw_consts(xs, i + 1, out)
+
+# ---- bodies: `let` types and type arguments ----
+method StructMono.rw_block(&mut self, b: &TBlock) -> TBlock ! alloc
+    out = List.new[TStmt]()
+    self.rw_stmts(&b.stmts, 0, &mut out)
+    TBlock(out, self.rw_expr(&b.tail))
+
+method StructMono.rw_stmts(&mut self, xs: &List[TStmt], i: Int, out: &mut List[TStmt]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        ty = self.rw(&s.ty)
+        e = self.rw_expr(&s.expr)
+        target = self.rw_expr(&s.target)
+        out.push(TStmt(s.kind, s.name.dup(), e, ty, s.is_let, target, s.frozen, s.stack, s.id))
+        self.rw_stmts(xs, i + 1, out)
+
+method StructMono.rw_exprs(&mut self, xs: &List[Expr], i: Int, out: &mut List[Expr]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(self.rw_expr(&xs.get(i)))
+        self.rw_exprs(xs, i + 1, out)
+
+method StructMono.rw_expr(&mut self, e: &Expr) -> Expr ! alloc
+    match e
+        XCall(name, args, targs, xp) => self.rw_call(&name, &args, &targs, xp)
+        XBin(op, l, r) => self.rw_bin(&op, &l, &r)
+        XTo(place, inner) => XTo(place.dup(), self.rw_expr(&inner))
+        XOn(place, body, kern, idx) => XOn(place.dup(), self.rw_block(&body), kern, idx)
+        XIf(cond, then_b, else_b, has_else, elsifs) => self.rw_if(&cond, &then_b, &else_b, has_else, &elsifs)
+        XWhile(cond, body) => self.rw_while(&cond, &body)
+        XField(base, field) => XField(self.rw_expr(&base), field.dup())
+        XLambda(param, body) => XLambda(param.dup(), self.rw_expr(&body))
+        XUnary(op, inner) => XUnary(op.dup(), self.rw_expr(&inner))
+        XMatch(scrut, arms) => self.rw_match(&scrut, &arms)
+        XTry(inner) => XTry(self.rw_expr(&inner))
+        _ => tc_expr(e)
+
+# The type arguments first, then the arguments (the order of `walk_expr` in src/specialize.rs).
+method StructMono.rw_call(&mut self, name: &String, args: &List[Expr], targs: &String, xp: Int) -> Expr ! alloc
+    ta = self.rw_targs(targs)
+    nargs = List.new[Expr]()
+    self.rw_exprs(args, 0, &mut nargs)
+    XCall(name.dup(), nargs, ta, xp)
+
+# A call's type arguments are a comma list (`Int`, `String, P`); a dotted call's carry an `@id`.
+method StructMono.rw_targs(&mut self, targs: &String) -> String ! alloc
+    if targs.len() == 0 || targs.contains("@") == 1 || targs.contains("[") == 0
+        targs.dup()
+    else
+        self.rw_targs_list(targs)
+
+method StructMono.rw_targs_list(&mut self, targs: &String) -> String ! alloc
+    parts = tg_args(&("X[" + targs + "]"))
+    nparts = List.new[String]()
+    self.rw_list(&parts, 0, &mut nparts)
+    if sm_same(&parts, &nparts, 0) == 1
+        targs.dup()
+    else
+        sm_join_comma(&nparts, 0, "")
+
+method StructMono.rw_bin(&mut self, op: &String, l: &Expr, r: &Expr) -> Expr ! alloc
+    nl = self.rw_expr(l)
+    nr = self.rw_expr(r)
+    XBin(op.dup(), nl, nr)
+
+method StructMono.rw_while(&mut self, cond: &Expr, body: &TBlock) -> Expr ! alloc
+    nc = self.rw_expr(cond)
+    nb = self.rw_block(body)
+    XWhile(nc, nb)
+
+method StructMono.rw_if(&mut self, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Expr ! alloc
+    nc = self.rw_expr(cond)
+    nt = self.rw_block(then_b)
+    els = List.new[TElsif]()
+    self.rw_elsifs(elsifs, 0, &mut els)
+    ne = self.rw_block(else_b)
+    XIf(nc, nt, ne, has_else, els)
+
+method StructMono.rw_elsifs(&mut self, xs: &List[TElsif], i: Int, out: &mut List[TElsif]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        nc = self.rw_expr(&a.cond)
+        nb = self.rw_block(&a.body)
+        out.push(TElsif(nc, nb))
+        self.rw_elsifs(xs, i + 1, out)
+
+method StructMono.rw_match(&mut self, scrut: &Expr, arms: &List[TArm]) -> Expr ! alloc
+    ns = self.rw_expr(scrut)
+    out = List.new[TArm]()
+    self.rw_arms(arms, 0, &mut out)
+    XMatch(ns, out)
+
+method StructMono.rw_arms(&mut self, xs: &List[TArm], i: Int, out: &mut List[TArm]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        nb = self.rw_expr(&a.body)
+        ns = self.rw_block(&a.suite)
+        out.push(TArm(tc_pat(&a.pat), nb, ns, a.has_suite))
+        self.rw_arms(xs, i + 1, out)
+
+# ---- helpers ----
+fn sm_struct_index(xs: &List[TStruct], name: &String, i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0 - 1
+    elsif xs.get(i).name.eq(name) == 1
+        i
+    else
+        sm_struct_index(xs, name, i + 1)
+
+fn sm_all_concrete(xs: &List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        1
+    elsif tg_concrete(&xs.get(i)) == 0
+        0
+    else
+        sm_all_concrete(xs, i + 1)
+
+fn sm_same(a: &List[String], b: &List[String], i: Int) -> Int ! alloc
+    if i >= a.len()
+        1
+    elsif a.get(i).eq(&b.get(i)) == 0
+        0
+    else
+        sm_same(a, b, i + 1)
+
+fn sm_has(xs: &List[String], s: &String) -> Int ! alloc
+    if sm_index_of(xs, s, 0) >= 0
+        1
+    else
+        0
+
+fn sm_index_of(xs: &List[String], s: &String, i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0 - 1
+    elsif xs.get(i).eq(s) == 1
+        i
+    else
+        sm_index_of(xs, s, i + 1)
+
+# `G \t mangled…`, the key of an instance.
+fn sm_join(xs: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= xs.len()
+        acc
+    else
+        sm_join(xs, i + 1, acc + "\t" + tg_mangle(&xs.get(i)))
+
+fn sm_join_comma(xs: &List[String], i: Int, acc: String) -> String ! alloc
+    if i >= xs.len()
+        acc
+    elsif i == 0
+        sm_join_comma(xs, i + 1, acc + xs.get(i))
+    else
+        sm_join_comma(xs, i + 1, acc + ", " + xs.get(i))
+
+# The name stored after `key \t` in `xs`, or "".
+fn sm_lookup(xs: &List[String], key: &String, i: Int) -> String ! alloc
+    if i >= xs.len()
+        ""
+    else
+        e = xs.get(i)
+        k = key.len()
+        head = e.slice(0, sm_min(k, e.len()))
+        if e.len() > k && e.char(k) == 9 && head.eq(key) == 1
+            e.slice(k + 1, e.len())
+        else
+            sm_lookup(xs, key, i + 1)
+
+fn sm_min(a: Int, b: Int) -> Int ! alloc
+    if a < b
+        a
+    else
+        b

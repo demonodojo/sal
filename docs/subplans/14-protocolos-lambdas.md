@@ -10,7 +10,7 @@ Las lambdas no son valores: cada llamada que recibe una se **especializa** (una 
 
 | Fase | Contenido | Estado |
 |------|-----------|--------|
-| 0 | Monomorfización de `fn` genéricas (SPEC «Genéricos») | Hecha en los dos compiladores |
+| 0 | Monomorfización de `fn` y `struct` genéricos, también entre módulos (SPEC «Genéricos») | Hecha en los dos compiladores |
 | 1 | Tipo `fn(…) -> R`, lambdas de varios parámetros y con bloque, lambda final, especialización por lambda | Pendiente |
 | 2 | Métodos con cuerpo (provistos) en protocolos | Pendiente |
 | 3 | Protocolos genéricos, item `impl Tipo Protocolo`, `Collection` en el preludio | Pendiente |
@@ -39,8 +39,39 @@ Las lambdas no son valores: cada llamada que recibe una se **especializa** (una 
 - `tests/forward_ir.rs` (`generic_fn_is_monomorphized_per_type`): nombres, orden y descriptor de cada copia.
 - La paridad de IR del selfhost se mide sobre esos mismos programas.
 
+**Entre módulos.**
+- `MonoCtx` (`src/specialize.rs`; `selfhost/sem/mono_ctx.sal`) lleva:
+  - las genéricas de los demás módulos (`externals`; en el selfhost, `ext`);
+  - las copias que ya hizo el módulo que define cada genérica (`existing`, para llamarlas en vez de repetirlas);
+  - los nombres ocupados en el grafo (`taken`);
+  - las copias que el módulo hace de sus propias genéricas (`made`).
+- Las originales no se quitan módulo a módulo. Las retira un barrido final hasta el punto fijo: `sweep_generics`; en el selfhost, `sp_sweep_generics`.
+- Tests: `generic_cross_module.sal` y `generic_cross_module_alias.sal`, con `mods/generic_lib.sal`.
+
+**Structs genéricos.**
+- La inferencia admite `Box(d"a", 2)` con `struct Box[T]`: `infer_generic_struct_constructor`, que usa `specialize::bind_all`; en el selfhost, `infer_generic_struct`. Antes era «requires type arguments» aunque la SPEC lo permitía. Registra la construcción en `TypeEnv.generic_ctors` (`IC.gctors`).
+- `monomorphize_structs` corre tras las funciones:
+  - crea `Box__String` (`Instancer`; `StructMono` en `selfhost/sem/struct_mono.sal`);
+  - reescribe los tipos de las funciones no genéricas, los structs, los enums y las constantes;
+  - renombra las construcciones;
+  - coloca cada instancia tras su genérico.
+- El barrido (`sweep_generic_structs`; `sp_sweep_structs`) quita el genérico que ya nadie nombra.
+- En el arranque, `Box[String]` y `Box__String` son el mismo tipo para `types_compatible` (`canonical_instance`, registro `INSTANCES`). La compatibilidad del selfhost ya es laxa con los tipos nominales.
+- Tests: `tests/lang/structs/generic_struct_ctor.sal`, `generic_struct_nested.sal`, `generic_struct_through_fn.sal`, `err_generic_struct_unfixed.sal` y `tests/lang/generics/generic_struct_cross_module.sal` (con `mods/generic_box.sal`).
+
+**Enums genéricos.**
+- No se copian: tienen una sola representación.
+- Un parámetro por valor de un enum genérico se libera: `owned_param_release`; en el selfhost, `dr_param_generic_kind` y `dr_param_caller_keeps`.
+- El selfhost tipa el payload con los argumentos del escrutado (`infer_variant_field_ty`, `infer_payload_subst`). Antes valía `Unknown` y un método sobre él no se resolvía.
+- Test: `tests/lang/enums/generic_enum_param_drop.sal`.
+
+**Memoria.**
+- Una `List` limpia (ligada una vez, llena de valores frescos o de parámetros por valor) que sale del ámbito por cualquier movimiento, también por `return`, se construye dueña de sus elementos: `moved_clean_list` / `dr_moved_clean_list`. Antes solo si iba a un constructor.
+  - Es el modelo de Rust: quien la recibe suelta los `String`.
+  - Cierra la fuga de `generic_list_new.sal`, que pierde su `asan-xfail`.
+  - Destapó un uso tras liberar en `selfhost/sem/infer.sal` (`infer_elem` prestaba el elemento y luego soltaba la lista), ya corregido.
+- `specialize.sal` consume cada `TProgram` por valor una sola vez en todas las ramas. Al compilar el selfhost, un programa que solo algunas ramas mueven no se suelta en las demás; ver «Pendiente».
+
 **Pendiente.**
-- Una genérica llamada desde otro módulo sigue borrada: sus copias tendrían que vivir en el módulo que llama, con las firmas del módulo que la define a la vista.
-- Los `struct` y `enum` genéricos no se monomorfizan.
-- El stage1 instrumentado que compila un programa con genéricas da un `LEAK` de `enum_new`: un nodo del parser (`parse_primary`, `parse_call_with_type_args`) que se pierde al soltar por la glue el `TProgram` original una vez copiado. HEAD ya fugaba una caja igual con `generic_two_params.sal`. `selfhost_instrumented_clean_on_hello` no lo ve, porque el hola mundo no tiene genéricas. Por eso `specialize.sal` copia campo a campo (`sp_union`) en vez de usar el `clone` del struct entero, que fugaba además al compilar el hola mundo.
-- `generic_list_new.sal` lleva `asan-xfail`: una `List[String]` llenada con `String` recibidos por parámetro y devuelta no suelta sus elementos. Pasa igual sin genéricos.
+- El arranque no suelta un parámetro struct por valor que solo algunas ramas mueven. Ejemplo: `fn pick(p: Prog, q: Prog, first: Bool) -> Prog` devuelve uno y el otro se fuga. Necesita bandera de drop para structs en `src/drops.rs` y su espejo.
+- El selfhost instrumentado da un `LEAK` en casi cualquier programa con una llamada a función de usuario. Igual que HEAD: es el problema de propiedad del árbol del selfhost, con el test `selfhost_instrumented_releases_rewritten_fn_bodies` ignorado.

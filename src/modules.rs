@@ -118,28 +118,103 @@ pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGr
     Ok(graph)
 }
 
-/// `specialize::monomorphize` per module. A generic called from another module stays
-/// erased: its copies would have to live in the caller's module.
+/// `specialize::monomorphize` per module, in dependency order. A module specializes its own
+/// generics and those of other modules that it calls: it calls the copy the defining module
+/// already made, or makes its own (SPEC «Genéricos»). The originals nobody calls any more go at
+/// the end.
 fn monomorphize_graph(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnostic>> {
-    let called: Vec<HashSet<String>> =
-        graph.order.iter().map(|m| crate::specialize::called_names(&m.program)).collect();
-    for i in 0..graph.order.len() {
-        let mut external: HashSet<String> = HashSet::new();
-        for (j, names) in called.iter().enumerate() {
-            if j != i {
-                external.extend(names.iter().cloned());
+    let mut ctx = crate::specialize::MonoCtx::default();
+    for m in &graph.order {
+        for item in &m.program.items {
+            if let Item::Fn(f) = item {
+                ctx.taken.insert(f.name.clone());
             }
         }
+    }
+    let mut existing: HashMap<(String, Vec<String>), String> = HashMap::new();
+    for i in 0..graph.order.len() {
+        let mut externals = HashMap::new();
+        for (j, m) in graph.order.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            for item in &m.program.items {
+                if let Item::Fn(f) = item {
+                    if !crate::specialize::type_params_of(f).is_empty() {
+                        externals.insert(f.name.clone(), f.clone());
+                    }
+                }
+            }
+        }
+        ctx.externals = externals;
+        ctx.existing = existing.clone();
         let mut prog = graph.order[i].program.clone();
         let path = graph.order[i].path.clone();
         let has_methods = graph.order[i].has_methods;
         let g: &ModuleGraph = graph;
-        crate::specialize::monomorphize(&mut prog, &external, &|p: &Program| {
+        let made = crate::specialize::monomorphize(&mut prog, &mut ctx, &|p: &Program| {
             let m = LoadedModule { path: path.clone(), program: p.clone(), has_methods };
             type_env_for_module(&m, g).ok()
         })?;
+        existing.extend(made);
         graph.order[i].program = prog;
     }
+    {
+        let mut progs: Vec<&mut Program> = graph.order.iter_mut().map(|m| &mut m.program).collect();
+        crate::specialize::sweep_generics(&mut progs);
+    }
+    monomorphize_graph_structs(graph)
+}
+
+/// The same for generic structs, once the functions are concrete: a module instantiates its own
+/// generic structs and those of other modules that it names, reusing the instance the defining
+/// module made.
+fn monomorphize_graph_structs(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnostic>> {
+    crate::specialize::reset_instances();
+    let mut ctx = crate::specialize::StructCtx::default();
+    for m in &graph.order {
+        for item in &m.program.items {
+            match item {
+                Item::Struct(s) => {
+                    ctx.taken.insert(s.name.clone());
+                }
+                Item::Enum(e) => {
+                    ctx.taken.insert(e.name.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut existing: HashMap<(String, Vec<String>), String> = HashMap::new();
+    for i in 0..graph.order.len() {
+        let mut externals = HashMap::new();
+        for (j, m) in graph.order.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            for item in &m.program.items {
+                if let Item::Struct(s) = item {
+                    if !s.type_params.is_empty() {
+                        externals.insert(s.name.clone(), s.clone());
+                    }
+                }
+            }
+        }
+        ctx.externals = externals;
+        ctx.existing = existing.clone();
+        let mut prog = graph.order[i].program.clone();
+        let path = graph.order[i].path.clone();
+        let has_methods = graph.order[i].has_methods;
+        let g: &ModuleGraph = graph;
+        let made = crate::specialize::monomorphize_structs(&mut prog, &mut ctx, &|p: &Program| {
+            let m = LoadedModule { path: path.clone(), program: p.clone(), has_methods };
+            type_env_for_module(&m, g).ok()
+        })?;
+        existing.extend(made);
+        graph.order[i].program = prog;
+    }
+    let mut progs: Vec<&mut Program> = graph.order.iter_mut().map(|m| &mut m.program).collect();
+    crate::specialize::sweep_generic_structs(&mut progs);
     Ok(())
 }
 

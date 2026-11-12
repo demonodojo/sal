@@ -1,0 +1,7 @@
+# error: E_TYPE
+struct Tag[T]
+    n: Int
+
+fn main() -> Int
+    t = Tag(1)
+    t.n

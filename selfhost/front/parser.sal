@@ -2004,9 +2004,9 @@ fn parse_program_methods(tp: TProgram, errs: &mut List[String], ndots: Int) -> T
         if list_len(errs) > 0
             tp
         elsif ndots > 0
-            monomorphize(prepare_methods(tp, ndots, errs), errs)
+            monomorphize_all(prepare_methods(tp, ndots, errs), errs)
         else
-            monomorphize(tp, errs)
+            monomorphize_all(tp, errs)
 
 fn parse_program_raw(src: &String, errs: &mut List[String], flags: &mut List[Int]) -> TProgram ! alloc
     # Bind the lexer result: `parser_new(&lex(src))` would leak the temporary `Toks`

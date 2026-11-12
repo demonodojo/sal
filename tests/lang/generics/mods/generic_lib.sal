@@ -1,0 +1,16 @@
+fn helper(x: Int) -> Int
+    x + 1
+
+fn twice[T](x: T) -> T
+    x
+
+fn wrap[T](x: T) -> List[T] ! alloc
+    xs = List.new[T]()
+    xs.push(x)
+    xs
+
+fn bump[T](x: T, n: Int) -> Int
+    helper(n)
+
+fn local_use() -> Int
+    twice(3)

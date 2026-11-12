@@ -1,5 +1,4 @@
 # exit: 15
-# asan-xfail: List[String] llenada con String recibidos por parámetro y devuelta no suelta sus elementos (fuga igual sin genéricos)
 fn pair[T](a: T, b: T) -> List[T] ! alloc
     xs = List.new[T]()
     xs.push(a)

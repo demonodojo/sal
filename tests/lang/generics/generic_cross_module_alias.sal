@@ -1,0 +1,7 @@
+# exit: 12
+import "mods/generic_lib.sal" as l
+
+fn main() -> Int ! alloc
+    a = l.wrap(d"hey")
+    b = l.wrap(5)
+    a.get(0).len() + b.get(0) + l.twice(1) + l.bump(d"s", 2)

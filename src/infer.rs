@@ -50,6 +50,8 @@ pub struct TypeEnv {
     pub generic_calls: std::cell::RefCell<crate::specialize::GenericCalls>,
     /// Name of the fn being inferred (the key of `generic_calls`).
     pub current_fn: std::cell::RefCell<String>,
+    /// Constructions of a generic struct (`Box(d"a", 2)`), keyed like `generic_calls`.
+    pub generic_ctors: std::cell::RefCell<crate::specialize::GenericCalls>,
 }
 
 impl TypeEnv {
@@ -80,6 +82,7 @@ impl Default for TypeEnv {
             consts: HashMap::new(),
             generic_calls: Default::default(),
             current_fn: Default::default(),
+            generic_ctors: Default::default(),
         }
     }
 }
@@ -1497,11 +1500,7 @@ fn infer_struct_constructor(
     span: Span,
 ) -> DiagResult<Type> {
     if !def.type_params.is_empty() {
-        return Err(vec![Diagnostic::new(
-            ErrorCode::EType,
-            format!("struct `{}` requires type arguments", def.name),
-            span,
-        )]);
+        return infer_generic_struct_constructor(def, args, env, ctx, types, entries, span);
     }
     if args.len() != def.fields.len() {
         return Err(vec![Diagnostic::new(
@@ -1536,6 +1535,76 @@ fn infer_struct_constructor(
         args: vec![],
         span,
     })
+}
+
+/// `Box(d"a", 2)` with `struct Box[T]`: the arguments fix the type parameters through the field
+/// types, and the value is a `Box[String]` (SPEC «Genéricos»). A parameter the arguments leave
+/// unfixed is `E_TYPE`.
+fn infer_generic_struct_constructor(
+    def: &StructDef,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    if args.len() != def.fields.len() {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!(
+                "struct `{}` expects {} field(s), found {}",
+                def.name,
+                def.fields.len(),
+                args.len()
+            ),
+            span,
+        )]);
+    }
+    let mut arg_tys = Vec::new();
+    for arg in args {
+        arg_tys.push(check_expr(arg, env, ctx, types, entries)?);
+    }
+    let field_tys: Vec<Type> = def.fields.iter().map(|f| f.ty.clone()).collect();
+    let Some(targs) = crate::specialize::bind_all(&field_tys, &arg_tys, &def.type_params) else {
+        // Inside a generic body checked erased, an argument of unknown type leaves the
+        // parameter unknown; with every argument known, an unfixed parameter is an error.
+        if arg_tys.iter().any(crate::specialize::mentions_unknown) {
+            let unknown = Type::Named { name: "Unknown".into(), args: vec![], span };
+            return Ok(Type::Named {
+                name: def.name.clone(),
+                args: def.type_params.iter().map(|_| unknown.clone()).collect(),
+                span,
+            });
+        }
+        return Err(vec![Diagnostic::new(
+            ErrorCode::EType,
+            format!("struct `{}` requires type arguments", def.name),
+            span,
+        )]);
+    };
+    for ((arg, field), aty) in args.iter().zip(def.fields.iter()).zip(arg_tys.iter()) {
+        let want = subst_type_params(&field.ty, &def.type_params, &targs, span);
+        if !types_compatible(aty, &want) {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!(
+                    "struct `{}` field `{}`: expected {}, found {}",
+                    def.name,
+                    field.name,
+                    type_name(&want),
+                    type_name(aty)
+                ),
+                arg.span(),
+            )]);
+        }
+    }
+    let caller = types.current_fn.borrow().clone();
+    types
+        .generic_ctors
+        .borrow_mut()
+        .insert((caller, span.start, span.end), (def.name.clone(), Some(targs.clone())));
+    Ok(Type::Named { name: def.name.clone(), args: targs, span })
 }
 
 fn infer_enum_variant_constructor(
@@ -1975,9 +2044,7 @@ fn infer_call(
     }
     if type_args.is_empty() {
         if let Some(def) = types.structs.get(name) {
-            if def.type_params.is_empty() {
-                return infer_struct_constructor(def, args, env, ctx, types, entries, span);
-            }
+            return infer_struct_constructor(def, args, env, ctx, types, entries, span);
         }
         if let Some(vinfo) = find_enum_variant_call(name, types) {
             return infer_enum_variant_constructor(
@@ -3758,7 +3825,12 @@ fn peel_one_ref(t: &Type) -> &Type {
 }
 
 fn types_compatible(a: &Type, b: &Type) -> bool {
-    types_compatible_core(a, b)
+    types_compatible_core(a, b) || {
+        // `Box[String]` and its instance `Box__String` are one type (SPEC «Genéricos»).
+        let (ca, cb) = (crate::specialize::canonical_instance(a), crate::specialize::canonical_instance(b));
+        (ca.is_some() || cb.is_some())
+            && types_compatible_core(ca.as_ref().unwrap_or(a), cb.as_ref().unwrap_or(b))
+    }
 }
 
 fn types_compatible_core(a: &Type, b: &Type) -> bool {

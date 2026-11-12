@@ -1,0 +1,11 @@
+# exit: 9
+struct Pair[A, B]
+    a: A
+    b: B
+
+struct Box[T]
+    v: T
+
+fn main() -> Int ! alloc
+    b = Box(Pair(4, d"hello"))
+    b.v.a + b.v.b.len()

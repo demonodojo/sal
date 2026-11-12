@@ -241,7 +241,8 @@ pub fn resolve_methods(prog: &mut Program, env: &TypeEnv) {
 /// Single-file entry: desugar the definitions, then resolve the calls.
 pub fn prepare_program(prog: &mut Program) -> DiagResult<()> {
     if !has_methods(prog) && !has_field_calls(prog) && !crate::protocols::has_protocols(prog) {
-        return crate::specialize::monomorphize_program(prog);
+        crate::specialize::monomorphize_program(prog)?;
+        return crate::specialize::monomorphize_structs_program(prog);
     }
     desugar_method_defs(prog)?;
     if crate::protocols::has_protocols(prog) {
@@ -251,7 +252,8 @@ pub fn prepare_program(prog: &mut Program) -> DiagResult<()> {
     if has_methods(prog) || has_field_calls(prog) {
         resolve_methods(prog, &type_env_of_program(prog));
     }
-    crate::specialize::monomorphize_program(prog)
+    crate::specialize::monomorphize_program(prog)?;
+    crate::specialize::monomorphize_structs_program(prog)
 }
 
 /// Call span → (`T__m`, whether it was a static call `T.m(…)`).

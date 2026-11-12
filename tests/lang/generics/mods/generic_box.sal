@@ -1,0 +1,9 @@
+struct Box[T]
+    v: T
+    n: Int
+
+fn boxed_len(b: Box[String]) -> Int
+    b.v.len() + b.n
+
+fn make_int(x: Int) -> Box[Int]
+    Box(x, 1)

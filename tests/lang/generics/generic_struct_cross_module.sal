@@ -1,0 +1,9 @@
+# exit: 13
+import "mods/generic_box.sal"
+
+# `Box[String]` is the instance `generic_box` made for `boxed_len`; `Box[Int]` the one it made for
+# `make_int`.
+fn main() -> Int ! alloc
+    s = Box(d"abcd", 2)
+    i = make_int(6)
+    boxed_len(s) + i.v + i.n

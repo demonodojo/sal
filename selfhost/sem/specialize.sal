@@ -3,7 +3,8 @@
 # A call to a generic `fn g[T, …]` whose arguments fix every type parameter to a concrete type calls
 # its own copy `g__<tipos>`, with the types substituted. Copies may call other generics, so the pass
 # repeats until no call changes; then the generic originals go. All or nothing per generic: a call
-# that does not fix the types, or a call from another module, leaves that generic erased.
+# that does not fix the types leaves that generic erased. A module also specializes the generics of
+# other modules that it calls (`MonoCtx`).
 #
 # Inference records each generic call as `caller \t offset \t callee \t type…` (`ic_record_generic`).
 # The calls are handled in the order of src/specialize.rs (caller name, then offset), so both
@@ -13,48 +14,113 @@ import "../ast/tygeneric.sal"
 import "../ast/tytext.sal"
 import "../pkg/result.sal"
 import infer
+import mono_ctx
+import struct_mono
 
-# Single program: `ext` is empty.
+# Single program: the functions, then the structs.
+fn monomorphize_all(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
+    cx = MonoCtx(sp_empty_program(), List.new[String](), List.new[String](), 1, List.new[String]())
+    monomorphize_structs(monomorphize(tp, errs), &mut cx, errs)
+
+# Single program: nothing from other modules, and the originals go at the end.
 fn monomorphize(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
-    ext = sp_empty_program()
-    keep = List.new[String]()
-    monomorphize_ext(tp, &ext, &keep, errs)
+    cx = MonoCtx(sp_empty_program(), List.new[String](), List.new[String](), 1, List.new[String]())
+    monomorphize_ext(tp, &mut cx, errs)
 
 fn sp_empty_program() -> TProgram ! alloc
     TProgram(List.new[TFn](), List.new[String](), List.new[TStruct](), List.new[String](), List.new[TEnum](), List.new[TProtocol](), List.new[TConst]())
 
-# `ext` holds the items of the other modules (inference needs them); `keep` the generics that stay
-# erased whatever their calls.
-fn monomorphize_ext(tp: TProgram, ext: &TProgram, keep: &List[String], errs: &mut List[String]) -> TProgram ! alloc
-    if sp_count_generic(&tp.fns, keep, 0, tp.fns.len(), 0) == 0
+# Specializes the generic calls of `tp`: its own generics and those of `cx.ext`. The copies made of
+# its own generics go to `cx.made`. `tp` is consumed once on every path: a by-value program that
+# only some branches move is not released on the others when the compiler builds the selfhost.
+fn monomorphize_ext(tp: TProgram, cx: &mut MonoCtx, errs: &mut List[String]) -> TProgram ! alloc
+    none = List.new[String]()
+    if sp_count_generic(&tp.fns, &none, 0, tp.fns.len(), 0) == 0 && sp_calls_ext_generic(&tp, &cx.ext) == 0
         tp
     elsif errs.len() > 0
         tp
-    elsif sp_infer_ok(&tp, ext) == 0
+    elsif sp_infer_ok(&tp, &cx.ext) == 0
         # A program that does not type-check as written keeps its errors for the regular inference.
         tp
     else
-        erased = tc_strs(keep)
-        sp_attempts(tp, ext, &mut erased, errs, 0)
-
-fn sp_attempts(tp: TProgram, ext: &TProgram, erased: &mut List[String], errs: &mut List[String], k: Int) -> TProgram ! alloc
-    if k > 64
-        tp
-    else
-        out = List.new[String]()
-        # A copy field by field (as `sp_union` makes it): the whole-struct `clone` of a
-        # `TProgram` leaves one enum box behind under `--instrument`.
-        none = sp_empty_program()
-        p = sp_run(sp_union(&tp, &none), ext, erased, errs, &mut out)
+        erased = sp_plan_erased(&tp, cx, errs)
         if errs.len() > 0
             tp
-        elsif out.len() == 0
-            p
-        elsif sp_has(erased, &out.get(0)) == 1
-            tp
         else
-            erased.push(out.get(0).dup())
-            sp_attempts(tp, ext, erased, errs, k + 1)
+            owns = sp_generic_names(&tp.fns, &erased)
+            out = List.new[String]()
+            copies = List.new[String]()
+            r = sp_run(tp, cx, &erased, errs, &mut out, &mut copies)
+            sp_own_copies(&copies, &owns, 0, &mut cx.made)
+            r
+
+# The generics that stay erased: trial runs on copies of `tp` (`sp_union`), each one adding the
+# generic that had a call it could not specialize, until a run needs no more. The real run then
+# goes on `tp` itself.
+fn sp_plan_erased(tp: &TProgram, cx: &MonoCtx, errs: &mut List[String]) -> List[String] ! alloc
+    erased = List.new[String]()
+    sp_plan_go(tp, cx, &mut erased, errs, 0)
+    erased
+
+fn sp_plan_go(tp: &TProgram, cx: &MonoCtx, erased: &mut List[String], errs: &mut List[String], k: Int) -> Int ! alloc
+    none = sp_empty_program()
+    out = List.new[String]()
+    copies = List.new[String]()
+    trial = sp_run(sp_union(tp, &none), cx, erased, errs, &mut out, &mut copies)
+    # The trial program only answers which generic to erase.
+    n = trial.fns.len()
+    if errs.len() > 0 || k > 64 || n < 0
+        0
+    elsif out.len() == 0
+        0
+    elsif sp_has(erased, &out.get(0)) == 1
+        0
+    else
+        erased.push(out.get(0).dup())
+        sp_plan_go(tp, cx, erased, errs, k + 1)
+
+# Names of the generics of `fns` that are not erased.
+fn sp_generic_names(fns: &List[TFn], erased: &List[String]) -> List[String] ! alloc
+    out = List.new[String]()
+    sp_generic_names_go(fns, erased, 0, &mut out)
+    out
+
+fn sp_generic_names_go(fns: &List[TFn], erased: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        f = fns.get(i)
+        if sp_is_generic(&f, erased) == 1
+            out.push(f.name.dup())
+        sp_generic_names_go(fns, erased, i + 1, out)
+
+# The copies (`generic \t type… \t name`) whose generic is one of `owns`.
+fn sp_own_copies(copies: &List[String], owns: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= copies.len()
+        0
+    else
+        e = copies.get(i)
+        fields = sp_split_tabs(&e)
+        if sp_has(owns, &fields.get(0)) == 1
+            out.push(e.dup())
+        sp_own_copies(copies, owns, i + 1, out)
+
+# Does `tp` call a generic of `ext`?
+fn sp_calls_ext_generic(tp: &TProgram, ext: &TProgram) -> Int ! alloc
+    names = List.new[String]()
+    sp_called_names(&tp.fns, &mut names)
+    none = List.new[String]()
+    sp_any_generic_named(&ext.fns, &names, &none, 0)
+
+fn sp_any_generic_named(fns: &List[TFn], names: &List[String], erased: &List[String], i: Int) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        f = fns.get(i)
+        if sp_is_generic(&f, erased) == 1 && sp_has(names, &f.name) == 1
+            1
+        else
+            sp_any_generic_named(fns, names, erased, i + 1)
 
 fn sp_count_generic(fns: &List[TFn], erased: &List[String], i: Int, n: Int, acc: Int) -> Int ! alloc
     if i >= n
@@ -139,19 +205,18 @@ fn sp_infer_ok(tp: &TProgram, ext: &TProgram) -> Int ! alloc
         1
 
 # ---- one attempt ----
-# Returns the specialized program, or puts in `erase` the generic that has to stay erased.
-fn sp_run(tp: TProgram, ext: &TProgram, erased: &List[String], errs: &mut List[String], erase: &mut List[String]) -> TProgram ! alloc
-    copies = List.new[String]()
-    sp_rounds(tp, ext, erased, &mut copies, errs, erase, 0)
+# Returns the specialized program, or puts in `erase` the generic that has to stay erased. `copies`
+# gets `generic \t type… \t name` for each copy the run calls.
+fn sp_run(tp: TProgram, cx: &MonoCtx, erased: &List[String], errs: &mut List[String], erase: &mut List[String], copies: &mut List[String]) -> TProgram ! alloc
+    sp_rounds(tp, cx, erased, copies, errs, erase, 0)
 
-# `copies` holds `callee \t type… \t name` for each copy made.
-fn sp_rounds(tp: TProgram, ext: &TProgram, erased: &List[String], copies: &mut List[String], errs: &mut List[String], erase: &mut List[String], k: Int) -> TProgram ! alloc
+fn sp_rounds(tp: TProgram, cx: &MonoCtx, erased: &List[String], copies: &mut List[String], errs: &mut List[String], erase: &mut List[String], k: Int) -> TProgram ! alloc
     if k > 256
         tp
     else
-        u = sp_union(&tp, ext)
+        u = sp_union(&tp, &cx.ext)
         c = ic_build(&u, 0, 0)
-        start = ext.fns.len()
+        start = cx.ext.fns.len()
         r = infer_program_go(&mut c, start, start + tp.fns.len())
         if result_is_err(&r) == 1
             # A copy that does not type-check is an error of that instantiation.
@@ -161,22 +226,30 @@ fn sp_rounds(tp: TProgram, ext: &TProgram, erased: &List[String], copies: &mut L
             recs = sp_sorted(&c.gcalls)
             renames = List.new[String]()
             news = List.new[TFn]()
-            bad = sp_collect(&tp, erased, &recs, 0, recs.len(), copies, &mut renames, &mut news)
+            bad = sp_collect(&tp, cx, erased, &recs, 0, recs.len(), copies, &mut renames, &mut news)
             if bad.len() > 0
                 erase.push(bad)
                 tp
             elsif renames.len() == 0 && news.len() == 0
-                sp_drop_generics(tp, erased)
+                sp_finish(tp, cx.remove, erased)
             else
                 tp2 = sp_rename_program(tp, &renames)
-                tp3 = sp_place_copies(tp2, &news, 0, news.len())
-                sp_rounds(tp3, ext, erased, copies, errs, erase, k + 1)
+                tp3 = sp_place_copies(&tp2, &news)
+                sp_rounds(tp3, cx, erased, copies, errs, erase, k + 1)
+
+# The generic originals go here for a single file; a graph sweeps them once every module renamed
+# its calls (`sp_sweep_generics`).
+fn sp_finish(tp: TProgram, remove: Int, erased: &List[String]) -> TProgram ! alloc
+    if remove == 1
+        sp_drop_generics(tp, erased)
+    else
+        tp
 
 fn result_err_text(r: &Res) -> String ! alloc
     r.err.dup()
 
 # Goes through the records; returns the name of a generic with an unspecializable call, or "".
-fn sp_collect(tp: &TProgram, erased: &List[String], recs: &List[String], i: Int, n: Int, copies: &mut List[String], renames: &mut List[String], news: &mut List[TFn]) -> String ! alloc
+fn sp_collect(tp: &TProgram, cx: &MonoCtx, erased: &List[String], recs: &List[String], i: Int, n: Int, copies: &mut List[String], renames: &mut List[String], news: &mut List[TFn]) -> String ! alloc
     if i >= n
         ""
     else
@@ -184,21 +257,36 @@ fn sp_collect(tp: &TProgram, erased: &List[String], recs: &List[String], i: Int,
         caller = fields.get(0)
         callee = fields.get(2)
         gi = sp_fn_index(&tp.fns, &callee, 0, tp.fns.len())
-        if gi < 0
-            sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
-        elsif sp_is_generic(&tp.fns.get(gi), erased) == 0
-            sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
+        ei = sp_fn_index(&cx.ext.fns, &callee, 0, cx.ext.fns.len())
+        own = sp_generic_at(&tp.fns, gi, erased)
+        ext = sp_generic_at(&cx.ext.fns, ei, erased)
+        if own + ext == 0
+            sp_collect(tp, cx, erased, recs, i + 1, n, copies, renames, news)
         elsif sp_caller_is_generic(tp, &caller, erased) == 1
             # Inside a generic original, which goes away.
-            sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
+            sp_collect(tp, cx, erased, recs, i + 1, n, copies, renames, news)
         else
             vals = sp_tail(&fields, 3)
             if sp_any_empty(&vals, 0) == 1
                 callee.dup()
             else
-                name = sp_copy_for(tp, &tp.fns.get(gi), &vals, copies, news)
+                name = sp_copy_for_at(tp, cx, gi, ei, own, &vals, copies, news)
                 renames.push(caller + "\t" + fields.get(1) + "\t" + callee + "\t" + name)
-                sp_collect(tp, erased, recs, i + 1, n, copies, renames, news)
+                sp_collect(tp, cx, erased, recs, i + 1, n, copies, renames, news)
+
+fn sp_generic_at(fns: &List[TFn], i: Int, erased: &List[String]) -> Int ! alloc
+    if i < 0
+        0
+    else
+        sp_is_generic(&fns.get(i), erased)
+
+fn sp_copy_for_at(tp: &TProgram, cx: &MonoCtx, gi: Int, ei: Int, own: Int, vals: &List[String], copies: &mut List[String], news: &mut List[TFn]) -> String ! alloc
+    if own == 1
+        g = tp.fns.get(gi)
+        sp_copy_for(tp, cx, &g, 1, vals, copies, news)
+    else
+        g = cx.ext.fns.get(ei)
+        sp_copy_for(tp, cx, &g, 0, vals, copies, news)
 
 fn sp_caller_is_generic(tp: &TProgram, caller: &String, erased: &List[String]) -> Int ! alloc
     fi = sp_fn_index(&tp.fns, caller, 0, tp.fns.len())
@@ -223,17 +311,28 @@ fn sp_any_empty(xs: &List[String], i: Int) -> Int ! alloc
     else
         sp_any_empty(xs, i + 1)
 
-# The name of the copy of `g` for `vals`, making it when it does not exist yet.
-fn sp_copy_for(tp: &TProgram, g: &TFn, vals: &List[String], copies: &mut List[String], news: &mut List[TFn]) -> String ! alloc
+# The name of the copy of `g` for `vals`: one this run already uses, the one the module that
+# defines `g` made (when `g` comes from another module), or a new one.
+fn sp_copy_for(tp: &TProgram, cx: &MonoCtx, g: &TFn, own: Int, vals: &List[String], copies: &mut List[String], news: &mut List[TFn]) -> String ! alloc
     key = sp_join(vals, 0, g.name.dup())
     found = sp_copy_lookup(copies, &key, 0, copies.len())
+    there = sp_existing(cx, &key, own)
     if found.len() > 0
         found
+    elsif there.len() > 0
+        copies.push(key + "\t" + there)
+        there
     else
-        name = sp_free_name(tp, news, tg_copy_name(&g.name, vals))
+        name = sp_free_name(tp, cx, news, tg_copy_name(&g.name, vals))
         copies.push(key + "\t" + name)
         news.push(sp_instantiate(g, &name, vals))
         name
+
+fn sp_existing(cx: &MonoCtx, key: &String, own: Int) -> String ! alloc
+    if own == 1
+        ""
+    else
+        sp_copy_lookup(&cx.existing, key, 0, cx.existing.len())
 
 fn sp_join(xs: &List[String], i: Int, acc: String) -> String ! alloc
     if i >= xs.len()
@@ -253,10 +352,10 @@ fn sp_copy_lookup(copies: &List[String], key: &String, i: Int, n: Int) -> String
         else
             sp_copy_lookup(copies, key, i + 1, n)
 
-# `name`, with `_` appended while some fn (or a copy about to be added) already has it.
-fn sp_free_name(tp: &TProgram, news: &List[TFn], name: String) -> String ! alloc
-    if sp_fn_index(&tp.fns, &name, 0, tp.fns.len()) >= 0 || sp_fn_index(news, &name, 0, news.len()) >= 0
-        sp_free_name(tp, news, name + "_")
+# `name`, with `_` appended while some fn of the graph (or a copy about to be added) already has it.
+fn sp_free_name(tp: &TProgram, cx: &MonoCtx, news: &List[TFn], name: String) -> String ! alloc
+    if sp_fn_index(&tp.fns, &name, 0, tp.fns.len()) >= 0 || sp_fn_index(news, &name, 0, news.len()) >= 0 || sp_has(&cx.taken, &name) == 1
+        sp_free_name(tp, cx, news, name + "_")
     else
         name
 
@@ -382,35 +481,44 @@ fn sp_rename_fns(xs: &List[TFn], i: Int, renames: &List[String], out: &mut List[
         0
     else
         x = xs.get(i)
-        out.push(sp_rename_fn(x.clone(), renames, 0))
+        out.push(sp_rename_fn(&x, renames))
         sp_rename_fns(xs, i + 1, renames, out)
 
-fn sp_rename_fn(f: TFn, renames: &List[String], k: Int) -> TFn ! alloc
+# A copy of `f` with the renames of its calls applied.
+fn sp_rename_fn(f: &TFn, renames: &List[String]) -> TFn ! alloc
+    body = sp_rename_body(&f.body, &f.name, renames, 0)
+    TFn(f.name.dup(), f.params.clone(), body, f.ret.dup(), f.no_heap, f.arena, f.fx.clone(), f.tparams.clone(), f.recv.dup(), f.mkind, f.deprecated.dup(), f.tyat.dup())
+
+fn sp_rename_body(b: &TBlock, fname: &String, renames: &List[String], k: Int) -> TBlock ! alloc
+    none = List.new[String]()
     if k >= renames.len()
-        f
+        sp_block(b, &none, &none, 0, &"", &"")
     else
         r = sp_split_tabs(&renames.get(k))
-        if r.get(0).eq(&f.name) == 1
-            none = List.new[String]()
-            body = sp_block(&f.body, &none, &none, sp_atoi(&r.get(1), 0, 0), &r.get(2), &r.get(3))
-            g = TFn(f.name.dup(), f.params.clone(), body, f.ret.dup(), f.no_heap, f.arena, f.fx.clone(), f.tparams.clone(), f.recv.dup(), f.mkind, f.deprecated.dup(), f.tyat.dup())
-            sp_rename_fn(g, renames, k + 1)
+        if r.get(0).eq(fname) == 1
+            nb = sp_block(b, &none, &none, sp_atoi(&r.get(1), 0, 0), &r.get(2), &r.get(3))
+            sp_rename_body(&nb, fname, renames, k + 1)
         else
-            sp_rename_fn(f, renames, k + 1)
+            sp_rename_body(b, fname, renames, k + 1)
 
 # Each copy goes right after its generic and the copies of it made before.
-fn sp_place_copies(tp: TProgram, news: &List[TFn], i: Int, n: Int) -> TProgram ! alloc
+fn sp_place_copies(tp: &TProgram, news: &List[TFn]) -> TProgram ! alloc
+    fns = sp_place_go(&tp.fns, news, 0, news.len())
+    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+
+fn sp_place_go(fns: &List[TFn], news: &List[TFn], i: Int, n: Int) -> List[TFn] ! alloc
     if i >= n
-        tp
+        out = List.new[TFn]()
+        sp_append_fns(&mut out, fns, 0, fns.len())
+        out
     else
         nf = news.get(i)
         callee = sp_copy_base(&nf.name)
-        pos = sp_last_of(&tp.fns, &callee, 0, tp.fns.len(), 0 - 1)
-        at = sp_after(pos, tp.fns.len())
-        fns = List.new[TFn]()
-        sp_insert(&tp.fns, 0, at, &nf, &mut fns)
-        tp2 = TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
-        sp_place_copies(tp2, news, i + 1, n)
+        pos = sp_last_of(fns, &callee, 0, fns.len(), 0 - 1)
+        at = sp_after(pos, fns.len())
+        next = List.new[TFn]()
+        sp_insert(fns, 0, at, &nf, &mut next)
+        sp_place_go(&next, news, i + 1, n)
 
 fn sp_after(pos: Int, n: Int) -> Int ! alloc
     if pos < 0
@@ -668,3 +776,402 @@ fn sp_atoi(s: &String, i: Int, acc: Int) -> Int ! alloc
         acc
     else
         sp_atoi(s, i + 1, acc * 10 + s.char(i) - 48)
+
+# ---- module graph: the sweep ----
+# Removes the generic originals that no module of the graph calls any more. Repeats until nothing
+# changes: a removed original may have been the last caller of another one.
+fn sp_sweep_generics(progs: &mut List[TProgram]) -> Int ! alloc
+    called = List.new[String]()
+    sp_called_progs(progs, 0, &mut called)
+    if sp_uncalled_progs(progs, &called, 0) == 0
+        0
+    else
+        sp_sweep_go(progs, &called, 0)
+        sp_sweep_generics(progs)
+
+fn sp_uncalled_progs(progs: &List[TProgram], called: &List[String], i: Int) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        if sp_count_uncalled(&tp.fns, called, 0) > 0
+            1
+        else
+            sp_uncalled_progs(progs, called, i + 1)
+
+fn sp_called_progs(progs: &List[TProgram], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        sp_called_names(&tp.fns, out)
+        sp_called_progs(progs, i + 1, out)
+
+fn sp_sweep_go(progs: &mut List[TProgram], called: &List[String], i: Int) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        # Only a module with an original to remove gets a new program.
+        if sp_count_uncalled(&tp.fns, called, 0) > 0
+            fns = List.new[TFn]()
+            sp_keep_called(&tp.fns, called, 0, &mut fns)
+            progs.set(i, TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone()))
+        sp_sweep_go(progs, called, i + 1)
+
+fn sp_count_uncalled(fns: &List[TFn], called: &List[String], i: Int) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        f = fns.get(i)
+        none = List.new[String]()
+        if sp_is_generic(&f, &none) == 1 && sp_has(called, &f.name) == 0
+            1
+        else
+            sp_count_uncalled(fns, called, i + 1)
+
+fn sp_keep_called(fns: &List[TFn], called: &List[String], i: Int, out: &mut List[TFn]) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        f = fns.get(i)
+        none = List.new[String]()
+        if sp_is_generic(&f, &none) == 0 || sp_has(called, &f.name) == 1
+            out.push(f.clone())
+        sp_keep_called(fns, called, i + 1, out)
+
+# ---- generic structs ----
+# Every `G[tipos concretos]` of a generic struct `G` becomes the struct `G__tipos`, and `G(..)` built
+# with those types calls its constructor (`StructMono`). Runs after the functions are monomorphized.
+# Mirror of `monomorphize_structs` in src/specialize.rs; `tp` is consumed once on every path.
+fn monomorphize_structs(tp: TProgram, cx: &mut MonoCtx, errs: &mut List[String]) -> TProgram ! alloc
+    gens = List.new[TStruct]()
+    sp_generic_structs(&tp.structs, &mut gens)
+    nown = gens.len()
+    sp_generic_structs(&cx.ext.structs, &mut gens)
+    if gens.len() == 0 || errs.len() > 0
+        tp
+    elsif sp_infer_ok(&tp, &cx.ext) == 0
+        tp
+    else
+        u = sp_union(&tp, &cx.ext)
+        c = ic_build(&u, 0, 0)
+        start = cx.ext.fns.len()
+        infer_program_go(&mut c, start, start + tp.fns.len())
+        recs = sp_sorted(&c.gctors)
+        taken = tc_strs(&cx.taken)
+        sp_type_names(&tp, &mut taken)
+        sm = StructMono(gens, nown, List.new[String](), List.new[TStruct](), List.new[String](), taken, tc_strs(&cx.existing), List.new[String]())
+        renames = List.new[String]()
+        sp_ctor_renames(&mut sm, &recs, 0, &mut renames)
+        tp2 = sp_rename_program(tp, &renames)
+        tp3 = sm.rw_program(&tp2)
+        tp4 = sp_place_structs(&tp3, &sm.news, &sm.news_from)
+        sp_append_strs(&mut cx.made, &sm.made, 0, sm.made.len())
+        cx.taken = sm.taken.clone()
+        sp_finish_structs(tp4, cx.remove)
+
+fn sp_generic_structs(xs: &List[TStruct], out: &mut List[TStruct]) -> Int ! alloc
+    if xs.len() == 0
+        0
+    else
+        sp_generic_structs_go(xs, 0, out)
+
+fn sp_generic_structs_go(xs: &List[TStruct], i: Int, out: &mut List[TStruct]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        if s.tparams.len() > 0
+            out.push(s.clone())
+        sp_generic_structs_go(xs, i + 1, out)
+
+# The struct and enum names of `tp`.
+fn sp_type_names(tp: &TProgram, out: &mut List[String]) -> Int ! alloc
+    sp_struct_names(&tp.structs, 0, out)
+    sp_enum_names(&tp.enums, 0, out)
+
+fn sp_struct_names(xs: &List[TStruct], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(xs.get(i).name.dup())
+        sp_struct_names(xs, i + 1, out)
+
+fn sp_enum_names(xs: &List[TEnum], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(xs.get(i).name.dup())
+        sp_enum_names(xs, i + 1, out)
+
+# Each construction record (`caller \t offset \t G \t type…`) names its instance and renames the call.
+fn sp_ctor_renames(sm: &mut StructMono, recs: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= recs.len()
+        0
+    else
+        f = sp_split_tabs(&recs.get(i))
+        gi = sm_struct_index(&sm.gens, &f.get(2), 0)
+        vals = sp_tail(&f, 3)
+        if gi >= 0 && sp_any_empty(&vals, 0) == 0
+            name = sm.instance(gi, &vals)
+            out.push(f.get(0) + "\t" + f.get(1) + "\t" + f.get(2) + "\t" + name)
+        sp_ctor_renames(sm, recs, i + 1, out)
+
+# Each instance goes right after its generic and the instances of it made before.
+fn sp_place_structs(tp: &TProgram, news: &List[TStruct], from: &List[String]) -> TProgram ! alloc
+    structs = sp_place_structs_go(&tp.structs, news, from, 0)
+    TProgram(tp.fns.clone(), tp.imports.clone(), structs, tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+
+fn sp_place_structs_go(xs: &List[TStruct], news: &List[TStruct], from: &List[String], i: Int) -> List[TStruct] ! alloc
+    if i >= news.len()
+        out = List.new[TStruct]()
+        sp_append_structs(&mut out, xs, 0, xs.len())
+        out
+    else
+        g = from.get(i)
+        pos = sp_last_struct_of(xs, &g, 0, 0 - 1)
+        at = sp_after(pos, xs.len())
+        next = List.new[TStruct]()
+        sp_insert_struct(xs, 0, at, &news.get(i), &mut next)
+        sp_place_structs_go(&next, news, from, i + 1)
+
+fn sp_last_struct_of(xs: &List[TStruct], g: &String, i: Int, acc: Int) -> Int ! alloc
+    if i >= xs.len()
+        acc
+    else
+        nm = xs.get(i).name.dup()
+        prefix = g + "__"
+        head = nm.slice(0, sp_min(prefix.len(), nm.len()))
+        if nm.eq(g) == 1 || (nm.len() > prefix.len() && head.eq(&prefix) == 1)
+            sp_last_struct_of(xs, g, i + 1, i)
+        else
+            sp_last_struct_of(xs, g, i + 1, acc)
+
+fn sp_insert_struct(xs: &List[TStruct], i: Int, at: Int, ns: &TStruct, out: &mut List[TStruct]) -> Int ! alloc
+    if i == at
+        out.push(ns.clone())
+    if i >= xs.len()
+        0
+    else
+        x = xs.get(i)
+        out.push(x.clone())
+        sp_insert_struct(xs, i + 1, at, ns, out)
+
+fn sp_finish_structs(tp: TProgram, remove: Int) -> TProgram ! alloc
+    if remove == 1
+        progs = List.new[TProgram]()
+        progs.push(tp)
+        sp_sweep_structs(&mut progs)
+        progs.pop()
+    else
+        tp
+
+# Removes the generic structs that no type or call of the graph names any more.
+fn sp_sweep_structs(progs: &mut List[TProgram]) -> Int ! alloc
+    named = List.new[String]()
+    sp_named_progs(progs, 0, &mut named)
+    sp_sweep_structs_go(progs, &named, 0)
+
+fn sp_named_progs(progs: &List[TProgram], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        sp_named_in(&tp, out)
+        sp_named_progs(progs, i + 1, out)
+
+# The names the types of `tp` mention (outside the generic structs themselves) and the called names.
+fn sp_named_in(tp: &TProgram, out: &mut List[String]) -> Int ! alloc
+    sp_called_names(&tp.fns, out)
+    sp_named_fns(&tp.fns, 0, out)
+    sp_named_structs(&tp.structs, 0, out)
+    sp_named_enums(&tp.enums, 0, out)
+    sp_named_consts(&tp.consts, 0, out)
+
+fn sp_named_fns(xs: &List[TFn], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        f = xs.get(i)
+        sp_named_params(&f.params, 0, out)
+        sp_idents(&f.ret, out)
+        sp_named_block(&f.body, out)
+        sp_named_fns(xs, i + 1, out)
+
+fn sp_named_params(xs: &List[TParam], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        sp_idents(&xs.get(i).ty, out)
+        sp_named_params(xs, i + 1, out)
+
+fn sp_named_structs(xs: &List[TStruct], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        if s.tparams.len() == 0
+            sp_named_fields(&s.fields, 0, out)
+        sp_named_structs(xs, i + 1, out)
+
+fn sp_named_fields(xs: &List[TField], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        sp_idents(&xs.get(i).ty, out)
+        sp_named_fields(xs, i + 1, out)
+
+fn sp_named_enums(xs: &List[TEnum], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        sp_named_variants(&xs.get(i).variants, 0, out)
+        sp_named_enums(xs, i + 1, out)
+
+fn sp_named_variants(xs: &List[TVariant], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        v = xs.get(i)
+        sp_named_texts(&v.fields, 0, out)
+        sp_named_variants(xs, i + 1, out)
+
+fn sp_named_texts(xs: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        sp_idents(&xs.get(i), out)
+        sp_named_texts(xs, i + 1, out)
+
+fn sp_named_consts(xs: &List[TConst], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        sp_idents(&xs.get(i).ty, out)
+        sp_named_consts(xs, i + 1, out)
+
+# `let` types and type arguments of a body.
+fn sp_named_block(b: &TBlock, out: &mut List[String]) -> Int ! alloc
+    sp_named_stmts(&b.stmts, 0, out)
+    sp_named_expr(&b.tail, out)
+
+fn sp_named_stmts(xs: &List[TStmt], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        st = xs.get(i)
+        sp_idents(&st.ty, out)
+        sp_named_expr(&st.expr, out)
+        sp_named_expr(&st.target, out)
+        sp_named_stmts(xs, i + 1, out)
+
+fn sp_named_exprs(xs: &List[Expr], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        sp_named_expr(&xs.get(i), out)
+        sp_named_exprs(xs, i + 1, out)
+
+fn sp_named_expr(e: &Expr, out: &mut List[String]) -> Int ! alloc
+    match e
+        XCall(_, args, targs, _) => sp_named_call(&targs, &args, out)
+        XBin(_, l, r) => sp_named_pair(&l, &r, out)
+        XTo(_, inner) => sp_named_expr(&inner, out)
+        XOn(_, body, _, _) => sp_named_block(&body, out)
+        XIf(cond, then_b, else_b, _, elsifs) => sp_named_if(&cond, &then_b, &else_b, &elsifs, out)
+        XWhile(cond, body) => sp_named_while(&cond, &body, out)
+        XField(base, _) => sp_named_expr(&base, out)
+        XLambda(_, body) => sp_named_expr(&body, out)
+        XUnary(_, inner) => sp_named_expr(&inner, out)
+        XMatch(scrut, arms) => sp_named_match(&scrut, &arms, out)
+        XTry(inner) => sp_named_expr(&inner, out)
+        _ => 0
+
+fn sp_named_call(targs: &String, args: &List[Expr], out: &mut List[String]) -> Int ! alloc
+    sp_idents(targs, out)
+    sp_named_exprs(args, 0, out)
+
+fn sp_named_pair(l: &Expr, r: &Expr, out: &mut List[String]) -> Int ! alloc
+    sp_named_expr(l, out)
+    sp_named_expr(r, out)
+
+fn sp_named_while(cond: &Expr, body: &TBlock, out: &mut List[String]) -> Int ! alloc
+    sp_named_expr(cond, out)
+    sp_named_block(body, out)
+
+fn sp_named_if(cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], out: &mut List[String]) -> Int ! alloc
+    sp_named_expr(cond, out)
+    sp_named_block(then_b, out)
+    sp_named_block(else_b, out)
+    sp_named_elsifs(elsifs, 0, out)
+
+fn sp_named_elsifs(xs: &List[TElsif], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        sp_named_expr(&a.cond, out)
+        sp_named_block(&a.body, out)
+        sp_named_elsifs(xs, i + 1, out)
+
+fn sp_named_match(scrut: &Expr, arms: &List[TArm], out: &mut List[String]) -> Int ! alloc
+    sp_named_expr(scrut, out)
+    sp_named_arms(arms, 0, out)
+
+fn sp_named_arms(xs: &List[TArm], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        sp_named_expr(&a.body, out)
+        if a.has_suite == 1
+            sp_named_block(&a.suite, out)
+        sp_named_arms(xs, i + 1, out)
+
+# The identifiers of a type text.
+fn sp_idents(t: &String, out: &mut List[String]) -> Int ! alloc
+    sp_idents_go(t, 0, out)
+
+fn sp_idents_go(t: &String, i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= t.len()
+        0
+    elsif tg_ident_char(t.char(i)) == 1
+        j = tg_ident_end(t, i, t.len())
+        w = t.slice(i, j)
+        if sp_has(out, &w) == 0
+            out.push(w)
+        sp_idents_go(t, j, out)
+    else
+        sp_idents_go(t, i + 1, out)
+
+fn sp_sweep_structs_go(progs: &mut List[TProgram], named: &List[String], i: Int) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        # Only a module with a generic struct to remove gets a new program.
+        if sp_unnamed_structs(&tp.structs, named, 0) > 0
+            structs = List.new[TStruct]()
+            sp_keep_named(&tp.structs, named, 0, &mut structs)
+            progs.set(i, TProgram(tp.fns.clone(), tp.imports.clone(), structs, tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone()))
+        sp_sweep_structs_go(progs, named, i + 1)
+
+fn sp_unnamed_structs(xs: &List[TStruct], named: &List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        if s.tparams.len() > 0 && sp_has(named, &s.name) == 0
+            1
+        else
+            sp_unnamed_structs(xs, named, i + 1)
+
+fn sp_keep_named(xs: &List[TStruct], named: &List[String], i: Int, out: &mut List[TStruct]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        if s.tparams.len() == 0 || sp_has(named, &s.name) == 1
+            out.push(s.clone())
+        sp_keep_named(xs, named, i + 1, out)

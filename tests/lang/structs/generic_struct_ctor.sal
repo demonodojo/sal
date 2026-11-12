@@ -1,0 +1,9 @@
+# exit: 15
+struct Box[T]
+    v: T
+    n: Int
+
+fn main() -> Int ! alloc
+    b = Box(d"hey", 2)
+    c = Box(7, 3)
+    b.v.len() + c.v + b.n + c.n

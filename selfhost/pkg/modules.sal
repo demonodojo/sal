@@ -5,6 +5,7 @@ import "../front/parser.sal"
 import "../sem/methods.sal"
 import "../sem/infer.sal"
 import "../sem/specialize.sal"
+import "../sem/mono_ctx.sal"
 import "../sem/checks.sal"
 import "../ast/tast.sal"
 
@@ -778,40 +779,107 @@ fn union_enums(dst: &mut List[TEnum], src: &List[TEnum], i: Int, n: Int) -> Int 
         union_enums(dst, src, i + 1, n)
 
 # ---- monomorphization ----
-# `monomorphize_ext` per module, against the items of the other modules. A generic called from
-# another module stays erased: its copies would have to live in the caller's module. Mirror of
+# `monomorphize_ext` per module, in dependency order. A module specializes its own generics and
+# those of other modules that it calls: it calls the copy the defining module already made, or
+# makes its own. The originals nobody calls any more go at the end (`sp_sweep_generics`). Mirror of
 # `monomorphize_graph` in src/modules.rs.
 fn monomorphize_graph(order: &mut Graph) -> Res ! alloc
     errs = List.new[String]()
-    mono_modules(order, 0, order.progs.len(), &mut errs)
+    taken = List.new[String]()
+    mono_names(&order.progs, 0, &mut taken)
+    existing = List.new[String]()
+    mono_modules(order, 0, order.progs.len(), &mut taken, &mut existing, &mut errs)
+    if errs.len() == 0
+        sp_sweep_generics(&mut order.progs)
+        mono_structs_graph(order, &mut errs)
     if errs.len() > 0
         result_err_str(&errs.get(0))
     else
         result_ok(0)
 
-fn mono_modules(order: &mut Graph, i: Int, n: Int, errs: &mut List[String]) -> Int ! alloc
+# The fn names of every module.
+fn mono_names(progs: &List[TProgram], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        mono_fn_names(&tp.fns, 0, out)
+        mono_names(progs, i + 1, out)
+
+fn mono_fn_names(fns: &List[TFn], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        out.push(fns.get(i).name.dup())
+        mono_fn_names(fns, i + 1, out)
+
+fn mono_modules(order: &mut Graph, i: Int, n: Int, taken: &mut List[String], existing: &mut List[String], errs: &mut List[String]) -> Int ! alloc
     if i >= n || errs.len() > 0
         0
     else
-        keep = List.new[String]()
         ext = sp_empty_program()
-        mono_others(&order.progs, i, 0, n, &mut keep, &mut ext)
-        none = sp_empty_program()
-        own = sp_union(&order.progs.get(i), &none)
-        tp = monomorphize_ext(own, &ext, &keep, errs)
-        order.progs.set(i, tp)
-        mono_modules(order, i + 1, n, errs)
+        mono_others(&order.progs, i, 0, n, &mut ext)
+        cur = order.progs.get(i)
+        none = List.new[String]()
+        # Only a module with generic calls to specialize gets a new program.
+        if sp_count_generic(&cur.fns, &none, 0, cur.fns.len(), 0) > 0 || sp_calls_ext_generic(&cur, &ext) == 1
+            cx = MonoCtx(ext, existing.clone(), taken.clone(), 0, List.new[String]())
+            own = sp_union(&cur, &sp_empty_program())
+            tp = monomorphize_ext(own, &mut cx, errs)
+            mono_fn_names(&tp.fns, 0, taken)
+            sp_append_strs(existing, &cx.made, 0, cx.made.len())
+            order.progs.set(i, tp)
+        mono_modules(order, i + 1, n, taken, existing, errs)
 
-fn mono_others(progs: &List[TProgram], i: Int, k: Int, n: Int, keep: &mut List[String], ext: &mut TProgram) -> Int ! alloc
+fn mono_others(progs: &List[TProgram], i: Int, k: Int, n: Int, ext: &mut TProgram) -> Int ! alloc
     if k >= n
         0
     elsif k == i
-        mono_others(progs, i, k + 1, n, keep, ext)
+        mono_others(progs, i, k + 1, n, ext)
     else
         tp = progs.get(k)
-        sp_called_names(&tp.fns, keep)
         sp_append_fns(&mut ext.fns, &tp.fns, 0, tp.fns.len())
         sp_append_structs(&mut ext.structs, &tp.structs, 0, tp.structs.len())
         sp_append_enums(&mut ext.enums, &tp.enums, 0, tp.enums.len())
         sp_append_strs(&mut ext.imports, &tp.imports, 0, tp.imports.len())
-        mono_others(progs, i, k + 1, n, keep, ext)
+        mono_others(progs, i, k + 1, n, ext)
+
+# The same for generic structs, once the functions are concrete: a module instantiates its own
+# generic structs and those of other modules that it names, reusing the instance the defining module
+# made (`monomorphize_graph_structs` in src/modules.rs).
+fn mono_structs_graph(order: &mut Graph, errs: &mut List[String]) -> Int ! alloc
+    taken = List.new[String]()
+    mono_type_names(&order.progs, 0, &mut taken)
+    existing = List.new[String]()
+    mono_struct_modules(order, 0, order.progs.len(), &mut taken, &mut existing, errs)
+    if errs.len() == 0
+        sp_sweep_structs(&mut order.progs)
+    0
+
+fn mono_type_names(progs: &List[TProgram], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        sp_type_names(&tp, out)
+        mono_type_names(progs, i + 1, out)
+
+fn mono_struct_modules(order: &mut Graph, i: Int, n: Int, taken: &mut List[String], existing: &mut List[String], errs: &mut List[String]) -> Int ! alloc
+    if i >= n || errs.len() > 0
+        0
+    else
+        ext = sp_empty_program()
+        mono_others(&order.progs, i, 0, n, &mut ext)
+        cur = order.progs.get(i)
+        gens = List.new[TStruct]()
+        sp_generic_structs(&cur.structs, &mut gens)
+        sp_generic_structs(&ext.structs, &mut gens)
+        # Only a module with generic structs in view gets a new program.
+        if gens.len() > 0
+            cx = MonoCtx(ext, existing.clone(), taken.clone(), 0, List.new[String]())
+            own = sp_union(&cur, &sp_empty_program())
+            tp = monomorphize_structs(own, &mut cx, errs)
+            sp_type_names(&tp, taken)
+            sp_append_strs(existing, &cx.made, 0, cx.made.len())
+            order.progs.set(i, tp)
+        mono_struct_modules(order, i + 1, n, taken, existing, errs)

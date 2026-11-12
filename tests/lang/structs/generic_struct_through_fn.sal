@@ -1,0 +1,12 @@
+# exit: 7
+struct Pair[A, B]
+    a: A
+    b: B
+
+fn swap[A, B](p: Pair[A, B]) -> Pair[B, A]
+    Pair(p.b, p.a)
+
+fn main() -> Int ! alloc
+    p = Pair(d"xy", 5)
+    q = swap(p)
+    q.a + q.b.len()

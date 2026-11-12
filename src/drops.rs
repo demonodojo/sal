@@ -46,9 +46,6 @@ thread_local! {
     static PASSTHRU_CALLS: std::cell::RefCell<HashSet<(u32, u32)>> = std::cell::RefCell::new(HashSet::new());
     /// Every struct name of the program (constructor calls).
     static STRUCT_NAMES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
-    /// Locals of the function passed directly as an argument of a struct constructor: the
-    /// struct owns them from then on (see `Ctx::moved_clean_list`).
-    static CTOR_ARGS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// Locals passed to `list_push_share`: the list borrows the element, so a later
     /// `list_get` is the same pointer and the list must not be released with `list_free`.
     static SHARED_LISTS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
@@ -1868,15 +1865,15 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashMa
 }
 
 impl Ctx {
-    /// A local bound once, handed to a struct constructor, which owns it from then on,
-    /// and only ever filled with fresh values: the owner's glue releases its elements, so the
-    /// list is built owned (`own_inline_string_list`).
+    /// A local bound once, moved out of this scope (to a struct constructor, a callee that
+    /// takes it, or by `return`), and only ever filled with fresh values or owned parameters:
+    /// the new owner releases its elements (SPEC «Memoria»: a `List[String]` owns its strings),
+    /// so the list is built owned (`own_inline_string_list`).
     fn moved_clean_list(&self, name: &str) -> bool {
         self.facts.moved.as_ref().is_some_and(|m| m.contains(name))
             && !self.facts.tainted.contains(name)
             && !self.params.contains(name)
             && self.facts.bindings.get(name) == Some(&1)
-            && CTOR_ARGS.with(|c| c.borrow().contains(name))
     }
 
     /// The release of a value an expression statement discards: a fresh value (see
@@ -2476,15 +2473,6 @@ fn collect_shared_expr(e: &Expr, out: &mut HashSet<String>) {
                     out.insert(xs.clone());
                 }
             }
-            if let Expr::Ident { name, .. } = func.as_ref() {
-                if STRUCT_NAMES.with(|n| n.borrow().contains(name)) {
-                    for a in args {
-                        if let Expr::Ident { name: l, .. } = a {
-                            CTOR_ARGS.with(|c| c.borrow_mut().insert(l.clone()));
-                        }
-                    }
-                }
-            }
             collect_shared_expr(func, out);
             for a in args {
                 collect_shared_expr(a, out);
@@ -2528,7 +2516,6 @@ fn collect_shared_expr(e: &Expr, out: &mut HashSet<String>) {
 }
 
 fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
-    CTOR_ARGS.with(|c| c.borrow_mut().clear());
     SHARED_LISTS.with(|s| *s.borrow_mut() = shared_list_names(f));
     let mut borrows = HashMap::new();
     claim_block(&mut f.body, true, &mut borrows, variants);
@@ -2593,7 +2580,9 @@ fn owned_param_release(ty: &Type) -> Option<&'static str> {
         Type::Named { name, args, .. } if args.is_empty() && name == "String" => Some("free"),
         Type::Named { name, args, .. } if name == "List" && args.len() == 1 => Some("list_free"),
         Type::Named { name, args, .. } if name == "Dict" && args.len() == 2 => Some("dict_free"),
-        Type::Named { name, args, .. } if args.is_empty() && is_ownable_enum(name) => Some("enum_free"),
+        // A generic enum (`Option[String]`, `Tree[T]` instantiated) has one representation for
+        // every type argument: its box is released alike.
+        Type::Named { name, .. } if is_ownable_enum(name) => Some("enum_free"),
         _ => None,
     }
 }

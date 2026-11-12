@@ -83,8 +83,6 @@ struct DC
     ps: List[TParam]
     scalars: List[String]
     copy_ok: List[Int]
-    # Locals passed whole to a struct constructor (`CTOR_ARGS` in src/drops.rs).
-    ctor_args: List[String]
     # Names first bound to references, then once to an owned value (`ref_then_owned`): name -> how
     # many of their bindings are references.
     rto: NM
@@ -115,7 +113,7 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
     _f = list_push(&mut cells, 0)
     _g = list_push(&mut cells, 0)
     _h = list_push(&mut cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, List.new[String](), nm_new(), nm_new(), nm_new())
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new())
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -1488,9 +1486,9 @@ fn dx_elem_release_call(c: &DC, name: &String, args: &List[Expr]) -> Int ! alloc
         else
             nm_get(&c.owned_enums, &dx_ident(&first))
 
-# A local bound once, handed whole to a struct constructor (which owns it from then on) and only
-# filled with fresh values: the owner's glue releases its elements, so the list is built owned
-# (`moved_clean_list` in src/drops.rs).
+# A local bound once, moved out of this scope (to a struct constructor, a callee that takes it, or
+# by `return`) and only filled with fresh values or owned parameters: the new owner releases its
+# elements, so the list is built owned (`moved_clean_list` in src/drops.rs).
 fn dr_moved_clean_list(c: &DC, name: &String) -> Int ! alloc
     if nm_get(&c.took, name) == 0
         0
@@ -1501,7 +1499,7 @@ fn dr_moved_clean_list(c: &DC, name: &String) -> Int ! alloc
     elsif nm_get(&c.defs, name) != 1
         0
     else
-        dr_in_live(&c.ctor_args, name, 0, c.ctor_args.len())
+        1
 
 # `list_new[String]()` becomes `list_new_owned[String]()` (`own_inline_string_list`).
 fn dr_own_inline_string_list(e: Expr) -> Expr ! alloc
@@ -1512,94 +1510,6 @@ fn dr_own_inline_string_list(e: Expr) -> Expr ! alloc
             else
                 XCall(fname, args, targs, xp)
         _ => e
-
-# ---- locals passed whole to a struct constructor (`collect_shared_expr` in src/drops.rs) ----
-fn ca_is_struct(vm: Int, name: &String) -> Int ! alloc
-    if map_get(vm, str_own(&("struct:" + name))) != 0
-        1
-    elsif map_get(vm, str_own(&("glue:" + name))) != 0
-        1
-    else
-        0
-
-fn ca_block(vm: Int, b: &TBlock, out: &mut List[String]) -> Int ! alloc
-    ca_stmts(vm, &b.stmts, 0, b.stmts.len(), out)
-    ca_expr(vm, &b.tail, out)
-
-fn ca_stmts(vm: Int, xs: &List[TStmt], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        st = xs.get(i)
-        ca_expr(vm, &st.target, out)
-        ca_expr(vm, &st.expr, out)
-        ca_stmts(vm, xs, i + 1, n, out)
-
-fn ca_expr(vm: Int, e: &Expr, out: &mut List[String]) -> Int ! alloc
-    match e
-        XCall(name, args, targs, xp) => ca_call(vm, &name, &args, out)
-        XBin(op, l, r) => ca_pair(vm, &l, &r, out)
-        XUnary(op, inner) => ca_expr(vm, &inner, out)
-        XField(base, field) => ca_expr(vm, &base, out)
-        XTo(place, inner) => ca_expr(vm, &inner, out)
-        XTry(inner) => ca_expr(vm, &inner, out)
-        XLambda(param, body) => ca_expr(vm, &body, out)
-        XOn(place, body, kern, idx) => ca_block(vm, &body, out)
-        XWhile(cond, body) => ca_cond_block(vm, &cond, &body, out)
-        XIf(cond, t, el, has_else, elsifs) => ca_if(vm, &cond, &t, &el, &elsifs, out)
-        XMatch(scrut, arms) => ca_match(vm, &scrut, &arms, 0, arms.len(), out)
-        _ => 0
-
-fn ca_pair(vm: Int, l: &Expr, r: &Expr, out: &mut List[String]) -> Int ! alloc
-    ca_expr(vm, l, out)
-    ca_expr(vm, r, out)
-
-fn ca_cond_block(vm: Int, cond: &Expr, b: &TBlock, out: &mut List[String]) -> Int ! alloc
-    ca_expr(vm, cond, out)
-    ca_block(vm, b, out)
-
-fn ca_if(vm: Int, cond: &Expr, t: &TBlock, el: &TBlock, elsifs: &List[TElsif], out: &mut List[String]) -> Int ! alloc
-    ca_cond_block(vm, cond, t, out)
-    ca_block(vm, el, out)
-    ca_elsifs(vm, elsifs, 0, elsifs.len(), out)
-
-fn ca_elsifs(vm: Int, xs: &List[TElsif], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        a = xs.get(i)
-        ca_cond_block(vm, &a.cond, &a.body, out)
-        ca_elsifs(vm, xs, i + 1, n, out)
-
-fn ca_match(vm: Int, scrut: &Expr, arms: &List[TArm], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
-    if i >= n
-        ca_expr(vm, scrut, out)
-    else
-        a = arms.get(i)
-        ca_expr(vm, &a.body, out)
-        ca_block(vm, &a.suite, out)
-        ca_match(vm, scrut, arms, i + 1, n, out)
-
-fn ca_call(vm: Int, name: &String, args: &List[Expr], out: &mut List[String]) -> Int ! alloc
-    if ca_is_struct(vm, name) == 1
-        ca_idents(args, 0, args.len(), out)
-    ca_args(vm, args, 0, args.len(), out)
-
-fn ca_idents(args: &List[Expr], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        match args.get(i)
-            XIdent(l) => out.push(l.dup())
-            _ => 0
-        ca_idents(args, i + 1, n, out)
-
-fn ca_args(vm: Int, args: &List[Expr], i: Int, n: Int, out: &mut List[String]) -> Int ! alloc
-    if i >= n
-        0
-    else
-        ca_expr(vm, &args.get(i), out)
-        ca_args(vm, args, i + 1, n, out)
 
 # An enum list the pass releases (kind 6) is built as `list_new_owned[E]()`: the lowering
 # stores the element descriptor `E` and the list frees its boxes. Other enum lists keep
@@ -2423,13 +2333,17 @@ fn dr_param_kind(c: &DC, ty: &String) -> Int ! alloc
             else
                 0
         else
-            dr_param_generic_kind(trim_spaces(ty.slice(0, open)))
+            dr_param_generic_kind(c.variants, trim_spaces(ty.slice(0, open)))
 
-fn dr_param_generic_kind(head: String) -> Int ! alloc
+# A generic enum (`Option[String]`) has one representation for every type argument: its box is
+# released alike (`owned_param_release` in src/drops.rs).
+fn dr_param_generic_kind(variants: Int, head: String) -> Int ! alloc
     if head.eq("List") == 1
         2
     elsif head.eq("Dict") == 1
         4
+    elsif map_get(variants, str_own(&("enum:" + head))) != 0
+        5
     else
         0
 
@@ -2501,7 +2415,6 @@ fn dr_seed_params(c: &mut DC, i: Int, n: Int) -> Int ! alloc
 # Escape facts of a fn body under the read-only assumptions `ro`.
 fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
     c = dr_new(variants, ro, lists, params, scalars, copy_ok)
-    ca_block(variants, body, &mut c.ctor_args)
     dr_ref_then_owned(params, body, &mut c.rto, &mut c.rtop)
     n = c.ps.len()
     _s = dr_seed_params(&mut c, 0, n)
@@ -2688,7 +2601,7 @@ fn dr_param_caller_keeps(ty: &String, variants: Int) -> Int ! alloc
                 0
             else
                 1
-        elsif dr_param_generic_kind(trim_spaces(ty.slice(0, open))) == 0
+        elsif dr_param_generic_kind(variants, trim_spaces(ty.slice(0, open))) == 0
             1
         else
             0

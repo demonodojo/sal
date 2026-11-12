@@ -1,0 +1,16 @@
+# What one module's monomorphization sees of the rest of the graph. Mirror of `MonoCtx` in
+# src/specialize.rs. `ext` holds the other modules' items: inference needs them, and a module also
+# specializes the generics of other modules that it calls.
+import "../ast/tast.sal"
+
+struct MonoCtx
+    ext: TProgram
+    # Copies already made in the module that defines their generic, so visible wherever the
+    # generic is: `generic \t type… \t name`. A call that needs one of them calls it.
+    existing: List[String]
+    # Every fn name of the graph, copies included: a new copy takes a free one.
+    taken: List[String]
+    # 1 removes the generic originals at the end (a single file); a graph sweeps them later.
+    remove: Int
+    # The copies made of this module's own generics, in the format of `existing`.
+    made: List[String]

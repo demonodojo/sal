@@ -1,0 +1,12 @@
+# exit: 7
+enum Tree[T]
+    Leaf
+    Node(T, Int)
+
+fn weight(t: Tree[String]) -> Int
+    match t
+        Node(s, n) => s.len() + n
+        Leaf => 0
+
+fn main() -> Int ! alloc
+    weight(Node(d"abc", 4)) + weight(Leaf)
