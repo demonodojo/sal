@@ -1,0 +1,11 @@
+# error: E_TYPE
+protocol Sized
+    method len(&self) -> Int
+    method plus_two(&self) -> Int
+        self.len() + 2
+
+impl List[Int] Sized
+
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.plus_two()

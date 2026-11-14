@@ -1,0 +1,2 @@
+protocol Foreign[T]
+    method len(&self) -> Int

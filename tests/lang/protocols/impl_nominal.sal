@@ -1,0 +1,17 @@
+# exit: 7
+protocol Value
+    method value(&self) -> Int
+    method doubled(&self) -> Int
+        self.value() * 2
+
+struct Box
+    n: Int
+
+impl Box Value
+
+method Box.value(&self) -> Int
+    self.n
+
+fn main() -> Int
+    b = Box(3)
+    b.doubled() + 1

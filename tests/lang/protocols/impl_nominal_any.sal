@@ -1,0 +1,20 @@
+# exit: 14
+protocol Value
+    method value(&self) -> Int
+    method doubled(&self) -> Int
+        self.value() + self.value()
+
+struct Number
+    n: Int
+
+impl Number Value
+
+method Number.value(&self) -> Int
+    self.n
+
+fn read(x: &any[Value]) -> Int
+    x.doubled()
+
+fn main() -> Int ! alloc
+    p = Number(7)
+    read(&p)

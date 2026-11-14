@@ -1,0 +1,15 @@
+# exit: 2
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    found = xs.any x => x > 2 && true
+    valid = xs.all x => x > 0 && true
+    n = xs.count x => x > 1 && true
+    if found && valid
+        n
+    else
+        0

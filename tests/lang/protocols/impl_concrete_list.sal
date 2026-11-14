@@ -1,0 +1,12 @@
+# exit: 3
+protocol Sized
+    method len(&self) -> Int
+    method plus_two(&self) -> Int
+        self.len() + 2
+
+impl List[Int] Sized
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(9)
+    xs.plus_two()

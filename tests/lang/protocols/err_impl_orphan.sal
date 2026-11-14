@@ -1,0 +1,7 @@
+# error: E_TYPE
+import "mods/foreign_protocol.sal"
+
+impl List[T] Foreign[T]
+
+fn main() -> Int
+    0

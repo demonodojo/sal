@@ -1,0 +1,25 @@
+# exit: 8
+import "../../../std/prelude.sal"
+
+struct Bag impl Collection[Int]
+    n: Int
+
+method Bag.len(&self) -> Int
+    1
+
+method Bag.get(&self, i: Int) -> &Int
+    &self.n
+
+method Bag.set(&mut self, i: Int, value: Int) -> Unit
+    self.n = value
+
+method Bag.push(&mut self, value: Int) -> Unit
+    self.n = value
+
+method Bag.pop(&mut self) -> Int
+    self.n
+
+fn main() -> Int ! alloc
+    bag = Bag(7)
+    ys = bag.map x => x + 1
+    ys.get(0)

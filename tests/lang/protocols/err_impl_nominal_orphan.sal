@@ -1,0 +1,8 @@
+# error: E_TYPE
+import "mods/nominal_type.sal"
+import "mods/foreign_value.sal"
+
+impl Number ForeignValue
+
+fn main() -> Int
+    0

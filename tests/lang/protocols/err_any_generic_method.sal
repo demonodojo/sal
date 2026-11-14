@@ -1,0 +1,9 @@
+# error: E_TYPE
+protocol Mapper
+    method map[U](self, f: fn(Int) -> U) -> U
+
+fn apply(x: &any[Mapper]) -> Int
+    x.map y => y + 1
+
+fn main() -> Int
+    0

@@ -1,0 +1,5 @@
+struct Number
+    n: Int
+
+method Number.value(&self) -> Int
+    self.n
