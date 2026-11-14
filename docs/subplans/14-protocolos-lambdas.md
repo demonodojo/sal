@@ -43,6 +43,24 @@ la suite serial aún falla en la divergencia de IR de drops y en los genéricos,
 detecta fugas tanto en `hello` como en el compilador al procesar protocolos; hay que aislar las
 introducidas por los cuerpos provistos antes de cerrarla.
 
+**Fase 2, `static` y `Self` (2026-11-14):** un protocolo declara `static nombre(…) -> R`,
+requerido o provisto (SPEC «Protocolos»). `Self` es el tipo que implementa, como tipo y como
+receptor (`Self.build(…)`). Árbol: `ProtocolMethod.is_static` / `TProtocolMethod.is_static`. El
+cuerpo provisto se comprueba con `Self` = `any[P]` y cada `Self.s(…)` llama a un stub
+`__protocol_static_P__s` (`check_protocol_bodies` en `src/protocols.rs`; `infer_protocol_stubs` y
+`ProvidedCopy` en el selfhost). Al copiar el cuerpo a un tipo, `Self` pasa a ser ese tipo
+(`rename_self` / `ProvidedCopy.callee`). Un static no entra en la vtable (`dynamic`) y llamarlo,
+o llamar un método que nombra `Self`, por `any[P]` es `E_TYPE`. Tampoco puede un tipo builtin
+implementar un protocolo con statics. `method` y `static` del mismo nombre siguen siendo `E_TYPE`.
+Las copias de un cuerpo provisto para dos tipos del mismo módulo llevan spans propios
+(`specialize::shift_spans`; en el selfhost, el sello de `targs`): antes la segunda pisaba los tipos
+de la primera (`E_TYPE` «expected &B, found &A»). Tests: `tests/lang/protocols/static_*.sal`,
+`err_static_*.sal`, `err_self_*.sal`, `err_method_static_same_name.sal`,
+`err_impl_builtin_static.sal`, `provided_two_types_one_module.sal`,
+`tests/lang/modules/static_imported_protocol.sal` y `fmt_protocol_static_and_self` en
+`tests/parse_and_fmt.rs`. Las líneas de solo comentario dentro de un bloque (también en el cuerpo
+de un protocolo) ya no abren ni cierran bloque: `tests/lang/syntax/comments_in_blocks.sal`.
+
 **Fase 3:** los AST de ambos compiladores reservan ya los parámetros de protocolos y métodos; aún
 no se ha habilitado su sintaxis ni implementado la resolución, las instancias o `Collection`.
 

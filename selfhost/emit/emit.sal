@@ -966,9 +966,10 @@ fn emit_c_call(fname: &String, args_e: &List[Expr], targs: &String, user: Int, s
         symbol + "(" + arg_parts.get(0) + ")"
     elsif names_has(user, hname, 0, vec_len(user)) == 1
         m = mangled(fname)
+        cells = cell_args_c(fname, args_e, &mut arg_parts, stmts, tc)
         acc = m + "("
         acc = join_commas(&arg_parts, 0, arg_parts.len(), acc)
-        acc + ")"
+        cell_call_c(acc + ")", &cells, stmts, tc)
     elsif str_eq(fname, "where") == 1
         emit_c_where(args_e, user, stmts, tc)
     elsif tt_struct_find(&tc.env.structs, fname) >= 0
@@ -1433,12 +1434,96 @@ fn emit_c_stmts(sts: &List[TStmt], i: Int, n: Int, user: Int, stmts: Int, tc: &m
             val3 = emit_c_expr(&st.expr, user, stmts, tc)
             line = "  " + lhs + " = " + val3 + ";\n"
             _p = vec_push(stmts, str_as_int(&line))
+            _wb = cell_write_back_c(&st.target, stmts, tc)
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
         else
             val1 = emit_c_expr(&st.expr, user, stmts, tc)
             line = "  " + val1 + ";\n"
             _p = vec_push(stmts, str_as_int(&line))
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
+
+# ---- cells: `p: &mut T` of a value without a box (`tt_is_cell`) ----
+# The C parameter is the cell `p__cell`; the local `p` holds `*p`, read once at entry, and every
+# rebinding is written back (`sal_cell_set`), as the IR does.
+fn cell_params_c(cells: &List[String], params: &List[TParam]) -> List[TParam] ! alloc
+    out = List.new[TParam]()
+    i = 0
+    while i < params.len()
+        pm = params.get(i)
+        if names_contain(cells, &pm.name) == 1
+            out.push(TParam(pm.name.dup() + "__cell", pm.ty.dup(), pm.mode))
+        else
+            out.push(pm.clone())
+        i = i + 1
+    out
+
+fn cell_prologue_c(cells: &List[String]) -> String ! alloc
+    out = ""
+    i = 0
+    while i < cells.len()
+        out = out + "  int64_t " + cells.get(i) + " = sal_cell_get(" + cells.get(i) + "__cell);\n"
+        i = i + 1
+    out
+
+fn names_contain(names: &List[String], name: &String) -> Int ! alloc
+    i = 0
+    hit = 0
+    while i < names.len()
+        if names.get(i).eq(name) == 1
+            hit = 1
+        i = i + 1
+    hit
+
+# `*p = v`, or `p.x = v` of a one-field struct: a cell parameter writes the new value back.
+fn cell_write_back_c(target: &Expr, stmts: Int, tc: &Tc) -> Int ! alloc
+    match target
+        XUnary(op, inner) => cell_set_c(&cell_target_name(&inner), stmts, tc)
+        XField(base, field) => cell_set_c(&cell_target_name(&base), stmts, tc)
+        _ => 0
+
+fn cell_target_name(e: &Expr) -> String ! alloc
+    match e
+        XIdent(name) => name.dup()
+        _ => ""
+
+fn cell_set_c(name: &String, stmts: Int, tc: &Tc) -> Int ! alloc
+    if name.len() == 0 || tc.pool.is_cell(name) == 0
+        0
+    else
+        vec_push(stmts, str_own(&("  sal_cell_set(" + name + "__cell, " + name + ");\n")))
+
+# Each argument for a cell parameter of `fname` goes in a new cell; returns [cell, local] pairs.
+fn cell_args_c(fname: &String, args_e: &List[Expr], arg_parts: &mut List[String], stmts: Int, tc: &mut Tc) -> List[String] ! alloc
+    out = List.new[String]()
+    flags = tc.pool.cell_flags_of(fname)
+    i = 0
+    while i < args_e.len() && i < flags.len() && i < arg_parts.len()
+        if flags.char(i) == 49
+            x = cell_arg_name(&args_e.get(i))
+            if x.len() > 0 && tenv_type(&tc.env, &x).len() > 0
+                c = tmp_fresh(tc)
+                _p = vec_push(stmts, str_own(&("  int64_t " + c + " = sal_cell_new(" + arg_parts.get(i) + ");\n")))
+                arg_parts.set(i, c.dup())
+                out.push(c)
+                out.push(x)
+        i = i + 1
+    out
+
+# The call runs as a statement; each cell is read back into its local and released.
+fn cell_call_c(call: String, cells: &List[String], stmts: Int, tc: &mut Tc) -> String ! alloc
+    if cells.len() == 0
+        call
+    else
+        r = tmp_fresh(tc)
+        _p = vec_push(stmts, str_own(&("  int64_t " + r + " = " + call + ";\n")))
+        i = 0
+        while i + 1 < cells.len()
+            c = cells.get(i)
+            x = cells.get(i + 1)
+            _g = vec_push(stmts, str_own(&("  " + x + " = sal_cell_get(" + c + ");\n  sal_cell_free(" + c + ");\n")))
+            _s = cell_set_c(&x, stmts, tc)
+            i = i + 2
+        r
 
 fn emit_c_fn_footer(is_main: Int, val: &String) -> String ! alloc
     if is_main == 1
@@ -1461,7 +1546,11 @@ fn emit_decl_names_filtered(names: Int, i: Int, n: Int, skip: Int, acc: String) 
 
 fn emit_c_fn(tf: &TFn, user: Int, linkable: Int, allow_main: Int, pool: &mut LitPool, env: &mut TEnv, enums: &List[TEnum]) -> String ! alloc
     is_main = str_eq(tf.name, "main")
-    acc = emit_c_fn_header(tf, linkable, allow_main)
+    _sc = pool.set_cells(&env.structs, &tf.params)
+    acc = if pool.cells.len() == 0 || is_main == 1
+        emit_c_fn_header(tf, linkable, allow_main)
+    else
+        emit_c_fn_header_body(&tf.name, &cell_params_c(&pool.cells, &tf.params), linkable)
     if str_len(acc) == 0
         ""
     else
@@ -1479,6 +1568,7 @@ fn emit_c_fn_body(tf: &TFn, user: Int, is_main: Int, acc: String, pool: &mut Lit
         acc = acc + "  sal_arena_enter();\n"
     else
         acc = acc
+    acc = acc + cell_prologue_c(&pool.cells)
     stmts = vec_new()
     tc = tc_new(pool, env, enums)
     _sp = seed_string_params(&tf.params, 0, list_len(&tf.params), &mut tc.env)
@@ -1574,6 +1664,8 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     _vr = pool.register_variants(&enums)
     stradd_fns(&tp.fns, env, 0, tp.fns.len())
     _dv = pool.set_drop_env(drop_env_t(tp, &env.structs, &enums, seen))
+    _cs = pool.add_cell_sigs(&env.structs, &tp.fns)
+    _cz = pool.add_cell_sigs(&env.structs, seen)
     acc = runtime_decls()
     acc = acc + "#include <stdint.h>\n"
     acc = emit_extern_decls(externs, 0, vec_len(externs), acc)

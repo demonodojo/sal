@@ -1821,6 +1821,12 @@ fn infer_any_method_call(
             span,
         );
     };
+    if pm.is_static {
+        return err(format!("`{field}` is a static of protocol `{protocol}`: call it on a type, not through `any`"), span);
+    }
+    if crate::protocols::mentions_self(pm) {
+        return err(format!("method `{field}` names `Self`: it cannot be called through `any`"), span);
+    }
     let Some(slot) = crate::protocols::method_slot(pdef, field) else {
         return err(format!("generic method `{field}` cannot be called through `any`"), span);
     };

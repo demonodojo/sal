@@ -1,0 +1,121 @@
+# A copy of a provided protocol body for one implementing type.
+import "../ast/tast.sal"
+import "../ast/tygeneric.sal"
+
+# `stamp` tells this copy's dotted calls apart: their resolution is recorded by the `@id` stamp, so
+# two types of one module sharing a body would otherwise share their calls (`@id~stamp`).
+# `self_ty` replaces `Self` in the body (`Self.make()`, `x: Self`); "" leaves it. With `statics`, a
+# static call `Self.make(..)` becomes the plain call `<statics>__make(..)` (the stubs of the abstract
+# check); otherwise it becomes `<self_ty>.make(..)`.
+struct ProvidedCopy
+    stamp: String
+    self_ty: String
+    statics: String
+
+method ProvidedCopy.block(&self, b: &TBlock) -> TBlock ! alloc
+    out = List.new[TStmt]()
+    self.stmts(&b.stmts, 0, &mut out)
+    TBlock(out, self.expr(&b.tail))
+
+method ProvidedCopy.stmts(&self, xs: &List[TStmt], i: Int, out: &mut List[TStmt]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        out.push(TStmt(s.kind, s.name.dup(), self.expr(&s.expr), self.ty(&s.ty), s.is_let, self.expr(&s.target), s.frozen, s.stack, s.id))
+        self.stmts(xs, i + 1, out)
+
+method ProvidedCopy.ty(&self, t: &String) -> String ! alloc
+    if self.self_ty.len() == 0
+        t.dup()
+    else
+        tps = List.new[String]()
+        tps.push("Self")
+        vals = List.new[String]()
+        vals.push(self.self_ty.dup())
+        tg_subst(t, &tps, &vals)
+
+method ProvidedCopy.list(&self, xs: &List[Expr]) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    self.exprs(xs, 0, &mut out)
+    out
+
+method ProvidedCopy.exprs(&self, xs: &List[Expr], i: Int, out: &mut List[Expr]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(self.expr(&xs.get(i)))
+        self.exprs(xs, i + 1, out)
+
+method ProvidedCopy.targs(&self, targs: &String) -> String ! alloc
+    if self.stamp.len() == 0 || stamped(targs, 0) == 0
+        targs.dup()
+    else
+        targs.dup() + "~" + self.stamp
+
+# `Self.make` → `T.make`, or `<statics>__make`.
+method ProvidedCopy.callee(&self, name: &String) -> String ! alloc
+    if self.self_ty.len() == 0 || name.len() <= 5 || name.slice(0, 5).eq("Self.") == 0
+        name.dup()
+    elsif self.statics.len() > 0
+        self.statics.dup() + "__" + name.slice(5, name.len())
+    else
+        self.self_ty.dup() + name.slice(4, name.len())
+
+method ProvidedCopy.ident(&self, name: &String) -> String ! alloc
+    if self.self_ty.len() > 0 && name.eq("Self") == 1
+        self.self_ty.dup()
+    else
+        name.dup()
+
+method ProvidedCopy.expr(&self, e: &Expr) -> Expr ! alloc
+    match e
+        XIdent(name) => XIdent(self.ident(&name))
+        XBin(op, l, r) => XBin(op.dup(), self.expr(&l), self.expr(&r))
+        XCall(name, args, targs, xp) => XCall(self.callee(&name), self.list(&args), self.targs(&targs), xp)
+        XTo(place, inner) => XTo(place.dup(), self.expr(&inner))
+        XOn(place, body, kern, idx) => XOn(place.dup(), self.block(&body), kern, idx)
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(self.expr(&cond), self.block(&then_b), self.block(&else_b), has_else, self.elsifs(&elsifs))
+        XWhile(cond, body) => XWhile(self.expr(&cond), self.block(&body))
+        XField(base, field) => XField(self.expr(&base), field.dup())
+        XLambda(param, body) => XLambda(param.dup(), self.expr(&body))
+        XLambdaBlock(param, body) => XLambdaBlock(param.dup(), self.block(&body))
+        XUnary(op, inner) => XUnary(op.dup(), self.expr(&inner))
+        XMatch(scrut, arms) => XMatch(self.expr(&scrut), self.arms(&arms))
+        XBlock(body) => XBlock(self.block(&body))
+        XTry(inner) => XTry(self.expr(&inner))
+        _ => tc_expr(e)
+
+method ProvidedCopy.elsifs(&self, xs: &List[TElsif]) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    self.elsifs_go(xs, 0, &mut out)
+    out
+
+method ProvidedCopy.elsifs_go(&self, xs: &List[TElsif], i: Int, out: &mut List[TElsif]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        out.push(TElsif(self.expr(&a.cond), self.block(&a.body)))
+        self.elsifs_go(xs, i + 1, out)
+
+method ProvidedCopy.arms(&self, xs: &List[TArm]) -> List[TArm] ! alloc
+    out = List.new[TArm]()
+    self.arms_go(xs, 0, &mut out)
+    out
+
+method ProvidedCopy.arms_go(&self, xs: &List[TArm], i: Int, out: &mut List[TArm]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        out.push(TArm(tc_pat(&a.pat), self.expr(&a.body), self.block(&a.suite), a.has_suite))
+        self.arms_go(xs, i + 1, out)
+
+fn stamped(t: &String, i: Int) -> Int
+    if i >= t.len()
+        0
+    elsif t.char(i) == 64
+        1
+    else
+        stamped(t, i + 1)

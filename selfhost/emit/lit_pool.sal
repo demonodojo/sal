@@ -3,6 +3,7 @@
 # emit; `Tc` borrows it (`&'a mut`) while it emits one function.
 import "../ast/tast.sal"
 import "../ast/thash.sal"
+import "../ast/ttypes.sal"
 import cenv
 
 # `globals`: the `static const` declarations of every literal so far. `texts` / `syms`: the
@@ -31,9 +32,52 @@ struct LitPool
     drop_env: Int
     arena: Int
     keep: List[String]
+    cell_fns: List[String]
+    cell_flags: List[String]
+    cells: List[String]
 
 static LitPool.new() -> LitPool ! alloc
-    LitPool("", List.new[String](), List.new[String](), 0, 0, HT.new(256), HT.new(256), List.new[VariantSite](), 0, 0, List.new[String]())
+    LitPool("", List.new[String](), List.new[String](), 0, 0, HT.new(256), HT.new(256), List.new[VariantSite](), 0, 0, List.new[String](), List.new[String](), List.new[String](), List.new[String]())
+
+# The functions with a parameter that takes a cell (`tt_cell_flags`), and their flags.
+method LitPool.add_cell_sigs(&mut self, structs: &List[TStruct], fns: &List[TFn]) -> Int ! alloc
+    i = 0
+    while i < fns.len()
+        flags = tt_cell_flags(structs, &fns.get(i).params)
+        if flags.index_of("1") >= 0
+            self.cell_fns.push(fns.get(i).name.dup())
+            self.cell_flags.push(flags)
+        i = i + 1
+    0
+
+# The cell flags of the callee `name` ("" when none of its parameters takes a cell).
+method LitPool.cell_flags_of(&self, name: &String) -> String ! alloc
+    i = 0
+    out = ""
+    while i < self.cell_fns.len()
+        if self.cell_fns.get(i).eq(name) == 1
+            out = self.cell_flags.get(i).dup()
+        i = i + 1
+    out
+
+# The cell parameters of the function being emitted.
+method LitPool.set_cells(&mut self, structs: &List[TStruct], params: &List[TParam]) -> Int ! alloc
+    self.cells = List.new[String]()
+    i = 0
+    while i < params.len()
+        if tt_is_cell_param(structs, &params.get(i).ty) == 1
+            self.cells.push(params.get(i).name.dup())
+        i = i + 1
+    0
+
+method LitPool.is_cell(&self, name: &String) -> Int ! alloc
+    i = 0
+    hit = 0
+    while i < self.cells.len()
+        if self.cells.get(i).eq(name) == 1
+            hit = 1
+        i = i + 1
+    hit
 
 # C expression of the literal `s`, declaring it on first use.
 method LitPool.ensure(&mut self, s: &String) -> String ! alloc

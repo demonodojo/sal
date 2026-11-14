@@ -3,6 +3,7 @@ import "../ast/tast.sal"
 import "../ast/tytext.sal"
 import "../ast/ttypes.sal"
 import "../ast/tygeneric.sal"
+import "provided_copy.sal"
 
 fn proto_find(ps: &List[TProtocol], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -28,7 +29,7 @@ fn proto_dynamic_count(methods: &List[TProtocolMethod], i: Int, count: Int) -> I
         count
     else
         m = methods.get(i)
-        if m.tparams.len() == 0
+        if m.tparams.len() == 0 && m.is_static == 0
             proto_dynamic_count(methods, i + 1, count + 1)
         else
             proto_dynamic_count(methods, i + 1, count)
@@ -38,7 +39,7 @@ fn proto_dynamic_slot(methods: &List[TProtocolMethod], name: &String, i: Int, sl
         0 - 1
     else
         m = methods.get(i)
-        if m.tparams.len() > 0
+        if m.tparams.len() > 0 || m.is_static == 1
             proto_dynamic_slot(methods, name, i + 1, slot)
         elsif m.name.eq(name) == 1
             slot
@@ -104,11 +105,19 @@ fn method_matches_proto(tp: &TProgram, type_name: &String, pm: &TProtocolMethod,
     else
         f = (&tp.fns).get(fi)
         want_self = provided_self_type(type_name, pm.self_ref)
-        p0 = (&f.params).get(0)
-        if (&f.params).len() == 0
+        is_static = if f.mkind >= 2
+            1
+        else
+            0
+        if is_static != pm.is_static
+            _e = errs.push("E_TYPE: `" + type_name + "." + pm.name + "` must be a " + proto_kind(pm.is_static) + " for the protocol, found a " + proto_kind(is_static))
+            0
+        elsif pm.is_static == 1
+            static_matches_proto(&f, pm, &mangled, errs)
+        elsif (&f.params).len() == 0
             _e = errs.push("E_TYPE: method `" + mangled + "` missing `self`")
             0
-        elsif types_equal_text(&p0.ty, &want_self) == 0
+        elsif types_equal_text(&(&f.params).get(0).ty, &want_self) == 0
             _e = errs.push("E_TYPE: method `" + mangled + "` self type mismatch")
             0
         elsif (&f.params).len() != (&pm.params).len() + 1
@@ -120,11 +129,61 @@ fn method_matches_proto(tp: &TProgram, type_name: &String, pm: &TProtocolMethod,
         elsif fx_equal(&f.fx, &pm.fx) == 0
             _e = errs.push("E_TYPE: method `" + mangled + "` effects mismatch")
             0
-        elsif p0.mode != pm.self_mode
+        elsif (&f.params).get(0).mode != pm.self_mode
             _e = errs.push("E_TYPE: method `" + mangled + "` self mode mismatch")
             0
         else
             proto_params_match(&f.params, &pm.params, 1, (&f.params).len(), &mangled, errs)
+
+# Whether the signature of `pm` names `Self` (such a method is not called through `any[P]`).
+fn proto_mentions_self(pm: &TProtocolMethod) -> Int ! alloc
+    if ty_names_self(&pm.ret) == 1
+        1
+    else
+        params_name_self(&pm.params, 0)
+
+fn params_name_self(ps: &List[TParam], i: Int) -> Int ! alloc
+    if i >= ps.len()
+        0
+    elsif ty_names_self(&ps.get(i).ty) == 1
+        1
+    else
+        params_name_self(ps, i + 1)
+
+fn ty_names_self(t: &String) -> Int ! alloc
+    marked = tg_subst(t, &with_self(&List.new[String](), &"Self"), &with_self(&List.new[String](), &"__Self__"))
+    if marked.eq(t) == 1
+        0
+    else
+        1
+
+fn proto_kind(is_static: Int) -> String ! alloc
+    if is_static == 1
+        "static"
+    else
+        "method"
+
+fn static_matches_proto(f: &TFn, pm: &TProtocolMethod, mangled: &String, errs: &mut List[String]) -> Int ! alloc
+    if f.params.len() != pm.params.len()
+        errs.push("E_TYPE: static `" + mangled + "` arity mismatch")
+        0
+    elsif types_equal_text(&f.ret, &pm.ret) == 0
+        errs.push("E_TYPE: static `" + mangled + "` return mismatch")
+        0
+    elsif fx_equal(&f.fx, &pm.fx) == 0
+        errs.push("E_TYPE: static `" + mangled + "` effects mismatch")
+        0
+    else
+        proto_static_params(&f.params, &pm.params, 0, mangled, errs)
+
+fn proto_static_params(fparams: &List[TParam], pparams: &List[TParam], i: Int, mangled: &String, errs: &mut List[String]) -> Int ! alloc
+    if i >= fparams.len()
+        1
+    elsif types_equal_text(&fparams.get(i).ty, &pparams.get(i).ty) == 0
+        errs.push("E_TYPE: static `" + mangled + "` parameter mismatch")
+        0
+    else
+        proto_static_params(fparams, pparams, i + 1, mangled, errs)
 
 fn proto_params_match(fparams: &List[TParam], pparams: &List[TParam], i: Int, n: Int, mangled: &String, errs: &mut List[String]) -> Int ! alloc
     if i >= n
@@ -195,14 +254,20 @@ fn check_proto_methods(tp: &TProgram, type_name: &String, p: &TProtocol, args: &
         0
     else
         pm = (&p.methods).get(i)
-        inst = proto_subst_method(&pm, &p.tparams, args)
+        inst = proto_subst_method(&pm, &with_self(&p.tparams, &"Self"), &with_self(args, type_name))
         method_matches_proto(tp, type_name, &inst, errs)
         check_proto_methods(tp, type_name, p, args, i + 1, n, errs)
 
 fn proto_subst_method(pm: &TProtocolMethod, tparams: &List[String], args: &List[String]) -> TProtocolMethod ! alloc
     params = List.new[TParam]()
     proto_subst_params(&pm.params, tparams, args, 0, &mut params)
-    TProtocolMethod(pm.name.dup(), pm.tparams.clone(), params, tg_subst(&pm.ret, tparams, args), pm.fx.clone(), pm.self_mode, pm.self_ref, pm.has_body, tc_block(&pm.body))
+    TProtocolMethod(pm.name.dup(), pm.tparams.clone(), params, tg_subst(&pm.ret, tparams, args), pm.fx.clone(), pm.self_mode, pm.self_ref, pm.has_body, tc_block(&pm.body), pm.is_static)
+
+# `xs` followed by `extra`: the type parameters of a claim plus `Self`, or its arguments plus the type.
+fn with_self(xs: &List[String], extra: &String) -> List[String] ! alloc
+    out = xs.clone()
+    out.push(extra.dup())
+    out
 
 fn proto_subst_params(src: &List[TParam], tparams: &List[String], args: &List[String], i: Int, out: &mut List[TParam]) -> Int ! alloc
     if i >= src.len()
@@ -287,7 +352,9 @@ fn check_builtin_methods(p: &TProtocol, args: &List[String], elem: &String, i: I
     else
         original = p.methods.get(i)
         pm = proto_subst_method(&original, &p.tparams, args)
-        if pm.has_body == 0
+        if pm.is_static == 1
+            errs.push("E_TYPE: protocol `" + p.name + "` has a static `" + pm.name + "`: a builtin type cannot implement it")
+        elsif pm.has_body == 0
             _c = check_list_builtin(&pm, elem, errs)
         check_builtin_methods(p, args, elem, i + 1, errs)
 
@@ -382,7 +449,7 @@ fn provided_builtin_methods(tp: &TProgram, target: &String, tps: &List[String], 
             provided_params(&pm.params, 0, &mut params)
             types = tps.clone()
             provided_type_params(&pm.tparams, 0, &mut types)
-            f = TFn(name, params, tc_block(&pm.body), pm.ret.dup(), 0, 0, pm.fx.clone(), types, "", 0, "", "")
+            f = TFn(name, params, ProvidedCopy("", "", "").block(&pm.body), pm.ret.dup(), 0, 0, pm.fx.clone(), types, "", 0, "", "")
             out.push(f)
         provided_builtin_methods(tp, target, tps, p, args, i + 1, out)
 
@@ -428,13 +495,14 @@ fn provided_methods(tp: &TProgram, type_name: &String, p: &TProtocol, args: &Lis
         0
     else
         original = p.methods.get(i)
-        pm = proto_subst_method(&original, &p.tparams, args)
+        pm = proto_subst_method(&original, &with_self(&p.tparams, &"Self"), &with_self(args, type_name))
         name = type_name + "__" + pm.name
         if pm.has_body == 1 && fn_sig_index(&tp.fns, &name, 0, tp.fns.len()) < 0 && fn_sig_index(out, &name, 0, out.len()) < 0
             params = List.new[TParam]()
-            params.push(TParam("self", provided_self_type(type_name, pm.self_ref), pm.self_mode))
+            if pm.is_static == 0
+                params.push(TParam("self", provided_self_type(type_name, pm.self_ref), pm.self_mode))
             provided_params(&pm.params, 0, &mut params)
-            f = TFn(name, params, tc_block(&pm.body), pm.ret.dup(), 0, 0, pm.fx.clone(), pm.tparams.clone(), type_name.dup(), 1, "", "")
+            f = TFn(name, params, ProvidedCopy((out.len() + 1).to_str(), type_name.dup(), "").block(&pm.body), pm.ret.dup(), 0, 0, pm.fx.clone(), pm.tparams.clone(), type_name.dup(), pm.is_static + 1, "", "")
             _c = out.push(f)
         provided_methods(tp, type_name, p, args, i + 1, out)
 

@@ -133,15 +133,29 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             if group > 0 {
                 continue;
             }
-            // Measure indent on next line
+            // Measure indent on the next line that has code. Blank lines and
+            // comment-only lines neither open nor close a block (as in the
+            // selfhost lexer), and they add no `Newline` of their own.
             let mut j = i;
-            while j < bytes.len() && bytes[j] == b' ' {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'\n' {
-                continue;
+            loop {
+                while j < bytes.len() && bytes[j] == b' ' {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'#' {
+                    while j < bytes.len() && bytes[j] != b'\n' {
+                        j += 1;
+                    }
+                }
+                if j < bytes.len() && bytes[j] == b'\n' {
+                    j += 1;
+                    i = j;
+                    line += 1;
+                    continue;
+                }
+                break;
             }
             if j >= bytes.len() {
+                // only trailing blank or comment lines remain
                 break;
             }
             let indent = j - i;

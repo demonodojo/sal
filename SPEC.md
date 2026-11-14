@@ -4,7 +4,7 @@ La gramática de este documento es la definición del lenguaje. Es recursiva por
 
 Los prefijos (`try`, `-`, `!`, `to`, `&`, `&mut`, `*`) y la lambda son recursivos por la derecha. `x => y => z` es `x => (y => z)` y `- - x` es `- (- x)`. Una reescritura recursiva por la derecha de los operadores no es esta gramática: cambiaría el árbol.
 
-El lexer parte el fuente en terminales e inserta `NEWLINE`, `INDENT` y `DEDENT`. La sangría son espacios; un tabulador es `E_PARSE`. Una línea en blanco no abre un bloque. Entre líneas el parser acepta uno o más `NEWLINE`. Los comentarios `#` desaparecen en el lexer y no tienen producción.
+El lexer parte el fuente en terminales e inserta `NEWLINE`, `INDENT` y `DEDENT`. La sangría son espacios; un tabulador es `E_PARSE`. Una línea en blanco o con solo un comentario no abre ni cierra un bloque, tenga la sangría que tenga, y no añade `NEWLINE`. Entre líneas el parser acepta uno o más `NEWLINE`. Los comentarios `#` desaparecen en el lexer y no tienen producción.
 
 Mientras haya un `(` o un `[` sin cerrar, un salto de línea emite `NEWLINE` y no inserta `INDENT` ni `DEDENT`. En ese tramo el parser ignora `NEWLINE` antes de un operador, un operando, una coma o el cierre. La expresión sigue siendo una: `1 - 2 - 3` partido dentro de paréntesis es el mismo árbol que en una línea. Fuera de `(…)` y `[…]`, el salto de línea sigue terminando la sentencia.
 
@@ -70,8 +70,11 @@ protocol_def → "protocol" IDENT type_params NEWLINE INDENT protocol_method_lis
 protocol_method_list → protocol_method_list protocol_method
                      | protocol_method
 protocol_method_sig → "method" IDENT type_params "(" method_params ")" "->" type effect_clause NEWLINE
+protocol_static_sig → "static" IDENT "(" param_list ")" "->" type effect_clause NEWLINE
 protocol_method → protocol_method_sig
                  | "method" IDENT type_params "(" method_params ")" "->" type effect_clause suite
+                 | protocol_static_sig
+                 | "static" IDENT "(" param_list ")" "->" type effect_clause suite
 variant_list → variant_list variant
              | variant
 variant      → IDENT variant_payload
@@ -364,9 +367,11 @@ Un `enum` genérico no necesita copias: todas sus instancias comparten represent
 
 Un `protocol P[T]` declara parámetros de tipo y métodos requeridos (sin suite) y provistos (con suite); cada método puede declarar parámetros de tipo propios. El cuerpo de un método provisto se comprueba una vez con un `self` abstracto, así que dentro solo puede llamar los métodos declarados por `P`; esos nombres y los demás del cuerpo se resuelven en el módulo del protocolo. Los métodos genéricos se especializan en cada llamada y no se llaman por `any[P]`.
 
+Un protocolo también declara `static nombre(params) -> R`, requerido o provisto, sin `self` ni parámetros de tipo propios (un `[` tras el nombre es `E_PARSE`). Dentro del protocolo, `Self` es el tipo que lo implementa: vale como tipo en las firmas y en los cuerpos (`-> Self`, `x: &Self`) y como receptor de un static del protocolo (`Self.nombre(args)`). El cuerpo provisto se comprueba con `Self` abstracto: `Self.nombre` tiene que ser un static declarado por `P` (un método de instancia o un nombre que `P` no declara es `E_TYPE`). Fuera de un protocolo, `Self` es un tipo desconocido (`E_TYPE`). El tipo que reclama `P` cumple un static con un `static T.nombre`, y se llama como cualquier static: `T.nombre(args)`; la copia provista sustituye `Self` por `T`. Un static de `P` cumplido con un `method`, o al revés, es `E_TYPE`. Como en Rust, un tipo no tiene un `method` y un `static` con el mismo nombre (`E_TYPE`). Un `impl` de un tipo básico no cumple un protocolo con statics (`E_TYPE`).
+
 La cláusula `impl P, …` en un `struct` o `enum` reclama esos protocolos con sus argumentos concretos. El compilador comprueba que el tipo tiene un `method T.nombre` por cada método requerido o provisto, con la misma aridad, tipos, efectos y receptor tras sustituir los parámetros. Si falta una implementación propia para un método provisto, se añade una copia de su cuerpo; una implementación propia prevalece si su firma coincide. Falta un método requerido o la firma no coincide: `E_TYPE`. Un nombre que no es protocolo, o repetido en la misma cabecera, es `E_TYPE`. El item `impl Tipo P` se declara en el módulo del tipo o en el del protocolo; para tipos básicos, en el del protocolo. Incumplir esta regla de huérfanos es `E_TYPE`.
 
-Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Pasarlo donde se espera `any[P]` mueve el valor a una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. `x.m()` con `x: any[P]` llama por la vtable; efectos y préstamos salen de la firma del protocolo. Un método que el protocolo no declara, un método genérico llamado por `any`, o un `any[P[…]]` genérico es `E_TYPE`. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. `Tensor` y `frame` no admiten `impl` en este corte.
+Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Pasarlo donde se espera `any[P]` mueve el valor a una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. `x.m()` con `x: any[P]` llama por la vtable; efectos y préstamos salen de la firma del protocolo. La vtable lleva los métodos no genéricos que no son `static`, en orden de declaración, y luego el drop. Un método que el protocolo no declara, un método genérico, un static o un método cuya firma nombra `Self` llamados por `any`, o un `any[P[…]]` genérico es `E_TYPE`. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. `Tensor` y `frame` no admiten `impl` en este corte.
 
 Los tipos nominales no se mezclan: `Int`, `String` y un `struct`/`enum` distinto son incompatibles salvo conversión explícita (p. ej. `.campo` en un newtype de un solo campo). `+` con `String` a la izquierda no es una excepción: exige `String` también a la derecha, y un asa `Int` se convierte explícitamente con `str_from_int` (o se formatea con `int_to_str`).
 
@@ -467,6 +472,8 @@ Un parámetro es `Copy` o `&T`. La única escritura permitida sobre un parámetr
 ### Liberación de locales
 
 El runtime usa `malloc`/`free`: lo que se libera vuelve al sistema. Cada tipo con dueño tiene una función de liberación (`drop.<Tipo>`): `String` llama a `sal_free`; `Bytes` a `sal_bytes_free` (una vista solo suelta la cabecera); un tensor a `sal_tensor_free` o, en una región fusionada, a `sal_place_free`; `List[T]` y `Dict[K, V]` recorren sus elementos con la liberación de `T` (y las claves `String`) y luego sueltan el bloque; un struct suelta sus campos en orden de declaración y, si tiene dos o más campos (bloque en el heap), suelta también ese bloque (`sal_struct_free_box`); un enum hace `switch` por tag; `&T`, `&mut T` y un `Copy` no sueltan nada. Un struct de un solo campo es transparente: el valor es el campo, sin bloque propio.
+
+Un parámetro `&mut T` cuyo `T` no tiene bloque propio (`Int`, `Float`, `Bool` o un struct de un solo campo sin parámetros de tipo) recibe una celda. El llamante crea la celda con el valor de `x` (`sal_cell_new`) para el argumento `&mut x` (o para `x` como receptor `&mut self`, o para un parámetro celda que se pasa tal cual), y tras la llamada lee la celda en `x` (`sal_cell_get`) y la suelta (`sal_cell_free`). El llamado lee `*p` una vez al entrar. Cada vez que reasigna `*p = v` o un campo `p.f = v`, escribe el valor nuevo en la celda (`sal_cell_set`); en esa reasignación, el valor viejo se suelta como en cualquier otra. El efecto es el de Rust: lo que el llamado escribe a través de `&mut` lo ve el llamante.
 
 Una lista de structs cuyo descriptor es `S(..)` guarda los campos de cada elemento en su propio bloque, con el paso del descriptor: no hay un bloque por elemento. `xs.get(i)` presta un puntero interior a esos campos; `push` y `set` copian los campos del valor y liberan la caja temporal que construyó el compilador; `pop` devuelve una caja nueva con los campos, que el llamante posee; `xs.clone()` copia cada elemento con `clone.<Struct>` a través de una caja temporal. Soltar la lista libera los campos en el sitio con el descriptor, sin liberar un bloque por elemento. Un struct sin descriptor (tiene `List`, `Dict`, `Bytes` o parámetros de tipo) sigue guardado en un bloque por elemento: la lista guarda `drop.elem.<Struct>`, que llama a `drop.<Struct>` (campos y bloque). Una lista de listas guarda `sal_list_free_elem`.
 

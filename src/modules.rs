@@ -97,24 +97,31 @@ fn push_candidates(out: &mut Vec<PathBuf>, base: &Path, import_path: &str) {
     }
 }
 
-/// The canonical path of a module, the key that identifies it in the graph. Memoized per
-/// thread: the import walks ask for the key of every module of the graph for each import
-/// (millions of `readlink` on `selfhost/main.sal`). Only a path that canonicalizes is kept, so
-/// a file created later is not stuck with the raw path.
+thread_local! {
+    /// `fs::canonicalize` per path. Module lookups compare `path_key`s inside loops over the
+    /// graph, and each canonicalization is a `readlink` per path component (millions on
+    /// `selfhost/main.sal`); `packages` clears this when it changes links or packages
+    /// (`forget_path_keys`).
+    static PATH_KEYS: std::cell::RefCell<HashMap<PathBuf, PathBuf>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// The canonical path of a module, the key that identifies it in the graph. Only a path that
+/// canonicalizes is kept, so a file created later is not stuck with the raw path.
 pub(crate) fn path_key(path: &Path) -> PathBuf {
-    thread_local! {
-        static KEYS: std::cell::RefCell<HashMap<PathBuf, PathBuf>> = std::cell::RefCell::new(HashMap::new());
-    }
-    if let Some(k) = KEYS.with(|m| m.borrow().get(path).cloned()) {
-        return k;
+    if let Some(key) = PATH_KEYS.with(|k| k.borrow().get(path).cloned()) {
+        return key;
     }
     match fs::canonicalize(path) {
-        Ok(k) => {
-            KEYS.with(|m| m.borrow_mut().insert(path.to_path_buf(), k.clone()));
-            k
+        Ok(key) => {
+            PATH_KEYS.with(|k| k.borrow_mut().insert(path.to_path_buf(), key.clone()));
+            key
         }
         Err(_) => path.to_path_buf(),
     }
+}
+
+pub(crate) fn forget_path_keys() {
+    PATH_KEYS.with(|k| k.borrow_mut().clear());
 }
 
 pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGraph, Vec<Diagnostic>> {

@@ -363,7 +363,11 @@ fn fx_protocol_callees(callees: &mut Callees, methods: &List[TProtocolMethod], i
         0
     else
         pm = list_get(methods, i)
-        _a = callees_add(callees, &("self." + pm.name), fx_mask(&pm.fx))
+        recv = if pm.is_static == 1
+            "Self."
+        else
+            "self."
+        _a = callees_add(callees, &(recv + pm.name), fx_mask(&pm.fx))
         fx_protocol_callees(callees, methods, i + 1)
 
 fn check_protocol_method_effects(p: &TProtocol, i: Int, env: &mut TEnv, used: &mut Fx) -> Res ! alloc
@@ -373,7 +377,8 @@ fn check_protocol_method_effects(p: &TProtocol, i: Int, env: &mut TEnv, used: &m
         pm = list_get(&p.methods, i)
         if pm.has_body == 1
             params = list_new[TParam]()
-            _s = list_push(&mut params, TParam("self", "any[" + p.name + "]", pm.self_mode))
+            if pm.is_static == 0
+                _s = list_push(&mut params, TParam("self", "any[" + p.name + "]", pm.self_mode))
             _p = provided_params(&pm.params, 0, &mut params)
             f = TFn("__protocol_body", params, tc_block(&pm.body), pm.ret.dup(), 0, 0, pm.fx.clone(), list_new[String](), "", 0, "", "")
             r = check_fn_effects(&f, env, used)

@@ -1,0 +1,8 @@
+# error: E_TYPE
+protocol Named
+    static zero() -> Int
+    method n(&self) -> Int
+        Self.missing()
+
+fn main() -> Int
+    0

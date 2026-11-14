@@ -1,0 +1,14 @@
+# exit: 3
+# Writing through `&mut self` of a one-field struct reaches the caller: both bumps count
+# (1 + 1 + 1). The value has no box of its own, so the argument goes in a cell.
+struct Db
+    n: Int
+
+method Db.bump(&mut self) -> Unit
+    self.n = self.n + 1
+
+fn main() -> Int
+    db = Db(1)
+    db.bump()
+    db.bump()
+    db.n

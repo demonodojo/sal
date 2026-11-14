@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::ast::{Item, Program};
-use crate::infer::infer_program;
-use crate::modules::{resolve_import_path_with_manifest, resolve_module_graph};
+use crate::modules::resolve_import_path_with_manifest;
 use crate::parser::parse;
 use crate::typed::TypedProgram;
 
@@ -86,9 +85,11 @@ fn push_import_candidates(out: &mut Vec<PathBuf>, base: &Path, import_path: &str
     }
 }
 
-/// Transitive digest of typed ASTs for every module reachable via `import`
+/// Transitive digest of the sources of every module reachable via `import`
 /// from `prog`. Empty if there are no resolvable imports (so the cache key
-/// matches the no-import case).
+/// matches the no-import case). The source decides the typed AST of a module
+/// (its own imports are in the digest too), so it is enough, and it does not
+/// re-resolve the module graph once per import.
 pub fn import_graph_digest(
     prog: &Program,
     source_file: &Path,
@@ -97,15 +98,13 @@ pub fn import_graph_digest(
     import_graph_digest_with(prog, source_file, project_root, &mut DigestCache::default())
 }
 
-/// What [`import_graph_digest_with`] learns about a file, kept for one compilation: neither
-/// the imports of a file nor its typed AST depend on the module that imports it. Without it,
-/// each module of a graph re-parsed, re-resolved and re-typed every module it reaches.
+/// What [`import_graph_digest_with`] learns about a file, kept for one compilation: the
+/// imports of a file do not depend on the module that imports it. Without it, each module of
+/// a graph re-parsed every module it reaches.
 #[derive(Default)]
 pub struct DigestCache {
     /// Import paths written in each file (empty when it does not read or parse).
     imports: HashMap<PathBuf, Vec<String>>,
-    /// Serialized typed AST of each file (`None` when it does not parse).
-    typed: HashMap<PathBuf, Option<String>>,
 }
 
 /// [`import_graph_digest`] with a memo shared by the modules of one compilation.
@@ -125,18 +124,9 @@ pub fn import_graph_digest_with(
     let mut hasher = Sha256::new();
     for path in &ordered {
         hasher.update(path.to_string_lossy().as_bytes());
-        let typed = cache.typed.entry(path.clone()).or_insert_with(|| {
-            typed_ast_for_file(path, project_root).map(|t| serde_json::to_string(&t).unwrap_or_default())
-        });
-        match typed {
-            Some(json) => {
-                hasher.update(json.as_bytes());
-            }
-            None => {
-                if let Ok(bytes) = fs::read(path) {
-                    hasher.update(&bytes);
-                }
-            }
+        if let Ok(bytes) = fs::read(path) {
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(&bytes);
         }
     }
     hasher.finalize().to_vec()
@@ -179,30 +169,6 @@ fn collect_import_paths(
             .clone();
         collect_import_paths(&dep_imports, &path, project_root, visited, ordered, cache);
     }
-}
-
-fn typed_ast_for_file(path: &Path, project_root: &Path) -> Option<TypedProgram> {
-    let src = fs::read_to_string(path).ok()?;
-    let prog = parse(&src).ok()?;
-    let entries = if let Ok(graph) = resolve_module_graph(path, project_root) {
-        if let Some(m) = graph.order.iter().find(|m| m.path == path) {
-            match crate::modules::infer_module(m, &graph, crate::target::Target::host()) {
-                Ok(out) => out.expr_types_by_fn,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            match infer_program(&prog) {
-                Ok(out) => out.expr_types_by_fn,
-                Err(_) => Vec::new(),
-            }
-        }
-    } else {
-        match infer_program(&prog) {
-            Ok(out) => out.expr_types_by_fn,
-            Err(_) => Vec::new(),
-        }
-    };
-    Some(TypedProgram::from_program(prog, entries))
 }
 
 pub fn cache_dir(base: &Path, key: &str) -> PathBuf {

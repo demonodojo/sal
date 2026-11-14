@@ -1007,6 +1007,51 @@ thread_local! {
     /// `selfhost/`: its AST shares enum/list boxes across statements, so a deep drop of
     /// the old field frees structure still reachable elsewhere.
     static FIELD_OVERWRITE_DROPS: Cell<bool> = const { Cell::new(true) };
+    /// Parameters `p: &mut T` of a value without a box: `p` names the cell; the value lives
+    /// in `env` and every rebinding is written back (`sal_cell_set`).
+    static CELL_PARAMS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Per callee: which parameters take a cell (`scalarize::FnSig::cell`).
+    static CELL_SIGS: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
+}
+
+/// `*p` with `p` a cell parameter, as an assignment target.
+fn deref_cell_target(target: &Expr) -> Option<String> {
+    let Expr::Unary { op: UnOp::Deref, expr, .. } = target else { return None };
+    let Expr::Ident { name, .. } = expr.as_ref() else { return None };
+    CELL_PARAMS.with(|c| c.borrow().contains(name)).then(|| name.clone())
+}
+
+/// `name` was rebound to `value`: a cell parameter writes it through to the caller.
+fn cell_write_back(name: &str, value: &str, instructions: &mut Vec<IrInst>) {
+    if CELL_PARAMS.with(|c| c.borrow().contains(name)) {
+        instructions.push(IrInst::Call {
+            dest: None,
+            func: "sal_cell_set".into(),
+            args: vec![name.to_string(), value.to_string()],
+        });
+    }
+}
+
+/// The arguments of a call to `fname` that go in a cell: `&mut x` (or `x` itself, the receiver
+/// of a `&mut self` method or a cell parameter passed on) for a parameter that takes a cell.
+fn cell_call_args(fname: &str, args: &[Expr], env: &HashMap<String, String>) -> Vec<(usize, String)> {
+    let Some(flags) = CELL_SIGS.with(|c| c.borrow().get(fname).cloned()) else {
+        return Vec::new();
+    };
+    args.iter()
+        .enumerate()
+        .filter(|(i, _)| flags.get(*i).copied().unwrap_or(false))
+        .filter_map(|(i, a)| {
+            let inner = match a {
+                Expr::Unary { op: UnOp::RefMut, expr, .. } => expr.as_ref(),
+                other => other,
+            };
+            match inner {
+                Expr::Ident { name, .. } if env.contains_key(name) => Some((i, name.clone())),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn arena_leave() -> IrInst {
@@ -1335,8 +1380,30 @@ fn lower_fn(
             .collect();
     });
 
-    for p in &f.params {
+    let cell_flags = strings.fn_sigs.get(&f.name).map(|s| s.cell.clone()).unwrap_or_default();
+    CELL_SIGS.with(|c| {
+        *c.borrow_mut() = strings
+            .fn_sigs
+            .iter()
+            .filter(|(_, s)| s.cell.iter().any(|b| *b))
+            .map(|(k, s)| (k.clone(), s.cell.clone()))
+            .collect();
+    });
+    CELL_PARAMS.with(|c| c.borrow_mut().clear());
+    for (i, p) in f.params.iter().enumerate() {
         env.insert(p.name.clone(), p.name.clone());
+        if cell_flags.get(i).copied().unwrap_or(false) {
+            // The value of `*p` is read once; writes go back through the cell.
+            counter += 1;
+            let v = format!("t{counter}");
+            instructions.push(IrInst::Call {
+                dest: Some(v.clone()),
+                func: "sal_cell_get".into(),
+                args: vec![p.name.clone()],
+            });
+            env.insert(p.name.clone(), v);
+            CELL_PARAMS.with(|c| c.borrow_mut().insert(p.name.clone()));
+        }
         if let Type::Tensor {
             elem, dims, place, ..
         } = peel_ref_ty(&p.ty)
@@ -2770,8 +2837,24 @@ fn collect_assigned_stmt(st: &Stmt, names: &mut HashSet<String>) {
     match st {
         Stmt::Break { .. } => {}
         Stmt::Assign { target, value, .. } => {
-            if let Expr::Ident { name, .. } = target {
-                names.insert(name.clone());
+            match target {
+                Expr::Ident { name, .. } => {
+                    names.insert(name.clone());
+                }
+                Expr::Unary { op: UnOp::Deref, expr, .. } => {
+                    if let Expr::Ident { name, .. } = expr.as_ref() {
+                        names.insert(name.clone());
+                    }
+                }
+                Expr::Field { base, .. } => {
+                    // A one-field struct cell parameter is rebound by `p.x = v`.
+                    if let Expr::Ident { name, .. } = base.as_ref() {
+                        if CELL_PARAMS.with(|c| c.borrow().contains(name)) {
+                            names.insert(name.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
             collect_assigned_expr(value, names);
         }
@@ -2816,6 +2899,23 @@ fn collect_assigned_expr(e: &Expr, names: &mut HashSet<String>) {
             collect_assigned_expr(func, names);
             for a in args {
                 collect_assigned_expr(a, names);
+            }
+            // A cell argument comes back rebound.
+            if let Expr::Ident { name: fname, .. } = func.as_ref() {
+                if let Some(flags) = CELL_SIGS.with(|c| c.borrow().get(fname).cloned()) {
+                    for (i, a) in args.iter().enumerate() {
+                        if !flags.get(i).copied().unwrap_or(false) {
+                            continue;
+                        }
+                        let inner = match a {
+                            Expr::Unary { op: UnOp::RefMut, expr, .. } => expr.as_ref(),
+                            other => other,
+                        };
+                        if let Expr::Ident { name, .. } = inner {
+                            names.insert(name.clone());
+                        }
+                    }
+                }
             }
         }
         Expr::Binary { left, right, .. } => {
@@ -2942,6 +3042,7 @@ fn lower_stmt(
                                     host_literals,
                                     strings,
                                 );
+                                cell_write_back(name, &v, instructions);
                                 env.insert(name.clone(), v);
                                 return false;
                             }
@@ -3054,6 +3155,30 @@ fn lower_stmt(
                 register_let_tensor(name, None, value, &v, strings, tensors);
                 env.insert(name.clone(), v);
                 strings.note_init(name, None, value);
+            } else if let Some(name) = deref_cell_target(target) {
+                // `*p = v` with `p` a cell parameter: the old value is released, the new one
+                // is written back.
+                let v = lower_expr(
+                    value,
+                    instructions,
+                    env,
+                    counter,
+                    regions,
+                    tensors,
+                    dim_params,
+                    fn_names,
+                    host_literals,
+                    strings,
+                );
+                if let Some(old) = env.get(&name).cloned() {
+                    if let Some(sn) = strings.struct_types.get(&name).cloned() {
+                        if let Some(fd) = strings.structs.get(&sn).and_then(|sd| sd.fields.first()).cloned() {
+                            emit_owned_value_drop(&old, &fd.ty, strings, counter, instructions);
+                        }
+                    }
+                }
+                cell_write_back(&name, &v, instructions);
+                env.insert(name, v);
             } else {
                 lower_expr(
                     value,
@@ -4646,11 +4771,42 @@ fn lower_expr(
                 return dest;
             }
             let func_name = runtime_call_name(&fname, fn_names);
+            let cells = cell_call_args(&fname, args, env);
+            let mut arg_names = arg_names;
+            for (i, _) in &cells {
+                *counter += 1;
+                let c = format!("t{counter}");
+                instructions.push(IrInst::Call {
+                    dest: Some(c.clone()),
+                    func: "sal_cell_new".into(),
+                    args: vec![arg_names[*i].clone()],
+                });
+                arg_names[*i] = c;
+            }
+            let cell_names: Vec<(String, String)> =
+                cells.iter().map(|(i, x)| (arg_names[*i].clone(), x.clone())).collect();
             instructions.push(IrInst::Call {
                 dest: Some(dest.clone()),
                 func: func_name,
                 args: arg_names,
             });
+            // The callee may have rebound `*x`: read it back and release the cell.
+            for (c, x) in cell_names {
+                *counter += 1;
+                let v = format!("t{counter}");
+                instructions.push(IrInst::Call {
+                    dest: Some(v.clone()),
+                    func: "sal_cell_get".into(),
+                    args: vec![c.clone()],
+                });
+                instructions.push(IrInst::Call {
+                    dest: None,
+                    func: "sal_cell_free".into(),
+                    args: vec![c],
+                });
+                cell_write_back(&x, &v, instructions);
+                env.insert(x, v);
+            }
             if fn_names.contains_key(&fname) {
                 if let Some(ret_ty) = strings.fn_tensor_rets.get(&fname) {
                     register_ssa_tensor(ret_ty, &dest, tensors);

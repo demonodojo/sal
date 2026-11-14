@@ -19,7 +19,7 @@ Tests: `tests/frontend.rs`, `tests/parse_and_fmt.rs`.
 El lexer no conoce la gramática de expresiones. Emite tokens e inserta layout:
 
 1. `#` hasta fin de línea se descarta, sin token.
-2. Un salto de línea emite `NEWLINE`. Si la línea siguiente está vacía, no hay `INDENT` ni `DEDENT`.
+2. Un salto de línea emite `NEWLINE`. Las líneas vacías o con solo un comentario se saltan antes de medir la sangría, tengan la columna que tengan: no abren ni cierran un bloque ni añaden `NEWLINE`.
 3. La sangría se mide en espacios. Si la columna sube, un `INDENT`. Si baja, tantos `DEDENT` como niveles desapilados. Si no coincide con un nivel abierto, `E_PARSE`.
 4. Un tabulador es `E_PARSE`.
 5. `->` es `Arrow`, `=>` es `FatArrow`, `==` `!=` `<=` `>=` son un token cada uno.

@@ -1,0 +1,14 @@
+# exit: 7
+# A one-field struct around a `String`: each rename through `&mut self` releases the old text
+# and the caller keeps the last one ("longest").
+struct Name
+    s: String
+
+method Name.rename(&mut self, fresh: String) -> Unit
+    self.s = fresh
+
+fn main() -> Int ! alloc
+    n = Name("old".clone())
+    n.rename("longer".clone())
+    n.rename("longest".clone())
+    n.s.len()

@@ -554,6 +554,9 @@ pub struct ProtocolMethod {
     pub self_ref: u8,
     #[serde(default)]
     pub body: Option<Block>,
+    /// `static nombre(…)`: no `self`; called on the implementing type, never through `any[P]`.
+    #[serde(default)]
+    pub is_static: bool,
     pub span: Span,
 }
 

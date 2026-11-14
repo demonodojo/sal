@@ -2599,6 +2599,26 @@ void sal_struct_free_box(int64_t raw) {
     sal_xfree((void *)(uintptr_t)raw);
 }
 
+/* `&mut x` of a value without a box (Int, Float, Bool, a one-field struct): the caller puts
+ * the value in a cell, the callee reads and writes it there, and the caller reads it back. */
+int64_t sal_cell_new(int64_t value) {
+    int64_t *cell = (int64_t *)sal_xmalloc(sizeof(int64_t), "cell");
+    *cell = value;
+    return (int64_t)(intptr_t)cell;
+}
+
+int64_t sal_cell_get(int64_t cell) {
+    return *(int64_t *)(uintptr_t)cell;
+}
+
+void sal_cell_set(int64_t cell, int64_t value) {
+    *(int64_t *)(uintptr_t)cell = value;
+}
+
+void sal_cell_free(int64_t cell) {
+    sal_xfree((void *)(uintptr_t)cell);
+}
+
 /* `p.x = v` on a boxed struct writes the slot. The block stays the one the list holds. */
 int64_t sal_struct_set(int64_t raw, int64_t index, int64_t value) {
     if (raw < 4096 || index < 0) {

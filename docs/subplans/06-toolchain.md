@@ -44,7 +44,9 @@ El grafo de imports es el de reachability del módulo raíz. Un ciclo es `E_TYPE
 
 ## Caché
 
-`target/` guarda, por módulo, el objeto ya compilado y la región fusionada. La clave es el hash del AST tipado, la versión del compilador y las flags que cambian el binario: `--release`, `--instrument`, `--device`.
+`target/` guarda, por módulo, el objeto ya compilado y la región fusionada. La clave es el hash del AST tipado, la versión del compilador y las flags que cambian el binario: `--release`, `--instrument`, `--device`. Si el módulo importa, la clave lleva además el hash de la ruta y del fuente de cada módulo alcanzable por `import` (`import_graph_digest`). Así no hace falta volver a resolver ni tipar el grafo por cada import.
+
+La resolución de imports reutiliza dentro del proceso `Sal.toml` y `Sal.lock` ya parseados mientras no cambien su fecha de modificación ni su tamaño, y la ruta canónica de cada módulo (`path_key`). `sal fetch` e `sal install` vacían esta última al tocar enlaces o paquetes.
 
 Un segundo `compile` de la misma clave reutiliza el `.o`. No lo regenera. Marca `cache_hit`. Tocar el módulo, o un módulo del que importa, invalida esa clave y las de quienes lo importan.
 

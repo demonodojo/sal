@@ -1,0 +1,13 @@
+# exit: 18
+# The callee rebinds `*x` inside a loop; the caller sees the last value (9), and the callee
+# reads it back after the loop (9 + 9).
+fn count_to(x: &mut Int, n: Int) -> Int
+    while *x < n
+        *x = *x + 1
+    last = *x
+    last
+
+fn main() -> Int
+    a = 2
+    k = count_to(&mut a, 9)
+    a + k
