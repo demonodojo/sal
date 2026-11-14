@@ -12,8 +12,8 @@ Las lambdas no son valores: cada llamada que recibe una se **especializa** (una 
 |------|-----------|--------|
 | 0 | Monomorfización de `fn` y `struct` genéricos, también entre módulos (SPEC «Genéricos») | Hecha en los dos compiladores |
 | 1 | Tipo `fn(…) -> R`, lambdas de varios parámetros y con bloque, lambda final, especialización por lambda | Hecha en arranque y selfhost |
-| 2 | Métodos con cuerpo (provistos) en protocolos | En curso |
-| 3 | Protocolos genéricos, item `impl Tipo Protocolo`, `Collection` en el preludio | En curso |
+| 2 | Métodos con cuerpo (provistos) en protocolos | Hecha en arranque y selfhost |
+| 3 | Protocolos genéricos, item `impl Tipo Protocolo`, `Collection` en el preludio | Hecha en arranque y selfhost |
 
 **Estado de fase 1 (2026-11-13):** cerrada en ambos compiladores. El selfhost eleva las lambdas a
 `__lamN`, crea copias `__sN`, propaga capturas compartidas sin emitir una referencia redundante,
@@ -22,26 +22,15 @@ Los drops condicionales de parámetros `String` y structs también coinciden con
 
 Verificación de cierre: `selfhost_phase_one_lambda_ir_matches_bootstrap`,
 `selfhost_conditional_string_param_drops_match_bootstrap` y `stage2_emit_ir_writes_selfhost_cache`
-pasan; las pruebas de conformidad y memoria del arranque para la fase también pasan. La prueba
-amplia `selfhost_meets_language_conformance` aún falla en varios programas genéricos con un
-use-after-free de `TProgram` en `sp_rounds`; se reprodujo con un stage1 ASan anterior a los cambios
-de esta divergencia, por lo que queda registrado como bloqueo previo de la fase 0, no como hueco de
-lambdas. `selfhost_ir_matches_bootstrap_on_parity_files` también conserva una divergencia anterior
-en `selfhost/ir/drops.sal` (cadena de `If` frente a `Switch`).
+pasan; las pruebas de conformidad y memoria del arranque para la fase también pasan. Las dos
+divergencias que quedaron anotadas entonces están cerradas a 2026-11-14:
+`selfhost_meets_language_conformance` y `selfhost_ir_matches_bootstrap_on_parity_files` pasan.
 
-**Fase 2 (2026-11-13):** implementación parcial en el arranque. La SPEC y el AST admiten cuerpos,
-`fmt` los conserva, el arranque comprueba el cuerpo con `self: any[P]` y sintetiza los métodos que
-faltan después de desazucarar métodos. La conformidad del arranque cubre ejecución, override,
-despacho por `any[P]` y errores de cuerpo/firma. `tests/selfhost_ir.rs` conserva
-El selfhost sintetiza funciones para structs y enums, admite receptores por referencia, despacha
-métodos provistos mediante `any[P]` y comprueba tipos y efectos del cuerpo con receptor abstracto
-incluso sin implementadores. Los casos dirigidos de lambdas e imports pasan en stage1.
-El arranque prepara los protocolos tras cualificar el grafo y copia al módulo del tipo los cuerpos
-importados; `provided_imported_protocol.sal` cubre además un choque de nombres en el módulo receptor.
-El selfhost también prepara los claims después de cualificar el grafo. La fase 2 sigue en curso:
-la suite serial aún falla en la divergencia de IR de drops y en los genéricos, y LeakSanitizer
-detecta fugas tanto en `hello` como en el compilador al procesar protocolos; hay que aislar las
-introducidas por los cuerpos provistos antes de cerrarla.
+**Fase 2 (cerrada el 2026-11-14):** un protocolo admite métodos con cuerpo. Los dos compiladores
+comprueban el cuerpo con `self: any[P]`, sintetizan en cada tipo los métodos que no redefine
+(structs y enums, receptor por referencia), los despachan también por `any[P]` y copian al módulo
+del tipo los cuerpos de un protocolo importado. Conformidad: `tests/lang/protocols/provided_*.sal`,
+`err_provided_*.sal`, `err_override_sig_mismatch.sal`.
 
 **Fase 2, `static` y `Self` (2026-11-14):** un protocolo declara `static nombre(…) -> R`,
 requerido o provisto (SPEC «Protocolos»). `Self` es el tipo que implementa, como tipo y como
@@ -61,8 +50,33 @@ de la primera (`E_TYPE` «expected &B, found &A»). Tests: `tests/lang/protocols
 `tests/parse_and_fmt.rs`. Las líneas de solo comentario dentro de un bloque (también en el cuerpo
 de un protocolo) ya no abren ni cierran bloque: `tests/lang/syntax/comments_in_blocks.sal`.
 
-**Fase 3:** los AST de ambos compiladores reservan ya los parámetros de protocolos y métodos; aún
-no se ha habilitado su sintaxis ni implementado la resolución, las instancias o `Collection`.
+**Fase 3 (cerrada el 2026-11-14):** protocolos con parámetros de tipo, métodos de protocolo con
+parámetros propios (`map[U]`), item `impl Tipo Protocolo` con la regla de huérfanos (el `impl` va
+en el módulo del tipo o en el del protocolo) y `Collection[T]` en `std/prelude.sal` con
+`impl List[T] Collection[T]`. Conformidad: `tests/lang/protocols/impl_*.sal`, `generic_*.sal`,
+`err_impl_*.sal`, y `tests/lang/collections/list_{each,map,map_strings,filter_strings,predicates,provided_*,prelude_map_reduce}.sal`
+y `struct_impl_collection.sal`; ninguno lleva `xfail` ni `selfhost-xfail`.
+
+Notas de cierre que no se deducen del código:
+
+- Un `impl` sobre un tipo de otro módulo llega a la conversión a `any` del selfhost porque
+  `tenv_for_graph` y `graph_enums_t` (`selfhost/emit/emit.sal`) añaden ese claim a la copia del tipo
+  que ve todo el grafo; la regla de huérfanos garantiza que es único.
+- Una comparación escalar es `Int` en los dos compiladores (el operando izquierdo sin referencias,
+  `peel_refs`); por eso los predicados de los tests escriben `x > 2 && true` para dar un `Bool`.
+- `mr_reindex_fns` (`selfhost/sem/methods.sal`) renumera las llamadas con punto antes de cada
+  resolución y quita el identificador a las que ya no lo tienen (`a.f()` cualificada por alias).
+- `TypeEnv::fn_defs` del arranque guarda firmas sin cuerpo salvo en las funciones con un parámetro
+  callback: `specialize_lambdas` copia ese cuerpo, también cuando la función es de otro módulo.
+- `mr_reindex_fns` es idempotente: si el identificador ya es el mismo no reescribe el texto, porque
+  las copias de `union_progs` siguen apuntando a él (era un uso tras liberar en stage2 que solo
+  rompía en el CI).
+- `returns_param_map` es transitivo (`id(id(x))` devuelve `x`), con su espejo en
+  `passthru_close` y `fr_summary_close` del selfhost.
+
+Verificación de cierre: `RUST_TEST_THREADS=1 cargo test --locked` completo, incluidos
+`selfhost_meets_language_conformance`, `selfhost_ir_matches_bootstrap_on_parity_files` y
+`memory_asan`.
 
 ## Fase 0: monomorfización
 
@@ -122,5 +136,5 @@ no se ha habilitado su sintaxis ni implementado la resolución, las instancias o
 - `specialize.sal` consume cada `TProgram` por valor una sola vez en todas las ramas. Al compilar el selfhost, un programa que solo algunas ramas mueven no se suelta en las demás; ver «Pendiente».
 
 **Pendiente.**
-- El arranque no suelta un parámetro struct por valor que solo algunas ramas mueven. Ejemplo: `fn pick(p: Prog, q: Prog, first: Bool) -> Prog` devuelve uno y el otro se fuga. Necesita bandera de drop para structs en `src/drops.rs` y su espejo.
+- Stage2 con ASan (clang envoltorio con `-fsanitize=address`) da un uso tras liberar al emitir la IR de `tests/lang/ownership/list_get_mut_ok.sal`: `dr_hoist_field` (`selfhost/ir/drops.sal`) suelta la caja del `XField` que saca a un temporal y `free_old_body` (`selfhost/ir/fuse.sal`) vuelve a recorrerla. Es anterior a la fase 3 (lo reproduce el stage2 de `15a699c`) y es el único aviso que queda al pasar ese stage2 por `PARITY_FILES`, `tests/lang`, `corpus/` y `examples/`.
 - El selfhost instrumentado da un `LEAK` en casi cualquier programa con una llamada a función de usuario. Igual que HEAD: es el problema de propiedad del árbol del selfhost, con el test `selfhost_instrumented_releases_rewritten_fn_bodies` ignorado.

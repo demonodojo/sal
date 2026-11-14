@@ -683,7 +683,7 @@ fn vec_has_key(v: Int, k: Int, i: Int, n: Int) -> Int ! alloc
         vec_has_key(v, k, i + 1, n)
 
 fn qx_err(ctx: &QualCtx, msg: &String) -> Int ! alloc
-    vec_push(ctx.errs, str_as_int(msg))
+    vec_push(ctx.errs, str_own(msg))
 
 fn vec_has_name(v: Int, name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n

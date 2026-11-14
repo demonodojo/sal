@@ -153,7 +153,11 @@ fn mr_reindex_expr(e: &Expr, counter: &mut List[Int]) -> Int ! alloc
             if mth_dot(&name, 0, name.len()) >= 0
                 n = counter.get(0) + 1
                 counter.set(0, n)
-                mr_set_str(e, 2, &targs, &(mth_targs(targs.dup()) + "@" + n.to_str()))
+                tagged = mth_targs(targs.dup()) + "@" + n.to_str()
+                # Renumbering again gives the same id: leave the text alone then. A module graph
+                # holds copies of this call (`union_progs`) that still point at it.
+                if targs.eq(tagged) == 0
+                    mr_set_str(e, 2, &targs, &tagged)
             elsif mth_id(targs.dup()).len() > 0
                 # A call that lost its dot (`a.f()` qualified to its module's fn) still carries
                 # the parser's id, which would collide with the ids given here.
