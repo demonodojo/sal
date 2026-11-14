@@ -154,7 +154,35 @@ method FRC.call_shares_arg(&self, fname: &String, args: &List[Expr], i: Int, n: 
 fn fr_summary(fns: &List[TFn]) -> Int ! alloc
     m = map_new()
     fr_summary_go(m, fns, 0, fns.len())
+    fr_summary_close(m, fns)
     m
+
+# A tail that hands the parameter to a fn that returns it returns it too (the loop of
+# `returns_param_map`).
+fn fr_summary_close(m: Int, fns: &List[TFn]) -> Int ! alloc
+    if fr_close_go(m, fns, 0, fns.len(), 0) == 1
+        fr_summary_close(m, fns)
+    else
+        0
+
+fn fr_close_go(m: Int, fns: &List[TFn], i: Int, n: Int, grew: Int) -> Int ! alloc
+    if i >= n
+        grew
+    else
+        f = fns.get(i)
+        g2 = fr_close_params(m, &f, 0, f.params.len(), grew)
+        fr_close_go(m, fns, i + 1, n, g2)
+
+fn fr_close_params(m: Int, f: &TFn, j: Int, n: Int, grew: Int) -> Int ! alloc
+    if j >= n
+        grew
+    else
+        key = "r:" + f.name + ":" + j.to_str()
+        if map_get(m, str_own(&key)) == 0 && tail_call_passes(m, &"r:", &f.body.tail, &f.params.get(j).name) == 1
+            map_put(m, str_own(&key), 1)
+            fr_close_params(m, f, j + 1, n, 1)
+        else
+            fr_close_params(m, f, j + 1, n, grew)
 
 fn fr_summary_go(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n

@@ -154,6 +154,10 @@ fn mr_reindex_expr(e: &Expr, counter: &mut List[Int]) -> Int ! alloc
                 n = counter.get(0) + 1
                 counter.set(0, n)
                 mr_set_str(e, 2, &targs, &(mth_targs(targs.dup()) + "@" + n.to_str()))
+            elsif mth_id(targs.dup()).len() > 0
+                # A call that lost its dot (`a.f()` qualified to its module's fn) still carries
+                # the parser's id, which would collide with the ids given here.
+                mr_set_str(e, 2, &targs, &mth_targs(targs.dup()))
             0
         XBin(_, l, r) =>
             mr_reindex_expr(&l, counter)

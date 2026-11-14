@@ -476,13 +476,66 @@ fn passthru_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         passthru_params(m, &f, 0, f.params.len())
         passthru_put(m, fns, i + 1, n)
 
+# A tail that hands the parameter to a fn that returns it (`id(id(x))`) returns it too: repeat
+# until nothing is added (the loop of `returns_param_map`). `rp:<fn>:<i>` is the unfiltered
+# fact, `pass:<fn>:<i>` the by-value one.
+fn passthru_close(m: Int, fns: &List[TFn]) -> Int ! alloc
+    if passthru_close_go(m, fns, 0, fns.len(), 0) == 1
+        passthru_close(m, fns)
+    else
+        0
+
+fn passthru_close_go(m: Int, fns: &List[TFn], i: Int, n: Int, grew: Int) -> Int ! alloc
+    if i >= n
+        grew
+    else
+        f = fns.get(i)
+        g2 = passthru_close_params(m, &f, 0, f.params.len(), grew)
+        passthru_close_go(m, fns, i + 1, n, g2)
+
+fn passthru_close_params(m: Int, f: &TFn, j: Int, n: Int, grew: Int) -> Int ! alloc
+    if j >= n
+        grew
+    else
+        p = f.params.get(j)
+        suffix = f.name + ":" + j.to_str()
+        if map_get(m, str_own(&("rp:" + suffix))) == 0 && tail_call_passes(m, &"rp:", &f.body.tail, &p.name) == 1
+            map_put(m, str_own(&("rp:" + suffix)), 1)
+            if dr_ty_is_ref(&p.ty) == 0
+                map_put(m, str_own(&("pass:" + suffix)), 1)
+            passthru_close_params(m, f, j + 1, n, 1)
+        else
+            passthru_close_params(m, f, j + 1, n, grew)
+
+# `g(…, p, …)` or `g(…, h(p), …)` where `g` (and `h`) return the argument at that index
+# (`call_passes_param` in src/ir.rs). `prefix` selects the table of facts in `m`.
+fn tail_call_passes(m: Int, prefix: &String, e: &Expr, name: &String) -> Int ! alloc
+    match e
+        XCall(g, args, targs, xp) => tail_call_arg(m, prefix, &g, &args, name, 0)
+        _ => 0
+
+fn tail_call_arg(m: Int, prefix: &String, g: &String, args: &List[Expr], name: &String, i: Int) -> Int ! alloc
+    if i >= args.len()
+        0
+    elsif map_get(m, str_own(&(prefix + g + ":" + i.to_str()))) == 1 && tail_arg_passes(m, prefix, &args.get(i), name) == 1
+        1
+    else
+        tail_call_arg(m, prefix, g, args, name, i + 1)
+
+fn tail_arg_passes(m: Int, prefix: &String, a: &Expr, name: &String) -> Int ! alloc
+    match a
+        XIdent(nm) => nm.eq(name)
+        _ => tail_call_passes(m, prefix, a, name)
+
 fn passthru_params(m: Int, f: &TFn, j: Int, n: Int) -> Int ! alloc
     if j >= n
         0
     else
         p = f.params.get(j)
-        if dr_ty_is_ref(&p.ty) == 0 && tail_is_param(&f.body.tail, &p.name) == 1
-            map_put(m, str_own(&("pass:" + f.name + ":" + j.to_str())), 1)
+        if tail_is_param(&f.body.tail, &p.name) == 1
+            map_put(m, str_own(&("rp:" + f.name + ":" + j.to_str())), 1)
+            if dr_ty_is_ref(&p.ty) == 0
+                map_put(m, str_own(&("pass:" + f.name + ":" + j.to_str())), 1)
         passthru_params(m, f, j + 1, n)
 
 # 1 when `e` is `name`, or an `if`/`match` whose value is `name` in some branch

@@ -2860,6 +2860,7 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     _a = vec_push(denv, variant_map_t(tp, structs, enums, seen))
     _o = owned_fns_put(vec_get(denv, 0), &tp.fns, 0, list_len(&tp.fns))
     _pf = passthru_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
+    passthru_close(vec_get(denv, 0), &tp.fns)
     _rk = ret_kinds_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
     _rs = ret_kinds_put(vec_get(denv, 0), seen, 0, seen.len())
     cons = dr_cons_list(&tp.fns)
