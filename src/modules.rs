@@ -127,6 +127,7 @@ fn prepare_graph_protocols(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnostic
         let env = type_env_for_module(&graph.order[i], graph)?;
         let mut program = graph.order[i].program.clone();
         crate::protocols::instantiate_provided_with_protocols(&mut program, &env.protocols);
+        crate::protocols::attach_local_impl_claims(&mut program);
         let module = LoadedModule {
             path: graph.order[i].path.clone(),
             has_methods: graph.order[i].has_methods,
@@ -748,9 +749,39 @@ pub fn type_env_for_module(
             )]);
         }
     }
+    for dep in flat_transitive_import_modules(module, graph)? {
+        apply_foreign_impls(&mut env, &dep.program);
+    }
+    apply_foreign_impls(&mut env, &module.program);
     let own = crate::consteval::eval_consts(&module.program, &env.consts)?;
     env.consts.extend(own);
     Ok(env)
+}
+
+fn apply_foreign_impls(env: &mut crate::infer::TypeEnv, program: &Program) {
+    for item in &program.items {
+        let Item::Impl(imp) = item else { continue };
+        let crate::ast::Type::Named { name, args, .. } = &imp.target else { continue };
+        if !args.is_empty() { continue; }
+        let local = program.items.iter().any(|item| match item {
+            Item::Struct(s) => s.name == *name,
+            Item::Enum(e) => e.name == *name,
+            _ => false,
+        });
+        if local { continue; }
+        let claims = if let Some(s) = env.structs.get_mut(name) {
+            &mut s.protocols
+        } else if let Some(e) = env.enums.get_mut(name) {
+            &mut e.protocols
+        } else {
+            continue;
+        };
+        for claim in &imp.protocols {
+            if !claims.iter().any(|existing| existing.name == claim.name) {
+                claims.push(claim.clone());
+            }
+        }
+    }
 }
 
 /// Another item of `prog` (not this constant) already uses `name`.

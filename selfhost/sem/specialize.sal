@@ -161,7 +161,9 @@ fn sp_union(tp: &TProgram, ext: &TProgram) -> TProgram ! alloc
     sp_append_enums(&mut enums, &tp.enums, 0, tp.enums.len())
     imports = ext.imports.clone()
     sp_append_strs(&mut imports, &tp.imports, 0, tp.imports.len())
-    TProgram(fns, imports, structs, tp.aliases.clone(), enums, tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
+    u = TProgram(fns, imports, structs, tp.aliases.clone(), enums, tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
+    attach_local_impls(&mut u, 0)
+    u
 
 fn sp_append_fns(dst: &mut List[TFn], src: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n

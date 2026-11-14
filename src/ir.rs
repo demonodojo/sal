@@ -808,6 +808,25 @@ fn collect_any_vtables(prog: &Program) -> Vec<AnyVtableDef> {
             });
         }
     }
+    // The module defining an impl of an imported type owns its vtable.
+    for item in &prog.items {
+        let Item::Impl(imp) = item else { continue };
+        let Type::Named { name, args, .. } = &imp.target else { continue };
+        if !args.is_empty() || prog.items.iter().any(|item| match item {
+            Item::Struct(s) => s.name == *name,
+            Item::Enum(e) => e.name == *name,
+            _ => false,
+        }) { continue; }
+        for claim in &imp.protocols {
+            let Some(pdef) = protocols.get(&claim.name) else { continue };
+            out.push(AnyVtableDef {
+                type_name: name.clone(),
+                protocol: claim.name.clone(),
+                global: crate::protocols::vtable_global(name, &claim.name),
+                entries: crate::protocols::vtable_entries(name, pdef),
+            });
+        }
+    }
     out
 }
 

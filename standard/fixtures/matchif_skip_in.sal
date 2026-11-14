@@ -97,3 +97,12 @@ fn final_block(n: Int) -> Int
     else
         x = n + 1
         x
+
+fn assigned(n: Int) -> Int
+    value = if n == 1
+        10
+    elsif n == 2
+        20
+    else
+        0
+    value

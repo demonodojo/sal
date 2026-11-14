@@ -669,6 +669,9 @@ fn mi_has_homogeneous_branch(lex: &Lex, n: Int, if_i: Int) -> Int ! alloc
             0
 
 fn mi_try_if(src: &String, lex: &Lex, if_i: Int, n: Int) -> MiPack ! alloc
+    lead = mi_line_leading(src, lex.start(if_i))
+    if mi_trim(&lead).len() > 0
+        return mi_fail()
     ind = mi_skip_to_indent(lex, n, if_i + 1)
     if ind >= n
         return mi_fail()

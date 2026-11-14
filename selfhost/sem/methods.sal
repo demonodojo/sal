@@ -86,7 +86,99 @@ fn prepare_methods(tp: TProgram, ndots: Int, errs: &mut List[String]) -> TProgra
     if list_len(errs) > 0
         tp
     else
-        methods_resolve(tp, &mut ic_build(&tp, ndots, 1))
+        methods_resolve_fresh(tp)
+
+fn methods_resolve_fresh(tp: TProgram) -> TProgram ! alloc
+    n = mr_reindex_fns(&tp.fns)
+    methods_resolve(tp, &mut ic_build(&tp, n, 1))
+
+# Copied protocol bodies and inlined callbacks can originate in different modules. Give every
+# remaining dotted call its own id in this program before inference records its resolution.
+fn mr_reindex_fns(fns: &List[TFn]) -> Int ! alloc
+    counter = List.new[Int]()
+    counter.push(0)
+    mr_reindex_fns_go(fns, 0, &mut counter)
+    counter.get(0)
+
+fn mr_reindex_fns_go(fns: &List[TFn], i: Int, counter: &mut List[Int]) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        mr_reindex_block(&fns.get(i).body, counter)
+        mr_reindex_fns_go(fns, i + 1, counter)
+
+fn mr_reindex_block(b: &TBlock, counter: &mut List[Int]) -> Int ! alloc
+    mr_reindex_stmts(&b.stmts, 0, counter)
+    mr_reindex_expr(&b.tail, counter)
+
+fn mr_reindex_stmts(xs: &List[TStmt], i: Int, counter: &mut List[Int]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        st = xs.get(i)
+        mr_reindex_expr(&st.expr, counter)
+        mr_reindex_expr(&st.target, counter)
+        mr_reindex_stmts(xs, i + 1, counter)
+
+fn mr_reindex_args(xs: &List[Expr], i: Int, counter: &mut List[Int]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        mr_reindex_expr(&xs.get(i), counter)
+        mr_reindex_args(xs, i + 1, counter)
+
+fn mr_reindex_elsifs(xs: &List[TElsif], i: Int, counter: &mut List[Int]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        arm = xs.get(i)
+        mr_reindex_expr(&arm.cond, counter)
+        mr_reindex_block(&arm.body, counter)
+        mr_reindex_elsifs(xs, i + 1, counter)
+
+fn mr_reindex_arms(xs: &List[TArm], i: Int, counter: &mut List[Int]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        arm = xs.get(i)
+        mr_reindex_expr(&arm.body, counter)
+        if arm.has_suite == 1
+            mr_reindex_block(&arm.suite, counter)
+        mr_reindex_arms(xs, i + 1, counter)
+
+fn mr_reindex_expr(e: &Expr, counter: &mut List[Int]) -> Int ! alloc
+    match e
+        XCall(name, args, targs, _) =>
+            mr_reindex_args(&args, 0, counter)
+            if mth_dot(&name, 0, name.len()) >= 0
+                n = counter.get(0) + 1
+                counter.set(0, n)
+                mr_set_str(e, 2, &targs, &(mth_targs(targs.dup()) + "@" + n.to_str()))
+            0
+        XBin(_, l, r) =>
+            mr_reindex_expr(&l, counter)
+            mr_reindex_expr(&r, counter)
+        XTo(_, inner) => mr_reindex_expr(&inner, counter)
+        XOn(_, body, _, _) => mr_reindex_block(&body, counter)
+        XIf(cond, yes, no, has_else, elsifs) =>
+            mr_reindex_expr(&cond, counter)
+            mr_reindex_block(&yes, counter)
+            if has_else == 1
+                mr_reindex_block(&no, counter)
+            mr_reindex_elsifs(&elsifs, 0, counter)
+        XWhile(cond, body) =>
+            mr_reindex_expr(&cond, counter)
+            mr_reindex_block(&body, counter)
+        XField(base, _) => mr_reindex_expr(&base, counter)
+        XLambda(_, body) => mr_reindex_expr(&body, counter)
+        XLambdaBlock(_, body) => mr_reindex_block(&body, counter)
+        XBlock(body) => mr_reindex_block(&body, counter)
+        XUnary(_, inner) => mr_reindex_expr(&inner, counter)
+        XTry(inner) => mr_reindex_expr(&inner, counter)
+        XMatch(scrut, arms) =>
+            mr_reindex_expr(&scrut, counter)
+            mr_reindex_arms(&arms, 0, counter)
+        _ => 0
 
 fn methods_resolve(tp: TProgram, c: &mut IC) -> TProgram ! alloc
     _r = infer_program_go(c, 0, list_len(&tp.fns))
@@ -199,7 +291,7 @@ fn mr_call_in(e: &Expr, name: &String, args: &List[Expr], targs: &String, res: &
     else
         val = res.get(&id)
         if str_len(val) == 0
-            mr_set_str(e, 2, targs, &mth_targs(targs.dup()))
+            0
         else
             mr_apply(e, name, args, targs, &mth_targs(targs.dup()), str_char(val, 0), &str_slice(val, 1, str_len(val)))
 

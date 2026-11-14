@@ -2213,7 +2213,7 @@ fn parse_program_resolve_methods(tp: TProgram, errs: &mut List[String], ndots: I
     elsif ndots > 0
         prepared = prepare_methods(tp, ndots, errs)
         specialized = monomorphize_all(specialize_lambdas(&prepared, errs), errs)
-        methods_resolve(specialized, &mut ic_build(&specialized, ndots, 1))
+        methods_resolve_fresh(specialized)
     else
         monomorphize_all(specialize_lambdas(&tp, errs), errs)
 
@@ -2225,7 +2225,7 @@ fn parse_program_raw(src: &String, errs: &mut List[String], flags: &mut List[Int
     it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[TProtocol](), list_new[String](), list_new[String](), list_new[TConst](), list_new[TImpl]())
     _a = p_skip_nls(&mut pr)
     _b = parse_program_go(&mut pr, &mut it)
-    msg = parse_program_error(&pr, list_len(&it.fns), list_len(&it.structs), list_len(&it.enums), list_len(&it.consts), src)
+    msg = parse_program_error(&pr, it.fns.len(), it.structs.len(), it.enums.len(), it.consts.len(), it.protocols.len(), it.impls.len(), src)
     _n = list_set(flags, 0, list_get(&pr.st, 4))
     _f = parser_free(&pr)
     if str_len(msg) > 0
@@ -2306,7 +2306,7 @@ fn parse_const_item(pr: &mut Parser, dep: &String) -> TConst ! alloc
             TConst(name, ty, parse_expr(pr), dep.dup())
 
 # The error text of the parse, empty when it went well.
-fn parse_program_error(pr: &Parser, nfns: Int, nstructs: Int, nenums: Int, nconsts: Int, src: &String) -> String ! alloc
+fn parse_program_error(pr: &Parser, nfns: Int, nstructs: Int, nenums: Int, nconsts: Int, nprotocols: Int, nimpls: Int, src: &String) -> String ! alloc
     if p_has_err(pr) == 1
         strdup(p_err_msg(pr))
     elsif nfns > 0
@@ -2316,6 +2316,8 @@ fn parse_program_error(pr: &Parser, nfns: Int, nstructs: Int, nenums: Int, ncons
     elsif nenums > 0
         ""
     elsif nconsts > 0
+        ""
+    elsif nprotocols > 0 || nimpls > 0
         ""
     elsif toks_has_code(pr, 0, list_len(&pr.kinds)) == 1
         "parse error: expected fn"

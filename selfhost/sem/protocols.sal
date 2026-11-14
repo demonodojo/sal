@@ -223,11 +223,45 @@ fn check_builtin_impls(tp: &TProgram, i: Int, errs: &mut List[String]) -> Int ! 
     else
         imp = tp.impls.get(i)
         tps = tg_args(&imp.target)
-        if ty_base(&imp.target).eq("List") == 0 || tps.len() != 1
-            errs.push("E_TYPE: unsupported impl target")
-        else
+        target = ty_base(&imp.target)
+        if target.eq("List") == 1 && tps.len() == 1
             _c = check_builtin_claims(tp, &imp, &tps.get(0), 0, errs)
+        elsif tps.len() == 0
+            _c = check_claims(tp, &target, &imp.protocols, 0, imp.protocols.len(), errs)
+        else
+            errs.push("E_TYPE: unsupported impl target")
         check_builtin_impls(tp, i + 1, errs)
+
+# A builtin implementation belongs to the module defining its protocol.
+fn check_builtin_impl_origins(tp: &TProgram, i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= tp.impls.len()
+        0
+    else
+        imp = tp.impls.get(i)
+        target = ty_base(&imp.target)
+        if target.eq("List") == 1
+            _a = check_builtin_origin_claims(&tp.protocols, &imp.protocols, 0, errs)
+        elsif tt_struct_find(&tp.structs, &target) < 0 && enum_find(&tp.enums, &target, 0, tp.enums.len()) < 0
+            _a = check_nominal_origin_claims(&tp.protocols, &imp.protocols, 0, errs)
+        check_builtin_impl_origins(tp, i + 1, errs)
+
+fn check_nominal_origin_claims(protocols: &List[TProtocol], claims: &List[String], i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= claims.len()
+        0
+    else
+        name = ty_base(&claims.get(i))
+        if proto_find(protocols, &name, 0, protocols.len()) < 0
+            errs.push("E_TYPE: impl must be in the type or protocol module")
+        check_nominal_origin_claims(protocols, claims, i + 1, errs)
+
+fn check_builtin_origin_claims(protocols: &List[TProtocol], claims: &List[String], i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= claims.len()
+        0
+    else
+        name = ty_base(&claims.get(i))
+        if proto_find(protocols, &name, 0, protocols.len()) < 0
+            errs.push("E_TYPE: builtin impl must be in the protocol module")
+        check_builtin_origin_claims(protocols, claims, i + 1, errs)
 
 fn check_builtin_claims(tp: &TProgram, imp: &TImpl, elem: &String, i: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= imp.protocols.len()
@@ -314,7 +348,10 @@ fn provided_builtin_impls(tp: &TProgram, i: Int, out: &mut List[TFn]) -> Int ! a
         0
     else
         imp = tp.impls.get(i)
-        _a = provided_builtin_claims(tp, &imp, 0, out)
+        if ty_base(&imp.target).eq("List") == 1
+            _a = provided_builtin_claims(tp, &imp, 0, out)
+        elsif tg_args(&imp.target).len() == 0
+            _a = provided_claims(tp, &imp.target, &imp.protocols, 0, out)
         provided_builtin_impls(tp, i + 1, out)
 
 fn provided_builtin_claims(tp: &TProgram, imp: &TImpl, i: Int, out: &mut List[TFn]) -> Int ! alloc
@@ -420,7 +457,31 @@ fn provided_params(src: &List[TParam], i: Int, out: &mut List[TParam]) -> Int ! 
 fn add_provided(tp: TProgram) -> TProgram ! alloc
     extra = provided_functions(&tp)
     provided_append(&mut tp.fns, &extra, 0)
+    attach_local_impls(&mut tp, 0)
     tp
+
+fn attach_local_impls(tp: &mut TProgram, i: Int) -> Int ! alloc
+    if i >= tp.impls.len()
+        0
+    else
+        imp = tp.impls.get(i)
+        if tg_args(&imp.target).len() == 0
+            si = tt_struct_find(&tp.structs, &imp.target)
+            ei = enum_find(&tp.enums, &imp.target, 0, tp.enums.len())
+            if si >= 0
+                st = tp.structs.get_mut(si)
+                attach_impl_claims(&mut st.protocols, &imp.protocols, 0)
+            elsif ei >= 0
+                en = tp.enums.get_mut(ei)
+                attach_impl_claims(&mut en.protocols, &imp.protocols, 0)
+        attach_local_impls(tp, i + 1)
+
+fn attach_impl_claims(dst: &mut List[String], src: &List[String], i: Int) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        dst.push(src.get(i).dup())
+        attach_impl_claims(dst, src, i + 1)
 
 fn provided_append(fns: &mut List[TFn], extra: &List[TFn], i: Int) -> Int ! alloc
     if i >= extra.len()

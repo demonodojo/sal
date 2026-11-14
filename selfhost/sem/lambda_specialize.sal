@@ -44,7 +44,10 @@ fn lambda_sweep_fns(fns: &List[TFn], defs: &List[TFn], i: Int, out: &mut List[TF
     else
         f = fns.get(i)
         di = lambda_find_fn(defs, &f.name, 0)
-        remove = di >= 0 && lambda_callback_index(&defs.get(di).params, 0) >= 0
+        remove = if di >= 0
+            lambda_callback_index(&defs.get(di).params, 0) >= 0
+        else
+            0
         if !remove
             out.push(f.clone())
         lambda_sweep_fns(fns, defs, i + 1, out)
@@ -197,7 +200,7 @@ fn lambda_lift_call(owner: &String, f: &TFn, ci: Int, args: &List[Expr], targs: 
         XLambda(p, _) => lambda_param_list(&p)
         XLambdaBlock(p, _) => lambda_param_list(&p)
         _ => List.new[String]()
-    vals = lambda_callback_type_binds(f, ci, args, cb, defs)
+    vals = lambda_callback_type_binds(owner, f, ci, args, cb, defs)
     tps = tg_type_params(&f.tparams)
     ps_ty = lambda_subst_types(&lambda_fn_param_types(&ty), &tps, &vals)
     if ps_ty.len() != lambda_param_count(&param_names) || lambda_generic_unbound(&tps, &vals) == 1
@@ -270,7 +273,7 @@ fn lambda_append_capture_args(out: &mut List[Expr], sources: &List[String], caps
         out.push(id)
         lambda_append_capture_args(out, sources, caps, i + 1)
 
-fn lambda_callback_type_binds(f: &TFn, ci: Int, args: &List[Expr], cb: &Expr, defs: &List[TFn]) -> List[String] ! alloc
+fn lambda_callback_type_binds(owner: &String, f: &TFn, ci: Int, args: &List[Expr], cb: &Expr, defs: &List[TFn]) -> List[String] ! alloc
     tps = tg_type_params(&f.tparams)
     vals = List.new[String]()
     lambda_fill_empty(&mut vals, tps.len())
@@ -278,7 +281,7 @@ fn lambda_callback_type_binds(f: &TFn, ci: Int, args: &List[Expr], cb: &Expr, de
     actual = lambda_guess_callback_ret(cb, &lambda_callback_params(cb), &lambda_fn_param_types(&f.params.get(ci).ty), defs)
     if tps.len() > 0 && actual.eq("Unknown") == 0
         tg_bind(&decl, &actual, &tps, &mut vals)
-    lambda_bind_regular_args(f, ci, args, &tps, &mut vals, 0)
+    lambda_bind_regular_args(owner, f, ci, args, &tps, &mut vals, defs, 0)
     vals
 
 fn lambda_fill_empty(out: &mut List[String], n: Int) -> Int ! alloc
@@ -288,16 +291,32 @@ fn lambda_fill_empty(out: &mut List[String], n: Int) -> Int ! alloc
         out.push("")
         lambda_fill_empty(out, n - 1)
 
-fn lambda_bind_regular_args(f: &TFn, skip: Int, args: &List[Expr], tps: &List[String], vals: &mut List[String], i: Int) -> Int ! alloc
+fn lambda_bind_regular_args(owner: &String, f: &TFn, skip: Int, args: &List[Expr], tps: &List[String], vals: &mut List[String], defs: &List[TFn], i: Int) -> Int ! alloc
     if i >= f.params.len() || i >= args.len()
         0
     elsif i == skip
-        lambda_bind_regular_args(f, skip, args, tps, vals, i + 1)
+        lambda_bind_regular_args(owner, f, skip, args, tps, vals, defs, i + 1)
     else
-        actual = lambda_guess_expr_type(&args.get(i), &List.new[String](), &List.new[String](), &List.new[String](), &List.new[TFn]())
+        actual = lambda_regular_arg_type(owner, &args.get(i), defs)
         if actual.eq("Unknown") == 0
             tg_bind(&f.params.get(i).ty, &actual, tps, vals)
-        lambda_bind_regular_args(f, skip, args, tps, vals, i + 1)
+        lambda_bind_regular_args(owner, f, skip, args, tps, vals, defs, i + 1)
+
+fn lambda_regular_arg_type(owner: &String, arg: &Expr, defs: &List[TFn]) -> String ! alloc
+    match arg
+        XIdent(name) => lambda_owner_local_type(owner, &name, defs)
+        _ => lambda_guess_expr_type(arg, &List.new[String](), &List.new[String](), &List.new[String](), defs)
+
+fn lambda_owner_local_type(owner: &String, name: &String, defs: &List[TFn]) -> String ! alloc
+    fi = lambda_find_fn(defs, owner, 0)
+    if fi < 0
+        "Unknown"
+    else
+        f = defs.get(fi)
+        names = List.new[String]()
+        tys = List.new[String]()
+        lambda_seed_local_types(&f.params, &mut names, &mut tys)
+        lambda_local_type_block(&f.body, &names, &tys, name, defs)
 
 fn lambda_generic_unbound(tps: &List[String], vals: &List[String]) -> Int ! alloc
     lambda_generic_unbound_go(tps, vals, 0)
@@ -377,9 +396,15 @@ fn lambda_guess_expr_type(e: &Expr, names: &List[String], tys: &List[String], lo
         XBin(op, l, r) => lambda_guess_bin_type(&op, &l, &r, names, tys, defs)
         XUnary(_, inner) => lambda_guess_expr_type(&inner, names, tys, locals, defs)
         XTo(_, inner) => lambda_guess_expr_type(&inner, names, tys, locals, defs)
-        XCall(name, _, _, _) => lambda_fn_ret_of_name(defs, &name, 0)
+        XCall(name, _, targs, _) => lambda_guess_call_type(&name, &targs, defs)
         XField(_, _) => "Unknown"
         _ => "Unknown"
+
+fn lambda_guess_call_type(name: &String, targs: &String, defs: &List[TFn]) -> String ! alloc
+    if name.eq("list_new") == 1 && targs.len() > 0
+        "List[" + targs + "]"
+    else
+        lambda_fn_ret_of_name(defs, name, 0)
 
 fn lambda_name_type(names: &List[String], tys: &List[String], name: &String, i: Int) -> String ! alloc
     if i >= names.len() || i >= tys.len()
@@ -392,7 +417,9 @@ fn lambda_name_type(names: &List[String], tys: &List[String], name: &String, i: 
 fn lambda_guess_bin_type(op: &String, l: &Expr, r: &Expr, names: &List[String], tys: &List[String], defs: &List[TFn]) -> String ! alloc
     lt = lambda_guess_expr_type(l, names, tys, &List.new[String](), defs)
     rt = lambda_guess_expr_type(r, names, tys, &List.new[String](), defs)
-    if op.eq("+") == 1 && (lt.eq("String") == 1 || rt.eq("String") == 1)
+    if op.eq("eq") + op.eq("ne") + op.eq("lt") + op.eq("le") + op.eq("gt") + op.eq("ge") + op.eq("and") + op.eq("or") > 0
+        "Bool"
+    elsif op.eq("add") == 1 && (lt.eq("String") == 1 || rt.eq("String") == 1)
         "String"
     elsif lt.eq(rt) == 1 && (lt.eq("Int") == 1 || lt.eq("Float") == 1 || lt.eq("Bool") == 1)
         lt

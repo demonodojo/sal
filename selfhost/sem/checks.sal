@@ -24,8 +24,43 @@ fn check_program_in(tp: &TProgram, progs: &List[TProgram]) -> Res ! alloc
         if str_len(err) > 0
             _f = list_free(vals)
             result_err_str(&err)
+        elsif tp.impls.len() > 0
+            view = check_impl_view(tp, progs)
+            check_after_infer(tp, progs, infer_with_vals(&view, vals))
         else
             check_after_infer(tp, progs, infer_with_vals(tp, vals))
+
+# Add imported types named by this module's standalone impls to the inference view.
+fn check_impl_view(tp: &TProgram, progs: &List[TProgram]) -> TProgram ! alloc
+    view = TProgram(tp.fns.clone(), tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
+    check_impl_imports(&mut view, progs, 0)
+    attach_local_impls(&mut view, 0)
+    view
+
+fn check_impl_imports(view: &mut TProgram, progs: &List[TProgram], i: Int) -> Int ! alloc
+    if i >= view.impls.len()
+        0
+    else
+        imp = view.impls.get(i)
+        if tg_args(&imp.target).len() == 0 && tt_struct_find(&view.structs, &imp.target) < 0 && enum_find(&view.enums, &imp.target, 0, view.enums.len()) < 0
+            _a = check_impl_find_type(view, progs, &imp.target, 0)
+        check_impl_imports(view, progs, i + 1)
+
+fn check_impl_find_type(view: &mut TProgram, progs: &List[TProgram], name: &String, i: Int) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        si = tt_struct_find(&tp.structs, name)
+        ei = enum_find(&tp.enums, name, 0, tp.enums.len())
+        if si >= 0
+            view.structs.push(tp.structs.get(si).clone())
+            0
+        elsif ei >= 0
+            view.enums.push(tp.enums.get(ei).clone())
+            0
+        else
+            check_impl_find_type(view, progs, name, i + 1)
 
 fn check_after_infer(tp: &TProgram, progs: &List[TProgram], ty: Res) -> Res ! alloc
     if result_is_err(&ty) == 1

@@ -2064,6 +2064,8 @@ fn infer_scalar_left_unsupported(op: &String) -> Int ! alloc
         "shr" => 1
         _ => 0
 
+# The result is the left operand without its references (`peel_refs` in src/infer.rs): a
+# comparison of `&Int` is an `Int`, as in the bootstrap.
 fn infer_numeric(c: &mut IC, lt: &String, rt: &String) -> String ! alloc
     if ty_numeric(lt) == 0
         _f = ic_fail(c, &"numeric operation requires Int or Float")
@@ -2072,7 +2074,7 @@ fn infer_numeric(c: &mut IC, lt: &String, rt: &String) -> String ! alloc
         _f = ic_fail(c, &"numeric operation requires Int or Float")
         lt.dup()
     else
-        lt.dup()
+        ty_deref(lt)
 
 fn infer_is_bitop(op: &String) -> Int ! alloc
     match op

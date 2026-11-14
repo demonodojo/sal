@@ -25,7 +25,7 @@ pub fn check_program_protocols(prog: &Program, types: &TypeEnv) -> DiagResult<()
         match item {
             Item::Struct(s) => check_type_protocols(&s.name, &s.protocols, &s.type_params, s.span, types, &protocols)?,
             Item::Enum(e) => check_type_protocols(&e.name, &e.protocols, &e.type_params, e.span, types, &protocols)?,
-            Item::Impl(i) => check_builtin_impl(prog, i, protocols)?,
+            Item::Impl(i) => check_impl(prog, i, types, protocols)?,
             _ => {}
         }
     }
@@ -106,6 +106,26 @@ pub fn instantiate_provided(prog: &mut Program) {
     instantiate_provided_with_protocols(prog, &protocols);
 }
 
+/// Record standalone claims on types owned by this module for `any` coercions and vtables.
+pub fn attach_local_impl_claims(prog: &mut Program) {
+    let claims: Vec<(String, Vec<ProtocolClaim>)> = prog.items.iter().filter_map(|item| {
+        let Item::Impl(imp) = item else { return None };
+        let Type::Named { name, args, .. } = &imp.target else { return None };
+        if !args.is_empty() { return None; }
+        Some((name.clone(), imp.protocols.clone()))
+    }).collect();
+    for (name, added) in claims {
+        for item in &mut prog.items {
+            let protocols = match item {
+                Item::Struct(s) if s.name == name => &mut s.protocols,
+                Item::Enum(e) if e.name == name => &mut e.protocols,
+                _ => continue,
+            };
+            protocols.extend(added.iter().cloned());
+        }
+    }
+}
+
 pub fn instantiate_provided_with_protocols(prog: &mut Program, protocols: &HashMap<String, ProtocolDef>) {
     let own_methods: HashSet<String> = prog.items.iter().filter_map(|item| match item {
         Item::Fn(f) => Some(f.name.clone()),
@@ -113,13 +133,18 @@ pub fn instantiate_provided_with_protocols(prog: &mut Program, protocols: &HashM
     }).collect();
     let mut generated = Vec::new();
     for item in &prog.items {
-        if let Item::Impl(imp) = item {
-            instantiate_builtin_provided(imp, protocols, &own_methods, &mut generated);
-            continue;
-        }
         let (type_name, claims): (&str, &[ProtocolClaim]) = match item {
             Item::Struct(s) => (&s.name, &s.protocols),
             Item::Enum(e) => (&e.name, &e.protocols),
+            Item::Impl(imp) => {
+                if impl_type_params(&imp.target).is_some() {
+                    instantiate_builtin_provided(imp, protocols, &own_methods, &mut generated);
+                    continue;
+                }
+                let Type::Named { name, args, .. } = &imp.target else { continue };
+                if !args.is_empty() { continue; }
+                (name, &imp.protocols)
+            }
             _ => continue,
         };
         for claim in claims {
@@ -177,6 +202,37 @@ fn impl_type_params(target: &Type) -> Option<Vec<String>> {
         Type::Named { name, args, .. } if args.is_empty() => Some(vec![name.clone()]),
         _ => None,
     }
+}
+
+fn check_impl(prog: &Program, imp: &ImplDef, types: &TypeEnv, protocols: &HashMap<String, ProtocolDef>) -> DiagResult<()> {
+    if impl_type_params(&imp.target).is_some() {
+        return check_builtin_impl(prog, imp, protocols);
+    }
+    let Type::Named { name, args, .. } = &imp.target else {
+        return Err(vec![Diagnostic::new(ErrorCode::EType, "unsupported impl target", imp.span)]);
+    };
+    if !args.is_empty() {
+        return Err(vec![Diagnostic::new(ErrorCode::EType, "unsupported impl target", imp.span)]);
+    }
+    let type_params = if let Some(s) = types.structs.get(name) {
+        &s.type_params
+    } else if let Some(e) = types.enums.get(name) {
+        &e.type_params
+    } else {
+        return Err(vec![Diagnostic::new(ErrorCode::EType, "unknown impl target", imp.span)]);
+    };
+    let owns_type = prog.items.iter().any(|item| match item {
+        Item::Struct(s) => s.name == *name,
+        Item::Enum(e) => e.name == *name,
+        _ => false,
+    });
+    for claim in &imp.protocols {
+        let owns_protocol = prog.items.iter().any(|item| matches!(item, Item::Protocol(p) if p.name == claim.name));
+        if !owns_type && !owns_protocol {
+            return Err(vec![Diagnostic::new(ErrorCode::EType, "impl must be in the type or protocol module", imp.span)]);
+        }
+    }
+    check_type_protocols(name, &imp.protocols, type_params, imp.span, types, protocols)
 }
 
 fn check_builtin_impl(prog: &Program, imp: &ImplDef, protocols: &HashMap<String, ProtocolDef>) -> DiagResult<()> {

@@ -88,6 +88,7 @@ fn tenv_for_graph(order: &Graph) -> TEnv ! alloc
     all = List.new[TStruct]()
     refret = List.new[String]()
     tenv_graph_structs(&mut all, &mut refret, order, 0, order.progs.len())
+    graph_impl_structs(&mut all, &order.progs, 0)
     env = TEnv(List.new[String](), List.new[String](), tstructs_marked(&all, &refret), List.new[String](), List.new[String](), List.new[String](), List.new[Int]())
     tenv_graph_fill(&mut env, order, 0, order.progs.len())
     env
@@ -101,6 +102,48 @@ fn tenv_graph_structs(all: &mut List[TStruct], refret: &mut List[String], order:
         tenv_push_structs(all, &tp.structs, 0, tp.structs.len())
         tt_ref_returned(&tp.fns, 0, tp.fns.len(), refret)
         tenv_graph_structs(all, refret, order, i + 1, n)
+
+# An `impl` on a type of another module: the claim reaches the graph's copy of that type,
+# so a coercion to `any` sees it. The module that declares the type attached its own.
+fn graph_impl_structs(all: &mut List[TStruct], progs: &List[TProgram], i: Int) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        graph_impl_structs_go(all, tp, 0)
+        graph_impl_structs(all, progs, i + 1)
+
+fn graph_impl_structs_go(all: &mut List[TStruct], tp: &TProgram, k: Int) -> Int ! alloc
+    if k >= tp.impls.len()
+        0
+    else
+        imp = tp.impls.get(k)
+        if tg_args(&imp.target).len() == 0 && tt_struct_find(&tp.structs, &imp.target) < 0
+            si = tt_struct_find(all, &imp.target)
+            if si >= 0
+                st = all.get_mut(si)
+                attach_impl_claims(&mut st.protocols, &imp.protocols, 0)
+        graph_impl_structs_go(all, tp, k + 1)
+
+fn graph_impl_enums(all: &mut List[TEnum], progs: &List[TProgram], i: Int) -> Int ! alloc
+    if i >= progs.len()
+        0
+    else
+        tp = progs.get(i)
+        graph_impl_enums_go(all, tp, 0)
+        graph_impl_enums(all, progs, i + 1)
+
+fn graph_impl_enums_go(all: &mut List[TEnum], tp: &TProgram, k: Int) -> Int ! alloc
+    if k >= tp.impls.len()
+        0
+    else
+        imp = tp.impls.get(k)
+        if tg_args(&imp.target).len() == 0 && enum_find(&tp.enums, &imp.target, 0, tp.enums.len()) < 0
+            ei = enum_find(all, &imp.target, 0, all.len())
+            if ei >= 0
+                en = all.get_mut(ei)
+                attach_impl_claims(&mut en.protocols, &imp.protocols, 0)
+        graph_impl_enums_go(all, tp, k + 1)
 
 fn tenv_graph_fill(env: &mut TEnv, order: &Graph, i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -140,6 +183,7 @@ fn graph_fns_add(out: List[TFn], fns: &List[TFn], i: Int, n: Int) -> List[TFn] !
 fn graph_enums_t(order: &Graph) -> List[TEnum] ! alloc
     out = list_new[TEnum]()
     _a = graph_enums_go(order, 0, list_len(&order.mods), &mut out)
+    graph_impl_enums(&mut out, &order.progs, 0)
     out
 
 fn graph_enums_go(order: &Graph, i: Int, n: Int, out: &mut List[TEnum]) -> Int ! alloc
@@ -405,7 +449,19 @@ fn emit_vtables_enums(tp: &TProgram, es: &List[TEnum], i: Int, n: Int, acc: Stri
 
 fn emit_any_vtables_module(tp: &TProgram, acc: String) -> String ! alloc
     acc2 = emit_vtables_structs(tp, &tp.structs, 0, list_len(&tp.structs), acc)
-    emit_vtables_enums(tp, &tp.enums, 0, list_len(&tp.enums), acc2)
+    acc3 = emit_vtables_enums(tp, &tp.enums, 0, tp.enums.len(), acc2)
+    emit_vtables_impls(tp, 0, acc3)
+
+fn emit_vtables_impls(tp: &TProgram, i: Int, acc: String) -> String ! alloc
+    if i >= tp.impls.len()
+        acc
+    else
+        imp = tp.impls.get(i)
+        if tg_args(&imp.target).len() == 0 && tt_struct_find(&tp.structs, &imp.target) < 0 && enum_find(&tp.enums, &imp.target, 0, tp.enums.len()) < 0
+            acc2 = emit_vtables_claims(tp, &imp.target, &imp.protocols, 0, imp.protocols.len(), acc)
+            emit_vtables_impls(tp, i + 1, acc2)
+        else
+            emit_vtables_impls(tp, i + 1, acc)
 
 fn collect_assigns_block(b: &TBlock, names: Int) -> Int ! alloc
     _a = collect_assigns_stmts(&b.stmts, 0, list_len(&b.stmts), names)
