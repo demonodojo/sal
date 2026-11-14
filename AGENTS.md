@@ -64,6 +64,8 @@ cargo run --bin standard -- check|fix <fichero.sal>
 
 Flags: `--release`, `--device cpu|gpu|tpu`, `--instrument`, `--sanitize` (ASan+LSan+UBSan; no vale para soso), `--target linux|soso`, `--error-format json`.
 
+`--release` en linux enlaza por LTO completo: módulos y runtime C van como bitcode (`module.lto.o`) y el camino rápido del runtime se inlinea en el programa. `SAL_LTO=0` lo desactiva; tampoco se aplica con `--instrument`, `--sanitize` ni soso.
+
 ## Verificar (el test del pase tocado, no la suite entera por costumbre)
 
 | Se tocó | Comando |

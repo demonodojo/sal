@@ -903,20 +903,27 @@ fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> 
     loop {
         let mut changed = false;
         for f in fns.iter().copied() {
-            let facts = fn_facts(f, variants, &ro, &cons);
+            // What each parameter does, read before `ro`/`cons` change: `facts` borrows them.
+            let seen: Vec<(bool, bool, bool)> = {
+                let facts = fn_facts(f, variants, &ro, &cons);
+                f.params
+                    .iter()
+                    .map(|p| (facts.escapes(&p.name), facts.consumed.contains(&p.name), facts.kept.contains(&p.name)))
+                    .collect()
+            };
             let flags = ro.get_mut(&f.name).unwrap();
             let took = cons.get_mut(&f.name).unwrap();
             let kept = kept_map.get_mut(&f.name).unwrap();
-            for (i, p) in f.params.iter().enumerate() {
-                if flags[i] && facts.escapes(&p.name) {
+            for (i, &(escapes, consumed, keeps)) in seen.iter().enumerate() {
+                if flags[i] && escapes {
                     flags[i] = false;
                     changed = true;
                 }
-                if !took[i] && facts.consumed.contains(&p.name) {
+                if !took[i] && consumed {
                     took[i] = true;
                     changed = true;
                 }
-                if !kept[i] && facts.kept.contains(&p.name) {
+                if !kept[i] && keeps {
                     kept[i] = true;
                     changed = true;
                 }
@@ -935,13 +942,29 @@ fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> 
     }
 }
 
-fn fn_facts(f: &FnDef, variants: &Variants, ro: &ReadOnly, cons: &ReadOnly) -> Facts {
+fn fn_facts<'a>(f: &FnDef, variants: &'a Variants, ro: &'a ReadOnly, cons: &'a ReadOnly) -> Facts<'a> {
     let mut facts = Facts {
-        variants: variants.clone(),
-        ro: ro.clone(),
-        cons: cons.clone(),
+        escaped: HashSet::new(),
+        consumed: HashSet::new(),
+        kept: HashSet::new(),
+        consume_arg: false,
+        user_take: false,
+        bindings: HashMap::new(),
+        variants,
+        tainted: HashSet::new(),
+        matches: Vec::new(),
+        ro,
+        cons,
+        soft: HashSet::new(),
+        sites: HashMap::new(),
+        cur: None,
+        opaque: 0,
+        loop_depth: 0,
+        bind_depth: HashMap::new(),
+        hard_move: 0,
+        param_tys: HashMap::new(),
+        box_shell: HashSet::new(),
         moved: crate::borrowck::published_moved_locals(&f.name),
-        ..Facts::default()
     };
     for p in &f.params {
         facts.bind(&p.name);
@@ -1221,8 +1244,10 @@ fn is_string_operand(e: &Expr) -> bool {
     }
 }
 
-#[derive(Default)]
-struct Facts {
+/// What one fn does with its names. `variants`, `ro` and `cons` are borrowed: the fixed point
+/// of `read_only_params` builds one `Facts` per fn and round, and cloning those maps (one entry
+/// per fn of the program) each time made the pass quadratic (seconds on `selfhost/main.sal`).
+struct Facts<'a> {
     escaped: HashSet<String>,
     /// Handed out for real (returned, stored, or passed to a callee that consumes it).
     /// A Copy field (`return p.n`) is in `escaped` but not here.
@@ -1237,13 +1262,13 @@ struct Facts {
     /// consumption; only this flag promotes that parameter so callers take it.
     user_take: bool,
     bindings: HashMap<String, u32>,
-    variants: Variants,
+    variants: &'a Variants,
     /// Containers that received a value not known to be fresh.
     tainted: HashSet<String>,
     /// `match x` over a local: the names its variant patterns bind.
     matches: Vec<(String, Vec<String>)>,
-    ro: ReadOnly,
-    cons: ReadOnly,
+    ro: &'a ReadOnly,
+    cons: &'a ReadOnly,
     /// Names that escape only at whole statements of their own loop depth: the local still
     /// drops, guarded by a flag cleared right after each such statement.
     soft: HashSet<String>,
@@ -1269,7 +1294,7 @@ struct Facts {
     moved: Option<HashSet<String>>,
 }
 
-impl Facts {
+impl Facts<'_> {
     fn bind(&mut self, name: &str) {
         *self.bindings.entry(name.to_string()).or_insert(0) += 1;
         let d = self.loop_depth;
@@ -1783,8 +1808,8 @@ fn expr_is_string(e: &Expr) -> bool {
     EXPR_TYPES.with(|t| t.borrow().get(&(sp.start, sp.end)).is_some_and(crate::string_expr::is_string_type))
 }
 
-struct Ctx {
-    facts: Facts,
+struct Ctx<'a> {
+    facts: Facts<'a>,
     params: HashSet<String>,
     /// Names first bound to a reference (a `&` parameter, `t = xs.get(0)`) and then, once, to
     /// an owned value at the top level of the fn: that value is the fn's, released at the end.
@@ -1938,7 +1963,7 @@ fn own_enum_list(name: &str, released: bool, init: &mut Expr, owned: &mut HashMa
     }
 }
 
-impl Ctx {
+impl Ctx<'_> {
     /// A local bound once, moved out of this scope (to a struct constructor, a callee that
     /// takes it, or by `return`), and only ever filled with fresh values or owned parameters:
     /// the new owner releases its elements (SPEC «Memoria»: a `List[String]` owns its strings),
@@ -1980,7 +2005,7 @@ impl Ctx {
     }
 }
 
-impl Ctx {
+impl Ctx<'_> {
     /// The release function for a droppable local, if `name = init` declares one.
     fn candidate(&self, name: &str, ty: &Option<Type>, init: &Expr) -> Option<(&'static str, bool)> {
         // `t = s` moves an owned local into `t`: `t` is the new owner of what `s` released (its
@@ -2612,7 +2637,8 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
     SHARED_LISTS.with(|s| *s.borrow_mut() = shared_list_names(f));
     let mut borrows = HashMap::new();
     claim_block(&mut f.body, true, &mut borrows, variants);
-    let mut facts = fn_facts(f, variants, ro, &ReadOnly::new());
+    let no_cons = ReadOnly::new();
+    let mut facts = fn_facts(f, variants, ro, &no_cons);
     let elems = list_elem_structs(f);
     let mut copy_locals = HashMap::new();
     struct_copy_locals(&f.body, &elems, &mut copy_locals);

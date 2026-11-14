@@ -1,0 +1,35 @@
+# exit: 42
+# Piezas de 0 a 20 bytes (los bordes 1, 2, 4, 8 y 16 de la copia corta del runtime): el
+# acumulador crece in situ o se realoja, y `+` concatena; cada byte llega a su sitio.
+# 42 = ninguna discrepancia y longitudes totales 3·210 = 630 y 2·210 = 420.
+fn main() -> Int ! alloc
+    a = d"abcdefghijklmnopqrst"
+    bad = 0
+    total_acc = 0
+    total_cat = 0
+    k = 0
+    while k <= 20
+        piece = a.slice(0, k)
+        acc = d""
+        n = 0
+        while n < 3
+            acc = acc + piece
+            n = n + 1
+        cat = piece + piece
+        j = 0
+        while j < acc.len()
+            if acc.char(j) != a.char(j % k)
+                bad = bad + 1
+            j = j + 1
+        j = 0
+        while j < cat.len()
+            if cat.char(j) != a.char(j % k)
+                bad = bad + 1
+            j = j + 1
+        total_acc = total_acc + acc.len()
+        total_cat = total_cat + cat.len()
+        k = k + 1
+    ok = 0
+    if total_acc == 630 && total_cat == 420
+        ok = 1
+    bad * 10 + ok * 42

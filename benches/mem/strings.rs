@@ -12,7 +12,7 @@ fn build(n: usize) -> Vec<String> {
     xs
 }
 
-fn main() {
+fn run() -> i32 {
     let xs = build(N);
     let ys = xs.clone();
     let mut total = 0_usize;
@@ -21,5 +21,11 @@ fn main() {
         total += ys[i].len();
         i += 1;
     }
-    std::process::exit((total & 255) as i32);
+    (total & 255) as i32
+}
+
+// `std::process::exit` no ejecuta destructores: `run` devuelve antes, así que la lista y sus
+// elementos se liberan como en sal (que suelta cada local al salir de `main`).
+fn main() {
+    std::process::exit(run());
 }

@@ -9,7 +9,7 @@ use crate::diag::{Diagnostic, ErrorCode};
 use crate::effects::check_effects_with_infer;
 use crate::fuse::fuse_module_opts;
 use crate::incremental::{
-    cache_key_with_deps, cache_path, import_graph_digest, is_cache_hit, ll_cache_path,
+    cache_dir, cache_key_with_deps, cache_path, import_graph_digest_with, is_cache_hit, ll_cache_path,
     load_cached_meta, obj_cache_path, store_cached_meta, CacheMeta, CompileFlags,
 };
 use crate::infer::infer_program;
@@ -133,7 +133,7 @@ fn compile_program_at(
     )?;
     if !opts.skip_link {
         require_device_toolchain(&opts.device)?;
-        let obj = obj_cache_path(&opts.project_root, &key);
+        let obj = module_obj_path(opts, &key);
         artifacts.binary = Some(link_binary_multi(&opts.project_root, &[obj], opts)?);
     }
     Ok(artifacts)
@@ -181,16 +181,23 @@ fn compile_file_with_imports(
     let mut all_cache_hit = true;
     let mut root_artifacts: Option<CompileArtifacts> = None;
     let callees = graph_fns(&graph);
+    // Shared by every module: the import digest of a file and the graph-wide string env do
+    // not depend on the module being compiled. `from_module_graph` also records the structs
+    // returned by reference (`scalarize::note_ref_returned`) for the lowering below; nothing in
+    // the loop resets that record (the per-module checks that do run before it).
+    let mut digest_cache = crate::incremental::DigestCache::default();
+    let graph_progs: Vec<&Program> = graph.order.iter().map(|x| &x.program).collect();
+    let graph_strings = StringEnv::from_module_graph(&graph_progs);
 
     for m in &graph.order {
         let infer_m = infer_module(m, &graph, opts.toolchain.target)?;
         // The moves are published per module, right before its lowering: the checks above ran
         // for every module first, and the last one would otherwise be what this one lowers with.
         crate::borrowck::publish_moved_locals(&m.program, &infer_m);
-        let graph_progs: Vec<&Program> = graph.order.iter().map(|x| &x.program).collect();
-        let strings_env = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_m);
+        let strings_env = graph_strings.clone().with_infer(&infer_m);
         let typed_m = TypedProgram::from_program(m.program.clone(), infer_m.expr_types_by_fn);
-        let mut deps_m = import_graph_digest(&m.program, &m.path, &graph.project_root);
+        let mut deps_m =
+            import_graph_digest_with(&m.program, &m.path, &graph.project_root, &mut digest_cache);
         // The layout of this module's structs also depends on modules that import it (a field
         // `&'a mut Pool` there keeps `Pool` a heap block): the key carries those facts too.
         deps_m.extend(crate::scalarize::layout_digest(&strings_env.structs));
@@ -221,7 +228,7 @@ fn compile_file_with_imports(
         if is_root {
             root_artifacts = Some(artifacts);
         }
-        let obj = obj_cache_path(&opts.project_root, &key_m);
+        let obj = module_obj_path(opts, &key_m);
         all_objs.push(obj);
     }
 
@@ -327,7 +334,7 @@ fn compile_single_module(
     }
     let meta_file = cache_path(&opts.project_root, key);
     let ll_path = ll_cache_path(&opts.project_root, key);
-    let obj_path = obj_cache_path(&opts.project_root, key);
+    let obj_path = module_obj_path(opts, key);
     let cache_hit = is_cache_hit(&meta_file, key);
     let prev_meta = load_cached_meta(&meta_file);
 
@@ -354,8 +361,8 @@ fn compile_single_module(
                 extern_user_fns: externs.clone(),
                 emit_entry_main,
                 struct_defs: crate::layout::collect_struct_defs(program),
-                agg_structs: strings_env.structs.clone(),
-                fn_sigs: strings_env.fn_sigs.clone(),
+                agg_structs: (*strings_env.structs).clone(),
+                fn_sigs: (*strings_env.fn_sigs).clone(),
             },
             &tensors,
             externs,
@@ -426,6 +433,9 @@ fn compile_obj_from_ll(
         .arg("-o")
         .arg(obj_path);
     clang.arg(opt_flag);
+    if lto_enabled(opts) {
+        clang.arg("-flto");
+    }
     if opts.instrument || !opts.release || sanitize_enabled() {
         clang.arg("-g");
     }
@@ -446,6 +456,78 @@ fn sanitize_flags() -> Vec<&'static str> {
     } else {
         Vec::new()
     }
+}
+
+/// `--release` for Linux links by full LTO: the module objects and the C runtime are LLVM
+/// bitcode, so the fast path of `push`, `get`, `len`, `str_append`… inlines into the program
+/// instead of costing a call (in `benches/mem/ints.sal`, about a third of the time). ThinLTO
+/// imports too little across modules to get there. Off with `SAL_LTO=0`, under `--sanitize`
+/// and `--instrument`, for soso, and when the C compiler cannot link bitcode.
+pub fn lto_enabled(opts: &CompileOptions) -> bool {
+    opts.release
+        && !opts.instrument
+        && !sanitize_enabled()
+        && opts.toolchain.target == crate::target::Target::Linux
+        && std::env::var_os("SAL_LTO").is_none_or(|v| v != "0")
+        && toolchain_links_lto(&opts.project_root, &opts.toolchain.cc)
+}
+
+/// The cached object of a module. An LTO object is bitcode: it keeps its own name so that
+/// a build without LTO (`SAL_LTO=0`) never links it as a native object.
+fn module_obj_path(opts: &CompileOptions, key: &str) -> PathBuf {
+    if lto_enabled(opts) {
+        cache_dir(&opts.project_root, key).join("module.lto.o")
+    } else {
+        obj_cache_path(&opts.project_root, key)
+    }
+}
+
+/// Whether `cc -flto` compiles and links a C file (it needs the LLVM linker plugin or lld).
+/// Probed once per compiler and process, under the lock (threads that build at the same time
+/// wait for one probe). A yes is also kept under `rt-cache/` so a later build does not pay for
+/// the probe; a no is not, so a failure that passes (a full disk) does not stick.
+fn toolchain_links_lto(root: &Path, cc: &Path) -> bool {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&(_, ok)) = seen.iter().find(|(c, _)| c == cc) {
+        return ok;
+    }
+    let mut h = DefaultHasher::new();
+    cc.hash(&mut h);
+    env!("SAL_COMPILER_ID").hash(&mut h);
+    let dir = root.join("target").join("sal-out").join("rt-cache");
+    let mark = dir.join(format!("lto-{:016x}.ok", h.finish()));
+    let ok = if mark.is_file() {
+        true
+    } else {
+        let probe = dir.join(format!("lto-probe.{}", std::process::id()));
+        let ok = fs::create_dir_all(&probe).is_ok()
+            && fs::write(probe.join("p.c"), "int main(void) { return 0; }\n").is_ok()
+            && Command::new(cc)
+                .args(["-flto", "-c"])
+                .arg(probe.join("p.c"))
+                .arg("-o")
+                .arg(probe.join("p.o"))
+                .output()
+                .is_ok_and(|o| o.status.success())
+            && Command::new(cc)
+                .arg("-flto")
+                .arg(probe.join("p.o"))
+                .arg("-o")
+                .arg(probe.join("p"))
+                .output()
+                .is_ok_and(|o| o.status.success());
+        let _ = fs::remove_dir_all(&probe);
+        if ok {
+            let _ = fs::write(&mark, "");
+        }
+        ok
+    };
+    seen.push((cc.to_path_buf(), ok));
+    ok
 }
 
 /// Whether a physical device / native toolchain is present (no network).
@@ -563,6 +645,12 @@ fn link_binary_multi(
     if opts.instrument {
         defs.push("-DSAL_INSTRUMENT=1");
     }
+    // Bitcode runtime: the program inlines it at link time (see `lto_enabled`). The flag is
+    // part of the object's cache key, so native and bitcode objects never mix.
+    let lto = lto_enabled(opts);
+    if lto {
+        defs.push("-flto");
+    }
     let mut rt_srcs = vec![runtime.join("sal_runtime.c")];
     rt_srcs.push(runtime.join("soso/linux_host_syscall.c"));
     rt_srcs.push(runtime.join("kernels.c"));
@@ -586,6 +674,9 @@ fn link_binary_multi(
         link.arg("-lcudart");
     }
     link.args(sanitize_flags());
+    if lto {
+        link.arg("-flto");
+    }
     link.arg("-o").arg(&bin).arg(opt_flag).arg("-lm");
     run_cmd(link)?;
     Ok(bin)

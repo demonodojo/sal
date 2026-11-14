@@ -13,33 +13,33 @@ use crate::layout::{collect_enum_defs, collect_layout_structs};
 pub struct StringEnv {
     /// `(span.start, span.end)` -> type, from `ExprTypeEntry`.
     pub types: Rc<HashMap<(u32, u32), Type>>,
-    pub structs: HashMap<String, StructDef>,
-    pub enums: HashMap<String, EnumDef>,
+    pub structs: Rc<HashMap<String, StructDef>>,
+    pub enums: Rc<HashMap<String, EnumDef>>,
     /// Local/param names bound to a struct type (for `.field` lowering).
     pub struct_types: HashMap<String, String>,
     /// Locals bound to a lambda (`f = x => body`): parameter and body, inlined at calls.
     pub lambdas: HashMap<String, (String, Expr)>,
     /// User functions whose return type is a nominal struct (for assign/init typing).
-    pub fn_struct_rets: HashMap<String, String>,
+    pub fn_struct_rets: Rc<HashMap<String, String>>,
     /// The subset of `fn_struct_rets` whose declared result is a reference (`-> &P`): the
     /// result borrows from an argument, so the caller's local does not own the struct.
-    pub fn_ref_rets: HashSet<String>,
+    pub fn_ref_rets: Rc<HashSet<String>>,
     /// User functions that return `Tensor[…]` (for IR shape on call results).
-    pub fn_tensor_rets: HashMap<String, Type>,
+    pub fn_tensor_rets: Rc<HashMap<String, Type>>,
     /// Scalarised signature of every function in the graph (see `scalarize`).
-    pub fn_sigs: HashMap<String, crate::scalarize::FnSig>,
+    pub fn_sigs: Rc<HashMap<String, crate::scalarize::FnSig>>,
     /// Name of the binding an `x = x + ...` chain accumulates into, while its
     /// left spine is being lowered.
     pub accumulate: Option<String>,
-    pub protocol_calls: HashMap<(u32, u32), (String, String, u32)>,
-    pub any_coercions: HashMap<(u32, u32), (String, String)>,
-    pub protocols: HashMap<String, crate::ast::ProtocolDef>,
+    pub protocol_calls: Rc<HashMap<(u32, u32), (String, String, u32)>>,
+    pub any_coercions: Rc<HashMap<(u32, u32), (String, String)>>,
+    pub protocols: Rc<HashMap<String, crate::ast::ProtocolDef>>,
     /// Struct and enum variant constructors across the module graph (`P(…)`, `V(…)` with fields).
-    pub ctor_names: HashSet<String>,
+    pub ctor_names: Rc<HashSet<String>>,
     /// Parameter indices a function returns as a branch-tail value (see `ir::returns_param_map`).
-    pub returns_param: HashMap<String, Vec<usize>>,
+    pub returns_param: Rc<HashMap<String, Vec<usize>>>,
     /// Module constants visible while lowering this function, after qualify.
-    pub consts: HashMap<String, crate::consteval::ConstValue>,
+    pub consts: Rc<HashMap<String, crate::consteval::ConstValue>>,
 }
 
 fn peel_ref_type(ty: &Type) -> &Type {
@@ -119,21 +119,21 @@ impl StringEnv {
         }
         Self {
             types: Rc::new(HashMap::new()),
-            fn_sigs,
-            structs,
-            enums,
+            fn_sigs: Rc::new(fn_sigs),
+            structs: Rc::new(structs),
+            enums: Rc::new(enums),
             struct_types: HashMap::new(),
             lambdas: HashMap::new(),
-            fn_struct_rets,
-            fn_ref_rets,
-            fn_tensor_rets,
+            fn_struct_rets: Rc::new(fn_struct_rets),
+            fn_ref_rets: Rc::new(fn_ref_rets),
+            fn_tensor_rets: Rc::new(fn_tensor_rets),
             accumulate: None,
-            protocol_calls: HashMap::new(),
-            any_coercions: HashMap::new(),
-            protocols,
-            ctor_names,
-            returns_param,
-            consts: HashMap::new(),
+            protocol_calls: Rc::new(HashMap::new()),
+            any_coercions: Rc::new(HashMap::new()),
+            protocols: Rc::new(protocols),
+            ctor_names: Rc::new(ctor_names),
+            returns_param: Rc::new(returns_param),
+            consts: Rc::new(HashMap::new()),
         }
     }
 
@@ -150,9 +150,9 @@ impl StringEnv {
             }
         }
         self.types = Rc::new(map);
-        self.protocol_calls = out.protocol_calls.clone();
-        self.any_coercions = out.any_coercions.clone();
-        self.consts = out.consts.clone();
+        self.protocol_calls = Rc::new(out.protocol_calls.clone());
+        self.any_coercions = Rc::new(out.any_coercions.clone());
+        self.consts = Rc::new(out.consts.clone());
         self
     }
 

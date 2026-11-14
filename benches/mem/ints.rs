@@ -2,7 +2,7 @@
 
 const N: usize = 5_000_000;
 
-fn main() {
+fn run() -> i32 {
     let mut xs: Vec<i64> = Vec::new();
     let mut i = 0_i64;
     while (i as usize) < N {
@@ -15,5 +15,11 @@ fn main() {
         total += xs[j];
         j += 1;
     }
-    std::process::exit((total & 255) as i32);
+    (total & 255) as i32
+}
+
+// `std::process::exit` no ejecuta destructores: `run` devuelve antes, así que la lista y sus
+// elementos se liberan como en sal (que suelta cada local al salir de `main`).
+fn main() {
+    std::process::exit(run());
 }

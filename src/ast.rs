@@ -123,6 +123,30 @@ pub struct FnDef {
     pub span: Span,
 }
 
+impl FnDef {
+    /// The fn with an empty body (same span): what a type environment needs to check calls.
+    /// Copying it does not copy the body, which a module graph would otherwise copy into the
+    /// environment of every module that sees the fn.
+    pub fn signature(&self) -> FnDef {
+        FnDef {
+            name: self.name.clone(),
+            receiver: self.receiver.clone(),
+            self_mode: self.self_mode,
+            self_ref: self.self_ref,
+            method_kind: self.method_kind,
+            type_params: self.type_params.clone(),
+            params: self.params.clone(),
+            ret: self.ret.clone(),
+            effects: self.effects.clone(),
+            body: Block { stmts: Vec::new(), tail: None, span: self.body.span },
+            no_heap: self.no_heap,
+            arena: self.arena,
+            deprecated: self.deprecated.clone(),
+            span: self.span,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Param {
     pub name: String,

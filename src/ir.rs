@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -681,7 +682,8 @@ pub fn lower_program_with_callables_env(
                 .collect()
         });
     }
-    let caller_modes = caller_param_modes(prog, &param_modes, &declared, &consumed);
+    let caller_modes = Rc::new(caller_param_modes(prog, &param_modes, &declared, &consumed));
+    let param_modes = Rc::new(param_modes);
     let mut functions = Vec::new();
     for item in &prog.items {
         if let Item::Fn(f) = item {
@@ -1273,10 +1275,12 @@ fn export_keep_args(
 
 /// The fn being lowered and its parameter modes. An `if` branch releases the struct
 /// locals it declares when it ends (`block_struct_drops`); that needs the whole fn's moves.
+/// The fn being lowered. The mode maps cover the module and its callees: shared, not copied
+/// per fn or per block.
 struct ScopeCtx {
     f: FnDef,
-    param_modes: HashMap<String, Vec<ParamMode>>,
-    caller_modes: HashMap<String, Vec<ParamMode>>,
+    param_modes: Rc<HashMap<String, Vec<ParamMode>>>,
+    caller_modes: Rc<HashMap<String, Vec<ParamMode>>>,
 }
 
 thread_local! {
@@ -1290,8 +1294,8 @@ fn lower_fn(
     f: &FnDef,
     fn_names: &HashMap<String, ()>,
     base: &StringEnv,
-    param_modes: &HashMap<String, Vec<ParamMode>>,
-    caller_modes: &HashMap<String, Vec<ParamMode>>,
+    param_modes: &Rc<HashMap<String, Vec<ParamMode>>>,
+    caller_modes: &Rc<HashMap<String, Vec<ParamMode>>>,
 ) -> IrFunction {
     SCOPE_CTX.with(|c| {
         *c.borrow_mut() = Some(ScopeCtx {
@@ -1874,7 +1878,7 @@ fn return_struct_drops(
     strings: &StringEnv,
 ) {
     #[allow(clippy::type_complexity)]
-    let scopes: Vec<(FnDef, HashSet<String>, HashMap<String, Vec<ParamMode>>, HashMap<String, Vec<ParamMode>>)> =
+    let scopes: Vec<(FnDef, HashSet<String>, Rc<HashMap<String, Vec<ParamMode>>>, Rc<HashMap<String, Vec<ParamMode>>>)> =
         SCOPE_CTX.with(|c| {
             let c = c.borrow();
             let Some(ctx) = c.as_ref() else {
@@ -1895,7 +1899,7 @@ fn return_struct_drops(
             out.into_iter()
                 .map(|(mut block, outer)| {
                     block.stmts.push(ret.clone());
-                    let mut synth = ctx.f.clone();
+                    let mut synth = ctx.f.signature();
                     synth.params = Vec::new();
                     synth.body = block;
                     (synth, outer, ctx.param_modes.clone(), ctx.caller_modes.clone())
@@ -1923,7 +1927,7 @@ fn reassign_struct_drop(
             let mut synth = ctx.f.clone();
             let branch = OPEN_BRANCHES.with(|b| {
                 b.borrow().iter().rev().find_map(|(block, _)| {
-                    let mut probe = ctx.f.clone();
+                    let mut probe = ctx.f.signature();
                     probe.params = Vec::new();
                     probe.body = block.clone();
                     fn_struct_bindings(&probe, strings).contains_key(name).then_some(probe)
@@ -1956,7 +1960,7 @@ fn block_struct_drops(
 ) {
     let scoped = SCOPE_CTX.with(|c| {
         c.borrow().as_ref().map(|ctx| {
-            let mut synth = ctx.f.clone();
+            let mut synth = ctx.f.signature();
             synth.params = Vec::new();
             synth.body = block.clone();
             (synth, ctx.param_modes.clone(), ctx.caller_modes.clone())

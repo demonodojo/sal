@@ -745,3 +745,62 @@ fn install_github_release_dep_picks_highest_matching_release() {
     drop(_guard);
     assert!(err.contains("checksum mismatch"), "{err}");
 }
+
+/// Every `.o` under `target/incremental` of `project`, by file name.
+fn incremental_objects(project: &Path, name: &str) -> Vec<PathBuf> {
+    let dir = project.join("target").join("incremental");
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let obj = entry.path().join(name);
+        if obj.is_file() {
+            out.push(obj);
+        }
+    }
+    out
+}
+
+/// `--release` links by LTO (see `lto_enabled`): the module object is LLVM bitcode, kept apart
+/// from the native `module.o` of a debug build, and the program still computes the same value.
+#[test]
+fn release_build_links_runtime_by_lto() {
+    let tmp = isolated_root();
+    let project = tmp.path().to_path_buf();
+    let file = project.join("sum.sal");
+    fs::write(
+        &file,
+        "fn main() -> Int ! alloc\n    xs = List.new[Int]()\n    i = 0\n    while i < 1000\n        \
+         xs.push(i)\n        i = i + 1\n    total = 0\n    i = 0\n    while i < xs.len()\n        \
+         total = total + xs.get(i)\n        i = i + 1\n    total & 255\n",
+    )
+    .expect("write sum.sal");
+    let mut opts = CompileOptions {
+        toolchain: Default::default(),
+        output: None,
+        release: true,
+        instrument: false,
+        device: "cpu".into(),
+        project_root: project.clone(),
+        skip_link: false,
+    };
+    if !sal_compiler::compile::lto_enabled(&opts) {
+        eprintln!("skip: the C compiler cannot link LLVM bitcode (-flto)");
+        return;
+    }
+    let rel = compile_file(&file, &opts).expect("release build");
+    // 0 + 1 + … + 999 = 499500, and 499500 & 255 = 44.
+    let st = Command::new(rel.binary.as_ref().expect("binary")).status().expect("run release");
+    assert_eq!(st.code(), Some(44));
+    let lto = incremental_objects(&project, "module.lto.o");
+    assert_eq!(lto.len(), 1, "one bitcode object for the release build");
+    let head = fs::read(&lto[0]).expect("read module.lto.o");
+    assert!(head.starts_with(b"BC\xC0\xDE"), "module.lto.o must be LLVM bitcode");
+    assert!(incremental_objects(&project, "module.o").is_empty());
+
+    opts.release = false;
+    let dbg = compile_file(&file, &opts).expect("debug build");
+    let st = Command::new(dbg.binary.as_ref().expect("binary")).status().expect("run debug");
+    assert_eq!(st.code(), Some(44));
+    let native = incremental_objects(&project, "module.o");
+    assert_eq!(native.len(), 1, "the debug build keeps a native object");
+    assert!(fs::read(&native[0]).expect("read module.o").starts_with(b"\x7fELF"));
+}

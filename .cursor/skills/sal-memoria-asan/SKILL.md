@@ -50,7 +50,7 @@ Misma convención que `xfail` y `selfhost-xfail`: el programa **debe seguir fall
 | struct/enum devuelto por una función de usuario y consumido en `main` no se libera | `drop_enum_deep`, `drop_struct_containers`, `drop_struct_nested_strings`, `enum_owns`, `generic_struct` |
 | `Dict.get` de un valor struct: el `Option` libera su caja, pero la copia (`desc_copy`) no la libera nadie (`sal_enum_free` solo conoce `String` y enum) | `dict_owned_values` |
 | `n = p.name` mueve un campo `String` a un local y ese local no se libera | `partial_move_ok` |
-| `String` por valor a una función genérica (tipo borrado): ni el llamador ni la callee lo liberan | `generic_two_params` |
+| `String` por valor a una función genérica (tipo borrado): ni el llamador ni la callee lo liberan | `generic_two_params`, `generic_calls_generic` |
 | `int_to_str` como clave de `Dict.remove`/`put` en bucle | `dict_remove_many` |
 | el `String` de `f64_bits_to_str` | `method_float_math` |
 

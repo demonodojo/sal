@@ -36,7 +36,8 @@ pub struct TypeEnv {
     /// Mangled names of `static` and `init` fns (`T__name`): they have no `self`.
     pub statics: std::collections::HashSet<String>,
     pub protocols: HashMap<String, ProtocolDef>,
-    /// Full `FnDef` for signature checks (protocols, effects on methods).
+    /// `FnDef` for signature checks (protocols, effects on methods); bodies are empty
+    /// (`FnDef::signature`).
     pub fn_defs: HashMap<String, FnDef>,
     /// Dynamic `x.m()` on `any[P]`: call span → (protocol, method, slot).
     pub protocol_calls: std::cell::RefCell<HashMap<(u32, u32), (String, String, u32)>>,
@@ -124,7 +125,7 @@ pub fn type_env_of_program(prog: &Program) -> TypeEnv {
 /// Add `f` to the callable signatures, noting whether it is a `static`/`init`.
 pub fn register_fn(types: &mut TypeEnv, f: &FnDef) {
     types.fns.insert(f.name.clone(), fn_signature(f));
-    types.fn_defs.insert(f.name.clone(), f.clone());
+    types.fn_defs.insert(f.name.clone(), f.signature());
     if let Some(i) = generic_ret_index(f) {
         types.generic_ret.insert(f.name.clone(), i);
     }

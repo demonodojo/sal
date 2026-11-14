@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -94,9 +94,30 @@ pub fn import_graph_digest(
     source_file: &Path,
     project_root: &Path,
 ) -> Vec<u8> {
+    import_graph_digest_with(prog, source_file, project_root, &mut DigestCache::default())
+}
+
+/// What [`import_graph_digest_with`] learns about a file, kept for one compilation: neither
+/// the imports of a file nor its typed AST depend on the module that imports it. Without it,
+/// each module of a graph re-parsed, re-resolved and re-typed every module it reaches.
+#[derive(Default)]
+pub struct DigestCache {
+    /// Import paths written in each file (empty when it does not read or parse).
+    imports: HashMap<PathBuf, Vec<String>>,
+    /// Serialized typed AST of each file (`None` when it does not parse).
+    typed: HashMap<PathBuf, Option<String>>,
+}
+
+/// [`import_graph_digest`] with a memo shared by the modules of one compilation.
+pub fn import_graph_digest_with(
+    prog: &Program,
+    source_file: &Path,
+    project_root: &Path,
+    cache: &mut DigestCache,
+) -> Vec<u8> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut ordered: Vec<PathBuf> = Vec::new();
-    collect_import_paths(prog, source_file, project_root, &mut visited, &mut ordered);
+    collect_import_paths(&import_strings(prog), source_file, project_root, &mut visited, &mut ordered, cache);
     if ordered.is_empty() {
         return Vec::new();
     }
@@ -104,9 +125,12 @@ pub fn import_graph_digest(
     let mut hasher = Sha256::new();
     for path in &ordered {
         hasher.update(path.to_string_lossy().as_bytes());
-        match typed_ast_for_file(path, project_root) {
-            Some(typed) => {
-                hasher.update(serde_json::to_string(&typed).unwrap_or_default());
+        let typed = cache.typed.entry(path.clone()).or_insert_with(|| {
+            typed_ast_for_file(path, project_root).map(|t| serde_json::to_string(&t).unwrap_or_default())
+        });
+        match typed {
+            Some(json) => {
+                hasher.update(json.as_bytes());
             }
             None => {
                 if let Ok(bytes) = fs::read(path) {
@@ -118,20 +142,23 @@ pub fn import_graph_digest(
     hasher.finalize().to_vec()
 }
 
+fn import_strings(prog: &Program) -> Vec<String> {
+    prog.items
+        .iter()
+        .filter_map(|item| if let Item::Import(imp) = item { Some(imp.path.clone()) } else { None })
+        .collect()
+}
+
 fn collect_import_paths(
-    prog: &Program,
+    imports: &[String],
     source_file: &Path,
     project_root: &Path,
     visited: &mut HashSet<PathBuf>,
     ordered: &mut Vec<PathBuf>,
+    cache: &mut DigestCache,
 ) {
-    for item in &prog.items {
-        let Item::Import(imp) = item else {
-            continue;
-        };
-        let Some(path) =
-            resolve_import_path_with_manifest(&imp.path, source_file, project_root)
-        else {
+    for imp in imports {
+        let Some(path) = resolve_import_path_with_manifest(imp, source_file, project_root) else {
             continue;
         };
         let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -139,13 +166,18 @@ fn collect_import_paths(
             continue;
         }
         ordered.push(path.clone());
-        let Ok(src) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(dep) = parse(&src) else {
-            continue;
-        };
-        collect_import_paths(&dep, &path, project_root, visited, ordered);
+        let dep_imports = cache
+            .imports
+            .entry(path.clone())
+            .or_insert_with(|| {
+                fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|src| parse(&src).ok())
+                    .map(|dep| import_strings(&dep))
+                    .unwrap_or_default()
+            })
+            .clone();
+        collect_import_paths(&dep_imports, &path, project_root, visited, ordered, cache);
     }
 }
 

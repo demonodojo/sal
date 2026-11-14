@@ -14,6 +14,7 @@ pub struct ModuleExports {
     pub structs: HashMap<String, StructDef>,
     pub enums: HashMap<String, EnumDef>,
     pub frames: HashMap<String, FrameDef>,
+    /// Signatures only (`FnDef::signature`): the bodies stay in their module.
     pub fns: HashMap<String, FnDef>,
     pub protocols: HashMap<String, crate::ast::ProtocolDef>,
     pub consts: HashMap<String, ConstValue>,
@@ -66,12 +67,18 @@ pub fn resolve_import_path_with_manifest(
     source_file: &Path,
     project_root: &Path,
 ) -> Option<PathBuf> {
+    // Same order as always (source dir, project root, `sal_modules/`, dependencies), but the
+    // dependency bases read `Sal.toml`/`Sal.lock`: only when nothing nearer has the file.
     let mut candidates = Vec::new();
     if let Some(dir) = source_file.parent() {
         push_candidates(&mut candidates, dir, import_path);
     }
     push_candidates(&mut candidates, project_root, import_path);
     push_candidates(&mut candidates, &project_root.join("sal_modules"), import_path);
+    if let Some(found) = candidates.into_iter().find(|p| p.is_file()) {
+        return Some(found);
+    }
+    let mut candidates = Vec::new();
     for base in all_search_bases(project_root) {
         push_candidates(&mut candidates, &base.path, import_path);
         if let Some((dep, rest)) = import_path.split_once('/') {
@@ -90,8 +97,24 @@ fn push_candidates(out: &mut Vec<PathBuf>, base: &Path, import_path: &str) {
     }
 }
 
+/// The canonical path of a module, the key that identifies it in the graph. Memoized per
+/// thread: the import walks ask for the key of every module of the graph for each import
+/// (millions of `readlink` on `selfhost/main.sal`). Only a path that canonicalizes is kept, so
+/// a file created later is not stuck with the raw path.
 pub(crate) fn path_key(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    thread_local! {
+        static KEYS: std::cell::RefCell<HashMap<PathBuf, PathBuf>> = std::cell::RefCell::new(HashMap::new());
+    }
+    if let Some(k) = KEYS.with(|m| m.borrow().get(path).cloned()) {
+        return k;
+    }
+    match fs::canonicalize(path) {
+        Ok(k) => {
+            KEYS.with(|m| m.borrow_mut().insert(path.to_path_buf(), k.clone()));
+            k
+        }
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGraph, Vec<Diagnostic>> {
@@ -348,7 +371,7 @@ pub fn exports_for_module(module: &LoadedModule) -> ModuleExports {
                 out.enums.insert(e.name.clone(), e.clone());
             }
             Item::Fn(f) => {
-                out.fns.insert(f.name.clone(), f.clone());
+                out.fns.insert(f.name.clone(), f.signature());
             }
             Item::Frame(f) => {
                 out.frames.insert(f.name.clone(), f.clone());

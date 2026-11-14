@@ -78,9 +78,10 @@ dhat = dhat and shutil.which("valgrind") is not None
 
 
 def run(binary):
-    # El resultado va en el código de salida, no en 0.
+    # El resultado va en el código de salida, no en 0. Sin `timeout`: con él, Python espera
+    # al hijo con sleeps que doblan y redondea cada tiempo a 15,7 / 31,8 / 64 ms.
     return subprocess.run([binary], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL, timeout=600)
+                          stderr=subprocess.DEVNULL)
 
 
 def peak_rss_kb(binary):
@@ -104,9 +105,14 @@ def median_ms(binary):
 
 
 def dhat_totals(binary):
-    """Reservas y bytes reservados en todo el proceso (valgrind --tool=dhat)."""
+    """Reservas y bytes reservados en todo el proceso (valgrind --tool=dhat).
+
+    Solo hacen falta los totales: `--num-callers=4` evita que dhat desenrolle la pila más
+    allá de `main` en un binario con LTO, donde cada reserva parecía venir de un sitio
+    distinto y el coste crecía con el cuadrado de las reservas (minutos en vez de segundos)."""
     with tempfile.NamedTemporaryFile(suffix=".json") as f:
-        r = subprocess.run(["valgrind", "--tool=dhat", f"--dhat-out-file={f.name}", binary],
+        r = subprocess.run(["valgrind", "--tool=dhat", "--num-callers=4",
+                            f"--dhat-out-file={f.name}", binary],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.PIPE, text=True, timeout=1800)
     m = re.search(r"Total:\s+([\d,]+) bytes in ([\d,]+) blocks", r.stderr)

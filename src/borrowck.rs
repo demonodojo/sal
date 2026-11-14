@@ -82,11 +82,13 @@ enum ParamKind {
     Unknown,
 }
 
-struct Cx {
+/// `structs` and `sigs` are the program's, borrowed: cloning them for each fn made the check
+/// quadratic in the size of the module.
+struct Cx<'a> {
     publish_moves: bool,
     types: HashMap<(u32, u32), Type>,
-    structs: HashMap<String, StructDef>,
-    sigs: HashMap<String, Vec<Type>>,
+    structs: &'a HashMap<String, StructDef>,
+    sigs: &'a HashMap<String, Vec<Type>>,
     ret_refs: bool,
     scopes: Vec<Scope>,
     loans: Vec<Loan>,
@@ -295,13 +297,13 @@ fn check_fn_with_moves_policy(
     (cx.diags, roots)
 }
 
-fn run_fn(
+fn run_fn<'a>(
     f: &FnDef,
     entries: &[ExprTypeEntry],
-    structs: &HashMap<String, StructDef>,
-    sigs: &HashMap<String, Vec<Type>>,
+    structs: &'a HashMap<String, StructDef>,
+    sigs: &'a HashMap<String, Vec<Type>>,
     publish_moves: bool,
-) -> Cx {
+) -> Cx<'a> {
     let mut types = HashMap::new();
     for e in entries {
         types.insert((e.span_start, e.span_end), e.ty.clone());
@@ -309,8 +311,8 @@ fn run_fn(
     let mut cx = Cx {
         publish_moves,
         types,
-        structs: structs.clone(),
-        sigs: sigs.clone(),
+        structs,
+        sigs,
         ret_refs: false,
         scopes: vec![Scope { vars: HashMap::new(), end: u32::MAX }],
         loans: Vec::new(),
@@ -343,7 +345,7 @@ fn is_ref(ty: &Type) -> bool {
     matches!(ty, Type::Ref { .. })
 }
 
-impl Cx {
+impl Cx<'_> {
     fn ref_of(&self, e: &Expr) -> Option<(String, bool)> {
         ref_of(e)
     }

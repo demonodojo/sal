@@ -287,6 +287,35 @@ static size_t sal_str_len_add(size_t a, size_t b) {
     return a + b;
 }
 
+/* Copies n bytes. Up to 16 they go as two overlapping loads and stores of 8, 4, 2 or 1 bytes,
+ * inline: an accumulator appends short pieces (`acc = acc + ","`), and a call to memcpy for
+ * them cost more than the rest of the append. `dst` and `src` do not overlap. */
+static inline void sal_copy_bytes(char *dst, const char *src, size_t n) {
+    if (n >= 8 && n <= 16) {
+        uint64_t a, b;
+        memcpy(&a, src, 8);
+        memcpy(&b, src + n - 8, 8);
+        memcpy(dst, &a, 8);
+        memcpy(dst + n - 8, &b, 8);
+    } else if (n >= 4 && n < 8) {
+        uint32_t a, b;
+        memcpy(&a, src, 4);
+        memcpy(&b, src + n - 4, 4);
+        memcpy(dst, &a, 4);
+        memcpy(dst + n - 4, &b, 4);
+    } else if (n >= 2 && n < 4) {
+        uint16_t a, b;
+        memcpy(&a, src, 2);
+        memcpy(&b, src + n - 2, 2);
+        memcpy(dst, &a, 2);
+        memcpy(dst + n - 2, &b, 2);
+    } else if (n == 1) {
+        *dst = *src;
+    } else if (n > 16) {
+        memcpy(dst, src, n);
+    }
+}
+
 /* A new, private String block with room for `cap_bytes` (>= content_len + 1). Nobody else
  * sees it until the caller returns it: that is the only place String bytes are written. */
 static char *sal_str_alloc_size(size_t content_len, size_t cap_bytes) {
@@ -372,14 +401,14 @@ char *sal_strdup(const char *s) {
         if (!out) {
             return NULL;
         }
-        memcpy(out, s, n + 1);
+        sal_copy_bytes(out, s, n + 1);
         return out;
     }
     char *out = sal_str_alloc_size(n, n + 1);
     if (!out) {
         return NULL;
     }
-    memcpy(out, s, n + 1);
+    sal_copy_bytes(out, s, n + 1);
     return out;
 }
 
@@ -663,9 +692,7 @@ char *sal_str_concat_n(int64_t n, const char *const *parts) {
     size_t w = 0;
     for (int64_t i = 0; i < n; i++) {
         size_t k = (size_t)sal_str_len_raw(parts[i]);
-        if (k > 0) {
-            memcpy(out + w, parts[i], k);
-        }
+        sal_copy_bytes(out + w, parts[i], k);
         w += k;
     }
     out[w] = 0;
@@ -676,6 +703,19 @@ char *sal_str_concat_n(int64_t n, const char *const *parts) {
 /* `x = x + b` (SPEC «Expresiones», acumulador): consumes `a`, which the compiler has
  * moved, so no one else can see it. Not reachable from sal source. */
 char *sal_str_append(char *a, const char *b) {
+    /* The loop case: `a` is heap, `b` fits in its free room and lies outside its block. */
+    if (a && b) {
+        int64_t cap = sal_str_cap(a);
+        size_t na = (size_t)sal_str_len_raw(a);
+        size_t nb = (size_t)sal_str_len_raw(b);
+        if (cap > 0 && nb < (size_t)cap - na
+            && (b < sal_str_base(a) || b >= a + cap)) {
+            sal_copy_bytes(a + na, b, nb);
+            a[na + nb] = 0;
+            *(int64_t *)((unsigned char *)a - 8) = (int64_t)(na + nb);
+            return a;
+        }
+    }
     const char *parts[1] = {b};
     return sal_str_append_n(a, 1, parts);
 }
@@ -723,9 +763,7 @@ char *sal_str_append_n(char *acc, int64_t n, const char *const *parts) {
     size_t w = na;
     for (int64_t i = 0; i < n; i++) {
         size_t k = (size_t)sal_str_len_raw(parts[i]);
-        if (k > 0) {
-            memcpy(out + w, parts[i], k);
-        }
+        sal_copy_bytes(out + w, parts[i], k);
         w += k;
     }
     out[w] = 0;
@@ -940,7 +978,7 @@ char *sal_str_slice(const char *s, int64_t start, int64_t end) {
     if (!out) {
         return NULL;
     }
-    memcpy(out, s + start, len);
+    sal_copy_bytes(out, s + start, len);
     out[len] = '\0';
     *(int64_t *)((unsigned char *)out - 8) = (int64_t)len;
     return out;

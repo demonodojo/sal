@@ -49,12 +49,13 @@ progs = sys.argv[3:]
 
 def run(binary):
     # El benchmark devuelve el resultado en el código de salida (p. ej. 224), no en 0.
+    # Sin `timeout`: con él, Python espera al hijo con sleeps que doblan (0,5+1+2+4+8 ms…)
+    # y todo tiempo se redondea al escalón siguiente (15,7 / 31,8 / 64 ms).
     return subprocess.run(
         [binary],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        timeout=600,
     )
 
 
