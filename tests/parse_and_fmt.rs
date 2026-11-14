@@ -77,3 +77,48 @@ fn fmt_grouped_newlines_match_one_line() {
     let f2 = format_program(&parse(&fm).expect("reparse"));
     assert_eq!(fm, f2);
 }
+
+#[test]
+fn fmt_lambda_arguments_and_function_types() {
+    let src = "fn apply(f: fn(Int, Int) -> Int, a: Int) -> Int\n    a.apply f (x, y) => x + y\n";
+    let p = parse(src).expect("parse function type and trailing lambda");
+    let formatted = format_program(&p);
+    let reparsed = parse(&formatted).expect("reparse formatted lambda");
+    assert_eq!(formatted, format_program(&reparsed));
+    assert!(formatted.contains("fn(Int, Int) -> Int"));
+    assert!(formatted.contains("(x, y) => x + y"));
+}
+
+#[test]
+fn fmt_protocol_provided_method_body() {
+    let src = "protocol Value\n    method value(self) -> Int\n        7\n";
+    let p1 = parse(src).expect("parse protocol body");
+    let formatted = format_program(&p1);
+    let p2 = parse(&formatted).expect("reparse protocol body");
+    assert_eq!(formatted, format_program(&p2));
+    let protocol = p1.items.iter().find_map(|item| match item {
+        sal_compiler::ast::Item::Protocol(protocol) => Some(protocol),
+        _ => None,
+    }).expect("protocol item");
+    assert!(protocol.methods[0].body.is_some());
+}
+
+#[test]
+fn fmt_generic_protocol_and_claim() {
+    let src = "protocol Value[T]\n    method map[U](&self, f: fn(T) -> U) -> U\n\nstruct Number impl Value[Int]\n    n: Int\n";
+    let p = parse(src).expect("parse generic protocol");
+    let formatted = format_program(&p);
+    assert!(formatted.contains("protocol Value[T]"));
+    assert!(formatted.contains("method map[U](&self, f: fn(T) -> U) -> U"));
+    assert!(formatted.contains("struct Number impl Value[Int]"));
+    assert_eq!(formatted, format_program(&parse(&formatted).expect("reparse")));
+}
+
+#[test]
+fn fmt_impl_item() {
+    let src = "impl List[T] Collection[T]\n";
+    let p = parse(src).expect("parse impl item");
+    let formatted = format_program(&p);
+    assert_eq!(formatted, src);
+    assert_eq!(formatted, format_program(&parse(&formatted).expect("reparse")));
+}

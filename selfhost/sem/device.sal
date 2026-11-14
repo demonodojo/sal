@@ -385,6 +385,7 @@ fn dv_expr_go(c: &mut DevC, e: &Expr) -> String ! alloc
         XTry(inner) => dv_expr(c, &inner)
         XField(base, field) => dv_field(c, &base)
         XTensor(nr, nc, data) => dv_tensor(c)
+        XBlock(body) => dv_block(c, &body)
         XIf(cond, then_b, else_b, has_else, elsifs) => dv_if(c, &cond, &then_b, &else_b, &elsifs)
         XWhile(cond, body) => dv_while(c, &cond, &body)
         XLambda(param, body) => dv_lambda(c, &param, &body)

@@ -510,6 +510,7 @@ fn texpr_type(env: &TEnv, e: &Expr) -> String ! alloc
         XUnary(op, inner) => tt_unary_type(env, &op, &inner)
         XBin(op, l, r) => tt_binary_type(env, &op, &l, &r)
         XField(base, field) => tt_field_type(&env.structs, &texpr_type(env, &base), &field)
+        XBlock(body) => tt_block_tail_type(env, &body)
         XIf(cond, then_b, else_b, has_else, elsifs) => tt_block_tail_type(env, &then_b)
         _ => ""
 

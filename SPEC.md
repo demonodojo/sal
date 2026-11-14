@@ -29,6 +29,7 @@ item         → import_def
              | enum_def
              | frame_def
              | protocol_def
+             | impl_def
              | attr_list fn_def
              | attr_list method_def
              | attr_list static_def
@@ -61,12 +62,16 @@ column_type  → "F32" | "F16" | "BF16" | "I8" | "String"
 enum_def     → "enum" IDENT type_params impl_clause NEWLINE INDENT variant_list DEDENT
 impl_clause  → "impl" protocol_list
              | ε
-protocol_list → protocol_list "," IDENT
-              | IDENT
-protocol_def → "protocol" IDENT NEWLINE INDENT protocol_method_list DEDENT
-protocol_method_list → protocol_method_list protocol_method_sig
-                     | protocol_method_sig
-protocol_method_sig → "method" IDENT "(" method_params ")" "->" type effect_clause NEWLINE
+protocol_list → protocol_list "," protocol_ref
+              | protocol_ref
+protocol_ref → named_type
+impl_def     → "impl" named_type protocol_list NEWLINE
+protocol_def → "protocol" IDENT type_params NEWLINE INDENT protocol_method_list DEDENT
+protocol_method_list → protocol_method_list protocol_method
+                     | protocol_method
+protocol_method_sig → "method" IDENT type_params "(" method_params ")" "->" type effect_clause NEWLINE
+protocol_method → protocol_method_sig
+                 | "method" IDENT type_params "(" method_params ")" "->" type effect_clause suite
 variant_list → variant_list variant
              | variant
 variant      → IDENT variant_payload
@@ -98,6 +103,8 @@ type_param   → "'" IDENT
 param_list   → param_list "," param
              | param
              | ε
+ident_list   → ident_list "," IDENT
+             | IDENT
 param        → IDENT ":" type
 effect_clause → "!" effect_list
               | ε
@@ -131,6 +138,9 @@ Si hay `=`, la izquierda tiene que ser un lvalue: `IDENT`, un postfijo que solo 
 expr         → "try" expr
              | lambda
 lambda       → or "=>" expr
+             | IDENT "=>" suite
+             | "(" ident_list ")" "=>" expr
+             | "(" ident_list ")" "=>" suite
              | or
 or           → or "||" and
              | and
@@ -167,6 +177,10 @@ unary        → "-" unary
              | "*" unary
              | postfix
 postfix      → postfix "(" arg_list ")"
+             | postfix "(" arg_list ")" IDENT "=>" expr
+             | postfix "(" arg_list ")" "(" ident_list ")" "=>" expr
+             | postfix IDENT "=>" expr
+             | postfix "(" ident_list ")" "=>" expr
              | postfix "[" type_arg_list "]" "(" arg_list ")"
              | postfix "." IDENT
              | primary
@@ -227,7 +241,7 @@ elsif_list   → elsif_list "elsif" expr suite
 `&&` y `||` son los operadores lógicos. Toman valores de verdad: `Bool`, o `Int` donde distinto de cero es verdadero (como la condición de `if` y `while`), y devuelven `Bool`. Cualquier otro tipo es `E_TYPE`. Cortocircuitan: `a && b` no evalúa `b` si `a` es falso, y `a || b` no evalúa `b` si `a` es verdadero. El valor es siempre `true` o `false`, aunque el operando sea `Int`. Una comparación escalar sigue valiendo `Int` (`0` o `1`).
 
 
-El parámetro a la izquierda de `=>` en `lambda` es un `IDENT`. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda. Tras `=>`, un `arm_body` puede ser una expresión o un bloque indentado (`suite`); el bloque sigue las mismas reglas de valor, `return` y `break` que el cuerpo de un `if`.
+La lambda acepta `x => expr` y `(x, y) => expr`; el bloque indentado tras `=>` también vale. Puede pasarse a un parámetro `fn(…)` o ligarse a un local como macro; no se guarda en un struct ni se devuelve. Un tipo `fn(…)` solo se admite como tipo de parámetro. La lambda final `xs.map x => x * 2` equivale a `xs.map(x => x * 2)`, y `xs.reduce(0) (a, x) => a + x` equivale a `xs.reduce(0, (a, x) => a + x)`. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda. Dentro de una lambda, `return` y `break` son `E_TYPE`.
 
 Un `match` sobre un escalar distinto de enum elige el **primer** brazo cuyo patrón coincide. `_` coincide siempre. Un `INT` exige escrutado `Int` y `==`. Un `STRING` en el patrón exige escrutado `String` e igualdad exacta (`str_eq`). Un `RSTRING` exige escrutado `String` y encaja si la expresión regular POSIX ERE (como `regexec`, sin anclar salvo `^`/`$` en el patrón) coincide en algún punto; no liga grupos. Mezclar patrones de enteros, cadenas o regex con patrones de variantes de enum en el mismo `match` es `E_TYPE`. Mezclar enteros con cadenas o regex es `E_TYPE`. Un `IDENT` que no nombra variante del enum del escrutado liga el escrutado y coincide siempre. Si ningún brazo coincide, el valor es `0` (`Int`). Los literales y regex en el patrón no mueven el `String` del escrutado. Regex inválida: `E_TYPE`. En destino `soso`, un patrón `RSTRING` es `E_TARGET` (no hay `regcomp` en ese runtime).
 
@@ -239,8 +253,10 @@ Un `match` sobre un escalar distinto de enum elige el **primer** brazo cuyo patr
 
 ```text
 type         → ref_type
+             | fn_type
              | tensor_type
              | named_type
+fn_type      → "fn" "(" type_list ")" "->" type effect_clause
 ref_type     → "&" lifetime "mut" type
              | "&" lifetime type
              | "&" "mut" type
@@ -323,7 +339,7 @@ parallel_expr → "parallel" suite
 | `Int` | i64 |
 | `Float` | f64 (no elemento de tensor) |
 | `Bool`, `String`, `Bytes`, `Unit` | |
-| `List[T]` | heap, límites comprobados; `T` ∈ Int, Float, Bool, String, struct o enum. `list_push(xs, v)` mueve `v`; `list_set(xs, i, v)` lo pone en la posición `i` (suelta el anterior si es `String`) y devuelve la lista; `list_pop(xs)` quita el último y lo mueve al llamador (pánico si está vacía); `list_get` presta el elemento (`String`, struct describible o enum: el mismo puntero). La copia profunda se inserta solo para una segunda dueña (`return` que vive más que la lista, el parámetro mismo guardado o devuelto, `list_push` / `list_set` / `dict_put`, payload de una variante). Recomponer un struct con campos prestados no copia: el resultado es un alias |
+| `List[T]` | heap, límites comprobados; `T` ∈ Int, Float, Bool, String, struct o enum. `list_push(xs, v)` mueve `v`; `list_set(xs, i, v)` lo pone en la posición `i` (suelta el anterior si es `String`) y devuelve `Unit`; `list_pop(xs)` quita el último y lo mueve al llamador (pánico si está vacía); `list_get` presta el elemento (`String`, struct describible o enum: el mismo puntero). La copia profunda se inserta solo para una segunda dueña (`return` que vive más que la lista, el parámetro mismo guardado o devuelto, `list_push` / `list_set` / `dict_put`, payload de una variante). Recomponer un struct con campos prestados no copia: el resultado es un alias |
 | `Dict[K, V]` | heap; `K` ∈ Int, String; `V` cualquier tipo salvo `Tensor` y funciones (`String`, struct, enum…). `dict_get` devuelve `Option[V]` (el `Option` del preludio: `None` y `Some`, en ese orden) y copia los `String`; `dict_put` presta la clave (con `&` o sin él: no se mueve) y mueve el valor; el `Dict` guarda su propia copia de una clave nueva (un literal se comparte) y la suelta en `dict_remove` o al soltarse; si la clave ya estaba, conserva la suya y suelta el valor anterior si era `String`; `dict_has(d, k)` es `Bool`; `dict_len(d)` es `Int`; `dict_remove(d, k)` borra la entrada (suelta el valor si es `String`) y devuelve `Bool` (`true` si estaba); `dict_keys(d)` y `dict_values(d)` devuelven una `List[K]` / `List[V]` nueva, con las mismas posiciones, en orden no especificado, y copian los `String`. Las claves `Int` (también 0 y negativas) funcionan igual que las `String`. Para recorrer un `Dict` se itera `keys` con `while` y se consulta con `dict_get` |
 | `Tensor[Elem, dims…] on lugar` | `Elem` ∈ F32, F16, BF16, I8; `?` eje dinámico |
 | structs, enums | |
@@ -344,13 +360,13 @@ Un `enum` genérico no necesita copias: todas sus instancias comparten represent
 
 ### Protocolos
 
-`protocol` e `impl` son contextuales, como `method`: `protocol` solo al inicio de un item; `impl` solo en la cabecera de un `struct` o un `enum`, tras los parámetros de tipo (`struct Point impl Show, Other`). La lista de protocolos crece por la izquierda; el texto canónico deja un espacio tras cada coma. Un `struct` que se llame `any` es `E_PARSE`.
+`protocol` e `impl` son contextuales, como `method`: `protocol` inicia un item; `impl` puede aparecer en la cabecera de un `struct` o un `enum`, o iniciar un item `impl Tipo Protocolo`. La lista de protocolos crece por la izquierda; el texto canónico deja un espacio tras cada coma. Un `struct` que se llame `any` es `E_PARSE`.
 
-Un `protocol P` declara métodos sin cuerpo: cada línea es `method nombre(self …) -> R ! efectos`, con las mismas reglas de `self` que un `method` de instancia. Un protocolo no tiene parámetros de tipo.
+Un `protocol P[T]` declara parámetros de tipo y métodos requeridos (sin suite) y provistos (con suite); cada método puede declarar parámetros de tipo propios. El cuerpo de un método provisto se comprueba una vez con un `self` abstracto, así que dentro solo puede llamar los métodos declarados por `P`; esos nombres y los demás del cuerpo se resuelven en el módulo del protocolo. Los métodos genéricos se especializan en cada llamada y no se llaman por `any[P]`.
 
-La cláusula `impl P, …` en un `struct` o `enum` sin parámetros de tipo reclama esos protocolos. El compilador comprueba, al cerrar el módulo, que el tipo ya tiene un `method T.nombre` por cada método de cada protocolo, con la misma aridad, tipos (con `self: T`), efectos y modo de `self`. Falta un método: `E_TYPE` en el nombre de ese protocolo en la cabecera. La firma no coincide: `E_TYPE` en el `method`. Un tipo con parámetros de tipo que escribe `impl` es `E_PARSE`. Un nombre que no es protocolo, o repetido en la misma cabecera, es `E_TYPE`.
+La cláusula `impl P, …` en un `struct` o `enum` reclama esos protocolos con sus argumentos concretos. El compilador comprueba que el tipo tiene un `method T.nombre` por cada método requerido o provisto, con la misma aridad, tipos, efectos y receptor tras sustituir los parámetros. Si falta una implementación propia para un método provisto, se añade una copia de su cuerpo; una implementación propia prevalece si su firma coincide. Falta un método requerido o la firma no coincide: `E_TYPE`. Un nombre que no es protocolo, o repetido en la misma cabecera, es `E_TYPE`. El item `impl Tipo P` se declara en el módulo del tipo o en el del protocolo; para tipos básicos, en el del protocolo. Incumplir esta regla de huérfanos es `E_TYPE`.
 
-Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Pasarlo donde se espera `any[P]` mueve el valor a una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. `x.m()` con `x: any[P]` llama por la vtable; efectos y `borrow`/`take` salen de la firma del protocolo. Un método que el protocolo no declara es `E_TYPE`. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. Los tipos básicos, `Tensor` y `frame` no admiten `impl` en este corte.
+Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Pasarlo donde se espera `any[P]` mueve el valor a una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. `x.m()` con `x: any[P]` llama por la vtable; efectos y préstamos salen de la firma del protocolo. Un método que el protocolo no declara, un método genérico llamado por `any`, o un `any[P[…]]` genérico es `E_TYPE`. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. `Tensor` y `frame` no admiten `impl` en este corte.
 
 Los tipos nominales no se mezclan: `Int`, `String` y un `struct`/`enum` distinto son incompatibles salvo conversión explícita (p. ej. `.campo` en un newtype de un solo campo). `+` con `String` a la izquierda no es una excepción: exige `String` también a la derecha, y un asa `Int` se convierte explícitamente con `str_from_int` (o se formatea con `int_to_str`).
 

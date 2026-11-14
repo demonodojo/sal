@@ -46,6 +46,7 @@ Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:
 - **Patrones de enlace** (`IDENT` que no es variante, `_`): condición siempre verdadera (`ConstInt 1`) y el nombre liga al escrutado; **no** usar `Switch` con tag ficticio sobre `String` (los brazos restantes solo con `_`/`IDENT` sobre `String` o `Int` siguen en cadena de `if`, salvo la cola entera de un `match` de enteros solo con `_`, que puede ir a `Switch` con `default`).
 - **`Switch` sobre tag**: cuando `match_should_use_switch` lo permite: cola (o match entero) formada solo por `Variant` / variante unitaria (`IDENT`) / `_`, y escrutado enum conocido, **o** cualquier cola que incluya al menos un `Variant`, **o** cola solo `_`/`IDENT`/`Variant` sobre `Int`. Escrutado `String` nunca entra en `Switch`.
 - **Cuerpo de brazo bloque**: `Expr::Block` en el AST tipado; `lower_expr` ejecuta sentencias del bloque y usa la cola (o `0` si falta).
+- **Variantes en cadena**: si un brazo asigna un local exterior, se usa `If` con el tag declarado por el enum (igual que `Switch`). Los `EnumField` se emiten dentro de la rama coincidente; nunca se lee el payload de una variante distinta. Espejo: `lower_match_chain` y `match_arm_cond` en `selfhost/ir/fuse.sal`. Regresión: `variant_chain_checks_declared_tag_before_reading_payload` y `tests/lang/enums/variant_chain_payload_guard.sal`.
 
 Tests: `tests/forward_ir.rs` (`match_string_pattern_*`, `match_regex_pattern_*`), `tests/lang/control_flow/match_*.sal`, `tests/soso_target.rs` (`E_TARGET` para `r"…"` en soso).
 

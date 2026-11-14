@@ -1,0 +1,10 @@
+# error: E_TYPE
+protocol Value
+    method value(&self) -> Int
+        "not an integer"
+
+struct Number impl Value
+    n: Int
+
+fn main() -> Int
+    Number(1).value()

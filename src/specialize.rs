@@ -66,6 +66,14 @@ pub fn bind_all(decl: &[Type], actual: &[Type], tps: &[String]) -> Option<Vec<Ty
     tps.iter().map(|t| binds.get(t).filter(|ty| is_concrete(ty)).cloned()).collect()
 }
 
+pub(crate) fn bind_partial(decl: &[Type], actual: &[Type], tps: &[String]) -> HashMap<String, Type> {
+    let mut binds = HashMap::new();
+    for (d, a) in decl.iter().zip(actual) {
+        bind(d, a, tps, &mut binds);
+    }
+    binds
+}
+
 fn bind(decl: &Type, actual: &Type, tps: &[String], out: &mut HashMap<String, Type>) {
     match (decl, actual) {
         (Type::Named { name, args, .. }, _) if args.is_empty() && tps.contains(name) => {
@@ -90,6 +98,10 @@ fn bind(decl: &Type, actual: &Type, tps: &[String], out: &mut HashMap<String, Ty
         (Type::Ref { inner: d, .. }, Type::Ref { inner: a, .. }) => bind(d, a, tps, out),
         // `&T` receiving a value (auto-reference of a receiver): bind through it.
         (Type::Ref { inner: d, .. }, a) => bind(d, a, tps, out),
+        (Type::Fn { params: dp, ret: dr, .. }, Type::Fn { params: ap, ret: ar, .. }) if dp.len() == ap.len() => {
+            for (d, a) in dp.iter().zip(ap) { bind(d, a, tps, out); }
+            bind(dr, ar, tps, out);
+        }
         _ => {}
     }
 }
@@ -238,6 +250,350 @@ pub fn monomorphize(
             Outcome::Abort => return Ok(Vec::new()),
         }
     }
+}
+
+/// Lift callbacks passed to `fn(…)` parameters and make one callee copy per lambda.
+/// The pass runs after generic instantiation, while the AST still carries lambdas.
+pub fn specialize_lambdas_program(
+    prog: &mut Program,
+    make_env: &dyn Fn(&Program) -> Option<TypeEnv>,
+) -> DiagResult<()> {
+    specialize_lambdas_inner(prog, make_env, false)
+}
+
+pub(crate) fn specialize_lambdas_graph(
+    prog: &mut Program,
+    make_env: &dyn Fn(&Program) -> Option<TypeEnv>,
+) -> DiagResult<()> {
+    specialize_lambdas_inner(prog, make_env, true)
+}
+
+fn specialize_lambdas_inner(
+    prog: &mut Program,
+    make_env: &dyn Fn(&Program) -> Option<TypeEnv>,
+    preserve_originals: bool,
+) -> DiagResult<()> {
+    let Some(env) = make_env(prog) else { return Ok(()) };
+    let Ok(inferred) = infer_program_with_env(prog, &env) else { return Ok(()) };
+    let entries: HashMap<String, Vec<crate::typed::ExprTypeEntry>> = inferred
+        .expr_types_by_fn
+        .into_iter()
+        .map(|(f, es)| (f.name, es))
+        .collect();
+    let defs = env.fn_defs.clone();
+    let mut calls = Vec::new();
+    for item in &prog.items {
+        if let Item::Fn(f) = item {
+            let mut local_lambdas = HashMap::new();
+            let mut body = f.body.clone();
+            walk_block(&mut body, &mut |_| {}, &mut |st| match st {
+                Stmt::Let { name, init, .. } if matches!(init, Expr::Lambda { .. }) => {
+                    local_lambdas.insert(name.clone(), init.clone());
+                }
+                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } if matches!(value, Expr::Lambda { .. }) => {
+                    local_lambdas.insert(name.clone(), value.clone());
+                }
+                _ => {}
+            });
+            let mut body = f.body.clone();
+            walk_block(&mut body, &mut |e| {
+                let Expr::Call { func, args, span, .. } = e else { return };
+                let Expr::Ident { name, .. } = func.as_ref() else { return };
+                let Some(def) = defs.get(name) else { return };
+                for (i, (arg, param)) in args.iter().zip(&def.params).enumerate() {
+                    let callback = match arg {
+                        Expr::Lambda { .. } => Some(arg.clone()),
+                        Expr::Ident { name, .. } => local_lambdas.get(name).cloned(),
+                        _ => None,
+                    };
+                    if let (Some(callback), Type::Fn { .. }) = (callback, &param.ty) {
+                        calls.push((f.name.clone(), *span, name.clone(), i, callback));
+                    }
+                }
+            }, &mut |_| {});
+        }
+    }
+    let callback_fns: HashSet<String> = defs.iter().filter_map(|(name, f)| {
+        f.params.iter().any(|p| matches!(p.ty, Type::Fn { .. })).then(|| name.clone())
+    }).collect();
+    if calls.is_empty() {
+        if !preserve_originals {
+            prog.items.retain(|item| !matches!(item, Item::Fn(f) if callback_fns.contains(&f.name)));
+        }
+        return Ok(())
+    }
+
+    // The call order is the source order, with a per-callee suffix just like generic copies.
+    let mut used: HashSet<String> = prog.items.iter().filter_map(|i| match i {
+        Item::Fn(f) => Some(f.name.clone()), _ => None,
+    }).collect();
+    let mut serials: HashMap<String, usize> = HashMap::new();
+    let mut generated = Vec::new();
+    let mut rewrites = Vec::new();
+    for (caller, at, callee, callback_i, lambda) in calls {
+        let Some(def) = defs.get(&callee) else { continue };
+        let Some(Type::Fn { params: lambda_params, ret: lambda_ret, effects: declared_fx, .. }) =
+            def.params.get(callback_i).map(|p| &p.ty) else { continue };
+        let Expr::Lambda { params, body, span: lambda_span } = lambda else { continue };
+        if params.len() != lambda_params.len() { continue }
+        let local_entries = entries.get(&caller).cloned().unwrap_or_default();
+        let captures = lambda_captures(&body, &params, &local_entries, &env);
+        if let Some(at) = lambda_writes_capture(&body, &captures) {
+            return Err(vec![crate::diag::Diagnostic::new(
+                crate::diag::ErrorCode::EBorrow,
+                "cannot assign to a captured value while it is shared-borrowed",
+                at,
+            )]);
+        }
+        let n = serials.entry(callee.clone()).or_default();
+        let copy_name = fresh_specialized_name(&format!("{callee}__s{n}"), &mut used);
+        *n += 1;
+        let caller_n = serials.entry(format!("{caller}__lam")).or_default();
+        let lambda_name = fresh_specialized_name(&format!("{caller}__lam{caller_n}"), &mut used);
+        *caller_n += 1;
+
+        let cap_params: Vec<Param> = captures.iter().map(|c| Param {
+            name: c.param.clone(), ty: c.param_ty.clone(), mode: ParamMode::Inferred, span: c.span,
+        }).collect();
+        let mut lifted_body = (*body).clone();
+        rename_captured_names(&mut lifted_body, &captures);
+        let lambda_block = match lifted_body {
+            Expr::Block(b) => b,
+            e => Block { stmts: Vec::new(), tail: Some(Box::new(e)), span: lambda_span },
+        };
+        let helper_fx = if declared_fx.is_empty() {
+            let mut effect_program = prog.clone();
+            let mut effect_names: HashSet<String> = effect_program.items.iter().filter_map(|i| match i {
+                Item::Fn(f) => Some(f.name.clone()), _ => None,
+            }).collect();
+            for f in env.fn_defs.values() {
+                if effect_names.insert(f.name.clone()) { effect_program.items.push(Item::Fn(f.clone())); }
+            }
+            crate::effects::required_effects_for_block(&lambda_block, &[&effect_program])
+        } else { declared_fx.clone() };
+        let lifted = FnDef {
+            name: lambda_name.clone(), receiver: None, self_mode: ParamMode::Inferred,
+            self_ref: 0, method_kind: MethodKind::Method, type_params: Vec::new(),
+            params: cap_params.iter().cloned().chain(params.iter().zip(lambda_params).map(|(name, ty)| Param {
+                name: name.clone(), ty: ty.clone(), mode: ParamMode::Inferred, span: lambda_span,
+            })).collect(),
+            ret: (**lambda_ret).clone(), effects: helper_fx.clone(), body: lambda_block,
+            no_heap: false, arena: false, deprecated: None, span: lambda_span,
+        };
+
+        let mut copy = def.clone();
+        copy.name = copy_name.clone();
+        let callback_name = copy.params[callback_i].name.clone();
+        copy.params.remove(callback_i);
+        copy.params.extend(cap_params.clone());
+        replace_callback_calls(&mut copy.body, &callback_name, &lambda_name, &captures);
+        for fx in &helper_fx {
+            if !copy.effects.contains(fx) { copy.effects.push(fx.clone()); }
+        }
+        inline_forwarded_callbacks(&mut copy.body, &callback_name, &lambda_name, &captures, &defs, &mut copy.effects, &mut used, 0);
+
+        let cap_args: Vec<Expr> = captures.iter().map(|c| {
+            let id = Expr::Ident { name: c.source.clone(), span: c.span };
+            if c.by_value { id } else { Expr::Unary { op: UnOp::Ref, expr: Box::new(id), span: c.span } }
+        }).collect();
+        rewrites.push((caller, at, callee, callback_i, copy_name, cap_args));
+        generated.push((def.name.clone(), lifted));
+        generated.push((def.name.clone(), copy));
+    }
+
+    for item in &mut prog.items {
+        let Item::Fn(f) = item else { continue };
+        let rs: Vec<_> = rewrites.iter().filter(|r| r.0 == f.name).cloned().collect();
+        if rs.is_empty() { continue }
+        walk_block(&mut f.body, &mut |e| {
+            let Expr::Call { func, args, span, .. } = e else { return };
+            let Expr::Ident { name, .. } = func.as_mut() else { return };
+            if let Some((_, _, original, cb_i, specialized, captures)) = rs.iter().find(|r| r.1 == *span && r.2 == *name) {
+                *name = specialized.clone();
+                if *cb_i < args.len() { args.remove(*cb_i); }
+                args.extend(captures.clone());
+                let _ = original;
+            }
+        }, &mut |_| {});
+    }
+    // The unspecialized callback body is checked above but cannot be lowered: a function value
+    // has no runtime representation in this language.
+    if !preserve_originals {
+        prog.items.retain(|item| !matches!(item, Item::Fn(f) if callback_fns.contains(&f.name)));
+    }
+    let stride = max_span_end(prog) as u64 + 1;
+    for (i, (_, mut f)) in generated.into_iter().enumerate() {
+        shift_spans(&mut f, span_base(stride, i as u64 + 1));
+        prog.items.push(Item::Fn(f));
+    }
+    if let Some(final_env) = make_env(prog) {
+        infer_program_with_env(prog, &final_env)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct LambdaCapture { source: String, param: String, param_ty: Type, by_value: bool, span: Span }
+
+fn fresh_specialized_name(base: &str, used: &mut HashSet<String>) -> String {
+    let mut name = base.to_string();
+    while !used.insert(name.clone()) { name.push('_'); }
+    name
+}
+
+fn lambda_captures(
+    body: &Expr,
+    params: &[String],
+    entries: &[crate::typed::ExprTypeEntry],
+    env: &TypeEnv,
+) -> Vec<LambdaCapture> {
+    let mut locals = HashSet::new();
+    let mut callees = HashSet::new();
+    let mut ordered = Vec::new();
+    let mut copy = body.clone();
+    walk_expr(&mut copy, &mut |e| {
+        if let Expr::Call { func, .. } = e {
+            if let Expr::Ident { name, .. } = func.as_ref() { callees.insert(name.clone()); }
+        }
+    }, &mut |s| {
+        if let Stmt::Let { name, .. } = s { locals.insert(name.clone()); }
+    });
+    let mut seen = HashSet::new();
+    let mut copy = body.clone();
+    walk_expr(&mut copy, &mut |e| {
+        if let Expr::Ident { name, span } = e {
+            if seen.insert(name.clone()) { ordered.push((name.clone(), *span)); }
+        }
+    }, &mut |_| {});
+    let mut out = Vec::new();
+    for (name, span) in ordered {
+        if params.contains(&name) || locals.contains(&name) || callees.contains(&name)
+            || env.fns.contains_key(&name) || env.consts.contains_key(&name)
+            || env.structs.contains_key(&name) || env.enums.contains_key(&name) { continue }
+        let Some(ty) = entries.iter().find(|e| e.span_start == span.start && e.span_end == span.end).map(|e| e.ty.clone()) else { continue };
+        let by_value = is_copy_capture(&ty, &env.structs);
+        let param_ty = if by_value { ty } else { Type::Ref { mutable: false, lifetime: None, inner: Box::new(ty), span } };
+        let n = out.len();
+        out.push(LambdaCapture { source: name, param: format!("__cap{n}"), param_ty, by_value, span });
+    }
+    out
+}
+
+fn is_copy_capture(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
+    match ty {
+        Type::Named { name, args, .. } | Type::Qualified { name, args, .. } => {
+            if matches!(name.as_str(), "Int" | "Float" | "Bool" | "Unit") { return true }
+            structs.get(name).is_some_and(|s| s.fields.iter().all(|f| is_copy_capture(&f.ty, structs))) && args.is_empty()
+        }
+        Type::Ref { mutable, .. } => !mutable,
+        Type::Tensor { .. } | Type::Fn { .. } => false,
+    }
+}
+
+fn lambda_writes_capture(body: &Expr, captures: &[LambdaCapture]) -> Option<Span> {
+    let names: HashSet<&str> = captures.iter().filter(|c| !c.by_value).map(|c| c.source.as_str()).collect();
+    if names.is_empty() { return None }
+    let mut found = None;
+    let mut e = body.clone();
+    walk_expr(&mut e, &mut |_| {}, &mut |st| {
+        if let Stmt::Assign { target: Expr::Ident { name, span, .. }, .. } = st {
+            if names.contains(name.as_str()) { found = Some(*span); }
+        }
+    });
+    found
+}
+
+fn rename_captured_names(e: &mut Expr, captures: &[LambdaCapture]) {
+    walk_expr(e, &mut |node| {
+        if let Expr::Ident { name, .. } = node {
+            if let Some(c) = captures.iter().find(|c| c.source == *name) { *name = c.param.clone(); }
+        }
+    }, &mut |_| {});
+}
+
+fn replace_callback_calls(b: &mut Block, callback: &str, lifted: &str, captures: &[LambdaCapture]) {
+    walk_block(b, &mut |e| {
+        let Expr::Call { func, args, span, .. } = e else { return };
+        if !matches!(func.as_ref(), Expr::Ident { name, .. } if name == callback) { return }
+        let mut lifted_args: Vec<Expr> = captures.iter().map(|c| Expr::Ident { name: c.param.clone(), span: c.span }).collect();
+        lifted_args.extend(args.clone());
+        *e = Expr::Call { func: Box::new(Expr::Ident { name: lifted.to_string(), span: *span }), type_args: Vec::new(), args: lifted_args, span: *span };
+    }, &mut |_| {});
+}
+
+fn inline_forwarded_callbacks(
+    body: &mut Block,
+    callback: &str,
+    lifted: &str,
+    captures: &[LambdaCapture],
+    defs: &HashMap<String, FnDef>,
+    effects: &mut Vec<Effect>,
+    used: &mut HashSet<String>,
+    depth: usize,
+) {
+    if depth > 64 { return }
+    walk_block(body, &mut |e| {
+        let Expr::Call { func, args, span, .. } = e else { return };
+        let Expr::Ident { name: callee, .. } = func.as_ref() else { return };
+        let Some(def) = defs.get(callee) else { return };
+        let forwarded = def.params.iter().enumerate().find(|(i, p)| {
+            matches!(p.ty, Type::Fn { .. })
+                && matches!(args.get(*i), Some(Expr::Ident { name, .. }) if name == callback)
+        });
+        let Some((callback_i, _)) = forwarded else { return };
+        let replacement = inline_forwarded_call(
+            def, callback_i, args, *span, lifted, captures, defs, effects, used, depth + 1,
+        );
+        *e = replacement;
+    }, &mut |_| {});
+}
+
+fn inline_forwarded_call(
+    def: &FnDef,
+    callback_i: usize,
+    args: &[Expr],
+    call_span: Span,
+    lifted: &str,
+    captures: &[LambdaCapture],
+    defs: &HashMap<String, FnDef>,
+    effects: &mut Vec<Effect>,
+    used: &mut HashSet<String>,
+    depth: usize,
+) -> Expr {
+    for fx in &def.effects { if !effects.contains(fx) { effects.push(fx.clone()); } }
+    let callback_name = def.params[callback_i].name.clone();
+    let mut names = HashMap::new();
+    let mut prefix = Vec::new();
+    for (i, param) in def.params.iter().enumerate() {
+        if i == callback_i { continue }
+        let Some(arg) = args.get(i) else { continue };
+        let local = fresh_specialized_name(&format!("__forward{i}"), used);
+        names.insert(param.name.clone(), local.clone());
+        prefix.push(Stmt::Let {
+            name: local,
+            ty: None,
+            init: arg.clone(),
+            frozen: false,
+            stack: false,
+            span: call_span,
+        });
+    }
+    let mut block = def.body.clone();
+    rename_forwarded_params(&mut block, &names);
+    replace_callback_calls(&mut block, &callback_name, lifted, captures);
+    inline_forwarded_callbacks(&mut block, &callback_name, lifted, captures, defs, effects, used, depth);
+    prefix.extend(block.stmts);
+    block.stmts = prefix;
+    block.span = call_span;
+    Expr::Block(block)
+}
+
+fn rename_forwarded_params(block: &mut Block, names: &HashMap<String, String>) {
+    walk_block(block, &mut |e| {
+        if let Expr::Ident { name, .. } = e {
+            if let Some(replacement) = names.get(name) { *name = replacement.clone(); }
+        }
+    }, &mut |_| {});
 }
 
 enum Outcome {
@@ -428,7 +784,7 @@ fn with_span(t: &Type, span: Span) -> Type {
     }
 }
 
-fn subst_block(b: &mut Block, sub: &HashMap<String, Type>) {
+pub(crate) fn subst_block(b: &mut Block, sub: &HashMap<String, Type>) {
     walk_block(b, &mut |e| {
         if let Expr::Call { type_args, .. } = e {
             for ta in type_args.iter_mut() {

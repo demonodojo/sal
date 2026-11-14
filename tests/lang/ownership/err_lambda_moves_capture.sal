@@ -1,0 +1,10 @@
+# error: E_BORROW
+fn take(s: String) -> Int
+    s.len()
+
+fn apply(f: fn(Int) -> Int, x: Int) -> Int
+    f(x)
+
+fn main() -> Int ! alloc
+    s = strdup(d"x")
+    apply(i => take(s), 0)

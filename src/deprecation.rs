@@ -134,6 +134,12 @@ impl Walk<'_> {
                 }
                 self.expr(&c.value);
             }
+            Item::Impl(i) => {
+                self.ty(&i.target);
+                for claim in &i.protocols {
+                    for arg in &claim.args { self.ty(arg); }
+                }
+            }
             Item::Import(_) | Item::Frame(_) | Item::Protocol(_) => {}
         }
     }

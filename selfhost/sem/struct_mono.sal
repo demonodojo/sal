@@ -111,7 +111,7 @@ method StructMono.rw_program(&mut self, tp: &TProgram) -> TProgram ! alloc
     self.rw_enums(&tp.enums, 0, &mut enums)
     consts = List.new[TConst]()
     self.rw_consts(&tp.consts, 0, &mut consts)
-    TProgram(fns, tp.imports.clone(), structs, tp.aliases.clone(), enums, tp.protocols.clone(), consts)
+    TProgram(fns, tp.imports.clone(), structs, tp.aliases.clone(), enums, tp.protocols.clone(), consts, tp.impls.clone())
 
 method StructMono.rw_fns(&mut self, xs: &List[TFn], i: Int, out: &mut List[TFn]) -> Int ! alloc
     if i >= xs.len()
@@ -219,6 +219,7 @@ method StructMono.rw_expr(&mut self, e: &Expr) -> Expr ! alloc
         XTo(place, inner) => XTo(place.dup(), self.rw_expr(&inner))
         XOn(place, body, kern, idx) => XOn(place.dup(), self.rw_block(&body), kern, idx)
         XIf(cond, then_b, else_b, has_else, elsifs) => self.rw_if(&cond, &then_b, &else_b, has_else, &elsifs)
+        XBlock(body) => XBlock(self.rw_block(&body))
         XWhile(cond, body) => self.rw_while(&cond, &body)
         XField(base, field) => XField(self.rw_expr(&base), field.dup())
         XLambda(param, body) => XLambda(param.dup(), self.rw_expr(&body))

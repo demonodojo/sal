@@ -1,0 +1,6 @@
+# error: E_EFFECT
+fn apply(x: Int, f: fn(Int) -> Int ! alloc) -> Int
+    f(x)
+
+fn main() -> Int ! io
+    apply(2) n => print_str("x") + n

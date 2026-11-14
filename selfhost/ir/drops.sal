@@ -90,6 +90,8 @@ struct DC
     # Locals whose `Option` payload is a Copy scalar: 1 a dict with `Int`/`Float`/`Bool` values,
     # 2 what `dict_get` hands out of one. A payload bound from it aliases nothing on the heap.
     copy_pay: NM
+    # Locals handed out by a branch tail (the bootstrap's `branch_moved`).
+    branch_moved: NM
 
 # An owned copy of the parameter list: the `TFn` it comes from keeps its own.
 fn tparams_copy(xs: &List[TParam]) -> List[TParam] ! alloc
@@ -113,7 +115,9 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
     _f = list_push(&mut cells, 0)
     _g = list_push(&mut cells, 0)
     _h = list_push(&mut cells, 0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new())
+    # Branch depth, reset by loops: an identifier tail moves on that path only.
+    cells.push(0)
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new(), nm_new())
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -1154,12 +1158,14 @@ fn dr_walk_if(c: &mut DC, e: &Expr) -> Int ! alloc
 
 fn dr_walk_if_parts(c: &mut DC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Int ! alloc
     _a = dr_arg(c, cond, 1)
+    dr_set(c, 8, dr_cell(c, 8) + 1)
     _b = dr_block(c, then_b)
     _c = dr_if_arms(c, elsifs, 0, list_len(elsifs))
     if has_else == 1
         dr_block(c, else_b)
     else
         0
+    dr_set(c, 8, dr_cell(c, 8) - 1)
 
 # Arguments of a call: bare identifiers are only read when the callee borrows them
 # (`safe`) or its parameter at that position is read-only (`ro`, 0 when not a user fn).
@@ -1338,6 +1344,7 @@ fn dr_expr(c: &mut DC, e: &Expr) -> Int ! alloc
         XTo(place, inner) => dr_arg(c, &inner, 3)
         XField(base, field) => dr_arg(c, &base, 1)
         XMatch(scrut, arms) => dr_match(c, &scrut, &arms)
+        XBlock(body) => dr_on(c, &body)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_if_nested(c, e)
         XWhile(cond, body) => dr_while(c, &cond, &body)
         XTry(inner) => dr_arg(c, &inner, 3)
@@ -1385,7 +1392,10 @@ fn dr_while(c: &mut DC, cond: &Expr, body: &TBlock) -> Int ! alloc
     _n = dr_set(c, 1, 0)
     _a = dr_arg(c, cond, 1)
     _d = dr_set(c, 3, dr_cell(c, 3) + 1)
+    branches = dr_cell(c, 8)
+    dr_set(c, 8, 0)
     _b = dr_block(c, body)
+    dr_set(c, 8, branches)
     _u = dr_set(c, 3, dr_cell(c, 3) - 1)
     dr_set(c, 1, outer)
 
@@ -1719,8 +1729,15 @@ fn dr_block(c: &mut DC, b: &TBlock) -> Int ! alloc
     tail_outer = dr_cell(c, 5)
     _i = dr_set(c, 5, dr_tail_key(&b.tail))
     call_outer = dr_cell(c, 7)
-    _k = dr_set(c, 7, dr_is_call_tail(&b.tail))
+    branch_local = dr_cell(c, 8) > 0 && dx_is_ident(&b.tail) == 1
+    tail_moves = if dr_is_call_tail(&b.tail) == 1 || branch_local
+        1
+    else
+        0
+    _k = dr_set(c, 7, tail_moves)
     r = dr_top(c, &b.tail, 3)
+    if branch_local && dr_cell(c, 2) == 0
+        nm_put(&mut c.branch_moved, &dx_ident(&b.tail), 1)
     _l = dr_set(c, 7, call_outer)
     _j = dr_set(c, 5, tail_outer)
     _t = dr_set(c, 1, outer)
@@ -1971,7 +1988,9 @@ fn dr_plain(e: Expr) -> TStmt ! alloc
     TStmt(0, "", e, "", 0, XNone, 0, 0, 0)
 
 fn dr_free_fn(kind: Int) -> String ! alloc
-    if kind == 10
+    if kind > 10
+        str_from_int(kind).dup()
+    elsif kind == 10
         "tensor_free"
     elsif kind == 9
         "struct_free_box"
@@ -2094,20 +2113,26 @@ fn dr_xform_if_arms(c: &mut DC, arms: &mut List[TElsif], i: Int, n: Int) -> Int 
 
 fn dr_xform_expr(c: &mut DC, e: &Expr) -> Expr ! alloc
     match e
+        XBlock(_) => dr_alias(e)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_xform_if(c, e, &mut then_b, &mut else_b, has_else, &mut elsifs)
         XWhile(cond, body) =>
+            branches = dr_cell(c, 8)
+            dr_set(c, 8, 0)
             nb = dr_xform_block(c, &mut body)
+            dr_set(c, 8, branches)
             _b = enum_set(e, 1, nb)
             dr_ret(e)
         _ => dr_alias(e)
 
 fn dr_xform_if(c: &mut DC, e: &Expr, then_b: &mut TBlock, else_b: &mut TBlock, has_else: Int, elsifs: &mut List[TElsif]) -> Expr ! alloc
+    dr_set(c, 8, dr_cell(c, 8) + 1)
     tb = dr_xform_block(c, then_b)
     _t = enum_set(e, 1, tb)
     if has_else == 1
         eb = dr_xform_block(c, else_b)
         _e = enum_set(e, 2, eb)
     _a = dr_xform_if_arms(c, elsifs, 0, list_len(elsifs))
+    dr_set(c, 8, dr_cell(c, 8) - 1)
     dr_ret(e)
 
 # Returns 1 when a `return` ended the statement list.
@@ -2178,11 +2203,48 @@ fn dr_discard_free(name: &String, k: Int, sd: Int) -> TStmt ! alloc
     dr_plain(XCall(strdup(dr_free_fn(k)), args, "", 0))
 
 fn dr_xform_bind(c: &mut DC, st: &mut TStmt, out: &mut List[TStmt]) -> Int ! alloc
-    cand = dr_bind_candidate(c, st)
+    ordinary = dr_bind_candidate(c, st)
+    cand = if ordinary == 0
+        dr_branch_struct_kind(c, &st.name, &st.ty, &st.expr)
+    else
+        ordinary
     if dr_rebinds(c, &st.name, cand) == 1
         dr_rebind(c, st, out)
     else
         dr_xform_bind_new(c, st, cand, out)
+
+# A struct moved by a branch is released by its per-type glue on the other paths.
+# Kinds above 10 are handles of the glue symbol; the existing numbered runtime kinds stay closed.
+fn dr_branch_struct_kind(c: &DC, name: &String, ty: &String, init: &Expr) -> Int ! alloc
+    if nm_get(&c.soft, name) == 0 || nm_get(&c.branch_moved, name) == 0 || nm_get(&c.params, name) != 0 || nm_get(&c.defs, name) != 1
+        0
+    elsif ty.len() > 0
+        map_get(c.variants, str_own(&("dropkind:" + trim_spaces(ty.dup()))))
+    else
+        dr_expr_glue_kind(c, init)
+
+fn dr_expr_glue_kind(c: &DC, init: &Expr) -> Int ! alloc
+    match init
+        XCall(callee, _, _, _) =>
+            ctor = map_get(c.variants, str_own(&("dropkind:" + callee)))
+            if ctor != 0
+                ctor
+            else
+                map_get(c.variants, str_own(&("dropfn:" + callee)))
+        XIf(_, then_b, else_b, _, _) =>
+            first = dr_expr_glue_kind(c, &then_b.tail)
+            if first != 0
+                first
+            else
+                dr_expr_glue_kind(c, &else_b.tail)
+        XBlock(body) => dr_expr_glue_kind(c, &body.tail)
+        XIdent(name) =>
+            kind = nm_get(&c.kinds, &name)
+            if kind > 10
+                kind
+            else
+                0
+        _ => 0
 
 # The binding replaces a live owned value of a rebound local.
 fn dr_rebinds(c: &DC, name: &String, cand: Int) -> Int ! alloc
@@ -2208,7 +2270,10 @@ fn dr_rebind(c: &mut DC, st: &TStmt, out: &mut List[TStmt]) -> Int ! alloc
     0
 
 fn dr_xform_bind_new(c: &mut DC, st: &mut TStmt, cand: Int, out: &mut List[TStmt]) -> Int ! alloc
-    init0 = dr_own_enum_list(c, &st.name, cand, st.expr.clone())
+    init0 = if cand == 6
+        dr_own_enum_list(c, &st.name, cand, tc_expr(&st.expr))
+    else
+        tc_expr(&st.expr)
     init = if cand == 0 && dr_moved_clean_list(c, &st.name) == 1
         dr_own_inline_string_list(init0)
     else
@@ -2302,7 +2367,11 @@ fn dr_seed_param_go(c: &mut DC, out: &mut List[TStmt], i: Int, n: Int) -> Int ! 
         dr_seed_param_go(c, out, i + 1, n)
 
 fn dr_seed_one_param(c: &mut DC, out: &mut List[TStmt], name: &String, ty: &String) -> Int ! alloc
-    k = dr_param_kind(c, ty)
+    ordinary = dr_param_kind(c, ty)
+    k = if ordinary == 0 && nm_get(&c.soft, name) != 0 && nm_get(&c.branch_moved, name) != 0
+        map_get(c.variants, str_own(&("dropkind:" + trim_spaces(ty.dup()))))
+    else
+        ordinary
     if k == 0
         0
     elsif nm_get(&c.esc, name) != 0 && nm_get(&c.soft, name) == 0 && nm_get(&c.box_shell, name) == 0
@@ -2364,7 +2433,12 @@ fn dr_tail_key(e: &Expr) -> Int ! alloc
 # Only a call tail is a statement of its own for the moves it makes (`is_call_tail`).
 fn dr_clear_tail_moved(c: &DC, b: &TBlock, out: &mut List[TStmt]) -> Int ! alloc
     t = dr_tail_key(&b.tail)
-    if t == 0
+    if dr_cell(c, 8) > 0 && dx_is_ident(&b.tail) == 1
+        name = dx_ident(&b.tail)
+        if nm_get(&c.soft, &name) != 0 && dr_in_live(&c.live, &name, 0, c.live.len()) == 1
+            out.push(dr_flag_clear(&name))
+        0
+    elsif t == 0
         0
     elsif dr_is_call_tail(&b.tail) == 0
         0
@@ -2861,6 +2935,7 @@ fn dr_hoist_expr(h: &mut HC, e: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
         XCall(name, args, targs, xp) => dr_hoist_call(h, e, &name, &mut args, out)
         XBin(op, l, r) => dr_hoist_bin(h, e, &l, &r, out)
         XUnary(op, inner) => dr_hoist_unary(h, e, &op, &inner, out)
+        XBlock(_) => dr_alias(e)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_hoist_if(h, e, &cond, &mut then_b, &mut else_b, has_else, &mut elsifs, out)
         XWhile(cond, body) => dr_hoist_while(h, e, &mut body)
         XMatch(scrut, arms) => dr_hoist_match(h, e, &scrut, &mut arms, out)
@@ -2997,6 +3072,7 @@ fn dr_lists_new(m: &mut NM, name: &String, fname: &String, targs: &String, varia
 # A `while` body is scanned too (as `Stmt::While` is in src/drops.rs).
 fn dr_lists_expr(m: &mut NM, e: &Expr, variants: Int) -> Int ! alloc
     match e
+        XBlock(body) => dr_lists_block(m, &body, variants)
         XWhile(cond, body) => dr_lists_block(m, &body, variants)
         _ => 0
 
@@ -3320,6 +3396,7 @@ fn dr_claim_walk(e: &Expr, own: Int, variants: Int, elems: &mut NM, borrows: &mu
             nb = dr_claim_expr(&base, 0, variants, elems, borrows, lists, sns, took)
             _a = dr_set_expr(e, 0, &base, &nb)
             dr_ret(e)
+        XBlock(body) => XBlock(dr_claim_block(&mut body, own, variants, elems, borrows, lists, sns, took))
         XIf(cond, then_b, else_b, has_else, elsifs) =>
             c2 = dr_claim_expr(&cond, 0, variants, elems, borrows, lists, sns, took)
             _c = dr_set_expr(e, 0, &cond, &c2)

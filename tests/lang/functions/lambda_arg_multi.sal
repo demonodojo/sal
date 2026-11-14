@@ -1,0 +1,6 @@
+# exit: 42
+fn apply(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int
+    f(a, b)
+
+fn main() -> Int
+    apply((a, b) => a + b, 20, 22)

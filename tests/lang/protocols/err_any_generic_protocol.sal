@@ -1,0 +1,9 @@
+# error: E_TYPE
+protocol Value[T]
+    method get(&self) -> T
+
+fn take_value(v: &any[Value[Int]]) -> Int
+    0
+
+fn main() -> Int
+    0

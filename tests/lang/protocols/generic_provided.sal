@@ -1,0 +1,14 @@
+# exit: 7
+protocol Getter[T]
+    method get(self) -> T
+    method value(self) -> T
+        self.get()
+
+struct Number impl Getter[Int]
+    n: Int
+
+method Number.get(self) -> Int
+    self.n
+
+fn main() -> Int
+    Number(7).value()

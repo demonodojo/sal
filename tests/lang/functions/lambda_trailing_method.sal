@@ -1,0 +1,9 @@
+# exit: 42
+struct Acc
+    n: Int
+
+method Acc.fold(self, f: fn(Int) -> Int) -> Int
+    f(self.n)
+
+fn main() -> Int
+    Acc(40).fold x => x + 2

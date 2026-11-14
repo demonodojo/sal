@@ -320,6 +320,12 @@ fn erase_type_params(ty: &Type, params: &[String]) -> Type {
             effects: effects.clone(),
             span: *span,
         },
+        Type::Ref { mutable, lifetime, inner, span } => Type::Ref {
+            mutable: *mutable,
+            lifetime: lifetime.clone(),
+            inner: Box::new(erase_type_params(inner, params)),
+            span: *span,
+        },
         other => other.clone(),
     }
 }
@@ -356,8 +362,14 @@ fn infer_fn(f: &FnDef, types: &TypeEnv) -> DiagResult<Vec<ExprTypeEntry>> {
     let mut env: HashMap<String, Type> = HashMap::new();
     let (ptys, ret) = fn_signature(f);
     for (p, ty) in f.params.iter().zip(ptys) {
+        if !matches!(ty, Type::Fn { .. }) && contains_fn_type(&ty) {
+            return Err(vec![Diagnostic::new(ErrorCode::EType, "function types are only allowed as parameter types", p.span)]);
+        }
         check_type_well_formed(&ty, types)?;
         env.insert(p.name.clone(), ty);
+    }
+    if contains_fn_type(&ret) {
+        return Err(vec![Diagnostic::new(ErrorCode::EType, "function types cannot be returned", f.span)]);
     }
     check_type_well_formed(&ret, types)?;
     let mut entries = Vec::new();
@@ -660,6 +672,9 @@ fn check_stmt(
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr(init, env, ctx, types, entries)?;
             if let Some(decl) = ty {
+                if contains_fn_type(decl) {
+                    return Err(vec![Diagnostic::new(ErrorCode::EType, "function types are only allowed as parameter types", decl.span())]);
+                }
                 check_type_well_formed(decl, types)?;
                 if let Err(d) = types_compatible_or_any_coerce(&ity, decl, init.span(), ctx, types) {
                     return Err(vec![d]);
@@ -745,6 +760,15 @@ fn check_stmt(
             }
             Ok(false)
         }
+    }
+}
+
+fn contains_fn_type(ty: &Type) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        Type::Named { args, .. } | Type::Qualified { args, .. } => args.iter().any(contains_fn_type),
+        Type::Ref { inner, .. } => contains_fn_type(inner),
+        Type::Tensor { .. } => false,
     }
 }
 
@@ -885,7 +909,7 @@ Expr::Int { .. } => Type::Named {
                             *span,
                         )]);
                     }
-                    lt
+                    peel_refs(&lt).clone()
                 }
             }
         }
@@ -1793,7 +1817,10 @@ fn infer_any_method_call(
             span,
         );
     };
-    let slot = crate::protocols::method_slot(pdef, field).unwrap_or(0) as u32;
+    let Some(slot) = crate::protocols::method_slot(pdef, field) else {
+        return err(format!("generic method `{field}` cannot be called through `any`"), span);
+    };
+    let slot = slot as u32;
     if args.len() != pm.params.len() {
         return err(
             format!(
@@ -1909,6 +1936,22 @@ fn infer_method_call(
                 .borrow_mut()
                 .insert((span.start, span.end), (builtin.to_string(), false));
             return Ok(ty);
+        }
+    }
+    if let Type::Named { name, args: receiver_args, .. } = &bty {
+        if !receiver_args.is_empty() {
+            let mangled = format!("{name}__{field}");
+            if types.fn_defs.contains_key(&mangled) {
+                let recv = "__recv".to_string();
+                let mut env2 = env.clone();
+                env2.insert(recv.clone(), bty.clone());
+                let mut call_args = vec![Expr::Ident { name: recv, span: base.span() }];
+                call_args.extend(args.iter().cloned());
+                let callee = Expr::Ident { name: mangled.clone(), span };
+                let ty = infer_call(&callee, type_args, &call_args, &env2, ctx, types, entries, span)?;
+                types.method_calls.borrow_mut().insert((span.start, span.end), (mangled, false));
+                return Ok(ty);
+            }
         }
     }
     let tname = match &bty {
@@ -2677,12 +2720,36 @@ fn infer_call(
                 }
                 let mut arg_tys: Vec<Type> = Vec::new();
                 for (i, (a, pt)) in args.iter().zip(params.iter()).enumerate() {
-                    let aty = check_expr(a, env, ctx, types, entries)?;
+                    let inferred_param = types.fn_defs.get(name).and_then(|fd| {
+                        if fd.type_params.is_empty() { return None; }
+                        let previous: Vec<Type> = fd.params.iter().take(i).map(|p| p.ty.clone()).collect();
+                        let bound = crate::specialize::bind_partial(&previous, &arg_tys, &fd.type_params);
+                        let unbound: Vec<String> = fd.type_params.iter().filter(|p| !bound.contains_key(*p)).cloned().collect();
+                        Some(erase_type_params(&crate::specialize::subst(&fd.params[i].ty, &bound), &unbound))
+                    });
+                    let pt = inferred_param.as_ref().unwrap_or(pt);
+                    let aty = if let Type::Fn { params: fparams, ret: fret, .. } = pt {
+                        if let Expr::Lambda { params: lparams, body, span: lspan } = a {
+                            let fty = infer_lambda(lparams, body, Some(fparams.clone()), env, ctx, types, entries, *lspan)?;
+                            if fparams.len() != lparams.len() || !types_compatible(&fty, pt) {
+                                return Err(vec![Diagnostic::new(ErrorCode::EType, "lambda does not match function parameter type", a.span())]);
+                            }
+                            if !types_compatible(&fty, &Type::Fn { params: fparams.clone(), ret: fret.clone(), effects: vec![], span: a.span() }) {
+                                return Err(vec![Diagnostic::new(ErrorCode::EType, "lambda return type does not match function parameter", a.span())]);
+                            }
+                            fty
+                        } else { check_expr(a, env, ctx, types, entries)? }
+                    } else { check_expr(a, env, ctx, types, entries)? };
                     arg_tys.push(aty.clone());
                     if let Err(d) =
                         types_compatible_or_any_coerce(&aty, pt, a.span(), ctx, types)
                     {
-                        if !receiver_autoref(types, name, i, &aty) {
+                        if captured_move_error(&aty, pt, a, types) {
+                            return Err(vec![Diagnostic::new(ErrorCode::EBorrow, "cannot move a captured value out of its shared borrow", a.span())]);
+                        }
+                        let copy_list_get = matches!(pt, Type::Ref { inner, .. } if elem_is_copy(inner, types) && types_compatible(&aty, inner))
+                            && matches!(a, Expr::Call { func, .. } if matches!(&**func, Expr::Ident { name, .. } if name == "list_get"));
+                        if !receiver_autoref(types, name, i, &aty) && !copy_list_get {
                             return Err(vec![Diagnostic::new(
                                 d.code,
                                 d.message,
@@ -2711,13 +2778,14 @@ fn infer_call(
                         span,
                     )]);
                 }
-                for a in args {
-                    check_expr(a, env, ctx, types, entries)?;
+                for (a, pt) in args.iter().zip(params.iter()) {
+                    let aty = check_expr(a, env, ctx, types, entries)?;
+                    let copy_ref = matches!(pt, Type::Ref { inner, .. } if elem_is_copy(inner, types) && types_compatible(&aty, inner));
+                    if !types_compatible(&aty, pt) && !copy_ref {
+                        return Err(vec![Diagnostic::new(ErrorCode::EType, "function argument type mismatch", a.span())]);
+                    }
                 }
-                // The lambda is checked with a stand-in parameter type; its
-                // result at a real call site is whatever the argument makes it.
-                let _ = ret;
-                Ok(Type::Named { name: "Unknown".into(), args: vec![], span })
+                Ok(*ret)
             } else {
                 if !is_runtime_builtin(name) {
                     return Err(vec![Diagnostic::new(
@@ -2779,32 +2847,25 @@ fn lowering_only_runtime_fn(name: &str) -> bool {
     matches!(name, "str_append" | "str_append_n" | "str_concat_n")
 }
 
-/// One-parameter lambda `x => body`.
+/// Lambda `x => body` or `(x, y) => body`.
 fn infer_lambda(
     params: &[String],
     body: &Expr,
-    param_ty_hint: Option<Type>,
+    param_ty_hints: Option<Vec<Type>>,
     env: &HashMap<String, Type>,
     ctx: &ReturnCtx<'_>,
     types: &TypeEnv,
     entries: &mut Vec<ExprTypeEntry>,
     span: Span,
 ) -> DiagResult<Type> {
-    if params.len() != 1 {
-        return Err(vec![Diagnostic::new(
-            ErrorCode::EType,
-            "lambda expects one parameter and a body",
-            span,
-        )]);
-    }
-    let param_name = params[0].clone();
-    let param_ty = param_ty_hint.unwrap_or_else(|| Type::Named {
-        name: "Unknown".into(),
-        args: vec![],
-        span,
-    });
     let mut local = env.clone();
-    local.insert(param_name, param_ty.clone());
+    let unknown = || Type::Named { name: "Unknown".into(), args: vec![], span };
+    let mut param_tys = Vec::with_capacity(params.len());
+    for (i, param_name) in params.iter().enumerate() {
+        let param_ty = param_ty_hints.as_ref().and_then(|h| h.get(i)).cloned().unwrap_or_else(unknown);
+        local.insert(param_name.clone(), param_ty.clone());
+        param_tys.push(param_ty);
+    }
     let body_ctx = ReturnCtx {
         fn_ret: ctx.fn_ret,
         allow_return: false,
@@ -2812,7 +2873,7 @@ fn infer_lambda(
     };
     let body_ty = check_expr(body, &local, &body_ctx, types, entries)?;
     Ok(Type::Fn {
-        params: vec![param_ty],
+        params: param_tys,
         ret: Box::new(body_ty),
         effects: vec![],
         span,
@@ -2843,7 +2904,7 @@ fn infer_map_like(
             span: lspan,
         } = cb
         {
-            let fty = infer_lambda(params, body, Some(elem_ty), env, ctx, types, entries, *lspan)?;
+            let fty = infer_lambda(params, body, Some(vec![elem_ty]), env, ctx, types, entries, *lspan)?;
             entries.push(ExprTypeEntry {
                 span_start: fty.span().start,
                 span_end: fty.span().end,
@@ -3735,7 +3796,7 @@ fn is_unknown_type(t: &Type) -> bool {
 
 fn is_numeric(t: &Type) -> bool {
     matches!(
-        t,
+        peel_refs(t),
         Type::Named { name, .. } if name == "Int" || name == "Float"
     )
 }
@@ -3809,7 +3870,7 @@ fn receiver_autoref(types: &TypeEnv, name: &str, index: usize, aty: &Type) -> bo
     let Type::Ref { inner, .. } = &param.ty else {
         return false;
     };
-    types_compatible(aty, inner)
+    types_compatible(aty, &erase_type_params(inner, &def.type_params))
 }
 
 /// A dict stores the key pointer. `&String` and `String` are that same pointer.
@@ -3969,6 +4030,9 @@ fn infer_list_push(
     if let Some(x) = args.get(1) {
         let xty = check_expr(x, env, ctx, types, entries)?;
         if !types_compatible(&xty, &elem) {
+            if captured_move_error(&xty, &elem, x, types) {
+                return Err(vec![Diagnostic::new(ErrorCode::EBorrow, "cannot move a captured value out of its shared borrow", x.span())]);
+            }
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
                 format!(
@@ -3981,6 +4045,13 @@ fn infer_list_push(
         }
     }
     Ok(peel_refs(&xs_ty).clone())
+}
+
+fn captured_move_error(actual: &Type, expected: &Type, expr: &Expr, types: &TypeEnv) -> bool {
+    let Type::Ref { inner, .. } = actual else { return false };
+    matches!(expr, Expr::Ident { name, .. } if name.starts_with("__cap"))
+        && types_compatible(inner, expected)
+        && !elem_is_copy(expected, types)
 }
 
 /// Whether a list element of this type is copied out by `get` (it owns no heap).
@@ -4331,6 +4402,9 @@ fn infer_clone_method(
     span: Span,
 ) -> DiagResult<Type> {
     let err = |msg: String| Err(vec![Diagnostic::new(ErrorCode::EType, msg, span)]);
+    if is_unknown_type(ty) {
+        return Ok(ty.clone());
+    }
     if matches!(ty, Type::Tensor { .. }) {
         return err("`Tensor` has no `clone`: move it or copy it with `to`".into());
     }

@@ -1,0 +1,10 @@
+# exit: 7
+protocol Value
+    method value(self) -> Int
+        7
+
+struct Number impl Value
+    n: Int
+
+fn main() -> Int
+    Number(7).value()

@@ -3,6 +3,17 @@ use sal_compiler::ir::{ir_to_text, lower_program};
 use sal_compiler::parser::parse;
 
 #[test]
+fn variant_chain_checks_declared_tag_before_reading_payload() {
+    use sal_compiler::ir::IrInst;
+    let p = parse("enum Token\n    Empty\n    Number(Int)\n    Call(Int, Int, Int)\n\nfn inspect(t: Token) -> Int\n    result = 0\n    match t\n        Call(a, b, c) =>\n            result = a + b + c\n        _ =>\n            result = 42\n    result\n").expect("parse");
+    let ir = lower_program(&p);
+    let f = ir.functions.iter().find(|f| f.name == "inspect").unwrap();
+    assert!(!f.instructions.iter().any(|i| matches!(i, IrInst::EnumField { .. })), "payload reads must be conditional: {f:?}");
+    assert!(f.instructions.iter().any(|i| matches!(i, IrInst::Binary { op, right, .. } if op == "eq" && right == "3")), "Call has tag 3: {f:?}");
+    assert!(f.instructions.iter().any(|i| matches!(i, IrInst::If { then_body, .. } if then_body.iter().filter(|i| matches!(i, IrInst::EnumField { .. })).count() == 3)), "payload belongs to matching branch: {f:?}");
+}
+
+#[test]
 fn early_return_in_if_then_body() {
     let src = include_str!("../corpus/early_return.sal");
     let p = parse(src).expect("parse early_return");
@@ -367,4 +378,16 @@ fn generic_fn_is_monomorphized_per_type() {
     assert!(body("pair__Int").contains(r#"ConstString { dest: "t2", value: "i" }"#), "{text}");
     assert!(body("main").contains(r#"func: "pair__String""#), "{text}");
     assert!(body("main").contains(r#"func: "pair__Int""#), "{text}");
+}
+
+#[test]
+fn callback_lambda_is_lifted_and_specialized() {
+    let src = "fn apply(f: fn(Int) -> Int, x: Int) -> Int\n    f(x)\n\nfn main() -> Int\n    offset = 40\n    apply(x => offset + x, 2)\n";
+    let mut p = parse(src).expect("parse callback");
+    sal_compiler::methods::prepare_program(&mut p).expect("specialize callback");
+    let text = ir_to_text(&lower_program(&p));
+    let fns: Vec<&str> = text.lines().filter(|l| l.starts_with("fn ")).collect();
+    assert_eq!(fns, vec!["fn main:", "fn main__lam0:", "fn apply__s0:"], "{text}");
+    assert!(text.contains("func: \"main__lam0\""), "{text}");
+    assert!(!text.contains("func: \"sal_f\""), "{text}");
 }

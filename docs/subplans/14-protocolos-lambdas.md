@@ -11,9 +11,40 @@ Las lambdas no son valores: cada llamada que recibe una se **especializa** (una 
 | Fase | Contenido | Estado |
 |------|-----------|--------|
 | 0 | Monomorfización de `fn` y `struct` genéricos, también entre módulos (SPEC «Genéricos») | Hecha en los dos compiladores |
-| 1 | Tipo `fn(…) -> R`, lambdas de varios parámetros y con bloque, lambda final, especialización por lambda | Pendiente |
-| 2 | Métodos con cuerpo (provistos) en protocolos | Pendiente |
-| 3 | Protocolos genéricos, item `impl Tipo Protocolo`, `Collection` en el preludio | Pendiente |
+| 1 | Tipo `fn(…) -> R`, lambdas de varios parámetros y con bloque, lambda final, especialización por lambda | Hecha en arranque y selfhost |
+| 2 | Métodos con cuerpo (provistos) en protocolos | En curso |
+| 3 | Protocolos genéricos, item `impl Tipo Protocolo`, `Collection` en el preludio | En curso |
+
+**Estado de fase 1 (2026-11-13):** cerrada en ambos compiladores. El selfhost eleva las lambdas a
+`__lamN`, crea copias `__sN`, propaga capturas compartidas sin emitir una referencia redundante,
+conserva los tipos concretos de las copias genéricas y procesa el bloque elevado como bloque interno.
+Los drops condicionales de parámetros `String` y structs también coinciden con el arranque.
+
+Verificación de cierre: `selfhost_phase_one_lambda_ir_matches_bootstrap`,
+`selfhost_conditional_string_param_drops_match_bootstrap` y `stage2_emit_ir_writes_selfhost_cache`
+pasan; las pruebas de conformidad y memoria del arranque para la fase también pasan. La prueba
+amplia `selfhost_meets_language_conformance` aún falla en varios programas genéricos con un
+use-after-free de `TProgram` en `sp_rounds`; se reprodujo con un stage1 ASan anterior a los cambios
+de esta divergencia, por lo que queda registrado como bloqueo previo de la fase 0, no como hueco de
+lambdas. `selfhost_ir_matches_bootstrap_on_parity_files` también conserva una divergencia anterior
+en `selfhost/ir/drops.sal` (cadena de `If` frente a `Switch`).
+
+**Fase 2 (2026-11-13):** implementación parcial en el arranque. La SPEC y el AST admiten cuerpos,
+`fmt` los conserva, el arranque comprueba el cuerpo con `self: any[P]` y sintetiza los métodos que
+faltan después de desazucarar métodos. La conformidad del arranque cubre ejecución, override,
+despacho por `any[P]` y errores de cuerpo/firma. `tests/selfhost_ir.rs` conserva
+El selfhost sintetiza funciones para structs y enums, admite receptores por referencia, despacha
+métodos provistos mediante `any[P]` y comprueba tipos y efectos del cuerpo con receptor abstracto
+incluso sin implementadores. Los casos dirigidos de lambdas e imports pasan en stage1.
+El arranque prepara los protocolos tras cualificar el grafo y copia al módulo del tipo los cuerpos
+importados; `provided_imported_protocol.sal` cubre además un choque de nombres en el módulo receptor.
+El selfhost también prepara los claims después de cualificar el grafo. La fase 2 sigue en curso:
+la suite serial aún falla en la divergencia de IR de drops y en los genéricos, y LeakSanitizer
+detecta fugas tanto en `hello` como en el compilador al procesar protocolos; hay que aislar las
+introducidas por los cuerpos provistos antes de cerrarla.
+
+**Fase 3:** los AST de ambos compiladores reservan ya los parámetros de protocolos y métodos; aún
+no se ha habilitado su sintaxis ni implementado la resolución, las instancias o `Collection`.
 
 ## Fase 0: monomorfización
 

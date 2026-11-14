@@ -1,0 +1,14 @@
+# exit: 10
+import "mods/provided_protocol.sal"
+
+fn adjustment() -> Int
+    99
+
+struct Number impl Value
+    n: Int
+
+method Number.value(&self) -> Int
+    self.n
+
+fn main() -> Int
+    Number(7).adjusted()

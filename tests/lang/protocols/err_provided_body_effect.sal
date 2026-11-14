@@ -1,0 +1,8 @@
+# error: E_EFFECT
+protocol Value
+    method value(self) -> Int
+        print_str("x")
+        0
+
+fn main() -> Int
+    0

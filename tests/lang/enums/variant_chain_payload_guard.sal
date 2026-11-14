@@ -1,0 +1,17 @@
+# exit: 42
+enum Token
+    Empty
+    Number(Int)
+    Call(Int, Int, Int)
+
+fn inspect(t: Token) -> Int
+    result = 0
+    match t
+        Call(a, b, c) =>
+            result = a + b + c
+        _ =>
+            result = 42
+    result
+
+fn main() -> Int
+    inspect(Number(7))

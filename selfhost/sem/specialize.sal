@@ -28,7 +28,7 @@ fn monomorphize(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
     monomorphize_ext(tp, &mut cx, errs)
 
 fn sp_empty_program() -> TProgram ! alloc
-    TProgram(List.new[TFn](), List.new[String](), List.new[TStruct](), List.new[String](), List.new[TEnum](), List.new[TProtocol](), List.new[TConst]())
+    TProgram(List.new[TFn](), List.new[String](), List.new[TStruct](), List.new[String](), List.new[TEnum](), List.new[TProtocol](), List.new[TConst](), List.new[TImpl]())
 
 # Specializes the generic calls of `tp`: its own generics and those of `cx.ext`. The copies made of
 # its own generics go to `cx.made`. `tp` is consumed once on every path: a by-value program that
@@ -161,7 +161,7 @@ fn sp_union(tp: &TProgram, ext: &TProgram) -> TProgram ! alloc
     sp_append_enums(&mut enums, &tp.enums, 0, tp.enums.len())
     imports = ext.imports.clone()
     sp_append_strs(&mut imports, &tp.imports, 0, tp.imports.len())
-    TProgram(fns, imports, structs, tp.aliases.clone(), enums, tp.protocols.clone(), tp.consts.clone())
+    TProgram(fns, imports, structs, tp.aliases.clone(), enums, tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
 
 fn sp_append_fns(dst: &mut List[TFn], src: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -208,7 +208,7 @@ fn sp_infer_ok(tp: &TProgram, ext: &TProgram) -> Int ! alloc
 # Returns the specialized program, or puts in `erase` the generic that has to stay erased. `copies`
 # gets `generic \t type… \t name` for each copy the run calls.
 fn sp_run(tp: TProgram, cx: &MonoCtx, erased: &List[String], errs: &mut List[String], erase: &mut List[String], copies: &mut List[String]) -> TProgram ! alloc
-    sp_rounds(tp, cx, erased, copies, errs, erase, 0)
+    sp_rounds(tp.clone(), cx, erased, copies, errs, erase, 0)
 
 fn sp_rounds(tp: TProgram, cx: &MonoCtx, erased: &List[String], copies: &mut List[String], errs: &mut List[String], erase: &mut List[String], k: Int) -> TProgram ! alloc
     if k > 256
@@ -231,17 +231,17 @@ fn sp_rounds(tp: TProgram, cx: &MonoCtx, erased: &List[String], copies: &mut Lis
                 erase.push(bad)
                 tp
             elsif renames.len() == 0 && news.len() == 0
-                sp_finish(tp, cx.remove, erased)
+                sp_finish(tp.clone(), cx.remove, erased)
             else
-                tp2 = sp_rename_program(tp, &renames)
+                tp2 = sp_rename_program(tp.clone(), &renames)
                 tp3 = sp_place_copies(&tp2, &news)
-                sp_rounds(tp3, cx, erased, copies, errs, erase, k + 1)
+                sp_rounds(tp3.clone(), cx, erased, copies, errs, erase, k + 1)
 
 # The generic originals go here for a single file; a graph sweeps them once every module renamed
 # its calls (`sp_sweep_generics`).
 fn sp_finish(tp: TProgram, remove: Int, erased: &List[String]) -> TProgram ! alloc
     if remove == 1
-        sp_drop_generics(tp, erased)
+        sp_drop_generics(tp.clone(), erased)
     else
         tp
 
@@ -426,10 +426,12 @@ fn sp_expr(e: &Expr, tps: &List[String], vals: &List[String], at: Int, from: &St
         XBin(op, l, r) => XBin(op.dup(), sp_expr(&l, tps, vals, at, from, dst), sp_expr(&r, tps, vals, at, from, dst))
         XTo(place, inner) => XTo(place.dup(), sp_expr(&inner, tps, vals, at, from, dst))
         XOn(place, body, kern, idx) => XOn(place.dup(), sp_block(&body, tps, vals, at, from, dst), kern, idx)
+        XBlock(body) => XBlock(sp_block(&body, tps, vals, at, from, dst))
         XIf(cond, then_b, else_b, has_else, elsifs) => XIf(sp_expr(&cond, tps, vals, at, from, dst), sp_block(&then_b, tps, vals, at, from, dst), sp_block(&else_b, tps, vals, at, from, dst), has_else, sp_elsifs(&elsifs, tps, vals, at, from, dst))
         XWhile(cond, body) => XWhile(sp_expr(&cond, tps, vals, at, from, dst), sp_block(&body, tps, vals, at, from, dst))
         XField(base, field) => XField(sp_expr(&base, tps, vals, at, from, dst), field.dup())
         XLambda(param, body) => XLambda(param.dup(), sp_expr(&body, tps, vals, at, from, dst))
+        XLambdaBlock(param, body) => XLambdaBlock(param.dup(), sp_block(&body, tps, vals, at, from, dst))
         XUnary(op, inner) => XUnary(op.dup(), sp_expr(&inner, tps, vals, at, from, dst))
         XMatch(scrut, arms) => XMatch(sp_expr(&scrut, tps, vals, at, from, dst), sp_arms(&arms, tps, vals, at, from, dst))
         XTry(inner) => XTry(sp_expr(&inner, tps, vals, at, from, dst))
@@ -474,7 +476,7 @@ fn sp_arms_go(xs: &List[TArm], i: Int, tps: &List[String], vals: &List[String], 
 fn sp_rename_program(tp: TProgram, renames: &List[String]) -> TProgram ! alloc
     fns = List.new[TFn]()
     sp_rename_fns(&tp.fns, 0, renames, &mut fns)
-    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
 
 fn sp_rename_fns(xs: &List[TFn], i: Int, renames: &List[String], out: &mut List[TFn]) -> Int ! alloc
     if i >= xs.len()
@@ -504,7 +506,7 @@ fn sp_rename_body(b: &TBlock, fname: &String, renames: &List[String], k: Int) ->
 # Each copy goes right after its generic and the copies of it made before.
 fn sp_place_copies(tp: &TProgram, news: &List[TFn]) -> TProgram ! alloc
     fns = sp_place_go(&tp.fns, news, 0, news.len())
-    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
 
 fn sp_place_go(fns: &List[TFn], news: &List[TFn], i: Int, n: Int) -> List[TFn] ! alloc
     if i >= n
@@ -562,7 +564,7 @@ fn sp_insert(xs: &List[TFn], i: Int, at: Int, nf: &TFn, out: &mut List[TFn]) -> 
 fn sp_drop_generics(tp: TProgram, erased: &List[String]) -> TProgram ! alloc
     fns = List.new[TFn]()
     sp_keep_fns(&tp.fns, 0, erased, &mut fns)
-    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
 
 fn sp_keep_fns(xs: &List[TFn], i: Int, erased: &List[String], out: &mut List[TFn]) -> Int ! alloc
     if i >= xs.len()
@@ -713,10 +715,12 @@ fn sp_called_expr(e: &Expr, out: &mut List[String]) -> Int ! alloc
         XBin(_, l, r) => sp_called_pair(&l, &r, out)
         XTo(_, inner) => sp_called_expr(&inner, out)
         XOn(_, body, _, _) => sp_called_block(&body, out)
+        XBlock(body) => sp_called_block(&body, out)
         XIf(cond, then_b, else_b, _, elsifs) => sp_called_if(&cond, &then_b, &else_b, &elsifs, out)
         XWhile(cond, body) => sp_called_while(&cond, &body, out)
         XField(base, _) => sp_called_expr(&base, out)
         XLambda(_, body) => sp_called_expr(&body, out)
+        XLambdaBlock(_, body) => sp_called_block(&body, out)
         XUnary(_, inner) => sp_called_expr(&inner, out)
         XMatch(scrut, arms) => sp_called_match(&scrut, &arms, out)
         XTry(inner) => sp_called_expr(&inner, out)
@@ -816,7 +820,7 @@ fn sp_sweep_go(progs: &mut List[TProgram], called: &List[String], i: Int) -> Int
         if sp_count_uncalled(&tp.fns, called, 0) > 0
             fns = List.new[TFn]()
             sp_keep_called(&tp.fns, called, 0, &mut fns)
-            progs.set(i, TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone()))
+            progs.set(i, TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone()))
         sp_sweep_go(progs, called, i + 1)
 
 fn sp_count_uncalled(fns: &List[TFn], called: &List[String], i: Int) -> Int ! alloc
@@ -864,12 +868,12 @@ fn monomorphize_structs(tp: TProgram, cx: &mut MonoCtx, errs: &mut List[String])
         sm = StructMono(gens, nown, List.new[String](), List.new[TStruct](), List.new[String](), taken, tc_strs(&cx.existing), List.new[String]())
         renames = List.new[String]()
         sp_ctor_renames(&mut sm, &recs, 0, &mut renames)
-        tp2 = sp_rename_program(tp, &renames)
+        tp2 = sp_rename_program(tp.clone(), &renames)
         tp3 = sm.rw_program(&tp2)
         tp4 = sp_place_structs(&tp3, &sm.news, &sm.news_from)
         sp_append_strs(&mut cx.made, &sm.made, 0, sm.made.len())
         cx.taken = sm.taken.clone()
-        sp_finish_structs(tp4, cx.remove)
+        sp_finish_structs(tp4.clone(), cx.remove)
 
 fn sp_generic_structs(xs: &List[TStruct], out: &mut List[TStruct]) -> Int ! alloc
     if xs.len() == 0
@@ -921,7 +925,7 @@ fn sp_ctor_renames(sm: &mut StructMono, recs: &List[String], i: Int, out: &mut L
 # Each instance goes right after its generic and the instances of it made before.
 fn sp_place_structs(tp: &TProgram, news: &List[TStruct], from: &List[String]) -> TProgram ! alloc
     structs = sp_place_structs_go(&tp.structs, news, from, 0)
-    TProgram(tp.fns.clone(), tp.imports.clone(), structs, tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone())
+    TProgram(tp.fns.clone(), tp.imports.clone(), structs, tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
 
 fn sp_place_structs_go(xs: &List[TStruct], news: &List[TStruct], from: &List[String], i: Int) -> List[TStruct] ! alloc
     if i >= news.len()
@@ -961,7 +965,7 @@ fn sp_insert_struct(xs: &List[TStruct], i: Int, at: Int, ns: &TStruct, out: &mut
 fn sp_finish_structs(tp: TProgram, remove: Int) -> TProgram ! alloc
     if remove == 1
         progs = List.new[TProgram]()
-        progs.push(tp)
+        progs.push(tp.clone())
         sp_sweep_structs(&mut progs)
         progs.pop()
     else
@@ -1079,10 +1083,12 @@ fn sp_named_expr(e: &Expr, out: &mut List[String]) -> Int ! alloc
         XBin(_, l, r) => sp_named_pair(&l, &r, out)
         XTo(_, inner) => sp_named_expr(&inner, out)
         XOn(_, body, _, _) => sp_named_block(&body, out)
+        XBlock(body) => sp_named_block(&body, out)
         XIf(cond, then_b, else_b, _, elsifs) => sp_named_if(&cond, &then_b, &else_b, &elsifs, out)
         XWhile(cond, body) => sp_named_while(&cond, &body, out)
         XField(base, _) => sp_named_expr(&base, out)
         XLambda(_, body) => sp_named_expr(&body, out)
+        XLambdaBlock(_, body) => sp_named_block(&body, out)
         XUnary(_, inner) => sp_named_expr(&inner, out)
         XMatch(scrut, arms) => sp_named_match(&scrut, &arms, out)
         XTry(inner) => sp_named_expr(&inner, out)
@@ -1154,7 +1160,7 @@ fn sp_sweep_structs_go(progs: &mut List[TProgram], named: &List[String], i: Int)
         if sp_unnamed_structs(&tp.structs, named, 0) > 0
             structs = List.new[TStruct]()
             sp_keep_named(&tp.structs, named, 0, &mut structs)
-            progs.set(i, TProgram(tp.fns.clone(), tp.imports.clone(), structs, tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone()))
+            progs.set(i, TProgram(tp.fns.clone(), tp.imports.clone(), structs, tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone()))
         sp_sweep_structs_go(progs, named, i + 1)
 
 fn sp_unnamed_structs(xs: &List[TStruct], named: &List[String], i: Int) -> Int ! alloc

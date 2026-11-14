@@ -1,0 +1,6 @@
+# error: E_TYPE
+fn apply(f: fn(Int) -> String, x: Int) -> String
+    f(x)
+
+fn main() -> Int
+    apply(x => x + 1, 40).len()

@@ -1,0 +1,11 @@
+# exit: 7
+protocol Value
+    method value(self) -> Int
+        7
+
+enum Number impl Value
+    Seven
+
+fn main() -> Int
+    x = Seven
+    x.value()

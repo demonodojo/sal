@@ -312,10 +312,23 @@ fn find_char(s: &String, ch: Int, i: Int, n: Int) -> Int ! alloc
 fn mi_match_str_pat(raw: &String) -> String ! alloc
     t = mi_trim(raw)
     n = t.len()
-    if n >= 2 && t.char(0) == 34 && t.char(n - 1) == 34
+    if n >= 2 && t.char(0) == 34 && t.char(n - 1) == 34 && mi_literal_contents(&t, 1, n - 1) == 1
         t
     else
-        "\"" + t + "\""
+        d""
+
+fn mi_literal_contents(s: &String, i: Int, end: Int) -> Int ! alloc
+    if i >= end
+        1
+    elsif s.char(i) == 34
+        0
+    elsif s.char(i) == 92
+        if i + 1 >= end
+            0
+        else
+            mi_literal_contents(s, i + 2, end)
+    else
+        mi_literal_contents(s, i + 1, end)
 
 fn mi_str_pat(cond: &String, scrut: &String) -> String ! alloc
     c = strip_eq_one(cond)
@@ -566,6 +579,23 @@ fn body_is_block(b: &String) -> Int ! alloc
     else
         0
 
+fn mi_multiple_code_lines(b: &String, i: Int, count: Int) -> Int ! alloc
+    if i >= b.len()
+        if count > 1
+            1
+        else
+            0
+    else
+        end = mi_find_first_nl(b, i, b.len())
+        line = mi_trim(&b.slice(i, end))
+        next = if line.len() == 0
+            count
+        elsif line.char(0) == 35
+            count
+        else
+            count + 1
+        mi_multiple_code_lines(b, end + 1, next)
+
 fn body_has_break(b: &String) -> Int ! alloc
     if b.contains(d"\nbreak\n") == 1
         1
@@ -713,6 +743,8 @@ fn mi_finish_else(src: &String, lex: &Lex, n: Int, if_i: Int, scrut: String, arm
         return mi_fail()
     suite_end = mi_consume_suite(lex, n, ind)
     b = suite_body(src, lex, ind, suite_end, 0)
+    if mi_multiple_code_lines(&b, 0, 0) == 1 || b.contains(d" = ") == 1
+        return mi_fail()
     if body_has_break(&b) == 1
         return mi_fail()
     if suite_has_return_or_if(src, lex, ind, suite_end) == 1

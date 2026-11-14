@@ -196,6 +196,14 @@ impl Parser {
             && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
         {
             Ok(Item::Protocol(self.parse_protocol()?))
+        } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "impl")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        {
+            let span = self.bump().span;
+            let target = self.parse_type()?;
+            let protocols = self.parse_protocol_claims()?;
+            self.expect(TokenKind::Newline, "expected newline after impl")?;
+            Ok(Item::Impl(ImplDef { target, protocols, span }))
         } else if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "method")
             && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)))
         {
@@ -307,11 +315,18 @@ impl Parser {
             return Ok(Vec::new());
         }
         self.bump();
+        self.parse_protocol_claims()
+    }
+
+    fn parse_protocol_claims(&mut self) -> Result<Vec<ProtocolClaim>, Diagnostic> {
         let mut list = Vec::new();
         loop {
             let sp = self.peek().span;
-            let name = self.parse_ident()?;
-            list.push(ProtocolClaim { name, span: sp });
+            let ty = self.parse_type()?;
+            let Type::Named { name, args, .. } = ty else {
+                return Err(Diagnostic::new(ErrorCode::EParse, "expected protocol name", sp));
+            };
+            list.push(ProtocolClaim { name, args, span: sp });
             if self.at(TokenKind::Comma) {
                 self.bump();
             } else {
@@ -325,6 +340,7 @@ impl Parser {
         let sp = self.peek().span;
         let _ = self.bump();
         let name = self.parse_ident()?;
+        let type_params = self.parse_type_params()?;
         self.expect(TokenKind::Newline, "expected newline after protocol header")?;
         self.expect(TokenKind::Indent, "expected indented protocol methods")?;
         let mut methods = Vec::new();
@@ -337,6 +353,7 @@ impl Parser {
         }
         Ok(ProtocolDef {
             name,
+            type_params,
             methods,
             span: sp,
         })
@@ -353,6 +370,7 @@ impl Parser {
         }
         self.bump();
         let name = self.parse_ident()?;
+        let type_params = self.parse_type_params()?;
         self.expect(TokenKind::LParen, "expected ( after protocol method name")?;
         self.skip_soft_layout();
         let mut params = Vec::new();
@@ -420,13 +438,26 @@ impl Parser {
         let ret = self.parse_type()?;
         let effects = self.parse_effects()?;
         self.expect(TokenKind::Newline, "expected newline after protocol method signature")?;
+        let body = if self.at(TokenKind::Indent) {
+            self.bump();
+            let block = self.parse_block_inner()?;
+            if self.at(TokenKind::Dedent) {
+                self.bump();
+            }
+            self.skip_newlines();
+            Some(block)
+        } else {
+            None
+        };
         Ok(ProtocolMethod {
             name,
+            type_params,
             params,
             ret,
             effects,
             self_mode,
             self_ref,
+            body,
             span: sp,
         })
     }
@@ -823,6 +854,29 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<Type, Diagnostic> {
         let span = self.peek().span;
+        if self.at(TokenKind::Fn) {
+            self.bump();
+            self.expect(TokenKind::LParen, "expected ( after fn")?;
+            self.enter_group();
+            self.skip_group_newlines();
+            let mut params = Vec::new();
+            while !self.at(TokenKind::RParen) {
+                params.push(self.parse_type()?);
+                self.skip_group_newlines();
+                if self.at(TokenKind::Comma) {
+                    self.bump();
+                    self.skip_group_newlines();
+                } else {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "expected ) in function type")?;
+            self.leave_group();
+            self.expect(TokenKind::Arrow, "expected -> in function type")?;
+            let ret = self.parse_type()?;
+            let effects = self.parse_effects()?;
+            return Ok(Type::Fn { params, ret: Box::new(ret), effects, span });
+        }
         if self.at(TokenKind::Amp) {
             return self.parse_ref_type(span);
         }
@@ -1158,8 +1212,44 @@ impl Parser {
         self.parse_lambda()
     }
 
-    /// `lambda → cmp "=>" expr | cmp`. El cuerpo es un `expr`, así que admite `try`.
+    /// `lambda → or "=>" expr | "(" ident_list ")" "=>" expr | or`.
     fn parse_lambda(&mut self) -> Result<Expr, Diagnostic> {
+        if self.at(TokenKind::LParen) {
+            let save = self.pos;
+            let start = self.bump().span;
+            self.enter_group();
+            self.skip_group_newlines();
+            let mut params = Vec::new();
+            let mut valid = true;
+            if !self.at(TokenKind::RParen) {
+                loop {
+                    if self.at_ident() {
+                        params.push(self.parse_ident()?);
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                    self.skip_group_newlines();
+                    if self.at(TokenKind::Comma) {
+                        self.bump();
+                        self.skip_group_newlines();
+                    } else { break; }
+                }
+            }
+            if valid && self.at(TokenKind::RParen) {
+                self.bump();
+                self.leave_group();
+                self.skip_group_newlines();
+                if self.at(TokenKind::FatArrow) {
+                    let arrow = self.bump().span;
+                    let body = self.parse_lambda_body()?;
+                    let span = Span::merge(Span::merge(start, arrow), body.span());
+                    return Ok(Expr::Lambda { params, body: Box::new(body), span });
+                }
+            }
+            self.pos = save;
+            self.group -= 1;
+        }
         let left = self.parse_or()?;
         self.skip_group_newlines();
         if self.at(TokenKind::FatArrow) {
@@ -1175,7 +1265,7 @@ impl Parser {
                     ));
                 }
             };
-            let body = self.parse_expr()?;
+            let body = self.parse_lambda_body()?;
             let span = Span::merge(Span::merge(start, arrow), body.span());
             return Ok(Expr::Lambda {
                 params: vec![param],
@@ -1184,6 +1274,18 @@ impl Parser {
             });
         }
         Ok(left)
+    }
+
+    fn parse_lambda_body(&mut self) -> Result<Expr, Diagnostic> {
+        if self.at(TokenKind::Newline) {
+            self.bump();
+            self.expect(TokenKind::Indent, "expected indented lambda body")?;
+            let block = self.parse_block_inner()?;
+            self.skip_newlines();
+            if self.at(TokenKind::Dedent) { self.bump(); }
+            return Ok(Expr::Block(block));
+        }
+        self.parse_expr()
     }
 
     /// `or → or "||" and | and`
@@ -1427,6 +1529,20 @@ impl Parser {
         let mut e = self.parse_primary()?;
         loop {
             self.skip_group_newlines();
+            if self.trailing_lambda_ahead() {
+                let lambda = self.parse_lambda()?;
+                let span = Span::merge(e.span(), lambda.span());
+                match &mut e {
+                    Expr::Call { args, span: call_span, .. } => {
+                        args.push(lambda);
+                        *call_span = span;
+                    }
+                    _ => e = Expr::Call {
+                        func: Box::new(e), type_args: Vec::new(), args: vec![lambda], span,
+                    },
+                }
+                continue;
+            }
             match self.peek().kind {
                 TokenKind::LBracket => {
                     let sp = self.bump().span;
@@ -1518,6 +1634,26 @@ impl Parser {
             }
         }
         Ok(e)
+    }
+
+    fn trailing_lambda_ahead(&self) -> bool {
+        if matches!(self.peek().kind, TokenKind::Ident(_)) {
+            return self.tokens.get(self.pos + 1).is_some_and(|t| t.kind == TokenKind::FatArrow);
+        }
+        if !self.at(TokenKind::LParen) { return false; }
+        let mut i = self.pos + 1;
+        if !matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) { return false; }
+        loop {
+            i += 1;
+            match self.tokens.get(i).map(|t| &t.kind) {
+                Some(TokenKind::Comma) => {
+                    i += 1;
+                    if !matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) { return false; }
+                }
+                Some(TokenKind::RParen) => return self.tokens.get(i + 1).is_some_and(|t| t.kind == TokenKind::FatArrow),
+                _ => return false,
+            }
+        }
     }
 
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {

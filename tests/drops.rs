@@ -1089,3 +1089,21 @@ fn elsif_branch_returning_a_borrow_makes_the_result_not_owned() {
     // String, so `main` must not release `d`.
     assert_eq!(frees(&ir), 0, "{ir}");
 }
+
+// SPEC «Memoria» (Rust's drop flags): a by-value struct parameter or local that only some branches
+// hand out is released by its glue behind its flag; the branch that moves it clears the flag.
+#[test]
+fn struct_moved_by_one_branch_is_released_behind_its_flag() {
+    let ir = ir_full(
+        "branch_moved_struct",
+        "struct Prog\n    names: List[String]\n    name: String\n\nfn pick(p: Prog, q: Prog, first: Bool) -> Prog\n    if first\n        p\n    else\n        q\n\nfn keep(p: Prog, own: Bool) -> Prog ! alloc\n    c = Prog(List.new[String](), d\"c\")\n    if own\n        p\n    else\n        c\n\nfn main() -> Int ! alloc\n    a = pick(Prog(List.new[String](), d\"a\"), Prog(List.new[String](), d\"b\"), true)\n    b = keep(Prog(List.new[String](), d\"k\"), false)\n    a.name.len() + b.name.len()\n",
+    );
+    let pick = fn_ir(&ir, "pick");
+    assert!(pick.contains(r#"func: "drop.Prog", args: ["p"]"#), "{pick}");
+    assert!(pick.contains(r#"func: "drop.Prog", args: ["q"]"#), "{pick}");
+    // The flags start at 1 and each branch clears the one of what it returns.
+    assert!(pick.contains("carried: [IfCarry"), "{pick}");
+    let keep = fn_ir(&ir, "keep");
+    assert!(keep.contains(r#"func: "drop.Prog", args: ["p"]"#), "{keep}");
+    assert_eq!(keep.matches(r#"func: "drop.Prog""#).count(), 2, "{keep}");
+}

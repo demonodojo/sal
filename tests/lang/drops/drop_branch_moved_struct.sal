@@ -1,0 +1,32 @@
+# exit: 7
+# A struct (parameter or local) that only some branches return is released by its glue on the
+# others, behind its drop flag.
+struct Prog
+    names: List[String]
+    name: String
+
+fn pick(p: Prog, q: Prog, first: Bool) -> Prog
+    if first
+        p
+    else
+        q
+
+fn keep(p: Prog, other: &Prog, own: Bool) -> Prog ! alloc
+    c = Prog(List.new[String](), other.name.clone())
+    if own
+        p
+    else
+        c
+
+fn mk(s: String) -> Prog ! alloc
+    xs = List.new[String]()
+    xs.push(d"x")
+    Prog(xs, s)
+
+fn main() -> Int ! alloc
+    a = pick(mk(d"a"), mk(d"bb"), true)
+    b = pick(mk(d"a"), mk(d"bb"), false)
+    o = mk(d"ooo")
+    c = keep(mk(d"p"), &o, true)
+    d = keep(mk(d"p"), &o, false)
+    a.name.len() + b.name.len() + c.name.len() + d.name.len()

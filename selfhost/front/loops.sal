@@ -278,6 +278,9 @@ fn lp_expr(e: &Expr, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
         XWhile(_, _) => lp_while_value(e, cx, errs)
         XField(base, _) => lp_expr(&base, cx, errs)
         XLambda(_, body) => lp_expr(&body, cx, errs)
+        XLambdaBlock(_, body) =>
+            _b = enum_set(e, 1, lp_block(&body, &"", cx, errs))
+            0
         XUnary(_, inner) => lp_expr(&inner, cx, errs)
         XTry(inner) => lp_expr(&inner, cx, errs)
         XMatch(scrut, arms) => lp_match(&scrut, &mut arms, cx, errs)

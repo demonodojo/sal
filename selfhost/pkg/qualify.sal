@@ -772,6 +772,27 @@ fn qx_fns(fns: &mut List[TFn], i: Int, n: Int, ctx: &QualCtx, links: &List[Link]
         f.ret = qx_apply_ty(&f.ret, ctx, links)
         qx_fns(fns, i + 1, n, ctx, links)
 
+fn qx_protocols(ps: &mut List[TProtocol], i: Int, n: Int, ctx: &QualCtx, links: &List[Link]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        p = list_get(&mut ps, i)
+        n_methods = list_len(&p.methods)
+        _m = qx_protocol_methods(&mut p.methods, 0, n_methods, ctx, links)
+        qx_protocols(ps, i + 1, n, ctx, links)
+
+fn qx_protocol_methods(ms: &mut List[TProtocolMethod], i: Int, n: Int, ctx: &QualCtx, links: &List[Link]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        m = list_get(&mut ms, i)
+        n_params = list_len(&m.params)
+        _p = qx_params(&mut m.params, 0, n_params, ctx, links)
+        m.ret = qx_apply_ty(&m.ret, ctx, links)
+        if m.has_body == 1
+            m.body = qx_block(&mut m.body, ctx, links)
+        qx_protocol_methods(ms, i + 1, n, ctx, links)
+
 fn qx_rename_fns(fns: &mut List[TFn], i: Int, n: Int, r: &List[Rename]) -> Int ! alloc
     if i >= n
         0
@@ -818,6 +839,8 @@ fn qualify_typed(order: &mut Graph, mi: Int, ctx: &QualCtx, links: &List[Link], 
     tp = list_get(&mut order.progs, mi)
     n_fns = list_len(&tp.fns)
     _a = qx_fns(&mut tp.fns, 0, n_fns, ctx, links)
+    n_protocols = list_len(&tp.protocols)
+    _p = qx_protocols(&mut tp.protocols, 0, n_protocols, ctx, links)
     n_consts = list_len(&tp.consts)
     _k = qx_consts(&mut tp.consts, 0, n_consts, ctx, links)
     n_fns = list_len(&tp.fns)

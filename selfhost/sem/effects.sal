@@ -3,6 +3,7 @@
 import "../pkg/result.sal"
 import "../ast/tast.sal"
 import "../ast/ttypes.sal"
+import protocols
 
 # Used effects: `flags` holds io, alloc, panic, gpu, tpu and, in slot 5, the `@stack let` violation.
 # `callees` lists the fns a body may call: `names[i]` declares the effects in bit mask `masks[i]`.
@@ -239,6 +240,7 @@ fn fx_scan_expr(e: &Expr, used: &mut Fx, env: &mut TEnv) -> Int ! alloc
         XTensor(nr, nc, data) => fx_mark(used, 1)
         XField(base, field) => fx_scan_expr(&base, used, env)
         XWhile(cond, body) => fx_scan_while(&cond, &body, used, env)
+        XBlock(body) => fx_scan_block(&body, used, env)
         XIf(cond, then_b, else_b, has_else, elsifs) => fx_scan_if(&cond, &then_b, &else_b, &elsifs, used, env)
         _ => 0
 
@@ -342,6 +344,46 @@ fn check_effects_go(tp: &TProgram, i: Int, n: Int, env: &mut TEnv, used: &mut Fx
         else
             check_effects_go(tp, i + 1, n, env, used)
 
+fn check_protocol_effects(ps: &List[TProtocol], i: Int, env: &mut TEnv, used: &mut Fx) -> Res ! alloc
+    if i >= list_len(ps)
+        result_ok(0)
+    else
+        p = list_get(ps, i)
+        callees = Callees(used.callees.names.clone(), used.callees.masks.clone())
+        _a = fx_protocol_callees(&mut callees, &p.methods, 0)
+        local = fx_new(callees)
+        r = check_protocol_method_effects(&p, 0, env, &mut local)
+        if result_is_err(&r) == 1
+            r
+        else
+            check_protocol_effects(ps, i + 1, env, used)
+
+fn fx_protocol_callees(callees: &mut Callees, methods: &List[TProtocolMethod], i: Int) -> Int ! alloc
+    if i >= list_len(methods)
+        0
+    else
+        pm = list_get(methods, i)
+        _a = callees_add(callees, &("self." + pm.name), fx_mask(&pm.fx))
+        fx_protocol_callees(callees, methods, i + 1)
+
+fn check_protocol_method_effects(p: &TProtocol, i: Int, env: &mut TEnv, used: &mut Fx) -> Res ! alloc
+    if i >= list_len(&p.methods)
+        result_ok(0)
+    else
+        pm = list_get(&p.methods, i)
+        if pm.has_body == 1
+            params = list_new[TParam]()
+            _s = list_push(&mut params, TParam("self", "any[" + p.name + "]", pm.self_mode))
+            _p = provided_params(&pm.params, 0, &mut params)
+            f = TFn("__protocol_body", params, tc_block(&pm.body), pm.ret.dup(), 0, 0, pm.fx.clone(), list_new[String](), "", 0, "", "")
+            r = check_fn_effects(&f, env, used)
+            if result_is_err(&r) == 1
+                result_err_str(&("E_EFFECT: " + r.err))
+            else
+                check_protocol_method_effects(p, i + 1, env, used)
+        else
+            check_protocol_method_effects(p, i + 1, env, used)
+
 # name -> declared effects of the fns of `tp`; the first definition of a name wins.
 fn callees_add(m: &mut Callees, name: &String, mask: Int) -> Int ! alloc
     if tt_index_of(&m.names, name, 0, list_len(&m.names)) >= 0
@@ -379,4 +421,8 @@ fn check_effects_with(tp: &TProgram, progs: &List[TProgram]) -> Res ! alloc
     _b = fx_callees_progs(&mut callees, progs, 0, list_len(progs))
     used = fx_new(callees)
     # `env` and `used` are dropped with this frame. Freeing their lists here is a double free.
-    check_effects_go(tp, 0, list_len(&tp.fns), &mut env, &mut used)
+    p = check_protocol_effects(&tp.protocols, 0, &mut env, &mut used)
+    if result_is_err(&p) == 1
+        p
+    else
+        check_effects_go(tp, 0, list_len(&tp.fns), &mut env, &mut used)

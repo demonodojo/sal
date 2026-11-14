@@ -24,6 +24,8 @@ type Variants = HashMap<String, Vec<bool>>;
 type ReadOnly = HashMap<String, Vec<bool>>;
 
 thread_local! {
+    /// Structs with drop glue (`drop.<S>`), set by the lowering before `insert_drops`.
+    static GLUE_STRUCTS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// Type of each expression by span (from the inference, `StringEnv::types`).
     static EXPR_TYPES: std::cell::RefCell<HashMap<(u32, u32), Type>> = std::cell::RefCell::new(HashMap::new());
     /// The descriptor of each ownable struct (`ir::struct_desc`), for copies released at scope end.
@@ -1251,6 +1253,11 @@ struct Facts {
     /// Inside blocks `xform_block` does not visit: nothing there can clear a flag.
     opaque: u32,
     loop_depth: u32,
+    /// Inside a branch of an `if` (and not in a loop under it): a tail that is a local moves it
+    /// on that path only, behind its flag (SPEC «Memoria»: Rust's drop flags).
+    branch_depth: u32,
+    /// Locals moved as the tail of a branch (`branch_depth`): only some paths move them.
+    branch_moved: HashSet<String>,
     bind_depth: HashMap<String, u32>,
     /// Inside a struct constructor call: value arguments move out fully (not soft).
     hard_move: u32,
@@ -1504,6 +1511,7 @@ fn walk_if(e: &Expr, f: &mut Facts) {
         return;
     };
     arg(cond, ArgMove::Read, f);
+    f.branch_depth += 1;
     block(then_block, f);
     for a in elsifs {
         arg(&a.cond, ArgMove::Read, f);
@@ -1512,12 +1520,72 @@ fn walk_if(e: &Expr, f: &mut Facts) {
     if let Some(b) = else_block {
         block(b, f);
     }
+    f.branch_depth -= 1;
+}
+
+/// The local a `match` arm hands out whole: its body is the name (`0 => a`), or a block whose
+/// only content is that name, and the arm's pattern does not bind it (a payload is not a local
+/// of the fn). `xform_expr` clears its flag there.
+fn arm_moved_local(arm: &MatchArm) -> Option<&Expr> {
+    let e = match &arm.body {
+        e @ Expr::Ident { .. } => e,
+        Expr::Block(b) if b.stmts.is_empty() => b.tail.as_deref().filter(|t| matches!(t, Expr::Ident { .. }))?,
+        _ => return None,
+    };
+    let Expr::Ident { name, .. } = e else { return None };
+    (!pattern_binds(&arm.pattern, name)).then_some(e)
+}
+
+fn pattern_binds(p: &Pattern, name: &str) -> bool {
+    match p {
+        Pattern::Ident(n, _) => n == name,
+        Pattern::Variant { args, .. } => args.iter().any(|a| pattern_binds(a, name)),
+        _ => false,
+    }
+}
+
+/// A `match` in a position `xform_expr` rewrites: an arm that hands out a local moves it on that
+/// path only, behind its flag, like the tail of an `if` branch. Any other arm stays opaque.
+fn walk_match_top(e: &Expr, f: &mut Facts) {
+    let Expr::Match { arms, .. } = e else { return };
+    if !arms.iter().any(|a| arm_moved_local(a).is_some()) || f.opaque > 0 {
+        expr(e, f);
+        return;
+    }
+    let Expr::Match { scrutinee, arms, .. } = e else { return };
+    let binds_whole = arms
+        .iter()
+        .any(|a| matches!(&a.pattern, Pattern::Ident(n, _) if !f.variants.contains_key(n)));
+    if let Expr::Ident { name, .. } = scrutinee.as_ref() {
+        let mut bound = Vec::new();
+        for a in arms {
+            bound_names(&a.pattern, &f.variants, &mut bound);
+        }
+        f.matches.push((name.clone(), bound));
+    }
+    arg(scrutinee, if binds_whole { ArgMove::TakeFields } else { ArgMove::Read }, f);
+    for a in arms {
+        pattern(&a.pattern, f);
+        if let Some(Expr::Ident { name, span }) = arm_moved_local(a) {
+            let outer = f.cur;
+            f.cur = Some(stmt_key(*span));
+            arg(&Expr::Ident { name: name.clone(), span: *span }, ArgMove::TakeFields, f);
+            f.branch_moved.insert(name.clone());
+            f.cur = outer;
+        } else {
+            f.opaque += 1;
+            expr(&a.body, f);
+            f.opaque -= 1;
+        }
+    }
 }
 
 /// An expression in a position `xform_expr` rewrites.
 fn top(e: &Expr, mov: ArgMove, f: &mut Facts) {
     if matches!(e, Expr::If { .. }) {
         walk_if(e, f);
+    } else if matches!(e, Expr::Match { .. }) {
+        walk_match_top(e, f);
     } else {
         arg(e, mov, f);
     }
@@ -1661,7 +1729,9 @@ fn block(b: &Block, f: &mut Facts) {
                 f.cur = None;
                 arg(cond, ArgMove::Read, f);
                 f.loop_depth += 1;
+                let branches = std::mem::replace(&mut f.branch_depth, 0);
                 block(body, f);
+                f.branch_depth = branches;
                 f.loop_depth -= 1;
             }
         }
@@ -1672,8 +1742,12 @@ fn block(b: &Block, f: &mut Facts) {
         // A plain tail is a statement of its own for the moves it makes (its flag is cleared
         // before it runs). A tail `if`/`match` keys its moves in its branches instead.
         let live = f.opaque == 0;
-        f.cur = (live && is_call_tail(t)).then(|| stmt_key(t.span()));
+        let branch_local = f.branch_depth > 0 && matches!(t.as_ref(), Expr::Ident { .. });
+        f.cur = (live && (is_call_tail(t) || branch_local)).then(|| stmt_key(t.span()));
         top(t, ArgMove::TakeFields, f);
+        if let (true, Expr::Ident { name, .. }) = (branch_local && live, t.as_ref()) {
+            f.branch_moved.insert(name.clone());
+        }
         f.cur = outer;
     }
 }
@@ -1951,7 +2025,10 @@ impl Ctx {
         };
         let (kind, owned) = match elem_release.or_else(|| struct_copy_kind(name, init)) {
             Some(k) => (k, false),
-            None => fresh_kind(init, &self.facts.variants)?,
+            None => match fresh_kind(init, &self.facts.variants) {
+                Some(k) => k,
+                None => return self.struct_glue_candidate(name, ty, init),
+            },
         };
         // SPEC «Memoria»: a moved local is never released at scope end (the new owner has it).
         // A taint from a non-fresh store only holds while the moves are not known.
@@ -1972,6 +2049,22 @@ impl Ctx {
             && (self.binds_once(name) || self.rebound.contains(name))
             && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
         ok.then_some((kind, self.facts.soft.contains(name)))
+    }
+
+    /// A struct local with glue that only some paths move (a branch tail returns it): released by
+    /// `drop.<S>` behind its flag on the others. One never moved stays with the struct tail of
+    /// the lowering; one always moved has nothing to release.
+    fn struct_glue_candidate(&self, name: &str, ty: &Option<Type>, init: &Expr) -> Option<(&'static str, bool)> {
+        let sp = init.span();
+        let t = ty.clone().or_else(|| EXPR_TYPES.with(|m| m.borrow().get(&(sp.start, sp.end)).cloned()))?;
+        let kind = struct_glue_release(&t)?;
+        let moved = self.facts.moved.as_ref().is_some_and(|m| m.contains(name));
+        let ok = moved
+            && self.facts.soft.contains(name)
+            && self.facts.branch_moved.contains(name)
+            && !self.params.contains(name)
+            && self.binds_once(name);
+        ok.then_some((kind, true))
     }
 
     /// Bound once in the body (see `ref_then_owned` for names first bound to a reference).
@@ -2560,6 +2653,11 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
                 if tracked {
                     flags.push(p.name.clone());
                 }
+            } else if let Some(k) =
+                struct_glue_release(&p.ty).filter(|_| tracked && cx.facts.branch_moved.contains(&p.name))
+            {
+                cx.live.push((p.name.clone(), k, true));
+                flags.push(p.name.clone());
             }
         }
     }
@@ -2572,6 +2670,22 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         body.stmts = init;
     }
     f.body = body;
+}
+
+/// The structs whose values `drop.<S>` releases (the lowering knows which have glue).
+pub fn set_glue_structs(names: HashSet<String>) {
+    GLUE_STRUCTS.with(|g| *g.borrow_mut() = names);
+}
+
+/// `drop.<S>` for a struct with glue: a value moved on some paths only is released behind its
+/// flag on the others (SPEC «Memoria»: Rust's drop flags). The struct tail of the lowering
+/// releases the ones never moved.
+fn struct_glue_release(ty: &Type) -> Option<&'static str> {
+    let Type::Named { name, args, .. } = ty else { return None };
+    if !args.is_empty() || !GLUE_STRUCTS.with(|g| g.borrow().contains(name)) {
+        return None;
+    }
+    Some(Box::leak(format!("drop.{name}").into_boxed_str()))
 }
 
 /// The release of a by-value parameter of this type, if the drops pass owns one.
@@ -2746,6 +2860,30 @@ fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
             else_block: else_block.map(|b| xform_block(b, cx)),
             span,
         },
+        // An arm that hands out a local clears that local's flag first (`walk_match_top`).
+        Expr::Match { scrutinee, arms, span } => Expr::Match {
+            scrutinee,
+            arms: arms
+                .into_iter()
+                .map(|a| {
+                    let Some(Expr::Ident { name, span: isp }) = arm_moved_local(&a).cloned() else {
+                        return a;
+                    };
+                    let mut stmts = Vec::new();
+                    clear_moved(cx, stmt_key(isp), isp, &mut stmts);
+                    if stmts.is_empty() {
+                        return a;
+                    }
+                    let body = Expr::Block(Block {
+                        stmts,
+                        tail: Some(Box::new(Expr::Ident { name, span: isp })),
+                        span: a.body.span(),
+                    });
+                    MatchArm { pattern: a.pattern, body, span: a.span }
+                })
+                .collect(),
+            span,
+        },
         other => other,
     }
 }
@@ -2881,7 +3019,8 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
         }
     }
     if let Some(t) = &b.tail {
-        if is_call_tail(t) {
+        // A call tail, or a local moved as the tail of a branch (the facts keyed only those).
+        if is_call_tail(t) || matches!(t.as_ref(), Expr::Ident { .. }) {
             clear_moved(cx, stmt_key(t.span()), t.span(), &mut stmts);
         }
     }

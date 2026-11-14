@@ -1,0 +1,9 @@
+# exit: 5
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(d"ab")
+    xs.push(d"xyz")
+    lengths = xs.map s => s.len()
+    lengths.get(0) + lengths.get(1)

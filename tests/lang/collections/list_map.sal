@@ -1,0 +1,21 @@
+# exit: 9
+protocol Collection[T]
+    method len(&self) -> Int
+    method get(&self, i: Int) -> &T
+    method map[U](&self, f: fn(&T) -> U) -> List[U] ! alloc
+        out = List.new[U]()
+        i = 0
+        while i < self.len()
+            out.push(f(self.get(i)))
+            i = i + 1
+        out
+
+impl List[T] Collection[T]
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    ys = xs.map x => x + 1
+    ys.get(0) + ys.get(1) + ys.get(2)

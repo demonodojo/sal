@@ -82,3 +82,18 @@ fn nested_else(n: Int, m: Int) -> Int
 
 fn main() -> Int
     f(1, 2)
+fn combined(q: String) -> Int ! alloc
+    if q.eq("a") + q.eq("b") > 0
+        1
+    elsif q.eq("c") + q.eq("d") > 0
+        2
+    else
+        0
+fn final_block(n: Int) -> Int
+    if n == 1
+        1
+    elsif n == 2
+        2
+    else
+        x = n + 1
+        x

@@ -5,8 +5,10 @@ import "../front/parser.sal"
 import "../sem/methods.sal"
 import "../sem/infer.sal"
 import "../sem/specialize.sal"
+import "../sem/lambda_specialize.sal"
 import "../sem/mono_ctx.sal"
 import "../sem/checks.sal"
+import "../sem/protocols.sal"
 import "../ast/tast.sal"
 
 # ---- Modules ----
@@ -327,6 +329,46 @@ struct Graph
 
 fn graph_new() -> Graph ! alloc
     Graph(list_new[Mod](), list_new[TProgram]())
+
+# Complete protocol claims after imports and qualification are available.
+fn prepare_graph_protocols(order: &mut Graph, proot: &String, i: Int) -> Res ! io, alloc
+    if i >= order.progs.len()
+        result_ok(0)
+    else
+        deps = flat_transitive_import_modules(order, i, proot)
+        if result_is_err(&deps) == 1
+            deps
+        else
+            ids = result_unwrap(&deps)
+            imported = List.new[TProtocol]()
+            _p = graph_protocol_imports(order, ids, 0, &mut imported)
+            tp = list_get(&mut order.progs, i)
+            _a = graph_protocol_append(&imported, 0, &mut tp.protocols)
+            extra = provided_functions(&tp)
+            _f = provided_append(&mut tp.fns, &extra, 0)
+            errs = List.new[String]()
+            _c = check_program_protocols(&tp, &mut errs)
+            if errs.len() > 0
+                result_err_str(&errs.get(0))
+            else
+                prepare_graph_protocols(order, proot, i + 1)
+
+fn graph_protocol_imports(order: &Graph, ids: Int, i: Int, out: &mut List[TProtocol]) -> Int ! alloc
+    if i >= vec_len(ids)
+        0
+    else
+        dep = list_get(&order.progs, vec_get(ids, i))
+        _a = graph_protocol_append(&dep.protocols, 0, out)
+        graph_protocol_imports(order, ids, i + 1, out)
+
+fn graph_protocol_append(src: &List[TProtocol], i: Int, out: &mut List[TProtocol]) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        p = src.get(i)
+        if proto_find(out, &p.name, 0, out.len()) < 0
+            _a = out.push(p.clone())
+        graph_protocol_append(src, i + 1, out)
 
 # The graph is a `Graph` in dependency order (the root last); a module is named by its index.
 fn mod_path_at(order: &Graph, i: Int) -> String ! alloc
@@ -691,7 +733,7 @@ fn methods_resolve_graph(order: &Graph) -> Int ! io, alloc
     if graph_any_dots(&order.mods, 0, list_len(&order.mods)) == 0
         0
     else
-        u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum](), list_new[TProtocol](), list_new[TConst]())
+        u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum](), list_new[TProtocol](), list_new[TConst](), List.new[TImpl]())
         _u = union_progs(&order.progs, 0, list_len(&order.progs), &mut u)
         _m = methods_resolve_modules(order, &u, 0, list_len(&order.progs))
         # The elements are aliases of `order.progs` (`union_*` pushes `list_get`): only the shells go.
@@ -703,6 +745,45 @@ fn methods_resolve_graph(order: &Graph) -> Int ! io, alloc
         _f = list_free_shell(u.protocols)
         _g = list_free_shell(u.consts)
         _m
+
+# Specialize callbacks after method names are resolved and before generic monomorphization.
+# The pass sees the graph-wide function table so callers can specialize imported callbacks.
+fn lambda_specialize_graph(order: &mut Graph) -> Res ! alloc
+    u = TProgram(List.new[TFn](), List.new[String](), List.new[TStruct](), List.new[String](), List.new[TEnum](), List.new[TProtocol](), List.new[TConst](), List.new[TImpl]())
+    _u = union_progs(&order.progs, 0, order.progs.len(), &mut u)
+    result = lambda_specialize_graph_go(order, &u.fns, 0, order.progs.len())
+    if result_is_err(&result) == 0
+        lambda_sweep_callback_graph(order, &u.fns, 0, order.progs.len())
+    _f = list_free_shell(u.fns)
+    _i = list_free_shell(u.imports)
+    _s = list_free_shell(u.structs)
+    _a = list_free_shell(u.aliases)
+    _e = list_free_shell(u.enums)
+    _p = list_free_shell(u.protocols)
+    _c = list_free_shell(u.consts)
+    result
+
+fn lambda_specialize_graph_go(order: &mut Graph, defs: &List[TFn], i: Int, n: Int) -> Res ! alloc
+    if i >= n
+        result_ok(0)
+    else
+        tp = list_get(&order.progs, i)
+        errs = List.new[String]()
+        specialized = specialize_lambdas_with_defs(&tp, defs, 1, &mut errs)
+        if errs.len() > 0
+            result_err_str(&errs.get(0))
+        else
+            _s = order.progs.set(i, specialized)
+            lambda_specialize_graph_go(order, defs, i + 1, n)
+
+fn lambda_sweep_callback_graph(order: &mut Graph, defs: &List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        tp = list_get(&order.progs, i)
+        swept = lambda_sweep_callback_defs(&tp, defs)
+        _s = order.progs.set(i, swept)
+        lambda_sweep_callback_graph(order, defs, i + 1, n)
 
 fn graph_any_dots(mods: &List[Mod], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -726,8 +807,10 @@ fn methods_resolve_one(order: &Graph, u: &TProgram, i: Int) -> Int ! io, alloc
     else
         tp = list_get(&order.progs, i)
         start = fns_before(&order.progs, i, 0, 0)
-        c = ic_build(&TProgram(u.fns.clone(), u.imports.clone(), u.structs.clone(), tp.aliases.clone(), u.enums.clone(), tp.protocols.clone(), tp.consts.clone()), nd, 1)
+        c = ic_build(&TProgram(u.fns.clone(), u.imports.clone(), u.structs.clone(), tp.aliases.clone(), u.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone()), nd, 1)
         _r = infer_program_go(&mut c, start, start + list_len(&tp.fns))
+        if result_is_err(&_r) == 1
+            _dbg = eprint_str(&("DEBUG methods: " + _r.err + "\n"))
         _m = mr_fns(&tp.fns, 0, list_len(&tp.fns), &c.res)
         _f = ic_free_tables(&c)
         0
@@ -878,7 +961,7 @@ fn mono_struct_modules(order: &mut Graph, i: Int, n: Int, taken: &mut List[Strin
         if gens.len() > 0
             cx = MonoCtx(ext, existing.clone(), taken.clone(), 0, List.new[String]())
             own = sp_union(&cur, &sp_empty_program())
-            tp = monomorphize_structs(own, &mut cx, errs)
+            tp = monomorphize_structs(own.clone(), &mut cx, errs)
             sp_type_names(&tp, taken)
             sp_append_strs(existing, &cx.made, 0, cx.made.len())
             order.progs.set(i, tp)

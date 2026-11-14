@@ -1,0 +1,7 @@
+# exit: 2
+# stdout: x
+fn apply(x: Int, f: fn(Int) -> Int) -> Int
+    f(x)
+
+fn main() -> Int ! io
+    apply(2) n => print_str("x") + n

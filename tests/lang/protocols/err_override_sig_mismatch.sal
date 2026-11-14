@@ -1,0 +1,13 @@
+# error: E_TYPE
+protocol Value
+    method value(&self) -> Int
+        1
+
+struct Number impl Value
+    n: Int
+
+method Number.value(&self) -> String
+    "wrong"
+
+fn main() -> Int
+    Number(1).value()

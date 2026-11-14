@@ -1,0 +1,18 @@
+# exit: 1
+# Recursive branches retain the input only when they return it unchanged.
+fn trim(s: String) -> String ! alloc
+    n = s.len()
+    if n > 0
+        if s.char(0) == 32
+            trim(s.slice(1, n))
+        elsif s.char(n - 1) == 32
+            trim(s.slice(0, n - 1))
+        else
+            s
+    else
+        s
+
+fn main() -> Int ! alloc
+    a = trim(d" a ")
+    b = trim(d"")
+    a.len() + b.len()

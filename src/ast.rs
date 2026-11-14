@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
 
-pub const AST_SCHEMA_VERSION: u32 = 6;
+pub const AST_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Program {
@@ -22,8 +22,16 @@ pub enum Item {
     Enum(EnumDef),
     Frame(FrameDef),
     Protocol(ProtocolDef),
+    Impl(ImplDef),
     /// `NOMBRE = expr` at module scope. `ty` is `None` when the source omits it.
     Const(ConstDef),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImplDef {
+    pub target: Type,
+    pub protocols: Vec<ProtocolClaim>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -297,7 +305,7 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
-    /// `x => body` (one parameter in this phase).
+    /// Lambda expression. Lambdas are only accepted in call arguments.
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,
@@ -493,20 +501,26 @@ pub struct EnumVariant {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProtocolClaim {
     pub name: String,
+    #[serde(default)]
+    pub args: Vec<Type>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProtocolDef {
     pub name: String,
+    #[serde(default)]
+    pub type_params: Vec<String>,
     pub methods: Vec<ProtocolMethod>,
     pub span: Span,
 }
 
-/// Method signature inside a `protocol` (no body).
+/// Required signature or provided method body inside a `protocol`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProtocolMethod {
     pub name: String,
+    #[serde(default)]
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Type,
     pub effects: Vec<Effect>,
@@ -514,6 +528,8 @@ pub struct ProtocolMethod {
     /// `0` by value, `1` for `&self`, `2` for `&mut self`.
     #[serde(default)]
     pub self_ref: u8,
+    #[serde(default)]
+    pub body: Option<Block>,
     pub span: Span,
 }
 

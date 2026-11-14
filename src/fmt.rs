@@ -58,6 +58,10 @@ fn format_program_raw(p: &Program) -> String {
             Item::Frame(f) => out.push_str(&format_frame(f)),
             Item::Enum(e) => out.push_str(&format_enum(e)),
             Item::Protocol(p) => out.push_str(&format_protocol(p)),
+            Item::Impl(i) => {
+                let claims = format_impl_clause(&i.protocols);
+                out.push_str(&format!("impl {} {}\n", format_type(&i.target), claims.trim_start_matches(" impl ")));
+            }
             Item::Const(c) => out.push_str(&format_const(c)),
         }
     }
@@ -87,6 +91,11 @@ fn format_impl_clause(protocols: &[ProtocolClaim]) -> String {
             out.push_str(", ");
         }
         out.push_str(&p.name);
+        if !p.args.is_empty() {
+            out.push('[');
+            out.push_str(&p.args.iter().map(format_type).collect::<Vec<_>>().join(", "));
+            out.push(']');
+        }
     }
     out
 }
@@ -150,10 +159,21 @@ fn format_enum(e: &EnumDef) -> String {
 }
 
 fn format_protocol(p: &ProtocolDef) -> String {
-    let mut out = format!("protocol {}\n", p.name);
+    let mut out = format!("protocol {}", p.name);
+    if !p.type_params.is_empty() {
+        out.push('[');
+        out.push_str(&p.type_params.join(", "));
+        out.push(']');
+    }
+    out.push('\n');
     for m in &p.methods {
         out.push_str("    method ");
         out.push_str(&m.name);
+        if !m.type_params.is_empty() {
+            out.push('[');
+            out.push_str(&m.type_params.join(", "));
+            out.push(']');
+        }
         out.push('(');
         if m.self_ref == 2 {
             out.push_str("&mut self");
@@ -183,6 +203,9 @@ fn format_protocol(p: &ProtocolDef) -> String {
             );
         }
         out.push('\n');
+        if let Some(body) = &m.body {
+            out.push_str(&format_block(body, 2));
+        }
     }
     out
 }
@@ -348,8 +371,10 @@ fn format_expr(e: &Expr, indent: usize) -> String {
         Expr::String { value, parts, .. } => format_string_literal(value, parts),
         Expr::Ident { name, .. } => name.clone(),
         Expr::Lambda { params, body, .. } => {
-            let p = params.first().map(|s| s.as_str()).unwrap_or("_");
-            format!("{} => {}", p, format_expr(body, indent))
+            let p = if params.len() == 1 { params[0].clone() } else { format!("({})", params.join(", ")) };
+            let body_s = format_expr(body, indent);
+            if body_s.starts_with('\n') { format!("{} =>{}", p, body_s) }
+            else { format!("{} => {}", p, body_s) }
         }
         Expr::Call {
             func,
@@ -368,14 +393,22 @@ fn format_expr(e: &Expr, indent: usize) -> String {
                 }
                 s.push(']');
             }
-            s.push('(');
-            for (i, a) in args.iter().enumerate() {
-                if i > 0 {
-                    s.push_str(", ");
+            let trailing = args.last().is_some_and(|a| matches!(a, Expr::Lambda { .. }));
+            let ordinary_len = args.len() - usize::from(trailing);
+            if !(trailing && ordinary_len == 0 && matches!(&**func, Expr::Field { .. })) {
+                s.push('(');
+                for (i, a) in args[..ordinary_len].iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push_str(&format_expr(a, indent));
                 }
-                s.push_str(&format_expr(a, indent));
+                s.push(')');
             }
-            s.push(')');
+            if trailing {
+                s.push(' ');
+                s.push_str(&format_expr(args.last().unwrap(), indent));
+            }
             s
         }
         Expr::Binary { op, left, right, .. } => {

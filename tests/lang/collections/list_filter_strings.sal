@@ -1,0 +1,9 @@
+# exit: 3
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(d"a")
+    xs.push(d"xyz")
+    ys = xs.filter s => s.len() > 1 && true
+    ys.get(0).len()

@@ -1,0 +1,6 @@
+# exit: 42
+fn fold(x: Int, f: fn(Int, Int) -> Int) -> Int
+    f(x, 2)
+
+fn main() -> Int
+    fold(40) (acc, x) => acc + x

@@ -1305,3 +1305,10 @@ fn struct_with_borrowed_field_takes_a_lifetime_at_use() {
         "struct Items\n    xs: List[Int]\n\nstruct View['a]\n    items: &'a List[Int]\n    n: Int\n\nfn view_of['a](it: &'a Items) -> View\n    View(&it.xs, it.xs.len())\n\nfn main() -> Int ! alloc\n    it = Items(list_new[Int]())\n    v = view_of(&it)\n    v.n\n",
     );
 }
+
+#[test]
+fn function_type_is_rejected_in_a_local_annotation() {
+    let p = parse("fn main() -> Int\n    let f: fn(Int) -> Int = x => x + 1\n    0\n").unwrap();
+    let err = match infer_program(&p) { Ok(_) => panic!("expected function type error"), Err(e) => e };
+    assert!(err.iter().any(|d| d.code == ErrorCode::EType), "{err:?}");
+}

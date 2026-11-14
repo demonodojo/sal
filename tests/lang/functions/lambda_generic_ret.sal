@@ -1,0 +1,6 @@
+# exit: 42
+fn apply[U](f: fn(Int) -> U, x: Int) -> U
+    f(x)
+
+fn main() -> Int
+    apply(x => x + 2, 40)

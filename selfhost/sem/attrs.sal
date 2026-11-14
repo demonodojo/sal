@@ -118,6 +118,7 @@ fn at_block_lets(structs: &List[TStruct], b: &TBlock, mode: Int) -> Res ! alloc
 
 fn at_expr_lets(structs: &List[TStruct], e: &Expr, mode: Int) -> Res ! alloc
     match e
+        XBlock(body) => at_block_lets(structs, &body, mode)
         XWhile(cond, body) => at_block_lets(structs, &body, mode)
         _ => result_ok(0)
 
@@ -200,6 +201,7 @@ fn at_frozen_expr(e: &Expr, names: &mut List[String]) -> Res ! alloc
     match e
         XWhile(cond, body) => at_frozen_block(&body, names)
         XOn(place, body, is_kern, has_index) => at_frozen_block(&body, names)
+        XBlock(body) => at_frozen_block(&body, names)
         XIf(cond, then_b, else_b, has_else, elsifs) => at_frozen_if(&then_b, &else_b, &elsifs, names)
         _ => result_ok(0)
 

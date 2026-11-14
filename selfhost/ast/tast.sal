@@ -18,14 +18,23 @@ struct TField
 
 struct TProtocolMethod
     name: String
+    tparams: List[String]
     params: List[TParam]
     ret: String
     fx: List[Int]
     self_mode: Int
+    self_ref: Int
+    has_body: Int
+    body: TBlock
 
 struct TProtocol
     name: String
+    tparams: List[String]
     methods: List[TProtocolMethod]
+
+struct TImpl
+    target: String
+    protocols: List[String]
 
 struct TStruct
     name: String
@@ -123,9 +132,12 @@ enum Expr
     XField(Expr, String)
     XBool(Int)
     XLambda(String, Expr)
+    XLambdaBlock(String, TBlock)
     XUnary(String, Expr)
     XMatch(Expr, List[TArm])
     XTry(Expr)
+    # Internal expression block, used when specializing forwarded callbacks.
+    XBlock(TBlock)
 
 struct TFn
     name: String
@@ -157,6 +169,7 @@ struct TProgram
     enums: List[TEnum]
     protocols: List[TProtocol]
     consts: List[TConst]
+    impls: List[TImpl]
 
 # ---- release ----
 # The tree is owned by its holder: its glue releases it (SPEC «Liberación de locales»). A manual
@@ -232,8 +245,10 @@ fn tc_expr(e: &Expr) -> Expr ! alloc
         XField(base, field) => XField(tc_expr(&base), field.dup())
         XBool(v) => XBool(v)
         XLambda(param, body) => XLambda(param.dup(), tc_expr(&body))
+        XLambdaBlock(param, body) => XLambdaBlock(param.dup(), tc_block(&body))
         XUnary(op, inner) => XUnary(op.dup(), tc_expr(&inner))
         XMatch(scrut, arms) => XMatch(tc_expr(&scrut), tc_arms(&arms))
+        XBlock(body) => XBlock(tc_block(&body))
         XTry(inner) => XTry(tc_expr(&inner))
 
 fn tc_elsifs(xs: &List[TElsif]) -> List[TElsif] ! alloc
@@ -327,8 +342,10 @@ fn tv_expr(e: &Expr) -> Expr ! alloc
         XField(base, field) => XField(tv_expr(&base), tv_s(&field))
         XBool(v) => XBool(v)
         XLambda(param, body) => XLambda(tv_s(&param), tv_expr(&body))
+        XLambdaBlock(param, body) => XLambdaBlock(tv_s(&param), tv_block(&body))
         XUnary(op, inner) => XUnary(tv_s(&op), tv_expr(&inner))
         XMatch(scrut, arms) => XMatch(tv_expr(&scrut), tv_arms(&arms))
+        XBlock(body) => XBlock(tv_block(&body))
         XTry(inner) => XTry(tv_expr(&inner))
 
 fn tv_elsifs(xs: &List[TElsif]) -> List[TElsif] ! alloc

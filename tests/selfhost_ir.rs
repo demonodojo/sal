@@ -281,10 +281,18 @@ fn write_temp_sal(body: &str) -> PathBuf {
 /// One cache directory per tag and process. A unique stamp per call used to leave
 /// thousands of dirs on tmpfs (RAM); reuse keeps the footprint flat.
 fn shared_cache_dir(tag: &str) -> PathBuf {
+    static RUN_ID: OnceLock<u128> = OnceLock::new();
+    let run_id = RUN_ID.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    });
     let dir = PathBuf::from(format!(
-        "/tmp/sal-selfhost-cache-{}-{}",
+        "/tmp/sal-selfhost-cache-{}-{}-{}",
         tag,
-        std::process::id()
+        std::process::id(),
+        run_id
     ));
     std::fs::create_dir_all(&dir).expect("cache dir");
     dir
@@ -1273,7 +1281,41 @@ const PARITY_FILES: &[&str] = &[
     "tests/sal/http_mock_integration.sal",
     "tests/sal/test_json_esc.sal",
     "tests/sal/test_sse.sal",
+    "tests/lang/functions/lambda_arg_fn.sal",
+    "tests/lang/functions/lambda_arg_multi.sal",
+    "tests/lang/functions/lambda_block_body.sal",
+    "tests/lang/functions/lambda_capture_int.sal",
+    "tests/lang/functions/lambda_effect_inherit.sal",
+    "tests/lang/functions/lambda_forward.sal",
+    "tests/lang/functions/lambda_generic_ret.sal",
+    "tests/lang/functions/lambda_trailing_two_params.sal",
+    "tests/lang/ownership/lambda_capture_string.sal",
+    "tests/lang/functions/lambda_trailing_method.sal",
 ];
+
+#[test]
+fn selfhost_conditional_string_param_drops_match_bootstrap() {
+    let stage1 = compile_selfhost(false);
+    for rel in [
+        "selfhost/ast/tytext.sal",
+        "selfhost/sem/attrs.sal",
+        "tests/lang/drops/drop_branch_moved_string_param.sal",
+        "tests/lang/drops/drop_branch_moved_string_elsif.sal",
+        "tests/lang/drops/drop_branch_moved_struct.sal",
+    ] {
+        let file = root().join(rel);
+        assert_eq!(bootstrap_cli_ir(&file), run_emit_ir(&stage1, &file), "{rel}");
+    }
+}
+
+#[test]
+fn selfhost_phase_one_lambda_ir_matches_bootstrap() {
+    let stage1 = compile_selfhost(false);
+    for rel in PARITY_FILES.iter().filter(|p| p.contains("/lambda_")) {
+        let file = root().join(rel);
+        assert_eq!(bootstrap_cli_ir(&file), run_emit_ir(&stage1, &file), "{rel}");
+    }
+}
 
 #[test]
 fn selfhost_ir_matches_bootstrap_on_parity_files() {

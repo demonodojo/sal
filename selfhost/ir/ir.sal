@@ -538,7 +538,9 @@ fn is_container_op(fname: Int) -> Int ! alloc
         0
 
 fn runtime_name(cx: &Cx, fname: Int) -> Int ! alloc
-    if str_eq(str_from_int(fname), "list_clone") == 1
+    if str_from_int(fname).slice(0, 5).eq("drop.") == 1
+        fname
+    elsif str_eq(str_from_int(fname), "list_clone") == 1
         str_as_int(&"sal_list_clone_val")
     elsif str_eq(str_from_int(fname), "dict_clone") == 1
         str_as_int(&"sal_dict_clone_val")

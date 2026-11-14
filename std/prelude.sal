@@ -17,6 +17,65 @@ enum Result[T, E]
     Ok(T)
     Err(E)
 
+protocol Collection[T]
+    method len(&self) -> Int
+    method get(&self, i: Int) -> &T
+    method set(&mut self, i: Int, value: T) -> Unit
+    method push(&mut self, value: T) -> Unit
+    method pop(&mut self) -> T
+    method each(&self, f: fn(&T) -> Unit) -> Unit
+        i = 0
+        while i < self.len()
+            f(self.get(i))
+            i = i + 1
+    method map[U](&self, f: fn(&T) -> U) -> List[U] ! alloc
+        out = List.new[U]()
+        i = 0
+        while i < self.len()
+            out.push(f(self.get(i)))
+            i = i + 1
+        out
+    method reduce[U](&self, initial: U, f: fn(U, &T) -> U) -> U
+        acc = initial
+        i = 0
+        while i < self.len()
+            acc = f(acc, self.get(i))
+            i = i + 1
+        acc
+    method filter(&self, f: fn(&T) -> Bool) -> List[T] ! alloc
+        out = List.new[T]()
+        i = 0
+        while i < self.len()
+            x = self.get(i)
+            if f(x)
+                out.push(x.clone())
+            i = i + 1
+        out
+    method any(&self, f: fn(&T) -> Bool) -> Bool
+        i = 0
+        while i < self.len()
+            if f(self.get(i))
+                return true
+            i = i + 1
+        false
+    method all(&self, f: fn(&T) -> Bool) -> Bool
+        i = 0
+        while i < self.len()
+            if !f(self.get(i))
+                return false
+            i = i + 1
+        true
+    method count(&self, f: fn(&T) -> Bool) -> Int
+        total = 0
+        i = 0
+        while i < self.len()
+            if f(self.get(i))
+                total = total + 1
+            i = i + 1
+        total
+
+impl List[T] Collection[T]
+
 fn list_new() -> List[Int] ! alloc
     list_new()
 

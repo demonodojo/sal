@@ -242,10 +242,16 @@ pub fn resolve_methods(prog: &mut Program, env: &TypeEnv) {
 pub fn prepare_program(prog: &mut Program) -> DiagResult<()> {
     if !has_methods(prog) && !has_field_calls(prog) && !crate::protocols::has_protocols(prog) {
         crate::specialize::monomorphize_program(prog)?;
+        crate::specialize::specialize_lambdas_program(prog, &|p: &Program| {
+            let mut env = type_env_of_program(p);
+            env.consts = crate::consteval::eval_consts(p, &HashMap::new()).unwrap_or_default();
+            Some(env)
+        })?;
         return crate::specialize::monomorphize_structs_program(prog);
     }
     desugar_method_defs(prog)?;
     if crate::protocols::has_protocols(prog) {
+        crate::protocols::instantiate_provided(prog);
         let types = type_env_of_program(prog);
         crate::protocols::check_program_protocols(prog, &types)?;
     }
@@ -253,6 +259,12 @@ pub fn prepare_program(prog: &mut Program) -> DiagResult<()> {
         resolve_methods(prog, &type_env_of_program(prog));
     }
     crate::specialize::monomorphize_program(prog)?;
+    resolve_methods(prog, &type_env_of_program(prog));
+    crate::specialize::specialize_lambdas_program(prog, &|p: &Program| {
+        let mut env = type_env_of_program(p);
+        env.consts = crate::consteval::eval_consts(p, &HashMap::new()).unwrap_or_default();
+        Some(env)
+    })?;
     crate::specialize::monomorphize_structs_program(prog)
 }
 
@@ -323,6 +335,7 @@ fn expr(e: &mut Expr, r: &Resolved) {
         | Expr::To { expr: inner, .. }
         | Expr::Try { expr: inner, .. } => expr(inner, r),
         Expr::Block(b) => block(b, r),
+        Expr::Lambda { body, .. } => expr(body, r),
         Expr::On { body, .. } => block(body, r),
         Expr::TensorLit { rows, .. } => {
             for row in rows {
@@ -348,7 +361,6 @@ fn expr(e: &mut Expr, r: &Resolved) {
                 block(b, r);
             }
         }
-        Expr::Lambda { body, .. } => expr(body, r),
         _ => {}
     }
 }

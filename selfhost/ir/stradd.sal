@@ -82,6 +82,7 @@ fn sa_expr(env: &mut TEnv, e: &Expr) -> Int ! alloc
         XTo(place, inner) => sa_expr(env, &inner)
         XOn(place, body, k, n) => sa_block(env, &body)
         XIf(cond, then_b, else_b, has_else, elsifs) => sa_if(env, &cond, &then_b, &else_b, has_else, &elsifs)
+        XBlock(body) => sa_block(env, &body)
         XWhile(cond, body) => sa_while(env, &cond, &body)
         XField(base, field) => sa_expr(env, &base)
         XLambda(param, body) => sa_lambda(env, &param, &body)

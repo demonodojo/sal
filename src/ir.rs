@@ -626,6 +626,9 @@ pub fn lower_program_with_callables_env(
     glue_memo_reset();
     let fn_names = callable_fns;
     let moded = crate::ownership::infer_param_modes(prog);
+    crate::drops::set_glue_structs(
+        strings.structs.keys().filter(|n| struct_glue_has(n, &strings)).cloned().collect(),
+    );
     let dropped = crate::drops::insert_drops(
         &moded,
         &strings.types,
@@ -3588,6 +3591,10 @@ fn matmul_runtime_name(tensors: &HashMap<String, TensorInfo>, lhs: &str) -> Stri
 }
 
 fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
+    // Drop glue (`drop.<S>`) is an IR function: the drops pass calls it by that name.
+    if fname.starts_with("drop.") {
+        return fname.to_string();
+    }
     // List ops always hit the runtime; prelude bodies are signatures only.
     if fname == "list_clone" {
         return "sal_list_clone_val".into();
@@ -5295,11 +5302,14 @@ fn lower_match_chain(
         instructions,
         strings,
     );
+    let mut then_body = Vec::new();
+    if let Pattern::Variant { args, .. } = &arm.pattern {
+        bind_variant_pattern_args(&scrut, args, &mut then_body, &mut arm_env, counter);
+    }
     note_variant_binding(&arm.pattern, scrut_ty.as_ref(), strings);
     for (k, v) in env.iter() {
         arm_env.entry(k.clone()).or_insert_with(|| v.clone());
     }
-    let mut then_body = Vec::new();
     let then_val = lower_expr(
         &arm.body,
         &mut then_body,
@@ -5683,8 +5693,11 @@ fn match_arm_cond(
             });
             (dest, env)
         }
-        Pattern::Variant { name, args, .. } => {
-            let vtag = variant_tag_for_name(name) + 1;
+        Pattern::Variant { name, .. } => {
+            let vtag = match find_variant_in_enums(name, &strings.enums) {
+                Some((edef, vdef)) => enum_variant_tag(edef, vdef),
+                None => variant_tag_for_name(name) + 1,
+            };
             *counter += 1;
             let low = format!("t{counter}");
             instructions.push(IrInst::EnumTag {
@@ -5699,7 +5712,6 @@ fn match_arm_cond(
                 left: low,
                 right: vtag.to_string(),
             });
-            bind_variant_pattern_args(scrut, args, instructions, &mut env, counter);
             (tag_tmp, env)
         }
     }

@@ -1,0 +1,13 @@
+# exit: 42
+protocol Value
+    method value(self) -> Int
+        apply(x => x + 2, 40)
+
+fn apply(f: fn(Int) -> Int, x: Int) -> Int
+    f(x)
+
+struct Number impl Value
+    n: Int
+
+fn main() -> Int
+    Number(1).value()

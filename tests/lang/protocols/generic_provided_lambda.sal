@@ -1,0 +1,14 @@
+# exit: 8
+protocol Getter[T]
+    method get(self) -> T
+    method map[U](self, f: fn(T) -> U) -> U
+        f(self.get())
+
+struct Number impl Getter[Int]
+    n: Int
+
+method Number.get(self) -> Int
+    self.n
+
+fn main() -> Int
+    Number(7).map x => x + 1

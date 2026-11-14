@@ -5,12 +5,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, ErrorCode, DiagResult};
-use crate::infer::TypeEnv;
+use crate::infer::{infer_program_with_env, TypeEnv};
 use crate::span::Span;
 
 pub fn has_protocols(prog: &Program) -> bool {
     prog.items.iter().any(|i| {
         matches!(i, Item::Protocol(_))
+            || matches!(i, Item::Impl(_))
             || matches!(i, Item::Struct(s) if !s.protocols.is_empty())
             || matches!(i, Item::Enum(e) if !e.protocols.is_empty())
     })
@@ -18,15 +19,238 @@ pub fn has_protocols(prog: &Program) -> bool {
 
 /// After `desugar_method_defs`, verify every `impl P` against existing `method T.m`.
 pub fn check_program_protocols(prog: &Program, types: &TypeEnv) -> DiagResult<()> {
-    let protocols = collect_protocols(prog);
+    check_protocol_bodies(prog, types)?;
+    let protocols = &types.protocols;
     for item in &prog.items {
         match item {
             Item::Struct(s) => check_type_protocols(&s.name, &s.protocols, &s.type_params, s.span, types, &protocols)?,
             Item::Enum(e) => check_type_protocols(&e.name, &e.protocols, &e.type_params, e.span, types, &protocols)?,
+            Item::Impl(i) => check_builtin_impl(prog, i, protocols)?,
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Validate provided bodies against the protocol's abstract receiver before expanding them for
+/// implementing types. Giving `self` type `any[P]` makes method lookup see only P's vtable.
+fn check_protocol_bodies(prog: &Program, types: &TypeEnv) -> DiagResult<()> {
+    let mut checked = prog.clone();
+    let mut synthetic = Vec::new();
+    for item in &prog.items {
+        let Item::Protocol(protocol) = item else { continue };
+        for method in &protocol.methods {
+            let Some(body) = &method.body else { continue };
+            let span = method.span;
+            let receiver = Type::Named {
+                name: "any".into(),
+                args: vec![Type::Named { name: protocol.name.clone(), args: vec![], span }],
+                span,
+            };
+            let mut params = vec![Param {
+                name: "self".into(),
+                ty: receiver,
+                mode: method.self_mode,
+                span,
+            }];
+            params.extend(method.params.iter().cloned());
+            synthetic.push(Item::Fn(FnDef {
+                name: format!("__protocol_body_{}_{}", protocol.name, method.name),
+                receiver: None,
+                self_mode: method.self_mode,
+                self_ref: method.self_ref,
+                method_kind: MethodKind::Method,
+                type_params: protocol.type_params.iter().chain(&method.type_params).cloned().collect(),
+                params,
+                ret: method.ret.clone(),
+                effects: method.effects.clone(),
+                body: body.clone(),
+                no_heap: false,
+                arena: false,
+                deprecated: None,
+                span,
+            }));
+        }
+    }
+    if synthetic.is_empty() {
+        return Ok(());
+    }
+    checked.items.extend(synthetic);
+    let inferred = infer_program_with_env(&checked, types)?;
+    crate::effects::check_effects_with_infer(&checked, &inferred)?;
+    for ((start, end), (protocol, method, _)) in inferred.protocol_calls {
+        let Some(pm) = types.protocols.get(&protocol).and_then(|p| p.methods.iter().find(|m| m.name == method)) else {
+            continue;
+        };
+        for effect in &pm.effects {
+            if let Some(f) = checked.items.iter().find_map(|item| match item {
+                Item::Fn(f) if f.name.starts_with("__protocol_body_") && f.body.span.start <= start && end <= f.body.span.end => Some(f),
+                _ => None,
+            }) {
+                if !f.effects.contains(effect) {
+                    return Err(vec![Diagnostic::new(
+                        ErrorCode::EEffect,
+                        format!("protocol method `{}` requires effect `{:?}`", method, effect),
+                        Span { start, end, line: f.span.line, col: f.span.col },
+                    )]);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Copy provided methods into each claimed type unless that type supplies an override.
+pub fn instantiate_provided(prog: &mut Program) {
+    let protocols = collect_protocols(prog);
+    instantiate_provided_with_protocols(prog, &protocols);
+}
+
+pub fn instantiate_provided_with_protocols(prog: &mut Program, protocols: &HashMap<String, ProtocolDef>) {
+    let own_methods: HashSet<String> = prog.items.iter().filter_map(|item| match item {
+        Item::Fn(f) => Some(f.name.clone()),
+        _ => None,
+    }).collect();
+    let mut generated = Vec::new();
+    for item in &prog.items {
+        if let Item::Impl(imp) = item {
+            instantiate_builtin_provided(imp, protocols, &own_methods, &mut generated);
+            continue;
+        }
+        let (type_name, claims): (&str, &[ProtocolClaim]) = match item {
+            Item::Struct(s) => (&s.name, &s.protocols),
+            Item::Enum(e) => (&e.name, &e.protocols),
+            _ => continue,
+        };
+        for claim in claims {
+            let Some(protocol) = protocols.get(&claim.name) else { continue };
+            if protocol.type_params.len() != claim.args.len() {
+                continue;
+            }
+            let sub: HashMap<String, Type> = protocol.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+            for method in &protocol.methods {
+                let Some(body) = &method.body else { continue };
+                let name = format!("{type_name}__{}", method.name);
+                if own_methods.contains(&name) {
+                    continue;
+                }
+                let span = method.span;
+                let named = Type::Named { name: type_name.into(), args: vec![], span };
+                let self_ty = match method.self_ref {
+                    1 => Type::Ref { mutable: false, lifetime: None, inner: Box::new(named), span },
+                    2 => Type::Ref { mutable: true, lifetime: None, inner: Box::new(named), span },
+                    _ => named,
+                };
+                let mut params = vec![Param { name: "self".into(), ty: self_ty, mode: method.self_mode, span }];
+                params.extend(method.params.iter().cloned().map(|mut p| {
+                    p.ty = crate::specialize::subst(&p.ty, &sub);
+                    p
+                }));
+                let mut body = body.clone();
+                crate::specialize::subst_block(&mut body, &sub);
+                generated.push(Item::Fn(FnDef {
+                    name,
+                    receiver: None,
+                    self_mode: method.self_mode,
+                    self_ref: method.self_ref,
+                    method_kind: MethodKind::Method,
+                    type_params: method.type_params.clone(),
+                    params,
+                    ret: crate::specialize::subst(&method.ret, &sub),
+                    effects: method.effects.clone(),
+                    body,
+                    no_heap: false,
+                    arena: false,
+                    deprecated: None,
+                    span,
+                }));
+            }
+        }
+    }
+    prog.items.extend(generated);
+}
+
+fn impl_type_params(target: &Type) -> Option<Vec<String>> {
+    let Type::Named { name, args, .. } = target else { return None };
+    if name != "List" || args.len() != 1 { return None; }
+    match &args[0] {
+        Type::Named { name, args, .. } if args.is_empty() => Some(vec![name.clone()]),
+        _ => None,
+    }
+}
+
+fn check_builtin_impl(prog: &Program, imp: &ImplDef, protocols: &HashMap<String, ProtocolDef>) -> DiagResult<()> {
+    let Some(_) = impl_type_params(&imp.target) else {
+        return Err(vec![Diagnostic::new(ErrorCode::EType, "unsupported impl target", imp.span)]);
+    };
+    let Type::Named { args, .. } = &imp.target else { unreachable!() };
+    let elem = args[0].clone();
+    for claim in &imp.protocols {
+        let Some(p) = protocols.get(&claim.name) else {
+            return Err(vec![Diagnostic::new(ErrorCode::EType, format!("`{}` is not a protocol", claim.name), claim.span)]);
+        };
+        if !prog.items.iter().any(|i| matches!(i, Item::Protocol(own) if own.name == claim.name)) {
+            return Err(vec![Diagnostic::new(ErrorCode::EType, "builtin impl must be in the protocol module", imp.span)]);
+        }
+        if p.type_params.len() != claim.args.len() {
+            return Err(vec![Diagnostic::new(ErrorCode::EType, "protocol type argument count mismatch", claim.span)]);
+        }
+        let sub: HashMap<String, Type> = p.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+        for method in &p.methods {
+            if method.body.is_some() { continue; }
+            let span = method.span;
+            let int = Type::Named { name: "Int".into(), args: vec![], span };
+            let unit = Type::Named { name: "Unit".into(), args: vec![], span };
+            let (self_ref, params, ret) = match method.name.as_str() {
+                "len" => (1, vec![], int.clone()),
+                "get" => (1, vec![int.clone()], Type::Ref { mutable: false, lifetime: None, inner: Box::new(elem.clone()), span }),
+                "set" => (2, vec![int, elem.clone()], unit.clone()),
+                "push" => (2, vec![elem.clone()], unit),
+                "pop" => (2, vec![], elem.clone()),
+                _ => return Err(vec![Diagnostic::new(ErrorCode::EType, format!("List has no builtin method `{}`", method.name), span)]),
+            };
+            let actual: Vec<Type> = method.params.iter().map(|p| crate::specialize::subst(&p.ty, &sub)).collect();
+            if method.self_ref != self_ref || !method.type_params.is_empty() || !method.effects.is_empty()
+                || actual.len() != params.len() || !actual.iter().zip(&params).all(|(a,b)| types_equal_modulo_span(a,b))
+                || !types_equal_modulo_span(&crate::specialize::subst(&method.ret, &sub), &ret)
+            {
+                return Err(vec![Diagnostic::new(ErrorCode::EType, format!("builtin List method `{}` does not match protocol signature", method.name), span)]);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn instantiate_builtin_provided(imp: &ImplDef, protocols: &HashMap<String, ProtocolDef>, own: &HashSet<String>, generated: &mut Vec<Item>) {
+    let Some(type_params) = impl_type_params(&imp.target) else { return };
+    let Type::Named { name: target_name, .. } = &imp.target else { return };
+    for claim in &imp.protocols {
+        let Some(protocol) = protocols.get(&claim.name) else { continue };
+        if protocol.type_params.len() != claim.args.len() { continue; }
+        let sub: HashMap<String, Type> = protocol.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+        for method in &protocol.methods {
+            let Some(body) = &method.body else { continue };
+            let name = format!("{target_name}__{}", method.name);
+            if own.contains(&name) { continue; }
+            let span = method.span;
+            let self_ty = match method.self_ref {
+                1 => Type::Ref { mutable: false, lifetime: None, inner: Box::new(imp.target.clone()), span },
+                2 => Type::Ref { mutable: true, lifetime: None, inner: Box::new(imp.target.clone()), span },
+                _ => imp.target.clone(),
+            };
+            let mut params = vec![Param { name: "self".into(), ty: self_ty, mode: method.self_mode, span }];
+            params.extend(method.params.iter().cloned().map(|mut p| { p.ty = crate::specialize::subst(&p.ty, &sub); p }));
+            let mut body = body.clone();
+            crate::specialize::subst_block(&mut body, &sub);
+            generated.push(Item::Fn(FnDef {
+                name, receiver: None, self_mode: method.self_mode, self_ref: method.self_ref,
+                method_kind: MethodKind::Method,
+                type_params: type_params.iter().chain(&method.type_params).cloned().collect(),
+                params, ret: crate::specialize::subst(&method.ret, &sub), effects: method.effects.clone(),
+                body, no_heap: false, arena: false, deprecated: None, span,
+            }));
+        }
+    }
 }
 
 fn collect_protocols(prog: &Program) -> HashMap<String, ProtocolDef> {
@@ -73,6 +297,14 @@ fn check_type_protocols(
                 claim.span,
             )]);
         };
+        if pdef.type_params.len() != claim.args.len() {
+            return Err(vec![Diagnostic::new(
+                ErrorCode::EType,
+                format!("protocol `{}` expects {} type arguments, found {}", claim.name, pdef.type_params.len(), claim.args.len()),
+                claim.span,
+            )]);
+        }
+        let sub: HashMap<String, Type> = pdef.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
         for pm in &pdef.methods {
             let mangled = format!("{type_name}__{}", pm.name);
             let Some((fparams, fret)) = types.fns.get(&mangled) else {
@@ -85,7 +317,22 @@ fn check_type_protocols(
                     claim.span,
                 )]);
             };
-            if let Err(d) = method_matches_protocol(type_name, pm, fparams, fret, types, &mangled) {
+            let mut instantiated = pm.clone();
+            for param in &mut instantiated.params {
+                param.ty = crate::specialize::subst(&param.ty, &sub);
+            }
+            instantiated.ret = crate::specialize::subst(&instantiated.ret, &sub);
+            let (raw_params, raw_ret) = if !pm.type_params.is_empty() {
+                let Some(f) = types.fn_defs.get(&mangled) else { unreachable!() };
+                if f.type_params.len() != pm.type_params.len() {
+                    return Err(vec![Diagnostic::new(ErrorCode::EType, format!("method `{mangled}` type parameter count mismatch"), pm.span)]);
+                }
+                let rename: HashMap<String, Type> = f.type_params.iter().cloned().zip(pm.type_params.iter().map(|name| Type::Named { name: name.clone(), args: vec![], span: pm.span })).collect();
+                (f.params.iter().map(|p| crate::specialize::subst(&p.ty, &rename)).collect(), crate::specialize::subst(&f.ret, &rename))
+            } else {
+                (fparams.clone(), fret.clone())
+            };
+            if let Err(d) = method_matches_protocol(type_name, &instantiated, &raw_params, &raw_ret, types, &mangled) {
                 return Err(vec![d]);
             }
         }
@@ -102,10 +349,15 @@ fn method_matches_protocol(
     types: &TypeEnv,
     mangled: &str,
 ) -> Result<(), Diagnostic> {
-    let expected_self = Type::Named {
+    let named_self = Type::Named {
         name: type_name.to_string(),
         args: vec![],
         span: pm.span,
+    };
+    let expected_self = match pm.self_ref {
+        1 => Type::Ref { mutable: false, lifetime: None, inner: Box::new(named_self), span: pm.span },
+        2 => Type::Ref { mutable: true, lifetime: None, inner: Box::new(named_self), span: pm.span },
+        _ => named_self,
     };
     if fparams.is_empty() {
         return Err(Diagnostic::new(
@@ -182,6 +434,9 @@ fn types_equal_modulo_span(a: &Type, b: &Type) -> bool {
                 && pa.iter().zip(pb).all(|(x, y)| types_equal_modulo_span(x, y))
                 && types_equal_modulo_span(ra, rb)
         }
+        (Type::Ref { mutable: ma, inner: ia, .. }, Type::Ref { mutable: mb, inner: ib, .. }) => {
+            ma == mb && types_equal_modulo_span(ia, ib)
+        }
         _ => false,
     }
 }
@@ -210,11 +465,11 @@ pub fn any_coerce_vtable(type_name: &str, protocol: &str) -> String {
 }
 
 pub fn method_slot(protocol: &ProtocolDef, method: &str) -> Option<usize> {
-    protocol.methods.iter().position(|m| m.name == method)
+    protocol.methods.iter().filter(|m| m.type_params.is_empty()).position(|m| m.name == method)
 }
 
 pub fn drop_slot(protocol: &ProtocolDef) -> usize {
-    protocol.methods.len()
+    protocol.methods.iter().filter(|m| m.type_params.is_empty()).count()
 }
 
 /// Build vtable entries: each method fn name, then drop thunk name.
@@ -222,6 +477,7 @@ pub fn vtable_entries(type_name: &str, protocol: &ProtocolDef) -> Vec<String> {
     let mut out: Vec<String> = protocol
         .methods
         .iter()
+        .filter(|m| m.type_params.is_empty())
         .map(|m| format!("{type_name}__{}", m.name))
         .collect();
     out.push(format!("sal_any_drop_{type_name}"));

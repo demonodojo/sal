@@ -1,0 +1,9 @@
+# exit: 42
+fn apply(f: fn(Int) -> Int, x: Int) -> Int
+    f(x)
+
+fn forward(f: fn(Int) -> Int, x: Int) -> Int
+    apply(f, x)
+
+fn main() -> Int
+    forward(x => x + 2, 40)

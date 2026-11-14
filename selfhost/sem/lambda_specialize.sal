@@ -1,0 +1,1207 @@
+# Compile-time expansion for functions whose parameter is `fn (...) -> ...`.
+# A callback is substituted at each call; function values never reach the emitter.
+import "../ast/tast.sal"
+import "../ast/tygeneric.sal"
+
+fn specialize_lambdas(tp: &TProgram, errs: &mut List[String]) -> TProgram ! alloc
+    specialize_lambdas_with_defs(tp, &tp.fns, 0, errs)
+
+fn specialize_lambdas_with_defs(tp: &TProgram, defs: &List[TFn], keep_callback_defs: Int, errs: &mut List[String]) -> TProgram ! alloc
+    out = List.new[TFn]()
+    generated = List.new[TFn]()
+    lambda_specialize_fns(&tp.fns, defs, keep_callback_defs, 0, &mut out, &mut generated, errs)
+    lambda_append_fns(&mut out, &generated, 0)
+    TProgram(out, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
+
+fn lambda_append_fns(out: &mut List[TFn], src: &List[TFn], i: Int) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        out.push(src.get(i).clone())
+        lambda_append_fns(out, src, i + 1)
+
+fn lambda_specialize_fns(fns: &List[TFn], defs: &List[TFn], keep_callback_defs: Int, i: Int, out: &mut List[TFn], generated: &mut List[TFn], errs: &mut List[String]) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        f = fns.get(i)
+        ci = lambda_callback_index(&f.params, 0)
+        if ci >= 0 && keep_callback_defs == 1
+            out.push(f.clone())
+        elsif ci < 0
+            body = lambda_expand_block(&f.name, &f.body, defs, &List.new[String](), &List.new[Expr](), 0, generated, errs)
+            out.push(TFn(f.name.dup(), f.params.clone(), body, f.ret.dup(), f.no_heap, f.arena, f.fx.clone(), f.tparams.clone(), f.recv.dup(), f.mkind, f.deprecated.dup(), f.tyat.dup()))
+        lambda_specialize_fns(fns, defs, keep_callback_defs, i + 1, out, generated, errs)
+
+fn lambda_sweep_callback_defs(tp: &TProgram, defs: &List[TFn]) -> TProgram ! alloc
+    fns = List.new[TFn]()
+    lambda_sweep_fns(&tp.fns, defs, 0, &mut fns)
+    TProgram(fns, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
+
+fn lambda_sweep_fns(fns: &List[TFn], defs: &List[TFn], i: Int, out: &mut List[TFn]) -> Int ! alloc
+    if i >= fns.len()
+        0
+    else
+        f = fns.get(i)
+        di = lambda_find_fn(defs, &f.name, 0)
+        remove = di >= 0 && lambda_callback_index(&defs.get(di).params, 0) >= 0
+        if !remove
+            out.push(f.clone())
+        lambda_sweep_fns(fns, defs, i + 1, out)
+
+fn lambda_callback_index(params: &List[TParam], i: Int) -> Int ! alloc
+    if i >= params.len()
+        0 - 1
+    elsif lambda_is_fn_type(&params.get(i).ty) == 1
+        i
+    else
+        lambda_callback_index(params, i + 1)
+
+fn lambda_is_fn_type(ty: &String) -> Int ! alloc
+    ty.slice(0, 4).eq("fn (")
+
+fn lambda_find_fn(fns: &List[TFn], name: &String, i: Int) -> Int ! alloc
+    if i >= fns.len()
+        0 - 1
+    elsif fns.get(i).name.eq(name) == 1
+        i
+    else
+        lambda_find_fn(fns, name, i + 1)
+
+fn lambda_find_sub(names: &List[String], name: &String, i: Int) -> Int ! alloc
+    if i >= names.len()
+        0 - 1
+    elsif names.get(i).eq(name) == 1
+        i
+    else
+        lambda_find_sub(names, name, i + 1)
+
+fn lambda_param_list(text: &String) -> List[String] ! alloc
+    out = List.new[String]()
+    lambda_param_go(text, 0, 0, &mut out)
+    out
+
+fn lambda_param_go(text: &String, i: Int, from: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= text.len()
+        if from < i
+            out.push(text.slice(from, i))
+        0
+    elsif text.char(i) == 44
+        out.push(text.slice(from, i))
+        lambda_param_go(text, i + 1, i + 1, out)
+    else
+        lambda_param_go(text, i + 1, from, out)
+
+fn lambda_expand_block(owner: &String, b: &TBlock, defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> TBlock ! alloc
+    ns = names.clone()
+    vs = vals.clone()
+    ss = List.new[TStmt]()
+    lambda_expand_stmts(owner, &b.stmts, 0, defs, &mut ns, &mut vs, depth, generated, errs, &mut ss)
+    TBlock(ss, lambda_expand_expr(owner, &b.tail, defs, &ns, &vs, depth, generated, errs))
+
+fn lambda_expand_stmts(owner: &String, src: &List[TStmt], i: Int, defs: &List[TFn], names: &mut List[String], vals: &mut List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        s = src.get(i)
+        if s.kind == 1 && s.is_let == 1 && lambda_is_expr(&s.expr) == 1
+            if lambda_is_fn_type(&s.ty) == 1
+                errs.push("E_TYPE: function types are only allowed on parameters")
+            names.push(s.name.dup())
+            vals.push(tc_expr(&s.expr))
+        else
+            out.push(TStmt(s.kind, s.name.dup(), lambda_expand_expr(owner, &s.expr, defs, names, vals, depth, generated, errs), s.ty.dup(), s.is_let, lambda_expand_expr(owner, &s.target, defs, names, vals, depth, generated, errs), s.frozen, s.stack, s.id))
+        lambda_expand_stmts(owner, src, i + 1, defs, names, vals, depth, generated, errs, out)
+
+fn lambda_expand_expr(owner: &String, e: &Expr, defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    match e
+        XIdent(name) => lambda_sub_expr(&name, vals, lambda_find_sub(names, &name, 0))
+        XCall(name, args, targs, xp) => lambda_expand_call(owner, &name, &args, &targs, xp, defs, names, vals, depth, generated, errs)
+        XBin(op, l, r) => XBin(op.dup(), lambda_expand_expr(owner, &l, defs, names, vals, depth, generated, errs), lambda_expand_expr(owner, &r, defs, names, vals, depth, generated, errs))
+        XUnary(op, inner) => XUnary(op.dup(), lambda_expand_expr(owner, &inner, defs, names, vals, depth, generated, errs))
+        XTo(place, inner) => XTo(place.dup(), lambda_expand_expr(owner, &inner, defs, names, vals, depth, generated, errs))
+        XField(base, field) => XField(lambda_expand_expr(owner, &base, defs, names, vals, depth, generated, errs), field.dup())
+        XOn(place, body, kern, idx) => XOn(place.dup(), lambda_expand_block(owner, &body, defs, names, vals, depth, generated, errs), kern, idx)
+        XIf(cond, then_b, else_b, has_else, arms) => XIf(lambda_expand_expr(owner, &cond, defs, names, vals, depth, generated, errs), lambda_expand_block(owner, &then_b, defs, names, vals, depth, generated, errs), lambda_expand_block(owner, &else_b, defs, names, vals, depth, generated, errs), has_else, lambda_expand_elsifs(owner, &arms, defs, names, vals, depth, generated, errs))
+        XWhile(cond, body) => XWhile(lambda_expand_expr(owner, &cond, defs, names, vals, depth, generated, errs), lambda_expand_block(owner, &body, defs, names, vals, depth, generated, errs))
+        XMatch(scrut, arms) => XMatch(lambda_expand_expr(owner, &scrut, defs, names, vals, depth, generated, errs), lambda_expand_arms(owner, &arms, defs, names, vals, depth, generated, errs))
+        XLambda(param, body) => XLambda(param.dup(), lambda_expand_expr(owner, &body, defs, names, vals, depth, generated, errs))
+        XLambdaBlock(param, body) => XLambdaBlock(param.dup(), lambda_expand_block(owner, &body, defs, names, vals, depth, generated, errs))
+        XBlock(body) => XBlock(lambda_expand_block(owner, &body, defs, names, vals, depth, generated, errs))
+        XTry(inner) => XTry(lambda_expand_expr(owner, &inner, defs, names, vals, depth, generated, errs))
+        _ => tc_expr(e)
+
+fn lambda_sub_expr(name: &String, vals: &List[Expr], i: Int) -> Expr ! alloc
+    if i < 0
+        XIdent(name.dup())
+    else
+        tc_expr(&vals.get(i))
+
+fn lambda_expand_call(owner: &String, name: &String, args: &List[Expr], targs: &String, xp: Int, defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    sub = lambda_find_sub(names, name, 0)
+    expanded = lambda_expand_args(owner, args, defs, names, vals, depth, generated, errs)
+    if sub >= 0
+        lambda_apply_callback(owner, &vals.get(sub), &expanded, defs, depth, generated, errs)
+    else
+        fi = lambda_find_fn(defs, name, 0)
+        if fi >= 0 && depth < 64
+            f = defs.get(fi)
+            ci = lambda_callback_index(&f.params, 0)
+            if ci >= 0 && ci < expanded.len()
+                lambda_specialize_call(owner, &f, ci, &expanded, &targs, xp, defs, depth, generated, errs)
+            else
+                XCall(name.dup(), expanded, targs.dup(), xp)
+        else
+            XCall(name.dup(), expanded, targs.dup(), xp)
+
+fn lambda_expand_args(owner: &String, args: &List[Expr], defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    lambda_expand_args_go(owner, args, 0, defs, names, vals, depth, generated, errs, &mut out)
+    out
+
+fn lambda_expand_args_go(owner: &String, args: &List[Expr], i: Int, defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String], out: &mut List[Expr]) -> Int ! alloc
+    if i >= args.len()
+        0
+    else
+        out.push(lambda_expand_expr(owner, &args.get(i), defs, names, vals, depth, generated, errs))
+        lambda_expand_args_go(owner, args, i + 1, defs, names, vals, depth, generated, errs, out)
+
+fn lambda_specialize_call(owner: &String, f: &TFn, ci: Int, args: &List[Expr], targs: &String, xp: Int, defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    if args.len() != f.params.len() || depth > 64
+        XCall(f.name.dup(), args.clone(), targs.dup(), xp)
+    else
+        cb = args.get(ci)
+        if lambda_is_expr(&cb) == 0
+            lambda_inline_fn(owner, f, ci, args, defs, depth, generated, errs)
+        else
+            lambda_record_capture_violation(&cb, defs, errs)
+            lambda_specialize_lambda(owner, f, ci, args, targs, xp, &cb, defs, depth, generated, errs)
+
+fn lambda_record_capture_violation(cb: &Expr, defs: &List[TFn], errs: &mut List[String]) -> Int ! alloc
+    if lambda_capture_violation(cb, defs) == 1
+        errs.push("E_BORROW: callback moves or assigns a captured value")
+    0
+
+fn lambda_specialize_lambda(owner: &String, f: &TFn, ci: Int, args: &List[Expr], targs: &String, xp: Int, cb: &Expr, defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    sources = lambda_capture_names(cb)
+    caps = lambda_capture_params(owner, defs, &sources)
+    if caps.len() != sources.len() || lambda_capture_types_known(&caps, 0) == 0
+        lambda_inline_fn(owner, f, ci, args, defs, depth, generated, errs)
+    else
+        lambda_callback_effect_check(cb, &f.params.get(ci).ty, defs, errs)
+        lambda_lift_call(owner, f, ci, args, targs, xp, cb, &sources, &caps, defs, generated, errs)
+
+fn lambda_lift_call(owner: &String, f: &TFn, ci: Int, args: &List[Expr], targs: &String, xp: Int, cb: &Expr, sources: &List[String], caps: &List[TParam], defs: &List[TFn], generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    ty = f.params.get(ci).ty
+    param_names = match cb
+        XLambda(p, _) => lambda_param_list(&p)
+        XLambdaBlock(p, _) => lambda_param_list(&p)
+        _ => List.new[String]()
+    vals = lambda_callback_type_binds(f, ci, args, cb, defs)
+    tps = tg_type_params(&f.tparams)
+    ps_ty = lambda_subst_types(&lambda_fn_param_types(&ty), &tps, &vals)
+    if ps_ty.len() != lambda_param_count(&param_names) || lambda_generic_unbound(&tps, &vals) == 1
+        lambda_inline_fn(owner, f, ci, args, defs, 0, generated, errs)
+    else
+        lam_name = lambda_fresh_name(generated, defs, &(owner + "__lam"))
+        spec_prefix = if tps.len() > 0
+            tg_copy_name(&f.name, &vals) + "__s"
+        else
+            f.name + "__s"
+        spec_name = lambda_fresh_name(generated, defs, &spec_prefix)
+        helper = lambda_make_helper(owner, &lam_name, cb, &param_names, &ps_ty, sources, caps, defs, generated, errs)
+        generated.push(helper.clone())
+        cb_name = f.params.get(ci).name
+        cb_names = List.new[String]()
+        cb_vals = List.new[Expr]()
+        cb_names.push(cb_name.dup())
+        cap_refs = lambda_helper_capture_refs(caps, 0)
+        cb_vals.push(XCall(lam_name.dup(), cap_refs, "__lambda_caps", 0))
+        copy_body = lambda_expand_block(&spec_name, &f.body, defs, &cb_names, &cb_vals, 0, generated, errs)
+        copy_params = lambda_subst_params(&lambda_params_without(&f.params, ci), &tps, &vals)
+        lambda_append_params(&mut copy_params, caps, 0)
+        copy_fx = lambda_merge_fx(&f.fx, &helper.fx)
+        copy_ret = tg_subst(&f.ret, &tps, &vals)
+        copy_fn = TFn(spec_name.dup(), copy_params, copy_body, copy_ret, f.no_heap, f.arena, copy_fx, List.new[String](), f.recv.dup(), f.mkind, f.deprecated.dup(), f.tyat.dup())
+        generated.push(copy_fn)
+        call_args = lambda_args_without(args, ci)
+        lambda_append_capture_args(&mut call_args, sources, caps, 0)
+        XCall(spec_name, call_args, targs.dup(), xp)
+
+fn lambda_param_count(params: &List[String]) -> Int ! alloc
+    params.len()
+
+fn lambda_make_helper(owner: &String, name: &String, cb: &Expr, names: &List[String], tys: &List[String], sources: &List[String], caps: &List[TParam], defs: &List[TFn], generated: &mut List[TFn], errs: &mut List[String]) -> TFn ! alloc
+    params = caps.clone()
+    lambda_append_params(&mut params, &lambda_typed_params(names, tys, 0), 0)
+    cap_vals = lambda_helper_capture_refs(caps, 0)
+    body = match cb
+        XLambda(_, e) => TBlock(List.new[TStmt](), lambda_expand_expr(name, &e, defs, sources, &cap_vals, 0, generated, errs))
+        XLambdaBlock(_, b) => lambda_expand_block(name, &b, defs, sources, &cap_vals, 0, generated, errs)
+        _ => TBlock(List.new[TStmt](), XNone)
+    fx = lambda_effects_for_cb(cb, defs)
+    ret = lambda_guess_callback_ret(cb, names, tys, defs)
+    TFn(name.dup(), params, body, ret, 0, 0, fx, List.new[String](), "", 0, "", "")
+
+fn lambda_append_params(dst: &mut List[TParam], src: &List[TParam], i: Int) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        dst.push(src.get(i).clone())
+        lambda_append_params(dst, src, i + 1)
+
+fn lambda_helper_capture_refs(caps: &List[TParam], i: Int) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    lambda_helper_capture_refs_go(caps, i, &mut out)
+    out
+
+fn lambda_helper_capture_refs_go(caps: &List[TParam], i: Int, out: &mut List[Expr]) -> Int ! alloc
+    if i >= caps.len()
+        0
+    else
+        out.push(XIdent(caps.get(i).name.dup()))
+        lambda_helper_capture_refs_go(caps, i + 1, out)
+
+fn lambda_append_capture_args(out: &mut List[Expr], sources: &List[String], caps: &List[TParam], i: Int) -> Int ! alloc
+    if i >= sources.len() || i >= caps.len()
+        0
+    else
+        id = XIdent(sources.get(i).dup())
+        out.push(id)
+        lambda_append_capture_args(out, sources, caps, i + 1)
+
+fn lambda_callback_type_binds(f: &TFn, ci: Int, args: &List[Expr], cb: &Expr, defs: &List[TFn]) -> List[String] ! alloc
+    tps = tg_type_params(&f.tparams)
+    vals = List.new[String]()
+    lambda_fill_empty(&mut vals, tps.len())
+    decl = lambda_fn_ret(&f.params.get(ci).ty)
+    actual = lambda_guess_callback_ret(cb, &lambda_callback_params(cb), &lambda_fn_param_types(&f.params.get(ci).ty), defs)
+    if tps.len() > 0 && actual.eq("Unknown") == 0
+        tg_bind(&decl, &actual, &tps, &mut vals)
+    lambda_bind_regular_args(f, ci, args, &tps, &mut vals, 0)
+    vals
+
+fn lambda_fill_empty(out: &mut List[String], n: Int) -> Int ! alloc
+    if n <= 0
+        0
+    else
+        out.push("")
+        lambda_fill_empty(out, n - 1)
+
+fn lambda_bind_regular_args(f: &TFn, skip: Int, args: &List[Expr], tps: &List[String], vals: &mut List[String], i: Int) -> Int ! alloc
+    if i >= f.params.len() || i >= args.len()
+        0
+    elsif i == skip
+        lambda_bind_regular_args(f, skip, args, tps, vals, i + 1)
+    else
+        actual = lambda_guess_expr_type(&args.get(i), &List.new[String](), &List.new[String](), &List.new[String](), &List.new[TFn]())
+        if actual.eq("Unknown") == 0
+            tg_bind(&f.params.get(i).ty, &actual, tps, vals)
+        lambda_bind_regular_args(f, skip, args, tps, vals, i + 1)
+
+fn lambda_generic_unbound(tps: &List[String], vals: &List[String]) -> Int ! alloc
+    lambda_generic_unbound_go(tps, vals, 0)
+
+fn lambda_generic_unbound_go(tps: &List[String], vals: &List[String], i: Int) -> Int ! alloc
+    if i >= tps.len()
+        0
+    elsif i >= vals.len() || vals.get(i).len() == 0
+        1
+    else
+        lambda_generic_unbound_go(tps, vals, i + 1)
+
+fn lambda_subst_types(types: &List[String], tps: &List[String], vals: &List[String]) -> List[String] ! alloc
+    out = List.new[String]()
+    lambda_subst_types_go(types, tps, vals, 0, &mut out)
+    out
+
+fn lambda_subst_types_go(types: &List[String], tps: &List[String], vals: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= types.len()
+        0
+    else
+        out.push(tg_subst(&types.get(i), tps, vals))
+        lambda_subst_types_go(types, tps, vals, i + 1, out)
+
+fn lambda_subst_params(params: &List[TParam], tps: &List[String], vals: &List[String]) -> List[TParam] ! alloc
+    out = List.new[TParam]()
+    lambda_subst_params_go(params, tps, vals, 0, &mut out)
+    out
+
+fn lambda_subst_params_go(params: &List[TParam], tps: &List[String], vals: &List[String], i: Int, out: &mut List[TParam]) -> Int ! alloc
+    if i >= params.len()
+        0
+    else
+        p = params.get(i)
+        out.push(TParam(p.name.dup(), tg_subst(&p.ty, tps, vals), p.mode))
+        lambda_subst_params_go(params, tps, vals, i + 1, out)
+
+fn lambda_callback_params(cb: &Expr) -> List[String] ! alloc
+    match cb
+        XLambda(params, _) => lambda_param_list(&params)
+        XLambdaBlock(params, _) => lambda_param_list(&params)
+        _ => List.new[String]()
+
+fn lambda_guess_callback_ret(cb: &Expr, names: &List[String], tys: &List[String], defs: &List[TFn]) -> String ! alloc
+    match cb
+        XLambda(_, body) => lambda_guess_expr_type(&body, names, tys, &List.new[String](), defs)
+        XLambdaBlock(_, body) => lambda_guess_block_type(&body, names, tys, defs)
+        _ => "Unknown"
+
+fn lambda_guess_block_type(body: &TBlock, params: &List[String], tys: &List[String], defs: &List[TFn]) -> String ! alloc
+    names = params.clone()
+    types = tys.clone()
+    lambda_guess_block_stmts(&body.stmts, 0, &mut names, &mut types, defs)
+    lambda_guess_expr_type(&body.tail, &names, &types, &List.new[String](), defs)
+
+fn lambda_guess_block_stmts(stmts: &List[TStmt], i: Int, names: &mut List[String], tys: &mut List[String], defs: &List[TFn]) -> Int ! alloc
+    if i >= stmts.len()
+        0
+    else
+        s = stmts.get(i)
+        if s.kind == 1 && s.is_let == 1
+            ty = if s.ty.len() > 0
+                s.ty.dup()
+            else
+                lambda_guess_expr_type(&s.expr, names, tys, &List.new[String](), defs)
+            names.push(s.name.dup())
+            tys.push(ty)
+        lambda_guess_block_stmts(stmts, i + 1, names, tys, defs)
+
+fn lambda_guess_expr_type(e: &Expr, names: &List[String], tys: &List[String], locals: &List[String], defs: &List[TFn]) -> String ! alloc
+    match e
+        XInt(_) => "Int"
+        XFloat(_, _) => "Float"
+        XBool(_) => "Bool"
+        XStr(_) => "String"
+        XIdent(name) => lambda_name_type(names, tys, &name, 0)
+        XBin(op, l, r) => lambda_guess_bin_type(&op, &l, &r, names, tys, defs)
+        XUnary(_, inner) => lambda_guess_expr_type(&inner, names, tys, locals, defs)
+        XTo(_, inner) => lambda_guess_expr_type(&inner, names, tys, locals, defs)
+        XCall(name, _, _, _) => lambda_fn_ret_of_name(defs, &name, 0)
+        XField(_, _) => "Unknown"
+        _ => "Unknown"
+
+fn lambda_name_type(names: &List[String], tys: &List[String], name: &String, i: Int) -> String ! alloc
+    if i >= names.len() || i >= tys.len()
+        "Unknown"
+    elsif names.get(i).eq(name) == 1
+        tys.get(i).dup()
+    else
+        lambda_name_type(names, tys, name, i + 1)
+
+fn lambda_guess_bin_type(op: &String, l: &Expr, r: &Expr, names: &List[String], tys: &List[String], defs: &List[TFn]) -> String ! alloc
+    lt = lambda_guess_expr_type(l, names, tys, &List.new[String](), defs)
+    rt = lambda_guess_expr_type(r, names, tys, &List.new[String](), defs)
+    if op.eq("+") == 1 && (lt.eq("String") == 1 || rt.eq("String") == 1)
+        "String"
+    elsif lt.eq(rt) == 1 && (lt.eq("Int") == 1 || lt.eq("Float") == 1 || lt.eq("Bool") == 1)
+        lt
+    elsif lt.eq("Unknown") == 0
+        lt
+    else
+        rt
+
+fn lambda_fn_ret_of_name(defs: &List[TFn], name: &String, i: Int) -> String ! alloc
+    if i >= defs.len()
+        "Unknown"
+    elsif defs.get(i).name.eq(name) == 1
+        defs.get(i).ret.dup()
+    else
+        lambda_fn_ret_of_name(defs, name, i + 1)
+
+fn lambda_typed_params(names: &List[String], tys: &List[String], i: Int) -> List[TParam] ! alloc
+    out = List.new[TParam]()
+    lambda_typed_params_go(names, tys, i, &mut out)
+    out
+
+fn lambda_typed_params_go(names: &List[String], tys: &List[String], i: Int, out: &mut List[TParam]) -> Int ! alloc
+    if i >= names.len()
+        0
+    else
+        out.push(TParam(names.get(i).dup(), lambda_trim(&tys.get(i)), 0))
+        lambda_typed_params_go(names, tys, i + 1, out)
+
+fn lambda_params_without(params: &List[TParam], skip: Int) -> List[TParam] ! alloc
+    out = List.new[TParam]()
+    lambda_params_without_go(params, skip, 0, &mut out)
+    out
+
+fn lambda_params_without_go(params: &List[TParam], skip: Int, i: Int, out: &mut List[TParam]) -> Int ! alloc
+    if i >= params.len()
+        0
+    elsif i == skip
+        lambda_params_without_go(params, skip, i + 1, out)
+    else
+        out.push(params.get(i).clone())
+        lambda_params_without_go(params, skip, i + 1, out)
+
+fn lambda_args_without(args: &List[Expr], skip: Int) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    lambda_args_without_go(args, skip, 0, &mut out)
+    out
+
+fn lambda_args_without_go(args: &List[Expr], skip: Int, i: Int, out: &mut List[Expr]) -> Int ! alloc
+    if i >= args.len()
+        0
+    elsif i == skip
+        lambda_args_without_go(args, skip, i + 1, out)
+    else
+        out.push(tc_expr(&args.get(i)))
+        lambda_args_without_go(args, skip, i + 1, out)
+
+fn lambda_fn_param_types(ty: &String) -> List[String] ! alloc
+    op = ty.index_of("(")
+    cl = ty.index_of(")")
+    if op < 0 || cl < op
+        List.new[String]()
+    else
+        text = ty.slice(op + 1, cl)
+        lambda_type_list(&text)
+
+fn lambda_type_list(text: &String) -> List[String] ! alloc
+    raw = lambda_param_list(text)
+    out = List.new[String]()
+    lambda_trim_types(&raw, 0, &mut out)
+    out
+
+fn lambda_trim_types(raw: &List[String], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= raw.len()
+        0
+    else
+        out.push(lambda_trim(&raw.get(i)))
+        lambda_trim_types(raw, i + 1, out)
+
+fn lambda_fn_ret(ty: &String) -> String ! alloc
+    arrow = ty.index_of("->")
+    if arrow < 0
+        "Unknown"
+    else
+        tail = ty.slice(arrow + 2, ty.len())
+        bang = tail.index_of("!")
+        if bang < 0
+            lambda_trim(&tail)
+        else
+            lambda_trim(&tail.slice(0, bang))
+
+fn lambda_trim(s: &String) -> String ! alloc
+    n = s.len()
+    if n == 0
+        ""
+    elsif s.char(0) == 32
+        lambda_trim(&s.slice(1, n))
+    elsif s.char(n - 1) == 32
+        lambda_trim(&s.slice(0, n - 1))
+    else
+        s.dup()
+
+fn lambda_fresh_name(generated: &List[TFn], defs: &List[TFn], prefix: &String) -> String ! alloc
+    lambda_fresh_name_go(generated, defs, prefix, 0)
+
+fn lambda_fresh_name_go(generated: &List[TFn], defs: &List[TFn], prefix: &String, i: Int) -> String ! alloc
+    candidate = prefix + i.to_str()
+    if lambda_fn_named(generated, &candidate, 0) == 1 || lambda_fn_named(defs, &candidate, 0) == 1
+        lambda_fresh_name_go(generated, defs, prefix, i + 1)
+    else
+        candidate
+
+fn lambda_fn_named(fns: &List[TFn], name: &String, i: Int) -> Int ! alloc
+    if i >= fns.len()
+        0
+    elsif fns.get(i).name.eq(name) == 1
+        1
+    else
+        lambda_fn_named(fns, name, i + 1)
+
+fn lambda_merge_fx(a: &List[Int], b: &List[Int]) -> List[Int] ! alloc
+    out = a.clone()
+    lambda_merge_fx_go(&mut out, b, 0)
+    out
+
+fn lambda_merge_fx_go(out: &mut List[Int], b: &List[Int], i: Int) -> Int ! alloc
+    if i >= b.len()
+        0
+    elsif b.get(i) == 1
+        out.set(i, 1)
+        lambda_merge_fx_go(out, b, i + 1)
+    else
+        lambda_merge_fx_go(out, b, i + 1)
+
+fn lambda_effects_for_cb(cb: &Expr, defs: &List[TFn]) -> List[Int] ! alloc
+    fx = List.new[Int]()
+    fx.push(0)
+    fx.push(0)
+    fx.push(0)
+    fx.push(0)
+    fx.push(0)
+    match cb
+        XLambda(_, e) => lambda_collect_expr_effects(&e, defs, &mut fx)
+        XLambdaBlock(_, b) => lambda_collect_block_effects(&b, defs, &mut fx)
+        _ => 0
+    fx
+
+fn lambda_has_capture(cb: &Expr, defs: &List[TFn]) -> Int ! alloc
+    match cb
+        XLambda(params, body) => lambda_expr_has_capture(&body, &lambda_param_list(&params))
+        XLambdaBlock(params, body) => lambda_block_has_free(&body, &lambda_param_list(&params))
+        _ => 1
+
+fn lambda_capture_names(cb: &Expr) -> List[String] ! alloc
+    out = List.new[String]()
+    match cb
+        XLambda(params, body) => lambda_collect_capture_expr(&body, &lambda_param_list(&params), &mut out)
+        XLambdaBlock(params, body) =>
+            bound = lambda_param_list(&params)
+            lambda_collect_let_names(&body.stmts, 0, &mut bound)
+            lambda_collect_capture_block(&body, &bound, &mut out)
+        _ => 0
+    out
+
+fn lambda_collect_capture_block(b: &TBlock, bound: &List[String], out: &mut List[String]) -> Int ! alloc
+    lambda_collect_capture_stmts(&b.stmts, bound, out, 0)
+    lambda_collect_capture_expr(&b.tail, bound, out)
+
+fn lambda_collect_capture_stmts(stmts: &List[TStmt], bound: &List[String], out: &mut List[String], i: Int) -> Int ! alloc
+    if i >= stmts.len()
+        0
+    else
+        lambda_collect_capture_expr(&stmts.get(i).expr, bound, out)
+        lambda_collect_capture_expr(&stmts.get(i).target, bound, out)
+        lambda_collect_capture_stmts(stmts, bound, out, i + 1)
+
+fn lambda_collect_capture_expr(e: &Expr, bound: &List[String], out: &mut List[String]) -> Int ! alloc
+    match e
+        XIdent(name) =>
+            if lambda_find_sub(bound, &name, 0) < 0 && lambda_find_sub(out, &name, 0) < 0
+                out.push(name.dup())
+            0
+        XCall(_, args, _, _) => lambda_collect_capture_args(&args, bound, out, 0)
+        XBin(_, l, r) =>
+            lambda_collect_capture_expr(&l, bound, out)
+            lambda_collect_capture_expr(&r, bound, out)
+        XUnary(_, inner) => lambda_collect_capture_expr(&inner, bound, out)
+        XTo(_, inner) => lambda_collect_capture_expr(&inner, bound, out)
+        XField(base, _) => lambda_collect_capture_expr(&base, bound, out)
+        XIf(cond, a, b, _, arms) =>
+            lambda_collect_capture_expr(&cond, bound, out)
+            lambda_collect_capture_block(&a, bound, out)
+            lambda_collect_capture_block(&b, bound, out)
+            lambda_collect_capture_elsifs(&arms, bound, out, 0)
+        XBlock(body) => lambda_collect_capture_block(&body, bound, out)
+        XWhile(cond, body) =>
+            lambda_collect_capture_expr(&cond, bound, out)
+            lambda_collect_capture_block(&body, bound, out)
+        XMatch(scrut, arms) =>
+            lambda_collect_capture_expr(&scrut, bound, out)
+            lambda_collect_capture_arms(&arms, bound, out, 0)
+        XTry(inner) => lambda_collect_capture_expr(&inner, bound, out)
+        _ => 0
+
+fn lambda_collect_capture_args(xs: &List[Expr], bound: &List[String], out: &mut List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        lambda_collect_capture_expr(&xs.get(i), bound, out)
+        lambda_collect_capture_args(xs, bound, out, i + 1)
+
+fn lambda_collect_capture_elsifs(xs: &List[TElsif], bound: &List[String], out: &mut List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        lambda_collect_capture_expr(&xs.get(i).cond, bound, out)
+        lambda_collect_capture_block(&xs.get(i).body, bound, out)
+        lambda_collect_capture_elsifs(xs, bound, out, i + 1)
+
+fn lambda_collect_capture_arms(xs: &List[TArm], bound: &List[String], out: &mut List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        lambda_collect_capture_expr(&a.body, bound, out)
+        lambda_collect_capture_block(&a.suite, bound, out)
+        lambda_collect_capture_arms(xs, bound, out, i + 1)
+
+fn lambda_capture_params(owner: &String, defs: &List[TFn], sources: &List[String]) -> List[TParam] ! alloc
+    out = List.new[TParam]()
+    fi = lambda_find_fn(defs, owner, 0)
+    if fi >= 0
+        f = defs.get(fi)
+        names = List.new[String]()
+        tys = List.new[String]()
+        lambda_seed_local_types(&f.params, &mut names, &mut tys)
+        lambda_capture_params_go(&f.body, sources, 0, &names, &tys, &mut out, defs)
+    out
+
+fn lambda_capture_params_go(body: &TBlock, sources: &List[String], i: Int, names: &List[String], tys: &List[String], out: &mut List[TParam], defs: &List[TFn]) -> Int ! alloc
+    if i >= sources.len()
+        0
+    else
+        source = sources.get(i)
+        ty = lambda_local_type_block(body, names, tys, &source, defs)
+        param_ty = if lambda_capture_copy_type(&ty) == 1
+            ty.dup()
+        else
+            "&" + ty
+        out.push(TParam("__cap" + i.to_str(), param_ty, 0))
+        lambda_capture_params_go(body, sources, i + 1, names, tys, out, defs)
+
+fn lambda_seed_local_types(params: &List[TParam], names: &mut List[String], tys: &mut List[String]) -> Int ! alloc
+    if names.len() >= params.len()
+        0
+    else
+        names.push(params.get(names.len()).name.dup())
+        tys.push(params.get(names.len() - 1).ty.dup())
+        lambda_seed_local_types(params, names, tys)
+
+fn lambda_local_type_block(body: &TBlock, names: &List[String], tys: &List[String], target: &String, defs: &List[TFn]) -> String ! alloc
+    found = lambda_name_type(names, tys, target, 0)
+    if found.eq("Unknown") == 0
+        found
+    else
+        lambda_local_type_stmts(&body.stmts, 0, names, tys, target, defs)
+
+fn lambda_local_type_stmts(stmts: &List[TStmt], i: Int, names: &List[String], tys: &List[String], target: &String, defs: &List[TFn]) -> String ! alloc
+    if i >= stmts.len()
+        "Unknown"
+    else
+        s = stmts.get(i)
+        if s.kind == 1 && s.name.eq(target) == 1
+            if s.ty.len() > 0
+                s.ty.dup()
+            else
+                lambda_guess_expr_type(&s.expr, names, tys, &List.new[String](), defs)
+        elsif s.kind == 1
+            ty = if s.ty.len() > 0
+                s.ty.dup()
+            else
+                lambda_guess_expr_type(&s.expr, names, tys, &List.new[String](), defs)
+            ns = names.clone()
+            ts = tys.clone()
+            ns.push(s.name.dup())
+            ts.push(ty)
+            lambda_local_type_stmts(stmts, i + 1, &ns, &ts, target, defs)
+        else
+            lambda_local_type_stmts(stmts, i + 1, names, tys, target, defs)
+
+fn lambda_capture_copy_type(ty: &String) -> Int ! alloc
+    if ty.eq("Int") == 1 || ty.eq("Float") == 1 || ty.eq("Bool") == 1 || ty.eq("Unit") == 1 || ty.slice(0, 1).eq("&") == 1
+        1
+    else
+        0
+
+fn lambda_capture_types_known(caps: &List[TParam], i: Int) -> Int ! alloc
+    if i >= caps.len()
+        1
+    elsif caps.get(i).ty.eq("&Unknown") == 1 || caps.get(i).ty.eq("Unknown") == 1
+        0
+    else
+        lambda_capture_types_known(caps, i + 1)
+
+fn lambda_block_has_free(b: &TBlock, params: &List[String]) -> Int ! alloc
+    names = params.clone()
+    lambda_collect_let_names(&b.stmts, 0, &mut names)
+    if lambda_stmts_have_free(&b.stmts, &names, 0) == 1
+        1
+    else
+        lambda_expr_has_capture(&b.tail, &names)
+
+fn lambda_collect_let_names(stmts: &List[TStmt], i: Int, names: &mut List[String]) -> Int ! alloc
+    if i >= stmts.len()
+        0
+    else
+        s = stmts.get(i)
+        if s.kind == 1
+            names.push(s.name.dup())
+        lambda_collect_let_names(stmts, i + 1, names)
+
+fn lambda_stmts_have_free(stmts: &List[TStmt], names: &List[String], i: Int) -> Int ! alloc
+    if i >= stmts.len()
+        0
+    elsif lambda_expr_has_capture(&stmts.get(i).expr, names) == 1 || lambda_expr_has_capture(&stmts.get(i).target, names) == 1
+        1
+    else
+        lambda_stmts_have_free(stmts, names, i + 1)
+
+fn lambda_capture_violation(cb: &Expr, defs: &List[TFn]) -> Int ! alloc
+    match cb
+        XLambda(params, body) => lambda_return_capture_violation(&body, &lambda_param_list(&params), defs)
+        XLambdaBlock(params, body) =>
+            names = lambda_param_list(&params)
+            lambda_collect_let_names(&body.stmts, 0, &mut names)
+            lambda_block_capture_violation(&body, &names, defs)
+        _ => 0
+
+fn lambda_return_capture_violation(body: &Expr, params: &List[String], defs: &List[TFn]) -> Int ! alloc
+    match body
+        XIdent(name) => lambda_find_sub(params, &name, 0) < 0
+        _ => lambda_expr_capture_violation(body, params, defs)
+
+fn lambda_expr_capture_violation(e: &Expr, params: &List[String], defs: &List[TFn]) -> Int ! alloc
+    match e
+        XIdent(_) => 0
+        XCall(name, args, _, _) => lambda_call_capture_violation(&name, &args, params, defs, 0)
+        XBin(_, l, r) => lambda_expr_capture_violation(&l, params, defs) == 1 || lambda_expr_capture_violation(&r, params, defs) == 1
+        XUnary(_, inner) => lambda_expr_capture_violation(&inner, params, defs)
+        XTo(_, inner) => lambda_expr_capture_violation(&inner, params, defs)
+        XField(base, _) => lambda_expr_capture_violation(&base, params, defs)
+        XIf(cond, a, b, _, arms) => lambda_expr_capture_violation(&cond, params, defs) == 1 || lambda_block_capture_violation(&a, params, defs) == 1 || lambda_block_capture_violation(&b, params, defs) == 1 || lambda_elsif_capture_violation(&arms, params, defs, 0)
+        XBlock(body) => lambda_block_capture_violation(&body, params, defs)
+        XWhile(cond, body) => lambda_expr_capture_violation(&cond, params, defs) == 1 || lambda_block_capture_violation(&body, params, defs) == 1
+        XMatch(scrut, arms) => lambda_expr_capture_violation(&scrut, params, defs) == 1 || lambda_arm_capture_violation(&arms, params, defs, 0)
+        XTry(inner) => lambda_expr_capture_violation(&inner, params, defs)
+        _ => 0
+
+fn lambda_call_capture_violation(name: &String, args: &List[Expr], params: &List[String], defs: &List[TFn], i: Int) -> Int ! alloc
+    if i >= args.len()
+        0
+    elsif lambda_arg_moves_capture(name, i, &args.get(i), params, defs) == 1
+        1
+    elsif lambda_arg_nested_violation(&args.get(i), params, defs) == 1
+        1
+    else
+        lambda_call_capture_violation(name, args, params, defs, i + 1)
+
+fn lambda_arg_nested_violation(arg: &Expr, params: &List[String], defs: &List[TFn]) -> Int ! alloc
+    match arg
+        XIdent(_) => 0
+        _ => lambda_expr_capture_violation(arg, params, defs)
+
+fn lambda_arg_moves_capture(name: &String, i: Int, arg: &Expr, params: &List[String], defs: &List[TFn]) -> Int ! alloc
+    match arg
+        XIdent(captured) =>
+            if lambda_find_sub(params, &captured, 0) >= 0
+                0
+            else
+                fi = lambda_find_fn(defs, name, 0)
+                if fi < 0 || i >= defs.get(fi).params.len()
+                    0
+                else
+                    ty = defs.get(fi).params.get(i).ty
+                    if ty.slice(0, 1).eq("&") == 1
+                        0
+                    else
+                        1
+        _ => 0
+
+fn lambda_block_capture_violation(b: &TBlock, params: &List[String], defs: &List[TFn]) -> Int ! alloc
+    if lambda_stmts_capture_violation(&b.stmts, params, defs, 0) == 1
+        1
+    else
+        lambda_return_capture_violation(&b.tail, params, defs)
+
+fn lambda_stmts_capture_violation(xs: &List[TStmt], params: &List[String], defs: &List[TFn], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        s = xs.get(i)
+        assigned = match s.target
+            XIdent(name) => lambda_find_sub(params, &name, 0) < 0 && s.is_let == 0 && (s.kind == 1 || s.kind == 3)
+            _ => 0
+        if assigned || lambda_expr_capture_violation(&s.expr, params, defs) == 1
+            1
+        else
+            lambda_stmts_capture_violation(xs, params, defs, i + 1)
+
+fn lambda_elsif_capture_violation(xs: &List[TElsif], params: &List[String], defs: &List[TFn], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_expr_capture_violation(&xs.get(i).cond, params, defs) == 1 || lambda_block_capture_violation(&xs.get(i).body, params, defs) == 1
+        1
+    else
+        lambda_elsif_capture_violation(xs, params, defs, i + 1)
+
+fn lambda_arm_capture_violation(xs: &List[TArm], params: &List[String], defs: &List[TFn], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        if lambda_expr_capture_violation(&a.body, params, defs) == 1 || lambda_block_capture_violation(&a.suite, params, defs) == 1
+            1
+        else
+            lambda_arm_capture_violation(xs, params, defs, i + 1)
+
+fn lambda_expr_has_capture(e: &Expr, params: &List[String]) -> Int ! alloc
+    match e
+        XIdent(name) => lambda_find_sub(params, &name, 0) < 0
+        XCall(_, args, _, _) => lambda_args_have_capture(&args, params, 0)
+        XBin(_, l, r) => lambda_expr_has_capture(&l, params) == 1 || lambda_expr_has_capture(&r, params) == 1
+        XUnary(_, x) => lambda_expr_has_capture(&x, params)
+        XTo(_, x) => lambda_expr_has_capture(&x, params)
+        XField(base, _) => lambda_expr_has_capture(&base, params)
+        XIf(cond, a, b, _, arms) => lambda_expr_has_capture(&cond, params) == 1 || lambda_block_has_capture(&a, params) == 1 || lambda_block_has_capture(&b, params) == 1 || lambda_elsif_has_capture(&arms, params, 0)
+        XBlock(body) => lambda_block_has_capture(&body, params)
+        XWhile(cond, b) => lambda_expr_has_capture(&cond, params) == 1 || lambda_block_has_capture(&b, params) == 1
+        XMatch(scrut, arms) => lambda_expr_has_capture(&scrut, params) == 1 || lambda_arm_has_capture(&arms, params, 0)
+        XTry(x) => lambda_expr_has_capture(&x, params)
+        _ => 0
+
+fn lambda_args_have_capture(xs: &List[Expr], params: &List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_expr_has_capture(&xs.get(i), params) == 1
+        1
+    else
+        lambda_args_have_capture(xs, params, i + 1)
+
+fn lambda_block_has_capture(b: &TBlock, params: &List[String]) -> Int ! alloc
+    if b.stmts.len() > 0
+        1
+    else
+        lambda_expr_has_capture(&b.tail, params)
+
+fn lambda_elsif_has_capture(xs: &List[TElsif], params: &List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_expr_has_capture(&xs.get(i).cond, params) == 1 || lambda_block_has_capture(&xs.get(i).body, params) == 1
+        1
+    else
+        lambda_elsif_has_capture(xs, params, i + 1)
+
+fn lambda_arm_has_capture(xs: &List[TArm], params: &List[String], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_expr_has_capture(&xs.get(i).body, params) == 1 || lambda_block_has_capture(&xs.get(i).suite, params) == 1
+        1
+    else
+        lambda_arm_has_capture(xs, params, i + 1)
+
+fn lambda_collect_block_effects(b: &TBlock, defs: &List[TFn], fx: &mut List[Int]) -> Int ! alloc
+    lambda_collect_stmts_effects(&b.stmts, defs, fx, 0)
+    lambda_collect_expr_effects(&b.tail, defs, fx)
+
+fn lambda_collect_stmts_effects(stmts: &List[TStmt], defs: &List[TFn], fx: &mut List[Int], i: Int) -> Int ! alloc
+    if i >= stmts.len()
+        0
+    else
+        lambda_collect_expr_effects(&stmts.get(i).expr, defs, fx)
+        lambda_collect_stmts_effects(stmts, defs, fx, i + 1)
+
+fn lambda_collect_expr_effects(e: &Expr, defs: &List[TFn], fx: &mut List[Int]) -> Int ! alloc
+    match e
+        XCall(name, args, _, _) =>
+            slot = lambda_effect_slot(&name, defs)
+            if slot >= 0
+                fx.set(slot, 1)
+            lambda_collect_args_effects(&args, defs, fx, 0)
+        XBin(_, l, r) =>
+            lambda_collect_expr_effects(&l, defs, fx)
+            lambda_collect_expr_effects(&r, defs, fx)
+        XUnary(_, x) => lambda_collect_expr_effects(&x, defs, fx)
+        XTo(_, x) => lambda_collect_expr_effects(&x, defs, fx)
+        XField(base, _) => lambda_collect_expr_effects(&base, defs, fx)
+        XIf(cond, a, b, _, arms) =>
+            lambda_collect_expr_effects(&cond, defs, fx)
+            lambda_collect_block_effects(&a, defs, fx)
+            lambda_collect_block_effects(&b, defs, fx)
+            lambda_collect_elsif_effects(&arms, defs, fx, 0)
+        XBlock(body) => lambda_collect_block_effects(&body, defs, fx)
+        XWhile(cond, b) =>
+            lambda_collect_expr_effects(&cond, defs, fx)
+            lambda_collect_block_effects(&b, defs, fx)
+        XMatch(scrut, arms) =>
+            lambda_collect_expr_effects(&scrut, defs, fx)
+            lambda_collect_arm_effects(&arms, defs, fx, 0)
+        XTry(x) => lambda_collect_expr_effects(&x, defs, fx)
+        _ => 0
+
+fn lambda_collect_args_effects(xs: &List[Expr], defs: &List[TFn], fx: &mut List[Int], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        lambda_collect_expr_effects(&xs.get(i), defs, fx)
+        lambda_collect_args_effects(xs, defs, fx, i + 1)
+
+fn lambda_collect_elsif_effects(xs: &List[TElsif], defs: &List[TFn], fx: &mut List[Int], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        lambda_collect_expr_effects(&xs.get(i).cond, defs, fx)
+        lambda_collect_block_effects(&xs.get(i).body, defs, fx)
+        lambda_collect_elsif_effects(xs, defs, fx, i + 1)
+
+fn lambda_collect_arm_effects(xs: &List[TArm], defs: &List[TFn], fx: &mut List[Int], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        lambda_collect_expr_effects(&a.body, defs, fx)
+        lambda_collect_block_effects(&a.suite, defs, fx)
+        lambda_collect_arm_effects(xs, defs, fx, i + 1)
+
+
+fn lambda_inline_fn(owner: &String, f: &TFn, ci: Int, args: &List[Expr], defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    if args.len() != f.params.len()
+        XCall(f.name.dup(), args.clone(), "", 0)
+    else
+        cb = args.get(ci)
+        if lambda_is_expr(&cb) == 0 && lambda_is_lifted_fn(&cb, generated) == 0
+            errs.push("E_TYPE: callback argument must be a lambda or forwarded callback")
+            XNone
+        else
+            lambda_callback_effect_check_if_lambda(&cb, &f.params.get(ci).ty, defs, errs)
+            ns = List.new[String]()
+            vs = List.new[Expr]()
+            prefix = List.new[TStmt]()
+            lambda_inline_fn_bindings(f, ci, args, 0, &mut ns, &mut vs, &mut prefix)
+            body = lambda_expand_block(owner, &f.body, defs, &ns, &vs, depth, generated, errs)
+            block = lambda_prepend_stmts(&prefix, &body)
+            if block.stmts.len() == 0
+                block.tail.clone()
+            else
+                XBlock(block)
+
+fn lambda_inline_fn_bindings(f: &TFn, skip: Int, args: &List[Expr], i: Int, names: &mut List[String], vals: &mut List[Expr], prefix: &mut List[TStmt]) -> Int ! alloc
+    if i >= f.params.len() || i >= args.len()
+        0
+    else
+        p = f.params.get(i)
+        names.push(p.name.dup())
+        if i == skip
+            vals.push(tc_expr(&args.get(i)))
+        else
+            local = "__lambda_forward" + i.to_str()
+            vals.push(XIdent(local.dup()))
+            prefix.push(TStmt(1, local, tc_expr(&args.get(i)), "", 1, XNone, 0, 0, 0))
+        lambda_inline_fn_bindings(f, skip, args, i + 1, names, vals, prefix)
+
+fn lambda_prepend_stmts(prefix: &List[TStmt], body: &TBlock) -> TBlock ! alloc
+    stmts = List.new[TStmt]()
+    lambda_append_stmts(&mut stmts, prefix, 0)
+    lambda_append_stmts(&mut stmts, &body.stmts, 0)
+    TBlock(stmts, body.tail.clone())
+
+fn lambda_append_stmts(dst: &mut List[TStmt], src: &List[TStmt], i: Int) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        dst.push(src.get(i).clone())
+        lambda_append_stmts(dst, src, i + 1)
+
+fn lambda_callback_effect_check_if_lambda(cb: &Expr, ty: &String, defs: &List[TFn], errs: &mut List[String]) -> Int ! alloc
+    if lambda_is_expr(cb) == 1
+        lambda_callback_effect_check(cb, ty, defs, errs)
+    else
+        0
+
+fn lambda_is_lifted_fn(e: &Expr, generated: &List[TFn]) -> Int ! alloc
+    match e
+        XIdent(name) => lambda_fn_named(generated, &name, 0)
+        XCall(name, _, marker, _) => marker.eq("__lambda_caps") == 1 && lambda_fn_named(generated, &name, 0) == 1
+        _ => 0
+
+fn lambda_callback_effect_check(cb: &Expr, ty: &String, defs: &List[TFn], errs: &mut List[String]) -> Int ! alloc
+    if lambda_callback_effect_overrun(cb, ty, defs) == 1
+        errs.push("E_EFFECT: callback effects exceed the function type bound")
+    0
+
+fn lambda_is_expr(e: &Expr) -> Int ! alloc
+    match e
+        XLambda(_, _) => 1
+        XLambdaBlock(_, _) => 1
+        _ => 0
+
+fn lambda_callback_effect_overrun(cb: &Expr, ty: &String, defs: &List[TFn]) -> Int ! alloc
+    bang = ty.index_of("!")
+    if bang < 0
+        0
+    else
+        allowed = ty.slice(bang + 1, ty.len())
+        match cb
+            XLambda(_, body) => lambda_effect_expr_overrun(&body, &allowed, defs)
+            XLambdaBlock(_, body) => lambda_effect_block_overrun(&body, &allowed, defs)
+            _ => 0
+
+fn lambda_effect_slot(name: &String, defs: &List[TFn]) -> Int ! alloc
+    fi = lambda_find_fn(defs, name, 0)
+    if fi >= 0
+        f = defs.get(fi)
+        lambda_effect_list_slot(&f.fx, 0)
+    elsif name.eq("print_str") || name.eq("print_int") || name.eq("print_float") || name.eq("print_bool") || name.eq("eprint_str")
+        0
+    elsif name.eq("strdup") || name.eq("str_concat") || name.eq("bytes_new") || name.eq("list_new")
+        1
+    else
+        -1
+
+fn lambda_effect_list_slot(fx: &List[Int], i: Int) -> Int ! alloc
+    if i >= fx.len()
+        -1
+    elsif fx.get(i) == 1
+        i
+    else
+        lambda_effect_list_slot(fx, i + 1)
+
+fn lambda_effect_allowed(allowed: &String, slot: Int) -> Int ! alloc
+    match slot
+        0 => allowed.contains("io")
+        1 => allowed.contains("alloc")
+        2 => allowed.contains("panic")
+        3 => allowed.contains("gpu")
+        4 => allowed.contains("tpu")
+        _ => 1
+
+fn lambda_effect_expr_overrun(e: &Expr, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    match e
+        XCall(name, args, _, _) => lambda_effect_call_overrun(&name, &args, allowed, defs)
+        XBin(_, l, r) => lambda_effect_pair_overrun(&l, &r, allowed, defs)
+        XUnary(_, inner) => lambda_effect_expr_overrun(&inner, allowed, defs)
+        XTo(_, inner) => lambda_effect_expr_overrun(&inner, allowed, defs)
+        XField(base, _) => lambda_effect_expr_overrun(&base, allowed, defs)
+        XIf(cond, then_b, else_b, _, arms) => lambda_effect_if_overrun(&cond, &then_b, &else_b, &arms, allowed, defs)
+        XBlock(body) => lambda_effect_block_overrun(&body, allowed, defs)
+        XWhile(cond, body) => lambda_effect_if_overrun(&cond, &body, &TBlock(List.new[TStmt](), XNone), &List.new[TElsif](), allowed, defs)
+        XOn(_, body, _, _) => lambda_effect_block_overrun(&body, allowed, defs)
+        XMatch(scrut, arms) => lambda_effect_match_overrun(&scrut, &arms, allowed, defs)
+        XLambda(_, body) => lambda_effect_expr_overrun(&body, allowed, defs)
+        XLambdaBlock(_, body) => lambda_effect_block_overrun(&body, allowed, defs)
+        XTry(inner) => lambda_effect_expr_overrun(&inner, allowed, defs)
+        _ => 0
+
+fn lambda_effect_call_overrun(name: &String, args: &List[Expr], allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    slot = lambda_effect_slot(name, defs)
+    if slot >= 0 && lambda_effect_allowed(allowed, slot) == 0
+        1
+    else
+        lambda_effect_args_overrun(args, 0, allowed, defs)
+
+fn lambda_effect_args_overrun(args: &List[Expr], i: Int, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if i >= args.len()
+        0
+    elsif lambda_effect_expr_overrun(&args.get(i), allowed, defs) == 1
+        1
+    else
+        lambda_effect_args_overrun(args, i + 1, allowed, defs)
+
+fn lambda_effect_pair_overrun(l: &Expr, r: &Expr, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if lambda_effect_expr_overrun(l, allowed, defs) == 1
+        1
+    else
+        lambda_effect_expr_overrun(r, allowed, defs)
+
+fn lambda_effect_if_overrun(cond: &Expr, then_b: &TBlock, else_b: &TBlock, arms: &List[TElsif], allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if lambda_effect_expr_overrun(cond, allowed, defs) == 1
+        1
+    elsif lambda_effect_block_overrun(then_b, allowed, defs) == 1
+        1
+    elsif lambda_effect_block_overrun(else_b, allowed, defs) == 1
+        1
+    else
+        lambda_effect_elsifs_overrun(arms, 0, allowed, defs)
+
+fn lambda_effect_block_overrun(b: &TBlock, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if lambda_effect_stmts_overrun(&b.stmts, 0, allowed, defs) == 1
+        1
+    else
+        lambda_effect_expr_overrun(&b.tail, allowed, defs)
+
+fn lambda_effect_stmts_overrun(sts: &List[TStmt], i: Int, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if i >= sts.len()
+        0
+    elsif lambda_effect_expr_overrun(&sts.get(i).expr, allowed, defs) == 1
+        1
+    else
+        lambda_effect_stmts_overrun(sts, i + 1, allowed, defs)
+
+fn lambda_effect_elsifs_overrun(xs: &List[TElsif], i: Int, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_effect_expr_overrun(&xs.get(i).cond, allowed, defs) == 1 || lambda_effect_block_overrun(&xs.get(i).body, allowed, defs) == 1
+        1
+    else
+        lambda_effect_elsifs_overrun(xs, i + 1, allowed, defs)
+
+fn lambda_effect_match_overrun(scrut: &Expr, arms: &List[TArm], allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if lambda_effect_expr_overrun(scrut, allowed, defs) == 1
+        1
+    else
+        lambda_effect_arms_overrun(arms, 0, allowed, defs)
+
+fn lambda_effect_arms_overrun(xs: &List[TArm], i: Int, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_effect_expr_overrun(&xs.get(i).body, allowed, defs) == 1 || lambda_effect_block_overrun(&xs.get(i).suite, allowed, defs) == 1
+        1
+    else
+        lambda_effect_arms_overrun(xs, i + 1, allowed, defs)
+
+fn lambda_param_names(params: &List[TParam]) -> List[String] ! alloc
+    out = List.new[String]()
+    lambda_param_names_go(params, 0, &mut out)
+    out
+
+fn lambda_param_names_go(params: &List[TParam], i: Int, out: &mut List[String]) -> Int ! alloc
+    if i >= params.len()
+        0
+    else
+        out.push(params.get(i).name.dup())
+        lambda_param_names_go(params, i + 1, out)
+
+fn lambda_apply_callback(owner: &String, cb: &Expr, args: &List[Expr], defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    match cb
+        XLambda(params, body) => lambda_inline_expr(owner, &body, &params, args, defs, depth, generated, errs)
+        XLambdaBlock(params, body) => lambda_inline_block_body(owner, &body, &params, args, defs, depth, generated, errs)
+        XCall(name, captures, marker, _) =>
+            if marker.eq("__lambda_caps") == 1
+                XCall(name.dup(), lambda_prepend_args(&captures, args), "", 0)
+            else
+                XNone
+        XIdent(name) => XCall(name.dup(), args.clone(), "", 0)
+        _ => XNone
+
+fn lambda_prepend_args(prefix: &List[Expr], args: &List[Expr]) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    lambda_append_exprs(&mut out, prefix, 0)
+    lambda_append_exprs(&mut out, args, 0)
+    out
+
+fn lambda_append_exprs(dst: &mut List[Expr], src: &List[Expr], i: Int) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        dst.push(tc_expr(&src.get(i)))
+        lambda_append_exprs(dst, src, i + 1)
+
+fn lambda_inline_expr(owner: &String, body: &Expr, params: &String, args: &List[Expr], defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    ps = lambda_param_list(params)
+    if ps.len() != args.len()
+        errs.push("E_TYPE: callback arity mismatch")
+        XNone
+    else
+        lambda_inline_expr_go(owner, body, &ps, args, defs, depth, generated, errs)
+
+fn lambda_inline_expr_go(owner: &String, body: &Expr, ps: &List[String], args: &List[Expr], defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    lambda_expand_expr(owner, body, defs, ps, args, depth, generated, errs)
+
+fn lambda_inline_block_body(owner: &String, body: &TBlock, params: &String, args: &List[Expr], defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    ps = lambda_param_list(params)
+    if ps.len() != args.len()
+        errs.push("E_TYPE: callback arity mismatch")
+        XNone
+    else
+        block = lambda_expand_block(owner, body, defs, &ps, args, depth, generated, errs)
+        XBlock(block)
+
+fn lambda_expand_elsifs(owner: &String, xs: &List[TElsif], defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    lambda_expand_elsifs_go(owner, xs, 0, defs, names, vals, depth, generated, errs, &mut out)
+    out
+
+fn lambda_expand_elsifs_go(owner: &String, xs: &List[TElsif], i: Int, defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String], out: &mut List[TElsif]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        out.push(TElsif(lambda_expand_expr(owner, &a.cond, defs, names, vals, depth, generated, errs), lambda_expand_block(owner, &a.body, defs, names, vals, depth, generated, errs)))
+        lambda_expand_elsifs_go(owner, xs, i + 1, defs, names, vals, depth, generated, errs, out)
+
+fn lambda_expand_arms(owner: &String, xs: &List[TArm], defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> List[TArm] ! alloc
+    out = List.new[TArm]()
+    lambda_expand_arms_go(owner, xs, 0, defs, names, vals, depth, generated, errs, &mut out)
+    out
+
+fn lambda_expand_arms_go(owner: &String, xs: &List[TArm], i: Int, defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String], out: &mut List[TArm]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        out.push(TArm(tc_pat(&a.pat), lambda_expand_expr(owner, &a.body, defs, names, vals, depth, generated, errs), lambda_expand_block(owner, &a.suite, defs, names, vals, depth, generated, errs), a.has_suite))
+        lambda_expand_arms_go(owner, xs, i + 1, defs, names, vals, depth, generated, errs, out)

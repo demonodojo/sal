@@ -60,6 +60,16 @@ pub fn fn_body_uses_alloc(f: &FnDef, env: &StringEnv) -> bool {
     used.alloc
 }
 
+/// Effects required by a lifted lambda body, using the declared effects of this program's
+/// functions and the same builtin accounting as the regular effect pass.
+pub fn required_effects_for_block(block: &Block, programs: &[&Program]) -> Vec<Effect> {
+    let mut used = EffectsUsed::default();
+    used.callees = callee_effects(programs);
+    let mut strings = StringEnv::from_module_graph(programs);
+    scan_block(block, &mut used, &mut strings);
+    used.into_list()
+}
+
 /// Whether evaluating `e` allocates (for `@stack`).
 pub fn expr_uses_alloc(e: &Expr, env: &StringEnv) -> bool {
     let mut used = EffectsUsed::default();

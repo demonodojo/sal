@@ -282,6 +282,7 @@ fn fr_expr_uses(e: &Expr, name: &String) -> Int ! alloc
             else
                 fr_expr_uses(&r, name)
         XUnary(op, x) => fr_expr_uses(&x, name)
+        XBlock(body) => fr_block_uses(&body, name)
         XIf(cond, then_b, else_b, has_else, elsifs) => fr_if_uses(&cond, &then_b, &else_b, has_else, &elsifs, name)
         XMatch(scrut, arms) => fr_match_uses(&scrut, &arms, name)
         XWhile(cond, body) =>
@@ -508,6 +509,7 @@ fn fr_ex(c: &FRC, e: &Expr, moving: Int) -> Int ! alloc
         XTo(place, inner) => fr_ex(c, &inner, moving)
         XTry(inner) => fr_ex(c, &inner, moving)
         XOn(place, body, is_kern, has_index) => fr_blk(c, &body)
+        XBlock(body) => fr_blk(c, &body)
         XIf(cond, then_b, else_b, has_else, elsifs) => fr_if(c, &cond, &then_b, &else_b, &elsifs)
         XWhile(cond, body) => fr_while(c, &cond, &body)
         XMatch(scrut, arms) => fr_match(c, &scrut, &arms)

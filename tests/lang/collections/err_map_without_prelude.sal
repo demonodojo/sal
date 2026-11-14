@@ -1,0 +1,5 @@
+# error: E_TYPE
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.map x => x + 1
+    0

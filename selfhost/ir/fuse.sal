@@ -119,6 +119,7 @@ fn lower_expr(cx: &mut Cx, e: &Expr) -> Int ! alloc
         XOn(place, body, is_kern, has_index) => lower_on(cx, &place, &body)
         XCall(name, args, targs, xp) => lower_call(cx, &name, &args, &targs)
         XField(base, field) => lower_field(cx, &base, &field)
+        XBlock(body) => lower_block_value(cx, &body)
         XIf(cond, then_b, else_b, has_else, elsifs) => lower_if(cx, &cond, &then_b, &else_b, &elsifs)
         XWhile(cond, body) => lower_while(cx, &cond, &body)
         XUnary(op, inner) => lower_unary(cx, &op, &inner)
@@ -446,12 +447,12 @@ fn cx_fn_index_go(fns: &List[TFn], name: &String, i: Int, n: Int) -> Int ! alloc
         cx_fn_index_go(fns, name, i + 1, n)
 
 fn maybe_box_any(cx: &mut Cx, pt: &String, arg: &Expr, payload: Int) -> Int ! alloc
-    proto = ty_any_protocol(pt)
+    proto = ty_any_protocol(&ty_deref(pt))
     if str_len(proto) == 0
         payload
     else
         at = texpr_type(&cx.env, arg)
-        tname = ty_nominal(&at)
+        tname = ty_nominal(&ty_deref(&at))
         if str_len(tname) == 0
             payload
         elsif type_claims_ctx(&cx.env.structs, &cx.enums, &tname, &proto) == 0
@@ -495,7 +496,7 @@ fn lower_protocol_call(cx: &mut Cx, recv: &String, fld: &String, args: &List[Exp
         d
     else
         p = list_get(&cx.protocols, pi)
-        slot = proto_method_slot(&p.methods, fld, 0, list_len(&p.methods))
+        slot = proto_dynamic_slot(&p.methods, fld, 0, 0)
         if slot < 0
             d
         else
@@ -511,7 +512,7 @@ fn lower_call(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> 
         recv = str_slice(name, 0, dot)
         fld = str_slice(name, dot + 1, str_len(name))
         rty = trim_spaces(tenv_type(&cx.env, &recv))
-        proto = ty_any_protocol(&rty)
+        proto = ty_any_protocol(&ty_deref(&rty))
         if str_len(proto) > 0
             lower_protocol_call(cx, &recv, &fld, args, &proto)
         elsif is_struct_ctor_call(cx, name, args) == 1
@@ -1000,6 +1001,7 @@ fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int 
     base_snap = snap_binds(binds, 0, n0, vec_new())
     slen = tenv_len(&cx.env)
     _a = cx_begin_body(cx)
+    bind_variant_payloads(cx, scrut, &pat.name, &pat.args, 0, pat.args.len(), pat.kind)
     if pat.kind == 1
         _bd = cx_bind(cx, str_own(&pat.name), scrut)
     else
@@ -1052,7 +1054,13 @@ fn match_has_text_pat(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
 # The condition of one arm over `scrut`: `_` and a binding are always true.
 fn match_arm_cond(cx: &mut Cx, scrut: Int, pat: &TPat) -> Int ! alloc
     k = pat.kind
-    if k == 2
+    if k == 3
+        low = fresh(cx)
+        ir_push(cx, ir_etag(low, scrut))
+        d = fresh(cx)
+        ir_push(cx, ir_bin(d, str_as_int(&"eq"), low, str_own(&switch_pattern_tag(cx, pat).to_str())))
+        d
+    elsif k == 2
         d = fresh(cx)
         _p = ir_push(cx, ir_bin(d, str_as_int(&"eq"), scrut, str_own(&pat.ival.to_str())))
         d
@@ -1823,6 +1831,7 @@ fn assigned_bin(l: &Expr, r: &Expr, names: Int) -> Int ! alloc
 
 fn assigned_expr(e: &Expr, names: Int) -> Int ! alloc
     match e
+        XBlock(body) => assigned_block(&body, names)
         XIf(cond, then_b, else_b, has_else, elsifs) => assigned_if(&cond, &then_b, &else_b, &elsifs, names)
         XOn(place, body, is_kern, has_index) => assigned_block(&body, names)
         XWhile(cond, body) => assigned_while(&cond, &body, names)
@@ -2345,6 +2354,7 @@ fn mv_expr(e: &Expr, names: Int, md: Int) -> Int ! alloc
         XOn(place, body, is_kern, has_index) => mv_block(&body, names, md)
         XWhile(cond, body) => mv_while(&cond, &body, names, md)
         XMatch(scrut, arms) => mv_match(&scrut, &arms, names, md)
+        XBlock(body) => mv_block(&body, names, md)
         XIf(cond, then_b, else_b, has_else, elsifs) => mv_if(&cond, &then_b, &else_b, &elsifs, names, md)
         _ => 0
 
@@ -3125,6 +3135,7 @@ fn rel_expr(e: &Expr, out: Int) -> Int ! alloc
         XField(base, field) => rel_expr(&base, out)
         XOn(place, body, is_kern, has_index) => rel_block(&body, out)
         XWhile(cond, body) => rel_while(&cond, &body, out)
+        XBlock(body) => rel_block(&body, out)
         XIf(cond, then_b, else_b, has_else, elsifs) => rel_if(&cond, &then_b, &else_b, &elsifs, out)
         XMatch(scrut, arms) => rel_match(&scrut, &arms, out)
         XLambda(param, body) => rel_expr(&body, out)
@@ -3204,7 +3215,9 @@ fn ret_desc_keys(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         0
     else
         f = list_get(fns, i)
-        h = map_get(m, str_own(&("desc:" + trim_spaces(f.ret))))
+        drop = map_get(m, str_own(&("dropkind:" + trim_spaces(f.ret.clone()))))
+        map_put(m, str_own(&("dropfn:" + f.name)), drop)
+        h = map_get(m, str_own(&("desc:" + trim_spaces(f.ret.clone()))))
         if h == 0
             ret_desc_keys(m, fns, i + 1, n)
         else
@@ -3226,6 +3239,8 @@ fn flat_map_structs_t(m: Int, sts: &List[TStruct], enums: &List[TEnum], i: Int, 
         0
     else
         sd = list_get(sts, i)
+        if struct_glue_fn(&sd, sts, enums).name.len() > 0
+            map_put(m, str_own(&("dropkind:" + sd.name)), str_own(&("drop." + sd.name)))
         if str_len(desc_struct_text(sts, enums, &sd.name, 0)) > 0
             flags = vec_new()
             _f = field_classes_t(flags, enums, &sd.fields, 0, list_len(&sd.fields))

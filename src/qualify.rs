@@ -428,7 +428,24 @@ fn qualify_program(
                 }
                 qualify_expr(&mut c.value, &ctx)?;
             }
-            Item::Frame(_) | Item::Import(_) | Item::Protocol(_) => {}
+            Item::Protocol(protocol) => {
+                for method in &mut protocol.methods {
+                    qualify_type(&mut method.ret, &ctx)?;
+                    for param in &mut method.params {
+                        qualify_type(&mut param.ty, &ctx)?;
+                    }
+                    if let Some(body) = &mut method.body {
+                        qualify_block(body, &ctx)?;
+                    }
+                }
+            }
+            Item::Impl(imp) => {
+                qualify_type(&mut imp.target, &ctx)?;
+                for claim in &mut imp.protocols {
+                    for arg in &mut claim.args { qualify_type(arg, &ctx)?; }
+                }
+            }
+            Item::Frame(_) | Item::Import(_) => {}
         }
     }
     Ok(())
@@ -508,7 +525,26 @@ fn rename_clashing_defs(
                 }
                 rename_expr_refs(&mut c.value, &renames, &mut HashSet::new());
             }
-            Item::Frame(_) | Item::Import(_) | Item::Protocol(_) => {}
+            Item::Protocol(protocol) => {
+                for method in &mut protocol.methods {
+                    rename_type_refs(&mut method.ret, &renames);
+                    let mut bound = HashSet::from(["self".to_string()]);
+                    for param in &mut method.params {
+                        rename_type_refs(&mut param.ty, &renames);
+                        bound.insert(param.name.clone());
+                    }
+                    if let Some(body) = &mut method.body {
+                        rename_block_refs(body, &renames, &mut bound);
+                    }
+                }
+            }
+            Item::Impl(imp) => {
+                rename_type_refs(&mut imp.target, &renames);
+                for claim in &mut imp.protocols {
+                    for arg in &mut claim.args { rename_type_refs(arg, &renames); }
+                }
+            }
+            Item::Frame(_) | Item::Import(_) => {}
         }
     }
 }

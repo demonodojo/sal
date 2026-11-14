@@ -1,0 +1,7 @@
+fn adjustment() -> Int
+    3
+
+protocol Value
+    method value(&self) -> Int
+    method adjusted(&self) -> Int
+        self.value() + adjustment()

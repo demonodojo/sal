@@ -1,0 +1,8 @@
+# error: E_TYPE
+protocol Missing[T]
+    method unknown(&self) -> Int
+
+impl List[T] Missing[T]
+
+fn main() -> Int
+    0

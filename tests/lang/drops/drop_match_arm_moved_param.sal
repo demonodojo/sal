@@ -1,0 +1,18 @@
+# exit: 5
+# A match arm that hands out a parameter moves it on that path only.
+fn pick(a: String, b: String, k: Int) -> String
+    match k
+        0 => a
+        _ => b
+
+fn pickb(a: String, b: String, k: Int) -> String
+    match k
+        0 =>
+            a
+        _ =>
+            b
+
+fn main() -> Int ! alloc
+    x = pick(d"aa", d"bbb", 0)
+    y = pickb(d"cc", d"ddd", 1)
+    x.len() + y.len()

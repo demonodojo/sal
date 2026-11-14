@@ -1,0 +1,14 @@
+# exit: 14
+protocol Value
+    method value(&self) -> Int
+    method doubled(&self) -> Int
+        self.value() + self.value()
+
+struct Number impl Value
+    n: Int
+
+method Number.value(&self) -> Int
+    self.n
+
+fn main() -> Int
+    Number(7).doubled()

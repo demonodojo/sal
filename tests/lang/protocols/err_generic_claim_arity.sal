@@ -1,0 +1,9 @@
+# error: E_TYPE
+protocol Getter[T]
+    method get(self) -> T
+
+struct Number impl Getter
+    n: Int
+
+fn main() -> Int
+    0

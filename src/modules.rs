@@ -113,9 +113,30 @@ pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGr
         order,
     };
     crate::qualify::qualify_module_graph(&mut graph)?;
+    prepare_graph_protocols(&mut graph)?;
     resolve_graph_methods(&mut graph)?;
     monomorphize_graph(&mut graph)?;
     Ok(graph)
+}
+
+fn prepare_graph_protocols(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnostic>> {
+    for i in 0..graph.order.len() {
+        if !crate::protocols::has_protocols(&graph.order[i].program) {
+            continue;
+        }
+        let env = type_env_for_module(&graph.order[i], graph)?;
+        let mut program = graph.order[i].program.clone();
+        crate::protocols::instantiate_provided_with_protocols(&mut program, &env.protocols);
+        let module = LoadedModule {
+            path: graph.order[i].path.clone(),
+            has_methods: graph.order[i].has_methods,
+            program,
+        };
+        let types = type_env_for_module(&module, graph)?;
+        crate::protocols::check_program_protocols(&module.program, &types)?;
+        graph.order[i].program = module.program;
+    }
+    Ok(())
 }
 
 /// `specialize::monomorphize` per module, in dependency order. A module specializes its own
@@ -156,8 +177,18 @@ fn monomorphize_graph(graph: &mut ModuleGraph) -> Result<(), Vec<Diagnostic>> {
             let m = LoadedModule { path: path.clone(), program: p.clone(), has_methods };
             type_env_for_module(&m, g).ok()
         })?;
+        let current = LoadedModule { path: path.clone(), program: prog.clone(), has_methods };
+        let env = type_env_for_module(&current, graph)?;
+        crate::methods::resolve_methods(&mut prog, &env);
+        crate::specialize::specialize_lambdas_graph(&mut prog, &|p: &Program| {
+            let m = LoadedModule { path: path.clone(), program: p.clone(), has_methods };
+            type_env_for_module(&m, g).ok()
+        })?;
         existing.extend(made);
         graph.order[i].program = prog;
+    }
+    for module in &mut graph.order {
+        module.program.items.retain(|item| !matches!(item, Item::Fn(f) if f.params.iter().any(|p| matches!(p.ty, crate::ast::Type::Fn { .. }))));
     }
     {
         let mut progs: Vec<&mut Program> = graph.order.iter_mut().map(|m| &mut m.program).collect();
@@ -271,10 +302,6 @@ fn load_module_recursive(
     crate::loops::desugar_break(&mut program)?;
     let has_methods = crate::methods::has_methods(&program);
     crate::methods::desugar_method_defs(&mut program)?;
-    if crate::protocols::has_protocols(&program) {
-        let types = crate::infer::type_env_of_program(&program);
-        crate::protocols::check_program_protocols(&program, &types)?;
-    }
 
     for item in &program.items {
         let Item::Import(imp) = item else {
@@ -330,7 +357,7 @@ pub fn exports_for_module(module: &LoadedModule) -> ModuleExports {
             Item::Protocol(p) => {
                 out.protocols.insert(p.name.clone(), p.clone());
             }
-            Item::Const(_) | Item::Import(_) => {}
+            Item::Const(_) | Item::Import(_) | Item::Impl(_) => {}
         }
     }
     out
@@ -708,7 +735,7 @@ pub fn type_env_for_module(
                     )]);
                 }
             }
-            Item::Import(_) => {}
+            Item::Import(_) | Item::Impl(_) => {}
         }
     }
     for item in &module.program.items {

@@ -1,0 +1,7 @@
+# exit: 42
+fn apply(f: fn(Int) -> Int, x: Int) -> Int
+    f(x)
+
+fn main() -> Int
+    prefix = "x"
+    apply(i => prefix.len() + i, 41)

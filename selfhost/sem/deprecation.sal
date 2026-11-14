@@ -252,6 +252,7 @@ fn dep_expr(ds: &DepSet, w: &Where, out: Int, tc: &mut TyCur, e: &Expr) -> Int !
         XTo(place, inner) => dep_expr(ds, w, out, tc, &inner)
         XOn(place, body, kern, idx) => dep_block(ds, w, out, tc, &body)
         XIf(c, t, el, has_else, elsifs) => dep_if(ds, w, out, tc, &c, &t, &el, &elsifs)
+        XBlock(body) => dep_block(ds, w, out, tc, &body)
         XWhile(c, body) => dep_while(ds, w, out, tc, &c, &body)
         XField(base, fld) => dep_expr(ds, w, out, tc, &base)
         XLambda(param, body) => dep_expr(ds, w, out, tc, &body)

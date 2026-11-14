@@ -153,8 +153,10 @@ fn mr_expr(e: &Expr, res: &HT) -> Int ! alloc
         XWhile(cond, body) => mr_while(&cond, &body, res)
         XField(base, _) => mr_expr(&base, res)
         XLambda(_, body) => mr_expr(&body, res)
+        XLambdaBlock(_, body) => mr_block(&body, res)
         XUnary(_, inner) => mr_expr(&inner, res)
         XTry(inner) => mr_expr(&inner, res)
+        XBlock(body) => mr_block(&body, res)
         XMatch(scrut, arms) => mr_match(&scrut, &arms, res)
         _ => 0
 

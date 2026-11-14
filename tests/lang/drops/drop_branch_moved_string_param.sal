@@ -1,0 +1,12 @@
+# exit: 5
+# The parameter a branch does not return is released behind its drop flag.
+fn pick(a: String, b: String, first: Bool) -> String
+    if first
+        a
+    else
+        b
+
+fn main() -> Int ! alloc
+    x = pick(d"aa", d"bbb", true)
+    y = pick(d"cc", d"ddd", false)
+    x.len() + y.len()

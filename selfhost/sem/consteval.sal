@@ -455,6 +455,7 @@ fn ce_fold_expr(e: Expr, vals: &List[CVal], bound: &mut List[String]) -> Expr ! 
         XIf(cond, then_b, else_b, has_else, elsifs) => XIf(ce_fold_expr(cond, vals, bound), ce_fold_block(&then_b, vals, bound), ce_fold_block(&else_b, vals, bound), has_else, ce_fold_elsifs(&elsifs, vals, bound))
         XMatch(scrut, arms) => XMatch(ce_fold_expr(scrut, vals, bound), ce_fold_arms(&arms, vals, bound))
         XOn(place, body, kern, idx) => XOn(place, ce_fold_block(&body, vals, bound), kern, idx)
+        XBlock(body) => XBlock(ce_fold_block(&body, vals, bound))
         XWhile(cond, body) => XWhile(ce_fold_expr(cond, vals, bound), ce_fold_block(&body, vals, bound))
         XTry(inner) => XTry(ce_fold_expr(inner, vals, bound))
         XLambda(nm, body) => ce_fold_lambda(&nm, body, vals, bound)

@@ -575,6 +575,7 @@ fn track_expr_go(c: &mut OC, e: &Expr) -> String ! alloc
         XTo(place, inner) => track_to(c, &inner)
         XOn(place, body, is_kern, has_index) => track_on(c, &body)
         XField(base, field) => track_field(c, e, &base)
+        XBlock(body) => track_inline_block(c, &body)
         XIf(cond, then_b, else_b, has_else, elsifs) => track_if(c, &cond, &then_b, &else_b, has_else, &elsifs)
         XMatch(scrut, arms) => track_match(c, &scrut, &arms)
         XWhile(cond, body) => track_while(c, &cond, &body)
@@ -597,6 +598,12 @@ fn track_to(c: &mut OC, inner: &Expr) -> String ! alloc
     _m = consume_if_unique(c, inner, &ty)
     ty
 
+fn track_inline_block(c: &mut OC, body: &TBlock) -> String ! alloc
+    mark = tenv_len(&c.env)
+    track_block(c, body)
+    ty = own_expr_ty(c, &body.tail)
+    tenv_truncate(&mut c.env, mark)
+    ty
 fn track_on(c: &mut OC, body: &TBlock) -> String ! alloc
     _t = track_block_scoped(c, body)
     "Unit"
@@ -1153,6 +1160,7 @@ fn ar_expr(e: &Expr, f: &TFn, names: &mut List[String], roots: &mut List[String]
         XWhile(cond, body) =>
             flags2 = ar_expr(&cond, f, names, roots, table, muts, flags)
             ar_block(&body, f, names, roots, table, muts, &flags2)
+        XBlock(body) => ar_block(&body, f, names, roots, table, muts, flags)
         XOn(_place, body, _k, _i) => ar_block(&body, f, names, roots, table, muts, flags)
         XMatch(sc, arms) =>
             flags2 = ar_expr(&sc, f, names, roots, table, muts, flags)
@@ -1311,6 +1319,7 @@ fn ar_err_expr(e: &Expr, f: &TFn, names: &mut List[String], roots: &mut List[Str
         XTry(inner) => ar_err_expr(&inner, f, names, roots, table, muts)
         XField(base, _field) => ar_err_expr(&base, f, names, roots, table, muts)
         XLambda(_param, body) => ar_err_expr(&body, f, names, roots, table, muts)
+        XBlock(body) => ar_err_block(&body, f, names, roots, table, muts)
         XIf(cond, th, el, _h, els) =>
             msg = ar_err_expr(&cond, f, names, roots, table, muts)
             if str_len(msg) > 0

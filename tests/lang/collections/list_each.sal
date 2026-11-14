@@ -1,0 +1,12 @@
+# stdout: xx
+# exit: 0
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! io, alloc
+    xs = List.new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.each x =>
+        print_str("x")
+        done = 0
+    0

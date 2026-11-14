@@ -1,0 +1,7 @@
+# error: E_TYPE
+protocol Value
+    method value(self) -> Int
+        self.missing()
+
+fn main() -> Int
+    0

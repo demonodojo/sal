@@ -1,0 +1,10 @@
+# exit: 60
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    ys = xs.map x => x * 10
+    ys.reduce(0) (acc, y) => acc + y
