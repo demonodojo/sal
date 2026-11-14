@@ -370,7 +370,9 @@ fn lambda_guess_block_type(body: &TBlock, params: &List[String], tys: &List[Stri
     names = params.clone()
     types = tys.clone()
     lambda_guess_block_stmts(&body.stmts, 0, &mut names, &mut types, defs)
-    lambda_guess_expr_type(&body.tail, &names, &types, &List.new[String](), defs)
+    match body.tail
+        XNone => "Unit"
+        _ => lambda_guess_expr_type(&body.tail, &names, &types, &List.new[String](), defs)
 
 fn lambda_guess_block_stmts(stmts: &List[TStmt], i: Int, names: &mut List[String], tys: &mut List[String], defs: &List[TFn]) -> Int ! alloc
     if i >= stmts.len()
