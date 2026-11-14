@@ -965,6 +965,8 @@ fn fn_facts<'a>(f: &FnDef, variants: &'a Variants, ro: &'a ReadOnly, cons: &'a R
         param_tys: HashMap::new(),
         box_shell: HashSet::new(),
         moved: crate::borrowck::published_moved_locals(&f.name),
+        branch_depth: 0,
+        branch_moved: HashSet::new(),
     };
     for p in &f.params {
         facts.bind(&p.name);
