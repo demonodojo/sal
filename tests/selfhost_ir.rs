@@ -1,9 +1,9 @@
 use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
 
 use sal_compiler::compile::compile_file;
 use sal_compiler::CompileOptions;
@@ -24,8 +24,16 @@ static LINK_LOCK: Mutex<()> = Mutex::new(());
 static STAGE1_LOCK: Mutex<()> = Mutex::new(());
 
 fn stage1_output(mut cmd: std::process::Command) -> std::process::Output {
-    let _guard = STAGE1_LOCK.lock().expect("stage1 lock");
-    cmd.output().expect("run stage1")
+    std::thread::Builder::new()
+        .name("sal-stage1".into())
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let _guard = STAGE1_LOCK.lock().expect("stage1 lock");
+            cmd.output().expect("run stage1")
+        })
+        .expect("spawn stage1")
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
 }
 
 /// Cross-process lock so Cursor (one test per process) and CI share the same
@@ -51,51 +59,62 @@ fn with_selfhost_build_lock<T>(f: impl FnOnce() -> T) -> T {
     out
 }
 
-fn file_mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).and_then(|m| m.modified()).ok()
-}
-
-fn max_selfhost_source_mtime() -> Option<SystemTime> {
-    let mut newest: Option<SystemTime> = None;
-    fn walk(dir: &Path, newest: &mut Option<SystemTime>) {
+fn selfhost_fingerprint(instrument: bool) -> u64 {
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
         let Ok(rd) = fs::read_dir(dir) else {
             return;
         };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
-                walk(&p, newest);
+                walk(&p, files);
             } else if p.extension().is_some_and(|x| x == "sal") {
-                if let Some(t) = file_mtime(&p) {
-                    *newest = Some(newest.map_or(t, |n| n.max(t)));
-                }
+                files.push(p);
             }
         }
     }
-    walk(&root().join("selfhost"), &mut newest);
-    // Runtime is linked into stage1; a newer runtime must rebuild it.
-    if let Some(t) = file_mtime(&root().join("runtime").join("sal_runtime.c")) {
-        newest = Some(newest.map_or(t, |n| n.max(t)));
+
+    let root = root();
+    let mut files = Vec::new();
+    walk(&root.join("selfhost"), &mut files);
+    files.push(root.join("std/prelude.sal"));
+    files.push(root.join("runtime/sal_runtime.c"));
+    files.sort();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    instrument.hash(&mut hasher);
+    for path in files {
+        path.strip_prefix(&root)
+            .expect("source path under repository")
+            .hash(&mut hasher);
+        fs::read(path).expect("read selfhost build input").hash(&mut hasher);
     }
-    newest
+    fs::read(env!("CARGO_BIN_EXE_sal"))
+        .expect("read bootstrap binary")
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
-/// Reuse a binary if it is at least as new as the bootstrap `sal` and the selfhost sources.
-fn stage_bin_fresh(bin: &Path) -> bool {
-    let Some(bin_t) = file_mtime(bin) else {
-        return false;
-    };
-    if let Some(sal_t) = file_mtime(Path::new(env!("CARGO_BIN_EXE_sal"))) {
-        if bin_t < sal_t {
-            return false;
-        }
-    }
-    if let Some(src_t) = max_selfhost_source_mtime() {
-        if bin_t < src_t {
-            return false;
-        }
-    }
-    true
+fn stage2_fingerprint(stage1: &Path) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    fs::read(stage1)
+        .expect("read stage1 build input")
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+fn fingerprint_path(bin: &Path) -> PathBuf {
+    bin.with_extension("fingerprint")
+}
+
+fn fingerprint_matches(bin: &Path, fingerprint: u64) -> bool {
+    bin.is_file()
+        && fs::read_to_string(fingerprint_path(bin))
+            .is_ok_and(|stored| stored == fingerprint.to_string())
+}
+
+fn write_fingerprint(bin: &Path, fingerprint: u64) {
+    fs::write(fingerprint_path(bin), fingerprint.to_string()).expect("write build fingerprint");
 }
 
 fn corpus_files() -> Vec<PathBuf> {
@@ -157,7 +176,8 @@ fn stage1_path(instrument: bool) -> PathBuf {
 fn ensure_stage1(instrument: bool) -> PathBuf {
     let out = stage1_path(instrument);
     with_selfhost_build_lock(|| {
-        if stage_bin_fresh(&out) {
+        let fingerprint = selfhost_fingerprint(instrument);
+        if fingerprint_matches(&out, fingerprint) {
             return out.clone();
         }
         let dest = out.clone();
@@ -169,6 +189,7 @@ fn ensure_stage1(instrument: bool) -> PathBuf {
             .expect("spawn selfhost compile")
             .join()
             .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+        write_fingerprint(&out, fingerprint);
         out
     })
 }
@@ -197,11 +218,14 @@ fn compile_selfhost_to(out: &Path, instrument: bool) {
 }
 
 fn run_emit_ir(bin: &Path, input: &Path) -> String {
-    run_emit_ir_in(bin, input, &root(), "emit")
+    let current = std::thread::current();
+    let test = current.name().unwrap_or("unknown");
+    run_emit_ir_in(bin, input, &root(), &format!("emit-{test}"))
 }
 
 fn run_emit_ir_in(bin: &Path, input: &Path, project: &Path, cache_tag: &str) -> String {
     let cache = shared_cache_dir(cache_tag);
+    let input = input.strip_prefix(project).unwrap_or(input);
     let mut cmd = Command::new(bin);
     cmd.arg(input)
         .env("SAL_SELFHOST_CACHE", &cache)
@@ -211,8 +235,9 @@ fn run_emit_ir_in(bin: &Path, input: &Path, project: &Path, cache_tag: &str) -> 
     assert_eq!(
         out.status.code(),
         Some(0),
-        "selfhost failed on {}: stderr={}",
+        "selfhost failed on {} ({:?}): stderr={}",
         input.display(),
+        out.status,
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).expect("utf8 ir")
@@ -233,15 +258,12 @@ fn stage2_path() -> PathBuf {
 fn ensure_stage2(stage1: &Path) -> PathBuf {
     let out = stage2_path();
     with_selfhost_build_lock(|| {
-        // Stage2 must be at least as new as the stage1 that produced it.
-        if stage_bin_fresh(&out) {
-            if let (Some(s2), Some(s1)) = (file_mtime(&out), file_mtime(stage1)) {
-                if s2 >= s1 {
-                    return out;
-                }
-            }
+        let fingerprint = stage2_fingerprint(stage1);
+        if fingerprint_matches(&out, fingerprint) {
+            return out;
         }
         compile_stage2_to(stage1, &out);
+        write_fingerprint(&out, fingerprint);
         out
     })
 }
@@ -251,7 +273,7 @@ fn compile_stage2_to(stage1: &Path, out: &Path) {
         fs::create_dir_all(parent).expect("sal-out");
     }
     let mut cmd = Command::new(stage1);
-    cmd.arg(root().join("selfhost/main.sal"))
+    cmd.arg("selfhost/main.sal")
         .arg("-o")
         .arg(out)
         .current_dir(root());
@@ -259,7 +281,8 @@ fn compile_stage2_to(stage1: &Path, out: &Path) {
     assert_eq!(
         status.status.code(),
         Some(0),
-        "stage1 failed to produce stage2: stderr={}",
+        "stage1 failed to produce stage2 ({:?}): stderr={}",
+        status.status,
         String::from_utf8_lossy(&status.stderr)
     );
     assert!(out.is_file(), "stage2 binary missing at {}", out.display());
@@ -281,16 +304,19 @@ fn write_temp_sal(body: &str) -> PathBuf {
 /// One cache directory per tag and process. A unique stamp per call used to leave
 /// thousands of dirs on tmpfs (RAM); reuse keeps the footprint flat.
 fn shared_cache_dir(tag: &str) -> PathBuf {
-    static RUN_ID: OnceLock<u128> = OnceLock::new();
+    static RUN_ID: OnceLock<u64> = OnceLock::new();
     let run_id = RUN_ID.get_or_init(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock")
-            .as_nanos()
+            .as_secs()
     });
+    let tag_hash = tag.bytes().fold(0u16, |h, b| {
+        h.wrapping_mul(31).wrapping_add(u16::from(b))
+    }) & 0x0fff;
     let dir = PathBuf::from(format!(
-        "/tmp/sal-selfhost-cache-{}-{}-{}",
-        tag,
+        "/tmp/s{:03x}-{:x}-{:x}",
+        tag_hash,
         std::process::id(),
         run_id
     ));

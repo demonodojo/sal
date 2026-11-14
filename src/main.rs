@@ -552,7 +552,7 @@ fn build_selfhost_stage2(
         })?;
     }
     let output = Command::new(&stage1)
-        .arg(&main)
+        .arg("selfhost/main.sal")
         .arg("-o")
         .arg(&stage2)
         .current_dir(root)

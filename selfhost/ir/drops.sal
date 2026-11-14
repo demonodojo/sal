@@ -1469,8 +1469,23 @@ fn dr_match(c: &mut DC, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
         _s = dr_arg(c, scrut, 1)
         0
     _o = dr_set(c, 2, dr_cell(c, 2) + 1)
+    dr_mark_match_moved(c, arms, 0, arms.len())
     _x = dr_match_arms(c, arms, 0, list_len(arms))
     dr_set(c, 2, dr_cell(c, 2) - 1)
+
+fn dr_mark_match_moved(c: &mut DC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = arms.get(i)
+        name = dr_arm_moved_local(&arm)
+        if name.len() > 0
+            site = if arm.has_suite == 1
+                dr_tail_key(&arm.suite.tail)
+            else
+                dr_tail_key(&arm.body)
+            _s = dr_soft(c, site, &name)
+        dr_mark_match_moved(c, arms, i + 1, n)
 
 # `list_push`, `list_set` and `dict_put` return an alias of their container.
 fn dr_is_alias_call(name: &String) -> Int ! alloc
@@ -2129,13 +2144,13 @@ fn dr_clear_moved(c: &DC, st: Int, out: &mut List[TStmt]) -> Int ! alloc
 fn dr_clear_go(c: &DC, st: Int, out: &mut List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif list_get(&c.site_ids, i) != st
+    elsif (&c.site_ids).get(i) != st
         dr_clear_go(c, st, out, i + 1, n)
     else
-        name = list_get(&c.site_names, i)
+        name = (&c.site_names).get(i)
         if nm_get(&c.soft, &name) != 0
-            if dr_in_live(&c.live, &name, 0, list_len(&c.live)) == 1
-                _p = list_push(out, dr_flag_clear(&name))
+            if dr_in_live(&c.live, &name, 0, (&c.live).len()) == 1
+                out.push(dr_flag_clear(&name))
                 dr_clear_go(c, st, out, i + 1, n)
             else
                 dr_clear_go(c, st, out, i + 1, n)
@@ -2149,7 +2164,7 @@ fn dr_push_frees(c: &DC, out: &mut List[TStmt], from: Int, i: Int) -> Int ! allo
     if i < from
         0
     else
-        name = list_get(&c.live, i)
+        name = (&c.live).get(i)
         if nm_get(&c.esc, &name) == 0
             out.push(dr_release_stmt(c, &name))
         dr_push_frees(c, out, from, i - 1)
@@ -2158,7 +2173,7 @@ fn dr_xform_if_arms(c: &mut DC, arms: &mut List[TElsif], i: Int, n: Int) -> Int 
     if i >= n
         0
     else
-        arm = list_get(&mut arms, i)
+        arm = (&mut arms).get(i)
         nb = dr_xform_block(c, &mut arm.body)
         dr_free_block(&arm.body)
         arm.body = nb
@@ -2168,14 +2183,88 @@ fn dr_xform_expr(c: &mut DC, e: &Expr) -> Expr ! alloc
     match e
         XBlock(_) => dr_alias(e)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_xform_if(c, e, &mut then_b, &mut else_b, has_else, &mut elsifs)
+        XMatch(scrut, arms) => dr_xform_match(c, e, &mut arms)
         XWhile(cond, body) =>
             branches = dr_cell(c, 8)
             dr_set(c, 8, 0)
             nb = dr_xform_block(c, &mut body)
             dr_set(c, 8, branches)
-            _b = enum_set(e, 1, nb)
+            enum_set(e, 1, nb)
             dr_ret(e)
         _ => dr_alias(e)
+
+# A match arm that returns an outer local moves it only on that path. Clear its live flag in the
+# arm block so lower_match_chain carries the flag across the branches, as xform_expr in drops.rs.
+fn dr_xform_match(c: &mut DC, e: &Expr, arms: &mut List[TArm]) -> Expr ! alloc
+    out = List.new[TArm]()
+    dr_xform_match_arms(c, arms, 0, arms.len(), &mut out)
+    enum_set(e, 1, out)
+    dr_ret(e)
+
+fn dr_xform_match_arms(c: &DC, arms: &mut List[TArm], i: Int, n: Int, out: &mut List[TArm]) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = arms.get(i)
+        name = dr_arm_moved_local(&arm)
+        clear = name.len() > 0 && nm_get(&c.soft, &name) != 0 && dr_in_live(&c.live, &name, 0, c.live.len()) == 1
+        body = if clear && arm.has_suite == 0
+            dr_arm_clear_body(&name)
+        else
+            arm.body.clone()
+        suite = if clear && arm.has_suite == 1
+            dr_arm_clear_suite(&name, &arm.suite)
+        else
+            arm.suite.clone()
+        out.push(TArm(arm.pat.clone(), body, suite, arm.has_suite))
+        dr_xform_match_arms(c, arms, i + 1, n, out)
+
+fn dr_arm_moved_local(arm: &TArm) -> String ! alloc
+    name = dr_arm_ident(&arm.body)
+    if name.len() > 0 && dr_pat_binds_name(&arm.pat, &name) == 0
+        name
+    else
+        name = dr_arm_ident(&arm.suite.tail)
+        if name.len() > 0 && arm.has_suite == 1 && dr_pat_binds_name(&arm.pat, &name) == 0
+            name
+        else
+            ""
+
+fn dr_arm_ident(e: &Expr) -> String ! alloc
+    match e
+        XIdent(name) => name.dup()
+        XBlock(body) =>
+            if body.stmts.len() == 0
+                match body.tail
+                    XIdent(name) => name.dup()
+                    _ => ""
+            else
+                ""
+        _ => ""
+
+fn dr_pat_binds_name(pat: &TPat, name: &String) -> Int ! alloc
+    match pat.kind
+        1 => pat.name.eq(name)
+        3 => dr_pat_binds_name_go(&pat.args, name, 0, pat.args.len())
+        _ => 0
+
+fn dr_pat_binds_name_go(args: &List[TPat], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif dr_pat_binds_name(&args.get(i), name) == 1
+        1
+    else
+        dr_pat_binds_name_go(args, name, i + 1, n)
+
+fn dr_arm_clear_body(name: &String) -> Expr ! alloc
+    stmts = List.new[TStmt]()
+    stmts.push(dr_flag_clear(name))
+    XBlock(TBlock(stmts, XIdent(name.dup())))
+
+fn dr_arm_clear_suite(name: &String, suite: &TBlock) -> TBlock ! alloc
+    out = suite.stmts.clone()
+    out.push(dr_flag_clear(name))
+    TBlock(out, suite.tail.clone())
 
 fn dr_xform_if(c: &mut DC, e: &Expr, then_b: &mut TBlock, else_b: &mut TBlock, has_else: Int, elsifs: &mut List[TElsif]) -> Expr ! alloc
     dr_set(c, 8, dr_cell(c, 8) + 1)
