@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::ast::{Item, Program};
-use crate::infer::infer_program;
-use crate::modules::{resolve_import_path_with_manifest, resolve_module_graph};
+use crate::modules::resolve_import_path_with_manifest;
 use crate::parser::parse;
 use crate::typed::TypedProgram;
 
@@ -86,9 +85,11 @@ fn push_import_candidates(out: &mut Vec<PathBuf>, base: &Path, import_path: &str
     }
 }
 
-/// Transitive digest of typed ASTs for every module reachable via `import`
+/// Transitive digest of the sources of every module reachable via `import`
 /// from `prog`. Empty if there are no resolvable imports (so the cache key
-/// matches the no-import case).
+/// matches the no-import case). The source decides the typed AST of a module
+/// (its own imports are in the digest too), so it is enough, and it does not
+/// re-resolve the module graph once per import.
 pub fn import_graph_digest(
     prog: &Program,
     source_file: &Path,
@@ -104,15 +105,9 @@ pub fn import_graph_digest(
     let mut hasher = Sha256::new();
     for path in &ordered {
         hasher.update(path.to_string_lossy().as_bytes());
-        match typed_ast_for_file(path, project_root) {
-            Some(typed) => {
-                hasher.update(serde_json::to_string(&typed).unwrap_or_default());
-            }
-            None => {
-                if let Ok(bytes) = fs::read(path) {
-                    hasher.update(&bytes);
-                }
-            }
+        if let Ok(bytes) = fs::read(path) {
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(&bytes);
         }
     }
     hasher.finalize().to_vec()
@@ -147,30 +142,6 @@ fn collect_import_paths(
         };
         collect_import_paths(&dep, &path, project_root, visited, ordered);
     }
-}
-
-fn typed_ast_for_file(path: &Path, project_root: &Path) -> Option<TypedProgram> {
-    let src = fs::read_to_string(path).ok()?;
-    let prog = parse(&src).ok()?;
-    let entries = if let Ok(graph) = resolve_module_graph(path, project_root) {
-        if let Some(m) = graph.order.iter().find(|m| m.path == path) {
-            match crate::modules::infer_module(m, &graph, crate::target::Target::host()) {
-                Ok(out) => out.expr_types_by_fn,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            match infer_program(&prog) {
-                Ok(out) => out.expr_types_by_fn,
-                Err(_) => Vec::new(),
-            }
-        }
-    } else {
-        match infer_program(&prog) {
-            Ok(out) => out.expr_types_by_fn,
-            Err(_) => Vec::new(),
-        }
-    };
-    Some(TypedProgram::from_program(prog, entries))
 }
 
 pub fn cache_dir(base: &Path, key: &str) -> PathBuf {

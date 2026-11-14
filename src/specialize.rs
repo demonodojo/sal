@@ -910,7 +910,7 @@ fn span_base(stride: u64, k: u64) -> u64 {
     ((1u64 << 31) + k * stride) % (1u64 << 32)
 }
 
-fn max_span_end(p: &Program) -> u32 {
+pub(crate) fn max_span_end(p: &Program) -> u32 {
     fn go(v: &serde_json::Value, m: &mut u64) {
         match v {
             serde_json::Value::Object(o) => {
@@ -964,7 +964,7 @@ fn is_span(o: &serde_json::Map<String, serde_json::Value>) -> bool {
 }
 
 /// Adds `delta` to `start` and `end` of every span of `f` (modulo 2^32).
-fn shift_spans(f: &mut FnDef, delta: u64) {
+pub(crate) fn shift_spans(f: &mut FnDef, delta: u64) {
     fn go(v: &mut serde_json::Value, d: u64) {
         match v {
             serde_json::Value::Object(o) => {

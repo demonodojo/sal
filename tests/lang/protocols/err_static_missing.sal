@@ -1,0 +1,9 @@
+# error: E_TYPE
+protocol Zero
+    static zero() -> Int
+
+struct A impl Zero
+    n: Int
+
+fn main() -> Int
+    0

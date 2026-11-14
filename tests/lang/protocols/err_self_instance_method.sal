@@ -1,0 +1,8 @@
+# error: E_TYPE
+protocol Named
+    method name(&self) -> Int
+    static make() -> Int
+        Self.name()
+
+fn main() -> Int
+    0

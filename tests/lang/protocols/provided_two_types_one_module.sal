@@ -1,0 +1,22 @@
+# exit: 20
+# Dos tipos del mismo módulo reciben la misma copia provista; cada una con su `self`.
+protocol Value
+    method value(&self) -> Int
+    method doubled(&self) -> Int
+        self.value() + self.value()
+
+struct A impl Value
+    n: Int
+
+struct B impl Value
+    n: Int
+    m: Int
+
+method A.value(&self) -> Int
+    self.n
+
+method B.value(&self) -> Int
+    self.n + self.m
+
+fn main() -> Int
+    A(7).doubled() + B(1, 2).doubled()

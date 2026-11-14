@@ -1,0 +1,12 @@
+# error: E_TYPE
+protocol Named
+    static zero() -> Int
+
+struct A impl Named
+    n: Int
+
+method A.zero(&self) -> Int
+    0
+
+fn main() -> Int
+    0

@@ -99,6 +99,7 @@ Estado de la liberación mientras `insert_drops` siga en su puesto (lo que ya si
 - El selfhost ya no usa la marca de «contenedor tainted» para decidir si suelta una lista: lo guardado se movió a ella.
 - Un temporal prestado (`f(&g())` / `&mut g()`) se liga a un local (`Hoist` / `dr_hoist_unary`) y lo suelta la cola o la glue del struct.
 - Sobreescribir un campo suelta el valor viejo; en un parámetro `&mut` o un alias de `list_get` se escribe in situ (`sal_struct_set`); tras llamar con un local scalarizado, `scalarize` repone los slots desde la caja.
+- `&mut T` con `T` sin bloque propio (`Int`, `Float`, `Bool`, struct de un campo no genérico) pasa por una celda (SPEC «Liberación de locales»): `scalarize::FnSig::cell` / `tt_cell_flags` dicen qué parámetros la reciben. El llamante emite `sal_cell_new` antes de la llamada y `sal_cell_get` + `sal_cell_free` después, y vuelve a ligar `x`. El llamado lee `sal_cell_get` en el prólogo y emite `sal_cell_set` en cada `*p = v` y en cada `p.f = v` de un struct de un campo. Los `while` acarrean `x` (`collect_assigned_*` / `assigned_*`). Bajada: `src/ir.rs` (`CELL_PARAMS`, `CELL_SIGS`), `selfhost/ir/fuse.sal` (`Cx.cells`, `cell_args_new`) y C en `selfhost/emit/emit.sal` (`p__cell`, `cell_args_c`). Pendiente: una `&mut` a un valor sin bloque guardada en un local o en un campo (`r = &mut a; *r = 5`) no pasa por una celda y la escritura se pierde.
 
 `drop.<Struct>` de un struct con dos o más campos suelta también el bloque (`sal_struct_free_box`); `drop.elem.<Struct>` es un envoltorio que lo llama (listas). Pendiente frente a la SPEC: un payload `List`/struct de una caja de enum copiada con `sal_enum_copy` se comparte; las reglas nuevas del borrow checker (`get` como `&T`, mover fuera de una referencia, payload de `match`, `&mut`→`&`) no están en `selfhost/sem/` y sus tests llevan `selfhost-xfail`.
 
@@ -123,6 +124,7 @@ Sin cambio de runtime (`sal_arena_enter` / `sal_arena_leave`, páginas de 64 KiB
 - `tests/frontend.rs`: árbol de `&T`, `&'a mut T`, `&x`, `&mut x`, `*x`, `&self`, y `fmt` idempotente.
 - `tests/lang/ownership/`: conflicto `&`/`&mut` (`E_BORROW`), referencia que sobrevive al referente, devolver `&` de un local, elisión válida e inválida, préstamo que acaba antes de mutar, movimiento en bucle (`E_MOVED`), movimiento parcial, `clone` exigido.
 - `tests/lang/drops/`: drop en rama, bucle, `match`, `return` y reasignación (`drop_reassign.sal`); contenedor que posee elementos de cualquier origen; contenedor devuelto por una función (`drop_fn_returns_container.sal`).
+- `tests/lang/ownership/mut_ref_*.sal`: escritura a través de `&mut` de un valor sin bloque (celda), con `Int`, `Bool`, `Float`, struct de un campo, `String` envuelto, bucle en el llamado y `&mut` reenviada.
 - `tests/lang/ownership/`: `clone` profundo (`clone_struct_list_field_deep.sal`, `clone_list_of_structs_deep.sal`), payload de `match` (`err_moved_match_payload.sal`, `match_ref_borrows_payload_ok.sal`).
 - `tests/lang/attributes/`: `@arena` con `&T`, `keep` rechazado, retorno con `&` es `E_TYPE`.
 - `tests/semantics.rs`, `tests/drops.rs`: el diagnóstico o la IR que la SPEC fija, escritos a mano.

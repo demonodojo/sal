@@ -1,0 +1,12 @@
+# error: E_TYPE
+struct A
+    n: Int
+
+method A.find(&self) -> Int
+    self.n
+
+static A.find() -> Int
+    0
+
+fn main() -> Int
+    A.find()

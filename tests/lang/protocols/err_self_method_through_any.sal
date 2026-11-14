@@ -1,0 +1,20 @@
+# error: E_TYPE
+protocol Named
+    method n(&self) -> Int
+    method again(&self) -> Self
+
+struct A impl Named
+    n: Int
+
+method A.n(&self) -> Int
+    self.n
+
+method A.again(&self) -> A
+    A(self.n)
+
+fn use(x: any[Named]) -> Int
+    y = x.again()
+    0
+
+fn main() -> Int ! alloc
+    use(A(1))

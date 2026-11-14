@@ -1,0 +1,23 @@
+# exit: 47
+# Un static provisto de un protocolo importado: `Self` es el tipo del módulo que lo implementa.
+import "mods/static_protocol.sal"
+
+fn base() -> Int
+    99
+
+struct Post impl Model
+    id: Int
+    views: Int
+
+static Post.table() -> String ! alloc
+    "posts"
+
+static Post.build(id: Int) -> Post
+    Post(id, 0)
+
+method Post.id(&self) -> Int
+    self.id
+
+fn main() -> Int ! alloc
+    p = Post.find(2)
+    p.id()

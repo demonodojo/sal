@@ -167,7 +167,7 @@ fn format_protocol(p: &ProtocolDef) -> String {
     }
     out.push('\n');
     for m in &p.methods {
-        out.push_str("    method ");
+        out.push_str(if m.is_static { "    static " } else { "    method " });
         out.push_str(&m.name);
         if !m.type_params.is_empty() {
             out.push('[');
@@ -175,7 +175,9 @@ fn format_protocol(p: &ProtocolDef) -> String {
             out.push(']');
         }
         out.push('(');
-        if m.self_ref == 2 {
+        if m.is_static {
+            // No receiver.
+        } else if m.self_ref == 2 {
             out.push_str("&mut self");
         } else if m.self_ref == 1 {
             out.push_str("&self");
@@ -183,8 +185,10 @@ fn format_protocol(p: &ProtocolDef) -> String {
             out.push_str("self");
             // Mode words are not source syntax (SPEC «Memoria»): `self` is `self`.
         }
-        for param in &m.params {
-            out.push_str(", ");
+        for (i, param) in m.params.iter().enumerate() {
+            if i > 0 || !m.is_static {
+                out.push_str(", ");
+            }
             out.push_str(&param.name);
             out.push_str(": ");
             out.push_str(&format_type(&param.ty));

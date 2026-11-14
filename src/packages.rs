@@ -13,13 +13,13 @@ pub struct DepSearchBase {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 struct ManifestFile {
     #[serde(default)]
     dependencies: HashMap<String, DepSpec>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct DepSpec {
     path: Option<String>,
     git: Option<String>,
@@ -30,7 +30,7 @@ struct DepSpec {
     std: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LockFile {
     #[serde(default)]
     pub package: Vec<LockPackage>,
@@ -62,18 +62,49 @@ fn dirs_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Modification time and length of a file: a parsed `Sal.toml` / `Sal.lock` is reused while
+/// they do not change. `None` when the file is missing.
+type Fingerprint = Option<(std::time::SystemTime, u64)>;
+
+fn fingerprint(path: &Path) -> Fingerprint {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+thread_local! {
+    /// Import resolution reads the manifest and the lock once per candidate import (hundreds of
+    /// thousands of times in a large module graph); this keeps the parsed file per path.
+    static MANIFESTS: std::cell::RefCell<HashMap<PathBuf, (Fingerprint, Result<ManifestFile, String>)>> =
+        std::cell::RefCell::new(HashMap::new());
+    static LOCKS: std::cell::RefCell<HashMap<PathBuf, (Fingerprint, LockFile)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 fn read_manifest(project_root: &Path) -> Result<ManifestFile, String> {
     let path = project_root.join("Sal.toml");
-    let raw = fs::read_to_string(&path).map_err(|e| format!("Sal.toml: {e}"))?;
-    toml::from_str(&raw).map_err(|e| format!("Sal.toml: {e}"))
+    let fp = fingerprint(&path);
+    if let Some(hit) = MANIFESTS.with(|m| m.borrow().get(&path).filter(|(f, _)| *f == fp).map(|(_, r)| r.clone())) {
+        return hit;
+    }
+    let parsed = fs::read_to_string(&path)
+        .map_err(|e| format!("Sal.toml: {e}"))
+        .and_then(|raw| toml::from_str(&raw).map_err(|e| format!("Sal.toml: {e}")));
+    MANIFESTS.with(|m| m.borrow_mut().insert(path, (fp, parsed.clone())));
+    parsed
 }
 
 pub fn read_lock(project_root: &Path) -> LockFile {
     let path = project_root.join("Sal.lock");
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return LockFile::default();
-    };
-    toml::from_str(&raw).unwrap_or_default()
+    let fp = fingerprint(&path);
+    if let Some(hit) = LOCKS.with(|m| m.borrow().get(&path).filter(|(f, _)| *f == fp).map(|(_, l)| l.clone())) {
+        return hit;
+    }
+    let lock: LockFile = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| toml::from_str(&raw).ok())
+        .unwrap_or_default();
+    LOCKS.with(|m| m.borrow_mut().insert(path, (fp, lock.clone())));
+    lock
 }
 
 pub fn write_lock(project_root: &Path, lock: &LockFile) -> Result<(), String> {
@@ -342,6 +373,7 @@ fn ensure_github_package(pkg: &mut LockPackage) -> Result<(), String> {
 
 /// Resolve git and GitHub-release dependencies, update cache, write `Sal.lock`.
 pub fn fetch_packages(project_root: &Path, update: bool) -> Result<(), String> {
+    crate::modules::forget_path_keys();
     let manifest = read_manifest(project_root)?;
     let old_lock = read_lock(project_root);
     let mut old_by_name: HashMap<String, LockPackage> = old_lock
@@ -398,6 +430,7 @@ pub fn std_dir() -> PathBuf {
 
 #[cfg(unix)]
 fn link_dir(target: &Path, link: &Path) -> Result<(), String> {
+    crate::modules::forget_path_keys();
     match fs::symlink_metadata(link) {
         Ok(meta) if meta.file_type().is_symlink() => {
             fs::remove_file(link).map_err(|e| format!("{}: {e}", link.display()))?;

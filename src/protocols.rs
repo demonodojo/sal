@@ -34,26 +34,74 @@ pub fn check_program_protocols(prog: &Program, types: &TypeEnv) -> DiagResult<()
 
 /// Validate provided bodies against the protocol's abstract receiver before expanding them for
 /// implementing types. Giving `self` type `any[P]` makes method lookup see only P's vtable.
+/// `Self` is read as `any[P]` too, and `Self.s(…)` calls a stub with the signature of P's
+/// static `s` (its body calls itself, so it has the declared type and effects and nothing else).
 fn check_protocol_bodies(prog: &Program, types: &TypeEnv) -> DiagResult<()> {
     let mut checked = prog.clone();
+    let mut env = types.clone();
     let mut synthetic = Vec::new();
     for item in &prog.items {
         let Item::Protocol(protocol) = item else { continue };
-        for method in &protocol.methods {
-            let Some(body) = &method.body else { continue };
-            let span = method.span;
-            let receiver = Type::Named {
-                name: "any".into(),
-                args: vec![Type::Named { name: protocol.name.clone(), args: vec![], span }],
+        let pspan = protocol.span;
+        let any_p = Type::Named {
+            name: "any".into(),
+            args: vec![Type::Named { name: protocol.name.clone(), args: vec![], span: pspan }],
+            span: pspan,
+        };
+        let sub = HashMap::from([("Self".to_string(), any_p.clone())]);
+        let mut seen = protocol.clone();
+        for m in &mut seen.methods {
+            for p in &mut m.params {
+                p.ty = crate::specialize::subst(&p.ty, &sub);
+            }
+            m.ret = crate::specialize::subst(&m.ret, &sub);
+        }
+        env.protocols.insert(protocol.name.clone(), seen.clone());
+        let stub_prefix = format!("__protocol_static_{}", protocol.name);
+        for m in seen.methods.iter().filter(|m| m.is_static) {
+            let name = format!("{stub_prefix}__{}", m.name);
+            let span = m.span;
+            let call = Expr::Call {
+                func: Box::new(Expr::Ident { name: name.clone(), span }),
+                type_args: vec![],
+                args: m.params.iter().map(|p| Expr::Ident { name: p.name.clone(), span }).collect(),
                 span,
             };
-            let mut params = vec![Param {
-                name: "self".into(),
-                ty: receiver,
-                mode: method.self_mode,
+            let stub = FnDef {
+                name,
+                receiver: None,
+                self_mode: m.self_mode,
+                self_ref: 0,
+                method_kind: MethodKind::Method,
+                type_params: protocol.type_params.clone(),
+                params: m.params.clone(),
+                ret: m.ret.clone(),
+                effects: m.effects.clone(),
+                body: Block { stmts: vec![], tail: Some(Box::new(call)), span },
+                no_heap: false,
+                arena: false,
+                deprecated: None,
                 span,
-            }];
+            };
+            crate::infer::register_fn(&mut env, &stub);
+            synthetic.push(Item::Fn(stub));
+        }
+        for method in &seen.methods {
+            let Some(body) = &method.body else { continue };
+            let span = method.span;
+            let mut params = Vec::new();
+            if !method.is_static {
+                params.push(Param {
+                    name: "self".into(),
+                    ty: any_p.clone(),
+                    mode: method.self_mode,
+                    span,
+                });
+            }
             params.extend(method.params.iter().cloned());
+            let mut body = body.clone();
+            crate::specialize::subst_block(&mut body, &sub);
+            resolve_self_statics(&mut body, protocol, &stub_prefix)?;
             synthetic.push(Item::Fn(FnDef {
                 name: format!("__protocol_body_{}_{}", protocol.name, method.name),
                 receiver: None,
@@ -64,7 +112,7 @@ fn check_protocol_bodies(prog: &Program, types: &TypeEnv) -> DiagResult<()> {
                 params,
                 ret: method.ret.clone(),
                 effects: method.effects.clone(),
-                body: body.clone(),
+                body,
                 no_heap: false,
                 arena: false,
                 deprecated: None,
@@ -76,10 +124,10 @@ fn check_protocol_bodies(prog: &Program, types: &TypeEnv) -> DiagResult<()> {
         return Ok(());
     }
     checked.items.extend(synthetic);
-    let inferred = infer_program_with_env(&checked, types)?;
+    let inferred = infer_program_with_env(&checked, &env)?;
     crate::effects::check_effects_with_infer(&checked, &inferred)?;
     for ((start, end), (protocol, method, _)) in inferred.protocol_calls {
-        let Some(pm) = types.protocols.get(&protocol).and_then(|p| p.methods.iter().find(|m| m.name == method)) else {
+        let Some(pm) = env.protocols.get(&protocol).and_then(|p| p.methods.iter().find(|m| m.name == method)) else {
             continue;
         };
         for effect in &pm.effects {
@@ -98,6 +146,67 @@ fn check_protocol_bodies(prog: &Program, types: &TypeEnv) -> DiagResult<()> {
         }
     }
     Ok(())
+}
+
+/// `Self.s(…)` in a protocol body: `s` must be a static of the protocol. In the abstract check
+/// the call goes to the stub `{prefix}__s`; anything else on `Self` is `E_TYPE`.
+fn resolve_self_statics(body: &mut Block, protocol: &ProtocolDef, prefix: &str) -> DiagResult<()> {
+    let mut bad: Option<Diagnostic> = None;
+    crate::specialize::walk_block(body, &mut |e| {
+        let Expr::Call { func, type_args, span, .. } = e else { return };
+        let Expr::Field { base, field, .. } = func.as_ref() else { return };
+        let Expr::Ident { name, .. } = base.as_ref() else { return };
+        if name != "Self" {
+            return;
+        }
+        match protocol.methods.iter().find(|m| m.name == *field) {
+            Some(m) if m.is_static && type_args.is_empty() => {
+                **func = Expr::Ident { name: format!("{prefix}__{field}"), span: *span };
+            }
+            Some(m) if !m.is_static => {
+                bad.get_or_insert(Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("`Self.{field}` is an instance method of protocol `{}`: call it on a value", protocol.name),
+                    *span,
+                ));
+            }
+            _ => {
+                bad.get_or_insert(Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("protocol `{}` has no static `{field}`", protocol.name),
+                    *span,
+                ));
+            }
+        }
+    }, &mut |_| {});
+    match bad {
+        Some(d) => Err(vec![d]),
+        None => Ok(()),
+    }
+}
+
+/// `Self` names the implementing type in a copy: `Self.s(…)` becomes `T.s(…)`.
+fn rename_self(body: &mut Block, type_name: &str) {
+    crate::specialize::walk_block(body, &mut |e| {
+        if let Expr::Ident { name, .. } = e {
+            if name == "Self" {
+                *name = type_name.to_string();
+            }
+        }
+    }, &mut |_| {});
+}
+
+/// Whether the signature of `m` names `Self` (such a method is not called through `any[P]`).
+pub fn mentions_self(m: &ProtocolMethod) -> bool {
+    fn ty(t: &Type) -> bool {
+        match t {
+            Type::Named { name, args, .. } => name == "Self" || args.iter().any(ty),
+            Type::Ref { inner, .. } => ty(inner),
+            Type::Fn { params, ret, .. } => params.iter().any(ty) || ty(ret),
+            _ => false,
+        }
+    }
+    ty(&m.ret) || m.params.iter().any(|p| ty(&p.ty))
 }
 
 /// Copy provided methods into each claimed type unless that type supplies an override.
@@ -127,7 +236,8 @@ pub fn instantiate_provided_with_protocols(prog: &mut Program, protocols: &HashM
             if protocol.type_params.len() != claim.args.len() {
                 continue;
             }
-            let sub: HashMap<String, Type> = protocol.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+            let mut sub: HashMap<String, Type> = protocol.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+            sub.insert("Self".into(), Type::Named { name: type_name.into(), args: vec![], span: claim.span });
             for method in &protocol.methods {
                 let Some(body) = &method.body else { continue };
                 let name = format!("{type_name}__{}", method.name);
@@ -141,19 +251,23 @@ pub fn instantiate_provided_with_protocols(prog: &mut Program, protocols: &HashM
                     2 => Type::Ref { mutable: true, lifetime: None, inner: Box::new(named), span },
                     _ => named,
                 };
-                let mut params = vec![Param { name: "self".into(), ty: self_ty, mode: method.self_mode, span }];
+                let mut params = Vec::new();
+                if !method.is_static {
+                    params.push(Param { name: "self".into(), ty: self_ty, mode: method.self_mode, span });
+                }
                 params.extend(method.params.iter().cloned().map(|mut p| {
                     p.ty = crate::specialize::subst(&p.ty, &sub);
                     p
                 }));
                 let mut body = body.clone();
                 crate::specialize::subst_block(&mut body, &sub);
+                rename_self(&mut body, type_name);
                 generated.push(Item::Fn(FnDef {
                     name,
                     receiver: None,
                     self_mode: method.self_mode,
-                    self_ref: method.self_ref,
-                    method_kind: MethodKind::Method,
+                    self_ref: if method.is_static { 0 } else { method.self_ref },
+                    method_kind: if method.is_static { MethodKind::Static } else { MethodKind::Method },
                     type_params: method.type_params.clone(),
                     params,
                     ret: crate::specialize::subst(&method.ret, &sub),
@@ -165,6 +279,14 @@ pub fn instantiate_provided_with_protocols(prog: &mut Program, protocols: &HashM
                     span,
                 }));
             }
+        }
+    }
+    // Each copy gets spans of its own: the inferred types are kept per span, so two types of
+    // one module that share a provided body would otherwise overwrite each other's `self`.
+    let stride = crate::specialize::max_span_end(prog) as u64 + 1;
+    for (k, item) in generated.iter_mut().enumerate() {
+        if let Item::Fn(f) = item {
+            crate::specialize::shift_spans(f, (k as u64 + 1) * stride);
         }
     }
     prog.items.extend(generated);
@@ -197,6 +319,9 @@ fn check_builtin_impl(prog: &Program, imp: &ImplDef, protocols: &HashMap<String,
         }
         let sub: HashMap<String, Type> = p.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
         for method in &p.methods {
+            if method.is_static {
+                return Err(vec![Diagnostic::new(ErrorCode::EType, format!("protocol `{}` has a static `{}`: a builtin type cannot implement it", claim.name, method.name), imp.span)]);
+            }
             if method.body.is_some() { continue; }
             let span = method.span;
             let int = Type::Named { name: "Int".into(), args: vec![], span };
@@ -227,7 +352,8 @@ fn instantiate_builtin_provided(imp: &ImplDef, protocols: &HashMap<String, Proto
     for claim in &imp.protocols {
         let Some(protocol) = protocols.get(&claim.name) else { continue };
         if protocol.type_params.len() != claim.args.len() { continue; }
-        let sub: HashMap<String, Type> = protocol.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+        let mut sub: HashMap<String, Type> = protocol.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+        sub.insert("Self".into(), imp.target.clone());
         for method in &protocol.methods {
             let Some(body) = &method.body else { continue };
             let name = format!("{target_name}__{}", method.name);
@@ -304,9 +430,18 @@ fn check_type_protocols(
                 claim.span,
             )]);
         }
-        let sub: HashMap<String, Type> = pdef.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+        let mut sub: HashMap<String, Type> = pdef.type_params.iter().cloned().zip(claim.args.iter().cloned()).collect();
+        sub.insert("Self".into(), Type::Named { name: type_name.into(), args: vec![], span: claim.span });
         for pm in &pdef.methods {
             let mangled = format!("{type_name}__{}", pm.name);
+            if pm.is_static != types.statics.contains(&mangled) && types.fns.contains_key(&mangled) {
+                let (want, got) = if pm.is_static { ("static", "method") } else { ("method", "static") };
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("`{type_name}.{}` must be a {want} for protocol `{}`, found a {got}", pm.name, claim.name),
+                    claim.span,
+                )]);
+            }
             let Some((fparams, fret)) = types.fns.get(&mangled) else {
                 return Err(vec![Diagnostic::new(
                     ErrorCode::EType,
@@ -354,6 +489,9 @@ fn method_matches_protocol(
         args: vec![],
         span: pm.span,
     };
+    if pm.is_static {
+        return static_matches_protocol(pm, fparams, fret, types, mangled);
+    }
     let expected_self = match pm.self_ref {
         1 => Type::Ref { mutable: false, lifetime: None, inner: Box::new(named_self), span: pm.span },
         2 => Type::Ref { mutable: true, lifetime: None, inner: Box::new(named_self), span: pm.span },
@@ -419,6 +557,33 @@ fn method_matches_protocol(
     Ok(())
 }
 
+fn static_matches_protocol(
+    pm: &ProtocolMethod,
+    fparams: &[Type],
+    fret: &Type,
+    types: &TypeEnv,
+    mangled: &str,
+) -> Result<(), Diagnostic> {
+    let mismatch = |what: &str| Diagnostic::new(
+        ErrorCode::EType,
+        format!("static `{mangled}` {what} mismatch with protocol static `{}`", pm.name),
+        pm.span,
+    );
+    if fparams.len() != pm.params.len() {
+        return Err(mismatch("arity"));
+    }
+    if !fparams.iter().zip(&pm.params).all(|(got, want)| types_equal_modulo_span(got, &want.ty)) {
+        return Err(mismatch("parameter"));
+    }
+    if !types_equal_modulo_span(fret, &pm.ret) {
+        return Err(mismatch("return"));
+    }
+    if types.fn_defs.get(mangled).is_some_and(|f| f.effects != pm.effects) {
+        return Err(mismatch("effects"));
+    }
+    Ok(())
+}
+
 fn types_equal_modulo_span(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (
@@ -464,12 +629,17 @@ pub fn any_coerce_vtable(type_name: &str, protocol: &str) -> String {
     vtable_global(type_name, protocol)
 }
 
+/// A slot of the vtable: neither generic nor `static`.
+fn dynamic(m: &ProtocolMethod) -> bool {
+    m.type_params.is_empty() && !m.is_static
+}
+
 pub fn method_slot(protocol: &ProtocolDef, method: &str) -> Option<usize> {
-    protocol.methods.iter().filter(|m| m.type_params.is_empty()).position(|m| m.name == method)
+    protocol.methods.iter().filter(|m| dynamic(m)).position(|m| m.name == method)
 }
 
 pub fn drop_slot(protocol: &ProtocolDef) -> usize {
-    protocol.methods.iter().filter(|m| m.type_params.is_empty()).count()
+    protocol.methods.iter().filter(|m| dynamic(m)).count()
 }
 
 /// Build vtable entries: each method fn name, then drop thunk name.
@@ -477,7 +647,7 @@ pub fn vtable_entries(type_name: &str, protocol: &ProtocolDef) -> Vec<String> {
     let mut out: Vec<String> = protocol
         .methods
         .iter()
-        .filter(|m| m.type_params.is_empty())
+        .filter(|m| dynamic(m))
         .map(|m| format!("{type_name}__{}", m.name))
         .collect();
     out.push(format!("sal_any_drop_{type_name}"));

@@ -1,0 +1,19 @@
+# error: E_TYPE
+protocol Named
+    method n(&self) -> Int
+    static zero() -> Int
+
+struct A impl Named
+    n: Int
+
+method A.n(&self) -> Int
+    self.n
+
+static A.zero() -> Int
+    0
+
+fn use(x: any[Named]) -> Int
+    x.zero()
+
+fn main() -> Int ! alloc
+    use(A(1))

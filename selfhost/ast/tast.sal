@@ -26,6 +26,8 @@ struct TProtocolMethod
     self_ref: Int
     has_body: Int
     body: TBlock
+    # 1 for `static nombre(…)`: no `self`, not in the vtable.
+    is_static: Int
 
 struct TProtocol
     name: String

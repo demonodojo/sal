@@ -90,8 +90,24 @@ fn push_candidates(out: &mut Vec<PathBuf>, base: &Path, import_path: &str) {
     }
 }
 
+thread_local! {
+    /// `fs::canonicalize` per path. Module lookups compare `path_key`s inside loops over the
+    /// graph, and each canonicalization is a `readlink` per path component; `packages` clears
+    /// this when it changes links or packages (`forget_path_keys`).
+    static PATH_KEYS: std::cell::RefCell<HashMap<PathBuf, PathBuf>> = std::cell::RefCell::new(HashMap::new());
+}
+
 pub(crate) fn path_key(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    if let Some(key) = PATH_KEYS.with(|k| k.borrow().get(path).cloned()) {
+        return key;
+    }
+    let key = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    PATH_KEYS.with(|k| k.borrow_mut().insert(path.to_path_buf(), key.clone()));
+    key
+}
+
+pub(crate) fn forget_path_keys() {
+    PATH_KEYS.with(|k| k.borrow_mut().clear());
 }
 
 pub fn resolve_module_graph(root: &Path, project_root: &Path) -> Result<ModuleGraph, Vec<Diagnostic>> {

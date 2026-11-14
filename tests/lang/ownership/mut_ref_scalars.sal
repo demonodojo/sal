@@ -1,0 +1,42 @@
+# exit: 123
+# `&mut` to `Int`, `Bool`, `Float` and a one-field struct writes through to the caller, also
+# from a loop, inside an `if`, and when the callee passes its own `&mut` on:
+# c.n = 5; a = 10 + 1 + 1 + 3 = 15; b = true (100); f = 3.0 (3). 5 + 15 + 100 + 3 = 123.
+struct Counter
+    n: Int
+
+method Counter.bump(&mut self) -> Unit
+    self.n = self.n + 1
+
+fn add(x: &mut Int, k: Int) -> Unit
+    *x = *x + k
+
+fn twice(x: &mut Int) -> Unit
+    add(x, 1)
+    add(x, 1)
+
+fn flip(b: &mut Bool) -> Unit
+    *b = !*b
+
+fn scale(f: &mut Float) -> Unit
+    *f = *f * 2.0
+
+fn main() -> Int
+    c = Counter(0)
+    i = 0
+    while i < 5
+        c.bump()
+        i = i + 1
+    a = 10
+    if c.n > 2
+        twice(&mut a)
+    add(&mut a, 3)
+    b = false
+    flip(&mut b)
+    f = 1.5
+    scale(&mut f)
+    extra = if b
+        100
+    else
+        0
+    c.n + a + extra + f.to_int()

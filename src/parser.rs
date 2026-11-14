@@ -361,22 +361,32 @@ impl Parser {
 
     fn parse_protocol_method_sig(&mut self) -> Result<ProtocolMethod, Diagnostic> {
         let sp = self.peek().span;
-        if !matches!(&self.peek().kind, TokenKind::Ident(n) if n == "method") {
+        let is_static = matches!(&self.peek().kind, TokenKind::Ident(n) if n == "static");
+        if !is_static && !matches!(&self.peek().kind, TokenKind::Ident(n) if n == "method") {
             return Err(Diagnostic::new(
                 ErrorCode::EParse,
-                "expected method signature in protocol",
+                "expected `method` or `static` signature in protocol",
                 sp,
             ));
         }
         self.bump();
         let name = self.parse_ident()?;
+        if is_static && self.at(TokenKind::LBracket) {
+            return Err(Diagnostic::new(
+                ErrorCode::EParse,
+                "a protocol `static` takes no type parameters",
+                self.peek().span,
+            ));
+        }
         let type_params = self.parse_type_params()?;
         self.expect(TokenKind::LParen, "expected ( after protocol method name")?;
         self.skip_soft_layout();
         let mut params = Vec::new();
         let mut self_mode = ParamMode::Inferred;
         let mut self_ref = 0u8;
-        if self.at(TokenKind::Amp) {
+        if is_static {
+            // No receiver: every parameter is an ordinary one.
+        } else if self.at(TokenKind::Amp) {
             let sp = self.peek().span;
             self.bump();
             let mutable = self.eat_mut_ident();
@@ -458,6 +468,7 @@ impl Parser {
             self_mode,
             self_ref,
             body,
+            is_static,
             span: sp,
         })
     }

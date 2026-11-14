@@ -104,6 +104,23 @@ fn fmt_protocol_provided_method_body() {
 }
 
 #[test]
+fn fmt_protocol_static_and_self() {
+    let src = "protocol Model\n    static build(id: Int, name: String) -> Self ! alloc\n    static zero() -> Self\n        Self.build(0, \"\")\n    method id(&self) -> Int\n";
+    let p1 = parse(src).expect("parse protocol statics");
+    let formatted = format_program(&p1);
+    assert_eq!(formatted, src);
+    assert_eq!(formatted, format_program(&parse(&formatted).expect("reparse")));
+    let protocol = p1.items.iter().find_map(|item| match item {
+        sal_compiler::ast::Item::Protocol(protocol) => Some(protocol),
+        _ => None,
+    }).expect("protocol item");
+    let statics: Vec<bool> = protocol.methods.iter().map(|m| m.is_static).collect();
+    assert_eq!(statics, vec![true, true, false]);
+    assert!(protocol.methods[1].body.is_some());
+    assert!(protocol.methods[0].params.len() == 2);
+}
+
+#[test]
 fn fmt_generic_protocol_and_claim() {
     let src = "protocol Value[T]\n    method map[U](&self, f: fn(T) -> U) -> U\n\nstruct Number impl Value[Int]\n    n: Int\n";
     let p = parse(src).expect("parse generic protocol");

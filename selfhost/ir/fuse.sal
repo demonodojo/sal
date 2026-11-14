@@ -729,7 +729,9 @@ fn lower_call_runtime_rest(cx: &mut Cx, name: &String, targs: &String, args: &Li
         if is_user_fn(cx, fname) == 1
             _b = maybe_box_user_args(cx, name, args, arg_names)
         rname = runtime_name(cx, fname)
+        cells = cell_args_new(cx, name, args, arg_names)
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
+        _cb = cell_args_back(cx, &cells)
         _r = register_ret_tensor(cx, d, name)
         d
 
@@ -1780,7 +1782,7 @@ fn carry_one(cx: &mut Cx, b: Int, t: Int, e: Int, out: &mut List[Inst]) -> Int !
 # ---- while ----
 # Names assigned (not `let`) anywhere in a block, as the bootstrap's collect_assigned_*.
 
-fn assigned_stmts(stmts: &List[TStmt], i: Int, n: Int, names: Int) -> Int ! alloc
+fn assigned_stmts(cx: &Cx, stmts: &List[TStmt], i: Int, n: Int, names: Int) -> Int ! alloc
     if i >= n
         0
     else
@@ -1790,77 +1792,109 @@ fn assigned_stmts(stmts: &List[TStmt], i: Int, n: Int, names: Int) -> Int ! allo
                 _a = assigned_add(names, str_own(&st.name))
             else
                 _a = 0
+        elsif st.kind == 3
+            _a = assigned_target(cx, &st.target, names)
         else
             _a = 0
-        _b = assigned_expr(&st.expr, names)
-        assigned_stmts(stmts, i + 1, n, names)
+        _b = assigned_expr(cx, &st.expr, names)
+        assigned_stmts(cx, stmts, i + 1, n, names)
 
-fn assigned_block(b: &TBlock, names: Int) -> Int ! alloc
-    _a = assigned_stmts(&b.stmts, 0, list_len(&b.stmts), names)
-    assigned_expr(&b.tail, names)
-
-fn assigned_args(args: &List[Expr], i: Int, n: Int, names: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        _a = assigned_expr(&list_get(args, i), names)
-        assigned_args(args, i + 1, n, names)
-
-fn assigned_arms(arms: &List[TElsif], i: Int, n: Int, names: Int) -> Int ! alloc
-    if i >= n
-        0
-    else
-        arm = list_get(arms, i)
-        _a = assigned_expr(&arm.cond, names)
-        _b = assigned_block(&arm.body, names)
-        assigned_arms(arms, i + 1, n, names)
-
-fn assigned_if(cond: &Expr, then_b: &TBlock, else_b: &TBlock, arms: &List[TElsif], names: Int) -> Int ! alloc
-    _a = assigned_expr(cond, names)
-    _b = assigned_block(then_b, names)
-    _c = assigned_arms(arms, 0, list_len(arms), names)
-    assigned_block(else_b, names)
-
-fn assigned_while(cond: &Expr, body: &TBlock, names: Int) -> Int ! alloc
-    _a = assigned_expr(cond, names)
-    assigned_block(body, names)
-
-fn assigned_bin(l: &Expr, r: &Expr, names: Int) -> Int ! alloc
-    _a = assigned_expr(l, names)
-    assigned_expr(r, names)
-
-fn assigned_expr(e: &Expr, names: Int) -> Int ! alloc
-    match e
-        XBlock(body) => assigned_block(&body, names)
-        XIf(cond, then_b, else_b, has_else, elsifs) => assigned_if(&cond, &then_b, &else_b, &elsifs, names)
-        XOn(place, body, is_kern, has_index) => assigned_block(&body, names)
-        XWhile(cond, body) => assigned_while(&cond, &body, names)
-        XCall(name, args, targs, xp) => assigned_args(&args, 0, list_len(&args), names)
-        XBin(op, l, r) => assigned_bin(&l, &r, names)
-        XUnary(op, inner) => assigned_expr(&inner, names)
-        XTo(place, inner) => assigned_expr(&inner, names)
-        XTry(inner) => assigned_expr(&inner, names)
-        XMatch(sc, arms) =>
-            _m = assigned_expr(&sc, names)
-            assigned_match_arms(&arms, 0, list_len(&arms), names)
+# `*p = v` rebinds `p`; so does `p.x = v` when `p` is a cell parameter (a one-field struct).
+fn assigned_target(cx: &Cx, target: &Expr, names: Int) -> Int ! alloc
+    match target
+        XUnary(op, inner) => assigned_target_ident(cx, &inner, 0, names)
+        XField(base, field) => assigned_target_ident(cx, &base, 1, names)
         _ => 0
 
-fn assigned_match_arms(arms: &List[TArm], i: Int, n: Int, names: Int) -> Int ! alloc
+fn assigned_target_ident(cx: &Cx, e: &Expr, only_cell: Int, names: Int) -> Int ! alloc
+    match e
+        XIdent(name) =>
+            if only_cell == 0 || cx_is_cell(cx, &name) == 1
+                assigned_add(names, str_own(&name))
+            else
+                0
+        _ => 0
+
+# A cell argument comes back rebound (`collect_assigned_expr` of src/ir.rs).
+fn assigned_cell_args(cx: &Cx, fname: &String, args: &List[Expr], names: Int) -> Int ! alloc
+    flags = cx_cell_flags(cx, fname)
+    i = 0
+    while i < args.len() && i < flags.len()
+        if flags.char(i) == 49
+            x = cell_arg_name(&args.get(i))
+            if x.len() > 0
+                _a = assigned_add(names, str_own(&x))
+        i = i + 1
+    0
+
+fn assigned_block(cx: &Cx, b: &TBlock, names: Int) -> Int ! alloc
+    _a = assigned_stmts(cx, &b.stmts, 0, list_len(&b.stmts), names)
+    assigned_expr(cx, &b.tail, names)
+
+fn assigned_args(cx: &Cx, args: &List[Expr], i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        _a = assigned_expr(cx, &list_get(args, i), names)
+        assigned_args(cx, args, i + 1, n, names)
+
+fn assigned_arms(cx: &Cx, arms: &List[TElsif], i: Int, n: Int, names: Int) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
-        _a = assigned_expr(&arm.body, names)
+        _a = assigned_expr(cx, &arm.cond, names)
+        _b = assigned_block(cx, &arm.body, names)
+        assigned_arms(cx, arms, i + 1, n, names)
+
+fn assigned_if(cx: &Cx, cond: &Expr, then_b: &TBlock, else_b: &TBlock, arms: &List[TElsif], names: Int) -> Int ! alloc
+    _a = assigned_expr(cx, cond, names)
+    _b = assigned_block(cx, then_b, names)
+    _c = assigned_arms(cx, arms, 0, list_len(arms), names)
+    assigned_block(cx, else_b, names)
+
+fn assigned_while(cx: &Cx, cond: &Expr, body: &TBlock, names: Int) -> Int ! alloc
+    _a = assigned_expr(cx, cond, names)
+    assigned_block(cx, body, names)
+
+fn assigned_bin(cx: &Cx, l: &Expr, r: &Expr, names: Int) -> Int ! alloc
+    _a = assigned_expr(cx, l, names)
+    assigned_expr(cx, r, names)
+
+fn assigned_expr(cx: &Cx, e: &Expr, names: Int) -> Int ! alloc
+    match e
+        XBlock(body) => assigned_block(cx, &body, names)
+        XIf(cond, then_b, else_b, has_else, elsifs) => assigned_if(cx, &cond, &then_b, &else_b, &elsifs, names)
+        XOn(place, body, is_kern, has_index) => assigned_block(cx, &body, names)
+        XWhile(cond, body) => assigned_while(cx, &cond, &body, names)
+        XCall(name, args, targs, xp) =>
+            _a = assigned_args(cx, &args, 0, list_len(&args), names)
+            assigned_cell_args(cx, &name, &args, names)
+        XBin(op, l, r) => assigned_bin(cx, &l, &r, names)
+        XUnary(op, inner) => assigned_expr(cx, &inner, names)
+        XTo(place, inner) => assigned_expr(cx, &inner, names)
+        XTry(inner) => assigned_expr(cx, &inner, names)
+        XMatch(sc, arms) =>
+            _m = assigned_expr(cx, &sc, names)
+            assigned_match_arms(cx, &arms, 0, list_len(&arms), names)
+        _ => 0
+
+fn assigned_match_arms(cx: &Cx, arms: &List[TArm], i: Int, n: Int, names: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = list_get(arms, i)
+        _a = assigned_expr(cx, &arm.body, names)
         _b = if arm.has_suite == 1
-            assigned_block(&arm.suite, names)
+            assigned_block(cx, &arm.suite, names)
         else
             0
-        assigned_match_arms(arms, i + 1, n, names)
+        assigned_match_arms(cx, arms, i + 1, n, names)
 
 # `arms_assign_outer` of src/ir.rs: some arm from `start` assigns a name the scope already binds.
 fn arms_assign_outer(cx: &Cx, arms: &List[TArm], start: Int) -> Int ! alloc
     names = vec_new()
-    _a = assigned_match_arms(arms, start, list_len(arms), names)
+    _a = assigned_match_arms(cx, arms, start, list_len(arms), names)
     assigned_any_bound(cx, names, 0, vec_len(names))
 
 fn assigned_any_bound(cx: &Cx, names: Int, i: Int, n: Int) -> Int ! alloc
@@ -1930,7 +1964,7 @@ fn while_carries(cx: &Cx, specs: Int, i: Int, n: Int, out: &mut List[Inst]) -> I
 
 fn lower_while(cx: &mut Cx, cond: &Expr, body: &TBlock) -> Int ! alloc
     assigned = vec_new()
-    _a = assigned_block(body, assigned)
+    _a = assigned_block(cx, body, assigned)
     names = while_carried_names(cx, assigned, 0, vec_len(assigned), vec_new())
     specs = while_specs(cx, names, 0, vec_len(names), vec_new())
     binds = cx_binds(cx)
@@ -2133,7 +2167,118 @@ fn is_box_place(cx: &Cx, name: &String) -> Int ! alloc
 fn lower_stmt_field_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.target
         XField(base, field) => lower_field_assign_base(cx, st, &base, &field)
+        XUnary(op, inner) => lower_deref_assign(cx, st, &inner)
         _ => lower_expr(cx, &st.expr)
+
+# `*p = v` with `p` a cell parameter: the old value is released and the new one written back.
+fn lower_deref_assign(cx: &mut Cx, st: &TStmt, inner: &Expr) -> Int ! alloc
+    match inner
+        XIdent(name) => lower_deref_assign_named(cx, st, &name)
+        _ => lower_expr(cx, &st.expr)
+
+fn lower_deref_assign_named(cx: &mut Cx, st: &TStmt, name: &String) -> Int ! alloc
+    if cx_is_cell(cx, name) == 0
+        lower_expr(cx, &st.expr)
+    else
+        v = lower_expr(cx, &st.expr)
+        old = cx_lookup(cx, str_own(name))
+        si = tt_struct_find(&cx_structs(cx), &ty_deref(&tenv_type(&cx.env, name)))
+        if si >= 0 && cx.keep_old == 0
+            _d = lower_field_drop_old(cx, &list_get(&cx_structs(cx), si).fields.get(0).ty, old)
+        _w = cell_write_back(cx, name, v)
+        _b = cx_bind(cx, str_own(name), v)
+        v
+
+fn cx_is_cell(cx: &Cx, name: &String) -> Int ! alloc
+    i = 0
+    hit = 0
+    while i < cx.cells.len()
+        if cx.cells.get(i).eq(name) == 1
+            hit = 1
+        i = i + 1
+    hit
+
+# Which parameters of the callee `fname` take a cell, one character each (`tt_cell_flags`).
+fn cx_cell_flags(cx: &Cx, fname: &String) -> String ! alloc
+    fi = cx_fn_index(cx, fname)
+    if fi < 0
+        ""
+    else
+        tt_cell_flags(&cx.env.structs, &cx.fns.get(fi).params)
+
+# The local an argument for a cell parameter names: `&mut x`, or `x` itself (a `&mut self`
+# receiver, or a cell parameter passed on). "" otherwise.
+fn cell_arg_name(e: &Expr) -> String ! alloc
+    match e
+        XUnary(op, inner) =>
+            if op.eq("refmut") == 1
+                cell_arg_name(&inner)
+            else
+                ""
+        XIdent(name) => name.dup()
+        _ => ""
+
+# `name` was rebound to `v`: a cell parameter writes it through to the caller.
+fn cell_write_back(cx: &mut Cx, name: &String, v: Int) -> Int ! alloc
+    if cx_is_cell(cx, name) == 0
+        0
+    else
+        argv = vec_new()
+        _a = vec_push(argv, str_own(name))
+        _b = vec_push(argv, v)
+        ir_push(cx, ir_call(0, str_as_int(&"sal_cell_set"), argv, 0))
+
+# The value of `*p` for each cell parameter is read once at entry.
+fn lower_cell_params(cx: &mut Cx, params: &List[TParam]) -> Int ! alloc
+    i = 0
+    while i < params.len()
+        pm = params.get(i)
+        if tt_is_cell_param(&cx.env.structs, &pm.ty) == 1
+            v = fresh(cx)
+            argv = vec_new()
+            _a = vec_push(argv, str_own(&pm.name))
+            _p = ir_push(cx, ir_call(v, str_as_int(&"sal_cell_get"), argv, 1))
+            _b = cx_bind(cx, str_own(&pm.name), v)
+            cx.cells.push(pm.name.dup())
+        i = i + 1
+    0
+
+# Each argument for a cell parameter goes in a new cell; returns [cell, local] pairs.
+fn cell_args_new(cx: &mut Cx, fname: &String, args: &List[Expr], arg_names: Int) -> List[String] ! alloc
+    out = List.new[String]()
+    flags = cx_cell_flags(cx, fname)
+    i = 0
+    while i < args.len() && i < flags.len()
+        if flags.char(i) == 49
+            x = cell_arg_name(&args.get(i))
+            if x.len() > 0 && cx_find(cx, str_own(&x)) != 0
+                c = fresh(cx)
+                argv = vec_new()
+                _a = vec_push(argv, vec_get(arg_names, i))
+                _p = ir_push(cx, ir_call(c, str_as_int(&"sal_cell_new"), argv, 1))
+                _s = vec_set(arg_names, i, c)
+                out.push(str_from_int(c))
+                out.push(x)
+        i = i + 1
+    out
+
+# After the call: read each cell back into its local and release it.
+fn cell_args_back(cx: &mut Cx, cells: &List[String]) -> Int ! alloc
+    i = 0
+    while i + 1 < cells.len()
+        c = str_own(&cells.get(i))
+        x = cells.get(i + 1)
+        v = fresh(cx)
+        argv = vec_new()
+        _a = vec_push(argv, c)
+        _p = ir_push(cx, ir_call(v, str_as_int(&"sal_cell_get"), argv, 1))
+        argf = vec_new()
+        _b = vec_push(argf, c)
+        _q = ir_push(cx, ir_call(0, str_as_int(&"sal_cell_free"), argf, 0))
+        _w = cell_write_back(cx, &x, v)
+        _d = cx_bind(cx, str_own(&x), v)
+        i = i + 2
+    0
 
 fn lower_field_assign_base(cx: &mut Cx, st: &TStmt, base: &Expr, field: &String) -> Int ! alloc
     match base
@@ -2155,6 +2300,7 @@ fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruc
         old = cx_lookup(cx, h)
         if cx.keep_old == 0
             lower_field_drop_old(cx, &list_get(&sd.fields, 0).ty, old)
+        _w = cell_write_back(cx, name, v)
         cx_bind(cx, h, v)
     else
         idx = tt_field_index(&sd.fields, field, 0, nf)
@@ -2515,6 +2661,7 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
     else
         _en = 0
     _a = lower_params(&mut cx, &f.params, 0, list_len(&f.params))
+    _cp = lower_cell_params(&mut cx, &f.params)
     stopped = lower_fn_stmts(&mut cx, &f.body.stmts, 0, f.body.stmts.len())
     ret = if stopped == 0 - 1
         lower_fn_tail(&mut cx, &f.body.tail)

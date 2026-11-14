@@ -1,0 +1,6 @@
+# error: E_PARSE
+protocol Named
+    static zero[T]() -> Int
+
+fn main() -> Int
+    0

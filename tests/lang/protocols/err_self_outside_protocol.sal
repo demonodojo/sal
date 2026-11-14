@@ -1,0 +1,6 @@
+# error: E_TYPE
+fn f() -> Self
+    0
+
+fn main() -> Int
+    0

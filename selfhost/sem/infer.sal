@@ -9,6 +9,7 @@ import "../ast/ttypes.sal"
 import "../ast/thash.sal"
 import "../ast/tytext.sal"
 import protocols
+import provided_copy
 import consteval
 import "../ast/tygeneric.sal"
 
@@ -744,9 +745,15 @@ fn infer_any_method(c: &mut IC, protocol: &String, fld: &String, args: &List[Exp
             _f = ic_fail(c, &("protocol `" + protocol + "` has no method `" + fld + "`"))
             "Unknown"
         else
-            pm = (&p.methods).get(mi)
+            pm = any_method_view(&(&p.methods).get(mi), protocol, c.cur.get(0).eq("__protocol_body"))
             want = (&pm.params).len() + 1
-            if pm.tparams.len() > 0
+            if pm.is_static == 1
+                _f = ic_fail(c, &("E_TYPE: `" + fld + "` is a static of protocol `" + protocol + "`: call it on a type, not through `any`"))
+                "Unknown"
+            elsif proto_mentions_self(&pm) == 1
+                _f = ic_fail(c, &("E_TYPE: method `" + fld + "` names `Self`: it cannot be called through `any`"))
+                "Unknown"
+            elsif pm.tparams.len() > 0
                 _f = ic_fail(c, &("E_TYPE: generic method `" + fld + "` cannot be called through `any`"))
                 "Unknown"
             elsif args.len() != want
@@ -756,6 +763,16 @@ fn infer_any_method(c: &mut IC, protocol: &String, fld: &String, args: &List[Exp
                 infer_any_method_args(c, &pm.params, args, 1, want)
                 infer_record(c, id, &"p")
                 pm.ret.clone()
+
+# The protocol method as `x.m()` on `any[P]` sees it. In the abstract check of a provided body
+# (`abstract` = 1), `Self` is `any[P]`.
+fn any_method_view(raw: &TProtocolMethod, protocol: &String, abstract: Int) -> TProtocolMethod ! alloc
+    tps = List.new[String]()
+    vals = List.new[String]()
+    if abstract == 1
+        tps.push("Self")
+        vals.push("any[" + protocol + "]")
+    proto_subst_method(raw, &tps, &vals)
 
 fn infer_any_method_args(c: &mut IC, params: &List[TParam], args: &List[Expr], ai: Int, an: Int) -> Int ! alloc
     if ai >= an
@@ -1011,6 +1028,10 @@ fn infer_call_go(c: &mut IC, name: &String, args: &List[Expr], tys: &mut List[St
         infer_lambda_marker_call(c, name, args, tys, &tenv_type(&c.env, name))
     elsif lowering_only_runtime_fn(name) == 1
         ic_fail(c, &("unknown function `" + name + "`"))
+        "Unknown"
+    elsif name.len() > 18 && name.slice(0, 18).eq("__protocol_static_") == 1
+        # `Self.m(..)` in a provided body where `m` is not a static of the protocol.
+        ic_fail(c, &("E_TYPE: `Self` names no static `" + name + "` of the protocol"))
         "Unknown"
     else
         infer_args(c, args, 0, args.len(), tys)
@@ -2699,6 +2720,7 @@ fn infer_protocol_bodies(c: &mut IC, i: Int, n: Int) -> Res ! alloc
         result_ok(0)
     else
         p = c.protocols.get(i).clone()
+        infer_protocol_stubs(c, &p, 0)
         r = infer_protocol_methods(c, &p, 0, p.methods.len())
         if result_is_err(&r) == 1
             r
@@ -2709,14 +2731,17 @@ fn infer_protocol_methods(c: &mut IC, p: &TProtocol, i: Int, n: Int) -> Res ! al
     if i >= n
         result_ok(0)
     else
-        pm = p.methods.get(i)
+        original = p.methods.get(i)
+        pm = proto_subst_method(&original, &with_self(&List.new[String](), &"Self"), &with_self(&List.new[String](), &("any[" + p.name + "]")))
         if pm.has_body == 1
             params = List.new[TParam]()
-            params.push(TParam("self", "any[" + p.name + "]", pm.self_mode))
+            if pm.is_static == 0
+                params.push(TParam("self", "any[" + p.name + "]", pm.self_mode))
             provided_params(&pm.params, 0, &mut params)
             tparams = p.tparams.clone()
             provided_type_params(&pm.tparams, 0, &mut tparams)
-            f = TFn("__protocol_body", params, tc_block(&pm.body), pm.ret.dup(), 0, 0, pm.fx.clone(), tparams, "", 0, "", "")
+            body = ProvidedCopy("", "any[" + p.name + "]", "__protocol_static_" + p.name).block(&pm.body)
+            f = TFn("__protocol_body", params, body, pm.ret.dup(), 0, 0, pm.fx.clone(), tparams, "", 0, "", "")
             r = infer_fn(c, &f)
             if result_is_err(&r) == 1
                 r
@@ -2724,6 +2749,22 @@ fn infer_protocol_methods(c: &mut IC, p: &TProtocol, i: Int, n: Int) -> Res ! al
                 infer_protocol_methods(c, p, i + 1, n)
         else
             infer_protocol_methods(c, p, i + 1, n)
+
+# The statics of `p` as plain fns `__protocol_static_P__s` with `Self` read as `any[P]`: the abstract
+# check calls them for `Self.s(..)`. They are only signatures (never inferred nor lowered).
+fn infer_protocol_stubs(c: &mut IC, p: &TProtocol, i: Int) -> Int ! alloc
+    if i >= p.methods.len()
+        0
+    else
+        original = p.methods.get(i)
+        if original.is_static == 1
+            pm = proto_subst_method(&original, &with_self(&List.new[String](), &"Self"), &with_self(&List.new[String](), &("any[" + p.name + "]")))
+            name = "__protocol_static_" + p.name + "__" + pm.name
+            params = List.new[TParam]()
+            provided_params(&pm.params, 0, &mut params)
+            c.fns.push(TFn(name.dup(), params, TBlock(List.new[TStmt](), XNone), pm.ret.dup(), 0, 0, pm.fx.clone(), p.tparams.clone(), "", 0, "", ""))
+            c.sigs.put(&name, &c.fns.len().to_str())
+        infer_protocol_stubs(c, p, i + 1)
 
 # Ok(0), or Err(message) for the first type error.
 fn infer_program(tp: &TProgram) -> Res ! alloc

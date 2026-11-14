@@ -574,6 +574,10 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_struct_free_box(i64)\n");
     s.push_str("declare i64 @sal_struct_set(i64, i64, i64)\n");
     s.push_str("declare i64 @sal_struct_new(i64)\n");
+    s.push_str("declare i64 @sal_cell_new(i64)\n");
+    s.push_str("declare i64 @sal_cell_get(i64)\n");
+    s.push_str("declare void @sal_cell_set(i64, i64)\n");
+    s.push_str("declare void @sal_cell_free(i64)\n");
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
     s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_box_id(i64)\n");
@@ -3431,6 +3435,21 @@ fn emit_runtime_or_user_call(
                     "  %{d} = call i64 @sal_arena_export(ptr {owner}, i64 {raw}, i64 {tag}, ptr {desc})\n"
                 ));
             }
+        }
+        name @ ("sal_cell_new" | "sal_cell_get") => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @{name}(i64 {a})\n"));
+            }
+        }
+        "sal_cell_set" => {
+            let c = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let v = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            s.push_str(&format!("  call void @sal_cell_set(i64 {c}, i64 {v})\n"));
+        }
+        "sal_cell_free" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            s.push_str(&format!("  call void @sal_cell_free(i64 {a})\n"));
         }
         "sal_struct_free_box" => {
             let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());

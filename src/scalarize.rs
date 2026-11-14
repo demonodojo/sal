@@ -30,6 +30,20 @@ pub struct FnSig {
     pub mut_ref: Vec<bool>,
     /// Per parameter: shared borrow (`&T`).
     pub shared_ref: Vec<bool>,
+    /// Per parameter: `&mut T` of a value without a box (`Int`, `Float`, `Bool`, a one-field
+    /// struct). The argument is a cell (`sal_cell_new`) the callee reads and writes.
+    pub cell: Vec<bool>,
+}
+
+/// `T` in `&mut T` has no box of its own, so the callee writes through a cell.
+pub fn is_cell_type(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
+    match ty {
+        Type::Named { name, args, .. } if args.is_empty() => {
+            matches!(name.as_str(), "Int" | "Float" | "Bool")
+                || structs.get(name).is_some_and(|sd| sd.type_params.is_empty() && crate::layout::is_transparent_struct(sd))
+        }
+        _ => false,
+    }
 }
 
 /// Name of the struct that `ty` is passed as, when it is scalarised.
@@ -161,6 +175,11 @@ pub fn fn_sig(f: &FnDef, structs: &HashMap<String, StructDef>) -> FnSig {
             .iter()
             .map(|p| matches!(p.ty, Type::Ref { mutable: false, .. }))
             .collect(),
+        cell: f
+            .params
+            .iter()
+            .map(|p| matches!(&p.ty, Type::Ref { mutable: true, inner, .. } if is_cell_type(inner, structs)))
+            .collect(),
     }
 }
 
@@ -257,6 +276,7 @@ fn scalarize_fn(
             ret: None,
             mut_ref: vec![false; f.params.len()],
             shared_ref: vec![false; f.params.len()],
+            cell: vec![false; f.params.len()],
         },
     };
     let mut p = Pass {

@@ -214,6 +214,10 @@ void sal_list_set_clone(void *l, int64_t (*glue)(int64_t));
 void *sal_list_new_desc(const char *desc);
 void sal_struct_free(int64_t raw, const char *desc);
 void sal_struct_free_box(int64_t raw);
+int64_t sal_cell_new(int64_t value);
+int64_t sal_cell_get(int64_t cell);
+void sal_cell_set(int64_t cell, int64_t value);
+void sal_cell_free(int64_t cell);
 /* Writes one slot of an existing struct block and returns the same pointer. */
 int64_t sal_struct_set(int64_t raw, int64_t index, int64_t value);
 int64_t sal_struct_new(int64_t n);

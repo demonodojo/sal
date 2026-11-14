@@ -1,0 +1,17 @@
+# exit: 9
+# Un static propio prevalece sobre el provisto si su firma coincide.
+protocol Zero
+    static zero() -> Int
+        0
+
+struct A impl Zero
+    n: Int
+
+struct B impl Zero
+    n: Int
+
+static B.zero() -> Int
+    9
+
+fn main() -> Int
+    A.zero() + B.zero()

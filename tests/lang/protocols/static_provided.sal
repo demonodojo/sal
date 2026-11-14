@@ -1,0 +1,41 @@
+# exit: 53
+# Statics requeridos y provistos; `Self` es el tipo que implementa, en cada copia.
+protocol Model
+    static table() -> String ! alloc
+    static build(id: Int) -> Self ! alloc
+    method id(&self) -> Int
+    static find(id: Int) -> Self ! alloc
+        x = Self.table()
+        Self.build(id + x.len())
+    method twice(&self) -> Int ! alloc
+        Self.table().len() + self.id() * 2
+
+struct Post impl Model
+    id: Int
+    title: String
+
+static Post.table() -> String ! alloc
+    "posts"
+
+static Post.build(id: Int) -> Post ! alloc
+    Post(id, "t")
+
+method Post.id(&self) -> Int
+    self.id
+
+struct Tag impl Model
+    id: Int
+
+static Tag.table() -> String ! alloc
+    "tg"
+
+static Tag.build(id: Int) -> Tag ! alloc
+    Tag(id)
+
+method Tag.id(&self) -> Int
+    self.id
+
+fn main() -> Int ! alloc
+    p = Post.find(1)
+    t = Tag.find(1)
+    p.id() + t.id() * 10 + p.twice()

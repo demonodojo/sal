@@ -319,6 +319,39 @@ fn tt_struct_find(structs: &List[TStruct], name: &String) -> Int ! alloc
     t = tt_strip_lifetimes(name)
     tt_struct_find_go(structs, &t, 0, structs.len())
 
+# `ty` (without `&`) has no box of its own: `Int`, `Float`, `Bool` or a one-field struct that is
+# not generic. A `&mut` to it goes in a cell (`sal_cell_new`), as `scalarize::is_cell_type`.
+fn tt_is_cell(structs: &List[TStruct], ty: &String) -> Int ! alloc
+    t = trim_spaces(ty.dup())
+    if t.eq("Int") == 1 || t.eq("Float") == 1 || t.eq("Bool") == 1
+        1
+    elsif tt_find_byte(&t, 91, 0) >= 0
+        0
+    else
+        si = tt_struct_find(structs, &t)
+        if si < 0
+            0
+        elsif structs.get(si).fields.len() == 1 && structs.get(si).tparams.len() == 0
+            1
+        else
+            0
+
+# The parameter type `&mut T` with `T` a cell type (`tt_is_cell`).
+fn tt_is_cell_param(structs: &List[TStruct], ty: &String) -> Int ! alloc
+    if ty_is_mut_ref(ty) == 0
+        0
+    else
+        tt_is_cell(structs, &ty_deref(ty))
+
+# One character per parameter, `1` when it takes a cell (`scalarize::FnSig::cell`).
+fn tt_cell_flags(structs: &List[TStruct], params: &List[TParam]) -> String ! alloc
+    out = ""
+    i = 0
+    while i < params.len()
+        out = out + tt_is_cell_param(structs, &params.get(i).ty).to_str()
+        i = i + 1
+    out
+
 # `Tc['a]` names the struct `Tc`: lifetime arguments do not make a generic instance.
 fn tt_strip_lifetimes(t: &String) -> String ! alloc
     open = tt_find_byte(t, 91, 0)

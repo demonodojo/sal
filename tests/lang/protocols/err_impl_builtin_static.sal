@@ -1,0 +1,9 @@
+# error: E_TYPE
+protocol Sized
+    static unit() -> Int
+    method len(&self) -> Int
+
+impl List[Int] Sized
+
+fn main() -> Int
+    0

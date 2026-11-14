@@ -1,0 +1,9 @@
+fn base() -> Int
+    40
+
+protocol Model
+    static table() -> String ! alloc
+    static build(id: Int) -> Self
+    method id(&self) -> Int
+    static find(id: Int) -> Self ! alloc
+        Self.build(id + Self.table().len() + base())

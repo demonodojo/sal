@@ -1,0 +1,21 @@
+# exit: 23
+# Una línea de solo comentario, con cualquier sangría, no abre ni cierra un bloque.
+protocol Value
+    # requerido
+    method value(&self) -> Int
+# provisto, comentario en la columna 1
+    method doubled(&self) -> Int
+        # suma
+        self.value() + self.value()
+
+struct Number impl Value
+
+    # el número
+    n: Int
+
+method Number.value(&self) -> Int
+            # más sangrado que el cuerpo
+    self.n
+
+fn main() -> Int
+    Number(7).doubled() + Number(9).value()
