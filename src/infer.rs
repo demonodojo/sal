@@ -37,7 +37,7 @@ pub struct TypeEnv {
     pub statics: std::collections::HashSet<String>,
     pub protocols: HashMap<String, ProtocolDef>,
     /// `FnDef` for signature checks (protocols, effects on methods); bodies are empty
-    /// (`FnDef::signature`).
+    /// (`FnDef::signature`), except in a fn with a callback parameter.
     pub fn_defs: HashMap<String, FnDef>,
     /// Dynamic `x.m()` on `any[P]`: call span → (protocol, method, slot).
     pub protocol_calls: std::cell::RefCell<HashMap<(u32, u32), (String, String, u32)>>,
@@ -125,7 +125,10 @@ pub fn type_env_of_program(prog: &Program) -> TypeEnv {
 /// Add `f` to the callable signatures, noting whether it is a `static`/`init`.
 pub fn register_fn(types: &mut TypeEnv, f: &FnDef) {
     types.fns.insert(f.name.clone(), fn_signature(f));
-    types.fn_defs.insert(f.name.clone(), f.signature());
+    // A fn that takes a callback keeps its body: `specialize_lambdas` copies it at each call
+    // with a lambda, also when the callee comes from another module.
+    let takes_callback = f.params.iter().any(|p| matches!(p.ty, Type::Fn { .. }));
+    types.fn_defs.insert(f.name.clone(), if takes_callback { f.clone() } else { f.signature() });
     if let Some(i) = generic_ret_index(f) {
         types.generic_ret.insert(f.name.clone(), i);
     }

@@ -1459,7 +1459,44 @@ pub(crate) fn returns_param_map(prog: &Program) -> HashMap<String, Vec<usize>> {
             m.insert(f.name.clone(), idx);
         }
     }
+    // A tail that hands the parameter to a fn that returns it (`id(id(x))`) returns it too.
+    loop {
+        let mut grew = false;
+        for item in &prog.items {
+            let Item::Fn(f) = item else { continue };
+            let Some(tail) = f.body.tail.as_deref() else { continue };
+            for (i, p) in f.params.iter().enumerate() {
+                if m.get(&f.name).is_some_and(|idx: &Vec<usize>| idx.contains(&i)) {
+                    continue;
+                }
+                if call_passes_param(tail, &p.name, &m) {
+                    m.entry(f.name.clone()).or_default().push(i);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
     m
+}
+
+/// `g(…, p, …)` or `g(…, h(p), …)` where `g` (and `h`) return the argument at that index.
+fn call_passes_param(e: &Expr, param: &str, m: &HashMap<String, Vec<usize>>) -> bool {
+    let Expr::Call { func, args, .. } = e else {
+        return false;
+    };
+    let Expr::Ident { name, .. } = func.as_ref() else {
+        return false;
+    };
+    m.get(name).is_some_and(|idx| {
+        idx.iter().any(|&i| match args.get(i) {
+            Some(Expr::Ident { name: a, .. }) => a == param,
+            Some(inner) => call_passes_param(inner, param, m),
+            None => false,
+        })
+    })
 }
 
 /// The result aliases an argument the caller does not own: a borrowed parameter, or a field
