@@ -1,0 +1,45 @@
+{
+  "model": "lmstudio:twil-8b",
+  "models": {
+    "lmstudio:twil-8b": {
+      "provider": "lmstudio",
+      "host": "127.0.0.1",
+      "port": 1234,
+      "model_id": "twil-8b",
+      "vision": false,
+      "stream": true
+    },
+    "lmstudio:ministral-3-8b-instruct-2512": {
+      "provider": "lmstudio",
+      "host": "127.0.0.1",
+      "port": 1234,
+      "model_id": "ministral-3-8b-instruct-2512",
+      "vision": true,
+      "stream": true
+    },
+    "lmstudio:qwen3-4b-instruct-2507": {
+      "provider": "lmstudio",
+      "host": "127.0.0.1",
+      "port": 1234,
+      "model_id": "qwen3-4b-instruct-2507",
+      "vision": false,
+      "stream": true
+    },
+    "lmstudio:qwen2.5-7b-instruct": {
+      "provider": "lmstudio",
+      "host": "127.0.0.1",
+      "port": 1234,
+      "model_id": "qwen2.5-7b-instruct",
+      "vision": false,
+      "stream": true
+    },
+    "lmstudio:ministral-3-3b-instruct-2512": {
+      "provider": "lmstudio",
+      "host": "127.0.0.1",
+      "port": 1234,
+      "model_id": "ministral-3-3b-instruct-2512",
+      "vision": false,
+      "stream": true
+    }
+  }
+}
