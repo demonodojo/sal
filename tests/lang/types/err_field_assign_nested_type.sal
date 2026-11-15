@@ -1,0 +1,14 @@
+# error: E_TYPE
+# Also through a chain of fields: `app.db.n` is an `Int`.
+struct Db
+    n: Int
+    k: Int
+
+struct App
+    db: Db
+    k: Int
+
+fn main() -> Int
+    app = App(Db(0, 0), 0)
+    app.db.n = "x"
+    app.db.n

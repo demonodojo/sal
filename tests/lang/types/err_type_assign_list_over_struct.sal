@@ -1,0 +1,11 @@
+# error: E_TYPE
+# selfhost-xfail: el selfhost tipa `xs.push(v)` como su lista y no da clase a los contenedores al reasignar
+# Two owned values of different types: the list cannot take the name of the `Pair`.
+struct Pair
+    a: String
+    b: String
+
+fn main() -> Int ! alloc
+    r = Pair(d"a", d"b")
+    r = List.new[Int]()
+    r.len()

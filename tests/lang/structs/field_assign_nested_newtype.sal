@@ -1,0 +1,16 @@
+# exit: 9
+# Three levels, with one-field structs (the value of their field) in between: 7 + 2.
+struct C
+    n: Int
+
+struct B
+    c: C
+    k: Int
+
+struct A
+    b: B
+
+fn main() -> Int
+    a = A(B(C(1), 2))
+    a.b.c.n = 7
+    a.b.c.n + a.b.k

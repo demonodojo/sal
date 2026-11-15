@@ -1012,6 +1012,14 @@ thread_local! {
     static CELL_PARAMS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Per callee: which parameters take a cell (`scalarize::FnSig::cell`).
     static CELL_SIGS: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
+    /// Locals of a type without a box whose `&mut` is kept (`r = &mut x`, `H(&mut x)`): each
+    /// lives in a cell for the whole call (local name -> cell ssa). Reads are `sal_cell_get`,
+    /// writes `sal_cell_set`, and `&mut x` is the cell.
+    static CELL_LOCALS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Locals that hold such a cell (`r = &mut x`): `*r` and `r.f` go through it.
+    static REF_CELLS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Per callee: which parameters are `&mut` (`scalarize::FnSig::mut_ref`).
+    static MUT_SIGS: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
 }
 
 /// `*p` with `p` a cell parameter, as an assignment target.
@@ -1029,6 +1037,136 @@ fn cell_write_back(name: &str, value: &str, instructions: &mut Vec<IrInst>) {
             func: "sal_cell_set".into(),
             args: vec![name.to_string(), value.to_string()],
         });
+    } else if let Some(cell) = cell_local(name) {
+        instructions.push(IrInst::Call {
+            dest: None,
+            func: "sal_cell_set".into(),
+            args: vec![cell, value.to_string()],
+        });
+    }
+}
+
+/// The cell of a local whose `&mut` is kept (`CELL_LOCALS`).
+fn cell_local(name: &str) -> Option<String> {
+    CELL_LOCALS.with(|c| c.borrow().get(name).cloned())
+}
+
+fn is_ref_cell(name: &str) -> bool {
+    REF_CELLS.with(|r| r.borrow().contains(name))
+}
+
+/// The expression is a cell handle: `&mut x` of a cell local, a local holding one (`r`), or a
+/// struct field `&'a mut T` of a type without a box (`h.r`).
+fn is_cell_handle(e: &Expr, strings: &StringEnv) -> bool {
+    match e {
+        Expr::Unary { op: UnOp::RefMut, expr, .. } => {
+            matches!(expr.as_ref(), Expr::Ident { name, .. } if cell_local(name).is_some())
+        }
+        Expr::Ident { name, .. } => is_ref_cell(name),
+        Expr::Field { base, field, .. } => struct_name_of_base(base, strings)
+            .and_then(|sn| strings.structs.get(&sn).and_then(|d| d.fields.iter().find(|f| &f.name == field).cloned()))
+            .is_some_and(|fd| {
+                matches!(&fd.ty, Type::Ref { mutable: true, inner, .. }
+                    if crate::scalarize::is_cell_type(inner, &strings.structs))
+            }),
+        _ => false,
+    }
+}
+
+fn cell_get(cell: &str, counter: &mut u32, instructions: &mut Vec<IrInst>) -> String {
+    *counter += 1;
+    let v = format!("t{counter}");
+    instructions.push(IrInst::Call {
+        dest: Some(v.clone()),
+        func: "sal_cell_get".into(),
+        args: vec![cell.to_string()],
+    });
+    v
+}
+
+/// Locals of `f` whose `&mut` is kept somewhere other than as a direct argument for a cell
+/// parameter, and whose type has no box (SPEC «Liberación de locales»).
+fn collect_cell_locals(f: &FnDef, strings: &StringEnv) -> Vec<String> {
+    let params: HashSet<&str> = f.params.iter().map(|p| p.name.as_str()).collect();
+    let mut kept: Vec<String> = Vec::new();
+    let mut direct: HashMap<String, usize> = HashMap::new();
+    let mut total: HashMap<String, usize> = HashMap::new();
+    let mut body = f.body.clone();
+    crate::specialize::walk_block(
+        &mut body,
+        &mut |e| {
+            if let Expr::Call { func, args, .. } = e {
+                if let Expr::Ident { name: fname, .. } = func.as_ref() {
+                    let flags = CELL_SIGS.with(|c| c.borrow().get(fname).cloned()).unwrap_or_default();
+                    for (i, a) in args.iter().enumerate() {
+                        if let Expr::Unary { op: UnOp::RefMut, expr, .. } = a {
+                            if let Expr::Ident { name, .. } = expr.as_ref() {
+                                if flags.get(i).copied().unwrap_or(false) {
+                                    *direct.entry(name.clone()).or_default() += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Expr::Unary { op: UnOp::RefMut, expr, .. } = e {
+                if let Expr::Ident { name, .. } = expr.as_ref() {
+                    if params.contains(name.as_str()) {
+                        return;
+                    }
+                    let cell_ty = strings
+                        .expr_type(expr)
+                        .is_some_and(|ty| crate::scalarize::is_cell_type(peel_ref_ty(ty), &strings.structs));
+                    if cell_ty {
+                        *total.entry(name.clone()).or_default() += 1;
+                    }
+                }
+            }
+        },
+        &mut |_| {},
+    );
+    for (name, n) in &total {
+        if *n > direct.get(name).copied().unwrap_or(0) {
+            kept.push(name.clone());
+        }
+    }
+    kept.sort();
+    kept
+}
+
+fn insert_cell_frees(insts: &mut Vec<IrInst>, cells: &[String]) {
+    for inst in insts.iter_mut() {
+        match inst {
+            IrInst::If { then_body, else_body, .. } => {
+                insert_cell_frees(then_body, cells);
+                insert_cell_frees(else_body, cells);
+            }
+            IrInst::While { cond_insts, body, .. } => {
+                insert_cell_frees(cond_insts, cells);
+                insert_cell_frees(body, cells);
+            }
+            IrInst::Switch { arms, default_body, .. } => {
+                for arm in arms.iter_mut() {
+                    insert_cell_frees(&mut arm.body, cells);
+                }
+                insert_cell_frees(default_body, cells);
+            }
+            IrInst::KernelGrid { body, .. } => insert_cell_frees(body, cells),
+            _ => {}
+        }
+    }
+    let mut i = 0;
+    while i < insts.len() {
+        if matches!(insts[i], IrInst::Return { .. }) {
+            for c in cells {
+                insts.insert(
+                    i,
+                    IrInst::Call { dest: None, func: "sal_cell_free".into(), args: vec![c.clone()] },
+                );
+                i += 1;
+            }
+        }
+        i += 1;
     }
 }
 
@@ -1050,6 +1188,53 @@ fn cell_call_args(fname: &str, args: &[Expr], env: &HashMap<String, String>) -> 
                 Expr::Ident { name, .. } if env.contains_key(name) => Some((i, name.clone())),
                 _ => None,
             }
+        })
+        .collect()
+}
+
+/// The arguments of a call to `fname` that lend a field place `a.b…` (`&mut a.b`, or `a.b` as
+/// the receiver of a `&mut self` method) and that the call has to write back: with `true`, the
+/// field holds a value without a box and goes in a cell; with `false`, the field is a struct
+/// inside an owned local, which the callee changes in its own copy (scalarize) and the caller
+/// stores back (only for a struct field: a `List` or `Dict` handle does not move). A place
+/// inside a block (a box or `&mut` root, or behind a reference field) is
+/// written in place by the callee and needs neither.
+fn place_call_args(
+    fname: &str,
+    args: &[Expr],
+    env: &HashMap<String, String>,
+    strings: &StringEnv,
+) -> Vec<(usize, Expr, bool)> {
+    let cells = CELL_SIGS.with(|c| c.borrow().get(fname).cloned()).unwrap_or_default();
+    let muts = MUT_SIGS.with(|c| c.borrow().get(fname).cloned()).unwrap_or_default();
+    args.iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            let cell = cells.get(i).copied().unwrap_or(false);
+            if !cell && !muts.get(i).copied().unwrap_or(false) {
+                return None;
+            }
+            let inner = match a {
+                Expr::Unary { op: UnOp::RefMut, expr, .. } => expr.as_ref(),
+                other => other,
+            };
+            if !matches!(inner, Expr::Field { .. }) {
+                return None;
+            }
+            let (root, steps) = field_path_steps(inner, env, strings)?;
+            if !cell {
+                let in_block = BOX_PLACE.with(|b| b.borrow().contains(&root))
+                    || MUT_REF_PLACE.with(|m| m.borrow().contains(&root))
+                    || CELL_PARAMS.with(|c| c.borrow().contains(&root))
+                    || steps.iter().any(|s| matches!(s.ty, Type::Ref { .. }));
+                let leaf_struct = steps.last().and_then(|s| struct_of_type(&s.ty)).and_then(|sn| {
+                    strings.structs.get(&sn).map(|d| !is_transparent_struct(d))
+                });
+                if in_block || leaf_struct != Some(true) {
+                    return None;
+                }
+            }
+            Some((i, inner.clone(), cell))
         })
         .collect()
 }
@@ -1389,7 +1574,30 @@ fn lower_fn(
             .map(|(k, s)| (k.clone(), s.cell.clone()))
             .collect();
     });
+    MUT_SIGS.with(|c| {
+        *c.borrow_mut() = strings
+            .fn_sigs
+            .iter()
+            .filter(|(_, s)| s.mut_ref.iter().any(|b| *b))
+            .map(|(k, s)| (k.clone(), s.mut_ref.clone()))
+            .collect();
+    });
     CELL_PARAMS.with(|c| c.borrow_mut().clear());
+    REF_CELLS.with(|r| r.borrow_mut().clear());
+    CELL_LOCALS.with(|c| c.borrow_mut().clear());
+    for name in collect_cell_locals(f, &strings) {
+        counter += 1;
+        let zero = format!("t{counter}");
+        instructions.push(IrInst::ConstInt { dest: zero.clone(), value: 0 });
+        counter += 1;
+        let cell = format!("t{counter}");
+        instructions.push(IrInst::Call {
+            dest: Some(cell.clone()),
+            func: "sal_cell_new".into(),
+            args: vec![zero],
+        });
+        CELL_LOCALS.with(|c| c.borrow_mut().insert(name, cell));
+    }
     for (i, p) in f.params.iter().enumerate() {
         env.insert(p.name.clone(), p.name.clone());
         if cell_flags.get(i).copied().unwrap_or(false) {
@@ -2846,12 +3054,11 @@ fn collect_assigned_stmt(st: &Stmt, names: &mut HashSet<String>) {
                         names.insert(name.clone());
                     }
                 }
-                Expr::Field { base, .. } => {
-                    // A one-field struct cell parameter is rebound by `p.x = v`.
-                    if let Expr::Ident { name, .. } = base.as_ref() {
-                        if CELL_PARAMS.with(|c| c.borrow().contains(name)) {
-                            names.insert(name.clone());
-                        }
+                Expr::Field { .. } => {
+                    // `p.x = v` / `p.a.b = v` rebinds the root local to the rebuilt struct (a
+                    // cell parameter writes it through). A block root keeps its name.
+                    if let Some(root) = rebound_field_root(target) {
+                        names.insert(root.to_string());
                     }
                 }
                 _ => {}
@@ -2913,6 +3120,24 @@ fn collect_assigned_expr(e: &Expr, names: &mut HashSet<String>) {
                         };
                         if let Expr::Ident { name, .. } = inner {
                             names.insert(name.clone());
+                        }
+                    }
+                }
+                // `&mut a.b` (or the receiver `a.b`) to a `&mut` parameter: the call stores the
+                // field back into `a` (`place_call_args`).
+                let muts = MUT_SIGS.with(|c| c.borrow().get(fname).cloned()).unwrap_or_default();
+                let cells = CELL_SIGS.with(|c| c.borrow().get(fname).cloned()).unwrap_or_default();
+                for (i, a) in args.iter().enumerate() {
+                    if !muts.get(i).copied().unwrap_or(false) && !cells.get(i).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let inner = match a {
+                        Expr::Unary { op: UnOp::RefMut, expr, .. } => expr.as_ref(),
+                        other => other,
+                    };
+                    if matches!(inner, Expr::Field { .. }) {
+                        if let Some(root) = rebound_field_root(inner) {
+                            names.insert(root.to_string());
                         }
                     }
                 }
@@ -3014,6 +3239,21 @@ fn lower_stmt(
             strings.note_init(name, ty.as_ref(), init);
         }
         Stmt::Assign { target, value, .. } => {
+            if lower_nested_field_assign(
+                target,
+                value,
+                instructions,
+                env,
+                counter,
+                regions,
+                tensors,
+                dim_params,
+                fn_names,
+                host_literals,
+                strings,
+            ) {
+                return false;
+            }
             if let Expr::Field { base, field, .. } = target {
                 if let Expr::Ident { name, .. } = base.as_ref() {
                     if let Some(sn) = strings.struct_types.get(name).cloned() {
@@ -4772,7 +5012,23 @@ fn lower_expr(
             }
             let func_name = runtime_call_name(&fname, fn_names);
             let cells = cell_call_args(&fname, args, env);
+            let places = place_call_args(&fname, args, env, strings);
             let mut arg_names = arg_names;
+            // (ssa passed, place, whether the ssa is a cell)
+            let mut place_names: Vec<(String, Expr, bool)> = Vec::new();
+            for (i, place, cell) in places {
+                if cell {
+                    *counter += 1;
+                    let c = format!("t{counter}");
+                    instructions.push(IrInst::Call {
+                        dest: Some(c.clone()),
+                        func: "sal_cell_new".into(),
+                        args: vec![arg_names[i].clone()],
+                    });
+                    arg_names[i] = c;
+                }
+                place_names.push((arg_names[i].clone(), place, cell));
+            }
             for (i, _) in &cells {
                 *counter += 1;
                 let c = format!("t{counter}");
@@ -4806,6 +5062,28 @@ fn lower_expr(
                 });
                 cell_write_back(&x, &v, instructions);
                 env.insert(x, v);
+            }
+            // `&mut a.b`: the field takes the value back (not an overwrite: the callee already
+            // released whatever it replaced).
+            for (c, place, cell) in place_names {
+                let v = if cell {
+                    *counter += 1;
+                    let v = format!("t{counter}");
+                    instructions.push(IrInst::Call {
+                        dest: Some(v.clone()),
+                        func: "sal_cell_get".into(),
+                        args: vec![c.clone()],
+                    });
+                    instructions.push(IrInst::Call {
+                        dest: None,
+                        func: "sal_cell_free".into(),
+                        args: vec![c],
+                    });
+                    v
+                } else {
+                    c
+                };
+                store_field_path(&place, &v, false, instructions, env, counter, strings);
             }
             if fn_names.contains_key(&fname) {
                 if let Some(ret_ty) = strings.fn_tensor_rets.get(&fname) {
@@ -5342,6 +5620,193 @@ fn skip_ref_expr(e: &Expr) -> &Expr {
     match e {
         Expr::Unary { op: UnOp::Ref | UnOp::RefMut | UnOp::Deref, expr, .. } => skip_ref_expr(expr),
         other => other,
+    }
+}
+
+/// One step `base.field` of an assignment target: the struct of `base`, whether it is a
+/// transparent newtype (the field is the value itself), the field index and the field type.
+struct FieldStep {
+    struct_name: String,
+    transparent: bool,
+    index: usize,
+    ty: Type,
+}
+
+/// `a.b.c = v` (two or more fields; `a.b = v` keeps its own lowering in `lower_stmt`): the
+/// value is computed first, then [`store_field_path`] writes it. Returns false (nothing
+/// emitted) when the target is not such a chain or a level is not a known struct.
+#[allow(clippy::too_many_arguments)]
+fn lower_nested_field_assign(
+    target: &Expr,
+    value: &Expr,
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+    regions: &mut Vec<FusedRegion>,
+    tensors: &mut HashMap<String, TensorInfo>,
+    dim_params: &mut Vec<String>,
+    fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
+    strings: &mut StringEnv,
+) -> bool {
+    let Expr::Field { base, .. } = target else { return false };
+    if !matches!(base.as_ref(), Expr::Field { .. }) || field_path_steps(target, env, strings).is_none() {
+        return false;
+    }
+    let new_val = lower_expr(
+        value,
+        instructions,
+        env,
+        counter,
+        regions,
+        tensors,
+        dim_params,
+        fn_names,
+        host_literals,
+        strings,
+    );
+    store_field_path(target, &new_val, true, instructions, env, counter, strings)
+}
+
+/// The root local and the steps of a field chain `root.f1.….fk` whose every level is a known
+/// struct.
+fn field_path_steps(
+    target: &Expr,
+    env: &HashMap<String, String>,
+    strings: &StringEnv,
+) -> Option<(String, Vec<FieldStep>)> {
+    let mut chain: Vec<(&Expr, &String)> = Vec::new();
+    let mut e = target;
+    while let Expr::Field { base, field, .. } = e {
+        chain.push((base.as_ref(), field));
+        e = base.as_ref();
+    }
+    let Expr::Ident { name: root, .. } = e else { return None };
+    if chain.is_empty() || !env.contains_key(root) {
+        return None;
+    }
+    chain.reverse();
+    let mut steps = Vec::new();
+    for (base, field) in &chain {
+        let sn = struct_name_of_base(base, strings)?;
+        let sdef = strings.structs.get(&sn)?;
+        let index = struct_field_index(sdef, field)?;
+        steps.push(FieldStep {
+            struct_name: sn.clone(),
+            transparent: is_transparent_struct(sdef),
+            index,
+            ty: sdef.fields[index].ty.clone(),
+        });
+    }
+    Some((root.clone(), steps))
+}
+
+/// Write `new_val` into the place `root.f1.….fk`. With `drop_old`, the old leaf is released
+/// first (an overwrite). Each level is written back innermost first: in place
+/// (`sal_struct_set`) once the container is a block (a box or `&mut` root, or the referent of
+/// a reference field), otherwise by rebuilding it, up to the root local, which a cell
+/// parameter writes through. A transparent level is the value of its only field.
+fn store_field_path(
+    target: &Expr,
+    new_val: &str,
+    drop_old: bool,
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+    strings: &mut StringEnv,
+) -> bool {
+    let Some((root, steps)) = field_path_steps(target, env, strings) else { return false };
+    let root_ssa = env.get(&root).cloned().unwrap_or_else(|| "0".into());
+    let root_box = BOX_PLACE.with(|b| b.borrow().contains(&root))
+        || MUT_REF_PLACE.with(|m| m.borrow().contains(&root));
+    // Down: `vals[i]` is the i-th container; `inplace[i]`, whether it is a block.
+    let mut vals = vec![root_ssa];
+    let mut inplace = vec![root_box];
+    for (i, st) in steps.iter().enumerate() {
+        let next = if st.transparent {
+            vals[i].clone()
+        } else {
+            *counter += 1;
+            let d = format!("t{counter}");
+            instructions.push(IrInst::Extract {
+                dest: d.clone(),
+                base: vals[i].clone(),
+                struct_name: st.struct_name.clone(),
+                field_index: st.index as u32,
+            });
+            d
+        };
+        vals.push(next);
+        inplace.push(inplace[i] || matches!(st.ty, Type::Ref { .. }));
+    }
+    if drop_old {
+        let leaf = steps.last().expect("one or more fields");
+        emit_owned_value_drop(&vals[steps.len()], &leaf.ty, strings, counter, instructions);
+    }
+    // Up: write the new value into each container, innermost first.
+    let mut cur = new_val.to_string();
+    for (i, st) in steps.iter().enumerate().rev() {
+        if st.transparent {
+            continue;
+        }
+        if inplace[i] {
+            *counter += 1;
+            let idx_ssa = format!("t{counter}");
+            instructions.push(IrInst::ConstInt { dest: idx_ssa.clone(), value: st.index as i64 });
+            instructions.push(IrInst::Call {
+                dest: None,
+                func: "sal_struct_set".into(),
+                args: vec![vals[i].clone(), idx_ssa, cur],
+            });
+            return true;
+        }
+        let n = strings.structs.get(&st.struct_name).map_or(0, |d| d.fields.len());
+        let mut fields = Vec::with_capacity(n);
+        for j in 0..n {
+            if j == st.index {
+                fields.push(cur.clone());
+            } else {
+                *counter += 1;
+                let d = format!("t{counter}");
+                instructions.push(IrInst::Extract {
+                    dest: d.clone(),
+                    base: vals[i].clone(),
+                    struct_name: st.struct_name.clone(),
+                    field_index: j as u32,
+                });
+                fields.push(d);
+            }
+        }
+        *counter += 1;
+        let dest = format!("t{counter}");
+        instructions.push(IrInst::Aggregate {
+            dest: dest.clone(),
+            struct_name: st.struct_name.clone(),
+            fields,
+        });
+        cur = dest;
+    }
+    cell_write_back(&root, &cur, instructions);
+    env.insert(root, cur);
+    true
+}
+
+/// The root of a field chain that a write into the chain rebinds: a cell parameter, or a local
+/// that is not a block (a box or `&mut` root is written in place and keeps its name).
+fn rebound_field_root(e: &Expr) -> Option<&str> {
+    let root = field_root_ident(e)?;
+    let cell = CELL_PARAMS.with(|c| c.borrow().contains(root));
+    let block = BOX_PLACE.with(|b| b.borrow().contains(root))
+        || MUT_REF_PLACE.with(|m| m.borrow().contains(root));
+    (cell || !block).then_some(root)
+}
+
+/// The local at the root of a field chain `root.f1.….fk`.
+fn field_root_ident(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Field { base, .. } => field_root_ident(base),
+        Expr::Ident { name, .. } => Some(name),
+        _ => None,
     }
 }
 

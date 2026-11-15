@@ -1,0 +1,14 @@
+# exit: 100
+# `app.db.n = v` writes the inner field of an owned local.
+struct Db
+    n: Int
+    k: Int
+
+struct App
+    db: Db
+    k: Int
+
+fn main() -> Int
+    app = App(Db(0, 0), 0)
+    app.db.n = 100
+    app.db.n

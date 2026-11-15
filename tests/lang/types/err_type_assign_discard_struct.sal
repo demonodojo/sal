@@ -1,0 +1,10 @@
+# error: E_TYPE
+# A `_name` may switch between plain scalars, not away from a struct it owns.
+struct Pair
+    a: String
+    b: String
+
+fn main() -> Int ! alloc
+    _r = Pair(d"a", d"b")
+    _r = 3
+    0

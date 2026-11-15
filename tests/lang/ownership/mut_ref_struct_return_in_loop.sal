@@ -1,0 +1,27 @@
+# exit: 42
+# A `return` from inside the loop that borrows the local `&mut` reads the writes made so far:
+# the second bump reaches the limit, so the first call gives 40 + 2. The second call never
+# reaches its limit and gives the count after the loop (5 bumps: 0 * 5), 42 in total.
+struct Tag
+    id: Int
+    name: String
+
+struct Counter
+    tag: Tag
+    n: Int
+
+method Counter.bump(&mut self) -> Int
+    self.n = self.n + 1
+    self.n
+
+fn first_over(lim: Int) -> Int ! alloc
+    c = Counter(Tag(40, d"t"), 0)
+    i = 0
+    while i < 5
+        if c.bump() == lim
+            return c.tag.id + c.n
+        i = i + 1
+    (c.n - 5) * c.tag.id
+
+fn main() -> Int ! alloc
+    first_over(2) + first_over(9)

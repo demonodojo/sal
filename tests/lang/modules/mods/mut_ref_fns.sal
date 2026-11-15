@@ -1,0 +1,15 @@
+struct One
+    n: Int
+
+struct Env
+    n: Int
+    k: Int
+
+fn bump_one(o: &mut One) -> Unit
+    o.n = o.n + 1
+
+fn bump_env(e: &mut Env) -> Unit
+    e.n = e.n + 10
+
+fn add(x: &mut Int, k: Int) -> Unit
+    *x = *x + k

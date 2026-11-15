@@ -1,0 +1,17 @@
+# exit: 12
+# A chain that crosses a `&'a mut` field writes the referent: `tc.pool.n = 5` reaches `p`,
+# and so does `tc.pool.m = 7`.
+struct Pool
+    n: Int
+    m: Int
+
+struct Tc['a]
+    pool: &'a mut Pool
+    k: Int
+
+fn main() -> Int
+    p = Pool(0, 0)
+    tc = Tc(&mut p, 1)
+    tc.pool.n = 5
+    tc.pool.m = 7
+    p.n + p.m

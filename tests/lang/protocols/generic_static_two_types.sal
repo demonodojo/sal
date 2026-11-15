@@ -1,0 +1,37 @@
+# exit: 42
+# Un protocolo genérico con statics, reclamado por dos tipos del mismo módulo:
+# A.find(1).id() 2 + B.find(1).id() * 10 30 + tags 7 + 3.
+protocol Model[T]
+    static build(id: Int) -> Self
+    method id(&self) -> Int
+    method tag(&self) -> T
+    static find(id: Int) -> Self
+        Self.build(id + 1)
+
+struct A impl Model[Int]
+    n: Int
+
+static A.build(id: Int) -> A
+    A(id)
+
+method A.id(&self) -> Int
+    self.n
+
+method A.tag(&self) -> Int
+    7
+
+struct B impl Model[Int]
+    n: Int
+    m: Int
+
+static B.build(id: Int) -> B
+    B(id, 1)
+
+method B.id(&self) -> Int
+    self.n + self.m
+
+method B.tag(&self) -> Int
+    3
+
+fn main() -> Int
+    A.find(1).id() + B.find(1).id() * 10 + A(0).tag() + B(0, 0).tag()

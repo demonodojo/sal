@@ -1,0 +1,20 @@
+# exit: 63
+# `c.bump()` borrows the local `&mut` on every iteration. Each call sees what the previous
+# one wrote (1 + 2 + 3 = 6), and so does the code after the loop (`c.n` is 3): 6 * 10 + 3.
+struct Counter
+    seen: List[Int]
+    n: Int
+
+method Counter.bump(&mut self) -> Int ! alloc
+    self.n = self.n + 1
+    self.seen.push(self.n)
+    self.n
+
+fn main() -> Int ! alloc
+    c = Counter(List.new[Int](), 0)
+    t = 0
+    i = 0
+    while i < 3
+        t = t + c.bump()
+        i = i + 1
+    t * 10 + c.n

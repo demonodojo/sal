@@ -1,0 +1,27 @@
+# exit: 44
+# Field writes inside a `while` carry the struct to the next turn: `p.x` five times + 2 (10),
+# `q.d.n` four times + 1 (4) and `q.d.k` + 10 in turns 2, 3 and 4 (30).
+struct P
+    x: Int
+    y: Int
+
+struct D
+    n: Int
+    k: Int
+
+struct Q
+    d: D
+    z: Int
+
+fn main() -> Int
+    p = P(0, 0)
+    q = Q(D(0, 0), 0)
+    i = 0
+    while i < 5
+        p.x = p.x + 2
+        if i < 4
+            q.d.n = q.d.n + 1
+        if i > 1
+            q.d.k = q.d.k + 10
+        i = i + 1
+    p.x + q.d.n + q.d.k

@@ -1,0 +1,14 @@
+# exit: 5
+# Overwriting an inner `String` field releases the old text and keeps the new one ("hello").
+struct Db
+    s: String
+    k: Int
+
+struct App
+    db: Db
+    k: Int
+
+fn main() -> Int ! alloc
+    app = App(Db("a".clone(), 0), 0)
+    app.db.s = "hello".clone()
+    app.db.s.len()

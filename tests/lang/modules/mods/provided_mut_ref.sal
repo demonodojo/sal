@@ -1,0 +1,8 @@
+struct Db
+    n: Int
+
+protocol Model
+    method id(&self) -> Int
+    method touch(&self, db: &mut Db) -> Int
+        db.n = db.n + self.id()
+        db.n

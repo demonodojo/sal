@@ -729,9 +729,11 @@ fn lower_call_runtime_rest(cx: &mut Cx, name: &String, targs: &String, args: &Li
         if is_user_fn(cx, fname) == 1
             _b = maybe_box_user_args(cx, name, args, arg_names)
         rname = runtime_name(cx, fname)
+        places = place_args_new(cx, name, args, arg_names)
         cells = cell_args_new(cx, name, args, arg_names)
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
         _cb = cell_args_back(cx, &cells)
+        place_args_back(cx, args, &places)
         _r = register_ret_tensor(cx, d, name)
         d
 
@@ -1799,12 +1801,24 @@ fn assigned_stmts(cx: &Cx, stmts: &List[TStmt], i: Int, n: Int, names: Int) -> I
         _b = assigned_expr(cx, &st.expr, names)
         assigned_stmts(cx, stmts, i + 1, n, names)
 
-# `*p = v` rebinds `p`; so does `p.x = v` when `p` is a cell parameter (a one-field struct).
+# `*p = v` rebinds `p`; `p.x = v` / `p.a.b = v` rebinds the root local to the rebuilt struct
+# (a cell parameter writes it through).
 fn assigned_target(cx: &Cx, target: &Expr, names: Int) -> Int ! alloc
     match target
         XUnary(op, inner) => assigned_target_ident(cx, &inner, 0, names)
-        XField(base, field) => assigned_target_ident(cx, &base, 1, names)
+        XField(base, field) => assigned_field_root(cx, target, names)
         _ => 0
+
+# The root of a field chain that a write into it rebinds (`rebound_field_root` in src/ir.rs): a
+# cell parameter, or a local that is not a block.
+fn assigned_field_root(cx: &Cx, e: &Expr, names: Int) -> Int ! alloc
+    root = field_root_name(e)
+    if root.len() == 0
+        0
+    elsif cx_is_cell(cx, &root) == 0 && is_box_place(cx, &root) == 1
+        0
+    else
+        assigned_add(names, str_own(&root))
 
 fn assigned_target_ident(cx: &Cx, e: &Expr, only_cell: Int, names: Int) -> Int ! alloc
     match e
@@ -1815,7 +1829,8 @@ fn assigned_target_ident(cx: &Cx, e: &Expr, only_cell: Int, names: Int) -> Int !
                 0
         _ => 0
 
-# A cell argument comes back rebound (`collect_assigned_expr` of src/ir.rs).
+# A cell argument comes back rebound (`collect_assigned_expr` of src/ir.rs), and so does the
+# root of `&mut a.b` (or the receiver `a.b`) for a `&mut` parameter.
 fn assigned_cell_args(cx: &Cx, fname: &String, args: &List[Expr], names: Int) -> Int ! alloc
     flags = cx_cell_flags(cx, fname)
     i = 0
@@ -1825,7 +1840,23 @@ fn assigned_cell_args(cx: &Cx, fname: &String, args: &List[Expr], names: Int) ->
             if x.len() > 0
                 _a = assigned_add(names, str_own(&x))
         i = i + 1
+    muts = cx_mut_flags(cx, fname)
+    j = 0
+    while j < args.len()
+        if flag_at(&flags, j) == 1 || flag_at(&muts, j) == 1
+            assigned_place_root(cx, &args.get(j), names)
+        j = j + 1
     0
+
+fn assigned_place_root(cx: &Cx, e: &Expr, names: Int) -> Int ! alloc
+    match e
+        XUnary(op, inner) =>
+            if op.eq("refmut") == 1 && field_chain_depth(&inner) > 0
+                assigned_field_root(cx, &inner, names)
+            else
+                0
+        XField(base, field) => assigned_field_root(cx, e, names)
+        _ => 0
 
 fn assigned_block(cx: &Cx, b: &TBlock, names: Int) -> Int ! alloc
     _a = assigned_stmts(cx, &b.stmts, 0, list_len(&b.stmts), names)
@@ -2165,6 +2196,12 @@ fn is_box_place(cx: &Cx, name: &String) -> Int ! alloc
 # `p.f = v`, as the bootstrap: a one-field struct is the field itself; multi-field values are
 # heap boxes written in place (`sal_struct_set`), dropping the previous field (Rust).
 fn lower_stmt_field_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
+    if lower_nested_field_assign(cx, st) == 1
+        0
+    else
+        lower_stmt_field_assign_one(cx, st)
+
+fn lower_stmt_field_assign_one(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.target
         XField(base, field) => lower_field_assign_base(cx, st, &base, &field)
         XUnary(op, inner) => lower_deref_assign(cx, st, &inner)
@@ -2349,6 +2386,253 @@ fn lower_field_store(cx: &mut Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! allo
     _b = vec_push(args, ix)
     _d = vec_push(args, v)
     ir_push(cx, ir_call(0, str_as_int(&"sal_struct_set"), args, 0))
+
+# `a.b.c = v` (two or more fields; `lower_nested_field_assign` in src/ir.rs): the value is
+# computed first, then `store_field_path` writes it. 1 when it lowered the statement.
+fn lower_nested_field_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
+    if field_chain_depth(&st.target) < 2
+        0
+    else
+        sis = List.new[Int]()
+        idxs = List.new[Int]()
+        if field_path_steps(cx, &st.target, &mut sis, &mut idxs) == 0
+            0
+        else
+            v = lower_expr(cx, &st.expr)
+            store_field_path(cx, &st.target, v, 1)
+            1
+
+# How many fields a chain `root.f1.….fk` has (0 when `e` is not a field).
+fn field_chain_depth(e: &Expr) -> Int ! alloc
+    match e
+        XField(base, field) => field_chain_depth(&base) + 1
+        _ => 0
+
+# The local at the root of a field chain; "" when it does not start at a local.
+fn field_root_name(e: &Expr) -> String ! alloc
+    match e
+        XField(base, field) => field_root_name(&base)
+        XIdent(name) => name.dup()
+        _ => ""
+
+# The fields of a chain, outermost first.
+fn field_chain_names(e: &Expr, out: &mut List[String]) -> Int ! alloc
+    match e
+        XField(base, field) =>
+            field_chain_names(&base, out)
+            out.push(field.dup())
+            0
+        _ => 0
+
+# The struct index and field index of each level of `root.f1.….fk` (`field_path_steps` in
+# src/ir.rs). 0 when the root is not a local or a level is not a known struct.
+fn field_path_steps(cx: &Cx, target: &Expr, sis: &mut List[Int], idxs: &mut List[Int]) -> Int ! alloc
+    root = field_root_name(target)
+    if root.len() == 0
+        0
+    elsif cx_find(cx, str_own(&root)) == 0
+        0
+    else
+        names = List.new[String]()
+        field_chain_names(target, &mut names)
+        structs = cx_structs(cx)
+        ty = ty_deref(&tenv_type(&cx.env, &root))
+        ok = 1
+        i = 0
+        while i < names.len() && ok == 1
+            si = tt_struct_find(&structs, &ty)
+            if si < 0
+                ok = 0
+            else
+                sd = structs.get(si)
+                idx = tt_field_index(&sd.fields, &names.get(i), 0, sd.fields.len())
+                sis.push(si)
+                idxs.push(idx)
+                ty = ty_deref(&sd.fields.get(idx).ty)
+            i = i + 1
+        ok
+
+# `t` is a reference type (`&T`, `&mut T`, `&'a mut T`).
+fn ty_starts_ref(t: &String) -> Int ! alloc
+    if t.len() == 0
+        0
+    elsif t.char(0) == 38
+        1
+    else
+        0
+
+# Write `v` into `root.f1.….fk` (`store_field_path` in src/ir.rs). With `drop_old`, the old leaf
+# is released first. Each level is written back innermost first: in place (`sal_struct_set`)
+# once the container is a block (a box or `&mut` root, or behind a reference field), otherwise
+# by rebuilding it up to the root local, which a cell parameter writes through. A one-field
+# level is the value of its field.
+fn store_field_path(cx: &mut Cx, target: &Expr, v: Int, drop_old: Int) -> Int ! alloc
+    sis = List.new[Int]()
+    idxs = List.new[Int]()
+    if field_path_steps(cx, target, &mut sis, &mut idxs) == 0
+        0
+    else
+        structs = cx_structs(cx)
+        root = field_root_name(target)
+        h = str_own(&root)
+        vals = List.new[Int]()
+        inplace = List.new[Int]()
+        vals.push(cx_lookup(cx, h))
+        inplace.push(is_box_place(cx, &root))
+        k = sis.len()
+        i = 0
+        while i < k
+            sd = structs.get(sis.get(i))
+            if sd.fields.len() == 1
+                vals.push(vals.get(i))
+            else
+                d = fresh(cx)
+                ir_push(cx, ir_extract(d, vals.get(i), str_own(&sd.name), idxs.get(i)))
+                vals.push(d)
+            if inplace.get(i) == 1
+                inplace.push(1)
+            else
+                inplace.push(ty_starts_ref(&sd.fields.get(idxs.get(i)).ty))
+            i = i + 1
+        if drop_old == 1 && cx.keep_old == 0
+            leaf = structs.get(sis.get(k - 1))
+            lower_field_drop_old(cx, &leaf.fields.get(idxs.get(k - 1)).ty, vals.get(k))
+        cur = v
+        done = 0
+        j = k - 1
+        while j >= 0 && done == 0
+            sd = structs.get(sis.get(j))
+            nf = sd.fields.len()
+            if nf != 1
+                if inplace.get(j) == 1
+                    lower_field_store(cx, vals.get(j), idxs.get(j), cur)
+                    done = 1
+                else
+                    fields = lower_field_rebuild(cx, &sd, vals.get(j), cur, idxs.get(j), 0, nf, vec_new())
+                    d = fresh(cx)
+                    ir_push(cx, ir_agg(d, str_own(&sd.name), fields))
+                    cur = d
+            j = j - 1
+        if done == 0
+            cell_write_back(cx, &root, cur)
+            cx_bind(cx, h, cur)
+        1
+
+# One character per parameter of the callee `fname`, `1` when it is `&mut`
+# (`scalarize::FnSig::mut_ref`).
+fn cx_mut_flags(cx: &Cx, fname: &String) -> String ! alloc
+    fi = cx_fn_index(cx, fname)
+    if fi < 0
+        ""
+    else
+        params = cx.fns.get(fi).params
+        out = ""
+        i = 0
+        while i < params.len()
+            out = out + ty_is_mut_ref(&params.get(i).ty).to_str()
+            i = i + 1
+        out
+
+fn flag_at(flags: &String, i: Int) -> Int ! alloc
+    if i >= flags.len()
+        0
+    elsif flags.char(i) == 49
+        1
+    else
+        0
+
+# Whether the argument `&mut a.b…` (or the receiver `a.b`) has to be written back after the
+# call (`place_call_args` in src/ir.rs): always in a cell; otherwise only for a struct field
+# of an owned local (a place inside a block is written in place by the callee).
+fn place_arg_ok(cx: &Cx, e: &Expr, cell: Int) -> Int ! alloc
+    match e
+        XUnary(op, inner) =>
+            if op.eq("refmut") == 1
+                place_arg_ok_go(cx, &inner, cell)
+            else
+                0
+        _ => place_arg_ok_go(cx, e, cell)
+
+fn place_arg_ok_go(cx: &Cx, e: &Expr, cell: Int) -> Int ! alloc
+    sis = List.new[Int]()
+    idxs = List.new[Int]()
+    if field_chain_depth(e) == 0
+        0
+    elsif field_path_steps(cx, e, &mut sis, &mut idxs) == 0
+        0
+    elsif cell == 1
+        1
+    else
+        structs = cx_structs(cx)
+        root = field_root_name(e)
+        in_block = 0
+        if is_box_place(cx, &root) == 1 || cx_is_cell(cx, &root) == 1
+            in_block = 1
+        i = 0
+        while i < sis.len()
+            fields = structs.get(sis.get(i)).fields
+            if ty_starts_ref(&fields.get(idxs.get(i)).ty) == 1
+                in_block = 1
+            i = i + 1
+        k = sis.len()
+        leaf_fields = structs.get(sis.get(k - 1)).fields
+        leaf_ty = leaf_fields.get(idxs.get(k - 1)).ty
+        li = tt_struct_find(&structs, &ty_deref(&leaf_ty))
+        if in_block == 1
+            0
+        elsif li < 0
+            0
+        elsif structs.get(li).fields.len() == 1
+            0
+        else
+            1
+
+# Before the call: a cell for each place argument that takes one. Returns [ssa, argument index,
+# cell] triples for `place_args_back`.
+fn place_args_new(cx: &mut Cx, fname: &String, args: &List[Expr], arg_names: Int) -> List[Int] ! alloc
+    out = List.new[Int]()
+    cells = cx_cell_flags(cx, fname)
+    muts = cx_mut_flags(cx, fname)
+    i = 0
+    while i < args.len()
+        cell = flag_at(&cells, i)
+        if cell == 1 || flag_at(&muts, i) == 1
+            if place_arg_ok(cx, &args.get(i), cell) == 1
+                if cell == 1
+                    c = fresh(cx)
+                    argv = vec_new()
+                    vec_push(argv, vec_get(arg_names, i))
+                    ir_push(cx, ir_call(c, "sal_cell_new".to_int(), argv, 1))
+                    vec_set(arg_names, i, c)
+                out.push(vec_get(arg_names, i))
+                out.push(i)
+                out.push(cell)
+        i = i + 1
+    out
+
+# After the call: each place takes its value back (read from the cell, which is released). Not
+# an overwrite: the callee already released whatever it replaced.
+fn place_args_back(cx: &mut Cx, args: &List[Expr], places: &List[Int]) -> Int ! alloc
+    i = 0
+    while i + 2 < places.len()
+        c = places.get(i)
+        v = c
+        if places.get(i + 2) == 1
+            v = fresh(cx)
+            argv = vec_new()
+            vec_push(argv, c)
+            ir_push(cx, ir_call(v, "sal_cell_get".to_int(), argv, 1))
+            argf = vec_new()
+            vec_push(argf, c)
+            ir_push(cx, ir_call(0, "sal_cell_free".to_int(), argf, 0))
+        store_place_arg(cx, &args.get(places.get(i + 1)), v)
+        i = i + 3
+    0
+
+fn store_place_arg(cx: &mut Cx, e: &Expr, v: Int) -> Int ! alloc
+    match e
+        XUnary(op, inner) => store_field_path(cx, &inner, v, 0)
+        _ => store_field_path(cx, e, v, 0)
 
 fn lower_stmt_return(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     v = lower_return_value(cx, st)
@@ -2809,7 +3093,9 @@ fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[
     stradd_fns(&tp.fns, env_tpl, 0, tp.fns.len())
     denv = drop_env_t(tp, &env_tpl.structs, em, seen)
     n_fns = list_len(&tp.fns)
-    h2112_3 = tp.fns.clone()
+    # The signatures of the whole graph: a callee in another module also takes cells and
+    # `&mut` places (`fn_sigs` in the bootstrap).
+    h2112_3 = seen.clone()
     lower_fns(&mut tp.fns, names, fm, env_tpl, em, denv, &h2112_3, &tp.protocols, 0, n_fns, &mut out)
     _g = struct_glue_all(&tp.structs, &env_tpl.structs, em, &mut out)
     out

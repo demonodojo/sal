@@ -1,0 +1,10 @@
+# error: E_TYPE
+# `r` holds a `Pair`: a value of another type cannot take its name.
+struct Pair
+    a: String
+    b: String
+
+fn main() -> Int ! alloc
+    r = Pair(d"a", d"b")
+    r = 3
+    r

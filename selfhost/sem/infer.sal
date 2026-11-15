@@ -2220,20 +2220,40 @@ fn infer_scalar_kind(t: &String) -> Int ! alloc
     else
         0
 
+# Kind of the value a local holds, for reassignment checks: the scalar kind, the name of a
+# declared struct or enum, or "" when the type does not take part (`Unit`, a reference, a
+# container: `xs.push(v)` is typed as its list here, so `n = xs.push(v)` then `n = 1` is valid).
+fn infer_bind_kind(c: &IC, t: &String) -> String ! alloc
+    k = infer_scalar_kind(t)
+    tt = ts_trim(t)
+    if k != 0
+        k.to_str()
+    elsif tt.len() == 0
+        ""
+    elsif tt.char(0) == 38
+        ""
+    else
+        base = ty_base(&tt)
+        if ic_get(&c.tnames, &base) != 0
+            base
+        else
+            ""
+
+# `x = v` over a local that holds a value of another type is `E_TYPE` (`binding_kinds_clash` in
+# `src/infer.rs`). A `_name` may switch between plain scalars only.
 fn infer_check_rebind(c: &mut IC, name: &String, ty: &String) -> Int ! alloc
     old = tenv_type(&c.env, name)
     if old.len() == 0
         0
-    elsif name.char(0) == 95
-        0
     else
-        ko = infer_scalar_kind(&old)
-        kn = infer_scalar_kind(ty)
-        if ko == 0
+        ko = infer_bind_kind(c, &old)
+        kn = infer_bind_kind(c, ty)
+        plain = infer_scalar_kind(&old) != 0 && infer_scalar_kind(ty) != 0
+        if ko.len() == 0 || kn.len() == 0
             0
-        elsif kn == 0
+        elsif ko.eq(kn) == 1
             0
-        elsif ko == kn
+        elsif name.char(0) == 95 && plain
             0
         else
             ic_fail(c, &("cannot assign " + ty_msg(ty) + " to `" + name + "`, which holds " + ty_msg(&old)))
@@ -2537,11 +2557,21 @@ fn infer_stmt(c: &mut IC, st: &TStmt) -> Int ! alloc
     elsif st.kind == 1
         infer_binding(c, st)
     elsif st.kind == 3
-        _a = infer_expr(c, &st.expr)
-        _b = infer_expr(c, &st.target)
+        vt = infer_expr(c, &st.expr)
+        tt = infer_expr(c, &st.target)
+        _p = infer_place_assign(c, &vt, &tt)
         0
     else
         _a = infer_expr(c, &st.expr)
+        0
+
+# `p.a.b = v` and `*r = v`: the value has the place's type (Rust E0308).
+fn infer_place_assign(c: &mut IC, vt: &String, tt: &String) -> Int ! alloc
+    if ic_failed(c) == 1
+        0
+    elsif ty_compat_or_any(c, vt, tt) == 0
+        ic_fail(c, &("expected " + ty_msg(tt) + ", found " + ty_msg(vt)))
+    else
         0
 
 fn infer_return(c: &mut IC, ex: &Expr) -> Int ! alloc

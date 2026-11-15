@@ -1,0 +1,12 @@
+# exit: 7
+# A `&mut Int` is accepted where the field holds a `&Int`, as in Rust: `h.r` now reads `b`.
+struct H['a]
+    r: &'a Int
+    k: Int
+
+fn main() -> Int
+    a = 1
+    b = 7
+    h = H(&a, 0)
+    h.r = &mut b
+    *h.r

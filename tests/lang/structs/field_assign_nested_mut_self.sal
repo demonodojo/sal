@@ -1,0 +1,27 @@
+# exit: 133
+# Through `&mut self` and through `&mut self.db` passed on, with one-field structs at both
+# levels: `db` gets 1 + 10 twice (22); `app.db.n` gets 100, then 1 + 10 (111).
+struct Db
+    n: Int
+
+struct App
+    db: Db
+
+fn inner(db: &mut Db) -> Unit
+    db.n = db.n + 1
+
+fn outer(db: &mut Db) -> Unit
+    inner(db)
+    db.n = db.n + 10
+
+method App.tick(&mut self) -> Unit
+    self.db.n = self.db.n + 100
+    outer(&mut self.db)
+
+fn main() -> Int
+    db = Db(0)
+    outer(&mut db)
+    outer(&mut db)
+    app = App(Db(0))
+    app.tick()
+    db.n + app.db.n

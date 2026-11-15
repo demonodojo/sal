@@ -1,0 +1,9 @@
+# error: E_TYPE
+# `*r = v` with `r: &mut Int` takes an `Int`.
+fn set(r: &mut Int) -> Unit
+    *r = "x"
+
+fn main() -> Int
+    a = 1
+    set(&mut a)
+    a

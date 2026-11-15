@@ -1,0 +1,21 @@
+# exit: 20
+# `&mut` parameters of functions of another module write through: a local `Int` (1 + 2), a
+# one-field struct (1), and fields of an owned local: a struct (10), a one-field struct (1) and
+# an `Int` (5).
+import "mods/mut_ref_fns.sal"
+
+struct Tc
+    m: Int
+    env: Env
+    one: One
+
+fn main() -> Int
+    a = 1
+    add(&mut a, 2)
+    o = One(0)
+    bump_one(&mut o)
+    tc = Tc(0, Env(0, 0), One(0))
+    bump_env(&mut tc.env)
+    bump_one(&mut tc.one)
+    add(&mut tc.m, 5)
+    a + o.n + tc.env.n + tc.one.n + tc.m

@@ -702,7 +702,7 @@ fn check_stmt(
                     )]);
                 }
                 if let Some(old) = env.get(name) {
-                    if !name.starts_with('_') && scalar_kinds_clash(old, &vty) {
+                    if binding_kinds_clash(old, &vty, name.starts_with('_')) {
                         return Err(vec![Diagnostic::new(
                             ErrorCode::EType,
                             format!(
@@ -716,7 +716,11 @@ fn check_stmt(
                 }
                 env.insert(name.clone(), vty);
             } else {
-                check_expr(target, env, ctx, types, entries)?;
+                // `p.a.b = v` and `*r = v`: the value has the place's type (Rust E0308).
+                let tty = check_expr(target, env, ctx, types, entries)?;
+                if let Err(d) = types_compatible_or_any_coerce(&vty, &tty, value.span(), ctx, types) {
+                    return Err(vec![d]);
+                }
             }
             Ok(false)
         }
@@ -3836,20 +3840,27 @@ fn bytes_type(span: Span) -> Type {
     }
 }
 
-/// Both are plain scalars of different kinds (`Int` and `Bool` interchange).
-fn scalar_kinds_clash(a: &Type, b: &Type) -> bool {
-    fn kind(t: &Type) -> Option<&'static str> {
+/// `x = v` over a local that holds a value of another type (SPEC «Liberación de locales»).
+/// `Int` and `Bool` interchange; a `Unit` (the value of a call made for its effect) and a
+/// reference clash with nothing. A `_name` may switch between plain scalars; it may not switch
+/// to or from any other type, whose old value would be released with the wrong glue.
+fn binding_kinds_clash(a: &Type, b: &Type, discard: bool) -> bool {
+    fn kind(t: &Type) -> Option<(&str, bool)> {
         match t {
-            Type::Named { name, args, .. } if args.is_empty() => match name.as_str() {
-                "Int" | "Bool" => Some("int"),
-                "Float" => Some("float"),
-                "String" => Some("string"),
-                _ => None,
+            Type::Named { name, .. } => match name.as_str() {
+                "Int" | "Bool" => Some(("Int", true)),
+                "Float" => Some(("Float", true)),
+                "String" => Some(("String", true)),
+                "Unit" => None,
+                other => Some((other, false)),
             },
             _ => None,
         }
     }
-    matches!((kind(a), kind(b)), (Some(x), Some(y)) if x != y)
+    match (kind(a), kind(b)) {
+        (Some((x, plain_x)), Some((y, plain_y))) => x != y && !(discard && plain_x && plain_y),
+        _ => false,
+    }
 }
 
 fn check_condition(cond: &Expr, ty: &Type) -> DiagResult<()> {

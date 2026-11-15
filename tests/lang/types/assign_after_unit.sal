@@ -1,0 +1,7 @@
+# exit: 5
+# A call made for its effect gives `Unit`, which clashes with nothing: `n` then holds an `Int`.
+fn main() -> Int ! alloc
+    xs = List.new[Int]()
+    n = xs.push(4)
+    n = xs.len() + 4
+    n

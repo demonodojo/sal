@@ -1,0 +1,18 @@
+# error: E_TYPE
+# Un método provisto y un static propio con el mismo nombre: el tipo no puede tener los dos.
+protocol Model
+    method id(&self) -> Int
+    method find(&self) -> Int
+        self.id()
+
+struct A impl Model
+    n: Int
+
+method A.id(&self) -> Int
+    self.n
+
+static A.find() -> Int
+    0
+
+fn main() -> Int
+    A.find()

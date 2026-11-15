@@ -1,0 +1,18 @@
+# exit: 22
+# A one-field struct behind a `&mut` parameter that is passed on: both levels write through
+# to the caller, twice (1 + 10 + 1 + 10).
+struct Db
+    n: Int
+
+fn inner(db: &mut Db) -> Unit
+    db.n = db.n + 1
+
+fn outer(db: &mut Db) -> Unit
+    inner(db)
+    db.n = db.n + 10
+
+fn main() -> Int
+    db = Db(0)
+    outer(&mut db)
+    outer(&mut db)
+    db.n

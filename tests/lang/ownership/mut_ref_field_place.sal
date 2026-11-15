@@ -1,0 +1,41 @@
+# exit: 39
+# Lending a field of an owned local (`&mut app.db`, or `app.db` as a `&mut self` receiver)
+# writes back into the local, for a struct with its own block and for a one-field struct:
+# `app.db.n` 1 + 1 + 1 (3), `app.one.n` 1 + 1 (2) times 10, `app.v` 2 + 4 + 10 (16).
+struct Db
+    n: Int
+    k: Int
+
+struct One
+    n: Int
+
+struct App
+    db: Db
+    one: One
+    v: Int
+
+method Db.bump(&mut self) -> Unit
+    self.n = self.n + 1
+
+method One.bump(&mut self) -> Unit
+    self.n = self.n + 1
+
+fn grow(db: &mut Db) -> Unit
+    db.n = db.n + 1
+
+fn grow_one(o: &mut One) -> Unit
+    o.n = o.n + 1
+
+fn add(x: &mut Int, k: Int) -> Unit
+    *x = *x + k
+
+fn main() -> Int
+    app = App(Db(0, 0), One(0), 2)
+    grow(&mut app.db)
+    app.db.bump()
+    app.db.bump()
+    grow_one(&mut app.one)
+    app.one.bump()
+    add(&mut app.v, 4)
+    add(&mut app.v, 10)
+    app.db.n + app.one.n * 10 + app.v

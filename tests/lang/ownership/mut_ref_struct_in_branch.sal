@@ -1,0 +1,21 @@
+# exit: 23
+# A write through `&mut` made inside an `if` branch or a `match` arm reaches the code after
+# it: the first bump leaves `c.n` at 1 (t = 1), the arm bumps it to 2 (k = 2): 2 * 10 + 3.
+struct Counter
+    seen: List[Int]
+    n: Int
+
+method Counter.bump(&mut self) -> Int ! alloc
+    self.n = self.n + 1
+    self.seen.push(self.n)
+    self.n
+
+fn main() -> Int ! alloc
+    c = Counter(List.new[Int](), 0)
+    t = 0
+    if c.n == 0
+        t = c.bump()
+    k = match t
+        1 => c.bump()
+        _ => 0
+    c.n * 10 + t + k

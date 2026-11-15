@@ -1,0 +1,23 @@
+# exit: 6
+# A provided method of an imported protocol writes through a `&mut` to a one-field struct of
+# that module; two types of this module share it (3 + 1 + 2).
+import "mods/provided_mut_ref.sal"
+
+struct A impl Model
+    n: Int
+
+struct B impl Model
+    n: Int
+    m: Int
+
+method A.id(&self) -> Int
+    self.n
+
+method B.id(&self) -> Int
+    self.n + self.m
+
+fn main() -> Int
+    db = Db(0)
+    x = A(3).touch(&mut db)
+    y = B(1, 2).touch(&mut db)
+    db.n

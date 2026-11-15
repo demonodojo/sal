@@ -1627,17 +1627,17 @@ fn emit_c_one_ir_fn(tf: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: 
 
 # One function at a time. The IR copies the strings it keeps, then C is emitted
 # (tensor C reads that IR), then the body is freed before the next function.
-fn emit_c_owned(tp: &mut TProgram, user: Int, denv: Int, names: Int, fm: Int, env: &mut TEnv, enums: &List[TEnum], allow_main: Int, linkable: Int, pool: &mut LitPool, i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_c_owned(tp: &mut TProgram, user: Int, denv: Int, names: Int, fm: Int, env: &mut TEnv, enums: &List[TEnum], seen: &List[TFn], allow_main: Int, linkable: Int, pool: &mut LitPool, i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         f = list_get(&mut tp.fns, i).clone()
         f.body = drops_body(&mut f, denv)
-        irf = lower_fn(&f, names, fm, env, enums, denv, &tp.fns, &tp.protocols)
+        irf = lower_fn(&f, names, fm, env, enums, denv, seen, &tp.protocols)
         piece = emit_c_one_fn(&f, &irf, user, linkable, allow_main, pool, env, enums)
         old = f.body
         f.body = TBlock(list_new[TStmt](), XNone)
-        emit_c_owned(tp, user, denv, names, fm, env, enums, allow_main, linkable, pool, i + 1, n, (acc + piece))
+        emit_c_owned(tp, user, denv, names, fm, env, enums, seen, allow_main, linkable, pool, i + 1, n, (acc + piece))
 
 # The per-type glue of the module's structs, emitted after the user fns. `all` are the module
 # graph's structs, which the glue of a field reads.
@@ -1678,7 +1678,7 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     denv = pool.drop_env
     vec_push(denv, keep_old)
-    body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, allow_main, linkable, &mut pool, 0, list_len(&tp.fns), "")
+    body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, seen, allow_main, linkable, &mut pool, 0, list_len(&tp.fns), "")
     body = emit_c_glue(tp, &env.structs, &enums, callables, &mut pool, 0, body)
     _fe = list_free_shell(enums)
     lits = pool.globals.clone()

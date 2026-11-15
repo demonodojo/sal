@@ -236,6 +236,18 @@ struct Val {
 struct Scope {
     vals: HashMap<String, Val>,
     boxed: HashMap<String, String>,
+    /// Locals that live in a carrier box while a nested body borrows them `&mut`: local ->
+    /// (struct, box). See `Pass::pin`.
+    pinned: HashMap<String, (String, String)>,
+}
+
+/// A local pinned for one nested instruction: its struct, its box, and whether this
+/// instruction made the box (and so releases it).
+struct Pin {
+    local: String,
+    struct_name: String,
+    handle: String,
+    owner: bool,
 }
 
 struct Pass<'a> {
@@ -410,6 +422,90 @@ impl<'a> Pass<'a> {
             }
         }
         slots
+    }
+
+    /// The arguments the calls of `insts` (nested bodies included) pass to an `&mut` parameter
+    /// that takes a box, in order of first use.
+    fn mut_borrowed(&self, insts: &[IrInst], found: &mut Vec<String>) {
+        for inst in insts {
+            match inst {
+                IrInst::Call { func, args, .. } => {
+                    let Some(sig) = self.sigs.get(func) else { continue };
+                    for (i, a) in args.iter().enumerate() {
+                        let boxed_param = sig.params.get(i).is_some_and(|p| p.is_none());
+                        if boxed_param && sig.mut_ref.get(i) == Some(&true) && !found.contains(a) {
+                            found.push(a.clone());
+                        }
+                    }
+                }
+                IrInst::If { then_body, else_body, .. } => {
+                    self.mut_borrowed(then_body, found);
+                    self.mut_borrowed(else_body, found);
+                }
+                IrInst::While { cond_insts, body, .. } => {
+                    self.mut_borrowed(cond_insts, found);
+                    self.mut_borrowed(body, found);
+                }
+                IrInst::Switch { arms, default_body, .. } => {
+                    for arm in arms {
+                        self.mut_borrowed(&arm.body, found);
+                    }
+                    self.mut_borrowed(default_body, found);
+                }
+                IrInst::KernelGrid { body, .. } => self.mut_borrowed(body, found),
+                _ => {}
+            }
+        }
+    }
+
+    /// Before an instruction with nested bodies (`if`, `while`, `match`): every scalarised local
+    /// one of those bodies passes as `&mut` moves into a carrier box for the whole instruction.
+    /// The callee writes the box, and the box is the one place the value lives until `unpin`:
+    /// slots reloaded inside a body are names of that body only, so without the box the writes
+    /// would be lost at the join (the next iteration, the code after the branch).
+    fn pin(&mut self, inst: &IrInst, scope: &mut Scope, out: &mut Vec<IrInst>) -> Vec<Pin> {
+        let mut names = Vec::new();
+        self.mut_borrowed(std::slice::from_ref(inst), &mut names);
+        let mut pins = Vec::new();
+        for local in names {
+            let Some(v) = scope.vals.get(&local).cloned() else { continue };
+            if let Some((struct_name, handle)) = scope.pinned.get(&local).cloned() {
+                pins.push(Pin { local, struct_name, handle, owner: false });
+                continue;
+            }
+            let handle = self.box_slots(&v.name, &v.slots, out);
+            scope.pinned.insert(local.clone(), (v.name.clone(), handle.clone()));
+            pins.push(Pin { local, struct_name: v.name, handle, owner: true });
+        }
+        pins
+    }
+
+    /// Reads a pinned local back from its box into fresh slots of `scope`.
+    fn reload(&mut self, local: &str, sn: &str, handle: &str, scope: &mut Scope, out: &mut Vec<IrInst>) {
+        let slots = self.unbox(handle, sn, out);
+        scope.vals.insert(local.to_string(), Val { name: sn.to_string(), slots });
+        scope.boxed.remove(local);
+    }
+
+    /// After the instruction: the locals read their slots back from the box, and the box made
+    /// by `pin` for this instruction is released.
+    fn unpin(&mut self, pins: Vec<Pin>, scope: &mut Scope, out: &mut Vec<IrInst>) {
+        for p in pins {
+            self.reload(&p.local, &p.struct_name, &p.handle, scope, out);
+            if p.owner {
+                self.free_carrier(&p.struct_name, &p.handle, true, out);
+                scope.pinned.remove(&p.local);
+            }
+        }
+    }
+
+    /// A `return` leaves every nested body at once: the carrier boxes still pinned go first.
+    fn free_pinned(&mut self, scope: &Scope, out: &mut Vec<IrInst>) {
+        let mut live: Vec<(String, String)> = scope.pinned.values().cloned().collect();
+        live.sort();
+        for (sn, handle) in live {
+            self.free_carrier(&sn, &handle, true, out);
+        }
     }
 
     fn list(&mut self, insts: &[IrInst], scope: &mut Scope) -> Vec<IrInst> {
@@ -602,20 +698,27 @@ impl<'a> Pass<'a> {
                         });
                         self.copies.remove(value);
                     }
+                    self.free_pinned(scope, out);
                     out.push(IrInst::SretStore { values: slots });
                     out.push(IrInst::Return { value: "0".into() });
                 } else {
                     let v = self.plain(value, scope, out);
+                    self.free_pinned(scope, out);
                     out.push(IrInst::Return { value: v });
                 }
             }
             IrInst::If { cond, then_body, else_body, then_val, else_val, dest, carried } => {
-                self.if_inst(cond, then_body, else_body, then_val, else_val, dest, carried, scope, out)
+                let pins = self.pin(inst, scope, out);
+                self.if_inst(cond, then_body, else_body, then_val, else_val, dest, carried, scope, out);
+                self.unpin(pins, scope, out);
             }
             IrInst::While { cond_insts, cond, body, carried } => {
-                self.while_inst(cond_insts, cond, body, carried, scope, out)
+                let pins = self.pin(inst, scope, out);
+                self.while_inst(cond_insts, cond, body, carried, &pins, scope, out);
+                self.unpin(pins, scope, out);
             }
             IrInst::Switch { scrut, arms, default_body, default_val, dest } => {
+                let pins = self.pin(inst, scope, out);
                 let scrut = self.plain(scrut, scope, out);
                 let mut new_arms = Vec::new();
                 for arm in arms {
@@ -638,8 +741,10 @@ impl<'a> Pass<'a> {
                     default_val: dval,
                     dest: dest.clone(),
                 });
+                self.unpin(pins, scope, out);
             }
             IrInst::KernelGrid { place, index_names, bounds, body, tail, dest } => {
+                let pins = self.pin(inst, scope, out);
                 let mut sc = scope.clone();
                 let mut b = self.list(body, &mut sc);
                 let t = self.plain_in_body(tail, &mut sc, &mut b);
@@ -651,6 +756,7 @@ impl<'a> Pass<'a> {
                     tail: t,
                     dest: dest.clone(),
                 });
+                self.unpin(pins, scope, out);
             }
         }
     }
@@ -719,10 +825,24 @@ impl<'a> Pass<'a> {
         // Reload slots after the call (Rust writeback). By-value moves must not free the box.
         let mut sync_back: Vec<(String, String, String, bool)> = Vec::new();
         let mut free_temp: Vec<(String, String, bool)> = Vec::new();
+        // Pinned locals a callee may have written: their slots are read back from the box.
+        let mut reload: Vec<(String, String, String)> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             match sig.params.get(i).cloned().flatten() {
                 Some(sn) => flat.extend(self.slots_of(a, &sn, scope, out)),
                 None => {
+                    // A pinned local already lives in its box: a borrow passes that box, which
+                    // outlives the call.
+                    let by_ref = sig.mut_ref.get(i) == Some(&true) || sig.shared_ref.get(i) == Some(&true);
+                    if let (true, Some((sn, handle))) = (by_ref, scope.pinned.get(a).cloned()) {
+                        if scope.vals.contains_key(a) {
+                            if sig.mut_ref.get(i) == Some(&true) {
+                                reload.push((a.clone(), sn, handle.clone()));
+                            }
+                            flat.push(handle);
+                            continue;
+                        }
+                    }
                     if let Some(v) = scope.vals.get(a).cloned() {
                         // A carrier made for this call owns its nested carriers too.
                         let fresh_box = !scope.boxed.contains_key(a);
@@ -787,6 +907,9 @@ impl<'a> Pass<'a> {
         }
         for (handle, sn, fresh_box) in free_temp {
             self.free_carrier(&sn, &handle, fresh_box, out);
+        }
+        for (local, sn, handle) in reload {
+            self.reload(&local, &sn, &handle, scope, out);
         }
     }
 
@@ -901,6 +1024,7 @@ impl<'a> Pass<'a> {
         cond: &str,
         body: &[IrInst],
         carried: &[WhileCarry],
+        pins: &[Pin],
         scope: &mut Scope,
         out: &mut Vec<IrInst>,
     ) {
@@ -947,7 +1071,12 @@ impl<'a> Pass<'a> {
                 }
             }
         }
-        let new_cond_insts = self.list(cond_insts, &mut inner);
+        // Each iteration starts from what the previous one left in the box.
+        let mut new_cond_insts = Vec::new();
+        for p in pins {
+            self.reload(&p.local, &p.struct_name, &p.handle, &mut inner, &mut new_cond_insts);
+        }
+        new_cond_insts.extend(self.list(cond_insts, &mut inner));
         let cond = self.plain(cond, &mut inner, &mut Vec::new());
         let mut new_body = self.list(body, &mut inner);
         let mut new_carried = Vec::new();
