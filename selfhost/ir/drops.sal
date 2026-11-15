@@ -663,20 +663,25 @@ fn note_passthru_args(vm: Int, args: &List[Expr], fresh: &List[String], i: Int, 
         note_passthru_args(vm, args, fresh, i + 1, n)
 
 # `retk:<name>` for every fn that returns a container by value: the caller owns and releases it
-# (`user_call_kind` in src/drops.rs). The kind is 2 `List`, 3 `Bytes`, 4 `Dict`.
+# (`user_call_kind` in src/drops.rs). The kind is 2 `List`, 3 `Bytes`, 4 `Dict`, 5 an enum box
+# the fn builds on every path (`dr_enum_block_fresh`).
 fn ret_kinds_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = list_get(fns, i)
-        k = dr_ret_kind(&f.ret)
-        _o = if k == 0
+        k = dr_ret_kind(m, &f.ret)
+        if k == 0
+            0
+        elsif k == 5 && dr_enum_block_fresh(m, &f.body) == 0
+            # A fn that returns a borrowed enum (a reference parameter or its field) hands the
+            # caller an alias: it is not released.
             0
         else
             map_put(m, str_own(&("retk:" + f.name)), k)
         ret_kinds_put(m, fns, i + 1, n)
 
-fn dr_ret_kind(ret: &String) -> Int ! alloc
+fn dr_ret_kind(m: Int, ret: &String) -> Int ! alloc
     t = ty_base(ret)
     if t.eq("Bytes") == 1
         3
@@ -684,6 +689,85 @@ fn dr_ret_kind(ret: &String) -> Int ! alloc
         2
     elsif t.eq("Dict") == 1
         4
+    elsif map_get(m, str_own(&("enum:" + t))) != 0
+        # A user fn returning an enum hands the caller a box (a unit tag is released alike).
+        5
+    else
+        0
+
+# The body only `return`s (and ends in) a fresh enum construction: a variant constructor or a
+# bare unit variant, possibly under a `match` / `if` (`fresh_enum_return_fns` in src/drops.rs).
+fn dr_enum_block_fresh(m: Int, b: &TBlock) -> Int ! alloc
+    if dr_enum_stmts_fresh(m, &b.stmts, 0, b.stmts.len()) == 0
+        0
+    else
+        dr_enum_expr_fresh(m, &b.tail)
+
+fn dr_enum_stmts_fresh(m: Int, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    else
+        st = stmts.get(i)
+        ok = if st.kind == 2
+            dr_enum_expr_fresh(m, &st.expr)
+        elsif st.kind == 0 && dx_is_while(&st.expr) == 1
+            0
+        else
+            1
+        if ok == 0
+            0
+        else
+            dr_enum_stmts_fresh(m, stmts, i + 1, n)
+
+fn dr_enum_expr_fresh(m: Int, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dr_enum_variant_has_fields(m, &name)
+        XIdent(nm) => dr_enum_variant_unit(m, &nm)
+        XMatch(scrut, arms) => dr_enum_arms_fresh(m, &arms, 0, arms.len())
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_enum_if_fresh(m, &then_b, &else_b, has_else, &elsifs)
+        XBlock(b) => dr_enum_block_fresh(m, &b)
+        _ => 0
+
+fn dr_enum_arms_fresh(m: Int, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    else
+        a = arms.get(i)
+        ok = if a.has_suite == 1
+            dr_enum_block_fresh(m, &a.suite)
+        else
+            dr_enum_expr_fresh(m, &a.body)
+        if ok == 0
+            0
+        else
+            dr_enum_arms_fresh(m, arms, i + 1, n)
+
+fn dr_enum_if_fresh(m: Int, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Int ! alloc
+    if has_else != 1
+        0
+    elsif dr_enum_block_fresh(m, then_b) == 0 || dr_enum_block_fresh(m, else_b) == 0
+        0
+    else
+        dr_enum_elsifs_fresh(m, elsifs, 0, elsifs.len())
+
+fn dr_enum_elsifs_fresh(m: Int, elsifs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        1
+    elsif dr_enum_block_fresh(m, &elsifs.get(i).body) == 0
+        0
+    else
+        dr_enum_elsifs_fresh(m, elsifs, i + 1, n)
+
+# Variant lookups over the whole module graph (`gv:` keys, see `variant_map_t` in fuse.sal).
+fn dr_enum_variant_has_fields(m: Int, name: &String) -> Int ! alloc
+    if map_get(m, str_own(&("gv:" + name))) == 1
+        1
+    else
+        0
+
+fn dr_enum_variant_unit(m: Int, name: &String) -> Int ! alloc
+    if map_get(m, str_own(&("gv:" + name))) == 2
+        1
     else
         0
 
@@ -3104,7 +3188,8 @@ fn dr_hoist_match(h: &mut HC, e: &Expr, scrut: &Expr, arms: &mut List[TArm], out
     dr_ret(e)
 
 # `list_get(xs, i).f` of a list whose element struct a copy can release: the copy is bound to a
-# temporary ahead of the statement (`Hoist` in src/drops.rs).
+# temporary ahead of the statement (`Hoist` in src/drops.rs). The field name is copied too: the
+# old body that shares it is released after the hoist, so a `str_share` here would dangle.
 fn dr_hoist_field(h: &mut HC, e: &Expr, base: &Expr, field: &String, out: &mut List[TStmt]) -> Expr ! alloc
     nb = dr_hoist_expr(h, base, out)
     if dr_elem_list_known(h, &nb) == 0
@@ -3115,7 +3200,7 @@ fn dr_hoist_field(h: &mut HC, e: &Expr, base: &Expr, field: &String, out: &mut L
         _s = list_set(h.k, 0, k)
         name = "__tmp" + int_to_str(k)
         _l = list_push(out, TStmt(1, strdup(name), nb, "", 1, XNone, 0, 0, 0 - k))
-        XField(XIdent(strdup(name)), str_share(field))
+        XField(XIdent(strdup(name)), field.dup())
 
 fn dr_elem_list_known(h: &HC, e: &Expr) -> Int ! alloc
     match e

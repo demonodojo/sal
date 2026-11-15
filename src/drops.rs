@@ -40,6 +40,9 @@ thread_local! {
     static VARIANT_CTORS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns whose `String` result is always fresh: the caller owns it (see `owned_return_fns`).
     static OWNED_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// User fns whose enum result is built by the fn on every path: the caller owns the box.
+    /// A fn that hands back a borrowed enum (a reference parameter or its field) is not one.
+    static FRESH_ENUM_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns that return a by-value parameter (`fn same[T](x: T) -> T`) -> the indices of
     /// those parameters. Given a fresh temporary, the result is that same fresh temporary.
     static PASSTHRU_FNS: std::cell::RefCell<HashMap<String, Vec<usize>>> = std::cell::RefCell::new(HashMap::new());
@@ -61,11 +64,16 @@ fn user_call_kind(name: &str, call: &Expr) -> Option<&'static str> {
     if !USER_FNS.with(|f| f.borrow().contains(name)) {
         return None;
     }
+    // A user fn that builds an enum on every path hands the caller a fresh box (a unit tag,
+    // which `sal_enum_free` ignores). One that returns a borrowed enum would be an alias: it
+    // is not released.
+    let fresh_enum = FRESH_ENUM_FNS.with(|f| f.borrow().contains(name));
     match type_at(call)? {
-        Type::Named { name, .. } => match name.as_str() {
+        Type::Named { name: ty, .. } => match ty.as_str() {
             "List" => Some("list_free"),
             "Dict" => Some("dict_free"),
             "Bytes" => Some("bytes_free"),
+            _ if is_ownable_enum(&ty) && fresh_enum => Some("enum_free"),
             _ => None,
         },
         _ => None,
@@ -88,6 +96,59 @@ fn is_variant_ctor(name: &str) -> bool {
 
 fn is_enum_type(name: &str) -> bool {
     ENUM_TYPES.with(|f| f.borrow().contains(name))
+}
+
+/// Every return of the fn (and its tail) builds the enum: a variant constructor or a bare
+/// unit variant, possibly under a `match` / `if`. Such a fn hands the caller a fresh box;
+/// one that returns a borrowed enum (a reference parameter, a field read, a local) does not.
+fn fresh_enum_return_fns(
+    prog: &Program,
+    callees: &[&FnDef],
+    enums: &HashMap<String, EnumDef>,
+) -> HashSet<String> {
+    let has_fields: HashSet<String> = enums
+        .values()
+        .flat_map(|e| e.variants.iter().filter(|v| !v.fields.is_empty()).map(|v| v.name.clone()))
+        .collect();
+    let mut out = HashSet::new();
+    let own = prog.items.iter().filter_map(|i| if let Item::Fn(f) = i { Some(f) } else { None });
+    for f in own.chain(callees.iter().copied()) {
+        let Type::Named { name: ret, .. } = &f.ret else {
+            continue;
+        };
+        if !enums.contains_key(ret) || !enum_block_fresh(&f.body, &has_fields) {
+            continue;
+        }
+        out.insert(f.name.clone());
+    }
+    out
+}
+
+/// The body only `return`s (and ends in) a fresh enum construction.
+fn enum_block_fresh(b: &Block, has_fields: &HashSet<String>) -> bool {
+    let returns_ok = b.stmts.iter().all(|st| match st {
+        Stmt::Return { value: Some(v), .. } => enum_expr_fresh(v, has_fields),
+        Stmt::While { .. } => false,
+        _ => true,
+    });
+    returns_ok && b.tail.as_ref().is_some_and(|t| enum_expr_fresh(t, has_fields))
+}
+
+fn enum_expr_fresh(e: &Expr, has_fields: &HashSet<String>) -> bool {
+    match e {
+        Expr::Call { func, .. } => {
+            matches!(func.as_ref(), Expr::Ident { name, .. } if has_fields.contains(name))
+        }
+        Expr::Ident { name, .. } => has_fields.get(name).is_none() && VARIANT_CTORS.with(|c| c.borrow().contains(name)),
+        Expr::Match { arms, .. } => arms.iter().all(|a| enum_expr_fresh(&a.body, has_fields)),
+        Expr::If { then_block, elsifs, else_block, .. } => {
+            enum_block_fresh(then_block, has_fields)
+                && elsifs.iter().all(|a| enum_block_fresh(&a.body, has_fields))
+                && else_block.as_ref().is_some_and(|b| enum_block_fresh(b, has_fields))
+        }
+        Expr::Block(b) => enum_block_fresh(b, has_fields),
+        _ => false,
+    }
 }
 
 /// `list_new[E]()` of a user enum: the list owns the boxes stored in it.
@@ -619,6 +680,7 @@ pub fn insert_drops(
     STRUCT_NAMES.with(|n| *n.borrow_mut() = structs.keys().cloned().collect());
     collect_enum_types(enums);
     OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog));
+    FRESH_ENUM_FNS.with(|f| *f.borrow_mut() = fresh_enum_return_fns(prog, callees, enums));
     PASSTHRU_CALLS.with(|c| c.borrow_mut().clear());
     PASSTHRU_FNS.with(|m| {
         let mut out = crate::ir::returns_param_map(prog);

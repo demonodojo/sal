@@ -3899,6 +3899,7 @@ fn variant_map_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], se
     m = map_new()
     _a = variant_map_enums_t(m, &tp.enums, 0, list_len(&tp.enums))
     _k = enum_keys_t(m, enums, 0, list_len(enums))
+    _g = graph_variant_keys_t(m, enums, 0, list_len(enums))
     _b = flat_map_structs_t(m, structs, enums, 0, list_len(structs))
     _r = ret_desc_keys(m, seen, 0, list_len(seen))
     m
@@ -3917,6 +3918,33 @@ fn ret_desc_keys(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         else
             _p = map_put(m, str_own(&("rd:" + f.name)), h)
             ret_desc_keys(m, fns, i + 1, n)
+
+# `gv:<variant>` is 1 for a variant with fields and 2 for a unit one, for every enum of the
+# module graph: the drops pass classifies the enum a fn returns by it, even when the enum is
+# declared in another module (`fresh_enum_return_fns` in src/drops.rs).
+fn graph_variant_keys_t(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        ed = enums.get(i)
+        _a = graph_variant_keys_go(m, &ed.variants, 0, ed.variants.len())
+        graph_variant_keys_t(m, enums, i + 1, n)
+
+fn graph_variant_keys_go(m: Int, vs: &List[TVariant], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        v = vs.get(i)
+        key = str_own(&("gv:" + v.name))
+        kind = if v.fields.len() == 0
+            2
+        else
+            1
+        if map_get(m, key) == 0
+            map_put(m, key, kind)
+        else
+            0
+        graph_variant_keys_go(m, vs, i + 1, n)
 
 # `enum:Name` for every enum of the module graph.
 fn enum_keys_t(m: Int, enums: &List[TEnum], i: Int, n: Int) -> Int ! alloc
