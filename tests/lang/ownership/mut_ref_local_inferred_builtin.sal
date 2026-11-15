@@ -1,0 +1,7 @@
+# exit: 7
+fn main() -> Int
+    s = "abc"
+    n = s.len()
+    r = &mut n
+    *r = 7
+    n

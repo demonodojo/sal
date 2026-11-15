@@ -363,7 +363,32 @@ fn corpus_ir_matches_bootstrap_stage1_stage2() {
         "stage2 must not be a byte-for-byte copy of stage1 (sal_copy_self shortcut)"
     );
 
-    for file in corpus_files() {
+    let mut files = corpus_files();
+    files.extend(
+        [
+            "tests/lang/ownership/mut_ref_local_parameter.sal",
+            "tests/lang/ownership/mut_ref_local_parameter_reborrow.sal",
+            "tests/lang/ownership/mut_ref_local_parameter_struct.sal",
+            "tests/lang/ownership/mut_ref_local_write_through.sal",
+            "tests/lang/ownership/mut_ref_local_loop.sal",
+            "tests/lang/ownership/mut_ref_local_reborrow.sal",
+            "tests/lang/ownership/mut_ref_local_one_field.sal",
+            "tests/lang/ownership/mut_ref_local_string_field.sal",
+            "tests/lang/ownership/mut_ref_local_shared_reborrow.sal",
+            "tests/lang/ownership/mut_ref_local_shared_field.sal",
+            "tests/lang/ownership/mut_ref_in_struct_field.sal",
+            "tests/lang/ownership/mut_ref_local_return.sal",
+            "tests/lang/ownership/mut_ref_local_multiple.sal",
+            "tests/lang/ownership/mut_ref_local_inferred_expr.sal",
+            "tests/lang/ownership/mut_ref_local_inferred_builtin.sal",
+            "tests/lang/ownership/mut_ref_local_string_reassign.sal",
+            "tests/lang/ownership/mut_ref_local_bool_float.sal",
+            "tests/lang/ownership/mut_ref_local_arena.sal",
+        ]
+        .iter()
+        .map(|rel| root().join(rel)),
+    );
+    for file in files {
         let boot = bootstrap_ir(&file);
         let ir1 = run_emit_ir(&stage1, &file);
         let ir2 = run_emit_ir(&stage2, &file);
@@ -1299,6 +1324,24 @@ const PARITY_FILES: &[&str] = &[
     "tests/lang/drops/drop_dict_get_int_payload_let.sal",
     "tests/lang/drops/drop_dict_get_int_payload_tail.sal",
     "tests/lang/ownership/match_arm_without_binding_keeps_value_ok.sal",
+    "tests/lang/ownership/mut_ref_local_parameter.sal",
+    "tests/lang/ownership/mut_ref_local_parameter_reborrow.sal",
+    "tests/lang/ownership/mut_ref_local_parameter_struct.sal",
+    "tests/lang/ownership/mut_ref_local_write_through.sal",
+    "tests/lang/ownership/mut_ref_local_loop.sal",
+    "tests/lang/ownership/mut_ref_local_reborrow.sal",
+    "tests/lang/ownership/mut_ref_local_one_field.sal",
+    "tests/lang/ownership/mut_ref_local_string_field.sal",
+    "tests/lang/ownership/mut_ref_local_shared_reborrow.sal",
+    "tests/lang/ownership/mut_ref_local_shared_field.sal",
+    "tests/lang/ownership/mut_ref_in_struct_field.sal",
+    "tests/lang/ownership/mut_ref_local_return.sal",
+    "tests/lang/ownership/mut_ref_local_multiple.sal",
+    "tests/lang/ownership/mut_ref_local_inferred_expr.sal",
+    "tests/lang/ownership/mut_ref_local_inferred_builtin.sal",
+    "tests/lang/ownership/mut_ref_local_string_reassign.sal",
+    "tests/lang/ownership/mut_ref_local_bool_float.sal",
+    "tests/lang/ownership/mut_ref_local_arena.sal",
     "tests/lang/strings/get_alias_accumulate.sal",
     "tests/lang/structs/struct_ref_return_field.sal",
     "tests/sal/support/assert.sal",

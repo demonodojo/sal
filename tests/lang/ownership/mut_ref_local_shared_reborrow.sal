@@ -1,0 +1,8 @@
+# exit: 8
+fn read(x: &Int) -> Int
+    *x
+
+fn main() -> Int
+    a = 8
+    r = &mut a
+    read(r)

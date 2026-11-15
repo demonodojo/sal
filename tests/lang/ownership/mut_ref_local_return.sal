@@ -1,0 +1,11 @@
+# exit: 4
+fn f() -> Int
+    n = 1
+    r = &mut n
+    *r = 4
+    if *r == 4
+        return *r
+    0
+
+fn main() -> Int
+    f()

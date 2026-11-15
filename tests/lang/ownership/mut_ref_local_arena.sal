@@ -1,0 +1,12 @@
+# exit: 10
+@arena
+fn f(early: Int) -> Int
+    a = 1
+    r = &mut a
+    *r = 5
+    if early == 1
+        return *r
+    a
+
+fn main() -> Int
+    f(1) + f(0)

@@ -1,0 +1,10 @@
+# exit: 8
+fn add(x: &mut Int, n: Int) -> Unit
+    *x = *x + n
+
+fn main() -> Int
+    a = 1
+    r = &mut a
+    add(r, 3)
+    *r = *r * 2
+    a

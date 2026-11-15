@@ -1026,7 +1026,13 @@ thread_local! {
 fn deref_cell_target(target: &Expr) -> Option<String> {
     let Expr::Unary { op: UnOp::Deref, expr, .. } = target else { return None };
     let Expr::Ident { name, .. } = expr.as_ref() else { return None };
-    CELL_PARAMS.with(|c| c.borrow().contains(name)).then(|| name.clone())
+    (CELL_PARAMS.with(|c| c.borrow().contains(name)) || is_ref_cell(name)).then(|| name.clone())
+}
+
+fn deref_field_cell<'a>(target: &'a Expr, strings: &StringEnv) -> Option<&'a Expr> {
+    let Expr::Unary { op: UnOp::Deref, expr, .. } = target else { return None };
+    (!matches!(expr.as_ref(), Expr::Ident { .. }) && is_cell_handle(expr, strings))
+        .then_some(expr.as_ref())
 }
 
 /// `name` was rebound to `value`: a cell parameter writes it through to the caller.
@@ -1053,6 +1059,11 @@ fn cell_local(name: &str) -> Option<String> {
 
 fn is_ref_cell(name: &str) -> bool {
     REF_CELLS.with(|r| r.borrow().contains(name))
+}
+
+fn cell_param_alias(e: &Expr) -> Option<String> {
+    let Expr::Ident { name, .. } = e else { return None };
+    CELL_PARAMS.with(|c| c.borrow().contains(name)).then(|| name.clone())
 }
 
 /// The expression is a cell handle: `&mut x` of a cell local, a local holding one (`r`), or a
@@ -1185,7 +1196,7 @@ fn cell_call_args(fname: &str, args: &[Expr], env: &HashMap<String, String>) -> 
                 other => other,
             };
             match inner {
-                Expr::Ident { name, .. } if env.contains_key(name) => Some((i, name.clone())),
+                Expr::Ident { name, .. } if env.contains_key(name) && !is_ref_cell(name) && cell_local(name).is_none() => Some((i, name.clone())),
                 _ => None,
             }
         })
@@ -1703,6 +1714,18 @@ fn lower_fn(
                 args: vec![],
             },
         );
+    }
+    let cells = CELL_LOCALS.with(|c| {
+        let c = c.borrow();
+        let mut names = c.keys().collect::<Vec<_>>();
+        names.sort();
+        names.into_iter().map(|name| c[name].clone()).collect::<Vec<_>>()
+    });
+    insert_cell_frees(&mut instructions, &cells);
+    if !matches!(instructions.last(), Some(IrInst::Return { .. })) {
+        for c in cells {
+            instructions.push(IrInst::Call { dest: None, func: "sal_cell_free".into(), args: vec![c] });
+        }
     }
     ARENA_KEEP.with(|k| k.borrow_mut().clear());
 
@@ -2334,9 +2357,12 @@ fn emit_struct_string_drops(
         let Some(sdef) = strings.structs.get(&sn) else {
             continue;
         };
-        let Some(base) = env.get(&name).cloned() else {
+        let Some(mut base) = env.get(&name).cloned() else {
             continue;
         };
+        if let Some(cell) = cell_local(&name) {
+            base = cell_get(&cell, counter, instructions);
+        }
         // A clean local (nothing moved, read whole or tainted) is released by the glue of its
         // struct: the same releases, one call. Any other local keeps the inline releases below.
         let clean = !reads.struct_valued.contains(&name)
@@ -3181,7 +3207,9 @@ fn lower_stmt(
     match st {
         Stmt::Break { .. } => return false,
         Stmt::Let { name, ty, init, .. } => {
-            let v = lower_expr(
+            let param_cell = cell_param_alias(init);
+            let ref_cell = param_cell.is_some() || is_cell_handle(init, strings);
+            let v = if let Some(cell) = param_cell { cell } else { lower_expr(
                 init,
                 instructions,
                 env,
@@ -3192,9 +3220,13 @@ fn lower_stmt(
                 fn_names,
                 host_literals,
                 strings,
-            );
+            ) };
             register_let_tensor(name, ty.as_ref(), init, &v, strings, tensors);
+            cell_write_back(name, &v, instructions);
             env.insert(name.clone(), v);
+            if ref_cell {
+                REF_CELLS.with(|r| r.borrow_mut().insert(name.clone()));
+            }
             if let Some(Type::Tensor { dims, .. }) = ty.as_ref().map(peel_ref_ty) {
                 for (i, d) in dims.iter().enumerate() {
                     if matches!(d, Dim::Dynamic) {
@@ -3259,6 +3291,16 @@ fn lower_stmt(
                     if let Some(sn) = strings.struct_types.get(name).cloned() {
                         if let Some(sdef) = strings.structs.get(&sn).cloned() {
                             if is_transparent_struct(&sdef) {
+                                if is_ref_cell(name) {
+                                    let cell = env.get(name).cloned().unwrap_or_else(|| "0".into());
+                                    let v = lower_expr(value, instructions, env, counter, regions, tensors, dim_params, fn_names, host_literals, strings);
+                                    if let Some(fd) = sdef.fields.first() {
+                                        let old = cell_get(&cell, counter, instructions);
+                                        emit_owned_value_drop(&old, &fd.ty, strings, counter, instructions);
+                                    }
+                                    instructions.push(IrInst::Call { dest: None, func: "sal_cell_set".into(), args: vec![cell, v] });
+                                    return false;
+                                }
                                 if let Some(old) = env.get(name).cloned() {
                                     if let Some(fd) = sdef.fields.first() {
                                         emit_owned_value_drop(
@@ -3289,7 +3331,7 @@ fn lower_stmt(
                             if let Some(idx) = struct_field_index(&sdef, field) {
                                 let writes_box = BOX_PLACE.with(|b| b.borrow().contains(name))
                                     || MUT_REF_PLACE.with(|m| m.borrow().contains(name));
-                                let new_val = lower_expr(
+                                let mut new_val = lower_expr(
                                     value,
                                     instructions,
                                     env,
@@ -3301,6 +3343,11 @@ fn lower_stmt(
                                     host_literals,
                                     strings,
                                 );
+                                if matches!(&sdef.fields[idx].ty, Type::Ref { mutable: false, .. })
+                                    && is_cell_handle(value, strings)
+                                {
+                                    new_val = cell_get(&new_val, counter, instructions);
+                                }
                                 let base_ssa = env.get(name).cloned().unwrap_or_else(|| "0".into());
                                 // Drop the previous field (Rust overwrite) before storing.
                                 *counter += 1;
@@ -3367,12 +3414,14 @@ fn lower_stmt(
                 }
             }
             if let Expr::Ident { name, .. } = target {
+                let param_cell = cell_param_alias(value);
+                let ref_cell = param_cell.is_some() || is_cell_handle(value, strings);
                 strings.accumulate = if assign_accumulates_string(name, value, strings) {
                     Some(name.clone())
                 } else {
                     None
                 };
-                let v = lower_expr(
+                let v = if let Some(cell) = param_cell { cell } else { lower_expr(
                     value,
                     instructions,
                     env,
@@ -3383,7 +3432,7 @@ fn lower_stmt(
                     fn_names,
                     host_literals,
                     strings,
-                );
+                ) };
                 strings.accumulate = None;
                 // Rebinding a struct local releases its previous value first (SPEC «Memoria»:
                 // the new value is computed first, then the old one is released).
@@ -3393,8 +3442,17 @@ fn lower_stmt(
                     }
                 }
                 register_let_tensor(name, None, value, &v, strings, tensors);
+                cell_write_back(name, &v, instructions);
                 env.insert(name.clone(), v);
+                REF_CELLS.with(|r| {
+                    if ref_cell { r.borrow_mut().insert(name.clone()); }
+                    else { r.borrow_mut().remove(name); }
+                });
                 strings.note_init(name, None, value);
+            } else if let Some(expr) = deref_field_cell(target, strings) {
+                let v = lower_expr(value, instructions, env, counter, regions, tensors, dim_params, fn_names, host_literals, strings);
+                let cell = lower_expr(expr, instructions, env, counter, regions, tensors, dim_params, fn_names, host_literals, strings);
+                instructions.push(IrInst::Call { dest: None, func: "sal_cell_set".into(), args: vec![cell, v] });
             } else if let Some(name) = deref_cell_target(target) {
                 // `*p = v` with `p` a cell parameter: the old value is released, the new one
                 // is written back.
@@ -3410,6 +3468,17 @@ fn lower_stmt(
                     host_literals,
                     strings,
                 );
+                if is_ref_cell(&name) {
+                    let cell = env.get(&name).cloned().unwrap_or_else(|| "0".into());
+                    if let Some(sn) = strings.struct_types.get(&name).cloned() {
+                        if let Some(fd) = strings.structs.get(&sn).and_then(|sd| sd.fields.first()).cloned() {
+                            let old = cell_get(&cell, counter, instructions);
+                            emit_owned_value_drop(&old, &fd.ty, strings, counter, instructions);
+                        }
+                    }
+                    instructions.push(IrInst::Call { dest: None, func: "sal_cell_set".into(), args: vec![cell, v] });
+                    return false;
+                }
                 if let Some(old) = env.get(&name).cloned() {
                     if let Some(sn) = strings.struct_types.get(&name).cloned() {
                         if let Some(fd) = strings.structs.get(&sn).and_then(|sd| sd.fields.first()).cloned() {
@@ -4249,6 +4318,9 @@ fn lower_expr(
             dest
         }
         Expr::Ident { name, .. } => {
+            if let Some(cell) = cell_local(name) {
+                return cell_get(&cell, counter, instructions);
+            }
             if let Some(v) = env.get(name) {
                 return v.clone();
             }
@@ -4418,7 +4490,17 @@ fn lower_expr(
             dest
         }
         Expr::Unary { op, expr, .. } => {
+            if matches!(op, UnOp::RefMut) {
+                if let Expr::Ident { name, .. } = expr.as_ref() {
+                    if let Some(cell) = cell_local(name) {
+                        return cell;
+                    }
+                }
+            }
             let inner = lower_expr_simple(expr, instructions, env, counter, tensors, fn_names, host_literals, strings);
+            if matches!(op, UnOp::Deref) && is_cell_handle(expr, strings) {
+                return cell_get(&inner, counter, instructions);
+            }
             if matches!(op, UnOp::Ref | UnOp::RefMut | UnOp::Deref) {
                 // A reference to a heap value, including a tensor, is the same pointer.
                 return inner;
@@ -4523,7 +4605,7 @@ fn lower_expr(
             };
             let mut arg_names = Vec::new();
             let is_ctor = strings.structs.contains_key(&fname);
-            for a in args {
+            for (i, a) in args.iter().enumerate() {
                 let owned_list = if is_ctor { crate::drops::own_inline_string_list(a) } else { None };
                 let mut n = lower_expr_simple(
                     owned_list.as_ref().unwrap_or(a),
@@ -4535,6 +4617,13 @@ fn lower_expr(
                     host_literals,
                     strings,
                 );
+                if is_ctor
+                    && strings.structs.get(&fname).and_then(|s| s.fields.get(i))
+                        .is_some_and(|f| matches!(&f.ty, Type::Ref { mutable: false, .. }))
+                    && is_cell_handle(a, strings)
+                {
+                    n = cell_get(&n, counter, instructions);
+                }
                 n = maybe_box_for_any(a, n, instructions, counter, strings);
                 arg_names.push(n);
             }
@@ -5014,6 +5103,13 @@ fn lower_expr(
             let cells = cell_call_args(&fname, args, env);
             let places = place_call_args(&fname, args, env, strings);
             let mut arg_names = arg_names;
+            if let Some(sig) = strings.fn_sigs.get(&fname) {
+                for (i, arg) in args.iter().enumerate() {
+                    if sig.shared_ref.get(i).copied().unwrap_or(false) && is_cell_handle(arg, strings) {
+                        arg_names[i] = cell_get(&arg_names[i], counter, instructions);
+                    }
+                }
+            }
             // (ssa passed, place, whether the ssa is a cell)
             let mut place_names: Vec<(String, Expr, bool)> = Vec::new();
             for (i, place, cell) in places {
@@ -5457,7 +5553,7 @@ fn lower_expr(
             payload
         }
         Expr::Field { base, field, .. } => {
-            let base_ssa = lower_expr_simple(
+            let mut base_ssa = lower_expr_simple(
                 base,
                 instructions,
                 env,
@@ -5469,6 +5565,9 @@ fn lower_expr(
             );
             if let Some(name) = struct_name_of_base(base, strings) {
                 if let Some(sdef) = strings.structs.get(&name) {
+                    if is_cell_handle(base, strings) {
+                        base_ssa = cell_get(&base_ssa, counter, instructions);
+                    }
                     if is_transparent_struct(sdef) {
                         return base_ssa;
                     }

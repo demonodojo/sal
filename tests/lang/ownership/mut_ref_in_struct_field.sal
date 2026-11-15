@@ -1,0 +1,9 @@
+# exit: 7
+struct Holder['a]
+    value: &'a mut Int
+
+fn main() -> Int
+    a = 1
+    h = Holder(&mut a)
+    *h.value = 7
+    a

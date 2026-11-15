@@ -1,0 +1,9 @@
+# exit: 4
+struct Db
+    n: Int
+
+fn main() -> Int
+    d = Db(1)
+    r = &mut d
+    r.n = r.n + 3
+    d.n

@@ -1,0 +1,9 @@
+# exit: 9
+fn set(x: &mut Int) -> Unit
+    r = x
+    *r = 9
+
+fn main() -> Int
+    n = 1
+    set(&mut n)
+    n

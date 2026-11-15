@@ -1,0 +1,6 @@
+# error: E_BORROW
+fn main() -> Int
+    a = 1
+    r = &mut a
+    a = 3
+    *r

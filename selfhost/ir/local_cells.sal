@@ -1,0 +1,208 @@
+# Find locals whose mutable reference outlives a direct cell-parameter call.
+import "../ast/tast.sal"
+import "../ast/ttypes.sal"
+import "../sem/infer.sal"
+
+fn cell_scan_type(env: &TEnv, e: &Expr) -> String ! alloc
+    match e
+        XInt(v) => "Int"
+        XBool(v) => "Bool"
+        XBin(op, l, r) => cell_scan_binary_type(env, &op, &l, &r)
+        XUnary(op, inner) => cell_scan_unary_type(env, &op, &inner)
+        XCall(name, args, targs, xp) => cell_scan_call_type(env, &name, &args, &targs)
+        XIf(cond, yes, no, has_else, elsifs) => cell_scan_type(env, &yes.tail)
+        XBlock(body) => cell_scan_type(env, &body.tail)
+        _ => texpr_type(env, e)
+
+fn cell_scan_binary_type(env: &TEnv, op: &String, l: &Expr, r: &Expr) -> String ! alloc
+    if op.eq("eq") + op.eq("ne") + op.eq("lt") + op.eq("le") + op.eq("gt") + op.eq("ge") + op.eq("and") + op.eq("or") > 0
+        "Bool"
+    else
+        lt = cell_scan_type(env, l)
+        rt = cell_scan_type(env, r)
+        if lt.eq("Float") == 1 || rt.eq("Float") == 1
+            "Float"
+        elsif lt.eq("Int") == 1 && rt.eq("Int") == 1
+            "Int"
+        else
+            tt_binary_type(env, op, l, r)
+
+fn cell_scan_unary_type(env: &TEnv, op: &String, inner: &Expr) -> String ! alloc
+    match op
+        "not" => "Bool"
+        "refmut" => "&mut " + cell_scan_type(env, inner)
+        "ref" => "&" + cell_scan_type(env, inner)
+        "deref" => ty_deref(&cell_scan_type(env, inner))
+        _ => cell_scan_type(env, inner)
+
+fn cell_scan_call_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
+    if infer_t_is_int(name) == 1 || infer_check_only_int(name) == 1 || name.eq("list_len") == 1 || name.eq("dict_len") == 1
+        "Int"
+    elsif infer_t_is_float(name) == 1 || name.eq("int_to_float") == 1
+        "Float"
+    else
+        tt_call_type(env, name, args, targs)
+
+fn cell_scan_param(params: &List[TParam], name: &String, i: Int) -> Int ! alloc
+    if i >= params.len()
+        0
+    elsif params.get(i).name.eq(name) == 1
+        1
+    else
+        cell_scan_param(params, name, i + 1)
+
+fn cell_scan_add(names: &mut List[String], name: &String) -> Int ! alloc
+    i = 0
+    while i < names.len()
+        if names.get(i).eq(name) == 1
+            return 0
+        i = i + 1
+    names.push(name.dup())
+    0
+
+fn cell_scan_flags(env: &TEnv, fns: &List[TFn], name: &String, i: Int) -> String ! alloc
+    if i >= fns.len()
+        ""
+    elsif fns.get(i).name.eq(name) == 1
+        tt_cell_flags(&env.structs, &fns.get(i).params)
+    else
+        cell_scan_flags(env, fns, name, i + 1)
+
+fn cell_scan_direct(e: &Expr) -> Int ! alloc
+    match e
+        XUnary(op, inner) =>
+            if op.eq("refmut") == 1
+                match inner
+                    XIdent(name) => 1
+                    _ => 0
+            else
+                0
+        _ => 0
+
+fn cell_scan_call(env: &mut TEnv, fns: &List[TFn], params: &List[TParam], name: &String, args: &List[Expr], names: &mut List[String]) -> Int ! alloc
+    flags = cell_scan_flags(env, fns, name, 0)
+    i = 0
+    while i < args.len()
+        direct = if i < flags.len() && flags.char(i) == 49 && cell_scan_direct(&args.get(i)) == 1
+            1
+        else
+            0
+        if direct == 0
+            cell_scan_expr(env, fns, params, &args.get(i), names)
+        i = i + 1
+    0
+
+fn cell_scan_ref(env: &TEnv, params: &List[TParam], inner: &Expr, names: &mut List[String]) -> Int ! alloc
+    match inner
+        XIdent(name) =>
+            if cell_scan_param(params, &name, 0) == 0 && tt_is_cell(&env.structs, &ty_deref(&cell_scan_type(env, inner))) == 1
+                cell_scan_add(names, &name)
+            else
+                0
+        _ => 0
+
+fn cell_scan_expr(env: &mut TEnv, fns: &List[TFn], params: &List[TParam], e: &Expr, names: &mut List[String]) -> Int ! alloc
+    match e
+        XUnary(op, inner) =>
+            if op.eq("refmut") == 1
+                cell_scan_ref(env, params, &inner, names)
+            cell_scan_expr(env, fns, params, &inner, names)
+        XCall(name, args, targs, xp) => cell_scan_call(env, fns, params, &name, &args, names)
+        XBin(op, l, r) =>
+            cell_scan_expr(env, fns, params, &l, names)
+            cell_scan_expr(env, fns, params, &r, names)
+        XField(base, field) => cell_scan_expr(env, fns, params, &base, names)
+        XTo(place, inner) => cell_scan_expr(env, fns, params, &inner, names)
+        XTry(inner) => cell_scan_expr(env, fns, params, &inner, names)
+        XLambda(param, body) => cell_scan_expr(env, fns, params, &body, names)
+        XLambdaBlock(param, body) => cell_scan_block(env, fns, params, &body, names)
+        XBlock(body) => cell_scan_block(env, fns, params, &body, names)
+        XOn(place, body, kern, idx) => cell_scan_block(env, fns, params, &body, names)
+        XWhile(cond, body) =>
+            cell_scan_expr(env, fns, params, &cond, names)
+            cell_scan_block(env, fns, params, &body, names)
+        XIf(cond, yes, no, has_else, elsifs) =>
+            cell_scan_expr(env, fns, params, &cond, names)
+            cell_scan_block(env, fns, params, &yes, names)
+            cell_scan_elsifs(env, fns, params, &elsifs, names)
+            cell_scan_block(env, fns, params, &no, names)
+        XMatch(scrut, arms) =>
+            cell_scan_expr(env, fns, params, &scrut, names)
+            cell_scan_arms(env, fns, params, &arms, names)
+        _ => 0
+
+fn cell_scan_elsifs(env: &mut TEnv, fns: &List[TFn], params: &List[TParam], arms: &List[TElsif], names: &mut List[String]) -> Int ! alloc
+    i = 0
+    while i < arms.len()
+        cell_scan_expr(env, fns, params, &arms.get(i).cond, names)
+        cell_scan_block(env, fns, params, &arms.get(i).body, names)
+        i = i + 1
+    0
+
+fn cell_scan_arms(env: &mut TEnv, fns: &List[TFn], params: &List[TParam], arms: &List[TArm], names: &mut List[String]) -> Int ! alloc
+    i = 0
+    while i < arms.len()
+        arm = arms.get(i)
+        cell_scan_expr(env, fns, params, &arm.body, names)
+        if arm.has_suite == 1
+            cell_scan_block(env, fns, params, &arm.suite, names)
+        i = i + 1
+    0
+
+fn cell_scan_block(env: &mut TEnv, fns: &List[TFn], params: &List[TParam], body: &TBlock, names: &mut List[String]) -> Int ! alloc
+    mark = env.names.len()
+    i = 0
+    while i < body.stmts.len()
+        st = body.stmts.get(i)
+        cell_scan_expr(env, fns, params, &st.expr, names)
+        cell_scan_expr(env, fns, params, &st.target, names)
+        if st.kind == 1
+            ty = if st.ty.len() > 0
+                st.ty.clone()
+            else
+                cell_scan_type(env, &st.expr)
+            tenv_bind(env, &st.name, &ty)
+        i = i + 1
+    cell_scan_expr(env, fns, params, &body.tail, names)
+    tenv_truncate(env, mark)
+    0
+
+fn cell_scan_sort(names: &mut List[String]) -> Int ! alloc
+    i = 1
+    while i < names.len()
+        j = i
+        while j > 0 && cell_scan_lt(&names.get(j), &names.get(j - 1), 0) == 1
+            a = names.get(j - 1).clone()
+            b = names.get(j).clone()
+            names.set(j - 1, b)
+            names.set(j, a)
+            j = j - 1
+        i = i + 1
+    0
+
+fn cell_scan_lt(a: &String, b: &String, i: Int) -> Int ! alloc
+    if i >= a.len()
+        if i < b.len()
+            1
+        else
+            0
+    elsif i >= b.len()
+        0
+    elsif a.char(i) < b.char(i)
+        1
+    elsif a.char(i) > b.char(i)
+        0
+    else
+        cell_scan_lt(a, b, i + 1)
+
+fn cell_scan_locals(env: &TEnv, f: &TFn, fns: &List[TFn]) -> List[String] ! alloc
+    scan = tenv_clone(env)
+    i = 0
+    while i < f.params.len()
+        p = f.params.get(i)
+        tenv_bind(&mut scan, &p.name, &p.ty)
+        i = i + 1
+    names = List.new[String]()
+    cell_scan_block(&mut scan, fns, &f.params, &f.body, &mut names)
+    cell_scan_sort(&mut names)
+    names

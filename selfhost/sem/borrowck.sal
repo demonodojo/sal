@@ -582,6 +582,10 @@ fn bk_stmt_return_go(c: &mut BK, e: &Expr, mode: Int) -> Int ! alloc
         bk_visit(c, e, 0)
 
 fn bk_stmt_bind(c: &mut BK, st: &TStmt, mode: Int) -> Int ! alloc
+    # Rebinding an existing local writes its place, even when its type is Copy.
+    # A `let` introduces a new binding instead of writing an outer one.
+    if mode != 0 && st.is_let == 0 && bk_idx(c, &st.name) >= 0
+        bk_move(c, &st.name, bk_clock(c))
     place = bk_ref_place(&st.expr)
     if str_len(&place) > 0
         epos = bk_visit(c, &st.expr, bk_child(mode))

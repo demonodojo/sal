@@ -16,6 +16,8 @@ Tests: `tests/forward_ir.rs`, `tests/kernels.rs`, `tests/exec_matmul.rs`, `tests
 
 ## Bajada a SSA
 
+El arranque y el selfhost identifican los locales sin bloque cuyo préstamo mutable se conserva y mantienen su valor en una celda durante la función. El recorrido del selfhost vive en `selfhost/ir/local_cells.sal`; distingue los préstamos guardados de los argumentos directos de parámetros celda. Las lecturas y escrituras usan `sal_cell_get` y `sal_cell_set`; al salir se libera la celda, incluidos los retornos anidados y antes de `sal_arena_leave` en funciones `@arena`. Los tests `tests/lang/ownership/mut_ref_local_*.sal` y `mut_ref_in_struct_field.sal` cubren las llamadas, las conversiones a préstamo compartido y la liberación; `tests/selfhost_ir.rs` compara su IR en las tres etapas. Queda pendiente la comprobación completa de ámbitos y lugares.
+
 Una función sal es una `IrFunction`. Cada valor intermedio es un nombre nuevo. Volver a ligar un `let` no reescribe el valor viejo: la versión nueva es otro nombre y el uso siguiente apunta a ella.
 
 Instrucciones que la IR tiene que poder emitir, no solo `ConstInt` y `Call`:

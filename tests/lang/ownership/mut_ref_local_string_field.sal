@@ -1,0 +1,9 @@
+# exit: 3
+struct Box
+    s: String
+
+fn main() -> Int ! alloc
+    b = Box("a".clone())
+    r = &mut b
+    r.s = "abc".clone()
+    b.s.len()

@@ -1,0 +1,13 @@
+# exit: 34
+fn add(x: &mut Int) -> Unit
+    *x = *x + 1
+
+fn main() -> Int
+    z = 1
+    a = 2
+    add(&mut z)
+    rz = &mut z
+    ra = &mut a
+    *rz = *rz + 1
+    *ra = *ra + 2
+    z * 10 + a

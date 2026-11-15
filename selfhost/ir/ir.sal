@@ -174,6 +174,9 @@ struct Cx
     # Parameters `p: &mut T` of a cell type (`tt_is_cell`): `p` names the cell, the value lives
     # in the binding, and every rebinding is written back (`sal_cell_set`).
     cells: List[String]
+    # Locals whose mutable reference is kept: names and their cell SSA values.
+    local_cell_names: List[String]
+    local_cell_values: List[String]
 
 fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn], protocols: &List[TProtocol]) -> Cx ! alloc
     ctr = list_new[Int]()
@@ -190,7 +193,7 @@ fn cx_new(fn_names: Int, fm: Int, env: TEnv, enums: &List[TEnum], fns: &List[TFn
     regions.push(List.new[Region]())
     lits = List.new[List[Lit]]()
     lits.push(List.new[Lit]())
-    Cx(ctr, bodies, acc, vec_new(), fn_names, dps, regions, map_new(), fm, lits, vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam](), 0, 0, 0, 0, List.new[TFn](), List.new[TBlock](), List.new[TBlock](), List.new[Int](), List.new[Int](), List.new[String]())
+    Cx(ctr, bodies, acc, vec_new(), fn_names, dps, regions, map_new(), fm, lits, vm, env, enums.clone(), fns.clone(), protocols.clone(), List.new[Lam](), 0, 0, 0, 0, List.new[TFn](), List.new[TBlock](), List.new[TBlock](), List.new[Int](), List.new[Int](), List.new[String](), List.new[String](), List.new[String]())
 
 # Variant name -> `[enum name, variant index, field count, tag]`; the first definition wins.
 fn cx_variants(cx: &Cx) -> Int ! alloc

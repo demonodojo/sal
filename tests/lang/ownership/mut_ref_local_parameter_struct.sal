@@ -1,0 +1,12 @@
+# exit: 4
+struct Db
+    n: Int
+
+fn set(x: &mut Db) -> Unit
+    r = x
+    r.n = r.n + 3
+
+fn main() -> Int
+    d = Db(1)
+    set(&mut d)
+    d.n

@@ -14,6 +14,7 @@ import stradd
 import fused
 import desc
 import frc
+import local_cells
 
 fn lower_args(cx: &mut Cx, args: &List[Expr], i: Int, n: Int, out: Int) -> Int ! alloc
     if i >= n
@@ -200,8 +201,18 @@ fn tbinary_ir_op(env: &TEnv, op: &String, left: &Expr, right: &Expr) -> Int ! al
         str_own(op)
 
 fn lower_unary(cx: &mut Cx, op: &String, operand: &Expr) -> Int ! alloc
+    if op.eq("refmut") == 1
+        cell = local_cell_operand(cx, operand)
+        if cell != 0
+            return cell
     inner = lower_expr(cx, operand)
-    if str_eq(op, "ref") + str_eq(op, "refmut") + str_eq(op, "deref") > 0
+    if op.eq("deref") == 1 && is_local_cell_ref(cx, operand) == 1
+        d = fresh(cx)
+        argv = vec_new()
+        vec_push(argv, inner)
+        ir_push(cx, ir_call(d, "sal_cell_get".to_int(), argv, 1))
+        d
+    elsif str_eq(op, "ref") + str_eq(op, "refmut") + str_eq(op, "deref") > 0
         inner
     else
         lower_unary_op(cx, op, operand, inner)
@@ -243,6 +254,12 @@ fn tt_field_index(fields: &List[TField], field: &String, i: Int, n: Int) -> Int 
 
 fn lower_field(cx: &mut Cx, base: &Expr, field: &String) -> Int ! alloc
     b = lower_expr(cx, base)
+    if is_local_cell_ref(cx, base) == 1
+        val = fresh(cx)
+        argv = vec_new()
+        vec_push(argv, b)
+        ir_push(cx, ir_call(val, "sal_cell_get".to_int(), argv, 1))
+        b = val
     si = tt_struct_find(&cx_structs(cx), &ty_deref(&texpr_type(&cx.env, base)))
     if si < 0
         b
@@ -263,6 +280,7 @@ fn lower_field_of(cx: &mut Cx, base: Int, sd: &TStruct, field: &String) -> Int !
 fn lower_struct_ctor(cx: &mut Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
     owned_args = ctor_own_args(args, 0, List.new[Expr]())
     arg_names = lower_args(cx, &owned_args, 0, list_len(&owned_args), vec_new())
+    shared_cells_ctor(cx, fname, args, arg_names)
     d = fresh(cx)
     if vec_len(arg_names) == 1
         vec_get(arg_names, 0)
@@ -729,6 +747,7 @@ fn lower_call_runtime_rest(cx: &mut Cx, name: &String, targs: &String, args: &Li
         if is_user_fn(cx, fname) == 1
             _b = maybe_box_user_args(cx, name, args, arg_names)
         rname = runtime_name(cx, fname)
+        shared_cells_call(cx, name, args, arg_names)
         places = place_args_new(cx, name, args, arg_names)
         cells = cell_args_new(cx, name, args, arg_names)
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
@@ -910,6 +929,9 @@ fn variant_rec(cx: &Cx, name: Int) -> Int ! alloc
 
 # A bound name, or a payload-free variant (a unit value), else the name itself.
 fn lower_ident(cx: &mut Cx, name: Int) -> Int ! alloc
+    cell = local_cell(cx, &str_from_int(name))
+    if cell != 0
+        return local_cell_get(cx, cell)
     b = cx_find(cx, name)
     if b != 0
         bind_ssa(b)
@@ -2144,7 +2166,11 @@ fn lower_stmt_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     else
         _sa = cx_set_acc(cx, 0)
     _lm = note_lambda(cx, &st.name, &st.expr)
-    v = lower_expr(cx, &st.expr)
+    param_cell = local_cell_param(cx, &st.expr)
+    v = if param_cell.len() > 0
+        param_cell.to_int()
+    else
+        lower_expr(cx, &st.expr)
     _za = cx_set_acc(cx, 0)
     # Rebinding a struct local releases its previous value first (`reassign_struct_drop` in
     # src/ir.rs): the new value was computed above, so it may read the old one.
@@ -2153,6 +2179,12 @@ fn lower_stmt_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     _b = cx_bind(cx, name, v)
     h1574_2 = texpr_type(&cx.env, &st.expr)
     _ns = tenv_bind(&mut cx.env, &st.name, &h1574_2)
+    marker = if param_cell.len() > 0 || is_local_cell_ref(cx, &st.expr) == 1 || local_cell_ref_expr(cx, &st.expr) == 1
+        "cell"
+    else
+        ""
+    tenv_bind(&mut cx.env, &("refcell:" + st.name), &marker)
+    local_cell_set(cx, &st.name, v)
     _bx = mark_box_place(cx, &st.name, &st.expr)
     lower_assign_shape(cx, name, st)
 
@@ -2211,10 +2243,27 @@ fn lower_stmt_field_assign_one(cx: &mut Cx, st: &TStmt) -> Int ! alloc
 fn lower_deref_assign(cx: &mut Cx, st: &TStmt, inner: &Expr) -> Int ! alloc
     match inner
         XIdent(name) => lower_deref_assign_named(cx, st, &name)
-        _ => lower_expr(cx, &st.expr)
+        _ =>
+            if is_local_cell_ref(cx, inner) == 1
+                v = lower_expr(cx, &st.expr)
+                cell = lower_expr(cx, inner)
+                args = vec_new()
+                vec_push(args, cell)
+                vec_push(args, v)
+                ir_push(cx, ir_call(0, "sal_cell_set".to_int(), args, 0))
+                v
+            else
+                lower_expr(cx, &st.expr)
 
 fn lower_deref_assign_named(cx: &mut Cx, st: &TStmt, name: &String) -> Int ! alloc
-    if cx_is_cell(cx, name) == 0
+    if is_cell_ref_name(cx, name) == 1
+        v = lower_expr(cx, &st.expr)
+        argv = vec_new()
+        vec_push(argv, cx_lookup(cx, str_own(name)))
+        vec_push(argv, v)
+        ir_push(cx, ir_call(0, "sal_cell_set".to_int(), argv, 0))
+        v
+    elsif cx_is_cell(cx, name) == 0
         lower_expr(cx, &st.expr)
     else
         v = lower_expr(cx, &st.expr)
@@ -2234,6 +2283,121 @@ fn cx_is_cell(cx: &Cx, name: &String) -> Int ! alloc
             hit = 1
         i = i + 1
     hit
+
+fn local_cell(cx: &Cx, name: &String) -> Int ! alloc
+    i = 0
+    while i < cx.local_cell_names.len()
+        if cx.local_cell_names.get(i).eq(name) == 1
+            return cx.local_cell_values.get(i).to_int()
+        i = i + 1
+    0
+
+fn local_cell_operand(cx: &Cx, e: &Expr) -> Int ! alloc
+    match e
+        XIdent(name) => local_cell(cx, &name)
+        _ => 0
+
+fn local_cell_ref_expr(cx: &Cx, e: &Expr) -> Int ! alloc
+    match e
+        XUnary(op, inner) =>
+            if op.eq("refmut") == 1 && local_cell_operand(cx, &inner) != 0
+                1
+            else
+                0
+        _ => 0
+
+fn local_cell_get(cx: &mut Cx, cell: Int) -> Int ! alloc
+    v = fresh(cx)
+    args = vec_new()
+    vec_push(args, cell)
+    ir_push(cx, ir_call(v, "sal_cell_get".to_int(), args, 1))
+    v
+
+fn local_cell_set(cx: &mut Cx, name: &String, v: Int) -> Int ! alloc
+    cell = local_cell(cx, name)
+    if cell == 0
+        0
+    else
+        args = vec_new()
+        vec_push(args, cell)
+        vec_push(args, v)
+        ir_push(cx, ir_call(0, "sal_cell_set".to_int(), args, 0))
+
+fn local_cells_init(cx: &mut Cx, f: &TFn, fns: &List[TFn]) -> Int ! alloc
+    names = cell_scan_locals(&cx.env, f, fns)
+    i = 0
+    while i < names.len()
+        z = fresh(cx)
+        push_const_int(cx, z, 0)
+        cell = fresh(cx)
+        args = vec_new()
+        vec_push(args, z)
+        ir_push(cx, ir_call(cell, "sal_cell_new".to_int(), args, 1))
+        cx.local_cell_names.push(names.get(i).clone())
+        cx.local_cell_values.push(str_from_int(cell))
+        i = i + 1
+    0
+
+fn local_cells_free(cx: &mut Cx) -> Int ! alloc
+    i = 0
+    while i < cx.local_cell_values.len()
+        args = vec_new()
+        vec_push(args, cx.local_cell_values.get(i).to_int())
+        ir_push(cx, ir_call(0, "sal_cell_free".to_int(), args, 0))
+        i = i + 1
+    0
+
+fn is_cell_ref_name(cx: &Cx, name: &String) -> Int ! alloc
+    tenv_type(&cx.env, &("refcell:" + name)).eq("cell")
+
+fn is_local_cell_ref(cx: &Cx, expr: &Expr) -> Int ! alloc
+    match expr
+        XIdent(name) => is_cell_ref_name(cx, &name)
+        XField(base, field) => tt_is_cell_param(&cx.env.structs, &texpr_type(&cx.env, expr))
+        _ => 0
+
+fn is_cell_handle(cx: &Cx, expr: &Expr) -> Int ! alloc
+    if is_local_cell_ref(cx, expr) == 1 || local_cell_ref_expr(cx, expr) == 1
+        1
+    else
+        0
+
+fn shared_cells_call(cx: &mut Cx, name: &String, args: &List[Expr], values: Int) -> Int ! alloc
+    fi = cx_fn_index(cx, name)
+    if fi < 0
+        return 0
+    params = cx.fns.get(fi).params
+    i = 0
+    while i < args.len() && i < params.len()
+        ty = params.get(i).ty
+        if tt_is_ref(&ty) == 1 && ty_is_mut_ref(&ty) == 0 && is_cell_handle(cx, &args.get(i)) == 1
+            v = local_cell_get(cx, vec_get(values, i))
+            vec_set(values, i, v)
+        i = i + 1
+    0
+
+fn shared_cells_ctor(cx: &mut Cx, name: &String, args: &List[Expr], values: Int) -> Int ! alloc
+    si = tt_struct_find(&cx.env.structs, name)
+    if si < 0
+        return 0
+    fields = cx.env.structs.get(si).fields
+    i = 0
+    while i < args.len() && i < fields.len()
+        ty = fields.get(i).ty
+        if tt_is_ref(&ty) == 1 && ty_is_mut_ref(&ty) == 0 && is_cell_handle(cx, &args.get(i)) == 1
+            v = local_cell_get(cx, vec_get(values, i))
+            vec_set(values, i, v)
+        i = i + 1
+    0
+
+fn local_cell_param(cx: &Cx, expr: &Expr) -> String ! alloc
+    match expr
+        XIdent(name) =>
+            if cx_is_cell(cx, &name) == 1
+                name.dup()
+            else
+                ""
+        _ => ""
 
 # Which parameters of the callee `fname` take a cell, one character each (`tt_cell_flags`).
 fn cx_cell_flags(cx: &Cx, fname: &String) -> String ! alloc
@@ -2258,7 +2422,7 @@ fn cell_arg_name(e: &Expr) -> String ! alloc
 # `name` was rebound to `v`: a cell parameter writes it through to the caller.
 fn cell_write_back(cx: &mut Cx, name: &String, v: Int) -> Int ! alloc
     if cx_is_cell(cx, name) == 0
-        0
+        local_cell_set(cx, name, v)
     else
         argv = vec_new()
         _a = vec_push(argv, str_own(name))
@@ -2288,7 +2452,7 @@ fn cell_args_new(cx: &mut Cx, fname: &String, args: &List[Expr], arg_names: Int)
     while i < args.len() && i < flags.len()
         if flags.char(i) == 49
             x = cell_arg_name(&args.get(i))
-            if x.len() > 0 && cx_find(cx, str_own(&x)) != 0
+            if x.len() > 0 && cx_find(cx, str_own(&x)) != 0 && is_cell_ref_name(cx, &x) == 0 && local_cell(cx, &x) == 0
                 c = fresh(cx)
                 argv = vec_new()
                 _a = vec_push(argv, vec_get(arg_names, i))
@@ -2333,7 +2497,19 @@ fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruc
     nf = list_len(&sd.fields)
     h = str_own(name)
     v = lower_expr(cx, &st.expr)
-    if nf == 1
+    if nf == 1 && is_cell_ref_name(cx, name) == 1
+        cell = cx_lookup(cx, h)
+        old = fresh(cx)
+        get_args = vec_new()
+        vec_push(get_args, cell)
+        ir_push(cx, ir_call(old, "sal_cell_get".to_int(), get_args, 1))
+        if cx.keep_old == 0
+            lower_field_drop_old(cx, &sd.fields.get(0).ty, old)
+        set_args = vec_new()
+        vec_push(set_args, cell)
+        vec_push(set_args, v)
+        ir_push(cx, ir_call(0, "sal_cell_set".to_int(), set_args, 0))
+    elsif nf == 1
         old = cx_lookup(cx, h)
         if cx.keep_old == 0
             lower_field_drop_old(cx, &list_get(&sd.fields, 0).ty, old)
@@ -2341,6 +2517,9 @@ fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruc
         cx_bind(cx, h, v)
     else
         idx = tt_field_index(&sd.fields, field, 0, nf)
+        ty = sd.fields.get(idx).ty
+        if tt_is_ref(&ty) == 1 && ty_is_mut_ref(&ty) == 0 && is_cell_handle(cx, &st.expr) == 1
+            v = local_cell_get(cx, v)
         base_ssa = cx_lookup(cx, h)
         old = fresh(cx)
         _e = ir_push(cx, ir_extract(old, base_ssa, str_own(&sd.name), idx))
@@ -2637,6 +2816,9 @@ fn store_place_arg(cx: &mut Cx, e: &Expr, v: Int) -> Int ! alloc
 fn lower_stmt_return(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     v = lower_return_value(cx, st)
     return_struct_drops(cx, st)
+    local_cells_free(cx)
+    if cx.fn_self.len() > 0 && cx.fn_self.get(0).arena == 1
+        ir_push(cx, ir_call(0, "sal_arena_leave".to_int(), vec_new(), 0))
     ir_push(cx, ir_ret(v))
 
 # The value a `return` hands back; a bare `return` gives 0.
@@ -2843,11 +3025,15 @@ fn drop_local_one(cx: &mut Cx, fr: &FRC, moved: Int, nm: Int) -> Int ! alloc
         if b != 0
             si = tt_struct_find(&cx_structs(cx), &trim_spaces(ty_deref(&tenv_type(&cx.env, &str_from_int(nm)))))
             sd = list_get(&cx_structs(cx), si)
+            base = bind_ssa(b)
+            cell = local_cell(cx, &str_from_int(nm))
+            if cell != 0
+                base = local_cell_get(cx, cell)
             # A clean local is released by the glue of its struct: one call, the same releases.
             if drop_local_clean(fr, nm) == 1 && struct_glue_fn(&sd, &cx_structs(cx), &cx.enums).name.len() != 0
-                drop_glue_call(cx, &sd.name, bind_ssa(b))
+                drop_glue_call(cx, &sd.name, base)
             else
-                drop_struct_fields(cx, bind_ssa(b), &sd, drop_glue_bits(fr, nm), fr, &str_from_int(nm))
+                drop_struct_fields(cx, base, &sd, drop_glue_bits(fr, nm), fr, &str_from_int(nm))
         else
             0
 
@@ -2944,6 +3130,7 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
         _en = ir_push(&mut cx, ir_call(0, str_as_int(&"sal_arena_enter"), vec_new(), 0))
     else
         _en = 0
+    local_cells_init(&mut cx, f, prog_fns)
     _a = lower_params(&mut cx, &f.params, 0, list_len(&f.params))
     _cp = lower_cell_params(&mut cx, &f.params)
     stopped = lower_fn_stmts(&mut cx, &f.body.stmts, 0, f.body.stmts.len())
@@ -2953,6 +3140,7 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
         stopped
     name = f.name.dup()
     _dr = emit_struct_drops(&mut cx, f, &f.body, vec_get(denv, 1))
+    local_cells_free(&mut cx)
     if f.arena == 1
         _lv = ir_push(&mut cx, ir_call(0, str_as_int(&"sal_arena_leave"), vec_new(), 0))
     else

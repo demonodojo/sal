@@ -1,0 +1,6 @@
+# exit: 7
+fn main() -> Int
+    n = 1 + 2
+    r = &mut n
+    *r = 7
+    n
