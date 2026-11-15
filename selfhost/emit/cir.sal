@@ -184,7 +184,9 @@ fn cir_call(cc: Int, inst: &Inst) -> Int ! alloc
     ops = List.new[String]()
     cir_ops(cc, args, 0, vec_len(args), &mut ops)
     if inst.n1 == 0
-        if cir_is_list_glue_call(&fname) == 1
+        if fname.eq("sal_enum_set_struct_glue") == 1
+            cir_enum_struct_glue_call(cc, &fname, args)
+        elsif cir_is_list_glue_call(&fname) == 1
             cir_list_glue_call(cc, &fname, args)
         else
             cir_call_free(cc, &fname, &ops)
@@ -285,6 +287,14 @@ fn cir_list_glue_call(cc: Int, fname: &String, args: Int) -> Int ! alloc
     else
         "(void (*)(int64_t))"
     ops.push(cast + cir_glue_symbol(cc, &str_from_int(vec_get(args, 1))))
+    cc_line(cc, &("  " + cir_rt(cc, fname, &ops) + ";\n"))
+
+fn cir_enum_struct_glue_call(cc: Int, fname: &String, args: Int) -> Int ! alloc
+    ops = List.new[String]()
+    ops.push(cir_op(cc, vec_get(args, 0)))
+    ops.push(cir_op(cc, vec_get(args, 1)))
+    ops.push("(int64_t (*)(int64_t))" + cir_glue_symbol(cc, &str_from_int(vec_get(args, 2))))
+    ops.push("(int64_t (*)(int64_t))" + cir_glue_symbol(cc, &str_from_int(vec_get(args, 3))))
     cc_line(cc, &("  " + cir_rt(cc, fname, &ops) + ";\n"))
 
 # A glue symbol (`drop.<T>`, `drop.elem.<T>`, `clone.<T>`, `sal_list_free_elem`) as C: declared

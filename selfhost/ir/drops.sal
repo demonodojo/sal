@@ -2421,6 +2421,7 @@ fn dr_xform_bind_new(c: &mut DC, st: &mut TStmt, cand: Int, out: &mut List[TStmt
     else
         init0
     ne = dr_xform_expr(c, &init)
+    enum_free(init)
     dr_push_with_expr(out, st, ne)
     _m = dr_clear_moved(c, st.id, out)
     if cand != 0
@@ -3114,7 +3115,6 @@ fn dr_hoist_field(h: &mut HC, e: &Expr, base: &Expr, field: &String, out: &mut L
         _s = list_set(h.k, 0, k)
         name = "__tmp" + int_to_str(k)
         _l = list_push(out, TStmt(1, strdup(name), nb, "", 1, XNone, 0, 0, 0 - k))
-        _f = enum_free_shell(e)
         XField(XIdent(strdup(name)), str_share(field))
 
 fn dr_elem_list_known(h: &HC, e: &Expr) -> Int ! alloc
@@ -3256,6 +3256,8 @@ fn dr_hoist_if(h: &mut HC, e: &Expr, cond: &Expr, then_b: &mut TBlock, else_b: &
     # `dr_hoist_expr` hands back a copy: the condition is only replaced when a temporary was bound.
     if list_len(out) > before
         _c = dr_set_expr(e, 0, cond, &nc)
+    else
+        _d = dr_drop_expr(&nc)
     tb = dr_hoist_block(h, then_b)
     _t = enum_set(e, 1, tb)
     if has_else == 1
@@ -3271,10 +3273,7 @@ fn dr_hoist_stmts(h: &mut HC, stmts: &mut List[TStmt], i: Int, n: Int, out: &mut
         # An owned copy: the list keeps the statement this one came from.
         st = tc_stmt(&list_get(&mut stmts, i))
         ne = dr_hoist_expr(h, &st.expr, out)
-        if dr_moved(&st.expr, &ne) == 1
-            dr_drop_expr(&st.expr)
-            st.expr = ne
-        _p = dr_share_stmt(out, &st)
+        _p = dr_push_with_expr(out, &st, ne)
         dr_hoist_stmts(h, stmts, i + 1, n, out)
 
 fn dr_hoist_block(h: &mut HC, b: &mut TBlock) -> TBlock ! alloc
@@ -3469,7 +3468,7 @@ fn dr_note_borrow(local: &String, e: &Expr, variants: Int, elems: &NM, borrows: 
 fn dr_wrap_copy(e: &Expr, desc: &String) -> Expr ! alloc
     args = list_new[Expr]()
     _a = list_push(&mut args, XStr(strdup(desc)))
-    _b = list_push_share(args, e)
+    _b = list_push(&mut args, tc_expr(e))
     XCall("desc_copy", args, "", 0)
 
 fn dr_took_at(took: Int, callee: &String, i: Int) -> Int ! alloc
@@ -3669,10 +3668,7 @@ fn dr_claim_stmts(stmts: &mut List[TStmt], i: Int, n: Int, variants: Int, elems:
         # An owned copy: the list keeps the statement this one came from.
         st = tc_stmt(&list_get(&mut stmts, i))
         ne = dr_claim_stmt_expr(&st, variants, elems, borrows, lists, sns, took)
-        if dr_moved(&st.expr, &ne) == 1
-            dr_drop_expr(&st.expr)
-            st.expr = ne
-        _p = dr_share_stmt(out, &st)
+        _p = dr_push_with_expr(out, &st, ne)
         dr_claim_stmts(stmts, i + 1, n, variants, elems, borrows, lists, sns, took, out)
 
 fn dr_claim_stmt_expr(st: &TStmt, variants: Int, elems: &mut NM, borrows: &mut NM, lists: &NM, sns: &mut NM, took: Int) -> Expr ! alloc

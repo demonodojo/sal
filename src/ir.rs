@@ -155,7 +155,7 @@ pub enum IrInst {
         enum_name: String,
         variant_index: u32,
         payload: Vec<String>,
-        /// Two bits per field: 1 owned `String`, 2 owned enum box; `enum_free` follows them.
+        /// Two bits per field: 1 owned `String`, 2 owned enum, 3 owned `List` or struct with glue.
         owned: u64,
     },
     /// Tag of an enum value, whether unit (the i64 itself) or boxed.
@@ -3934,8 +3934,6 @@ pub(crate) fn list_desc(
     }
 }
 
-/// `owned` is set only for the lists the drops pass releases (`list_new_owned`): an enum
-/// element is `E` there and `i` (borrowed) everywhere else.
 /// Descriptor of a struct value (`S(d..)`, one slot per field): a non-generic struct
 /// whose fields are all describable, `None` otherwise (a List, Dict, Bytes, generic…).
 /// A nested struct is boxed in its parent's slot, an enum field is an enum box.
@@ -3989,10 +3987,8 @@ fn field_desc(
     })
 }
 
-/// Element descriptor of `T` in `list_new[T]()`. A struct is always described, so that
-/// `list_get` hands out a copy the caller may release (the glue of a struct local frees
-/// its fields). An enum is described only when `owned` (`list_new_owned`, set by the drops
-/// pass for the lists it releases): otherwise its boxes are borrowed and `list_get` aliases.
+/// Element descriptor of `T` in `list_new[T]()`. Enum elements use `E` when the list owns
+/// them; struct descriptors also describe how their fields are copied and released.
 fn type_desc(
     t: &crate::ast::Type,
     structs: &HashMap<String, crate::ast::StructDef>,
@@ -4734,11 +4730,14 @@ fn lower_expr(
             }
             if fname == "list_new" || fname == "list_new_owned" {
                 // The element descriptor travels as a string constant (see `list_desc`).
+                let enum_elements = matches!(type_args.first(),
+                    Some(TypeArg::Type(Type::Named { name, args, .. }))
+                        if args.is_empty() && strings.enums.get(name).is_some_and(|e| e.type_params.is_empty()));
                 *counter += 1;
                 let desc = format!("t{counter}");
                 instructions.push(IrInst::ConstString {
                     dest: desc.clone(),
-                    value: list_desc(type_args, &strings.structs, &strings.enums, fname == "list_new_owned"),
+                    value: list_desc(type_args, &strings.structs, &strings.enums, fname == "list_new_owned" || enum_elements),
                 });
                 instructions.push(IrInst::Call {
                     dest: Some(dest.clone()),
@@ -4862,8 +4861,20 @@ fn lower_expr(
                     enum_name: edef.name.clone(),
                     variant_index: vidx,
                     payload: arg_names.clone(),
-                    owned: enum_owned_mask(args, vdef, &strings.enums),
+                    owned: enum_owned_mask(args, vdef, strings),
                 });
+                for (i, field) in vdef.fields.iter().enumerate().take(28) {
+                    if let Some(name) = enum_struct_glue_type(field, strings) {
+                        *counter += 1;
+                        let index = format!("t{counter}");
+                        instructions.push(IrInst::ConstInt { dest: index.clone(), value: i as i64 });
+                        instructions.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_enum_set_struct_glue".into(),
+                            args: vec![dest.clone(), index, format!("drop.{name}"), format!("clone.{name}")],
+                        });
+                    }
+                }
                 return dest;
             }
             if fname == "where" && arg_names.len() == 2 {
@@ -5662,17 +5673,17 @@ fn lower_expr(
 }
 
 /// Fields of a variant constructor that the new box owns: fresh strings, moved
-/// `String` locals (the drops pass `hard_move`s constructor args, so the local is
-/// not freed again), and fresh boxes of enums with fields.
+/// `String` locals, and enum, list or supported struct values moved into fields of those types.
 ///
 /// An `Ident` whose field type is `String` is treated as moved ownership: without
 /// the kinds bit, `sal_enum_copy` shares the pointer and any later free of an
 /// alias leaves a dangling name in the box (stage1 SEGV in `strdup` / `str_slice`
-/// on `XCall` names). A field / call that only borrows stays at kind 0.
+/// on `XCall` names). An enum field owns its value regardless of how it was
+/// produced; reference fields stay at kind 0.
 fn enum_owned_mask(
     args: &[Expr],
     vdef: &crate::ast::EnumVariant,
-    enums: &HashMap<String, crate::ast::EnumDef>,
+    strings: &StringEnv,
 ) -> u64 {
     let mut mask = 0u64;
     for (i, a) in args.iter().enumerate().take(28) {
@@ -5682,14 +5693,20 @@ fn enum_owned_mask(
             Some(crate::ast::Type::Named { name, args: ta, .. })
                 if name == "String" && ta.is_empty()
         );
-        let kind = if crate::drops::is_fresh_value(a) {
+        let kind = if matches!(field_ty, Some(crate::ast::Type::Named { name, .. }) if name == "List")
+            || field_ty.is_some_and(|ty| enum_struct_glue_type(ty, strings).is_some())
+        {
+            3
+        } else if crate::drops::is_fresh_value(a) {
             1
         } else if is_string_field && matches!(a, Expr::Ident { .. }) {
             1
+        } else if matches!(field_ty, Some(crate::ast::Type::Named { name, .. }) if strings.enums.contains_key(name)) {
+            2
         } else if let Expr::Call { func, args: inner, .. } = a {
             match func.as_ref() {
                 Expr::Ident { name, .. }
-                    if !inner.is_empty() && find_variant_in_enums(name, enums).is_some() =>
+                    if !inner.is_empty() && find_variant_in_enums(name, &strings.enums).is_some() =>
                 {
                     2
                 }
@@ -5701,6 +5718,12 @@ fn enum_owned_mask(
         mask |= kind << (2 * i);
     }
     mask
+}
+
+fn enum_struct_glue_type<'a>(ty: &'a Type, strings: &StringEnv) -> Option<&'a str> {
+    let Type::Named { name, args, .. } = ty else { return None };
+    (args.is_empty() && struct_is_boxed(name, strings) && struct_clone_glue(name, strings))
+        .then_some(name.as_str())
 }
 
 fn find_variant_in_enums<'a>(

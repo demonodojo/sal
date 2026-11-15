@@ -66,8 +66,8 @@ fn lp_is_while(e: &Expr) -> Int ! alloc
 # ---- blocks and statements ----
 
 # Rewrites `b`, whose enclosing loop (if any) uses `flag` ("" when none). Leaves in `cx[1]` whether a
-# `break` of that loop can run inside it. The statement vector is a new shell; its elements are the
-# same boxes. `hold` owns the tail until the block is built again.
+# `break` of that loop can run inside it. The new statement vector owns copies of its elements;
+# `hold` owns the tail until the block is built again.
 fn lp_block(b: &TBlock, flag: &String, cx: &mut List[Int], errs: &mut List[String]) -> TBlock ! alloc
     hold = List.new[Expr]()
     hold.push(tc_expr(&b.tail))
@@ -114,24 +114,22 @@ fn lp_after(stmts: &List[TStmt], i: Int, n: Int, flag: &String, code: Int, cx: &
 # `if flag == 0` around the rest of the block: it runs only if the `if` before it did not break.
 fn lp_guard(stmts: &List[TStmt], i: Int, n: Int, flag: &String, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt], hold: &mut List[Expr]) -> Int ! alloc
     rest = List.new[TStmt]()
-    lp_share_stmts(stmts, i, n, &rest)
+    lp_share_stmts(stmts, i, n, &mut rest)
     lp_move_tail(&mut rest, hold)
     tb = TBlock(rest, XNone)
     rb = lp_block(&tb, flag, cx, errs)
-    # `lp_block` shares the statements into its result: only the list shell is released here, after it.
-    tp_release_shell(tb.stmts)
     _p = out.push(lp_if_stmt(lp_flag_clear(flag), rb, lp_empty(), 0))
     1
 
-fn lp_share_stmts(stmts: &List[TStmt], i: Int, n: Int, out: &List[TStmt]) -> Int ! alloc
+fn lp_share_stmts(stmts: &List[TStmt], i: Int, n: Int, out: &mut List[TStmt]) -> Int ! alloc
     if i >= n
         0
     else
-        list_push_share(out, stmts.get(i))
+        out.push(tc_stmt(&stmts.get(i)))
         lp_share_stmts(stmts, i + 1, n, out)
 
-fn lp_share_one(out: &List[TStmt], st: &TStmt) -> Int ! alloc
-    _p = list_push_share(out, st)
+fn lp_share_one(out: &mut List[TStmt], st: &TStmt) -> Int ! alloc
+    _p = out.push(tc_stmt(st))
     0
 
 # Moves the tail into `rest` when it is a value, and leaves `XNone` in `hold`.
@@ -146,7 +144,7 @@ fn lp_move_tail(rest: &mut List[TStmt], hold: &mut List[Expr]) -> Int ! alloc
         0
 
 # Rewrites one statement into `out`. Returns 1 when it may run a `break` of the enclosing loop (an
-# `if`), 2 for a bare `break`, 0 otherwise. The statement box is shared; its expression is updated.
+# `if`), 2 for a bare `break`, 0 otherwise. The source expression is updated and the result copied.
 fn lp_stmt(st: &TStmt, flag: &String, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
     if st.kind == 4
         if flag.len() == 0
@@ -193,8 +191,6 @@ fn lp_while_go(e: &Expr, cond: &Expr, body: &TBlock, out: &mut List[TStmt], cx: 
     # The tail of a loop body is discarded: make it a statement.
     tb = lp_unit(tc_block(body))
     b2 = lp_block(&tb, &f, cx, errs)
-    # `lp_block` shares the statements into its result: only the list shell is released here, after it.
-    tp_release_shell(tb.stmts)
     if cx.get(1) == 1
         out.push(TStmt(1, f.dup(), XInt(0), "", 1, XNone, 0, 0, 0))
         stop = TBlock(lp_one(lp_set_flag(&f, 1)), XNone)
@@ -341,9 +337,7 @@ fn lp_fns(xs: &mut List[TFn], i: Int, n: Int, errs: &mut List[String]) -> Int ! 
         cx.push(0)
         cx.push(0)
         cx.push(0)
-        # `lp_block` shares the statements of the block it rewrites, and a field overwrite does not
-        # release the old value when the compiler builds the selfhost: rewrite a copy, release the
-        # copy's shell and the original body, then store the new one.
+        # Rewrite an independent copy, release it and the original body, then store the result.
         old = tc_block(&f.body)
         nb = lp_block(&old, &"", &mut cx, errs)
         lp_release_shell_block(old)
@@ -351,10 +345,9 @@ fn lp_fns(xs: &mut List[TFn], i: Int, n: Int, errs: &mut List[String]) -> Int ! 
         f.body = nb
         lp_fns(xs, i + 1, n, errs)
 
-# The block `lp_block` rewrote: its statements now belong to the new block and its tail was
-# copied, so the statement list is released without its elements.
+# The block `lp_block` rewrote: its result owns independent statement and tail copies.
 fn lp_release_shell_block(b: TBlock) -> Int ! alloc
-    list_free_shell(b.stmts)
+    list_free(b.stmts)
     enum_free(b.tail)
     0
 

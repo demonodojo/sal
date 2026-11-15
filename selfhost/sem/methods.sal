@@ -285,7 +285,6 @@ fn mr_set_str(e: &Expr, i: Int, old: &String, neu: &String) -> Int ! alloc
     if str_as_int(old) == str_as_int(neu)
         0
     else
-        _f = free(old)
         _s = enum_set(e, i, neu.dup())
         0
 
@@ -312,22 +311,21 @@ fn mr_apply(e: &Expr, name: &String, args: &List[Expr], old_ta: &String, ta: &St
     else
         mr_set_str(e, 0, name, target)
 
-# `q.name(args)` on a local `q`: the call takes `q` first. The old argument vector is only a shell.
+# `q.name(args)` on a local `q`: the call takes `q` first and owns copies of the other arguments.
 fn mr_prepend_local(e: &Expr, name: &String, args: &List[Expr], target: &String) -> Int ! alloc
     recv = str_slice(name, 0, mth_dot(name, 0, str_len(name)))
     nargs = list_new[Expr]()
     _a = list_push(&mut nargs, XIdent(recv))
-    _b = mr_share_args(&nargs, args, 0, list_len(args))
-    _c = list_free_shell(args)
+    _b = mr_share_args(&mut nargs, args, 0, list_len(args))
     _d = enum_set(e, 1, nargs)
     # Mentioning `nargs` marks it escaped, so the scope-end glue does not free the vector
     # now stored in the call.
     nargs
     mr_set_str(e, 0, name, target)
 
-fn mr_share_args(out: &List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
+fn mr_share_args(out: &mut List[Expr], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        _a = list_push_share(out, list_get(xs, i))
+        _a = list_push(out, tc_expr(&list_get(xs, i)))
         mr_share_args(out, xs, i + 1, n)

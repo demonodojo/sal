@@ -1,0 +1,12 @@
+# exit: 0
+enum Payload
+    Values(List[String])
+
+fn main() -> Int ! alloc
+    values = List.new[String]()
+    values.push("value".dup())
+    original = Values(values)
+    copy = original.clone()
+    enum_free(original)
+    enum_free(copy)
+    0

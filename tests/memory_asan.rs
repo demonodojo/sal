@@ -148,6 +148,41 @@ fn sanitized_programs_manage_memory() {
     assert!(failures.is_empty(), "{} memory failure(s):\n{}", failures.len(), failures.join("\n\n"));
 }
 
+/// Hoisting a field from a list element must not release the expression borrowed from the
+/// original function body: `lower_fns` still traverses that body after the rewrite.
+#[test]
+fn sanitized_selfhost_keeps_hoisted_field_source_alive() {
+    let work = root().join("target/test-asan");
+    std::fs::create_dir_all(&work).unwrap();
+    if !sanitizer_available(&work) {
+        return;
+    }
+    let compiler = work.join("selfhost-hoisted-field");
+    let built = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .arg("--sanitize")
+        .arg("build")
+        .arg(root().join("selfhost/main.sal"))
+        .arg("-o")
+        .arg(&compiler)
+        .current_dir(root())
+        .output()
+        .expect("build sanitized selfhost");
+    assert!(built.status.success(), "selfhost build: {}", String::from_utf8_lossy(&built.stderr));
+    let cache = std::env::temp_dir().join(format!("sal-asan-hoisted-field-{}", std::process::id()));
+    let run = Command::new(&compiler)
+        .arg(root().join("tests/lang/ownership/list_get_mut_ok.sal"))
+        .env("SAL_SELFHOST_CACHE", cache)
+        // The compiler has separately tracked leaks; this regression checks invalid accesses.
+        .env("ASAN_OPTIONS", "detect_leaks=0:halt_on_error=1")
+        .env("UBSAN_OPTIONS", "print_stacktrace=1:halt_on_error=1")
+        .current_dir(root())
+        .output()
+        .expect("run sanitized selfhost");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "selfhost failed: {stderr}");
+    assert!(!report(&stderr), "sanitizer report: {stderr}");
+}
+
 /// Build `tests/support/<name>.c` with the runtime under ASan and run it.
 fn run_negative(name: &str, work: &Path) -> (Option<i32>, String) {
     let bin = work.join(name);

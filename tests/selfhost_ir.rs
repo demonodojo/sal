@@ -770,11 +770,27 @@ fn selfhost_instrumented_clean_on_hello() {
     assert_eq!(boot, got, "instrumented emit IR must still match bootstrap");
 }
 
+#[test]
+fn selfhost_instrumented_releases_assignment_nodes() {
+    let bin = compile_selfhost(true);
+    let program = write_temp_sal("fn main() -> Int\n    x = 1\n    x\n");
+    let out = {
+        let mut cmd = Command::new(&bin);
+        cmd.arg(&program)
+            .env("SAL_SELFHOST_CACHE", unique_cache_dir("inst-assignment"))
+            .current_dir(root());
+        stage1_output(cmd)
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "instrumented selfhost failed: {stderr}");
+    assert!(!stderr.contains("LEAK"), "assignment leaked: {stderr}");
+    assert_eq!(bootstrap_ir(&program), String::from_utf8(out.stdout).unwrap());
+}
+
 /// The passes that rewrite the body of every function (`desugar_break`, `qualify`, `lower_fns`)
 /// must release the old body instead of leaving it behind by the overwrite. Several functions,
 /// a `while` and a `break` exercise them.
 #[test]
-#[ignore = "known gap: the drops pass of the selfhost (selfhost/ir/drops.sal) rewrites nested blocks with field overwrites (`st.expr = ne`, ...), which do not release the old copy when the bootstrap builds the selfhost (field-overwrite drops are off there); a `while`/`break` body leaks its intermediate copies (LEAK enum_new). `lp_fns` and `lower_fns` already release the bodies they replace"]
 fn selfhost_instrumented_releases_rewritten_fn_bodies() {
     let bin = compile_selfhost(true);
     let program = write_temp_sal(
@@ -794,6 +810,28 @@ fn selfhost_instrumented_releases_rewritten_fn_bodies() {
     let got = String::from_utf8(out.stdout).expect("utf8");
     assert_eq!(boot, got, "instrumented emit IR must still match bootstrap");
     let _ = fs::remove_file(&program);
+}
+
+#[test]
+fn selfhost_clones_and_drops_enum_struct_payload() {
+    let stage1 = compile_selfhost(false);
+    let program = root().join("tests/memory/enum_struct_clone.sal");
+    let bin = PathBuf::from(format!("/tmp/sal-enum-struct-clone-{}", std::process::id()));
+    let ir = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&program).current_dir(root());
+        stage1_output(cmd)
+    };
+    assert!(ir.status.success(), "selfhost IR: {}", String::from_utf8_lossy(&ir.stderr));
+    assert_eq!(bootstrap_ir(&program), String::from_utf8(ir.stdout).unwrap());
+    let built = {
+        let mut cmd = Command::new(&stage1);
+        cmd.arg(&program).arg("-o").arg(&bin).current_dir(root());
+        stage1_output(cmd)
+    };
+    assert!(built.status.success(), "selfhost build: {}", String::from_utf8_lossy(&built.stderr));
+    let run = Command::new(&bin).output().expect("run enum struct clone");
+    assert_eq!(run.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&run.stderr));
 }
 
 #[test]

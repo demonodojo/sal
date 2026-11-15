@@ -2216,19 +2216,51 @@ char *sal_ir_text(void *modp) {
     }
 }
 
+static void *sal_list_clone(void *vp);
+
 /* Enum values: a unit variant is its tag (< 4096); a variant with fields is the
  * address of a box [tag|kinds<<8, n, field0, field1, ...]. `kinds` says which
- * fields the box owns (2 bits each: 1 a fresh String, 2 a fresh box). */
+ * fields the box owns (2 bits each: 1 a String, 2 an enum, 3 a List or struct).
+ * The two arrays after the fields hold optional struct drop and clone functions. */
 int64_t sal_enum_new(int64_t tag, int64_t n) {
-    int64_t *b = (int64_t *)sal_xmalloc((size_t)(n + 2) * sizeof(int64_t), "enum_new");
+    int64_t *b = (int64_t *)sal_xmalloc((size_t)(3 * n + 2) * sizeof(int64_t), "enum_new");
     b[0] = tag;
     b[1] = n;
+    memset(b + 2, 0, (size_t)(3 * n) * sizeof(int64_t));
     return (int64_t)(intptr_t)b;
 }
 
+static void sal_enum_release_field(int64_t *b, int64_t i) {
+    int64_t x = b[2 + i];
+    int64_t k = i < 28 ? ((uint64_t)b[0] >> (8 + 2 * i)) & 3 : 0;
+    if (k == 1 && x != 0) {
+        sal_free((void *)(intptr_t)x);
+    } else if (k == 2) {
+        sal_enum_free(x);
+    } else if (k == 3 && x != 0) {
+        int64_t (*drop)(int64_t) = (int64_t (*)(int64_t))(intptr_t)b[2 + b[1] + i];
+        if (drop) {
+            drop(x);
+        } else {
+            sal_list_free((void *)(intptr_t)x);
+        }
+    }
+}
+
 int64_t sal_enum_set(int64_t v, int64_t i, int64_t x) {
-    ((int64_t *)(intptr_t)v)[i + 2] = x;
+    int64_t *b = (int64_t *)(intptr_t)v;
+    if (b[2 + i] != x) {
+        sal_enum_release_field(b, i);
+        b[2 + i] = x;
+    }
     return x;
+}
+
+void sal_enum_set_struct_glue(int64_t v, int64_t i, int64_t (*drop)(int64_t), int64_t (*clone)(int64_t)) {
+    int64_t *b = (int64_t *)(intptr_t)v;
+    int64_t n = b[1];
+    b[2 + n + i] = (int64_t)(intptr_t)drop;
+    b[2 + 2 * n + i] = (int64_t)(intptr_t)clone;
 }
 
 /* Releases the box of an enum value; a unit variant (the bare tag) has none. */
@@ -2239,12 +2271,7 @@ void sal_enum_free(int64_t v) {
     int64_t *b = (int64_t *)(intptr_t)v;
     int64_t kinds = (int64_t)((uint64_t)b[0] >> 8);
     for (int i = 0; i < 28 && (kinds >> (2 * i)) != 0; i++) {
-        int64_t k = (kinds >> (2 * i)) & 3;
-        if (k == 1) {
-            sal_free((void *)(intptr_t)b[2 + i]);
-        } else if (k == 2) {
-            sal_enum_free(b[2 + i]);
-        }
+        sal_enum_release_field(b, i);
     }
     sal_xfree(b);
 }
@@ -2257,7 +2284,7 @@ void sal_enum_free_shell(int64_t v) {
     sal_xfree((void *)(intptr_t)v);
 }
 
-/* A deep copy of an enum value: owned Strings and boxes are copied, the other
+/* A deep copy of an enum value: owned Strings, enums, lists and structs are copied, the other
  * fields are shared as they are (they are not owned by the box). */
 int64_t sal_enum_copy(int64_t v) {
     if (v < 4096) {
@@ -2266,9 +2293,10 @@ int64_t sal_enum_copy(int64_t v) {
     int64_t *b = (int64_t *)(intptr_t)v;
     int64_t n = b[1];
     int64_t kinds = (int64_t)((uint64_t)b[0] >> 8);
-    int64_t *c = (int64_t *)sal_xmalloc((size_t)(n + 2) * sizeof(int64_t), "enum_copy");
+    int64_t *c = (int64_t *)sal_xmalloc((size_t)(3 * n + 2) * sizeof(int64_t), "enum_copy");
     c[0] = b[0];
     c[1] = n;
+    memcpy(c + 2 + n, b + 2 + n, (size_t)(2 * n) * sizeof(int64_t));
     for (int64_t i = 0; i < n; i++) {
         int64_t k = i < 28 ? (kinds >> (2 * i)) & 3 : 0;
         int64_t x = b[2 + i];
@@ -2277,6 +2305,9 @@ int64_t sal_enum_copy(int64_t v) {
             c[2 + i] = (int64_t)(intptr_t)sal_strdup(str);
         } else if (k == 2) {
             c[2 + i] = sal_enum_copy(x);
+        } else if (k == 3) {
+            int64_t (*clone)(int64_t) = (int64_t (*)(int64_t))(intptr_t)b[2 + 2 * n + i];
+            c[2 + i] = clone ? clone(x) : (int64_t)(intptr_t)sal_list_clone((void *)(intptr_t)x);
         } else {
             c[2 + i] = x;
         }
@@ -2284,7 +2315,7 @@ int64_t sal_enum_copy(int64_t v) {
     return (int64_t)(intptr_t)c;
 }
 
-/* 1 when the box of `v` owns its field `i` (a fresh string or box), so `enum_free` releases it. */
+/* 1 when the box of `v` owns its field `i`, so `enum_free` releases it. */
 int64_t sal_enum_owns(int64_t v, int64_t i) {
     if (v < 4096 || i < 0 || i >= 28) {
         return 0;

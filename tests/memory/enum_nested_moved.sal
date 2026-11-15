@@ -1,0 +1,12 @@
+# exit: 0
+enum Tree
+    Leaf(Int)
+    Pair(Tree, Tree)
+
+fn leaf(n: Int) -> Tree ! alloc
+    Leaf(n)
+
+fn main() -> Int ! alloc
+    left = leaf(1)
+    tree = Pair(left, leaf(2))
+    0

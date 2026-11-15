@@ -118,8 +118,7 @@ fn sa_ref_name(env: &TEnv, l: &Expr) -> Int ! alloc
         _ => 0
 
 # Replaces the operator text of `e` in place (as `mr_set_str` in sem/methods.sal).
-fn sa_set_op(e: &Expr, old: &String, neu: &String) -> Int ! alloc
-    free(old)
+fn sa_set_op(e: &Expr, _old: &String, neu: &String) -> Int ! alloc
     enum_set(e, 0, neu.dup())
     0
 

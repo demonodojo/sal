@@ -135,6 +135,8 @@ Verificación de cierre: `RUST_TEST_THREADS=1 cargo test --locked` completo, inc
   - Destapó un uso tras liberar en `selfhost/sem/infer.sal` (`infer_elem` prestaba el elemento y luego soltaba la lista), ya corregido.
 - `specialize.sal` consume cada `TProgram` por valor una sola vez en todas las ramas. Al compilar el selfhost, un programa que solo algunas ramas mueven no se suelta en las demás; ver «Pendiente».
 
-**Pendiente.**
-- Stage2 con ASan (clang envoltorio con `-fsanitize=address`) da un uso tras liberar al emitir la IR de `tests/lang/ownership/list_get_mut_ok.sal`: `dr_hoist_field` (`selfhost/ir/drops.sal`) suelta la caja del `XField` que saca a un temporal y `free_old_body` (`selfhost/ir/fuse.sal`) vuelve a recorrerla. Es anterior a la fase 3 (lo reproduce el stage2 de `15a699c`) y es el único aviso que queda al pasar ese stage2 por `PARITY_FILES`, `tests/lang`, `corpus/` y `examples/`.
-- El selfhost instrumentado da un `LEAK` en casi cualquier programa con una llamada a función de usuario. Igual que HEAD: es el problema de propiedad del árbol del selfhost, con el test `selfhost_instrumented_releases_rewritten_fn_bodies` ignorado.
+**Liberación de árboles.**
+- `dr_hoist_field` conserva el `XField` del cuerpo original; `sanitized_selfhost_keeps_hoisted_field_source_alive` cubre el uso tras liberar anterior.
+- `selfhost_instrumented_releases_rewritten_fn_bodies` comprueba sin `ignore` que las reescrituras de cuerpos con llamadas, `while` y `break` liberan sus cajas. `selfhost_instrumented_releases_assignment_nodes` cubre la asignación escalar.
+- La máscara de propiedad marca por tipo los campos enum, `List` y los structs con glue de copia y liberación. La caja de enum guarda las funciones de glue de esos structs; al sustituir un campo libera su valor anterior. Las listas de enums poseen sus elementos incluso cuando la lista sale de la función que la construyó. El pase de `break` y la resolución de métodos usan copias independientes donde antes compartían nodos.
+- La glue completa para todos los tipos de payload de enum sigue pendiente; este cierre no implica que el compilador entero esté libre de fugas bajo LeakSanitizer.

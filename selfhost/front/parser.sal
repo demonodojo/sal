@@ -1272,7 +1272,9 @@ fn parse_assign_stmt(pr: &mut Parser, stmts: List[TStmt], target: Expr) -> TBloc
     value = parse_expr(pr)
     ak = assign_kind(&target)
     if ak == 1
-        _d = list_push(&mut stmts, mk_stmt(pr, 1, ident_of(&target), value))
+        name = ident_of(&target)
+        enum_free(target)
+        _d = list_push(&mut stmts, mk_stmt(pr, 1, name, value))
     elsif ak == 3
         st = TStmt(3, "", value, "", 0, target, 0, 0, p_next_id(pr))
         _d = list_push(&mut stmts, st)

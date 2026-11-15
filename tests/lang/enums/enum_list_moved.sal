@@ -1,0 +1,11 @@
+# exit: 1
+enum Payload
+    Values(List[Int])
+
+fn main() -> Int ! alloc
+    values = List.new[Int]()
+    values.push(7)
+    payload = Values(values)
+    owned = enum_owns(payload, 0)
+    enum_free(payload)
+    owned

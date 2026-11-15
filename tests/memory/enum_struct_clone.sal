@@ -1,0 +1,16 @@
+# exit: 0
+struct Block
+    values: List[String]
+    n: Int
+
+enum Payload
+    Blocked(Block)
+
+fn main() -> Int ! alloc
+    values = List.new[String]()
+    values.push("value".dup())
+    original = Blocked(Block(values, 1))
+    copy = original.clone()
+    enum_free(original)
+    enum_free(copy)
+    0

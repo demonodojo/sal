@@ -568,6 +568,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_vec_set(ptr, i64, i64)\n");
     s.push_str("declare i64 @sal_enum_new(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_set(i64, i64, i64)\n");
+    s.push_str("declare void @sal_enum_set_struct_glue(i64, i64, ptr, ptr)\n");
     s.push_str("declare void @sal_enum_free(i64)\n");
     s.push_str("declare void @sal_enum_free_shell(i64)\n");
     s.push_str("declare void @sal_struct_free(i64, ptr)\n");
@@ -3521,6 +3522,13 @@ fn emit_runtime_or_user_call(
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
+        }
+        "sal_enum_set_struct_glue" => {
+            let v = args.first().map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
+            let i = args.get(1).map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
+            let drop = args.get(2).cloned().unwrap_or_default();
+            let clone = args.get(3).cloned().unwrap_or_default();
+            s.push_str(&format!("  call void @sal_enum_set_struct_glue(i64 {v}, i64 {i}, ptr @{}, ptr @{})\n", llsym(&drop), llsym(&clone)));
         }
         "sal_list_set_clone" => {
             // The second argument names a `clone.<Struct>` function: its address is the glue.

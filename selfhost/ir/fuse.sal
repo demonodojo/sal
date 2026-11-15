@@ -549,7 +549,12 @@ fn lower_call(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> 
 # `list_new[T]()`: the element descriptor travels as a string constant.
 fn lower_list_new(cx: &mut Cx, txt: &String, d: Int, owned: Int) -> Int ! alloc
     dsc = fresh(cx)
-    _a = ir_push(cx, ir_cs(dsc, str_own(&desc_type_text(&cx_structs(cx), &cx.enums, txt, owned))))
+    elem = trim_type_piece(txt)
+    effective_owned = if enum_named_t(&cx.enums, &elem, 0, cx.enums.len()) == 1
+        1
+    else
+        owned
+    _a = ir_push(cx, ir_cs(dsc, str_own(&desc_type_text(&cx_structs(cx), &cx.enums, txt, effective_owned))))
     argv = vec_new()
     _b = vec_push(argv, dsc)
     _p = ir_push(cx, ir_call(d, str_as_int(&"sal_list_new_desc"), argv, 1))
@@ -952,10 +957,12 @@ fn lower_variant_ctor(cx: &mut Cx, fname: Int, args: &List[Expr]) -> Int ! alloc
     d = fresh(cx)
     mask = enum_owned_mask(cx, &str_from_int(fname), args, 0, list_len(args), 1, 0)
     _p = ir_push(cx, ir_emake(d, vec_get(rec, 0), vec_get(rec, 1), arg_names, mask))
+    enum_set_struct_glues(cx, &str_from_int(fname), d, 0, args.len())
     d
 
-# Two bits per field (first 28): 1 a fresh value or a local moved into a `String` field, 2 a
-# nested variant with fields (`enum_owned_mask` in src/ir.rs).
+# Two bits per field (first 28): 1 a fresh value or a local moved into a `String` field, 2 an
+# enum value moved into an enum field, 3 a list or supported struct moved into its field
+# (`enum_owned_mask` in src/ir.rs).
 fn enum_owned_mask(cx: &Cx, vname: &String, args: &List[Expr], i: Int, n: Int, scale: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
@@ -963,10 +970,14 @@ fn enum_owned_mask(cx: &Cx, vname: &String, args: &List[Expr], i: Int, n: Int, s
         acc
     else
         a = list_get(args, i)
-        kind = if dx_is_fresh_value(&a) == 1
+        kind = if variant_field_is_list(cx, vname, i) == 1 || variant_field_struct_glue(cx, vname, i).len() > 0
+            3
+        elsif dx_is_fresh_value(&a) == 1
             1
         elsif dx_is_ident(&a) == 1 && variant_field_is_string(cx, vname, i) == 1
             1
+        elsif variant_field_is_enum(cx, vname, i) == 1
+            2
         else
             nested_variant_kind(cx, &a)
         enum_owned_mask(cx, vname, args, i + 1, n, scale * 4, acc + kind * scale)
@@ -982,6 +993,64 @@ fn variant_field_is_string(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
             0
         else
             trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0)).eq("String")
+
+fn variant_field_is_enum(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
+    rec = variant_rec(cx, str_own(vname))
+    if rec == 0
+        0
+    else
+        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
+        if en < 0
+            0
+        else
+            ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
+            enum_named_t(&cx.enums, &ty_base(&ty), 0, cx.enums.len())
+
+fn variant_field_is_list(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
+    rec = variant_rec(cx, str_own(vname))
+    if rec == 0
+        0
+    else
+        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
+        if en < 0
+            0
+        else
+            ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
+            ty_base(&ty).eq("List")
+
+fn variant_field_struct_glue(cx: &Cx, vname: &String, i: Int) -> String ! alloc
+    rec = variant_rec(cx, str_own(vname))
+    if rec == 0
+        ""
+    else
+        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
+        if en < 0
+            ""
+        else
+            ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
+            si = struct_index_named(&cx.env.structs, &ty, 0)
+            if si < 0
+                ""
+            elsif struct_is_boxed_t(&cx.env.structs.get(si)) == 0 || struct_clone_glue_t(&cx.env.structs, &cx.enums, &ty) == 0
+                ""
+            else
+                ty
+
+fn enum_set_struct_glues(cx: &mut Cx, vname: &String, dest: Int, i: Int, n: Int) -> Int ! alloc
+    if i >= n || i >= 28
+        0
+    else
+        ty = variant_field_struct_glue(cx, vname, i)
+        if ty.len() > 0
+            index = fresh(cx)
+            push_const_int(cx, index, i)
+            args = vec_new()
+            vec_push(args, dest)
+            vec_push(args, index)
+            vec_push(args, str_own(&("drop." + ty)))
+            vec_push(args, str_own(&("clone." + ty)))
+            ir_push(cx, ir_call(0, "sal_enum_set_struct_glue".to_int(), args, 0))
+        enum_set_struct_glues(cx, vname, dest, i + 1, n)
 
 fn nested_variant_kind(cx: &Cx, a: &Expr) -> Int ! alloc
     match a
@@ -1583,6 +1652,9 @@ fn reassign_old(cx: &mut Cx, sname: &String, name: Int, v: Int) -> Int ! alloc
 # Over the innermost open branch that binds the local, or the fn body: the same rules as at scope
 # end. A local moved anywhere in that scope is left alone (a leak, never a double free).
 fn reassign_struct_drop(cx: &mut Cx, sname: &String, name: Int) -> Int ! alloc
+    ty = trim_spaces(ty_deref(&tenv_type(&cx.env, sname)))
+    if tt_struct_find(&cx.env.structs, &ty) < 0
+        return 0
     k = reassign_branch(cx, sname, cx.open_idx.len() - 1)
     if k >= 0
         blk = tc_block(&cx.open.get(cx.open_idx.get(k)))

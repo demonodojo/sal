@@ -162,6 +162,7 @@ void *sal_dict_keys(void *dp);
 void *sal_dict_values(void *dp);
 int64_t sal_enum_new(int64_t tag, int64_t n);
 int64_t sal_enum_set(int64_t v, int64_t i, int64_t x);
+void sal_enum_set_struct_glue(int64_t v, int64_t i, int64_t (*drop)(int64_t), int64_t (*clone)(int64_t));
 void sal_enum_free(int64_t v);
 /* Frees the box only. Strings and child boxes stay with whoever still holds them. */
 void sal_enum_free_shell(int64_t v);

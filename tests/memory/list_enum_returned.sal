@@ -1,0 +1,12 @@
+# exit: 0
+enum Entry
+    Value(Int)
+
+fn make_entries() -> List[Entry] ! alloc
+    entries = List.new[Entry]()
+    entries.push(Value(7))
+    entries
+
+fn main() -> Int ! alloc
+    entries = make_entries()
+    0

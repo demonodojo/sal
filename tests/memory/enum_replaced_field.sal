@@ -1,0 +1,9 @@
+# exit: 0
+enum Message
+    Text(String)
+
+fn main() -> Int ! alloc
+    message = Text("before".dup())
+    enum_set(message, 0, "after".dup())
+    enum_free(message)
+    0

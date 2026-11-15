@@ -1,5 +1,4 @@
-# exit: 10
-# asan-xfail: struct/enum devuelto por una función de usuario y consumido en main no se libera
+# exit: 12
 enum E
     Leaf(Int)
     Pair(E, E)
@@ -12,5 +11,5 @@ fn main() -> Int ! alloc
     made = Pair(leaf(1), leaf(2))
     a = enum_owns(boxed, 0) + enum_owns(boxed, 1)
     b = enum_owns(made, 0) + enum_owns(made, 1)
-    _f = enum_free(boxed)
+    enum_free(boxed)
     a * 5 + b
