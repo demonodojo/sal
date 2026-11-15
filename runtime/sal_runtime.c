@@ -17,6 +17,10 @@
 #include <sys/mman.h>
 
 #endif
+#if __has_include(<execinfo.h>)
+#include <execinfo.h>
+#define SAL_HAVE_BACKTRACE 1
+#endif
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/stat.h>
 static void chmod_dst_exec(const char *dst) {
@@ -3790,6 +3794,15 @@ int64_t sal_print_i64(int64_t v) {
 
 void sal_panic(const char *msg) {
     fprintf(stderr, "sal panic: %s\n", msg);
+#ifdef SAL_HAVE_BACKTRACE
+    {
+        void *frames[64];
+        int n = backtrace(frames, 64);
+        fprintf(stderr, "stack backtrace:\n");
+        backtrace_symbols_fd(frames, n, fileno(stderr));
+        fflush(stderr);
+    }
+#endif
     exit(1);
 }
 
@@ -3855,8 +3868,9 @@ void *sal_load_f32(const char *path, int64_t *out_elems) {
 void *sal_load_f32_checked(const char *path, int64_t *out_elems) {
     void *buf = sal_load_f32(path, out_elems);
     if (!buf) {
-        fprintf(stderr, "sal panic: cannot load tensor from %s\n", path);
-        exit(1);
+        char msg[4096];
+        snprintf(msg, sizeof msg, "cannot load tensor from %s", path);
+        sal_panic(msg);
     }
     return buf;
 }

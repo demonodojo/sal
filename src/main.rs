@@ -134,6 +134,11 @@ enum Commands {
 }
 
 fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("{}", info);
+        let bt = std::backtrace::Backtrace::force_capture();
+        eprintln!("stack backtrace:\n{}", bt);
+    }));
     let cli = Cli::parse();
     if cli.sanitize {
         std::env::set_var("SAL_SANITIZE", "1");
