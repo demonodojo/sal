@@ -139,3 +139,21 @@ fn fmt_impl_item() {
     assert_eq!(formatted, src);
     assert_eq!(formatted, format_program(&parse(&formatted).expect("reparse")));
 }
+
+#[test]
+fn fmt_keeps_multiline_tail_operand_bare() {
+    // A `match` or `if` over several lines can only close an expression: wrapped in
+    // parentheses the parser no longer sees its lines (`expected newline after match`).
+    for src in [
+        "fn f(x: Int) -> Int\n    y = 1 + match x\n        3 => 4\n        _ => 5\n    y\n",
+        "fn f(x: Int) -> Int\n    1 + 2 * if x == 3\n        4\n    else\n        5\n",
+        "fn f(x: Int) -> Int\n    1 - -match x\n        3 => 4\n        _ => 5\n",
+        "fn f(x: Int) -> Bool\n    x == 3 && match x\n        3 => true\n        _ => false\n",
+    ] {
+        let p1 = parse(src).expect("parse");
+        let f1 = format_program(&p1);
+        assert_eq!(f1, src, "fmt changed the program");
+        let p2 = parse(&f1).expect("re-parse");
+        assert_eq!(format_program(&p2), f1);
+    }
+}

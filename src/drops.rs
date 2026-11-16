@@ -1586,7 +1586,7 @@ fn expr(e: &Expr, f: &mut Facts) {
         }
         Expr::If { .. } => {
             f.opaque += 1;
-            walk_if(e, f);
+            walk_if(e, false, f);
             f.opaque -= 1;
         }
         Expr::Try { expr: x, .. } => arg(x, ArgMove::TakeFields, f),
@@ -1594,20 +1594,22 @@ fn expr(e: &Expr, f: &mut Facts) {
 }
 
 /// The branches of an `if`; `xform_block` visits them when the `if` is a whole statement
-/// expression, a `let` or assignment value, or a block tail.
-fn walk_if(e: &Expr, f: &mut Facts) {
+/// expression, a `let` or assignment value, or a block tail. With `discard` the `if` is a
+/// statement whose value nobody reads, so each branch's tail is a statement too: the tail
+/// `xs.push(v)` only borrows `xs`, as it does on a line of its own.
+fn walk_if(e: &Expr, discard: bool, f: &mut Facts) {
     let Expr::If { cond, then_block, elsifs, else_block, .. } = e else {
         return;
     };
     arg(cond, ArgMove::Read, f);
     f.branch_depth += 1;
-    block(then_block, f);
+    block_with(then_block, discard, f);
     for a in elsifs {
         arg(&a.cond, ArgMove::Read, f);
-        block(&a.body, f);
+        block_with(&a.body, discard, f);
     }
     if let Some(b) = else_block {
-        block(b, f);
+        block_with(b, discard, f);
     }
     f.branch_depth -= 1;
 }
@@ -1672,7 +1674,7 @@ fn walk_match_top(e: &Expr, f: &mut Facts) {
 /// An expression in a position `xform_expr` rewrites.
 fn top(e: &Expr, mov: ArgMove, f: &mut Facts) {
     if matches!(e, Expr::If { .. }) {
-        walk_if(e, f);
+        walk_if(e, false, f);
     } else if matches!(e, Expr::Match { .. }) {
         walk_match_top(e, f);
     } else {
@@ -1773,7 +1775,23 @@ fn push_stmt(e: &Expr, f: &mut Facts) -> bool {
     true
 }
 
+/// An expression whose value is discarded (a statement of its own).
+fn expr_stmt(e: &Expr, f: &mut Facts) {
+    if !push_stmt(e, f) {
+        if matches!(e, Expr::If { .. }) {
+            walk_if(e, true, f);
+        } else {
+            expr(e, f);
+        }
+    }
+}
+
 fn block(b: &Block, f: &mut Facts) {
+    block_with(b, false, f);
+}
+
+/// `discard_tail`: the block is a branch of an `if` statement, so its tail is a statement.
+fn block_with(b: &Block, discard_tail: bool, f: &mut Facts) {
     for st in &b.stmts {
         let outer = f.cur;
         let live = f.opaque == 0;
@@ -1786,13 +1804,7 @@ fn block(b: &Block, f: &mut Facts) {
             }
             Stmt::Expr(e) => {
                 f.cur = live.then(|| stmt_key(e.span()));
-                if !push_stmt(e, f) {
-                    if matches!(e, Expr::If { .. }) {
-                        walk_if(e, f);
-                    } else {
-                        expr(e, f);
-                    }
-                }
+                expr_stmt(e, f);
             }
             Stmt::Assign { target, value, span } => {
                 f.cur = live.then(|| stmt_key(*span));
@@ -1825,6 +1837,13 @@ fn block(b: &Block, f: &mut Facts) {
             }
         }
         f.cur = outer;
+    }
+    if let (true, Some(t)) = (discard_tail, &b.tail) {
+        let outer = f.cur;
+        f.cur = (f.opaque == 0).then(|| stmt_key(t.span()));
+        expr_stmt(t, f);
+        f.cur = outer;
+        return;
     }
     if let Some(t) = &b.tail {
         let outer = f.cur;

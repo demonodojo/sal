@@ -419,11 +419,11 @@ fn format_expr(e: &Expr, indent: usize) -> String {
             let p = binop_prec(op);
             // Left associative: the right operand needs parentheses at equal precedence.
             let l = format_operand(left, p, indent);
-            let r = format_operand(right, p + 1, indent);
+            let r = format_tail_operand(right, p + 1, indent);
             format!("{} {} {}", l, format_binop(op), r)
         }
         Expr::Unary { op, expr, .. } => {
-            format!("{}{}", format_unop(op), format_operand(expr, ATOM_PREC, indent))
+            format!("{}{}", format_unop(op), format_tail_operand(expr, ATOM_PREC, indent))
         }
         Expr::Block(b) => {
             let body = format_block(b, indent + 1);
@@ -840,6 +840,23 @@ fn expr_prec(e: &Expr) -> u8 {
 fn format_postfix_base(e: &Expr, indent: usize) -> String {
     let s = format_expr(e, indent);
     if expr_prec(e) < ATOM_PREC || matches!(e, Expr::Unary { .. }) {
+        format!("({s})")
+    } else {
+        s
+    }
+}
+
+/// The last operand of an operator or prefix (`a + match x`, `-if c`). A `match`, `if`, `on`
+/// or block written over several lines runs to the end of the statement and closes the
+/// expression by itself; inside parentheses the parser would not see its lines, so it stays
+/// bare. A one-line form keeps the parentheses that `format_operand` gives it.
+fn format_tail_operand(e: &Expr, min: u8, indent: usize) -> String {
+    let s = format_expr(e, indent);
+    let block = matches!(
+        e,
+        Expr::Match { .. } | Expr::If { .. } | Expr::On { .. } | Expr::Block(_)
+    );
+    if expr_prec(e) < min && !(block && s.contains('\n')) {
         format!("({s})")
     } else {
         s

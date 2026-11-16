@@ -22,10 +22,9 @@ fn main() -> Int ! alloc
     sum = 0
     k = -500
     while k < 500
-        got = match d.get(k)
+        sum = sum + match d.get(k)
             Some(v) => v
             None => 0
-        sum = sum + got
         k = k + 1
     ok_sum = if sum == 250000
         20

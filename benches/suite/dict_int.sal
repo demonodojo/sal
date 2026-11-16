@@ -15,9 +15,8 @@ fn main() -> Int ! alloc
     total = 0
     i = 0
     while i < n * 2
-        got = match d.get(i)
+        total = total + match d.get(i)
             Some(v) => v
             None => 1
-        total = total + got
         i = i + 1
     (total + d.len()) & 255

@@ -1107,3 +1107,30 @@ fn struct_moved_by_one_branch_is_released_behind_its_flag() {
     assert!(keep.contains(r#"func: "drop.Prog", args: ["p"]"#), "{keep}");
     assert_eq!(keep.matches(r#"func: "drop.Prog""#).count(), 2, "{keep}");
 }
+
+// `xs.push(v)` as the tail of a branch of an `if` statement only borrows `xs` (the `if` value
+// is discarded), as it does on a line of its own: no liveness flag, one release at the end, and
+// an instrumented run reports no leak. It used to clear the flag on that path and leak `xs`.
+#[test]
+fn push_as_branch_tail_of_if_statement_keeps_list_live() {
+    let src = "fn main() -> Int ! alloc\n    xs = List.new[Int]()\n    i = 0\n    while i < 4\n        if i == 0\n            xs.push(1)\n        elsif xs.len() == 1\n            xs.push(2)\n        else\n            xs.push(0)\n        i = i + 1\n    if xs.len() > 100\n        xs.push(9)\n    xs.len() + xs.get(1)\n";
+    let ir = ir_of("push_branch_tail", src);
+    assert!(!ir.contains("IfCarry"), "no liveness flag expected:\n{ir}");
+    assert_eq!(ir.matches("func: \"sal_list_free\"").count(), 1, "{ir}");
+    let dir = std::env::temp_dir().join(format!("sal-push-branch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("push_branch.sal");
+    std::fs::write(&path, src).unwrap();
+    let bin = dir.join("push_branch_instr");
+    let build = Command::new(env!("CARGO_BIN_EXE_sal"))
+        .args(["build", "--instrument", "-o"])
+        .arg(&bin)
+        .arg(&path)
+        .output()
+        .expect("sal build");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&bin).output().expect("run");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(6), "{stderr}");
+    assert!(!stderr.contains("LEAK") && !stderr.contains("DOUBLE_FREE"), "{stderr}");
+}

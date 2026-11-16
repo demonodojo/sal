@@ -1289,17 +1289,22 @@ fn dr_top(c: &mut DC, e: &Expr, mov: Int) -> Int ! alloc
         dr_arg(c, e, mov)
 
 fn dr_walk_if(c: &mut DC, e: &Expr) -> Int ! alloc
+    dr_walk_if_with(c, e, 0)
+
+# `discard` 1: the `if` is a statement whose value nobody reads, so each branch's tail is a
+# statement too (`xs.push(v)` only borrows `xs`); `walk_if` in src/drops.rs.
+fn dr_walk_if_with(c: &mut DC, e: &Expr, discard: Int) -> Int ! alloc
     match e
-        XIf(cond, then_b, else_b, has_else, elsifs) => dr_walk_if_parts(c, &cond, &then_b, &else_b, has_else, &elsifs)
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_walk_if_parts(c, &cond, &then_b, &else_b, has_else, &elsifs, discard)
         _ => 0
 
-fn dr_walk_if_parts(c: &mut DC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Int ! alloc
+fn dr_walk_if_parts(c: &mut DC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], discard: Int) -> Int ! alloc
     _a = dr_arg(c, cond, 1)
     dr_set(c, 8, dr_cell(c, 8) + 1)
-    _b = dr_block(c, then_b)
-    _c = dr_if_arms(c, elsifs, 0, list_len(elsifs))
+    _b = dr_block_with(c, then_b, discard)
+    _c = dr_if_arms(c, elsifs, 0, list_len(elsifs), discard)
     if has_else == 1
-        dr_block(c, else_b)
+        dr_block_with(c, else_b, discard)
     else
         0
     dr_set(c, 8, dr_cell(c, 8) - 1)
@@ -1457,14 +1462,14 @@ fn dr_match_arms(c: &mut DC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
             _b = dr_expr(c, &arm.body)
         dr_match_arms(c, arms, i + 1, n)
 
-fn dr_if_arms(c: &mut DC, arms: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+fn dr_if_arms(c: &mut DC, arms: &List[TElsif], i: Int, n: Int, discard: Int) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
         _a = dr_arg(c, &arm.cond, 1)
-        _b = dr_block(c, &arm.body)
-        dr_if_arms(c, arms, i + 1, n)
+        _b = dr_block_with(c, &arm.body, discard)
+        dr_if_arms(c, arms, i + 1, n, discard)
 
 fn dr_ident_out(c: &mut DC, name: &String) -> Int ! alloc
     c.take(name)
@@ -1802,7 +1807,7 @@ fn dr_stmt_expr(c: &mut DC, ex: &Expr) -> Int ! alloc
     if dr_push_stmt(c, ex) == 1
         0
     elsif dx_is_if(ex) == 1
-        dr_walk_if(c, ex)
+        dr_walk_if_with(c, ex, 1)
     else
         dr_expr(c, ex)
 
@@ -1875,19 +1880,26 @@ fn dr_stmts(c: &mut DC, stmts: &List[TStmt], i: Int, n: Int) -> Int ! alloc
         dr_stmts(c, stmts, i + 1, n)
 
 fn dr_block(c: &mut DC, b: &TBlock) -> Int ! alloc
+    dr_block_with(c, b, 0)
+
+# `discard` 1: the block is a branch of an `if` statement and its tail is a statement.
+fn dr_block_with(c: &mut DC, b: &TBlock, discard: Int) -> Int ! alloc
     _a = dr_stmts(c, &b.stmts, 0, list_len(&b.stmts))
     outer = dr_cell(c, 1)
     _n = dr_set(c, 1, 0)
     tail_outer = dr_cell(c, 5)
     _i = dr_set(c, 5, dr_tail_key(&b.tail))
     call_outer = dr_cell(c, 7)
-    branch_local = dr_cell(c, 8) > 0 && dx_is_ident(&b.tail) == 1
+    branch_local = discard == 0 && dr_cell(c, 8) > 0 && dx_is_ident(&b.tail) == 1
     tail_moves = if dr_is_call_tail(&b.tail) == 1 || branch_local
         1
     else
         0
     _k = dr_set(c, 7, tail_moves)
-    r = dr_top(c, &b.tail, 3)
+    r = if discard == 1
+        dr_stmt_expr(c, &b.tail)
+    else
+        dr_top(c, &b.tail, 3)
     if branch_local && dr_cell(c, 2) == 0
         nm_put(&mut c.branch_moved, &dx_ident(&b.tail), 1)
     _l = dr_set(c, 7, call_outer)
