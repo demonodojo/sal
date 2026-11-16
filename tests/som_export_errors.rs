@@ -2,7 +2,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sal_compiler::som_export::{default_soso_tiny_model, export_model_to_salt, read_infer_manifest};
+use sal_compiler::som_export::{
+    default_soso_tiny_model, export_model_to_salt, read_infer_manifest, INDEX_FILE, MANIFEST_FILE,
+    SHARDS_DIR,
+};
 
 fn scratch(tag: &str) -> PathBuf {
     let d = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +58,7 @@ fn missing_manifest_is_an_error() {
 #[test]
 fn garbage_manifest_fails_to_parse() {
     let Some((model, out)) = model_copy("garbage_manifest") else { return };
-    fs::write(model.join(sosomodel::layout::MANIFEST_FILE), b"not a manifest").unwrap();
+    fs::write(model.join(MANIFEST_FILE), b"not a manifest").unwrap();
     let err = export_model_to_salt(&model, &out).unwrap_err();
     assert!(err.contains("manifest.som parse failed"), "{err}");
 }
@@ -63,7 +66,7 @@ fn garbage_manifest_fails_to_parse() {
 #[test]
 fn garbage_index_fails_to_parse() {
     let Some((model, out)) = model_copy("garbage_index") else { return };
-    fs::write(model.join(sosomodel::layout::INDEX_FILE), b"not an index").unwrap();
+    fs::write(model.join(INDEX_FILE), b"not an index").unwrap();
     let err = export_model_to_salt(&model, &out).unwrap_err();
     assert!(err.contains("index.som parse failed"), "{err}");
 }
@@ -71,14 +74,14 @@ fn garbage_index_fails_to_parse() {
 #[test]
 fn missing_index_is_an_error() {
     let Some((model, out)) = model_copy("missing_index") else { return };
-    fs::remove_file(model.join(sosomodel::layout::INDEX_FILE)).unwrap();
+    fs::remove_file(model.join(INDEX_FILE)).unwrap();
     assert!(export_model_to_salt(&model, &out).is_err());
 }
 
 #[test]
 fn truncated_shard_is_reported() {
     let Some((model, out)) = model_copy("truncated_shard") else { return };
-    let shards = model.join(sosomodel::layout::SHARDS_DIR);
+    let shards = model.join(SHARDS_DIR);
     for e in fs::read_dir(&shards).unwrap() {
         fs::write(e.unwrap().path(), b"").unwrap();
     }
@@ -89,7 +92,7 @@ fn truncated_shard_is_reported() {
 #[test]
 fn missing_shard_is_reported() {
     let Some((model, out)) = model_copy("missing_shard") else { return };
-    fs::remove_file(first_file(&model.join(sosomodel::layout::SHARDS_DIR))).unwrap();
+    fs::remove_file(first_file(&model.join(SHARDS_DIR))).unwrap();
     let err = export_model_to_salt(&model, &out).unwrap_err();
     assert!(err.contains("read "), "{err}");
 }

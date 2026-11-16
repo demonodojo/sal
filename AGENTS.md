@@ -97,7 +97,7 @@ Una tarea no está hecha hasta que pasa el test del pase y cubre lo añadido. `c
 
 ## CI y Release
 
-- **CI** (`.github/workflows/ci.yml`): en `pull_request` y `push` a `main`, jobs por área (`scripts/test-area.sh`) y gate `RUST_TEST_THREADS=1 cargo test --locked`. Clona `demonodojo/soso` como hermano (`../soso`).
+- **CI** (`.github/workflows/ci.yml`): en `pull_request` y `push` a `main`, jobs por área (`scripts/test-area.sh`) y gate `RUST_TEST_THREADS=1 cargo test --locked`. No clona otros repos: el runtime `soso` está vendorizado en `runtime/soso/` y el formato `.som` se lee en `src/som_export.rs`.
 - **Release** (`.github/workflows/release.yml`): al pushear un tag `vX.Y.Z`, o con Actions → Release (`workflow_dispatch`, input `version` = `X.Y.Z`): el dispatch hace bump + commit + tag; el push del tag corre tests, build `--release` y `gh release create` con `sal`/`standard` linux-x86_64. No hay `cargo publish`. Detalle en `.claude/skills/sal-release/SKILL.md`. No toques `std/io/Sal.toml` ni el repo `opencode-sal`.
 
 ## Git

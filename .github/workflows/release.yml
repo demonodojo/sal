@@ -38,12 +38,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Checkout soso
-        uses: actions/checkout@v4
-        with:
-          repository: demonodojo/soso
-          path: soso
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -102,12 +96,6 @@ jobs:
         with:
           path: sal
           fetch-depth: 0
-
-      - name: Checkout soso
-        uses: actions/checkout@v4
-        with:
-          repository: demonodojo/soso
-          path: soso
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

@@ -1,6 +1,8 @@
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::Command;
+use std::thread::JoinHandle;
 
 use sal_compiler::compile::compile_file;
 use sal_compiler::CompileOptions;
@@ -53,24 +55,35 @@ fn sal_lib_unit_tests() {
     }
 }
 
+/// Minimal HTTP server for one request: answers with a chat-completion JSON body.
+fn spawn_mock() -> (u16, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("accept mock");
+        let mut buf = [0u8; 8192];
+        let mut request = Vec::new();
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            match conn.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => request.extend_from_slice(&buf[..n]),
+            }
+        }
+        let body = r#"{"id":"mock","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = conn.write_all(response.as_bytes());
+        let _ = conn.shutdown(std::net::Shutdown::Write);
+    });
+    (port, handle)
+}
+
 #[test]
 fn sal_http_mock_integration() {
-    let mock = root().join("../opencode-sal/tests/mock_llm.py");
-    if !mock.is_file() {
-        eprintln!("skip sal_http_mock: mock_llm.py not found");
-        return;
-    }
-    let port = 17422u16;
-    let guion = root().join("../opencode-sal/tests/guiones/read_then_stop.json");
-    let mut child = Command::new("python3")
-        .arg(&mock)
-        .arg(port.to_string())
-        .arg(&guion)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn mock");
-    std::thread::sleep(Duration::from_millis(400));
+    let (port, server) = spawn_mock();
     let path = root().join("tests/sal/http_mock_integration.sal");
     let bin_dir = root().join("target/sal-out/tests");
     std::fs::create_dir_all(&bin_dir).ok();
@@ -92,7 +105,6 @@ fn sal_http_mock_integration() {
         .status
         .code()
         .unwrap_or(99);
-    let _ = child.kill();
-    let _ = child.wait();
+    server.join().expect("mock server");
     assert_eq!(code, 0, "http_mock_integration exit {code}");
 }

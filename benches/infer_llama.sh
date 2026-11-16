@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Compare sal tiny infer (prefill + decode) vs llama.cpp on the same sosomodel tiny weights.
+# Compare sal tiny infer (prefill + decode) vs llama.cpp on the same tiny weights.
 #
-# Prerequisites:
-#   - sal built: cargo build --release
-#   - salts:     cargo run --bin som2salt
-#   - llama.cpp: clone/build (see LLAMA_CPP below) + GGUF model (see GGUF_MODEL)
+# Prerequisites: git, cmake, clang and python3. llama.cpp is cloned into target/ when
+# it is not already built; tiny weights are generated synthetically unless MODEL_DIR
+# points at a real sosomodel checkout.
 #
 # Usage (repo root):
 #   ./benches/infer_llama.sh
-#   BENCH_RUNS=7 LLAMA_CPP=../llama.cpp GGUF_MODEL=target/infer_salt/tiny/tiny.gguf ./benches/infer_llama.sh
+#   BENCH_RUNS=7 LLAMA_SRC=../llama.cpp MODEL_DIR=/path/to/model ./benches/infer_llama.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,19 +16,26 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 
 RUNS="${BENCH_RUNS:-5}"
 LLAMA_CPP="${LLAMA_CPP:-$ROOT/target/llama-cpu-build}"
-LLAMA_SRC="${LLAMA_SRC:-$ROOT/../soso/target/lfm-work/llama-build/llama.cpp}"
+LLAMA_SRC="${LLAMA_SRC:-$ROOT/target/llama.cpp}"
 GGUF_MODEL="${GGUF_MODEL:-$ROOT/target/infer_salt/tiny/tiny-f32.gguf}"
 GGUF_PY="${GGUF_PY:-$ROOT/target/gguf-venv/bin/python}"
-SAL="${SAL:-$ROOT/target/release/sal}"
+BIN_DIR="$CARGO_TARGET_DIR/release"
+SAL="${SAL:-$BIN_DIR/sal}"
+MODEL_DIR="${MODEL_DIR:-${SAL_TINY_MODEL:-}}"
 OUT="$ROOT/target/bench/infer"
 mkdir -p "$OUT"
 
 echo "== cargo build --release (sal + som2salt)" >&2
 cargo build --release --bin sal --bin som2salt
-SAL="$ROOT/target/release/sal"
+SAL="$BIN_DIR/sal"
 
-echo "== som2salt" >&2
-"$ROOT/target/release/som2salt" 2>&1 || cargo run --release --bin som2salt >&2
+if [[ -n "$MODEL_DIR" ]]; then
+  echo "== som2salt (model: $MODEL_DIR)" >&2
+  "$BIN_DIR/som2salt" --model "$MODEL_DIR" >&2
+else
+  echo "== som2salt (synthetic tiny weights)" >&2
+  "$BIN_DIR/som2salt" --synthetic >&2
+fi
 
 if [[ ! -x "$GGUF_PY" ]]; then
   echo "== python venv (gguf)" >&2
@@ -92,7 +98,11 @@ if [[ ! -x "$LLAMA_BENCH" && -x "$LLAMA_SRC/build/bin/llama-bench" ]]; then
 fi
 if [[ ! -x "$LLAMA_BENCH" ]]; then
   echo ""
-  echo "=== llama.cpp ==="
+  echo "=== llama.cpp ===" >&2
+  if [[ ! -d "$LLAMA_SRC" ]]; then
+    echo "llama.cpp not found; cloning into $LLAMA_SRC" >&2
+    git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_SRC"
+  fi
   echo "llama-bench not found; building CPU target under target/llama-cpu-build" >&2
   cmake -S "$LLAMA_SRC" -B "$ROOT/target/llama-cpu-build" -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF
   cmake --build "$ROOT/target/llama-cpu-build" -j"$(nproc)" --target llama-bench

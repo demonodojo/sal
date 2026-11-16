@@ -3,12 +3,15 @@
 use std::env;
 use std::path::PathBuf;
 
-use sal_compiler::som_export::{default_salt_out, default_soso_tiny_model, export_model_to_salt};
+use sal_compiler::som_export::{
+    default_salt_out, default_soso_tiny_model, export_model_to_salt, export_synthetic_tiny,
+};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut model = default_soso_tiny_model();
     let mut out = default_salt_out();
+    let mut synthetic = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -20,8 +23,10 @@ fn main() {
                 i += 1;
                 out = PathBuf::from(args.get(i).expect("--out path"));
             }
+            "--synthetic" => synthetic = true,
             "--help" | "-h" => {
-                eprintln!("usage: som2salt [--model DIR] [--out DIR]");
+                eprintln!("usage: som2salt [--model DIR] [--out DIR] [--synthetic]");
+                eprintln!("  --synthetic writes deterministic tiny weights (no .som model needed)");
                 eprintln!("  default model: {}", default_soso_tiny_model().display());
                 eprintln!("  default out:   {}", default_salt_out().display());
                 return;
@@ -33,7 +38,12 @@ fn main() {
         }
         i += 1;
     }
-    match export_model_to_salt(&model, &out) {
+    let result = if synthetic {
+        export_synthetic_tiny(&out)
+    } else {
+        export_model_to_salt(&model, &out)
+    };
+    match result {
         Ok(m) => {
             println!(
                 "exported {} layers hidden={} heads={} -> {}",

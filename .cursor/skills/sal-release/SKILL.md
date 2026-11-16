@@ -10,11 +10,11 @@ description: >-
 
 Esto es el compilador **sal** (`demonodojo/sal`). No es opencode-sal: no edites ese repo, su `Sal.toml` ni sus tags.
 
-No hagas `cargo publish`: `sosomodel` es una dependencia `path` y este paquete no sale a crates.io.
+No hagas `cargo publish`: este paquete no sale a crates.io.
 
 ## CI
 
-- **Tests:** [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) en `pull_request` y `push` a `main`: jobs por área (`scripts/test-area.sh`) y gate `RUST_TEST_THREADS=1 cargo test --locked`. Clona `demonodojo/soso` como `../soso`.
+- **Tests:** [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) en `pull_request` y `push` a `main`: jobs por área (`scripts/test-area.sh`) y gate `RUST_TEST_THREADS=1 cargo test --locked`. No clona repos hermanos.
 - **Release:** [`.github/workflows/release.yml`](../../../.github/workflows/release.yml):
   - Push de tag `vX.Y.Z` → tests, `cargo build --locked --release --bin sal --bin standard`, `gh release create` con `sal-X.Y.Z-linux-x86_64` y `standard-X.Y.Z-linux-x86_64`.
   - `workflow_dispatch` (Actions → Release, input `version` = `X.Y.Z`) → bump de `Cargo.toml`/`Cargo.lock`, commit `Release sal X.Y.Z`, tag anotado, push a `main` y del tag; el push del tag dispara el job de release anterior. Si `main` tiene branch protection que bloquea a `github-actions[bot]`, hay que permitir ese actor o usar un PAT en el checkout del job `prepare`.
@@ -59,7 +59,7 @@ La línea `version` bajo `name = "sal"` en `Cargo.lock` tiene que ser `X.Y.Z`.
 
 ### 3. Verificar antes del tag
 
-Árbol limpio de cosas que no sean este release. Desde la raíz de sal, con `../soso` presente (hace falta para compilar):
+Árbol limpio de cosas que no sean este release. Desde la raíz de sal, sin repos hermanos:
 
 ```bash
 cargo build --locked --release --bin sal --bin standard
@@ -73,7 +73,7 @@ cargo test --locked
 
 Solo si el usuario pide commit o publicar. Mensaje: `Release sal X.Y.Z`.
 
-No incluyas cambios de `soso` ni de `opencode-sal`.
+No incluyas cambios ajenos al release.
 
 ### 5. Tag y push
 
@@ -124,5 +124,5 @@ Ese cambio es un commit aparte en `soso`.
 | `cargo test --locked` rechaza el lock | `Cargo.lock` no se regeneró tras cambiar `version` |
 | La versión nueva no es posterior al último tag | Se partió de `Cargo.toml` en vez de `git tag -l 'v*'` |
 | Release CI: Cargo.toml ≠ tag | Tag pusheado sin bump, o bump en otro commit |
-| `cargo publish` | No aplica: dependencia `path` a `sosomodel` |
+| `cargo publish` | No aplica: este paquete no se publica en crates.io |
 | Release de opencode-sal | Skill equivocada; esa publicación no es esta |

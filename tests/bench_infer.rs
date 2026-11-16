@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use sal_compiler::infer::infer_program;
 use sal_compiler::parser::parse;
-use sal_compiler::som_export::{default_soso_tiny_model, export_model_to_salt};
+use sal_compiler::som_export::{
+    default_soso_tiny_model, export_model_to_salt, export_synthetic_tiny,
+};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -25,6 +27,31 @@ fn export_soso_tiny_to_salt() {
     assert_eq!(m.hidden_dim, 128);
     assert!(out.join("L00_ffn_up.salt").is_file());
     assert!(out.join("bench_input.salt").is_file());
+}
+
+#[test]
+fn export_synthetic_tiny_has_reference_shapes() {
+    let out = manifest_dir().join("target/infer_salt/tiny_synthetic_test");
+    let _ = fs::remove_dir_all(&out);
+    let m = export_synthetic_tiny(&out).expect("synthetic export");
+    assert_eq!(m.num_layers, 4);
+    assert_eq!(m.hidden_dim, 128);
+    assert_eq!(m.ffn_dim, 256);
+    for f in [
+        "L00_attn_q.salt",
+        "L03_ffn_down.salt",
+        "embed.salt",
+        "lm_head.salt",
+        "bench_input.salt",
+        "decode_token.salt",
+        "kv_cache.salt",
+        "manifest.json",
+    ] {
+        assert!(out.join(f).is_file(), "{f}");
+    }
+    let meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(meta["tensor_shapes"].as_object().unwrap().len(), 34);
 }
 
 #[test]
