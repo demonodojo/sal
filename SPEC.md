@@ -181,9 +181,13 @@ unary        → "-" unary
              | postfix
 postfix      → postfix "(" arg_list ")"
              | postfix "(" arg_list ")" IDENT "=>" expr
+             | postfix "(" arg_list ")" IDENT "=>" suite
              | postfix "(" arg_list ")" "(" ident_list ")" "=>" expr
+             | postfix "(" arg_list ")" "(" ident_list ")" "=>" suite
              | postfix IDENT "=>" expr
+             | postfix IDENT "=>" suite
              | postfix "(" ident_list ")" "=>" expr
+             | postfix "(" ident_list ")" "=>" suite
              | postfix "[" type_arg_list "]" "(" arg_list ")"
              | postfix "." IDENT
              | primary
@@ -244,7 +248,7 @@ elsif_list   → elsif_list "elsif" expr suite
 `&&` y `||` son los operadores lógicos. Toman valores de verdad: `Bool`, o `Int` donde distinto de cero es verdadero (como la condición de `if` y `while`), y devuelven `Bool`. Cualquier otro tipo es `E_TYPE`. Cortocircuitan: `a && b` no evalúa `b` si `a` es falso, y `a || b` no evalúa `b` si `a` es verdadero. El valor es siempre `true` o `false`, aunque el operando sea `Int`. Una comparación escalar sigue valiendo `Int` (`0` o `1`).
 
 
-La lambda acepta `x => expr` y `(x, y) => expr`; el bloque indentado tras `=>` también vale. Puede pasarse a un parámetro `fn(…)` o ligarse a un local como macro; no se guarda en un struct ni se devuelve. Un tipo `fn(…)` solo se admite como tipo de parámetro. La lambda final `xs.map x => x * 2` equivale a `xs.map(x => x * 2)`, y `xs.reduce(0) (a, x) => a + x` equivale a `xs.reduce(0, (a, x) => a + x)`. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda. Dentro de una lambda, `return` y `break` son `E_TYPE`.
+La lambda acepta `x => expr` y `(x, y) => expr`; el bloque indentado tras `=>` también vale. Puede pasarse a un parámetro `fn(…)` o ligarse a un local como macro; no se guarda en un struct ni se devuelve. Un tipo `fn(…)` solo se admite como tipo de parámetro. La lambda final `xs.map x => x * 2` equivale a `xs.map(x => x * 2)`, y `xs.reduce(0) (a, x) => a + x` equivale a `xs.reduce(0, (a, x) => a + x)`. La lambda final también acepta el bloque indentado tras `=>`, y su valor es la última expresión del bloque. Como la lambda final es el último argumento, el bloque cierra la llamada. Un bloque dentro de paréntesis, como en `xs.map(x =>` seguido de líneas, es `E_PARSE`. No hay lambdas entre llaves. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda. Dentro de una lambda, `return` y `break` son `E_TYPE`.
 
 Un `match` sobre un escalar distinto de enum elige el **primer** brazo cuyo patrón coincide. `_` coincide siempre. Un `INT` exige escrutado `Int` y `==`. Un `STRING` en el patrón exige escrutado `String` e igualdad exacta (`str_eq`). Un `RSTRING` exige escrutado `String` y encaja si la expresión regular POSIX ERE (como `regexec`, sin anclar salvo `^`/`$` en el patrón) coincide en algún punto; no liga grupos. Mezclar patrones de enteros, cadenas o regex con patrones de variantes de enum en el mismo `match` es `E_TYPE`. Mezclar enteros con cadenas o regex es `E_TYPE`. Un `IDENT` que no nombra variante del enum del escrutado liga el escrutado y coincide siempre. Si ningún brazo coincide, el valor es `0` (`Int`). Los literales y regex en el patrón no mueven el `String` del escrutado. Regex inválida: `E_TYPE`. En destino `soso`, un patrón `RSTRING` es `E_TARGET` (no hay `regcomp` en ese runtime).
 

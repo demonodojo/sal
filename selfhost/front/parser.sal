@@ -662,13 +662,22 @@ fn parse_lambda_ahead(pr: &Parser) -> Int ! alloc
     else
         0
 
+# A trailing lambda: the last argument of the call before it (`fold(0) (a, x) => a + x`), or the
+# only argument of a bare fn name (`twice x => x + 1`, as `twice(x => x + 1)`).
 fn parse_trailing_postfix(pr: &mut Parser, e: Expr) -> Expr ! alloc
     match e
         XCall(name, args, targs, xp) =>
             if parse_lambda_ahead(pr) == 1
                 args.push(parse_lambda(pr))
             parse_postfix_go(pr, XCall(name, args, targs, xp))
+        XIdent(name) => parse_trailing_bare(pr, &name)
         _ => e
+
+fn parse_trailing_bare(pr: &mut Parser, name: &String) -> Expr ! alloc
+    xp = call_pos(pr)
+    args = List.new[Expr]()
+    args.push(parse_lambda(pr))
+    parse_postfix_go(pr, XCall(name.dup(), args, "", xp))
 
 # After `e.name`: a method call (with optional type arguments, `List.new[Int]()`) or a field.
 fn parse_postfix_member(pr: &mut Parser, e: Expr, fld: &String) -> Expr ! alloc
@@ -1153,8 +1162,10 @@ fn trim_closing_bracket(text: &String) -> String ! alloc
     else
         text.dup()
 
+# `name(args)`; `name (a, b) => …` is not a call with arguments but a trailing lambda, which
+# `parse_postfix_go` takes from the bare name.
 fn parse_call_with_type_args(pr: &mut Parser, name: &String, targs: &String) -> Expr ! alloc
-    if tok_kind(pr, p_peek(pr)) == TK_LPAREN()
+    if tok_kind(pr, p_peek(pr)) == TK_LPAREN() && (targs.len() > 0 || parse_lambda_group_ahead(pr) == 0)
         xp = call_pos(pr)
         _a = p_advance(pr)
         _g = p_enter_group(pr)

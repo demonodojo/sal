@@ -26,6 +26,8 @@ pasan; las pruebas de conformidad y memoria del arranque para la fase también p
 divergencias que quedaron anotadas entonces están cerradas a 2026-11-14:
 `selfhost_meets_language_conformance` y `selfhost_ir_matches_bootstrap_on_parity_files` pasan.
 
+**Lambda final con bloque (2026-11-16):** la gramática de `postfix` en la SPEC recoge ya las cuatro formas de lambda final con `suite` (`f(a) x =>`, `f(a) (x, y) =>`, `f x =>`, `f (x, y) =>` seguidas de un bloque indentado), que el arranque ya aceptaba. El parser del selfhost no admitía una lambda final tras un nombre de función sin llamar (`twice x => …`, `pair (a, b) => …`), ni con expresión ni con bloque: ahora `parse_trailing_bare` (`selfhost/front/parser.sal`) la convierte en `twice(x => …)`, como el arranque. Test: `tests/lang/functions/trailing_lambda_suite.sal`.
+
 **Fase 2 (cerrada el 2026-11-14):** un protocolo admite métodos con cuerpo. Los dos compiladores
 comprueban el cuerpo con `self: any[P]`, sintetizan en cada tipo los métodos que no redefine
 (structs y enums, receptor por referencia), los despachan también por `any[P]` y copian al módulo

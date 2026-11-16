@@ -1,0 +1,9 @@
+# error: E_PARSE
+# A lambda block inside parentheses: the parser does not see its lines (SPEC «lambda»).
+fn apply(n: Int, f: fn(Int) -> Int) -> Int
+    f(n)
+
+fn main() -> Int
+    apply(5, x =>
+        y = x * 2
+        y + 1)
