@@ -40,20 +40,24 @@ Una reescritura recursiva por la derecha de `add`, `mul`, `cmp` o `postfix` no e
 
 Compilación: `E_PARSE`, `E_TYPE`, `E_MOVED`, `E_BORROW`, `E_EFFECT`, `E_PLACE`, `E_SHAPE`, `E_TENSOR_ELEM`, `E_DEVICE`, `E_DEVICE_MISSING`, `E_OOM`. `E_BORROW`: préstamo solapado, referencia que sobrevive a su referente, o lifetime elidido sin origen. `E_TARGET` (en la SPEC): la construcción no existe en el destino, p. ej. `syscall` fuera de soso y linux; úsalo solo para eso. `E_INTERNAL` solo para fallos del compilador, no para programas.
 
+Avisos: `W_DEPRECATED`, uso de un item marcado con `@deprecated`; no es error y no para la compilación.
+
 Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`.
 
 Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@resource`, `@shared`, `@copy`, `@unique`, `@no_gc`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). `@arena` está admitido en `fn`, `method`, `static` e `init`. Las dependencias `path`, `git` y `github` de `Sal.toml`, `Sal.lock` y `sal fetch` / `sal install` / `sal add` están en el arranque; ver [sal-paquetes](../sal-paquetes/SKILL.md).
 
 ## Atributos (arranque)
 
-`@frozen let` y `@stack let` delante de `let`; `@no_heap` delante de `fn`; `@layout(c)` delante de `struct`. Cualquier otro `@…`, o un atributo en un objetivo que no le corresponde, es `E_PARSE`. Las violaciones semánticas de un atributo admitido son `E_TYPE`:
+Seis atributos, cada uno en un solo sitio. Cualquier otro `@…`, un atributo en un objetivo que no le corresponde o un argumento distinto es `E_PARSE`:
 
-- `@frozen`: asignar al binding después.
-- `@stack`: el tipo no es de stack (`String`, `List`, `Dict`, `Tensor`, genéricos) o construirlo asigna.
-- `@no_heap`: la función asigna, recibe o devuelve un tipo de heap, o tiene un `let` de heap.
-- `@layout(c)`: campos solo `Int`, `Float` o `Bool`.
+- `@frozen let`: el binding no se reasigna.
+- `@stack let`: el tipo es de stack y construirlo no asigna.
+- `@no_heap fn`: no asigna, no recibe ni devuelve un tipo de heap y no tiene un `let` de heap.
+- `@arena` en `fn`, `method`, `static` o `init`: el retorno es de stack y no es una referencia; los parámetros son `Copy` o `&T`, salvo `&mut List` / `&mut Dict`. Junto con `@no_heap` es `E_TYPE`; sigue exigiendo `! alloc` si el cuerpo asigna.
+- `@layout(c)` en `struct`: campos solo `Int`, `Float` o `Bool`; `@layout(otro)` es `E_PARSE`.
+- `@deprecated("texto")` en `fn`, `method`, `struct`, `enum` o constante: no es error; cada uso emite `W_DEPRECATED` con el texto y la compilación sigue. Sin argumento es `E_PARSE`.
 
-Dueño: `src/attrs.rs` y su espejo `selfhost/sem/attrs.sal`. Tests: `tests/lang/attributes/attr_*.sal`.
+Las violaciones semánticas de los cinco atributos con regla son `E_TYPE`. Dueño: `src/attrs.rs` y su espejo `selfhost/sem/attrs.sal`. Tests: `tests/lang/attributes/attr_*.sal`.
 
 `Float` es f64 y no es elemento de tensor (`E_TENSOR_ELEM`). Elementos: `F32`, `F16`, `BF16`, `I8`.
 

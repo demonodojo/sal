@@ -19,7 +19,7 @@ La superficie aceptada está en [SPEC.md](../../../SPEC.md). Un programa que el 
 - Bloque indentado. La última expresión es el valor. Sin ella, el bloque es `Unit`.
 - `fn nombre(params) -> Tipo` y, si hace falta, `!` con efectos `io`, `alloc`, `panic`, `gpu`, `tpu`.
 - `if` con `elsif` y `else` opcionales, al mismo nivel de sangría. Sin `else`, el `if` es `Unit` aunque haya `elsif` (efecto secundario, no valor). Con `else`, el valor es el de la rama then. `let` con tipo opcional.
-- Items del arranque: `import`, `struct`, `enum`, `frame`, `fn`, `method`, `static`, `init`.
+- Items del arranque: `import`, `struct`, `enum`, `frame`, `protocol`, `impl`, `fn`, `method`, `static`, `init` y constantes (`NOMBRE = expr`).
 - `match expr` con brazos `patrón => expr` o `patrón =>` bloque indentado (`_`, enteros, `"…"`, `r"…"`, `Variante(x)`, `modulo.Variante(x)`, `IDENT` ligado).
 - `return` anticipado vale en cuerpo, `if`, `while` y `match`; no dentro de `on` ni de una lambda.
 - Interpolación `f"a#{x}"` (`x` tiene que ser `String`; en `"…"` y `d"…"` `{` y `}` son texto).
@@ -44,7 +44,16 @@ Un `if` sin `else` como única cola de una función `-> T` con `T` distinto de `
 
 ## Atributos
 
-Solo cuatro, y cada uno en su sitio; cualquier otro `@…` es `E_PARSE`:
+Seis, y cada uno en su sitio; cualquier otro `@…` es `E_PARSE`:
+
+| Atributo | Delante de | Regla |
+|----------|-----------|-------|
+| `@frozen` | `let` | El binding no se reasigna |
+| `@stack` | `let` | El tipo es de stack y construirlo no asigna |
+| `@no_heap` | `fn` | No asigna, no recibe ni devuelve heap y no tiene `let` de heap |
+| `@arena` | `fn`, `method`, `static`, `init` | Heap por región; retorno de stack y no referencia; parámetros `Copy` o `&T` salvo `&mut List`/`&mut Dict` |
+| `@layout(c)` | `struct` | Campos solo `Int`, `Float`, `Bool` |
+| `@deprecated("texto")` | `fn`, `method`, `struct`, `enum`, constante | Emite el aviso `W_DEPRECATED` en cada uso; no es error |
 
 ```sal
 @layout(c)
@@ -59,7 +68,7 @@ fn add(a: Int, b: Int) -> Int
     t
 ```
 
-`@frozen let` no se reasigna; `@stack let` exige tipo de stack y no asignar; `@no_heap fn` no asigna ni usa heap; `@layout(c)` solo con `Int`, `Float`, `Bool`. Las violaciones son `E_TYPE`. Ver [sal-autoridad](../sal-autoridad/SKILL.md).
+Las violaciones de un atributo admitido son `E_TYPE`; `@deprecated` sin texto es `E_PARSE`, y `@arena` junto con `@no_heap` también es `E_TYPE`. `@arena` no exime de declarar `! alloc` si el cuerpo asigna. Ver [sal-autoridad](../sal-autoridad/SKILL.md).
 
 ## Métodos de tipos básicos
 
@@ -88,14 +97,14 @@ Esto aplica también a `selfhost/` y a los tests de `tests/lang`. Dentro de un `
 - Una expresión que devuelve valor puede ir como sentencia suelta: `xs.push(v)`, `g(2)`, `xs.pop()`. No hace falta ligarla.
 - No asignes a una variable que no vas a usar. `_a = xs.push(v)` no aporta nada y añade un nombre que leer. El `_nombre` solo tiene sentido cuando el alias importa al pase de liberación (un `list_push` ligado a `_nombre` presta el contenedor en vez de escaparlo, ver SPEC), y en ese caso el nombre es la razón de existir.
 - Un valor fresco que se descarta (`xs.pop()` de una lista dueña, `int_to_str(n)`, `xs.get(i)`, `match dict_get(d, k) …` como sentencia) se libera en esa misma sentencia: no hace falta ligarlo para soltarlo (SPEC «Liberación de locales»).
-- Una función de usuario cuyo `String` de retorno es siempre fresco entrega un valor que el llamante posee: cada `return` y la cola son frescos; un `if`/`match` de nivel superior vale si **cada** rama lo es; un `while` de nivel superior la excluye. Detalle en [sal-memoria](../sal-memoria/SKILL.md). Las funciones matemáticas de `Float` toman `Float` (`Int` es `E_TYPE`) y usan libm: en `soso` son `E_TARGET`. `sal fmt` conserva los paréntesis de la base: `(a - b).abs()`. Un método inexistente es `E_TYPE`. Los métodos solo existen en el arranque (Rust): un test que los use lleva `# selfhost-xfail:`.
+- Una función de usuario cuyo `String` de retorno es siempre fresco entrega un valor que el llamante posee: cada `return` y la cola son frescos; un `if`/`match` de nivel superior vale si **cada** rama lo es; un `while` de nivel superior la excluye. Detalle en [sal-memoria](../sal-memoria/SKILL.md). Las funciones matemáticas de `Float` toman `Float` (`Int` es `E_TYPE`) y usan libm: en `soso` son `E_TARGET`. `sal fmt` conserva los paréntesis de la base: `(a - b).abs()`. Un método inexistente es `E_TYPE`. Los métodos están en los dos compiladores (`tests/lang/methods` y `selfhost_meets_language_conformance`); un hueco concreto se marca `# selfhost-xfail:` con su motivo.
 
 ## Memoria y efectos
 
-- Move por defecto. Copy solo en `Int`, `Float`, `Bool` y structs triviales.
+- Move por defecto. Son `Copy` `Int`, `Float`, `Bool`, `Unit`, un struct cuyos campos lo son y `&T`; `&mut T` no lo es.
 - Un `struct` es un valor: asignar un campo en una copia o en un callee no cambia el original (`tests/lang/structs/struct_value_alias.sal`). Un struct de un solo campo es un newtype transparente.
 - Un valor único se usa una vez. El segundo uso es `E_MOVED`.
-- El préstamo dura el argumento de la llamada. No hay locales de tipo referencia.
+- Un préstamo dura hasta el último uso de la referencia que lo guarda. La referencia puede vivir en un local, en un campo (`struct V['a]`) y en un retorno; `&mut` no se solapa con otro préstamo, y mutar o mover un lugar prestado es `E_BORROW`.
 - `load` exige `! io, alloc` y deja el tensor en `cpu`.
 - Lanzar trabajo en dispositivo es efecto: `! gpu` o `! tpu`.
 

@@ -34,6 +34,7 @@ Comprobar el pase tocado, no la suite entera por costumbre. El binario de desarr
 | Binarios auxiliares `som2salt` / `standard` | `cargo test --test bins --test som_export_errors` |
 | Un `.sal` concreto | `cargo run -- check <fichero>` y, si debe ejecutar, `cargo run -- run <fichero>` |
 | Estilo en `.sal` (no sintaxis) | `cargo run --bin standard -- check <fichero>`; opcional `fix` in situ. Ver [sal-standard](../sal-standard/SKILL.md) |
+| `README.md`, `LEEME.md`, documentación pública o snippets de la documentación | `sal check` y `sal run` de cada snippet en las dos versiones; contraste de comandos y flags con `sal --help`. Ver [sal-documentacion](../sal-documentacion/SKILL.md) |
 | `standard/` o cops de estilo (`Style/MatchIf`, `TK_RSTRING`, …) | `cargo test --test standard matchif -- --test-threads=1` (suite completa: `cargo test --test standard -- --test-threads=1`; el harness borra `target/sal-out` al compilar `standard/main.sal`) |
 | `selfhost/`, preludio o `corpus/` | `cargo test --test selfhost_ir` y la skill [sal-autohospedaje](../sal-autohospedaje/SKILL.md) |
 
