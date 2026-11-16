@@ -64,8 +64,9 @@ fn shift_left_one(i: Int) -> Int ! alloc
         2 * shift_left_one(i - 1)
 
 # Descriptor of a type as an element of `list_new[T]()` (read by `sal_list_new_desc`; `list_desc`
-# in src/ir.rs): `i` a Copy scalar or a borrowed value, `s` a String, `E` an enum box an owned
-# list releases, `S(d..)` a struct whose fields are all describable (`desc_struct_text`).
+# in src/ir.rs): `i` a Copy scalar or a borrowed value, `b` a Bool (a byte per element), `s` a
+# String, `E` an enum box an owned list releases, `S(d..)` a struct whose fields are all
+# describable (`desc_struct_text`).
 fn desc_type_text(structs: &List[TStruct], enums: &List[TEnum], txt: &String, owned: Int) -> String ! alloc
     base = desc_base_text(structs, enums, txt, owned)
     if owned == 1
@@ -78,6 +79,8 @@ fn desc_base_text(structs: &List[TStruct], enums: &List[TEnum], txt: &String, ow
     t = trim_type_piece(txt)
     if t.eq("String") == 1
         "s"
+    elsif t.eq("Bool") == 1
+        "b"
     elsif owned == 0
         desc_struct_or_i(structs, enums, &t)
     elsif enum_named_t(enums, &t, 0, enums.len()) == 1

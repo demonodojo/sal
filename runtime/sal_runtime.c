@@ -759,9 +759,25 @@ char *sal_str_append_n(char *acc, int64_t n, const char *const *parts) {
         while (cap < need) {
             cap = cap > (SAL_STR_MAX_LEN + 1) / 2 ? need : cap * 2;
         }
-        out = sal_str_alloc_size(na, cap);
-        if (na > 0) {
-            memcpy(out, acc, na);
+#if !defined(SAL_INSTRUMENT) && !defined(SAL_SOSO)
+        if (cap_i > 0 && !overlap && !g_arena && !sal_ptr_in_any(sal_str_base(acc))) {
+            /* A heap accumulator that no part points into grows with realloc: a large block
+             * moves its pages instead of copying them, and the old block is never live twice. */
+            char *base = (char *)realloc(sal_str_base(acc), (size_t)SAL_STR_HDR + cap);
+            if (!base) {
+                sal_panic("oom");
+            }
+            *(int64_t *)base = (int64_t)cap;
+            acc = base + SAL_STR_HDR;
+            cap_i = (int64_t)cap;
+            out = acc;
+        } else
+#endif
+        {
+            out = sal_str_alloc_size(na, cap);
+            if (na > 0) {
+                memcpy(out, acc, na);
+            }
         }
     }
     size_t w = na;
@@ -2532,6 +2548,7 @@ int64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb) {
 /* Element descriptor: a string the compiler passes to `list_new` for each
  * list type (see `src/ir.rs` and `selfhost/fuse.sal`):
  *   i        Copy scalar (Int, Float, Bool): nothing to release or copy
+ *   b        Bool element of a `List[Bool]`: one byte per element (`stride` 0)
  *   s        String: owned by the list, released with free, copied with strdup
  *   S(d..)   flat struct: a malloc'd block of one i64 per field; field k is
  *            described by the k-th descriptor inside the parentheses
@@ -2557,11 +2574,53 @@ typedef struct {
     SalVec vec;
     /* Elements in the list (`vec.len` counts i64 slots: `stride` per element when flat). */
     size_t count;
+    /* Elements with nothing to release: Copy scalars (`i`, `b`) without glue, or flat
+     * structs of Copy scalars (`S(ii..)`). Overwriting or freeing one releases nothing, so
+     * `set` and `list_free` skip the descriptor walk, and the emitted LLVM stores in place
+     * (src/llvm.rs reads it at offset 72). */
+    int32_t plain;
 } SalList;
 
 /* The emitted LLVM reads `count` at offset 64 when it inlines `sal_list_len`
  * (src/llvm.rs); keep the layout in sync or the inline load reads the wrong slot. */
 _Static_assert(__builtin_offsetof(SalList, count) == 64, "SalList layout feeds the inlined list_len");
+_Static_assert(__builtin_offsetof(SalList, stride) == 16, "SalList layout feeds the inlined list_get");
+_Static_assert(__builtin_offsetof(SalList, vec) == 40, "SalList layout feeds the inlined list_get");
+_Static_assert(__builtin_offsetof(SalList, plain) == 72, "SalList layout feeds the inlined list_set");
+_Static_assert(__builtin_offsetof(SalList, vec) + __builtin_offsetof(SalVec, len) == 48,
+               "SalList layout feeds the inlined list_push");
+_Static_assert(__builtin_offsetof(SalList, vec) + __builtin_offsetof(SalVec, cap) == 56,
+               "SalList layout feeds the inlined list_push");
+
+/* A `List[Bool]` (`b`) keeps one byte per element: `stride` is 0, `count` counts bytes and
+ * `vec.len` the i64 words in use, which is the whole reserved block, so there is always at
+ * least one byte past the last element: the emitted LLVM may read a whole word at
+ * `vec.data`, and its inlined `push` stores in place while `count + 2 <= 8 * vec.len`. Bytes
+ * past `count` are never read, so the block is not cleared (untouched pages stay unmapped). */
+static inline int sal_list_bytes(const SalList *l) {
+    return l->stride == 0;
+}
+
+static inline uint8_t *sal_list_b(const SalList *l) {
+    return (uint8_t *)l->vec.data;
+}
+
+/* Room for `n` bytes plus one, in whole words; every reserved word counts as in use. */
+static int sal_list_reserve_bytes(SalList *l, size_t n) {
+    size_t words = (n + 1 + 7) / 8;
+    if (words > l->vec.len) {
+        if (sal_vec_reserve(&l->vec, words - l->vec.len) != 0) {
+            return 1;
+        }
+        l->vec.len = l->vec.cap;
+    }
+    return 0;
+}
+
+/* Element i of a list of single-slot elements (bytes or words). */
+static inline int64_t sal_list_word_at(const SalList *l, size_t i) {
+    return sal_list_bytes(l) ? (int64_t)sal_list_b(l)[i] : l->vec.data[i];
+}
 
 /* The descriptor after `d` (which points at one descriptor). */
 static const char *desc_end(const char *d) {
@@ -2573,6 +2632,19 @@ static const char *desc_end(const char *d) {
         return *d ? d + 1 : d;
     }
     return *d ? d + 1 : d;
+}
+
+/* A flat struct descriptor whose fields are all Copy scalars (`S(i..)`): nothing to release. */
+static int desc_plain_struct(const char *d) {
+    if (d[0] != 'S' || d[1] != '(') {
+        return 0;
+    }
+    for (const char *f = d + 2; *f != ')'; f++) {
+        if (*f != 'i') {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 /* i64 slots of one flat struct element (a struct descriptor always has one). */
@@ -2807,9 +2879,13 @@ void *sal_list_new_desc(const char *desc) {
     l->elem_clone = NULL;
     l->stride = 1;
     l->flat = 0;
+    l->plain = l->desc[0] == 'i' || l->desc[0] == 'b';
     if (l->desc[0] == 'S') {
         l->stride = desc_stride(l->desc);
         l->flat = 1;
+        l->plain = desc_plain_struct(l->desc);
+    } else if (l->desc[0] == 'b') {
+        l->stride = 0;
     }
     l->vec.data = NULL;
     l->vec.len = 0;
@@ -2834,6 +2910,7 @@ void sal_list_set_drop(void *vp, void (*glue)(int64_t)) {
     }
     l->owned = 1;
     l->elem_drop = glue;
+    l->plain = 0;
 }
 
 /* The glue that copies one element of the list (the `clone.<Tipo>` of T). */
@@ -2855,6 +2932,7 @@ void *sal_list_new_typed(int64_t elem_kind) {
         /* Legacy packed kinds keep one boxed value per element. */
         l->stride = 1;
         l->flat = 0;
+        l->plain = l->desc[0] == 'i';
     }
     return vp;
 }
@@ -2878,7 +2956,7 @@ void sal_list_free(void *vp) {
     if (!l) {
         return;
     }
-    if (l->owned) {
+    if (l->owned && !l->plain) {
         if (l->flat) {
             /* The slots are the element: release the fields it owns in place. */
             for (size_t e = 0; e < l->count; e++) {
@@ -2976,6 +3054,13 @@ void *sal_list_push(void *vp, int64_t x) {
         l->count++;
         return l;
     }
+    if (sal_list_bytes(l)) {
+        if (sal_list_reserve_bytes(l, l->count + 1) != 0) {
+            return NULL;
+        }
+        sal_list_b(l)[l->count++] = (uint8_t)(x != 0);
+        return l;
+    }
     if (sal_vec_push(&l->vec, x) != 0) {
         return NULL;
     }
@@ -3001,13 +3086,57 @@ void *sal_list_push_flat(void *vp, const int64_t *slots, int64_t n) {
     }
     int64_t *dst = l->vec.data + l->vec.len;
     size_t stride = (size_t)l->stride;
-    size_t copy = (size_t)n < stride ? (size_t)n : stride;
-    memcpy(dst, slots, copy * sizeof(int64_t));
-    if (copy < stride) {
-        memset(dst + copy, 0, (stride - copy) * sizeof(int64_t));
+    if ((size_t)n == stride) {
+        /* The usual case: `n` is the call site's constant, so after LTO inlining the copy
+         * is a few stores instead of a call to memcpy. */
+        memcpy(dst, slots, (size_t)n * sizeof(int64_t));
+    } else {
+        size_t copy = (size_t)n < stride ? (size_t)n : stride;
+        memcpy(dst, slots, copy * sizeof(int64_t));
+        if (copy < stride) {
+            memset(dst + copy, 0, (stride - copy) * sizeof(int64_t));
+        }
     }
     l->vec.len += stride;
     l->count++;
+    return l;
+}
+
+/* `set` of a struct built in place (LLVM fusion), like `sal_list_push_flat`: the slots
+ * replace element i (whose owned fields are released), with no box in between. */
+void *sal_list_set_flat(void *vp, int64_t i, const int64_t *slots, int64_t n) {
+    SalList *l = (SalList *)vp;
+    if (!l || !l->flat) {
+        int64_t box = sal_struct_new(n > 0 ? n : 1);
+        if (n > 0) {
+            memcpy((void *)(uintptr_t)box, slots, (size_t)n * sizeof(int64_t));
+        }
+        return sal_list_set(vp, i, box);
+    }
+    int64_t len = (int64_t)l->count;
+    if (i < 0 || (size_t)i >= (size_t)len) {
+        sal_panic("list_set: out of bounds");
+    }
+    int64_t *dst = l->vec.data + (size_t)i * (size_t)l->stride;
+    if (l->owned && !l->plain) {
+        desc_free_fields(l->desc, dst);
+    }
+    size_t stride = (size_t)l->stride;
+    if (n > 0 && (size_t)n == stride) {
+        /* Constant size at the call site: inlined stores after LTO (see push_flat). */
+        memcpy(dst, slots, (size_t)n * sizeof(int64_t));
+        return l;
+    }
+    size_t copy = n > 0 && (size_t)n < stride ? (size_t)n : stride;
+    if (n <= 0) {
+        copy = 0;
+    }
+    if (copy) {
+        memcpy(dst, slots, copy * sizeof(int64_t));
+    }
+    if (copy < stride) {
+        memset(dst + copy, 0, (stride - copy) * sizeof(int64_t));
+    }
     return l;
 }
 
@@ -3023,7 +3152,7 @@ void *sal_list_select(void *in_list, const int8_t *mask, int64_t len) {
     }
     for (int64_t i = 0; i < n; i++) {
         if (mask[i] != 0) {
-            sal_list_push(out, in->vec.data[i]);
+            sal_list_push(out, sal_list_word_at(in, (size_t)i));
         }
     }
     return out;
@@ -3039,7 +3168,7 @@ void *sal_list_set(void *vp, int64_t i, int64_t x) {
     }
     if (l->flat) {
         int64_t *dst = l->vec.data + (size_t)i * (size_t)l->stride;
-        if (l->owned) {
+        if (l->owned && !l->plain) {
             desc_free_fields(l->desc, dst);
         }
         int64_t *src = (int64_t *)(uintptr_t)x;
@@ -3051,7 +3180,11 @@ void *sal_list_set(void *vp, int64_t i, int64_t x) {
         }
         return l;
     }
-    if (l->owned) {
+    if (sal_list_bytes(l)) {
+        sal_list_b(l)[i] = (uint8_t)(x != 0);
+        return l;
+    }
+    if (l->owned && !l->plain) {
         desc_free(l->desc, l->vec.data[i]);
     }
     l->vec.data[i] = x;
@@ -3071,6 +3204,9 @@ int64_t sal_list_pop(void *vp) {
         memcpy((void *)(uintptr_t)box, l->vec.data + l->vec.len,
                (size_t)l->stride * sizeof(int64_t));
         return box;
+    }
+    if (sal_list_bytes(l)) {
+        return sal_list_b(l)[--l->count];
     }
     l->count--;
     return l->vec.data[--l->vec.len];
@@ -3098,14 +3234,139 @@ int64_t sal_list_get_typed(void *vp, int64_t i) {
         /* The element lives in the list's block: the borrow is a pointer to its slots. */
         return (int64_t)(uintptr_t)(l->vec.data + (size_t)i * (size_t)l->stride);
     }
-    return l->vec.data[i];
+    return sal_list_word_at(l, (size_t)i);
 }
+
+/* Dict: open addressing with linear probing. `slots` holds `nslots` (key, val) pairs and
+ * right after them one control byte per slot: 0 marks an empty slot, anything else is
+ * 0x80 | the top 7 bits of the key's hash, so most mismatches are rejected without
+ * touching the key. Int keys are stored as themselves; String keys are the dict's own
+ * copies, compared by length and bytes. */
+typedef struct {
+    int64_t key;
+    int64_t val;
+} SalDictSlot;
 
 typedef struct {
     int32_t key_kind;
     int32_t val_kind;
-    SalMap map;
+    SalDictSlot *slots;
+    uint8_t *ctrl;
+    size_t nslots;
+    size_t fill;
 } SalDict;
+
+/* String keys (key_kind 3) are borrowed from the caller and copied on insertion. Int keys
+ * arrive as the integer itself in the pointer slot. */
+static int sal_dict_str_keys(const SalDict *d) {
+    return d->key_kind == 3;
+}
+
+static inline uint64_t sal_hash_mix(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+static uint64_t sal_hash_bytes(const char *s, size_t n) {
+    uint64_t h = 0x9e3779b97f4a7c15ULL ^ (uint64_t)n;
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, s + i, 8);
+        h = (h ^ w) * 0x100000001b3ULL;
+        h ^= h >> 29;
+    }
+    if (i < n) {
+        uint64_t w = 0;
+        memcpy(&w, s + i, n - i);
+        h = (h ^ w) * 0x100000001b3ULL;
+    }
+    return sal_hash_mix(h);
+}
+
+static inline uint64_t sal_dict_hash_key(const SalDict *d, int64_t key) {
+    if (sal_dict_str_keys(d)) {
+        const char *s = (const char *)(uintptr_t)key;
+        return sal_hash_bytes(s, (size_t)sal_str_len_raw(s));
+    }
+    return sal_hash_mix((uint64_t)key);
+}
+
+static inline uint8_t sal_dict_tag(uint64_t h) {
+    return (uint8_t)(0x80 | (h >> 57));
+}
+
+/* Slot of `key` (found = 1), or the empty slot where it would go (found = 0). The table
+ * always has an empty slot (fill stays under 3/4 of nslots). */
+static size_t sal_dict_find(const SalDict *d, int64_t key, uint64_t h, int *found) {
+    size_t mask = d->nslots - 1;
+    size_t i = (size_t)h & mask;
+    uint8_t tag = sal_dict_tag(h);
+    if (sal_dict_str_keys(d)) {
+        const char *k = (const char *)(uintptr_t)key;
+        int64_t klen = sal_str_len_raw(k);
+        for (;;) {
+            uint8_t c = d->ctrl[i];
+            if (c == 0) {
+                *found = 0;
+                return i;
+            }
+            if (c == tag) {
+                const char *s = (const char *)(uintptr_t)d->slots[i].key;
+                if (sal_str_len_raw(s) == klen && memcmp(s, k, (size_t)klen) == 0) {
+                    *found = 1;
+                    return i;
+                }
+            }
+            i = (i + 1) & mask;
+        }
+    }
+    for (;;) {
+        uint8_t c = d->ctrl[i];
+        if (c == 0) {
+            *found = 0;
+            return i;
+        }
+        if (c == tag && d->slots[i].key == key) {
+            *found = 1;
+            return i;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
+/* Moves every entry into a table of `nslots` (a power of two), in the dict's allocator. */
+static void sal_dict_resize(SalDict *d, size_t nslots) {
+    size_t bytes = nslots * (sizeof(SalDictSlot) + 1);
+    SalDictSlot *ns = (SalDictSlot *)(sal_ptr_in_any(d) ? sal_arena_alloc_in(d, (int64_t)bytes)
+                                                        : sal_xmalloc(bytes, "dict"));
+    if (!ns) {
+        sal_panic("oom");
+    }
+    uint8_t *nc = (uint8_t *)(ns + nslots);
+    memset(nc, 0, nslots);
+    size_t mask = nslots - 1;
+    for (size_t i = 0; i < d->nslots; i++) {
+        if (!d->ctrl[i]) {
+            continue;
+        }
+        uint64_t h = sal_dict_hash_key(d, d->slots[i].key);
+        size_t j = (size_t)h & mask;
+        while (nc[j]) {
+            j = (j + 1) & mask;
+        }
+        nc[j] = d->ctrl[i];
+        ns[j] = d->slots[i];
+    }
+    sal_xfree(d->slots);
+    d->slots = ns;
+    d->ctrl = nc;
+    d->nslots = nslots;
+}
 
 void *sal_dict_new(int64_t key_kind, int64_t val_kind) {
     SalDict *d = (SalDict *)sal_xmalloc(sizeof(SalDict), "dict_new");
@@ -3114,29 +3375,12 @@ void *sal_dict_new(int64_t key_kind, int64_t val_kind) {
     }
     d->key_kind = (int32_t)key_kind;
     d->val_kind = (int32_t)val_kind;
-    d->map.slots = NULL;
-    d->map.nslots = 0;
-    d->map.fill = 0;
-    sal_map_rehash(&d->map, 16);
+    d->slots = NULL;
+    d->ctrl = NULL;
+    d->nslots = 0;
+    d->fill = 0;
+    sal_dict_resize(d, 16);
     return d;
-}
-
-int64_t sal_dict_has(void *dp, const char *key);
-
-/* String keys (key_kind 3) are borrowed from the caller. Int keys arrive as the
- * integer itself in the pointer slot; the dict stores them as an owned decimal
- * string, so the map keeps working on strings. `sal_dict_key` gives the lookup
- * key for a call (into `buf` for an Int). */
-static int sal_dict_str_keys(const SalDict *d) {
-    return d->key_kind == 3;
-}
-
-static const char *sal_dict_key(const SalDict *d, const char *key, char *buf) {
-    if (sal_dict_str_keys(d)) {
-        return key;
-    }
-    snprintf(buf, 32, "%lld", (long long)(intptr_t)key);
-    return buf;
 }
 
 static void dict_val_release(int32_t val_kind, int64_t val) {
@@ -3154,21 +3398,22 @@ static void dict_val_release(int32_t val_kind, int64_t val) {
     }
 }
 
-/* Frees a dict. String keys are borrowed (never released), Int keys are owned;
- * String values are owned. */
+/* Frees a dict with its String keys (its own copies) and owned values. */
 void sal_dict_free(void *dp) {
     SalDict *d = (SalDict *)dp;
     if (!d) {
         return;
     }
-    for (size_t i = 0; i < d->map.nslots; i++) {
-        if (d->map.slots[i].key) {
-            dict_val_release(d->val_kind, d->map.slots[i].val);
-            /* The dict owns every key: its own copy (`sal_dict_put`), or the text of an Int key. */
-            sal_free((void *)(uintptr_t)d->map.slots[i].key);
+    int str = sal_dict_str_keys(d);
+    for (size_t i = 0; i < d->nslots; i++) {
+        if (d->ctrl[i]) {
+            dict_val_release(d->val_kind, d->slots[i].val);
+            if (str) {
+                sal_free((void *)(uintptr_t)d->slots[i].key);
+            }
         }
     }
-    sal_xfree(d->map.slots);
+    sal_xfree(d->slots);
     sal_xfree(d);
 }
 
@@ -3179,20 +3424,30 @@ void *sal_dict_put(void *dp, const char *key, int64_t val) {
     if (!d || (sal_dict_str_keys(d) && !key)) {
         return dp;
     }
-    char buf[32];
-    const char *k = sal_dict_key(d, key, buf);
-    int present = sal_dict_has(dp, key);
-    if (present) {
-        dict_val_release(d->val_kind, (int64_t)(intptr_t)sal_map_get(&d->map, k));
+    if ((d->fill + 1) * 4 > d->nslots * 3) {
+        sal_dict_resize(d, d->nslots * 2);
     }
-    if (!present) {
-        /* SPEC «Memoria»: a Dict owns its String keys. `put` borrows the caller's key and stores
-         * its own copy, in the dict's allocator (a literal is shared: it is never freed). */
+    int64_t k = (int64_t)(intptr_t)key;
+    uint64_t h = sal_dict_hash_key(d, k);
+    int found;
+    size_t i = sal_dict_find(d, k, h, &found);
+    if (found) {
+        /* The key was there: the dict keeps its own key and releases the old value. */
+        dict_val_release(d->val_kind, d->slots[i].val);
+        d->slots[i].val = val;
+        return d;
+    }
+    if (sal_dict_str_keys(d)) {
+        /* SPEC «Memoria»: a Dict owns its String keys. `put` borrows the caller's key and
+         * stores its own copy, in the dict's allocator (a literal is shared: never freed). */
         SalArena *prev = sal_arena_hold(d);
-        k = sal_dict_str_keys(d) ? sal_key_export(k) : sal_str_from_cstr(k);
+        k = (int64_t)(uintptr_t)sal_key_export(key);
         sal_arena_restore(prev);
     }
-    (void)sal_map_put(&d->map, k, val);
+    d->ctrl[i] = sal_dict_tag(h);
+    d->slots[i].key = k;
+    d->slots[i].val = val;
+    d->fill++;
     return d;
 }
 
@@ -3211,6 +3466,7 @@ static void *sal_list_clone(void *vp) {
     out->owned = 1;
     out->stride = in->stride;
     out->flat = in->flat;
+    out->plain = in->plain;
     if (in->desc_owned && in->desc) {
         size_t n = strlen(in->desc) + 1;
         char *copy = (char *)malloc(n);
@@ -3239,6 +3495,16 @@ static void *sal_list_clone(void *vp) {
             }
             sal_list_push(out, copy);
         }
+        return outp;
+    }
+    if (sal_list_bytes(in)) {
+        if (sal_list_reserve_bytes(out, in->count) != 0) {
+            return NULL;
+        }
+        if (in->count) {
+            memcpy(out->vec.data, in->vec.data, in->count);
+        }
+        out->count = in->count;
         return outp;
     }
     if (in->elem_drop == sal_list_free_elem) {
@@ -3315,17 +3581,27 @@ static void *sal_dict_clone(SalDict *in) {
     }
     void *outp = sal_dict_new(in->key_kind, in->val_kind);
     SalDict *out = (SalDict *)outp;
-    if (!out || !in->map.slots) {
+    if (!out) {
         return outp;
     }
-    for (size_t i = 0; i < in->map.nslots; i++) {
-        if (!in->map.slots[i].key) {
+    if (out->nslots != in->nslots) {
+        sal_dict_resize(out, in->nslots);
+    }
+    /* Same table size and hash: every entry keeps its slot. */
+    int str = sal_dict_str_keys(in);
+    for (size_t i = 0; i < in->nslots; i++) {
+        if (!in->ctrl[i]) {
             continue;
         }
-        const char *k = sal_key_export(in->map.slots[i].key);
-        int64_t val = sal_dict_val_copy(in->val_kind, in->map.slots[i].val);
-        sal_map_put(&out->map, k, val);
+        int64_t k = in->slots[i].key;
+        if (str) {
+            k = (int64_t)(uintptr_t)sal_key_export((const char *)(uintptr_t)k);
+        }
+        out->ctrl[i] = in->ctrl[i];
+        out->slots[i].key = k;
+        out->slots[i].val = sal_dict_val_copy(in->val_kind, in->slots[i].val);
     }
+    out->fill = in->fill;
     return outp;
 }
 
@@ -3369,119 +3645,90 @@ int64_t sal_arena_export(void *owner, int64_t raw, int64_t tag, const char *desc
     return out;
 }
 
+/* Slot of `key`, or -1 (also for a missing String key). */
+static int64_t sal_dict_lookup(const SalDict *d, const char *key) {
+    if (!d || (sal_dict_str_keys(d) && !key) || !d->fill) {
+        return -1;
+    }
+    int64_t k = (int64_t)(intptr_t)key;
+    int found;
+    size_t i = sal_dict_find(d, k, sal_dict_hash_key(d, k), &found);
+    return found ? (int64_t)i : -1;
+}
+
 int64_t sal_dict_has(void *dp, const char *key) {
-    SalDict *d = (SalDict *)dp;
-    if (!d || (sal_dict_str_keys(d) && !key) || !d->map.nslots) {
-        return 0;
-    }
-    char buf[32];
-    key = sal_dict_key(d, key, buf);
-    size_t mask = d->map.nslots - 1;
-    size_t i = sal_map_hash(key) & mask;
-    for (size_t step = 0; step < d->map.nslots; step++) {
-        if (!d->map.slots[i].key) {
-            return 0;
-        }
-        if (strcmp(d->map.slots[i].key, key) == 0) {
-            return 1;
-        }
-        i = (i + 1) & mask;
-    }
-    return 0;
+    return sal_dict_lookup((const SalDict *)dp, key) >= 0;
 }
 
 /* Returns the prelude `Option[V]`: `None` (variant 0, no fields) is the tag 0 and
  * `Some(v)` (variant 1) the box [2, v]. A String value is copied out. */
 int64_t sal_dict_get(void *dp, const char *key) {
     SalDict *d = (SalDict *)dp;
-    if (!d || (sal_dict_str_keys(d) && !key) || !d->map.nslots) {
+    int64_t at = sal_dict_lookup(d, key);
+    if (at < 0) {
         return 0;
     }
-    char buf[32];
-    key = sal_dict_key(d, key, buf);
-    size_t mask = d->map.nslots - 1;
-    size_t i = sal_map_hash(key) & mask;
-    for (size_t step = 0; step < d->map.nslots; step++) {
-        if (!d->map.slots[i].key) {
-            return 0;
+    int64_t raw = d->slots[at].val;
+    if (d->val_kind == 3) {
+        raw = (int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)raw);
+    } else if (d->val_kind == 5) {
+        raw = sal_enum_copy(raw);
+    } else if ((d->val_kind & 15) == 4) {
+        int owned = 0;
+        const char *desc = desc_from_kind((int64_t)d->val_kind, &owned);
+        raw = desc_copy(desc, raw);
+        if (owned) {
+            free((void *)desc);
         }
-        if (strcmp(d->map.slots[i].key, key) == 0) {
-            int64_t raw = d->map.slots[i].val;
-            if (d->val_kind == 3) {
-                raw = (int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)raw);
-            } else if (d->val_kind == 5) {
-                raw = sal_enum_copy(raw);
-            } else if ((d->val_kind & 15) == 4) {
-                int owned = 0;
-                const char *desc = desc_from_kind((int64_t)d->val_kind, &owned);
-                raw = desc_copy(desc, raw);
-                if (owned) {
-                    free((void *)desc);
-                }
-            }
-            int64_t some = sal_enum_new(2, 1);
-            if (d->val_kind == 3) {
-                int64_t *box = (int64_t *)(intptr_t)some;
-                box[0] = 2 | ((int64_t)1 << 8);
-            }
-            sal_enum_set(some, 0, raw);
-            return some;
-        }
-        i = (i + 1) & mask;
     }
-    return 0;
+    int64_t some = sal_enum_new(2, 1);
+    if (d->val_kind == 3) {
+        int64_t *box = (int64_t *)(intptr_t)some;
+        box[0] = 2 | ((int64_t)1 << 8);
+    }
+    sal_enum_set(some, 0, raw);
+    return some;
 }
 
 /* Number of entries. */
 int64_t sal_dict_len(void *dp) {
     SalDict *d = (SalDict *)dp;
-    return d ? (int64_t)d->map.fill : 0;
+    return d ? (int64_t)d->fill : 0;
 }
 
-/* Removes `key` (releasing a String value and an Int key's text). Returns 1 if
- * it was there, else 0. Backward-shift deletion keeps the linear-probing chains
- * intact. */
+/* Removes `key` (releasing a String key and an owned value). Returns 1 if it was there,
+ * else 0. Backward-shift deletion keeps the linear-probing chains intact. */
 int64_t sal_dict_remove(void *dp, const char *key) {
     SalDict *d = (SalDict *)dp;
-    if (!d || (sal_dict_str_keys(d) && !key) || !d->map.nslots) {
+    int64_t at = sal_dict_lookup(d, key);
+    if (at < 0) {
         return 0;
     }
-    char buf[32];
-    key = sal_dict_key(d, key, buf);
-    size_t mask = d->map.nslots - 1;
-    size_t i = sal_map_hash(key) & mask;
-    size_t step = 0;
-    for (; step < d->map.nslots; step++) {
-        if (!d->map.slots[i].key) {
-            return 0;
-        }
-        if (strcmp(d->map.slots[i].key, key) == 0) {
-            break;
-        }
-        i = (i + 1) & mask;
+    size_t i = (size_t)at;
+    dict_val_release(d->val_kind, d->slots[i].val);
+    if (sal_dict_str_keys(d)) {
+        sal_free((void *)(uintptr_t)d->slots[i].key);
     }
-    if (step == d->map.nslots) {
-        return 0;
-    }
-    dict_val_release(d->val_kind, d->map.slots[i].val);
-    sal_free((void *)(uintptr_t)d->map.slots[i].key);
+    size_t mask = d->nslots - 1;
     size_t j = i;
     for (;;) {
         j = (j + 1) & mask;
-        if (!d->map.slots[j].key) {
+        if (!d->ctrl[j]) {
             break;
         }
-        size_t k = sal_map_hash(d->map.slots[j].key) & mask;
+        size_t k = (size_t)sal_dict_hash_key(d, d->slots[j].key) & mask;
         int within = (i <= j) ? (i < k && k <= j) : (i < k || k <= j);
         if (within) {
             continue;
         }
-        d->map.slots[i] = d->map.slots[j];
+        d->slots[i] = d->slots[j];
+        d->ctrl[i] = d->ctrl[j];
         i = j;
     }
-    d->map.slots[i].key = NULL;
-    d->map.slots[i].val = 0;
-    d->map.fill--;
+    d->ctrl[i] = 0;
+    d->slots[i].key = 0;
+    d->slots[i].val = 0;
+    d->fill--;
     return 1;
 }
 
@@ -3493,13 +3740,12 @@ void *sal_dict_keys(void *dp) {
     if (!d || !out) {
         return out;
     }
-    for (size_t i = 0; i < d->map.nslots; i++) {
-        if (d->map.slots[i].key) {
-            int64_t raw;
-            if (sal_dict_str_keys(d)) {
-                raw = (int64_t)(uintptr_t)sal_strdup(d->map.slots[i].key);
-            } else {
-                raw = (int64_t)strtoll(d->map.slots[i].key, NULL, 10);
+    int str = sal_dict_str_keys(d);
+    for (size_t i = 0; i < d->nslots; i++) {
+        if (d->ctrl[i]) {
+            int64_t raw = d->slots[i].key;
+            if (str) {
+                raw = (int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)raw);
             }
             sal_list_push(out, raw);
         }
@@ -3515,9 +3761,9 @@ void *sal_dict_values(void *dp) {
     if (!d || !out) {
         return out;
     }
-    for (size_t i = 0; i < d->map.nslots; i++) {
-        if (d->map.slots[i].key) {
-            int64_t raw = d->map.slots[i].val;
+    for (size_t i = 0; i < d->nslots; i++) {
+        if (d->ctrl[i]) {
+            int64_t raw = d->slots[i].val;
             if (d->val_kind == 3) {
                 raw = (int64_t)(uintptr_t)sal_strdup((const char *)(uintptr_t)raw);
             }

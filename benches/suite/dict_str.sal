@@ -1,0 +1,24 @@
+# Dict[String, Int]: cuenta claves de texto (to_str) con put/get.
+# Misma carga que benches/suite/dict_str.rs (N debe coincidir).
+
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = Dict.new[String, Int]()
+    i = 0
+    while i < 1000000
+        k = (i % 5003).to_str()
+        c = match d.get(k)
+            Some(v) => v
+            None => 0
+        d.put(k, c + 1)
+        i = i + 1
+    total = 0
+    ks = d.keys()
+    j = 0
+    while j < ks.len()
+        total = total + ks.get(j).len()
+        j = j + 1
+    (total + d.len()) & 255

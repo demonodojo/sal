@@ -33,6 +33,10 @@ pub struct FnSig {
     /// Per parameter: `&mut T` of a value without a box (`Int`, `Float`, `Bool`, a one-field
     /// struct). The argument is a cell (`sal_cell_new`) the callee reads and writes.
     pub cell: Vec<bool>,
+    /// Parameters that are a `List[Int]` or `List[Float]` (also behind `&` / `&mut`): every
+    /// such list keeps one word per element and nothing to release, so the LLVM emitter
+    /// accesses it in place (`KNOWN_LISTS` in src/llvm.rs).
+    pub word_list_params: Vec<String>,
 }
 
 /// `T` in `&mut T` has no box of its own, so the callee writes through a cell.
@@ -180,6 +184,27 @@ pub fn fn_sig(f: &FnDef, structs: &HashMap<String, StructDef>) -> FnSig {
             .iter()
             .map(|p| matches!(&p.ty, Type::Ref { mutable: true, inner, .. } if is_cell_type(inner, structs)))
             .collect(),
+        word_list_params: f
+            .params
+            .iter()
+            .filter(|p| is_word_list_type(&p.ty))
+            .map(|p| p.name.clone())
+            .collect(),
+    }
+}
+
+/// `List[Int]` or `List[Float]`, possibly borrowed. Other element types may arrive in more
+/// than one layout (a `List[Bool]` or a list of structs built by `dict_values` keeps a word
+/// or a box per element), so only these two are assumed.
+fn is_word_list_type(ty: &Type) -> bool {
+    match ty {
+        Type::Ref { inner, .. } => is_word_list_type(inner),
+        Type::Named { name, args, .. } if name == "List" && args.len() == 1 => matches!(
+            &args[0],
+            Type::Named { name, args, .. }
+                if args.is_empty() && (name == "Int" || name == "Float")
+        ),
+        _ => false,
     }
 }
 
@@ -289,6 +314,7 @@ fn scalarize_fn(
             mut_ref: vec![false; f.params.len()],
             shared_ref: vec![false; f.params.len()],
             cell: vec![false; f.params.len()],
+            word_list_params: Vec::new(),
         },
     };
     let mut p = Pass {

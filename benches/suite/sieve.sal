@@ -1,0 +1,21 @@
+# Criba de Eratóstenes sobre List[Bool]: get/set con límites comprobados.
+# Misma carga que benches/suite/sieve.rs (N debe coincidir).
+
+fn main() -> Int ! alloc
+    n = 10000000
+    flags = List.new[Bool]()
+    i = 0
+    while i < n
+        flags.push(true)
+        i = i + 1
+    count = 0
+    i = 2
+    while i < n
+        if flags.get(i)
+            count = count + 1
+            j = i * i
+            while j < n
+                flags.set(j, false)
+                j = j + i
+        i = i + 1
+    count & 255

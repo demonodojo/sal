@@ -1,0 +1,11 @@
+# Llamadas recursivas sin heap: coste de llamada y retorno.
+# Misma carga que benches/suite/fib.rs (N debe coincidir).
+
+fn fib(n: Int) -> Int
+    if n < 2
+        n
+    else
+        fib(n - 1) + fib(n - 2)
+
+fn main() -> Int
+    fib(32) & 255

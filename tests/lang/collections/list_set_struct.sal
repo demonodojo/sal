@@ -1,0 +1,25 @@
+# exit: 193
+# `set` of a struct built in place, in `main` and in a function: the old element's String
+# field is released, a struct of Ints is overwritten. 10 + 4 + 101 + 7 + 30 + 40 + 1.
+struct Rec
+    id: Int
+    name: String
+
+struct Pt
+    x: Int
+    y: Int
+
+fn rename(rs: &mut List[Rec], i: Int) -> Unit ! alloc
+    rs.set(i, Rec(i + 100, d"renamed"))
+
+fn main() -> Int ! alloc
+    rs = List.new[Rec]()
+    rs.push(Rec(1, d"one"))
+    rs.push(Rec(2, d"two"))
+    rs.set(0, Rec(10, d"ten!"))
+    rename(&mut rs, 1)
+    ps = List.new[Pt]()
+    ps.push(Pt(1, 2))
+    ps.push(Pt(3, 4))
+    ps.set(1, Pt(30, 40))
+    rs.get(0).id + rs.get(0).name.len() + rs.get(1).id + rs.get(1).name.len() + ps.get(1).x + ps.get(1).y + ps.get(0).x

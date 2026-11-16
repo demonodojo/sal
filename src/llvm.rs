@@ -11,6 +11,9 @@ thread_local! {
     /// Struct values built only to be pushed: `dest` -> (alloca of its slots, slot count).
     /// The alloca lives in the entry block, so the element needs no box (see `emit_general_fn`).
     static FUSED_AGG: RefCell<HashMap<String, (String, usize)>> = RefCell::new(HashMap::new());
+    /// Lists created in the function being emitted, with the shape their descriptor gives
+    /// (see `collect_known_lists`).
+    static KNOWN_LISTS: RefCell<HashMap<String, KnownList>> = RefCell::new(HashMap::new());
     /// `--instrument`: keep the runtime `list_get` so its OOB probe still runs.
     static EMIT_INSTRUMENT: Cell<bool> = Cell::new(false);
 }
@@ -457,6 +460,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("%SalBytes = type { ptr, i64 }\n");
     s.push_str("@sal_bytes_oob = private unnamed_addr constant [20 x i8] c\"bytes: out of bounds\"\n");
     s.push_str("@sal_list_oob = private unnamed_addr constant [24 x i8] c\"list_get: out of bounds\\00\"\n");
+    s.push_str("@sal_list_set_oob = private unnamed_addr constant [24 x i8] c\"list_set: out of bounds\\00\"\n");
     s.push_str("@sal_tensor_shape_unknown = private unnamed_addr constant [46 x i8] c\"tensor op needs a shape known at compile time\\00\"\n\n");
     s.push_str("declare i64 @sal_print_i64(i64)\n");
     s.push_str("declare i64 @sal_float_to_int(i64)\n");
@@ -508,6 +512,14 @@ pub fn emit_llvm_with_externs(
     // 40 (data), 64 (count) and 72 at most, so the page covers them.
     s.push_str("@sal_zero_page = internal global [80 x i8] zeroinitializer, align 8\n");
     s.push_str("@sal_null_str = internal global [16 x i8] zeroinitializer, align 8\n");
+    // TBAA for the inlined list accesses: a list's header (`SalList`) and its element block
+    // never overlap, so a store to an element does not force reloading `count`, `data` or
+    // `stride` (the runtime's own C accesses use clang's tree, which may alias both).
+    s.push_str(&format!("{TBAA_ROOT} = !{{!\"sal tbaa\"}}\n"));
+    s.push_str(&format!("!9001 = !{{!\"sal list header\", {TBAA_ROOT}, i64 0}}\n"));
+    s.push_str(&format!("!9002 = !{{!\"sal list elem\", {TBAA_ROOT}, i64 0}}\n"));
+    s.push_str(&format!("{TBAA_HDR} = !{{!9001, !9001, i64 0}}\n"));
+    s.push_str(&format!("{TBAA_ELEM} = !{{!9002, !9002, i64 0}}\n"));
     s.push_str("declare i64 @sal_place_launches(i64)\n");
     s.push_str("declare ptr @malloc(i64)\n");
     s.push_str("declare void @free(ptr)\n");
@@ -610,6 +622,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_list_push(ptr, i64)\n");
     s.push_str("declare ptr @sal_list_push_share(ptr, i64)\n");
     s.push_str("declare ptr @sal_list_push_flat(ptr, ptr, i64)\n");
+    s.push_str("declare ptr @sal_list_set_flat(ptr, i64, ptr, i64)\n");
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
     s.push_str("declare i64 @sal_desc_copy(ptr, i64)\n");
@@ -2784,6 +2797,320 @@ fn emit_agg_load(dest: &str, base: &str, index: usize, s: &mut String, tmp: &mut
 /// Inline `sal_list_get`: bounds check + load of the element at `data + i * stride`.
 /// A flat struct element (stride > 1) is the address of its slots; any other element is the
 /// stored value. `SalList` offsets: stride 16, data 40, count 64 (runtime `_Static_assert`).
+const TBAA_ROOT: &str = "!9000";
+/// Access tag of a `SalList` header field (count, data, stride, plain).
+const TBAA_HDR: &str = "!9003";
+/// Access tag of a list element slot (word or byte) in the list's block.
+const TBAA_ELEM: &str = "!9004";
+
+/// `xs.set(i, v)` in place when the list is `plain` (nothing to release), `i` is in bounds and
+/// the element fits: a word (`stride` 1), a byte (`List[Bool]`, `stride` 0) or, for a struct
+/// built in place (see `collect_fused_aggs`), its `n` slots. Anything else (owned elements,
+/// a bad index, a null list) calls the runtime, which releases or panics.
+/// `set` on a list of known layout (see `collect_known_lists`). A plain list only checks the
+/// index (a bad one panics, so nothing returns into the caller's loop) and stores in place;
+/// a list that owns its elements, or a struct value passed as a box, goes to the runtime.
+#[allow(clippy::too_many_arguments)]
+fn emit_known_list_set(
+    k: KnownList,
+    dest: Option<&str>,
+    list: &str,
+    idx: &str,
+    val: &str,
+    fused: Option<&(String, usize)>,
+    s: &mut String,
+    tmp: &mut u32,
+    label_id: &mut u32,
+    cur_block: &mut String,
+) {
+    *tmp += 1;
+    let t = *tmp;
+    s.push_str(&format!("  %lkp{t} = inttoptr i64 {list} to ptr\n"));
+    let inline = k.plain
+        && match (k.shape, fused) {
+            (ListShape::Flat(n), Some((_, m))) => n == *m,
+            (ListShape::Flat(_), None) => false,
+            (_, Some(_)) => false,
+            _ => true,
+        };
+    if !inline {
+        match fused {
+            Some((slots, n)) => s.push_str(&format!(
+                "  call ptr @sal_list_set_flat(ptr %lkp{t}, i64 {idx}, ptr %{slots}, i64 {n})\n"
+            )),
+            None => s.push_str(&format!(
+                "  call ptr @sal_list_set(ptr %lkp{t}, i64 {idx}, i64 {val})\n"
+            )),
+        }
+        if let Some(d) = dest {
+            s.push_str(&format!("  %{d} = add i64 {list}, 0\n"));
+        }
+        return;
+    }
+    *label_id += 1;
+    let lid = *label_id;
+    let (bad, ok) = (format!("lkbad.{lid}"), format!("lkok.{lid}"));
+    s.push_str(&format!("  %lknz{t} = icmp ne ptr %lkp{t}, null\n"));
+    s.push_str(&format!(
+        "  %lkpp{t} = select i1 %lknz{t}, ptr %lkp{t}, ptr @sal_zero_page\n"
+    ));
+    s.push_str(&format!("  %lklnp{t} = getelementptr i8, ptr %lkpp{t}, i64 64\n"));
+    s.push_str(&format!("  %lkln{t} = load i64, ptr %lklnp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lkin{t} = icmp ult i64 {idx}, %lkln{t}\n"));
+    s.push_str(&format!("  br i1 %lkin{t}, label %{ok}, label %{bad}\n"));
+    s.push_str(&format!("{bad}:\n"));
+    s.push_str("  call void @sal_panic(ptr @sal_list_set_oob)\n");
+    s.push_str("  unreachable\n");
+    s.push_str(&format!("{ok}:\n"));
+    *cur_block = ok;
+    s.push_str(&format!("  %lkdp{t} = getelementptr i8, ptr %lkpp{t}, i64 40\n"));
+    s.push_str(&format!("  %lkd{t} = load ptr, ptr %lkdp{t}, !tbaa {TBAA_HDR}\n"));
+    match (k.shape, fused) {
+        (ListShape::Flat(n), Some((slots, _))) => {
+            s.push_str(&format!("  %lkoff{t} = mul i64 {idx}, {n}\n"));
+            s.push_str(&format!(
+                "  %lkslot{t} = getelementptr inbounds i64, ptr %lkd{t}, i64 %lkoff{t}\n"
+            ));
+            for j in 0..n {
+                s.push_str(&format!(
+                    "  %lkfs{t}_{j} = getelementptr inbounds [{n} x i64], ptr %{slots}, i64 0, i64 {j}\n"
+                ));
+                s.push_str(&format!("  %lkfv{t}_{j} = load i64, ptr %lkfs{t}_{j}\n"));
+                s.push_str(&format!(
+                    "  %lkfd{t}_{j} = getelementptr inbounds i64, ptr %lkslot{t}, i64 {j}\n"
+                ));
+                s.push_str(&format!(
+                    "  store i64 %lkfv{t}_{j}, ptr %lkfd{t}_{j}, !tbaa {TBAA_ELEM}\n"
+                ));
+            }
+        }
+        (ListShape::Byte, _) => {
+            s.push_str(&format!(
+                "  %lkslot{t} = getelementptr inbounds i8, ptr %lkd{t}, i64 {idx}\n"
+            ));
+            s.push_str(&format!("  %lkbv{t} = icmp ne i64 {val}, 0\n"));
+            s.push_str(&format!("  %lkbz{t} = zext i1 %lkbv{t} to i8\n"));
+            s.push_str(&format!("  store i8 %lkbz{t}, ptr %lkslot{t}, !tbaa {TBAA_ELEM}\n"));
+        }
+        _ => {
+            s.push_str(&format!(
+                "  %lkslot{t} = getelementptr inbounds i64, ptr %lkd{t}, i64 {idx}\n"
+            ));
+            s.push_str(&format!("  store i64 {val}, ptr %lkslot{t}, !tbaa {TBAA_ELEM}\n"));
+        }
+    }
+    if let Some(d) = dest {
+        s.push_str(&format!("  %{d} = add i64 {list}, 0\n"));
+    }
+}
+
+fn emit_inline_list_set(
+    dest: Option<&str>,
+    args: &[String],
+    consts: &HashMap<String, i64>,
+    s: &mut String,
+    tmp: &mut u32,
+    label_id: &mut u32,
+    cur_block: &mut String,
+) {
+    let list = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+    let idx = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+    let val = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+    let fused = args
+        .get(2)
+        .and_then(|v| FUSED_AGG.with(|m| m.borrow().get(v).cloned()));
+    if let Some(k) = args.first().and_then(|a| known_list(a)) {
+        emit_known_list_set(k, dest, &list, &idx, &val, fused.as_ref(), s, tmp, label_id, cur_block);
+        return;
+    }
+    *tmp += 1;
+    let t = *tmp;
+    *label_id += 1;
+    let lid = *label_id;
+    let (fast, byte_chk, byte, slow, join) = (
+        format!("lsf.{lid}"),
+        format!("lsc.{lid}"),
+        format!("lsb.{lid}"),
+        format!("lss.{lid}"),
+        format!("lsj.{lid}"),
+    );
+    s.push_str(&format!("  %lsp{t} = inttoptr i64 {list} to ptr\n"));
+    s.push_str(&format!("  %lsnz{t} = icmp ne ptr %lsp{t}, null\n"));
+    s.push_str(&format!(
+        "  %lspp{t} = select i1 %lsnz{t}, ptr %lsp{t}, ptr @sal_zero_page\n"
+    ));
+    s.push_str(&format!("  %lsplp{t} = getelementptr i8, ptr %lspp{t}, i64 72\n"));
+    s.push_str(&format!("  %lspl{t} = load i32, ptr %lsplp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lsstp{t} = getelementptr i8, ptr %lspp{t}, i64 16\n"));
+    s.push_str(&format!("  %lsst{t} = load i32, ptr %lsstp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lslnp{t} = getelementptr i8, ptr %lspp{t}, i64 64\n"));
+    s.push_str(&format!("  %lsln{t} = load i64, ptr %lslnp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lsin{t} = icmp ult i64 {idx}, %lsln{t}\n"));
+    s.push_str(&format!("  %lsplb{t} = icmp ne i32 %lspl{t}, 0\n"));
+    s.push_str(&format!("  %lsok{t} = and i1 %lsin{t}, %lsplb{t}\n"));
+    let want = fused.as_ref().map_or(1, |(_, n)| *n);
+    s.push_str(&format!("  %lsw{t} = icmp eq i32 %lsst{t}, {want}\n"));
+    s.push_str(&format!("  %lsgo{t} = and i1 %lsok{t}, %lsw{t}\n"));
+    let miss = if fused.is_some() { &slow } else { &byte_chk };
+    s.push_str(&format!("  br i1 %lsgo{t}, label %{fast}, label %{miss}\n"));
+    s.push_str(&format!("{fast}:\n"));
+    s.push_str(&format!("  %lsdp{t} = getelementptr i8, ptr %lspp{t}, i64 40\n"));
+    s.push_str(&format!("  %lsd{t} = load ptr, ptr %lsdp{t}, !tbaa {TBAA_HDR}\n"));
+    match &fused {
+        Some((slots, n)) => {
+            s.push_str(&format!("  %lsoff{t} = mul i64 {idx}, {n}\n"));
+            s.push_str(&format!(
+                "  %lsslot{t} = getelementptr inbounds i64, ptr %lsd{t}, i64 %lsoff{t}\n"
+            ));
+            for k in 0..*n {
+                s.push_str(&format!(
+                    "  %lsfs{t}_{k} = getelementptr inbounds [{n} x i64], ptr %{slots}, i64 0, i64 {k}\n"
+                ));
+                s.push_str(&format!("  %lsfv{t}_{k} = load i64, ptr %lsfs{t}_{k}\n"));
+                s.push_str(&format!(
+                    "  %lsfd{t}_{k} = getelementptr inbounds i64, ptr %lsslot{t}, i64 {k}\n"
+                ));
+                s.push_str(&format!(
+                    "  store i64 %lsfv{t}_{k}, ptr %lsfd{t}_{k}, !tbaa {TBAA_ELEM}\n"
+                ));
+            }
+            s.push_str(&format!("  br label %{join}\n"));
+        }
+        None => {
+            s.push_str(&format!(
+                "  %lsslot{t} = getelementptr inbounds i64, ptr %lsd{t}, i64 {idx}\n"
+            ));
+            s.push_str(&format!("  store i64 {val}, ptr %lsslot{t}, !tbaa {TBAA_ELEM}\n"));
+            s.push_str(&format!("  br label %{join}\n"));
+            // `List[Bool]`: one byte per element.
+            s.push_str(&format!("{byte_chk}:\n"));
+            s.push_str(&format!("  %lsby{t} = icmp eq i32 %lsst{t}, 0\n"));
+            s.push_str(&format!("  %lsbgo{t} = and i1 %lsok{t}, %lsby{t}\n"));
+            s.push_str(&format!("  br i1 %lsbgo{t}, label %{byte}, label %{slow}\n"));
+            s.push_str(&format!("{byte}:\n"));
+            s.push_str(&format!("  %lsbdp{t} = getelementptr i8, ptr %lspp{t}, i64 40\n"));
+            s.push_str(&format!("  %lsbd{t} = load ptr, ptr %lsbdp{t}, !tbaa {TBAA_HDR}\n"));
+            s.push_str(&format!(
+                "  %lsbslot{t} = getelementptr inbounds i8, ptr %lsbd{t}, i64 {idx}\n"
+            ));
+            s.push_str(&format!("  %lsbv{t} = icmp ne i64 {val}, 0\n"));
+            s.push_str(&format!("  %lsb8{t} = zext i1 %lsbv{t} to i8\n"));
+            s.push_str(&format!("  store i8 %lsb8{t}, ptr %lsbslot{t}, !tbaa {TBAA_ELEM}\n"));
+            s.push_str(&format!("  br label %{join}\n"));
+        }
+    }
+    s.push_str(&format!("{slow}:\n"));
+    match &fused {
+        Some((slots, n)) => s.push_str(&format!(
+            "  call ptr @sal_list_set_flat(ptr %lsp{t}, i64 {idx}, ptr %{slots}, i64 {n})\n"
+        )),
+        None => s.push_str(&format!(
+            "  call ptr @sal_list_set(ptr %lsp{t}, i64 {idx}, i64 {val})\n"
+        )),
+    }
+    s.push_str(&format!("  br label %{join}\n"));
+    s.push_str(&format!("{join}:\n"));
+    *cur_block = join;
+    if let Some(d) = dest {
+        s.push_str(&format!("  %{d} = add i64 {list}, 0\n"));
+    }
+}
+
+/// `xs.push(v)` in place when the block has room: a word list (`stride` 1) stores at
+/// `data[len]` and bumps `len` and `count`; a `List[Bool]` (stride 0) stores the byte at
+/// `count` while it and the trailing byte stay inside the words in use. Anything else
+/// (growth, a struct box, a null list) calls `sal_list_push`.
+fn emit_inline_list_push(
+    dest: Option<&str>,
+    args: &[String],
+    consts: &HashMap<String, i64>,
+    s: &mut String,
+    tmp: &mut u32,
+    label_id: &mut u32,
+    cur_block: &mut String,
+) {
+    let list = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+    let val = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+    *tmp += 1;
+    let t = *tmp;
+    *label_id += 1;
+    let lid = *label_id;
+    let (word, byte_chk, byte, slow, join) = (
+        format!("lpw.{lid}"),
+        format!("lpc.{lid}"),
+        format!("lpb.{lid}"),
+        format!("lps.{lid}"),
+        format!("lpj.{lid}"),
+    );
+    s.push_str(&format!("  %lpp{t} = inttoptr i64 {list} to ptr\n"));
+    s.push_str(&format!("  %lpnz{t} = icmp ne ptr %lpp{t}, null\n"));
+    s.push_str(&format!(
+        "  %lppp{t} = select i1 %lpnz{t}, ptr %lpp{t}, ptr @sal_zero_page\n"
+    ));
+    s.push_str(&format!("  %lpstp{t} = getelementptr i8, ptr %lppp{t}, i64 16\n"));
+    // A list created in this function has a known stride: the tests below fold away.
+    match args.first().and_then(|a| known_list(a)).map(|k| k.shape) {
+        Some(ListShape::Word) => s.push_str(&format!("  %lpst{t} = add i32 0, 1\n")),
+        Some(ListShape::Byte) => s.push_str(&format!("  %lpst{t} = add i32 0, 0\n")),
+        Some(ListShape::Flat(n)) => s.push_str(&format!("  %lpst{t} = add i32 0, {n}\n")),
+        None => s.push_str(&format!(
+            "  %lpst{t} = load i32, ptr %lpstp{t}, !tbaa {TBAA_HDR}\n"
+        )),
+    }
+    s.push_str(&format!("  %lplnp{t} = getelementptr i8, ptr %lppp{t}, i64 48\n"));
+    s.push_str(&format!("  %lpln{t} = load i64, ptr %lplnp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lpcnp{t} = getelementptr i8, ptr %lppp{t}, i64 64\n"));
+    s.push_str(&format!("  %lpcn{t} = load i64, ptr %lpcnp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lpw1{t} = icmp eq i32 %lpst{t}, 1\n"));
+    s.push_str(&format!("  %lpwnz{t} = and i1 %lpw1{t}, %lpnz{t}\n"));
+    s.push_str(&format!("  %lpcpp{t} = getelementptr i8, ptr %lppp{t}, i64 56\n"));
+    s.push_str(&format!("  %lpcp{t} = load i64, ptr %lpcpp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lproom{t} = icmp ult i64 %lpln{t}, %lpcp{t}\n"));
+    s.push_str(&format!("  %lpgo{t} = and i1 %lpwnz{t}, %lproom{t}\n"));
+    s.push_str(&format!("  br i1 %lpgo{t}, label %{word}, label %{byte_chk}\n"));
+    s.push_str(&format!("{word}:\n"));
+    s.push_str(&format!("  %lpdp{t} = getelementptr i8, ptr %lppp{t}, i64 40\n"));
+    s.push_str(&format!("  %lpd{t} = load ptr, ptr %lpdp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!(
+        "  %lpslot{t} = getelementptr inbounds i64, ptr %lpd{t}, i64 %lpln{t}\n"
+    ));
+    s.push_str(&format!("  store i64 {val}, ptr %lpslot{t}, !tbaa {TBAA_ELEM}\n"));
+    s.push_str(&format!("  %lplnx{t} = add i64 %lpln{t}, 1\n"));
+    s.push_str(&format!("  store i64 %lplnx{t}, ptr %lplnp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  %lpcnx{t} = add i64 %lpcn{t}, 1\n"));
+    s.push_str(&format!("  store i64 %lpcnx{t}, ptr %lpcnp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  br label %{join}\n"));
+    // `List[Bool]`: the new byte and the one after it must stay inside the `len` words.
+    s.push_str(&format!("{byte_chk}:\n"));
+    s.push_str(&format!("  %lpb0{t} = icmp eq i32 %lpst{t}, 0\n"));
+    s.push_str(&format!("  %lpbnz{t} = and i1 %lpb0{t}, %lpnz{t}\n"));
+    s.push_str(&format!("  %lpbytes{t} = shl i64 %lpln{t}, 3\n"));
+    s.push_str(&format!("  %lpcny{t} = add i64 %lpcn{t}, 2\n"));
+    s.push_str(&format!("  %lpbroom{t} = icmp ule i64 %lpcny{t}, %lpbytes{t}\n"));
+    s.push_str(&format!("  %lpbgo{t} = and i1 %lpbnz{t}, %lpbroom{t}\n"));
+    s.push_str(&format!("  br i1 %lpbgo{t}, label %{byte}, label %{slow}\n"));
+    s.push_str(&format!("{byte}:\n"));
+    s.push_str(&format!("  %lpbdp{t} = getelementptr i8, ptr %lppp{t}, i64 40\n"));
+    s.push_str(&format!("  %lpbd{t} = load ptr, ptr %lpbdp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!(
+        "  %lpbslot{t} = getelementptr inbounds i8, ptr %lpbd{t}, i64 %lpcn{t}\n"
+    ));
+    s.push_str(&format!("  %lpbv{t} = icmp ne i64 {val}, 0\n"));
+    s.push_str(&format!("  %lpb8{t} = zext i1 %lpbv{t} to i8\n"));
+    s.push_str(&format!("  store i8 %lpb8{t}, ptr %lpbslot{t}, !tbaa {TBAA_ELEM}\n"));
+    s.push_str(&format!("  %lpbcx{t} = add i64 %lpcn{t}, 1\n"));
+    s.push_str(&format!("  store i64 %lpbcx{t}, ptr %lpcnp{t}, !tbaa {TBAA_HDR}\n"));
+    s.push_str(&format!("  br label %{join}\n"));
+    s.push_str(&format!("{slow}:\n"));
+    s.push_str(&format!("  call ptr @sal_list_push(ptr %lpp{t}, i64 {val})\n"));
+    s.push_str(&format!("  br label %{join}\n"));
+    s.push_str(&format!("{join}:\n"));
+    *cur_block = join;
+    if let Some(d) = dest {
+        s.push_str(&format!("  %{d} = add i64 {list}, 0\n"));
+    }
+}
+
 fn emit_inline_list_get(
     dest: &str,
     args: &[String],
@@ -2811,7 +3138,7 @@ fn emit_inline_list_get(
         "  %{lenp} = getelementptr i8, ptr %{pp}, i64 64\n"
     ));
     let len = format!("{dest}_len");
-    s.push_str(&format!("  %{len} = load i64, ptr %{lenp}\n"));
+    s.push_str(&format!("  %{len} = load i64, ptr %{lenp}, !tbaa {TBAA_HDR}\n"));
     *tmp += 1;
     let neg = format!("lng{tmp}");
     s.push_str(&format!("  %{neg} = icmp slt i64 {idx}, 0\n"));
@@ -2823,8 +3150,8 @@ fn emit_inline_list_get(
     s.push_str(&format!("  %{bad} = or i1 %{neg}, %{ge}\n"));
     *label_id += 1;
     let lid = *label_id;
-    let bad_l = format!("lbads{lid}");
-    let ok_l = format!("lokl{lid}");
+    let bad_l = format!("lbads.{lid}");
+    let ok_l = format!("lokl.{lid}");
     s.push_str(&format!("  br i1 %{bad}, label %{bad_l}, label %{ok_l}\n"));
     s.push_str(&format!("{bad_l}:\n"));
     s.push_str("  call void @sal_panic(ptr @sal_list_oob)\n");
@@ -2837,14 +3164,44 @@ fn emit_inline_list_get(
         "  %{datap} = getelementptr i8, ptr %{pp}, i64 40\n"
     ));
     let data = format!("{dest}_data");
-    s.push_str(&format!("  %{data} = load ptr, ptr %{datap}\n"));
+    s.push_str(&format!("  %{data} = load ptr, ptr %{datap}, !tbaa {TBAA_HDR}\n"));
+    // A list created in this function has a known layout: no `stride` test.
+    if let Some(k) = args.first().and_then(|a| known_list(a)) {
+        match k.shape {
+            ListShape::Word => {
+                s.push_str(&format!(
+                    "  %{dest}_slot = getelementptr inbounds i64, ptr %{data}, i64 {idx}\n"
+                ));
+                s.push_str(&format!(
+                    "  %{dest} = load i64, ptr %{dest}_slot, !tbaa {TBAA_ELEM}\n"
+                ));
+            }
+            ListShape::Byte => {
+                s.push_str(&format!(
+                    "  %{dest}_slot = getelementptr inbounds i8, ptr %{data}, i64 {idx}\n"
+                ));
+                s.push_str(&format!(
+                    "  %{dest}_b = load i8, ptr %{dest}_slot, !tbaa {TBAA_ELEM}\n"
+                ));
+                s.push_str(&format!("  %{dest} = zext i8 %{dest}_b to i64\n"));
+            }
+            ListShape::Flat(n) => {
+                s.push_str(&format!("  %{dest}_off = mul i64 {idx}, {n}\n"));
+                s.push_str(&format!(
+                    "  %{dest}_slot = getelementptr inbounds i64, ptr %{data}, i64 %{dest}_off\n"
+                ));
+                s.push_str(&format!("  %{dest} = ptrtoint ptr %{dest}_slot to i64\n"));
+            }
+        }
+        return;
+    }
     *tmp += 1;
     let stridep = format!("lns{tmp}");
     s.push_str(&format!(
         "  %{stridep} = getelementptr i8, ptr %{pp}, i64 16\n"
     ));
     let stride = format!("{dest}_stride");
-    s.push_str(&format!("  %{stride} = load i32, ptr %{stridep}\n"));
+    s.push_str(&format!("  %{stride} = load i32, ptr %{stridep}, !tbaa {TBAA_HDR}\n"));
     *tmp += 1;
     let stride64 = format!("lns64{tmp}");
     s.push_str(&format!("  %{stride64} = zext i32 %{stride} to i64\n"));
@@ -2857,15 +3214,45 @@ fn emit_inline_list_get(
         "  %{slot} = getelementptr inbounds i64, ptr %{data}, i64 %{off}\n"
     ));
     let val = format!("{dest}_val");
-    s.push_str(&format!("  %{val} = load i64, ptr %{slot}\n"));
+    s.push_str(&format!("  %{val} = load i64, ptr %{slot}, !tbaa {TBAA_ELEM}\n"));
+    // One word per element (`stride` 1) is the common case and takes no other work; a
+    // `List[Bool]` (stride 0, a byte per element) and a flat struct (a pointer to its slots)
+    // branch off, so a loop over a word list keeps a single, hoistable test.
     *tmp += 1;
-    let is_flat = format!("lnf{tmp}");
-    s.push_str(&format!("  %{is_flat} = icmp ne i32 %{stride}, 1\n"));
+    let is_word = format!("lnw{tmp}");
+    s.push_str(&format!("  %{is_word} = icmp eq i32 %{stride}, 1\n"));
+    *label_id += 1;
+    let lid = *label_id;
+    let other_l = format!("lgo.{lid}");
+    let done_l = format!("lgd.{lid}");
+    let word_from = cur_block.clone();
+    s.push_str(&format!("  br i1 %{is_word}, label %{done_l}, label %{other_l}\n"));
+    s.push_str(&format!("{other_l}:\n"));
+    *tmp += 1;
+    let bp = format!("lnbp{tmp}");
+    s.push_str(&format!("  %{bp} = getelementptr inbounds i8, ptr %{data}, i64 {idx}\n"));
+    *tmp += 1;
+    let b8 = format!("lnb8{tmp}");
+    s.push_str(&format!("  %{b8} = load i8, ptr %{bp}, !tbaa {TBAA_ELEM}\n"));
+    *tmp += 1;
+    let b64 = format!("lnb64{tmp}");
+    s.push_str(&format!("  %{b64} = zext i8 %{b8} to i64\n"));
+    *tmp += 1;
+    let is_byte = format!("lnby{tmp}");
+    s.push_str(&format!("  %{is_byte} = icmp eq i32 %{stride}, 0\n"));
     let slot_val = format!("{dest}_slot");
     s.push_str(&format!("  %{slot_val} = ptrtoint ptr %{slot} to i64\n"));
+    *tmp += 1;
+    let other = format!("lnot{tmp}");
     s.push_str(&format!(
-        "  %{dest} = select i1 %{is_flat}, i64 %{slot_val}, i64 %{val}\n"
+        "  %{other} = select i1 %{is_byte}, i64 %{b64}, i64 %{slot_val}\n"
     ));
+    s.push_str(&format!("  br label %{done_l}\n"));
+    s.push_str(&format!("{done_l}:\n"));
+    s.push_str(&format!(
+        "  %{dest} = phi i64 [ %{val}, %{word_from} ], [ %{other}, %{other_l} ]\n"
+    ));
+    *cur_block = done_l;
 }
 
 fn i64_operand(name: &str, consts: &HashMap<String, i64>) -> String {
@@ -3224,10 +3611,34 @@ fn emit_runtime_or_user_call(
             }
         }
         "sal_str_char" => {
+            // Inline and branch-free, with the same null-String handle as `sal_str_len`: byte
+            // `i` when `0 <= i < len`, else 0. Out of range it reads byte 0 (the terminator of
+            // an empty String) and discards it. In `while i < s.len()` LLVM sees both lengths
+            // as one load, drops the test and can vectorize the scan.
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             let i = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
-                s.push_str(&format!("  %{d} = call i64 @sal_str_char(ptr {a}, i64 {i})\n"));
+                *tmp += 1;
+                let t = *tmp;
+                s.push_str(&format!("  %scnz{t} = icmp ne ptr {a}, null\n"));
+                s.push_str(&format!(
+                    "  %scnl{t} = getelementptr i8, ptr @sal_null_str, i64 8\n"
+                ));
+                s.push_str(&format!(
+                    "  %scp{t} = select i1 %scnz{t}, ptr {a}, ptr %scnl{t}\n"
+                ));
+                s.push_str(&format!("  %scll{t} = getelementptr i8, ptr %scp{t}, i64 -8\n"));
+                s.push_str(&format!("  %scln{t} = load i64, ptr %scll{t}\n"));
+                s.push_str(&format!("  %scin{t} = icmp ult i64 {i}, %scln{t}\n"));
+                s.push_str(&format!("  %scix{t} = select i1 %scin{t}, i64 {i}, i64 0\n"));
+                s.push_str(&format!(
+                    "  %scbp{t} = getelementptr inbounds i8, ptr %scp{t}, i64 %scix{t}\n"
+                ));
+                s.push_str(&format!("  %scb{t} = load i8, ptr %scbp{t}\n"));
+                s.push_str(&format!("  %scz{t} = zext i8 %scb{t} to i64\n"));
+                s.push_str(&format!(
+                    "  %{d} = select i1 %scin{t}, i64 %scz{t}, i64 0\n"
+                ));
             }
         }
         "sal_str_skip" => {
@@ -3646,7 +4057,7 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!(
                     "  %{lp} = getelementptr i8, ptr %{sp}, i64 64\n"
                 ));
-                s.push_str(&format!("  %{d}l = load i64, ptr %{lp}\n"));
+                s.push_str(&format!("  %{d}l = load i64, ptr %{lp}, !tbaa {TBAA_HDR}\n"));
                 s.push_str(&format!(
                     "  %{d} = select i1 %{nz}, i64 %{d}l, i64 0\n"
                 ));
@@ -3864,6 +4275,20 @@ fn emit_runtime_or_user_call(
         "sal_list_set" => {
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            // A value built only for this set is in an alloca: store its slots, no box.
+            let fused = args
+                .get(2)
+                .and_then(|v| FUSED_AGG.with(|m| m.borrow().get(v).cloned()));
+            if let Some((slots, n)) = fused {
+                let call = format!("call ptr @sal_list_set_flat(ptr {a}, i64 {b}, ptr %{slots}, i64 {n})");
+                if let Some(d) = dest {
+                    s.push_str(&format!("  %{d}_p = {call}\n"));
+                    s.push_str(&format!("  %{d} = ptrtoint ptr %{d}_p to i64\n"));
+                } else {
+                    s.push_str(&format!("  {call}\n"));
+                }
+                return;
+            }
             let c = args.get(2).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d}_p = call ptr @sal_list_set(ptr {a}, i64 {b}, i64 {c})\n"));
@@ -4261,6 +4686,25 @@ fn inst_list_ends_with_return(instructions: &[IrInst]) -> bool {
     )
 }
 
+/// The arms of an `if` that may both run: at most a few constants and integer, comparison
+/// or float operations that cannot trap (no division, no call, no memory access).
+fn if_arms_speculatable(then_body: &[IrInst], else_body: &[IrInst]) -> bool {
+    const MAX_ARM: usize = 6;
+    let pure = |body: &[IrInst]| {
+        body.len() <= MAX_ARM
+            && body.iter().all(|inst| match inst {
+                IrInst::ConstInt { .. } => true,
+                IrInst::Binary { op, .. } => matches!(
+                    op.as_str(),
+                    "add" | "sub" | "mul" | "band" | "bxor" | "bor" | "shl" | "shr" | "eq"
+                        | "ne" | "lt" | "le" | "gt" | "ge" | "neg"
+                ),
+                _ => false,
+            })
+    };
+    pure(then_body) && pure(else_body)
+}
+
 fn emit_inst_list(
     instructions: &[IrInst],
     str_globals: &HashMap<String, StrLitGlobal>,
@@ -4422,6 +4866,51 @@ fn emit_inst_list(
                     tensor.as_deref_mut(),
                 );
                 return (ret, cur_block.clone(), true);
+            }
+            if if_arms_speculatable(then_body, else_body) {
+                // Both arms are a few pure operations (`a || b`, `if c then n = n + 1`): run
+                // both and pick with `select`, so a data-dependent test is not a branch and
+                // the loop around it can still be vectorized.
+                *label_id += 1;
+                let id = *label_id;
+                let c = i64_operand(cond, &consts);
+                for body in [then_body, else_body] {
+                    emit_inst_list(
+                        body,
+                        str_globals,
+                        user_fns,
+                        s,
+                        label_id,
+                        tmp,
+                        cur_block,
+                        tensor.as_deref_mut(),
+                    );
+                }
+                let then_consts = const_int_map_from(then_body);
+                let else_consts = const_int_map_from(else_body);
+                let arm = |v: &String, cs: &HashMap<String, i64>| {
+                    if cs.contains_key(v) || v.chars().all(|c| c.is_ascii_digit()) {
+                        i64_operand(v, cs)
+                    } else {
+                        format!("%{v}")
+                    }
+                };
+                s.push_str(&format!("  %ifcond{id} = icmp ne i64 {c}, 0\n"));
+                s.push_str(&format!(
+                    "  %{dest} = select i1 %ifcond{id}, i64 {}, i64 {}\n",
+                    arm(then_val, &then_consts),
+                    arm(else_val, &else_consts)
+                ));
+                for carry in carried {
+                    s.push_str(&format!(
+                        "  %{} = select i1 %ifcond{id}, i64 {}, i64 {}\n",
+                        carry.dest,
+                        arm(&carry.then_val, &then_consts),
+                        arm(&carry.else_val, &else_consts)
+                    ));
+                }
+                i += 1;
+                continue;
             }
             *label_id += 1;
             let id = *label_id;
@@ -4786,7 +5275,31 @@ fn emit_inst_list(
                 }
             }
             IrInst::Call { dest, func, args } => {
-                if func == "sal_list_get"
+                let fused_push = func == "sal_list_push"
+                    && args
+                        .get(1)
+                        .is_some_and(|v| FUSED_AGG.with(|m| m.borrow().contains_key(v)));
+                if func == "sal_list_push" && !fused_push && !EMIT_INSTRUMENT.with(|f| f.get()) {
+                    emit_inline_list_push(
+                        dest.as_deref(),
+                        args,
+                        &consts,
+                        s,
+                        tmp,
+                        label_id,
+                        cur_block,
+                    );
+                } else if func == "sal_list_set" && !EMIT_INSTRUMENT.with(|f| f.get()) {
+                    emit_inline_list_set(
+                        dest.as_deref(),
+                        args,
+                        &consts,
+                        s,
+                        tmp,
+                        label_id,
+                        cur_block,
+                    );
+                } else if func == "sal_list_get"
                     && dest.is_some()
                     && !EMIT_INSTRUMENT.with(|f| f.get())
                 {
@@ -5102,9 +5615,10 @@ fn const_int_map_from(instructions: &[IrInst]) -> HashMap<String, i64> {
     m
 }
 
-/// Marks the struct values of `instructions` that are built only to be pushed (an
-/// `Aggregate` immediately followed by `sal_list_push` of that value): LLVM can store the
-/// fields straight into an alloca and call `sal_list_push_flat`, so no box is allocated.
+/// Marks the struct values of `instructions` that are built only to be stored in a list (an
+/// `Aggregate` immediately followed by `sal_list_push` or `sal_list_set` of that value): LLVM
+/// can store the fields straight into an alloca and call `sal_list_push_flat` /
+/// `sal_list_set_flat`, so no box is allocated.
 fn collect_fused_aggs(instructions: &[IrInst], out: &mut HashMap<String, (String, usize)>) {
     for w in instructions.windows(2) {
         let IrInst::Aggregate { dest, fields, .. } = &w[0] else {
@@ -5113,7 +5627,12 @@ fn collect_fused_aggs(instructions: &[IrInst], out: &mut HashMap<String, (String
         let IrInst::Call { func, args, .. } = &w[1] else {
             continue;
         };
-        if func == "sal_list_push" && args.get(1).is_some_and(|a| a == dest) {
+        let stored = match func.as_str() {
+            "sal_list_push" => args.get(1),
+            "sal_list_set" => args.get(2),
+            _ => None,
+        };
+        if stored.is_some_and(|a| a == dest) {
             out.insert(dest.clone(), (format!("fz_{dest}"), fields.len()));
         }
     }
@@ -5131,6 +5650,130 @@ fn collect_fused_aggs(instructions: &[IrInst], out: &mut HashMap<String, (String
             _ => {}
         }
     }
+}
+
+/// How a list keeps its elements, read from its descriptor (`sal_list_new_desc`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ListShape {
+    /// One i64 per element (`i`, `s`, `E`).
+    Word,
+    /// One byte per element (`b`, a `List[Bool]`).
+    Byte,
+    /// `n` i64 slots per element, inline (`S(..)`).
+    Flat(usize),
+}
+
+/// A list whose descriptor the emitter saw: `plain` when overwriting or dropping an element
+/// releases nothing (Copy scalars, or a flat struct of them) and no glue was set.
+#[derive(Clone, Copy, Debug)]
+struct KnownList {
+    shape: ListShape,
+    plain: bool,
+}
+
+/// The shape of a list descriptor (`+` marks ownership and does not change the layout).
+fn known_list_of_desc(desc: &str) -> Option<KnownList> {
+    let d = desc.strip_prefix('+').unwrap_or(desc);
+    match d {
+        "i" => return Some(KnownList { shape: ListShape::Word, plain: true }),
+        "b" => return Some(KnownList { shape: ListShape::Byte, plain: true }),
+        "s" | "E" => return Some(KnownList { shape: ListShape::Word, plain: false }),
+        _ => {}
+    }
+    let body = d.strip_prefix("S(")?;
+    // Count the top-level fields: a nested `S(..)` is one boxed slot.
+    let (mut n, mut depth, mut plain) = (0usize, 0usize, true);
+    for c in body.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => {
+                return (n > 0).then_some(KnownList { shape: ListShape::Flat(n), plain });
+            }
+            ')' => depth -= 1,
+            _ if depth > 0 => {}
+            'i' => n += 1,
+            's' | 'E' | 'S' | 'b' => {
+                n += 1;
+                plain = false;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Lists created in `instructions` (`sal_list_new_desc` of a constant descriptor). A list
+/// that later gets element glue (`sal_list_set_drop`) is not plain.
+fn collect_known_lists(instructions: &[IrInst], out: &mut HashMap<String, KnownList>) {
+    fn walk(
+        insts: &[IrInst],
+        strs: &mut HashMap<String, String>,
+        out: &mut HashMap<String, KnownList>,
+        glued: &mut Vec<String>,
+    ) {
+        for inst in insts {
+            match inst {
+                IrInst::ConstString { dest, value } => {
+                    strs.insert(dest.clone(), value.clone());
+                }
+                IrInst::Call { dest: Some(d), func, args } if func == "sal_list_new_desc" => {
+                    if let Some(k) = args
+                        .first()
+                        .and_then(|a| strs.get(a))
+                        .and_then(|v| known_list_of_desc(v))
+                    {
+                        out.insert(d.clone(), k);
+                    }
+                }
+                IrInst::Call { func, args, .. } if func == "sal_list_set_drop" => {
+                    glued.extend(args.first().cloned());
+                }
+                IrInst::If { then_body, else_body, .. } => {
+                    walk(then_body, strs, out, glued);
+                    walk(else_body, strs, out, glued);
+                }
+                IrInst::While { cond_insts, body, .. } => {
+                    walk(cond_insts, strs, out, glued);
+                    walk(body, strs, out, glued);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut strs = HashMap::new();
+    let mut glued = Vec::new();
+    walk(instructions, &mut strs, out, &mut glued);
+    for g in glued {
+        if let Some(k) = out.get_mut(&g) {
+            k.plain = false;
+        }
+    }
+}
+
+fn known_list(name: &str) -> Option<KnownList> {
+    KNOWN_LISTS.with(|m| m.borrow().get(name).copied())
+}
+
+/// Reserves the alloca of each struct built only to be stored in a list (see
+/// `collect_fused_aggs`) and publishes them for the `Aggregate` and list-call emitters.
+/// Must sit in the entry block; `FUSED_AGG` is cleared when the function ends.
+fn begin_fused_aggs(f: &IrFunction, sig: Option<&crate::scalarize::FnSig>, s: &mut String) {
+    let mut fused = HashMap::new();
+    collect_fused_aggs(&f.instructions, &mut fused);
+    let mut slots: Vec<_> = fused.values().collect();
+    slots.sort();
+    for (name, n) in slots {
+        s.push_str(&format!("  %{name} = alloca [{n} x i64]\n"));
+    }
+    FUSED_AGG.with(|m| *m.borrow_mut() = fused);
+    let mut known = HashMap::new();
+    for name in sig.map(|g| g.word_list_params.as_slice()).unwrap_or_default() {
+        if f.params.contains(name) {
+            known.insert(name.clone(), KnownList { shape: ListShape::Word, plain: true });
+        }
+    }
+    collect_known_lists(&f.instructions, &mut known);
+    KNOWN_LISTS.with(|m| *m.borrow_mut() = known);
 }
 
 fn emit_general_fn(
@@ -5153,12 +5796,7 @@ fn emit_general_fn(
         params.join(", ")
     ));
     s.push_str("entry:\n");
-    let mut fused = HashMap::new();
-    collect_fused_aggs(&f.instructions, &mut fused);
-    for (_, (slots, n)) in &fused {
-        s.push_str(&format!("  %{slots} = alloca [{n} x i64]\n"));
-    }
-    FUSED_AGG.with(|m| *m.borrow_mut() = fused);
+    begin_fused_aggs(f, opts.fn_sigs.get(&f.name), s);
     emit_layout_scope(struct_defs, || {
         let mut consts = const_int_map(f);
         let floats = const_float_map(f);
@@ -5215,6 +5853,7 @@ fn emit_general_fn(
         }
     });
     FUSED_AGG.with(|m| m.borrow_mut().clear());
+    KNOWN_LISTS.with(|m| m.borrow_mut().clear());
     s.push_str("}\n");
 }
 
@@ -5419,6 +6058,7 @@ fn emit_main_general(
 ) {
     s.push_str("define i64 @main(i64 %argc, ptr %argv) {\n");
     s.push_str("entry:\n");
+    begin_fused_aggs(f, opts.fn_sigs.get(&f.name), s);
     s.push_str("  call void @sal_runtime_init(i64 %argc, ptr %argv)\n");
     if opts.instrument {
         s.push_str("  call void @sal_instrument_init()\n");
@@ -5485,6 +6125,8 @@ fn emit_main_general(
         }
         s.push_str(&format!("  ret i64 {ret}\n"));
     }
+    FUSED_AGG.with(|m| m.borrow_mut().clear());
+    KNOWN_LISTS.with(|m| m.borrow_mut().clear());
     s.push_str("}\n");
 }
 

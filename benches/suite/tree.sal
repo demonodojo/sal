@@ -1,0 +1,26 @@
+# Árbol binario con enum recursivo (binary-trees): reservar, recorrer y soltar cajas.
+# Misma carga que benches/suite/tree.rs (DEPTH e ITERS deben coincidir).
+
+enum Tree
+    Leaf
+    Node(Tree, Tree)
+
+fn make(d: Int) -> Tree ! alloc
+    if d == 0
+        Leaf
+    else
+        Node(make(d - 1), make(d - 1))
+
+fn check(t: &Tree) -> Int
+    match t
+        Leaf => 1
+        Node(l, r) => 1 + check(&l) + check(&r)
+
+fn main() -> Int ! alloc
+    total = 0
+    i = 0
+    while i < 20
+        t = make(16)
+        total = total + check(&t)
+        i = i + 1
+    total & 255

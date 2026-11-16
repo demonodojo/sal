@@ -1,0 +1,34 @@
+# exit: 97
+# List[Bool] keeps a byte per element: push, set, pop, clone and get through a borrow.
+# xs: true at 1, 3, 6, 9, 12, 15, 18 after the sets (7), the popped 19th is false;
+# ys = xs.clone() with index 2 set (8). 7 * 10 + 8 + 0 + len 19.
+fn count(xs: &List[Bool]) -> Int
+    n = 0
+    i = 0
+    while i < xs.len()
+        if xs.get(i)
+            n = n + 1
+        i = i + 1
+    n
+
+fn main() -> Int ! alloc
+    xs = List.new[Bool]()
+    i = 0
+    while i < 20
+        if (i % 3) == 0
+            xs.push(true)
+        else
+            xs.push(false)
+        i = i + 1
+    xs.set(1, true)
+    xs.set(0, false)
+    last = xs.pop()
+    ys = xs.clone()
+    ys.set(2, true)
+    a = count(&xs)
+    b = count(&ys)
+    l = if last
+        100
+    else
+        0
+    a * 10 + b + l + xs.len()

@@ -1,0 +1,35 @@
+# exit: 164
+# A Dict[String, Int] past several resizes: keys of different lengths with a common prefix,
+# the empty key, removes, and lookups of present and removed keys:
+# len 201 - 200 = 1, "k150" → 150, "k50" removed → 0, "" → 5, key bytes 800 / 100 = 8.
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = Dict.new[String, Int]()
+    i = 0
+    while i < 300
+        d.put("k" + i.to_str(), i)
+        i = i + 1
+    i = 0
+    while i < 100
+        d.remove("k" + i.to_str())
+        i = i + 1
+    d.put(d"", 5)
+    a = match d.get(d"k150")
+        Some(v) => v
+        None => 100
+    b = match d.get(d"k50")
+        Some(v) => v
+        None => 0
+    e = match d.get(d"")
+        Some(v) => v
+        None => 100
+    ks = d.keys()
+    bytes = 0
+    j = 0
+    while j < ks.len()
+        bytes = bytes + ks.get(j).len()
+        j = j + 1
+    d.len() - 200 + a + b + e + bytes / 100

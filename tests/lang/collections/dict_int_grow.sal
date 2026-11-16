@@ -1,0 +1,48 @@
+# exit: 43
+# A Dict[Int, Int] that grows past several resizes, with negative keys, removes and a re-put:
+# removed 500 / 100 = 5, len 500 - 489 = 11, odd values 1 + 3 + … + 999 = 250000 → 20,
+# a huge key is found (0), key 0 comes back with 7.
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    d = Dict.new[Int, Int]()
+    i = 0
+    while i < 1000
+        d.put(i - 500, i)
+        i = i + 1
+    removed = 0
+    k = -500
+    while k < 500
+        if (k & 1) == 0
+            if d.remove(k)
+                removed = removed + 1
+        k = k + 1
+    sum = 0
+    k = -500
+    while k < 500
+        got = match d.get(k)
+            Some(v) => v
+            None => 0
+        sum = sum + got
+        k = k + 1
+    ok_sum = if sum == 250000
+        20
+    else
+        0
+    big = 4611686018427387904
+    d.put(big, 3)
+    found_big = match d.get(big)
+        Some(v) => v - 3
+        None => 100
+    gone = if d.has(-500)
+        100
+    else
+        0
+    n = d.len() - 1
+    d.put(0, 7)
+    zero = match d.get(0)
+        Some(v) => v
+        None => 100
+    removed / 100 + n - 489 + ok_sum + found_big + gone + zero

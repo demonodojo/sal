@@ -1,0 +1,23 @@
+# Dict[Int, Int]: inserta, actualiza y consulta claves enteras.
+# Misma carga que benches/suite/dict_int.rs (N debe coincidir).
+
+enum Option[T]
+    None
+    Some(T)
+
+fn main() -> Int ! alloc
+    n = 1000000
+    d = Dict.new[Int, Int]()
+    i = 0
+    while i < n
+        d.put((i * 7919) % n, i)
+        i = i + 1
+    total = 0
+    i = 0
+    while i < n * 2
+        got = match d.get(i)
+            Some(v) => v
+            None => 1
+        total = total + got
+        i = i + 1
+    (total + d.len()) & 255

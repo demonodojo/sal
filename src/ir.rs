@@ -3988,7 +3988,8 @@ fn field_desc(
 }
 
 /// Element descriptor of `T` in `list_new[T]()`. Enum elements use `E` when the list owns
-/// them; struct descriptors also describe how their fields are copied and released.
+/// them; struct descriptors also describe how their fields are copied and released; `Bool`
+/// is `b` (a byte per element). Inside a struct a `Bool` field stays `i` (`field_desc`).
 fn type_desc(
     t: &crate::ast::Type,
     structs: &HashMap<String, crate::ast::StructDef>,
@@ -3999,6 +4000,10 @@ fn type_desc(
         if args.is_empty() {
             if name == "String" {
                 return "s".into();
+            }
+            // A `List[Bool]` keeps one byte per element (see `sal_list_new_desc`).
+            if name == "Bool" {
+                return "b".into();
             }
             if owned && enums.get(name).is_some_and(|e| e.type_params.is_empty()) {
                 return "E".into();

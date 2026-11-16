@@ -1,0 +1,35 @@
+# Lista de structs con métodos: actualizar posiciones con set y leer con métodos &self.
+# Misma carga que benches/suite/points.rs (N y PASOS deben coincidir).
+
+struct Pt
+    x: Int
+    y: Int
+    vx: Int
+    vy: Int
+
+method Pt.moved(&self) -> Pt
+    Pt((self.x + self.vx) & 65535, (self.y + self.vy) & 65535, self.vx, self.vy)
+
+method Pt.energy(&self) -> Int
+    self.vx * self.vx + self.vy * self.vy
+
+fn main() -> Int ! alloc
+    n = 100000
+    ps = List.new[Pt]()
+    i = 0
+    while i < n
+        ps.push(Pt(i, i * 3, (i % 7) - 3, (i % 5) - 2))
+        i = i + 1
+    step = 0
+    while step < 50
+        i = 0
+        while i < n
+            ps.set(i, ps.get(i).moved())
+            i = i + 1
+        step = step + 1
+    total = 0
+    i = 0
+    while i < n
+        total = total + ps.get(i).x + ps.get(i).y + ps.get(i).energy()
+        i = i + 1
+    total & 255
