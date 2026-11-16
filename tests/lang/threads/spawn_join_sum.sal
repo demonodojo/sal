@@ -1,0 +1,8 @@
+# exit: 25
+fn square(n: Int) -> Int
+    n * n
+
+fn main() -> Int ! alloc
+    let a = Thread.spawn(square, 3)
+    let b = Thread.spawn(square, 4)
+    a.join() + b.join()

@@ -1,0 +1,16 @@
+# exit: 6
+# `try_acquire` takes a permit only when one is free; `release` gives it back.
+fn main() -> Int ! alloc
+    let s = Semaphore.new(1)
+    let got = 0
+    if s.try_acquire()
+        got = got + 1
+    if s.try_acquire()
+        got = got + 10
+    s.release()
+    if s.try_acquire()
+        got = got + 1
+    s.release()
+    s.acquire()
+    s.release()
+    got + 4

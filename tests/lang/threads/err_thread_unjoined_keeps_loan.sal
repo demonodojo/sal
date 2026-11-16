@@ -1,0 +1,11 @@
+# error: E_BORROW
+# `t` is never joined: its glue joins it at the end of `main`, so `xs` stays lent to the thread
+# while `push` mutates it.
+fn count(xs: &List[Int]) -> Int
+    xs.len()
+
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    let t = Thread.spawn(count, &xs)
+    xs.push(1)
+    0

@@ -1398,6 +1398,18 @@ const PARITY_FILES: &[&str] = &[
     "tests/lang/functions/lambda_trailing_two_params.sal",
     "tests/lang/ownership/lambda_capture_string.sal",
     "tests/lang/functions/lambda_trailing_method.sal",
+    // SPEC «Hilos». `channel_producer.sal` is left out: its `match &r` over the `Option` of
+    // `recv` lowers the `None` arm differently (the same gap as over `dict_get`).
+    "tests/lang/threads/spawn_join_sum.sal",
+    "tests/lang/threads/spawn_lends_list.sal",
+    "tests/lang/threads/spawn_moves_string.sal",
+    "tests/lang/threads/thread_drop_joins.sal",
+    "tests/lang/threads/thread_join_ends_loan.sal",
+    "tests/lang/threads/semaphore_permits.sal",
+    "tests/lang/threads/semaphore_workers.sal",
+    "tests/lang/threads/mutex_counter.sal",
+    "tests/lang/threads/mutex_list.sal",
+    "tests/lang/threads/channel_pending_released.sal",
 ];
 
 #[test]

@@ -1,0 +1,7 @@
+# error: E_MOVED
+fn main() -> Int ! io, alloc
+    let ch = Channel.new[String]()
+    let s = d"hola"
+    ch.send(s)
+    print_str(s)
+    0

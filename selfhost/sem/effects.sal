@@ -128,6 +128,8 @@ fn fx_call_is_io(name: &String) -> Int ! alloc
 fn fx_call_is_alloc(name: &String) -> Int ! alloc
     if str_eq(name, "str_concat") == 1
         1
+    elsif fx_sync_alloc(name) == 1
+        1
     elsif str_eq(name, "strdup") == 1
         1
     elsif str_eq(name, "list_clone") == 1
@@ -431,3 +433,14 @@ fn check_effects_with(tp: &TProgram, progs: &List[TProgram]) -> Res ! alloc
         p
     else
         check_effects_go(tp, 0, list_len(&tp.fns), &mut env, &mut used)
+
+# The thread builtins that allocate (SPEC «Hilos»; `src/effects.rs`).
+fn fx_sync_alloc(name: &String) -> Int ! alloc
+    match name
+        "thread_spawn" => 1
+        "sem_new" => 1
+        "chan_new" => 1
+        "chan_send" => 1
+        "chan_recv" => 1
+        "mutex_new" => 1
+        _ => 0

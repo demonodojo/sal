@@ -289,7 +289,7 @@ fn check_builtin_impls(tp: &TProgram, i: Int, errs: &mut List[String]) -> Int ! 
         imp = tp.impls.get(i)
         tps = tg_args(&imp.target)
         target = ty_base(&imp.target)
-        if target.eq("List") == 1 && tps.len() == 1
+        if builtin_impl_target(&target) == 1 && tps.len() == 1
             _c = check_builtin_claims(tp, &imp, &tps.get(0), 0, errs)
         elsif tps.len() == 0
             _c = check_claims(tp, &target, &imp.protocols, 0, imp.protocols.len(), errs)
@@ -304,7 +304,7 @@ fn check_builtin_impl_origins(tp: &TProgram, i: Int, errs: &mut List[String]) ->
     else
         imp = tp.impls.get(i)
         target = ty_base(&imp.target)
-        if target.eq("List") == 1
+        if builtin_impl_target(&target) == 1
             _a = check_builtin_origin_claims(&tp.protocols, &imp.protocols, 0, errs)
         elsif tt_struct_find(&tp.structs, &target) < 0 && enum_find(&tp.enums, &target, 0, tp.enums.len()) < 0
             _a = check_nominal_origin_claims(&tp.protocols, &imp.protocols, 0, errs)
@@ -343,10 +343,14 @@ fn check_builtin_claims(tp: &TProgram, imp: &TImpl, elem: &String, i: Int, errs:
             if args.len() != p.tparams.len()
                 errs.push("E_TYPE: protocol type argument count mismatch")
             else
-                _c = check_builtin_methods(&p, &args, elem, 0, errs)
+                _c = check_builtin_methods(&p, &args, &ty_base(&imp.target), elem, 0, errs)
         check_builtin_claims(tp, imp, elem, i + 1, errs)
 
-fn check_builtin_methods(p: &TProtocol, args: &List[String], elem: &String, i: Int, errs: &mut List[String]) -> Int ! alloc
+# `impl List[T] P` and `impl Mutex[T] P` (SPEC «Hilos»): the builtin types that take an `impl`.
+fn builtin_impl_target(name: &String) -> Int
+    name.eq("List") + name.eq("Mutex")
+
+fn check_builtin_methods(p: &TProtocol, args: &List[String], target: &String, elem: &String, i: Int, errs: &mut List[String]) -> Int ! alloc
     if i >= p.methods.len()
         0
     else
@@ -354,9 +358,27 @@ fn check_builtin_methods(p: &TProtocol, args: &List[String], elem: &String, i: I
         pm = proto_subst_method(&original, &p.tparams, args)
         if pm.is_static == 1
             errs.push("E_TYPE: protocol `" + p.name + "` has a static `" + pm.name + "`: a builtin type cannot implement it")
+        elsif pm.has_body == 0 && target.eq("Mutex") == 1
+            _c = check_mutex_builtin(&pm, elem, errs)
         elsif pm.has_body == 0
             _c = check_list_builtin(&pm, elem, errs)
-        check_builtin_methods(p, args, elem, i + 1, errs)
+        check_builtin_methods(p, args, target, elem, i + 1, errs)
+
+# `enter(&self) -> &mut T` and `leave(&self) -> Unit` are the builtin methods of `Mutex[T]`.
+fn check_mutex_builtin(pm: &TProtocolMethod, elem: &String, errs: &mut List[String]) -> Int ! alloc
+    name = pm.name.clone()
+    want_ret = if name.eq("enter") == 1
+        "&mut " + elem
+    else
+        "Unit"
+    if name.eq("enter") + name.eq("leave") == 0
+        errs.push("E_TYPE: Mutex has no builtin method `" + name + "`")
+        0
+    elsif pm.self_ref != 1 || pm.params.len() != 0 || pm.tparams.len() > 0 || proto_fx_empty(&pm.fx, 0) == 0 || types_equal_text(&pm.ret, &want_ret) == 0
+        errs.push("E_TYPE: builtin Mutex method does not match protocol signature")
+        0
+    else
+        1
 
 fn check_list_builtin(pm: &TProtocolMethod, elem: &String, errs: &mut List[String]) -> Int ! alloc
     name = pm.name.clone()
@@ -415,7 +437,7 @@ fn provided_builtin_impls(tp: &TProgram, i: Int, out: &mut List[TFn]) -> Int ! a
         0
     else
         imp = tp.impls.get(i)
-        if ty_base(&imp.target).eq("List") == 1
+        if builtin_impl_target(&ty_base(&imp.target)) == 1
             _a = provided_builtin_claims(tp, &imp, 0, out)
         elsif tg_args(&imp.target).len() == 0
             _a = provided_claims(tp, &imp.target, &imp.protocols, 0, out)
@@ -428,7 +450,7 @@ fn provided_builtin_claims(tp: &TProgram, imp: &TImpl, i: Int, out: &mut List[TF
         claim = imp.protocols.get(i)
         name = ty_base(&claim)
         pi = proto_find(&tp.protocols, &name, 0, tp.protocols.len())
-        if pi >= 0 && ty_base(&imp.target).eq("List") == 1
+        if pi >= 0 && builtin_impl_target(&ty_base(&imp.target)) == 1
             p = tp.protocols.get(pi)
             args = tg_args(&claim)
             tps = tg_args(&imp.target)
@@ -442,7 +464,7 @@ fn provided_builtin_methods(tp: &TProgram, target: &String, tps: &List[String], 
     else
         original = p.methods.get(i)
         pm = proto_subst_method(&original, &p.tparams, args)
-        name = "List__" + pm.name
+        name = ty_base(target) + "__" + pm.name
         if pm.has_body == 1 && fn_sig_index(&tp.fns, &name, 0, tp.fns.len()) < 0 && fn_sig_index(out, &name, 0, out.len()) < 0
             params = List.new[TParam]()
             params.push(TParam("self", provided_self_type(target, pm.self_ref), pm.self_mode))

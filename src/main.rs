@@ -234,6 +234,10 @@ fn main() {
                 print_diags(&diags, "human");
                 std::process::exit(1);
             }
+            if let Err(diags) = sal_compiler::threads::desugar_thread_spawn(&mut prog) {
+                print_diags(&diags, "human");
+                std::process::exit(1);
+            }
             if let Err(diags) = sal_compiler::methods::prepare_program(&mut prog) {
                 print_diags(&diags, "human");
                 std::process::exit(1);

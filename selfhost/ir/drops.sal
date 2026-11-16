@@ -92,6 +92,8 @@ struct DC
     copy_pay: NM
     # Locals handed out by a branch tail (the bootstrap's `branch_moved`).
     branch_moved: NM
+    # Locals bound to `thread_spawn(f(..))`: name -> handle of `f`, whose result `join` hands out.
+    spawned: NM
 
 # An owned copy of the parameter list: the `TFn` it comes from keeps its own.
 fn tparams_copy(xs: &List[TParam]) -> List[TParam] ! alloc
@@ -117,7 +119,7 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
     _h = list_push(&mut cells, 0)
     # Branch depth, reset by loops: an identifier tail moves on that path only.
     cells.push(0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new(), nm_new())
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new(), nm_new(), nm_new())
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -979,8 +981,12 @@ fn dr_fresh_call(c: &DC, e: &Expr, name: &String, targs: &String) -> Int ! alloc
     elsif str_eq(name, "dict_keys") + str_eq(name, "dict_values") == 1
         # A fresh list whose String elements are copies the list owns.
         6
-    elsif str_eq(name, "dict_get") == 1
+    elsif name.eq("dict_get") + name.eq("chan_recv") > 0
         5
+    elsif dr_sync_kind(name) != 0
+        dr_sync_kind(name)
+    elsif name.eq("thread_join") == 1
+        dr_joined_kind(c, e)
     elsif str_eq(name, "bytes_view") + str_eq(name, "bytes_view_mem") == 1
         3
     elsif name.eq("list_clone") == 1
@@ -1328,6 +1334,9 @@ fn dr_call_args(c: &mut DC, callee: &String, args: &List[Expr], i: Int, n: Int, 
             4
         elsif dr_reads_key_arg(callee, i) == 1
             # `dict_put(d, k, v)` reads the key: the dict stores its own copy.
+            1
+        elsif callee.eq("chan_send") == 1 && i == 0
+            # `ch.send(v)` reads the channel and moves `v` (SPEC «Hilos»).
             1
         elsif borrow == 1
             1
@@ -2729,6 +2738,7 @@ fn dr_seed_params(c: &mut DC, i: Int, n: Int) -> Int ! alloc
 fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
     c = dr_new(variants, ro, lists, params, scalars, copy_ok)
     dr_ref_then_owned(params, body, &mut c.rto, &mut c.rtop)
+    dr_note_spawns(&mut c.spawned, &body.stmts, 0)
     n = c.ps.len()
     _s = dr_seed_params(&mut c, 0, n)
     _w = dr_block(&mut c, body)
@@ -3826,6 +3836,8 @@ fn dr_borrows(name: &String) -> Int ! alloc
     # `enum_set(e, i, v)` is not a whole-call borrow: it moves `v` (see `dr_call_args`).
     if str_eq(name, "str_share") + str_eq(name, "list_push_share") == 1
         1
+    elsif dr_sync_borrows(name) == 1
+        1
     elsif dr_is_clone(name) == 1
         # `x.clone()` reads its receiver through `&self` (SPEC «Memoria»).
         1
@@ -4028,3 +4040,74 @@ fn dr_copy_vec(v: Int, i: Int, out: Int) -> Int ! alloc
         _p = vec_push(out, vec_get(v, i))
         dr_copy_vec(v, i + 1, out)
 
+
+# ---- threads (SPEC «Hilos»; `fresh_kind`, `joined_kind` and `borrows_args` in src/drops.rs) ----
+
+# The handles a thread builtin creates, released by their own glue (a release-name kind).
+fn dr_sync_kind(name: &String) -> Int ! alloc
+    match name
+        "thread_spawn" => str_own(&"thread_free")
+        "sem_new" => str_own(&"sem_free")
+        "chan_new" => str_own(&"chan_free")
+        "mutex_new" => str_own(&"mutex_free")
+        _ => 0
+
+# The thread builtins that only read their arguments.
+fn dr_sync_borrows(name: &String) -> Int ! alloc
+    match name
+        "sem_acquire" => 1
+        "sem_try_acquire" => 1
+        "sem_release" => 1
+        "chan_recv" => 1
+        "chan_close" => 1
+        "mutex_enter" => 1
+        "mutex_leave" => 1
+        _ => 0
+
+# `t.join()` hands out what the thread's fn returned: released as a call of that fn would be.
+fn dr_joined_kind(c: &DC, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            if args.len() != 1
+                0
+            else
+                match args.get(0)
+                    XIdent(t) =>
+                        f = nm_get(&c.spawned, &t)
+                        if f == 0
+                            0
+                        else
+                            fname = str_from_int(f).dup()
+                            dr_fresh_call(c, &XCall(fname.dup(), List.new[Expr](), "", 0), &fname, &"")
+                    _ => 0
+        _ => 0
+
+# Records every `t = thread_spawn(f(..))` of the body, nested blocks included.
+fn dr_note_spawns(m: &mut NM, stmts: &List[TStmt], i: Int) -> Int ! alloc
+    if i >= stmts.len()
+        0
+    else
+        st = stmts.get(i)
+        if st.kind == 1
+            _a = dr_note_spawn(m, &st.name, &st.expr)
+        dr_note_spawns_in(m, &st.expr)
+        dr_note_spawns(m, stmts, i + 1)
+
+fn dr_note_spawn(m: &mut NM, name: &String, e: &Expr) -> Int ! alloc
+    match e
+        XCall(fname, args, targs, xp) =>
+            if fname.eq("thread_spawn") == 0 || args.len() != 1
+                0
+            else
+                match args.get(0)
+                    XCall(f, iargs, ita, ixp) => nm_put(m, name, str_own(&f))
+                    _ => 0
+        _ => 0
+
+fn dr_note_spawns_in(m: &mut NM, e: &Expr) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) =>
+            dr_note_spawns(m, &then_b.stmts, 0)
+            dr_note_spawns(m, &else_b.stmts, 0)
+        XWhile(cond, body) => dr_note_spawns(m, &body.stmts, 0)
+        _ => 0

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const AREAS: &[&str] = &[
-    "drops", "ownership", "collections", "structs", "enums", "strings", "methods", "generics",
+    "drops", "ownership", "collections", "structs", "enums", "strings", "methods", "generics", "threads",
 ];
 
 fn root() -> PathBuf {

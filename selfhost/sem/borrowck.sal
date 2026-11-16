@@ -108,7 +108,7 @@ fn bk_at(c: &BK, name: &String) -> Int ! alloc
     i = bk_idx(c, name)
     if i < 0
         0 - 1
-    elsif list_get(&c.o_kind, i) == 2
+    elsif c.o_kind.get(i) == 2 || c.o_kind.get(i) == 4
         list_get(&c.o_at, i)
     else
         0 - 1
@@ -389,7 +389,7 @@ fn bk_visit_go(c: &mut BK, e: &Expr, mode: Int, pos: Int) -> Int ! alloc
     match e
         XIdent(name) => bk_visit_ident(c, &name, mode, pos)
         XUnary(op, inner) => bk_visit_unary(c, &op, &inner, mode)
-        XCall(name, args, targs, xp) => bk_visit_call(c, &args, mode)
+        XCall(name, args, targs, xp) => bk_visit_call(c, &name, &args, mode)
         XField(base, field) => bk_visit_field(c, e, &base, mode, pos)
         XBin(op, l, r) => bk_visit_bin(c, &l, &r, mode)
         XIf(cond, then_b, else_b, has_else, elsifs) => bk_visit_if(c, &cond, &then_b, &else_b, has_else, &elsifs, mode)
@@ -488,22 +488,66 @@ fn bk_arm(c: &mut BK, arm: &TArm, mode: Int) -> Int ! alloc
     else
         bk_visit(c, &arm.body, mode)
 
-fn bk_visit_call(c: &mut BK, args: &List[Expr], mode: Int) -> Int ! alloc
-    n0 = list_len(&c.l_place)
-    _a = bk_call_args(c, args, 0, list_len(args), mode)
+fn bk_visit_call(c: &mut BK, name: &String, args: &List[Expr], mode: Int) -> Int ! alloc
+    n0 = c.l_place.len()
+    bk_call_args(c, name, args, 0, args.len(), mode)
+    bk_recv_loan(c, name, args, mode, bk_tick(c))
     if mode == 0
         0
     else
         bk_extend_loans(c, n0, list_len(&c.l_place), bk_clock(c))
 
-fn bk_call_args(c: &mut BK, args: &List[Expr], i: Int, n: Int, mode: Int) -> Int ! alloc
+fn bk_call_args(c: &mut BK, name: &String, args: &List[Expr], i: Int, n: Int, mode: Int) -> Int ! alloc
     if i >= n
         0
     else
         a = list_get(args, i)
         apos = bk_visit(c, &a, bk_child(mode))
         _l = bk_call_arg_loan(c, &a, mode, apos)
-        bk_call_args(c, args, i + 1, n, mode)
+        bk_call_args(c, name, args, i + 1, n, mode)
+
+# The receiver of a builtin method lent by autoref (`xs.push(v)` is `list_push(xs, v)`): a
+# mutating one takes `&mut` (`mutates_container` in src/ownership.rs), a thread primitive `&`.
+# Like Rust's two-phase borrow, the loan starts when the call runs, after its arguments
+# (`xs.set(i, xs.get(i) + 1)` is valid), and lasts one position.
+fn bk_recv_loan(c: &mut BK, name: &String, args: &List[Expr], mode: Int, at: Int) -> Int ! alloc
+    if mode == 0 || args.len() == 0
+        0
+    else
+        place = bk_place(&args.get(0))
+        if place.len() == 0
+            0
+        elsif bk_mutates_container(name) == 1
+            bk_loan(c, &place, 1, at, at + 1)
+        elsif bk_sync_shared(name) == 1
+            bk_loan(c, &place, 0, at, at + 1)
+        else
+            0
+
+fn bk_mutates_container(name: &String) -> Int ! alloc
+    match name
+        "list_push" => 1
+        "list_set" => 1
+        "list_pop" => 1
+        "dict_put" => 1
+        "dict_remove" => 1
+        "bytes_set_u8" => 1
+        "bytes_set_u32" => 1
+        "bytes_fill" => 1
+        "bytes_fill_u32" => 1
+        "bytes_copy" => 1
+        _ => 0
+
+fn bk_sync_shared(name: &String) -> Int ! alloc
+    match name
+        "mutex_leave" => 1
+        "sem_acquire" => 1
+        "sem_try_acquire" => 1
+        "sem_release" => 1
+        "chan_send" => 1
+        "chan_recv" => 1
+        "chan_close" => 1
+        _ => 0
 
 # The loan of a `&x` argument lasts until its own call returns: it is created open (end -1) and
 # `bk_extend_loans` closes it there. A nested call closed its loans before, so
@@ -531,6 +575,8 @@ fn bk_block(c: &mut BK, b: &TBlock, fn_tail: Int, mode: Int) -> Int ! alloc
     _p = bk_push(c)
     _s = bk_stmts(c, &b.stmts, 0, list_len(&b.stmts), mode)
     _t = bk_tail(c, &b.tail, fn_tail, mode)
+    if mode == 0
+        bk_keep_threads(c, b, c.scope_o.get(c.scope_o.len() - 1))
     bk_pop(c)
 
 fn bk_tail(c: &mut BK, e: &Expr, fn_tail: Int, mode: Int) -> Int ! alloc
@@ -591,6 +637,20 @@ fn bk_stmt_bind(c: &mut BK, st: &TStmt, mode: Int) -> Int ! alloc
         epos = bk_visit(c, &st.expr, bk_child(mode))
         _n = bk_bind_ref(c, st, &place, epos, mode)
         0
+    elsif bk_is_call(&st.expr, &"thread_spawn") == 1
+        bk_bind_thread(c, st, mode)
+    elsif bk_is_call(&st.expr, &"mutex_enter") == 1
+        # `m.enter()` lends the mutex exclusively while its `&mut T` lives (SPEC «Hilos»).
+        epos = bk_visit(c, &st.expr, bk_child(mode))
+        mplace = bk_enter_place(&st.expr)
+        if mode == 0
+            bk_ne_set(c, epos, epos)
+            ty = bk_bound_ty(c, st)
+            bk_bind(c, &st.name, &ty, 2, &mplace, epos)
+        else
+            bk_loan(c, &mplace, 1, epos, bk_ne_get(c, epos))
+            ty = bk_bound_ty(c, st)
+            bk_bind(c, &st.name, &ty, 2, &mplace, epos)
     else
         _v = bk_visit(c, &st.expr, bk_move_mode(mode))
         ty = bk_bound_ty(c, st)
@@ -608,6 +668,8 @@ fn bk_bind_ref(c: &mut BK, st: &TStmt, place: &String, epos: Int, mode: Int) -> 
 
 fn bk_stmt_field(c: &mut BK, st: &TStmt, mode: Int) -> Int ! alloc
     _v = bk_visit(c, &st.expr, bk_move_mode(mode))
+    # The target only reads its root (`*v = x`, `p.f = x`): it is scanned for last uses.
+    bk_visit(c, &st.target, 0)
     if mode == 0
         0
     else
@@ -621,6 +683,7 @@ fn bk_returned(c: &mut BK, e: &Expr) -> Int ! alloc
 
 fn bk_escapes(c: &BK, e: &Expr) -> Int ! alloc
     match e
+        XCall(name, args, targs, xp) => bk_escapes_spawn(c, e)
         XUnary(op, inner) => bk_escapes_ref(c, &op, &inner)
         XIdent(name) => bk_escapes_ident(c, &name)
         XField(base, field) => bk_escapes_field(c, e, &base)
@@ -645,6 +708,12 @@ fn bk_escapes_ident(c: &BK, name: &String) -> Int ! alloc
         0
     elsif k == 2
         if bk_root_param(c, &bk_origin_place(c, name)) == 1
+            0
+        else
+            1
+    elsif k == 4
+        lent = bk_origin_place(c, name)
+        if lent.len() == 0 || bk_root_param(c, &lent) == 1
             0
         else
             1
@@ -831,3 +900,129 @@ fn bk_moved_loans(c: &mut BK, i: Int, j: Int, n: Int) -> Int ! alloc
 fn check_borrows(tp: &TProgram) -> Res ! alloc
     c = bk_new(tp)
     bk_fns(&mut c, &tp.fns, 0, list_len(&tp.fns))
+
+# ---- Threads (SPEC «Hilos», `keep_threads_to_drop` in src/borrowck.rs) ----
+
+# `e` is a call of `name` with one argument (`thread_spawn(f(a…))`, `mutex_enter(m)`).
+fn bk_is_call(e: &Expr, name: &String) -> Int ! alloc
+    match e
+        XCall(f, args, targs, xp) =>
+            if f.eq(name) == 1 && args.len() == 1
+                1
+            else
+                0
+        _ => 0
+
+# The first place that `thread_spawn(f(a…))` lends whose root is not a parameter, or "".
+fn bk_spawn_lent(c: &BK, e: &Expr) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            if name.eq("thread_spawn") == 1 && args.len() == 1
+                bk_inner_lent(c, &args.get(0))
+            else
+                ""
+        _ => ""
+
+fn bk_inner_lent(c: &BK, e: &Expr) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) => bk_spawn_local(c, &args, 0)
+        _ => ""
+
+# The mutex of `mutex_enter(m)`, or "".
+fn bk_enter_place(e: &Expr) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            if name.eq("mutex_enter") == 1 && args.len() == 1
+                bk_place(&args.get(0))
+            else
+                ""
+        _ => ""
+
+# The first place lent to the thread whose root is not a parameter, or "".
+fn bk_spawn_local(c: &BK, args: &List[Expr], i: Int) -> String ! alloc
+    if i >= args.len()
+        ""
+    else
+        place = bk_ref_place(&args.get(i))
+        if place.len() > 0 && bk_root_param(c, &place) == 0
+            place
+        else
+            bk_spawn_local(c, args, i + 1)
+
+# `t = Thread.spawn(f, &x…)`: the loans of the arguments live as long as `t` (kind 4).
+fn bk_bind_thread(c: &mut BK, st: &TStmt, mode: Int) -> Int ! alloc
+    n0 = c.l_place.len()
+    epos = bk_visit(c, &st.expr, bk_move_mode(mode))
+    lent = bk_spawn_lent(c, &st.expr)
+    ty = bk_bound_ty(c, st)
+    if mode == 0
+        bk_ne_set(c, epos, epos)
+        bk_bind(c, &st.name, &ty, 4, &lent, epos)
+    else
+        bk_extend_to(c, n0, c.l_place.len(), bk_ne_get(c, epos))
+        bk_bind(c, &st.name, &ty, 4, &lent, epos)
+
+fn bk_extend_to(c: &mut BK, i: Int, n: Int, end: Int) -> Int ! alloc
+    while i < n
+        if c.l_end.get(i) < end
+            c.l_end.set(i, end)
+        i = i + 1
+    0
+
+# A Thread of this block that the block does not join at its top level is joined by its glue at
+# the end of the block: its loans last until then.
+fn bk_keep_threads(c: &mut BK, b: &TBlock, i: Int) -> Int ! alloc
+    if i >= c.o_name.len()
+        0
+    else
+        name = c.o_name.get(i)
+        if c.o_kind.get(i) == 4 && bk_joined(b, &name) == 0
+            bk_note(c, &name, bk_clock(c))
+        bk_keep_threads(c, b, i + 1)
+
+fn bk_joined(b: &TBlock, name: &String) -> Int ! alloc
+    if bk_joins_stmts(&b.stmts, name, 0) == 1
+        1
+    else
+        bk_joins(&b.tail, name)
+
+fn bk_joins_stmts(xs: &List[TStmt], name: &String, i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif xs.get(i).kind != 3 && bk_joins(&xs.get(i).expr, name) == 1
+        1
+    else
+        bk_joins_stmts(xs, name, i + 1)
+
+# `thread_join(name)` in `e` outside any branch, loop or nested block.
+fn bk_joins(e: &Expr, name: &String) -> Int ! alloc
+    match e
+        XCall(f, args, targs, xp) =>
+            if f.eq("thread_join") == 1 && args.len() == 1 && bk_place(&args.get(0)).eq(name) == 1
+                1
+            else
+                bk_joins_list(&args, name, 0)
+        XBin(op, l, r) =>
+            if bk_joins(&l, name) == 1
+                1
+            else
+                bk_joins(&r, name)
+        XUnary(op, inner) => bk_joins(&inner, name)
+        XField(base, field) => bk_joins(&base, name)
+        _ => 0
+
+fn bk_joins_list(xs: &List[Expr], name: &String, i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif bk_joins(&xs.get(i), name) == 1
+        1
+    else
+        bk_joins_list(xs, name, i + 1)
+
+# `Thread.spawn(f, &x)` as a returned value lends a local to a thread that outlives it.
+fn bk_escapes_spawn(c: &BK, e: &Expr) -> Int ! alloc
+    lent = bk_spawn_lent(c, e)
+    if lent.len() > 0
+        1
+    else
+        0

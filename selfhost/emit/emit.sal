@@ -956,6 +956,13 @@ fn emit_c_keep_export(fname: &String, args_e: &List[Expr], arg_parts: &mut List[
             _ => 0
 
 fn emit_c_call(fname: &String, args_e: &List[Expr], targs: &String, user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
+    if fname.eq("thread_spawn") == 1
+        # The inner call is not run here: its arguments go to the new thread.
+        emit_c_thread_spawn(args_e, user, stmts, tc)
+    else
+        emit_c_call_go(fname, args_e, targs, user, stmts, tc)
+
+fn emit_c_call_go(fname: &String, args_e: &List[Expr], targs: &String, user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
     hname = str_as_int(fname)
     arg_parts = List.new[String]()
     emit_c_args(args_e, 0, list_len(args_e), user, stmts, tc, &mut arg_parts)
@@ -984,6 +991,10 @@ fn emit_c_call(fname: &String, args_e: &List[Expr], targs: &String, user: Int, s
         emit_c_list_new(targs, 0, tc)
     elsif str_eq(fname, "list_new_owned") == 1
         emit_c_list_new(targs, 1, tc)
+    elsif fname.eq("chan_new") == 1
+        emit_c_runtime1(&"sal_chan_new", &emit_c_list_new(targs, 1, tc), stmts)
+    elsif fname.eq("mutex_new") == 1
+        emit_c_mutex_new(&args_e.get(0), &arg_parts.get(0), stmts, tc)
     elsif str_eq(fname, "float_to_int") == 1
         "sal_fop(11, " + arg_parts.get(0).clone() + ", 0LL)"
     elsif str_eq(fname, "int_to_float") == 1
@@ -996,6 +1007,56 @@ fn emit_c_call(fname: &String, args_e: &List[Expr], targs: &String, user: Int, s
         emit_c_matmul(args_e, &arg_parts, stmts, tc)
     else
         emit_c_builtin(fname, &arg_parts, stmts)
+
+# ---- threads (SPEC «Hilos»; mirror of the `thread_spawn`/`chan_new`/`mutex_new` lowering in src/ir.rs) ----
+
+# `thread_spawn(f(a…))`: the runtime gets an owned `List[R]` for the result (released with the
+# glue of `R`), the address of `f` and its arguments, padded to 8.
+fn emit_c_thread_spawn(args_e: &List[Expr], user: Int, stmts: Int, tc: &mut Tc) -> String ! alloc
+    match args_e.get(0)
+        XCall(f, inner, _, _) =>
+            parts = List.new[String]()
+            emit_c_args(&inner, 0, inner.len(), user, stmts, tc, &mut parts)
+            r = texpr_type(&tc.env, &args_e.get(0))
+            result = emit_c_list_new(&r, 1, tc)
+            n = parts.len()
+            while parts.len() < 8
+                parts.push("(int64_t)0")
+            vec_push(stmts, "  extern int64_t sal_thread_spawn();\n".to_int())
+            acc = "sal_thread_spawn(" + result + ", (int64_t)(uintptr_t)&" + mangled(&f) + ", (int64_t)" + n.to_str() + ", "
+            join_commas(&parts, 0, parts.len(), acc) + ")"
+        _ => "0"
+
+# `mutex_new(v)`: a `T` without a block of its own lives in a cell, any other in a one-element
+# owned `List[T]`.
+fn emit_c_mutex_new(arg: &Expr, v: &String, stmts: Int, tc: &mut Tc) -> String ! alloc
+    t = ty_deref(&texpr_type(&tc.env, arg))
+    if t.len() == 0 || tt_is_cell(&tc.env.structs, &t) == 1
+        emit_c_runtime1(&"sal_mutex_new_cell", v, stmts)
+    else
+        l = tmp_fresh(tc)
+        line = "  int64_t " + l + " = " + emit_c_list_new(&t, 1, tc) + ";\n  extern int64_t sal_list_push();\n  sal_list_push(" + l + ", " + v + ");\n"
+        vec_push(stmts, line.to_int())
+        emit_c_runtime1(&"sal_mutex_new", &l, stmts)
+
+fn emit_c_runtime1(rname: &String, a: &String, stmts: Int) -> String ! alloc
+    vec_push(stmts, ("  extern int64_t " + rname + "();\n").to_int())
+    "((int64_t)" + rname + "(" + a + "))"
+
+# `v = m.enter()` with a `T` that lives in a cell: `v` reads the value and writes it back to the
+# mutex's cell, as a cell parameter does.
+fn emit_c_enter_cell(name: &String, e: &Expr, tc: &Tc) -> Int ! alloc
+    match e
+        XCall(f, args, _, _) =>
+            if f.eq("mutex_enter") == 0 || args.len() != 1
+                0
+            else
+                t = tt_arg(&ts_trim(&ty_deref(&texpr_type(&tc.env, &args.get(0)))), 0)
+                if t.len() == 0 || tt_is_cell(&tc.env.structs, &t) == 1
+                    1
+                else
+                    0
+        _ => 0
 
 # `list_new[T]()` / `list_new_owned[T]()`: the element descriptor is a C string literal
 # (the same rule as `desc_type_text` in desc.sal).
@@ -1416,7 +1477,11 @@ fn emit_c_stmts(sts: &List[TStmt], i: Int, n: Int, user: Int, stmts: Int, tc: &m
             h1322_1 = texpr_type(&tc.env, &st.expr)
             _ns = tenv_bind(&mut tc.env, &st.name, &h1322_1)
             _ka = emit_c_keep_alias(tc, &st.name, &st.expr)
-            line = "  " + st.name + " = " + val + ";\n"
+            line = if emit_c_enter_cell(&st.name, &st.expr, tc) == 1
+                tc.pool.cells.push(st.name.dup())
+                "  int64_t " + st.name + "__cell = " + val + ";\n  " + st.name + " = sal_cell_get(" + st.name + "__cell);\n"
+            else
+                "  " + st.name + " = " + val + ";\n"
             _p = vec_push(stmts, str_as_int(&line))
             emit_c_stmts(sts, i + 1, n, user, stmts, tc)
         elsif st.kind == 2

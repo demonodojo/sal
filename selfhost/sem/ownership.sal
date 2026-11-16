@@ -497,6 +497,17 @@ fn call_moves_arg(c: &OC, name: &String, i: Int, modes: &String) -> Int ! alloc
             1
         else
             0
+    elsif name.eq("thread_join") + name.eq("mutex_new") > 0
+        # `t.join()` takes the Thread, `Mutex.new(v)` the value (SPEC «Hilos»).
+        if i == 0
+            1
+        else
+            0
+    elsif name.eq("chan_send") == 1
+        if i == 1
+            1
+        else
+            0
     elsif own_has(&c.ctors, name, 0, list_len(&c.ctors)) == 1
         1
     elsif own_mode_at(modes, i) == 2

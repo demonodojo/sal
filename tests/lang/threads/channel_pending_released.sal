@@ -1,0 +1,14 @@
+# exit: 2
+# Values still queued when the channel is dropped are released with it.
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    let ch = Channel.new[String]()
+    ch.send(d"a")
+    ch.send(d"b")
+    let xs = List.new[Int]()
+    ch.send(d"c")
+    let r = ch.recv()
+    match &r
+        Some(s) => s.len() + 1
+        None => 0

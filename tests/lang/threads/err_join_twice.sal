@@ -1,0 +1,8 @@
+# error: E_MOVED
+fn one(n: Int) -> Int
+    n
+
+fn main() -> Int ! alloc
+    let t = Thread.spawn(one, 1)
+    let a = t.join()
+    a + t.join()

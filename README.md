@@ -378,7 +378,7 @@ standard fix examples/hello.sal   # rewrites the file in place
 
 ## Status and documentation
 
-The language specification — grammar, types, memory, modules, tensors — is **[SPEC.md](SPEC.md)** and takes precedence over the implementation. Per-pass subplans live in [docs/subplans/](docs/subplans/).
+The language specification — grammar, types, memory, modules, tensors — is **[SPEC.md](SPEC.md)** and takes precedence over the implementation. Per-pass subplans live in [docs/subplans/](docs/subplans/). Style and design conventions for sal code (structs with methods, one module per struct, protocols, lambdas) are in [docs/buenas-practicas.md](docs/buenas-practicas.md), written in Spanish.
 
 The bootstrap compiler currently runs the legacy ownership and drops passes while subplan 13 is being closed; the self-hosted compiler validates the language but does not replace the bootstrap. A construct marked `# xfail` in `tests/lang/` is a known gap, not a supported feature.
 

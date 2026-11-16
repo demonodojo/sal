@@ -251,4 +251,26 @@ void *sal_instrument_malloc(int64_t size, int place, const char *site);
 void sal_instrument_check_ptr(const void *p, int64_t nbytes, int place, const char *site);
 void sal_instrument_check_index(int64_t index, int64_t len, const char *site);
 
+/* Threads and synchronisation (SPEC «Hilos»; linux only). Handles are i64. */
+int64_t sal_thread_spawn(int64_t result, int64_t fn, int64_t argc, int64_t a0, int64_t a1,
+                         int64_t a2, int64_t a3, int64_t a4, int64_t a5, int64_t a6,
+                         int64_t a7);
+int64_t sal_thread_join(int64_t h);
+void sal_thread_free(int64_t h);
+int64_t sal_sem_new(int64_t n);
+int64_t sal_sem_acquire(int64_t h);
+int64_t sal_sem_try_acquire(int64_t h);
+int64_t sal_sem_release(int64_t h);
+void sal_sem_free(int64_t h);
+int64_t sal_mutex_new(int64_t list);
+int64_t sal_mutex_new_cell(int64_t v);
+int64_t sal_mutex_enter(int64_t h);
+int64_t sal_mutex_leave(int64_t h);
+void sal_mutex_free(int64_t h);
+int64_t sal_chan_new(int64_t queue);
+int64_t sal_chan_send(int64_t h, int64_t v);
+int64_t sal_chan_recv(int64_t h);
+int64_t sal_chan_close(int64_t h);
+void sal_chan_free(int64_t h);
+
 #endif

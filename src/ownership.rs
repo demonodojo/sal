@@ -114,6 +114,11 @@ fn call_moves_arg(name: &str, i: usize, nargs: usize) -> bool {
     match name {
         "list_push" => return i == 1,
         "list_set" | "dict_put" => return i == 2,
+        // SPEC «Hilos»: `t.join()` consumes the thread; `ch.send(v)` moves `v` into the channel;
+        // `thread_spawn(f(a…))` takes the call, whose arguments move as for `f(a…)`.
+        "thread_join" | "thread_spawn" => return i == 0,
+        "chan_send" => return i == 1,
+        "mutex_new" => return i == 0,
         // Free the shell of a container: the argument is consumed (the caller no longer releases it).
         "list_free_shell" | "enum_free_shell" => return i == 0,
         _ => {}
@@ -892,6 +897,17 @@ fn is_borrow_fn(name: &str) -> bool {
             | "enum_owns"
             | "enum_box_id"
             | "bytes_free"
+            | "thread_free"
+            | "sem_free"
+            | "mutex_free"
+            | "chan_free"
+            | "sem_acquire"
+            | "sem_try_acquire"
+            | "sem_release"
+            | "chan_recv"
+            | "chan_close"
+            | "mutex_enter"
+            | "mutex_leave"
             | "list_get"
             | "list_set"
             | "list_pop"

@@ -1,0 +1,11 @@
+# exit: 1
+# After `join` the thread no longer holds `xs`: it can be mutated again.
+fn count(xs: &List[Int]) -> Int
+    xs.len()
+
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    let t = Thread.spawn(count, &xs)
+    let n = t.join()
+    xs.push(1)
+    n + xs.len()

@@ -1,0 +1,13 @@
+# exit: 7
+# stdout: hilo
+# A thread nobody joins is joined when it goes out of scope; its String result is released.
+fn shout(n: Int) -> String ! io, alloc
+    print_str("hilo")
+    n.to_str()
+
+fn start() -> Int ! io, alloc
+    let t = Thread.spawn(shout, 7)
+    7
+
+fn main() -> Int ! io, alloc
+    start()

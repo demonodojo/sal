@@ -1,0 +1,14 @@
+# exit: 60
+# Three threads share one Semaphore through `&Semaphore`; each takes the permit around its work.
+fn work(sem: &Semaphore, n: Int) -> Int
+    sem.acquire()
+    let r = n * 10
+    sem.release()
+    r
+
+fn main() -> Int ! alloc
+    let sem = Semaphore.new(1)
+    let a = Thread.spawn(work, &sem, 1)
+    let b = Thread.spawn(work, &sem, 2)
+    let c = Thread.spawn(work, &sem, 3)
+    a.join() + b.join() + c.join()

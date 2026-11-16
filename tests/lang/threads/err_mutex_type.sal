@@ -1,0 +1,6 @@
+# error: E_TYPE
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    let m = Mutex.new(1)
+    m.lock x => *x + "a"

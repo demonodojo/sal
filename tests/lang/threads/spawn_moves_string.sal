@@ -1,0 +1,11 @@
+# exit: 0
+# stdout: hola mundo
+# The String moves into the thread, which hands a new one back through `join`.
+fn greet(name: String) -> String ! alloc
+    "hola " + name
+
+fn main() -> Int ! io, alloc
+    let t = Thread.spawn(greet, d"mundo")
+    let s = t.join()
+    print_str(s)
+    0

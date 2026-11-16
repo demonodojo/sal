@@ -483,8 +483,51 @@ fn tt_call_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) ->
             "Dict[" + targs + "]"
     elsif name.eq("dict_get") == 1
         tt_dict_get(env, args)
+    elsif tt_sync_call(name) == 1
+        tt_sync_type(env, name, args, targs)
     else
         tt_user_call(env, name, args)
+
+# The thread builtins (SPEC «Hilos»), typed as `infer_t_sync` in selfhost/sem/infer.sal does.
+fn tt_sync_call(name: &String) -> Int ! alloc
+    match name
+        "thread_spawn" => 1
+        "thread_join" => 1
+        "sem_new" => 1
+        "chan_new" => 1
+        "chan_recv" => 1
+        "mutex_new" => 1
+        "mutex_enter" => 1
+        _ => 0
+
+fn tt_sync_type(env: &TEnv, name: &String, args: &List[Expr], targs: &String) -> String ! alloc
+    a0 = if args.len() > 0
+        texpr_type(env, &args.get(0))
+    else
+        ""
+    inner = tt_arg(&trim_spaces(ty_deref(&a0)), 0)
+    match name
+        "thread_spawn" => tt_wrap(&"Thread", &a0)
+        "thread_join" => inner
+        "sem_new" => "Semaphore"
+        "chan_new" => tt_wrap(&"Channel", targs)
+        "chan_recv" => tt_wrap(&"Option", &inner)
+        "mutex_new" =>
+            if a0.len() == 0
+                "Mutex[Int]"
+            else
+                tt_wrap(&"Mutex", &a0)
+        _ =>
+            if inner.len() == 0
+                ""
+            else
+                "&mut " + inner
+
+fn tt_wrap(head: &String, arg: &String) -> String ! alloc
+    if arg.len() == 0
+        ""
+    else
+        head + "[" + arg + "]"
 
 # The clone builtins of the containers and of the Copy scalars (`infer_typed_builtin` in
 # selfhost/sem/infer.sal): their result has the type of the receiver.

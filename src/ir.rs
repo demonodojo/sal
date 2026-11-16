@@ -874,6 +874,7 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
                     if matches!(
                         name.as_str(),
                         "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free" | "any_free"
+                            | "thread_free" | "sem_free" | "mutex_free" | "chan_free"
                     ) {
                         for a in args {
                             if let Some(r) = root(a) {
@@ -1074,6 +1075,12 @@ fn is_cell_handle(e: &Expr, strings: &StringEnv) -> bool {
             matches!(expr.as_ref(), Expr::Ident { name, .. } if cell_local(name).is_some())
         }
         Expr::Ident { name, .. } => is_ref_cell(name),
+        // SPEC «Hilos»: `m.enter()` of a `Mutex[T]` whose T has no block of its own is the
+        // mutex's cell, which a `&mut T` parameter receives as is.
+        Expr::Call { func, span, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "mutex_enter") => {
+            matches!(strings.types.get(&(span.start, span.end)), Some(Type::Ref { mutable: true, inner, .. })
+                if crate::scalarize::is_cell_type(inner, &strings.structs))
+        }
         Expr::Field { base, field, .. } => struct_name_of_base(base, strings)
             .and_then(|sn| strings.structs.get(&sn).and_then(|d| d.fields.iter().find(|f| &f.name == field).cloned()))
             .is_some_and(|fd| {
@@ -4199,6 +4206,20 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "enum_owns"
             | "enum_box_id"
             | "bytes_free"
+            | "thread_free"
+            | "sem_free"
+            | "mutex_free"
+            | "chan_free"
+            | "thread_join"
+            | "sem_new"
+            | "sem_acquire"
+            | "sem_try_acquire"
+            | "sem_release"
+            | "chan_send"
+            | "chan_recv"
+            | "chan_close"
+            | "mutex_enter"
+            | "mutex_leave"
             | "bytes_new"
             | "bytes_len"
             | "bytes_get_u8"
@@ -4604,6 +4625,127 @@ fn lower_expr(
                 Expr::Ident { name, .. } => name.clone(),
                 _ => "unknown".into(),
             };
+            // SPEC «Hilos»: `thread_spawn(f(a…))` does not run the call here. The arguments are
+            // evaluated as for `f(a…)` and go with `f` to `sal_thread_spawn`, which runs `f` on a
+            // new thread and keeps its result in a `List[R]` that owns it until `join`.
+            if fname == "thread_spawn" {
+                if let Some(Expr::Call { func: inner_f, args: inner_args, span: ispan, .. }) = args.first() {
+                    if let Expr::Ident { name: target, .. } = inner_f.as_ref() {
+                        let r_ty = strings.types.get(&(ispan.start, ispan.end)).cloned().unwrap_or(Type::Named {
+                            name: "Int".into(),
+                            args: vec![],
+                            span: *span,
+                        });
+                        let list_call = Expr::Call {
+                            func: Box::new(Expr::Ident { name: "list_new_owned".into(), span: *span }),
+                            type_args: vec![TypeArg::Type(r_ty)],
+                            args: vec![],
+                            span: *span,
+                        };
+                        let list = lower_expr_simple(
+                            &list_call,
+                            instructions,
+                            env,
+                            counter,
+                            tensors,
+                            fn_names,
+                            host_literals,
+                            strings,
+                        );
+                        let mut call_args = vec![list, target.clone()];
+                        *counter += 1;
+                        let argc = format!("t{counter}");
+                        instructions.push(IrInst::ConstInt { dest: argc.clone(), value: inner_args.len() as i64 });
+                        call_args.push(argc);
+                        for a in inner_args {
+                            let n = lower_expr_simple(
+                                a,
+                                instructions,
+                                env,
+                                counter,
+                                tensors,
+                                fn_names,
+                                host_literals,
+                                strings,
+                            );
+                            call_args.push(maybe_box_for_any(a, n, instructions, counter, strings));
+                        }
+                        if inner_args.len() < 8 {
+                            *counter += 1;
+                            let zero = format!("t{counter}");
+                            instructions.push(IrInst::ConstInt { dest: zero.clone(), value: 0 });
+                            while call_args.len() < 11 {
+                                call_args.push(zero.clone());
+                            }
+                        }
+                        *counter += 1;
+                        let dest = format!("t{counter}");
+                        instructions.push(IrInst::Call {
+                            dest: Some(dest.clone()),
+                            func: "sal_thread_spawn".into(),
+                            args: call_args,
+                        });
+                        return dest;
+                    }
+                }
+            }
+            // `Channel.new[T]()`: the queue is a `List[T]` that owns what is still in it.
+            if fname == "chan_new" {
+                let list_call = Expr::Call {
+                    func: Box::new(Expr::Ident { name: "list_new_owned".into(), span: *span }),
+                    type_args: type_args.clone(),
+                    args: vec![],
+                    span: *span,
+                };
+                let list = lower_expr_simple(
+                    &list_call,
+                    instructions,
+                    env,
+                    counter,
+                    tensors,
+                    fn_names,
+                    host_literals,
+                    strings,
+                );
+                *counter += 1;
+                let dest = format!("t{counter}");
+                instructions.push(IrInst::Call { dest: Some(dest.clone()), func: "sal_chan_new".into(), args: vec![list] });
+                return dest;
+            }
+            // `Mutex.new(v)`: a T without a block of its own goes in a cell (what a `&mut T`
+            // points at); any other T in a one-element `List[T]` whose glue releases it.
+            if fname == "mutex_new" {
+                if let Some(v) = args.first() {
+                    let vsp = v.span();
+                    let vt = strings.types.get(&(vsp.start, vsp.end)).cloned();
+                    let val = lower_expr_simple(v, instructions, env, counter, tensors, fn_names, host_literals, strings);
+                    *counter += 1;
+                    let dest = format!("t{counter}");
+                    if vt.as_ref().is_none_or(|t| crate::scalarize::is_cell_type(t, &strings.structs)) {
+                        instructions.push(IrInst::Call {
+                            dest: Some(dest.clone()),
+                            func: "sal_mutex_new_cell".into(),
+                            args: vec![val],
+                        });
+                        return dest;
+                    }
+                    let list_call = Expr::Call {
+                        func: Box::new(Expr::Ident { name: "list_new_owned".into(), span: *span }),
+                        type_args: vec![TypeArg::Type(vt.unwrap())],
+                        args: vec![],
+                        span: *span,
+                    };
+                    let list = lower_expr_simple(&list_call, instructions, env, counter, tensors, fn_names, host_literals, strings);
+                    *counter += 1;
+                    instructions.push(IrInst::Call {
+                        dest: Some(format!("t{counter}")),
+                        func: "sal_list_push".into(),
+                        args: vec![list.clone(), val],
+                    });
+                    instructions.push(IrInst::Call { dest: Some(dest.clone()), func: "sal_mutex_new".into(), args: vec![list] });
+                    return dest;
+                }
+            }
             let mut arg_names = Vec::new();
             let is_ctor = strings.structs.contains_key(&fname);
             for (i, a) in args.iter().enumerate() {

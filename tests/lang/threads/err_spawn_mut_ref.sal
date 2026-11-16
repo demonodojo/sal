@@ -1,0 +1,9 @@
+# error: E_TYPE
+fn bump(n: &mut Int) -> Unit
+    *n = *n + 1
+
+fn main() -> Int ! alloc
+    let n = 1
+    let t = Thread.spawn(bump, &mut n)
+    t.join()
+    n

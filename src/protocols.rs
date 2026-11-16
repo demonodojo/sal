@@ -319,7 +319,8 @@ pub fn instantiate_provided_with_protocols(prog: &mut Program, protocols: &HashM
 
 fn impl_type_params(target: &Type) -> Option<Vec<String>> {
     let Type::Named { name, args, .. } = target else { return None };
-    if name != "List" || args.len() != 1 { return None; }
+    // `impl List[T] P` and `impl Mutex[T] P` (SPEC «Hilos»): one type parameter.
+    if !matches!(name.as_str(), "List" | "Mutex") || args.len() != 1 { return None; }
     match &args[0] {
         Type::Named { name, args, .. } if args.is_empty() => Some(vec![name.clone()]),
         _ => None,
@@ -361,7 +362,7 @@ fn check_builtin_impl(prog: &Program, imp: &ImplDef, protocols: &HashMap<String,
     let Some(_) = impl_type_params(&imp.target) else {
         return Err(vec![Diagnostic::new(ErrorCode::EType, "unsupported impl target", imp.span)]);
     };
-    let Type::Named { args, .. } = &imp.target else { unreachable!() };
+    let Type::Named { name: target_name, args, .. } = &imp.target else { unreachable!() };
     let elem = args[0].clone();
     for claim in &imp.protocols {
         let Some(p) = protocols.get(&claim.name) else {
@@ -382,20 +383,22 @@ fn check_builtin_impl(prog: &Program, imp: &ImplDef, protocols: &HashMap<String,
             let span = method.span;
             let int = Type::Named { name: "Int".into(), args: vec![], span };
             let unit = Type::Named { name: "Unit".into(), args: vec![], span };
-            let (self_ref, params, ret) = match method.name.as_str() {
-                "len" => (1, vec![], int.clone()),
-                "get" => (1, vec![int.clone()], Type::Ref { mutable: false, lifetime: None, inner: Box::new(elem.clone()), span }),
-                "set" => (2, vec![int, elem.clone()], unit.clone()),
-                "push" => (2, vec![elem.clone()], unit),
-                "pop" => (2, vec![], elem.clone()),
-                _ => return Err(vec![Diagnostic::new(ErrorCode::EType, format!("List has no builtin method `{}`", method.name), span)]),
+            let (self_ref, params, ret) = match (target_name.as_str(), method.name.as_str()) {
+                ("List", "len") => (1, vec![], int.clone()),
+                ("List", "get") => (1, vec![int.clone()], Type::Ref { mutable: false, lifetime: None, inner: Box::new(elem.clone()), span }),
+                ("List", "set") => (2, vec![int, elem.clone()], unit.clone()),
+                ("List", "push") => (2, vec![elem.clone()], unit),
+                ("List", "pop") => (2, vec![], elem.clone()),
+                ("Mutex", "enter") => (1, vec![], Type::Ref { mutable: true, lifetime: None, inner: Box::new(elem.clone()), span }),
+                ("Mutex", "leave") => (1, vec![], unit),
+                _ => return Err(vec![Diagnostic::new(ErrorCode::EType, format!("{target_name} has no builtin method `{}`", method.name), span)]),
             };
             let actual: Vec<Type> = method.params.iter().map(|p| crate::specialize::subst(&p.ty, &sub)).collect();
             if method.self_ref != self_ref || !method.type_params.is_empty() || !method.effects.is_empty()
                 || actual.len() != params.len() || !actual.iter().zip(&params).all(|(a,b)| types_equal_modulo_span(a,b))
                 || !types_equal_modulo_span(&crate::specialize::subst(&method.ret, &sub), &ret)
             {
-                return Err(vec![Diagnostic::new(ErrorCode::EType, format!("builtin List method `{}` does not match protocol signature", method.name), span)]);
+                return Err(vec![Diagnostic::new(ErrorCode::EType, format!("builtin {target_name} method `{}` does not match protocol signature", method.name), span)]);
             }
         }
     }

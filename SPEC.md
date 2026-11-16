@@ -351,6 +351,7 @@ parallel_expr → "parallel" suite
 | `Tensor[Elem, dims…] on lugar` | `Elem` ∈ F32, F16, BF16, I8; `?` eje dinámico |
 | structs, enums | |
 | `any[P]` | heap; `P` es un protocolo; despacho dinámico solo a través de este tipo |
+| `Thread[R]`, `Semaphore`, `Mutex[T]`, `Channel[T]` | heap; asas de hilo y de sincronización («Hilos») |
 | genéricos | monomorfización («Genéricos») |
 
 ### Genéricos
@@ -373,7 +374,7 @@ Un `protocol P[T]` declara parámetros de tipo y métodos requeridos (sin suite)
 
 Un protocolo también declara `static nombre(params) -> R`, requerido o provisto, sin `self` ni parámetros de tipo propios (un `[` tras el nombre es `E_PARSE`). Dentro del protocolo, `Self` es el tipo que lo implementa: vale como tipo en las firmas y en los cuerpos (`-> Self`, `x: &Self`) y como receptor de un static del protocolo (`Self.nombre(args)`). El cuerpo provisto se comprueba con `Self` abstracto: `Self.nombre` tiene que ser un static declarado por `P` (un método de instancia o un nombre que `P` no declara es `E_TYPE`). Fuera de un protocolo, `Self` es un tipo desconocido (`E_TYPE`). El tipo que reclama `P` cumple un static con un `static T.nombre`, y se llama como cualquier static: `T.nombre(args)`; la copia provista sustituye `Self` por `T`. Un static de `P` cumplido con un `method`, o al revés, es `E_TYPE`. Como en Rust, un tipo no tiene un `method` y un `static` con el mismo nombre (`E_TYPE`). Un `impl` de un tipo básico no cumple un protocolo con statics (`E_TYPE`).
 
-La cláusula `impl P, …` en un `struct` o `enum` reclama esos protocolos con sus argumentos concretos. El compilador comprueba que el tipo tiene un `method T.nombre` por cada método requerido o provisto, con la misma aridad, tipos, efectos y receptor tras sustituir los parámetros. Si falta una implementación propia para un método provisto, se añade una copia de su cuerpo; una implementación propia prevalece si su firma coincide. Falta un método requerido o la firma no coincide: `E_TYPE`. Un nombre que no es protocolo, o repetido en la misma cabecera, es `E_TYPE`. El item `impl Tipo P` se declara en el módulo del tipo o en el del protocolo; para tipos básicos, en el del protocolo. Incumplir esta regla de huérfanos es `E_TYPE`.
+La cláusula `impl P, …` en un `struct` o `enum` reclama esos protocolos con sus argumentos concretos. El compilador comprueba que el tipo tiene un `method T.nombre` por cada método requerido o provisto, con la misma aridad, tipos, efectos y receptor tras sustituir los parámetros. Si falta una implementación propia para un método provisto, se añade una copia de su cuerpo; una implementación propia prevalece si su firma coincide. Falta un método requerido o la firma no coincide: `E_TYPE`. Un nombre que no es protocolo, o repetido en la misma cabecera, es `E_TYPE`. El item `impl Tipo P` se declara en el módulo del tipo o en el del protocolo; para tipos básicos, en el del protocolo. Incumplir esta regla de huérfanos es `E_TYPE`. Los tipos básicos que admiten `impl` son `List[T]` y `Mutex[T]`; sus métodos requeridos se cumplen con los métodos builtin de la tabla de «Métodos» (`len`, `get`, `set`, `push`, `pop` de `List`; `enter`, `leave` de `Mutex`). Otro método requerido es `E_TYPE`.
 
 Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Pasarlo donde se espera `any[P]` mueve el valor a una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. `x.m()` con `x: any[P]` llama por la vtable; efectos y préstamos salen de la firma del protocolo. La vtable lleva los métodos no genéricos que no son `static`, en orden de declaración, y luego el drop. Un método que el protocolo no declara, un método genérico, un static o un método cuya firma nombra `Self` llamados por `any`, o un `any[P[…]]` genérico es `E_TYPE`. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. `Tensor` y `frame` no admiten `impl` en este corte.
 
@@ -401,6 +402,10 @@ Los tipos básicos tienen métodos que son el builtin con el receptor como prime
 | `Bytes` | `len`, `get_u8`, `get_u16`, `get_u32`, `get_i64`, `set_u8`, `set_u16`, `set_u32`, `set_i64`, `fill`, `copy`, `ptr` (`bytes_ptr`), `to_str` (`bytes_to_str`), `write_str` (`str_bytes_copy`) (`bytes_*`) |
 | `Int` | `to_str` (`int_to_str`), `to_float` (`int_to_float`) |
 | `Float` | `to_int` (`float_to_int`), `to_str` (`f64_bits_to_str`), y las funciones matemáticas `sqrt`, `abs`, `floor`, `ceil`, `sin`, `cos`, `exp`, `log`, `pow` (`float_*`) |
+| `Thread[R]` | `join` (`thread_join`) |
+| `Semaphore` | `acquire` (`sem_acquire`), `try_acquire` (`sem_try_acquire`), `release` (`sem_release`) |
+| `Mutex[T]` | `enter` (`mutex_enter`), `leave` (`mutex_leave`); `lock` es el método provisto de `Lockable` (preludio) |
+| `Channel[T]` | `send` (`chan_send`), `recv` (`chan_recv`), `close` (`chan_close`) |
 
 Los constructores de los tipos básicos se llaman sobre el tipo y llevan los argumentos de tipo tras el nombre, como `list_new[Int]()`:
 
@@ -411,6 +416,9 @@ Los constructores de los tipos básicos se llaman sobre el tipo y llevan los arg
 | `Bytes.new(n)` | `bytes_new(n)` |
 | `Bytes.view_mem(ptr, len)` | `bytes_view_mem(ptr, len)` |
 | `String.from_char(c)` | `char_to_str(c)` |
+| `Semaphore.new(n)` | `sem_new(n)` |
+| `Mutex.new(v)` | `mutex_new(v)` |
+| `Channel.new[T]()` | `chan_new[T]()` |
 
 Faltar argumentos de tipo (`List.new()`), sobrar o faltar alguno (`Dict.new[Int]()`) o llamar un estático que no existe (`List.nope[Int]()`) es `E_TYPE`. A diferencia de `list_new()`, que sin argumento de tipo es `List[Int]`, aquí el tipo del elemento siempre es explícito.
 
@@ -549,6 +557,26 @@ Precedencia (de menor a mayor): `||`, `&&`, comparación, `|`, `^`, `&`, desplaz
 `syscall(n, a0, a1, a2, a3, a4, a5) -> Int ! io` — siete argumentos `Int`. Disponible al compilar para **soso** (kernel) o **`--target linux`** (shim en `runtime/soso/linux_host_syscall.c`); en otros destinos es `E_TARGET`. En enlace baja a `sal_os_syscall`.
 
 Números estables (ABI soso, ver `std/io/abi.sal`): entre otros, `PIPE` 21, `SPAWN_IO` 22, `CHDIR` 23, `GETCWD` 24, `STAT` 6, `WAIT` 11, `CLOCK_GETTIME` 72, `GETRANDOM` 78, `TCP_CONNECT` 29, `DNS_RESOLVE` 40. `PIPE` devuelve `(escritura << 32) | lectura`. `WAIT` devuelve `(pid << 8) | (código & 0xff)`. En `SpawnIo`, stdio usa `FD_INHERIT_TTY` (-1) o un fd del padre; `FD_CLOSED` (-12) deja el slot vacío.
+
+## Hilos
+
+Un hilo ejecuta una `fn` con nombre en paralelo con quien lo lanza. El modelo es el de `std::thread::scope` de Rust: un hilo puede prestar valores de quien lo lanza y termina (se une) antes de que esos valores mueran. No hay hilos sueltos ni propiedad compartida (`Arc`). En destino `soso` cada construcción de esta sección es `E_TARGET`.
+
+`Thread.spawn(f, a1, …, an)` tiene tipo `Thread[R]`, donde `f` es una `fn` de nivel superior escrita por su nombre y `R` el tipo de `f(a1, …, an)`. Los argumentos siguen las reglas de la llamada `f(a1, …, an)`: un valor con dueño se mueve al hilo, `&x` presta `x` al hilo y los efectos de `f` son efectos de quien lanza (además de `alloc`). El hilo empieza a ejecutar `f` en ese momento. El primer argumento que no es un nombre (una lambda, un local) es `E_TYPE`; un nombre que no es una `fn` también. `Thread.spawn` no admite argumentos de tipo (`E_TYPE`). En este corte:
+
+- Un argumento `&mut T` es `E_TYPE`: para compartir algo mutable se usa `Mutex[T]`.
+- Un argumento o un `R` que es un struct de dos o más campos (o una referencia a uno) es `E_TYPE`, y `R` no puede ser una referencia (`E_TYPE`). Pasan como mucho 8 argumentos (`E_TYPE`).
+- Una función `@arena` no lanza hilos (`E_TYPE`): lo que el hilo recibe tiene que sobrevivir a las páginas de la región.
+
+Un `Thread[R]` guarda los préstamos de sus argumentos como un struct con un campo `&'a`: mientras el `Thread` vive, prestar en exclusiva, mutar o mover un valor prestado al hilo es `E_BORROW`, y devolver el `Thread` o guardarlo donde viva más que lo prestado también. `t.join()` espera a que el hilo termine, mueve `t` (usarlo después es `E_MOVED`) y devuelve el `R` del hilo, que pasa a ser de quien llama. Un `Thread` que sale de su ámbito sin `join` hace `join` en su liberación (`drop.Thread`) y suelta `R` con la glue de su tipo. Por eso un `Thread` vive hasta su `join` o, si su bloque no lo une, hasta el final del bloque: un `join` dentro de una rama o un bucle puede no ejecutarse y no acorta los préstamos.
+
+`Semaphore.new(n)` crea un semáforo con `n` permisos (`Int`; negativo es un pánico). `s.acquire()` espera a que haya un permiso y lo toma; `s.try_acquire()` lo toma si lo hay y devuelve `Bool`; `s.release()` devuelve uno. Los tres toman `&self`, así que varios hilos usan el mismo semáforo a través de `&Semaphore`.
+
+`Mutex.new(v)` mueve `v` a un mutex de tipo `Mutex[T]`. `T` no puede ser una referencia ni un struct de dos o más campos (`E_TYPE`). `m.lock(x => …)` toma el candado, ejecuta la lambda con `x: &mut T` y lo suelta; su valor es el de la lambda. Es el método provisto del protocolo `Lockable[T]` del preludio (`impl Mutex[T] Lockable[T]`), así que hace falta importar `std/prelude.sal`. Por debajo usa `m.enter()`, que toma el candado y da el `&mut T`, y `m.leave()`, que lo suelta. El `&mut T` de `enter` es un préstamo exclusivo de `m` hasta su último uso: `m.leave()` (o cualquier otro uso de `m`) mientras se sigue usando es `E_BORROW`. Un `T` sin bloque propio (`Int`, `Float`, `Bool`, struct de un campo de esos) vive en una celda: el `&mut T` es esa celda. El mutex suelta su valor al liberarse.
+
+`Channel.new[T]()` crea un canal de tipo `Channel[T]` (sin argumento de tipo es `E_TYPE`). `ch.send(v)` mueve `v` a la cola (usarlo después es `E_MOVED`); enviar a un canal cerrado es un pánico. `ch.recv()` espera a que haya un valor y lo saca, el más antiguo primero, como `Some(v)`; si el canal está cerrado y vacío devuelve `None` (el `Option` del preludio, como `dict_get`). `ch.close()` cierra el canal y despierta a quien espera en `recv`. Los tres toman `&self`. Un valor de tipo distinto de `T` es `E_TYPE`. Al liberarse el canal suelta los valores que siguen en la cola.
+
+Un pánico en cualquier hilo termina el proceso con el mensaje del pánico. El runtime sirve a varios hilos a la vez: el heap del host es el `malloc` del sistema, la región `@arena` y la región fusionada de tensores son de cada hilo, y los heaps de lugar de los tensores y las sondas de `--instrument` están protegidos con un candado.
 
 ## Dispositivos
 

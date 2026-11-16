@@ -102,6 +102,24 @@ fn soso_syscall_and_bytes_get_lower_to_runtime() {
     assert!(art.llvm.contains("load i32"));
 }
 
+/// SPEC «Hilos»: soso has no threads in this cut.
+#[test]
+fn soso_rejects_threads() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = root.join("main.sal");
+    std::fs::write(
+        &file,
+        "fn one(n: Int) -> Int\n    n\n\nfn main() -> Int ! alloc\n    let t = Thread.spawn(one, 1)\n    t.join()\n",
+    )
+    .unwrap();
+    std::fs::create_dir(root.join("sdk")).unwrap();
+    std::fs::write(root.join("sdk/manifest.txt"), "sdk=1").unwrap();
+    let err = compile_file(&file, &options(root, Target::Soso)).expect_err("threads on soso");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("ETarget") || msg.contains("E_TARGET"), "threads need pthreads:\n{msg}");
+}
+
 #[test]
 fn soso_rejects_regex_match_pattern() {
     let dir = tempfile::tempdir().unwrap();

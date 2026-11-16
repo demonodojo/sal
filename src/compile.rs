@@ -49,6 +49,7 @@ pub fn compile_source(source: &str, opts: &CompileOptions) -> Result<CompileArti
     let mut program = parse(&crate::interp::with_prelude_enums(source)).map_err(|d| vec![d])?;
     crate::interp::expand_interpolation(&mut program);
     crate::loops::desugar_break(&mut program)?;
+    crate::threads::desugar_thread_spawn(&mut program)?;
     crate::methods::prepare_program(&mut program)?;
     compile_program(&program, opts)
 }
@@ -64,6 +65,7 @@ pub fn compile_file(path: &Path, opts: &CompileOptions) -> Result<CompileArtifac
     let mut program = parse(&crate::interp::with_prelude_enums(&source)).map_err(|d| vec![d])?;
     crate::interp::expand_interpolation(&mut program);
     crate::loops::desugar_break(&mut program)?;
+    crate::threads::desugar_thread_spawn(&mut program)?;
     compile_program_at(&program, opts, Some(path))
 }
 
@@ -639,6 +641,8 @@ fn link_binary_multi(
     // Runtime C sources are compiled once per (source, flags) into cached
     // objects, so linking a program does not recompile ~3.5k lines of C.
     let mut defs: Vec<&str> = sanitize_flags();
+    // Threads (SPEC «Hilos»): the runtime uses pthreads on linux.
+    defs.push("-pthread");
     if gpu_obj.is_some() {
         defs.push("-DSAL_USE_CUDA=1");
     }
@@ -677,7 +681,7 @@ fn link_binary_multi(
     if lto {
         link.arg("-flto");
     }
-    link.arg("-o").arg(&bin).arg(opt_flag).arg("-lm");
+    link.arg("-o").arg(&bin).arg(opt_flag).arg("-lm").arg("-pthread");
     run_cmd(link)?;
     Ok(bin)
 }

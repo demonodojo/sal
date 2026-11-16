@@ -1,0 +1,9 @@
+# error: E_BORROW
+fn count(xs: &List[Int]) -> Int
+    xs.len()
+
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    let t = Thread.spawn(count, &xs)
+    xs.push(1)
+    t.join()

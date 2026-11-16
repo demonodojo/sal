@@ -1,0 +1,22 @@
+# exit: 10
+# Two threads read the same list through `&List[Int]`; the list is usable again once both
+# have been joined.
+fn sum_from(xs: &List[Int], from: Int, upto: Int) -> Int
+    let s = 0
+    let i = from
+    while i < upto
+        s = s + xs.get(i)
+        i = i + 1
+    s
+
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    xs.push(4)
+    let a = Thread.spawn(sum_from, &xs, 0, 2)
+    let b = Thread.spawn(sum_from, &xs, 2, 4)
+    let total = a.join() + b.join()
+    xs.push(5)
+    total + xs.len() - 5

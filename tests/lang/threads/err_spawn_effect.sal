@@ -1,0 +1,9 @@
+# error: E_EFFECT
+# The effects of the fn the thread runs belong to whoever starts it.
+fn hi(n: Int) -> Int ! io
+    print_str("hi")
+    n
+
+fn main() -> Int ! alloc
+    let t = Thread.spawn(hi, 1)
+    t.join()

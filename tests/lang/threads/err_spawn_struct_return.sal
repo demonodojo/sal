@@ -1,0 +1,11 @@
+# error: E_TYPE
+struct P
+    a: Int
+    b: Int
+
+fn mk(n: Int) -> P
+    P(n, n)
+
+fn main() -> Int ! alloc
+    let t = Thread.spawn(mk, 1)
+    t.join().a

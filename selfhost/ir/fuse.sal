@@ -587,6 +587,16 @@ fn lower_container_new(cx: &mut Cx, name: &String, txt: &String, d: Int, nkinds:
     d
 
 fn lower_call_runtime(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
+    if name.eq("thread_spawn") == 1 && args.len() == 1
+        lower_thread_spawn(cx, &args.get(0), args, targs)
+    elsif name.eq("chan_new") == 1
+        lower_chan_new(cx, targs)
+    elsif name.eq("mutex_new") == 1 && args.len() == 1
+        lower_mutex_new(cx, &args.get(0))
+    else
+        lower_call_runtime_args(cx, name, args, targs)
+
+fn lower_call_runtime_args(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
     out = vec_new()
     arg_names = lower_args(cx, args, 0, list_len(args), out)
     src = map_lambda_source(cx, name, args, arg_names)
@@ -597,6 +607,76 @@ fn lower_call_runtime(cx: &mut Cx, name: &String, args: &List[Expr], targs: &Str
         lower_lambda_call(cx, li, vec_get(arg_names, 0))
     else
         lower_call_runtime_go(cx, name, targs, args, arg_names)
+
+# ---- threads (SPEC «Hilos»; mirror of the `thread_spawn`, `chan_new` and `mutex_new` lowering in src/ir.rs) ----
+
+# `thread_spawn(f(a…))`: the inner call is not run here. `sal_thread_spawn` gets an owned
+# `List[R]` for the result, the name of `f`, the argument count and the arguments, padded to 8.
+fn lower_thread_spawn(cx: &mut Cx, inner: &Expr, args: &List[Expr], targs: &String) -> Int ! alloc
+    match inner
+        XCall(f, iargs, _, _) =>
+            r0 = ty_deref(&texpr_type(&cx.env, inner))
+            r = if r0.len() == 0
+                "Int"
+            else
+                r0
+            lst = fresh(cx)
+            lower_list_new(cx, &r, lst, 1)
+            argv = vec_new()
+            vec_push(argv, lst)
+            vec_push(argv, str_own(&f))
+            argc = fresh(cx)
+            push_const_int(cx, argc, iargs.len())
+            vec_push(argv, argc)
+            lower_args(cx, &iargs, 0, iargs.len(), argv)
+            pad_zero_args(cx, argv, iargs.len())
+            d = fresh(cx)
+            ir_push(cx, ir_call(d, "sal_thread_spawn".to_int(), argv, 1))
+            d
+        _ => lower_call_runtime_args(cx, &"thread_spawn", args, targs)
+
+# The runtime takes 8 argument slots: the unused ones get one 0 constant (src/ir.rs).
+fn pad_zero_args(cx: &mut Cx, argv: Int, n: Int) -> Int ! alloc
+    if n >= 8
+        return 0
+    z = fresh(cx)
+    push_const_int(cx, z, 0)
+    while vec_len(argv) < 11
+        vec_push(argv, z)
+    0
+
+# `chan_new[T]()`: the queue is an owned `List[T]`.
+fn lower_chan_new(cx: &mut Cx, targs: &String) -> Int ! alloc
+    lst = fresh(cx)
+    lower_list_new(cx, targs, lst, 1)
+    argv = vec_new()
+    vec_push(argv, lst)
+    d = fresh(cx)
+    ir_push(cx, ir_call(d, "sal_chan_new".to_int(), argv, 1))
+    d
+
+# `mutex_new(v)`: a `T` without a block of its own goes in a cell, any other in a one-element
+# owned `List[T]`.
+fn lower_mutex_new(cx: &mut Cx, v: &Expr) -> Int ! alloc
+    t = ty_deref(&texpr_type(&cx.env, v))
+    val = lower_expr(cx, v)
+    d = fresh(cx)
+    argv = vec_new()
+    if t.len() == 0 || tt_is_cell(&cx_structs(cx), &t) == 1
+        vec_push(argv, val)
+        ir_push(cx, ir_call(d, "sal_mutex_new_cell".to_int(), argv, 1))
+        d
+    else
+        lst = fresh(cx)
+        lower_list_new(cx, &t, lst, 1)
+        pargs = vec_new()
+        vec_push(pargs, lst)
+        vec_push(pargs, val)
+        pd = fresh(cx)
+        ir_push(cx, ir_call(pd, "sal_list_push".to_int(), pargs, 1))
+        vec_push(argv, lst)
+        ir_push(cx, ir_call(d, "sal_mutex_new".to_int(), argv, 1))
+        d
 
 # `f(a)` with `f = x => body`: the body is lowered with `x` bound to the argument.
 fn lower_lambda_call(cx: &mut Cx, li: Int, arg: Int) -> Int ! alloc
@@ -2376,7 +2456,20 @@ fn local_cell_ref_expr(cx: &Cx, e: &Expr) -> Int ! alloc
                 1
             else
                 0
+        XCall(name, args, targs, xp) => mutex_enter_cell(cx, &name, &args)
         _ => 0
+
+# SPEC «Hilos»: `m.enter()` of a `Mutex[T]` whose `T` has no block of its own is the mutex's
+# cell, which a `&mut T` parameter receives as is (`is_cell_handle` in src/ir.rs).
+fn mutex_enter_cell(cx: &Cx, name: &String, args: &List[Expr]) -> Int ! alloc
+    if name.eq("mutex_enter") == 0 || args.len() != 1
+        0
+    else
+        t = tt_arg(&trim_spaces(ty_deref(&texpr_type(&cx.env, &args.get(0)))), 0)
+        if t.len() == 0
+            0
+        else
+            tt_is_cell(&cx.env.structs, &t)
 
 fn local_cell_get(cx: &mut Cx, cell: Int) -> Int ! alloc
     v = fresh(cx)
@@ -3788,6 +3881,8 @@ fn rel_releasing(name: &String) -> Int ! alloc
     elsif str_eq(name, "tensor_free") == 1
         1
     elsif str_eq(name, "enum_free") == 1
+        1
+    elsif name.eq("thread_free") + name.eq("sem_free") + name.eq("mutex_free") + name.eq("chan_free") > 0
         1
     elsif str_eq(name, "enum_box_id") == 1
         1

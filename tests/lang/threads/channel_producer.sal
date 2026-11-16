@@ -1,0 +1,29 @@
+# exit: 6
+# stdout: 012
+# A producer thread sends three Strings; after `close`, `recv` drains them in order and then
+# gives `None`.
+import "../../../std/prelude.sal"
+
+fn produce(ch: &Channel[String], n: Int) -> Int ! alloc
+    let i = 0
+    while i < n
+        ch.send(i.to_str())
+        i = i + 1
+    n
+
+fn main() -> Int ! io, alloc
+    let ch = Channel.new[String]()
+    let p = Thread.spawn(produce, &ch, 3)
+    let sent = p.join()
+    ch.close()
+    let got = 0
+    let more = 1
+    while more == 1
+        let r = ch.recv()
+        match &r
+            Some(s) =>
+                print_str(s)
+                got = got + 1
+            None =>
+                more = 0
+    sent + got

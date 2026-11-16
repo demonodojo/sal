@@ -3,6 +3,7 @@ import "../pkg/result.sal"
 import lexer
 import "../ast/tast.sal"
 import loops
+import threads
 import "../sem/methods.sal"
 import "../sem/protocols.sal"
 import "../sem/specialize.sal"
@@ -2187,9 +2188,18 @@ fn parse_program_deferred_post(tp: TProgram, src: &String, errs: &mut List[Strin
     if list_len(errs) > 0
         tp
     elsif str_contains(src, "break") == 1
-        parse_program_check(desugar_break(tp, errs), errs, ndots)
+        parse_program_check(desugar_spawn(desugar_break(tp, errs), src, errs), errs, ndots)
     else
-        parse_program_check(tp, errs, ndots)
+        parse_program_check(desugar_spawn(tp, src, errs), errs, ndots)
+
+# `Thread.spawn(f, a…)` → `thread_spawn(f(a…))` (`threads.sal`), after `desugar_break`.
+fn desugar_spawn(tp: TProgram, src: &String, errs: &mut List[String]) -> TProgram ! alloc
+    if errs.len() > 0
+        tp
+    elsif src.contains("Thread.spawn") == 1
+        desugar_thread_spawn(tp, errs)
+    else
+        tp
 
 fn parse_program_check(tp: TProgram, errs: &mut List[String], ndots: Int) -> TProgram ! alloc
     if list_len(errs) > 0
@@ -2214,9 +2224,9 @@ fn parse_program_post(tp: TProgram, src: &String, errs: &mut List[String], flags
     if list_len(errs) > 0
         tp
     elsif str_contains(src, "break") == 1
-        parse_program_methods(desugar_break(tp, errs), errs, ndots)
+        parse_program_methods(desugar_spawn(desugar_break(tp, errs), src, errs), errs, ndots)
     else
-        parse_program_methods(tp, errs, ndots)
+        parse_program_methods(desugar_spawn(tp, src, errs), errs, ndots)
 
 fn parse_program_methods(tp: TProgram, errs: &mut List[String], ndots: Int) -> TProgram ! alloc
     if list_len(errs) > 0

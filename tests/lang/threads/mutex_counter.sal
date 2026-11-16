@@ -1,0 +1,20 @@
+# exit: 208
+# Two threads add 1000 each to a Mutex[Int] they both borrow: no update is lost
+# (2000 & 0xff = 208).
+import "../../../std/prelude.sal"
+
+fn add(m: &Mutex[Int], n: Int) -> Int
+    let i = 0
+    while i < n
+        m.lock x =>
+            *x = *x + 1
+        i = i + 1
+    n
+
+fn main() -> Int ! alloc
+    let m = Mutex.new(0)
+    let a = Thread.spawn(add, &m, 1000)
+    let b = Thread.spawn(add, &m, 1000)
+    a.join()
+    b.join()
+    m.lock x => *x

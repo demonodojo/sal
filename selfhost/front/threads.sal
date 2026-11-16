@@ -1,0 +1,159 @@
+# Threads (SPEC «Hilos»): `Thread.spawn(f, a1, …, an)`. Mirror of `src/threads.rs`.
+#
+# The pass runs right after the parse, next to `desugar_break`, and rewrites the call to
+# `thread_spawn(f(a1, …, an))`. The inner call is an ordinary call of `f`: every later pass checks
+# and moves the arguments as for `f(a1, …, an)`, and the effects of `f` reach the caller. Only the
+# lowering knows that `thread_spawn` hands `f` and its arguments to a new thread.
+#
+# A program that defines its own `Thread` keeps its static `Thread.spawn`. The first argument has
+# to name a fn: anything else (a lambda, a local) is `E_TYPE`.
+import "../ast/tast.sal"
+
+fn desugar_thread_spawn(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
+    if th_own_thread(&tp) == 1
+        tp
+    else
+        th_fns(&tp.fns, 0, errs)
+        tp
+
+fn th_own_thread(tp: &TProgram) -> Int ! alloc
+    th_struct_named(&tp.structs, 0) + th_enum_named(&tp.enums, 0)
+
+fn th_struct_named(xs: &List[TStruct], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif xs.get(i).name.eq("Thread") == 1
+        1
+    else
+        th_struct_named(xs, i + 1)
+
+fn th_enum_named(xs: &List[TEnum], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif xs.get(i).name.eq("Thread") == 1
+        1
+    else
+        th_enum_named(xs, i + 1)
+
+fn th_fns(xs: &List[TFn], i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        f = xs.get(i)
+        th_block(&f.body, errs)
+        th_fns(xs, i + 1, errs)
+
+fn th_block(b: &TBlock, errs: &mut List[String]) -> Int ! alloc
+    th_stmts(&b.stmts, 0, errs)
+    th_expr(&b.tail, errs)
+
+fn th_stmts(xs: &List[TStmt], i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        st = xs.get(i)
+        th_expr(&st.expr, errs)
+        th_expr(&st.target, errs)
+        th_stmts(xs, i + 1, errs)
+
+fn th_elsifs(xs: &List[TElsif], i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        th_expr(&a.cond, errs)
+        th_block(&a.body, errs)
+        th_elsifs(xs, i + 1, errs)
+
+fn th_arms(xs: &List[TArm], i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        a = xs.get(i)
+        th_expr(&a.body, errs)
+        if a.has_suite == 1
+            _s = th_block(&a.suite, errs)
+        th_arms(xs, i + 1, errs)
+
+fn th_args(xs: &List[Expr], i: Int, errs: &mut List[String]) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        th_expr(&xs.get(i), errs)
+        th_args(xs, i + 1, errs)
+
+fn th_expr(e: &Expr, errs: &mut List[String]) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => th_call(e, &name, &args, &targs, xp, errs)
+        XBin(_, l, r) =>
+            _l = th_expr(&l, errs)
+            th_expr(&r, errs)
+        XTo(_, inner) => th_expr(&inner, errs)
+        XOn(_, body, _, _) => th_block(&body, errs)
+        XIf(cond, then_b, else_b, has_else, elsifs) =>
+            _c = th_expr(&cond, errs)
+            th_block(&then_b, errs)
+            if has_else == 1
+                _e = th_block(&else_b, errs)
+            th_elsifs(&elsifs, 0, errs)
+        XWhile(cond, body) =>
+            _c = th_expr(&cond, errs)
+            th_block(&body, errs)
+        XField(base, _) => th_expr(&base, errs)
+        XLambda(_, body) => th_expr(&body, errs)
+        XLambdaBlock(_, body) => th_block(&body, errs)
+        XUnary(_, inner) => th_expr(&inner, errs)
+        XTry(inner) => th_expr(&inner, errs)
+        XBlock(body) => th_block(&body, errs)
+        XMatch(scrut, arms) =>
+            th_expr(&scrut, errs)
+            th_arms(&arms, 0, errs)
+        _ => 0
+
+# The arguments are rewritten first: a spawn can sit inside the argument of another call.
+fn th_call(e: &Expr, name: &String, args: &List[Expr], targs: &String, xp: Int, errs: &mut List[String]) -> Int ! alloc
+    th_args(args, 0, errs)
+    if name.eq("Thread.spawn") == 0
+        0
+    elsif th_type_args(targs).len() > 0
+        errs.push("E_TYPE: `Thread.spawn` takes no type arguments")
+        0
+    elsif args.len() == 0
+        th_not_a_fn(errs)
+    else
+        match args.get(0)
+            XIdent(f) => th_rewrite(e, &f, args, xp)
+            _ => th_not_a_fn(errs)
+
+fn th_not_a_fn(errs: &mut List[String]) -> Int ! alloc
+    errs.push("E_TYPE: `Thread.spawn` takes the name of a fn first: `Thread.spawn(f, args…)`")
+    0
+
+# The type arguments of a stamped `targs` (the text before `@`).
+fn th_type_args(targs: &String) -> String ! alloc
+    at = targs.index_of("@")
+    if at < 0
+        targs.dup()
+    else
+        targs.slice(0, at)
+
+# `Thread.spawn(f, a…)` becomes `thread_spawn(f(a…))`; the inner call owns copies of the arguments.
+fn th_rewrite(e: &Expr, f: &String, args: &List[Expr], xp: Int) -> Int ! alloc
+    inner_args = List.new[Expr]()
+    th_copy_args(&mut inner_args, args, 1)
+    outer = List.new[Expr]()
+    outer.push(XCall(f.dup(), inner_args, "", xp))
+    enum_set(e, 1, outer)
+    # Mentioning `outer` marks it escaped, so the scope-end glue does not free the vector now
+    # stored in the call.
+    outer
+    enum_set(e, 0, "thread_spawn".dup())
+    _t = enum_set(e, 2, "".dup())
+    0
+
+fn th_copy_args(out: &mut List[Expr], xs: &List[Expr], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    else
+        out.push(tc_expr(&xs.get(i)))
+        th_copy_args(out, xs, i + 1)

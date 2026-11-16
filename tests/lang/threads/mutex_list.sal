@@ -1,0 +1,18 @@
+# exit: 30
+# A Mutex[List[Int]] shared by three threads; the list is released with the mutex.
+import "../../../std/prelude.sal"
+
+fn fill(m: &Mutex[List[Int]], n: Int) -> Int ! alloc
+    let i = 0
+    while i < n
+        m.lock xs =>
+            xs.push(i)
+        i = i + 1
+    n
+
+fn main() -> Int ! alloc
+    let m = Mutex.new(List.new[Int]())
+    let a = Thread.spawn(fill, &m, 10)
+    let b = Thread.spawn(fill, &m, 10)
+    let c = Thread.spawn(fill, &m, 10)
+    a.join() + b.join() + c.join() - 30 + m.lock(xs => xs.len())

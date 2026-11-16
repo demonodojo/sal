@@ -80,6 +80,25 @@ fn user_call_kind(name: &str, call: &Expr) -> Option<&'static str> {
     }
 }
 
+/// The release of what `t.join()` hands back: the value `f` returned on the thread.
+fn joined_kind(call: &Expr) -> Option<&'static str> {
+    match type_at(call)? {
+        Type::Named { name: ty, .. } => match ty.as_str() {
+            "String" => Some("free"),
+            "List" => Some("list_free"),
+            "Dict" => Some("dict_free"),
+            "Bytes" => Some("bytes_free"),
+            "Thread" => Some("thread_free"),
+            "Semaphore" => Some("sem_free"),
+            "Mutex" => Some("mutex_free"),
+            "Channel" => Some("chan_free"),
+            _ if is_ownable_enum(&ty) => Some("enum_free"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn collect_enum_types(enums: &HashMap<String, EnumDef>) {
     let set = enums.keys().cloned().collect::<HashSet<String>>();
     let ctors = enums
@@ -1045,6 +1064,9 @@ pub(crate) fn borrows_args(name: &str) -> bool {
         name,
         // `x.clone()` reads its receiver through `&self` (SPEC «Memoria»).
         "struct_clone" | "enum_copy" | "list_clone" | "dict_clone" | "bytes_clone" | "clone_copy"
+            // SPEC «Hilos»: the receivers are `&self`.
+            | "sem_acquire" | "sem_try_acquire" | "sem_release" | "chan_recv" | "chan_close"
+            | "mutex_enter" | "mutex_leave"
             | "str_len"
             | "strdup"
             | "str_eq"
@@ -1155,8 +1177,20 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             } else if matches!(name.as_str(), "dict_keys" | "dict_values") {
                 // A fresh list whose String elements are copies the list owns.
                 Some(("list_free", true))
-            } else if name == "dict_get" {
+            } else if name == "dict_get" || name == "chan_recv" {
                 Some(("enum_free", false))
+            } else if name == "thread_spawn" {
+                // SPEC «Hilos»: dropping a thread nobody joined joins it and releases its result.
+                Some(("thread_free", false))
+            } else if name == "sem_new" {
+                Some(("sem_free", false))
+            } else if name == "chan_new" {
+                Some(("chan_free", false))
+            } else if name == "mutex_new" {
+                Some(("mutex_free", false))
+            } else if name == "thread_join" {
+                // The result of the thread is moved to the caller, who owns it.
+                joined_kind(init).map(|k| (k, false))
             } else if name == "bytes_view" || name == "bytes_view_mem" {
                 Some(("bytes_free", false))
             } else if name == "dict_new" && dict_args(type_args) {
@@ -1176,7 +1210,7 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
         Expr::TensorLit { .. } => Some(("tensor_free", false)),
         Expr::Match { scrutinee, .. } => match scrutinee.as_ref() {
             Expr::Call { func, .. } => {
-                matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get")
+                matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get" || name == "chan_recv")
                     .then_some(("enum_free", false))
             }
             _ => None,
@@ -1495,7 +1529,8 @@ fn expr(e: &Expr, f: &mut Facts) {
                 let enum_set_take = callee == "enum_set" && i == 2;
                 let enum_set_borrow = callee == "enum_set" && i != 2;
                 // `dict_put(d, k, v)` reads the key (the dict stores its own copy) and moves `v`.
-                let dict_key = reads_key_arg(callee, i);
+                // `ch.send(v)` lends the channel and moves `v`.
+                let dict_key = reads_key_arg(callee, i) || (callee == "chan_send" && i == 0);
                 f.consume_arg = if enum_set_take {
                     true
                 } else if enum_set_borrow || dict_key {

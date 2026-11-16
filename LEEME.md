@@ -378,7 +378,7 @@ standard fix examples/hello.sal   # reescribe el fichero in situ
 
 ## Estado y documentación
 
-La especificación del lenguaje —gramática, tipos, memoria, módulos, tensores— es **[SPEC.md](SPEC.md)** y manda sobre la implementación. Los subplanes por pase están en [docs/subplans/](docs/subplans/).
+La especificación del lenguaje —gramática, tipos, memoria, módulos, tensores— es **[SPEC.md](SPEC.md)** y manda sobre la implementación. Los subplanes por pase están en [docs/subplans/](docs/subplans/). Las convenciones de estilo y diseño del código sal (structs con métodos, un módulo por struct, protocolos, lambdas) están en [docs/buenas-practicas.md](docs/buenas-practicas.md).
 
 El compilador de arranque ejecuta hoy los pases heredados de ownership y drops mientras se cierra el subplan 13; el autohospedaje valida el lenguaje, pero no sustituye al arranque. Una construcción marcada con `# xfail` en `tests/lang/` es un hueco conocido, no una característica soportada.
 

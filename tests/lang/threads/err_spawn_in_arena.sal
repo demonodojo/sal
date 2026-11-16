@@ -1,0 +1,11 @@
+# error: E_TYPE
+fn one(n: Int) -> Int
+    n
+
+@arena
+fn run() -> Int ! alloc
+    let t = Thread.spawn(one, 1)
+    t.join()
+
+fn main() -> Int ! alloc
+    run()

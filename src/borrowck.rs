@@ -341,6 +341,20 @@ fn is_ctor_name(n: &str, structs: &HashMap<String, StructDef>) -> bool {
     last.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
+/// `thread_join(name)` in `e` outside any branch, loop or nested block: it runs whenever `e` does.
+fn joins_at_top(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Call { func, args, .. } => {
+            let direct = matches!(func.as_ref(), Expr::Ident { name: f, .. } if f == "thread_join")
+                && matches!(args.first(), Some(Expr::Ident { name: n, .. }) if n == name);
+            direct || joins_at_top(func, name) || args.iter().any(|a| joins_at_top(a, name))
+        }
+        Expr::Binary { left, right, .. } => joins_at_top(left, name) || joins_at_top(right, name),
+        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } => joins_at_top(expr, name),
+        _ => false,
+    }
+}
+
 fn is_ref(ty: &Type) -> bool {
     matches!(ty, Type::Ref { .. })
 }
@@ -413,6 +427,10 @@ impl Cx<'_> {
             match ty {
                 Type::Ref { .. } => true,
                 Type::Named { name, args, .. } | Type::Qualified { name, args, .. } => {
+                    // SPEC «Hilos»: a thread holds what `Thread.spawn` lent it until it is joined.
+                    if name == "Thread" && !structs.contains_key(name) {
+                        return true;
+                    }
                     if args.iter().any(|a| rec(a, structs, seen)) {
                         return true;
                     }
@@ -465,6 +483,11 @@ impl Cx<'_> {
         if i == 0 && matches!(n, "list_get" | "dict_get") {
             return ParamKind::Shared;
         }
+        // SPEC «Hilos»: what `m.enter()` hands out is exclusive until its last use, so the
+        // lock cannot be left (`m.leave()` lends `m`) while it is still reachable.
+        if i == 0 && n == "mutex_enter" {
+            return ParamKind::Mut;
+        }
         ParamKind::Unknown
     }
 
@@ -506,6 +529,29 @@ impl Cx<'_> {
                     Expr::Ident { name, .. } => Some(name.as_str()),
                     _ => None,
                 };
+                // `thread_spawn(f(a…))`: the thread keeps every loan its arguments carry or make
+                // (`&x` lends `x` to the thread), whatever `f` returns.
+                if fname == Some("thread_spawn") {
+                    let mut out = Src::default();
+                    if let Some(Expr::Call { func: inner, args: inner_args, .. }) = args.first() {
+                        let iname = match inner.as_ref() {
+                            Expr::Ident { name, .. } => Some(name.as_str()),
+                            _ => None,
+                        };
+                        for (i, a) in inner_args.iter().enumerate() {
+                            out.merge(self.sources(a));
+                            let k = self.param_kind(iname, i);
+                            if matches!(k, ParamKind::Shared | ParamKind::Mut) && !matches!(a, Expr::Unary { .. }) {
+                                if let Some(p) = place_of(a) {
+                                    if self.root_binding(&p).is_some_and(|b| !b.param_ref && !is_ref(&b.ty)) {
+                                        out.new.push((p, k == ParamKind::Mut, a.span()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return out;
+                }
                 let mut out = Src::default();
                 for (i, a) in args.iter().enumerate() {
                     let pty = fname.and_then(|n| self.sigs.get(n)).and_then(|s| s.get(i));
@@ -667,7 +713,35 @@ impl Cx<'_> {
                 self.returned(t);
             }
         }
+        self.keep_threads_to_drop(b);
         self.pop();
+    }
+
+    /// SPEC «Hilos»: a `Thread` that its block does not join is joined by its glue at the end
+    /// of the block, so what it was lent stays borrowed until then. A join inside a branch or a
+    /// loop may not run: only one at the top level of the block ends the loans earlier.
+    fn keep_threads_to_drop(&mut self, b: &Block) {
+        let Some(scope) = self.scopes.last() else { return };
+        let threads: Vec<String> = scope
+            .vars
+            .iter()
+            .filter(|(_, v)| {
+                matches!(&v.ty, Type::Named { name, .. } if name == "Thread" && !self.structs.contains_key(name))
+                    && !v.loans.is_empty()
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for name in threads {
+            let joined = b.stmts.iter().any(|st| match st {
+                Stmt::Expr(e) | Stmt::Return { value: Some(e), .. } => joins_at_top(e, &name),
+                Stmt::Let { init, .. } => joins_at_top(init, &name),
+                Stmt::Assign { value, .. } => joins_at_top(value, &name),
+                _ => false,
+            }) || b.tail.as_ref().is_some_and(|t| joins_at_top(t, &name));
+            if !joined {
+                self.touch(&name, b.span.end);
+            }
+        }
     }
 
     fn walk_stmt(&mut self, st: &Stmt) {
@@ -862,7 +936,9 @@ impl Cx<'_> {
                         .is_some_and(|n| crate::ownership::operand_is_moved(n, i, args.len()) || is_ctor_name(n, &self.structs))
                     {
                         self.walk_expr(a, Use::Move, call_end);
-                    } else if kind == ParamKind::Mut && place_of(a).is_some() {
+                    } else if kind == ParamKind::Mut && place_of(a).is_some() && fname.as_deref() != Some("mutex_enter") {
+                        // `m.enter()` mutates nothing in `m` (the lock is interior); its loan is
+                        // the exclusive one `sources` gives the result.
                         // Autoref (`xs.push(v)`, `c.add(1)`): the exclusive loan starts when the
                         // call does, after the other arguments are evaluated.
                         let place = place_of(a).unwrap_or_default();

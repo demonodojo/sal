@@ -411,6 +411,10 @@ fn infer_builtin_type(b: &String) -> Int ! alloc
         "Option" => 1
         "Result" => 1
         "Unknown" => 1
+        "Thread" => 1
+        "Semaphore" => 1
+        "Mutex" => 1
+        "Channel" => 1
         _ => 0
 
 # `E_TYPE` for a parameter or return type that names nothing declared.
@@ -832,6 +836,8 @@ fn infer_is_builtin_type(q: &String) -> Int ! alloc
         1
     elsif q.eq("Int") + q.eq("Float") + q.eq("Bool") > 0
         1
+    elsif q.eq("Thread") + q.eq("Semaphore") + q.eq("Mutex") + q.eq("Channel") > 0
+        1
     else
         0
 
@@ -977,6 +983,29 @@ fn mth_builtin(base: &String, fld: &String) -> String ! alloc
     elsif base.eq("Float") + fld.eq("pow") == 2
         "float_pow"
     else
+        mth_sync_builtin(base, fld)
+
+# The methods of the thread types (SPEC «Hilos»).
+fn mth_sync_builtin(base: &String, fld: &String) -> String ! alloc
+    if base.eq("Thread") + fld.eq("join") == 2
+        "thread_join"
+    elsif base.eq("Semaphore") + fld.eq("acquire") == 2
+        "sem_acquire"
+    elsif base.eq("Semaphore") + fld.eq("try_acquire") == 2
+        "sem_try_acquire"
+    elsif base.eq("Semaphore") + fld.eq("release") == 2
+        "sem_release"
+    elsif base.eq("Channel") + fld.eq("send") == 2
+        "chan_send"
+    elsif base.eq("Channel") + fld.eq("recv") == 2
+        "chan_recv"
+    elsif base.eq("Channel") + fld.eq("close") == 2
+        "chan_close"
+    elsif base.eq("Mutex") + fld.eq("enter") == 2
+        "mutex_enter"
+    elsif base.eq("Mutex") + fld.eq("leave") == 2
+        "mutex_leave"
+    else
         ""
 
 # The builtin a constructor `Type.name(..)` of a built-in type calls ("" when there is none) and how many type
@@ -992,6 +1021,12 @@ fn mth_static(ty: &String, name: &String) -> String ! alloc
         "char_to_str"
     elsif ty.eq("Bytes") + name.eq("view_mem") == 2
         "bytes_view_mem"
+    elsif ty.eq("Semaphore") + name.eq("new") == 2
+        "sem_new"
+    elsif ty.eq("Mutex") + name.eq("new") == 2
+        "mutex_new"
+    elsif ty.eq("Channel") + name.eq("new") == 2
+        "chan_new"
     else
         ""
 
@@ -1000,6 +1035,8 @@ fn mth_static_targs(ty: &String, name: &String) -> Int ! alloc
         1
     elsif ty.eq("Dict") + name.eq("new") == 2
         2
+    elsif ty.eq("Channel") + name.eq("new") == 2
+        1
     else
         0
 
@@ -1134,6 +1171,8 @@ fn infer_typed_builtin(c: &mut IC, name: &String, tys: &List[String], targs: &St
         "String"
     elsif infer_t_is_clone(name) == 1
         infer_t_arg(tys, 0)
+    elsif infer_t_is_sync(name) == 1
+        infer_t_sync(c, name, tys, targs)
     else
         ""
 
@@ -1425,6 +1464,8 @@ fn ic_join_concrete(vals: &List[String], i: Int, acc: String) -> String ! alloc
 
 # Builtins typed here take priority over the older cases below.
 fn infer_builtin_call(c: &mut IC, name: &String, args: &List[Expr], tys: &List[String], targs: &String) -> String ! alloc
+    if name.eq("thread_spawn") == 1
+        _s = infer_spawn_target(c, args)
     t = infer_typed_builtin(c, name, tys, targs)
     if t.len() > 0
         t
@@ -2820,3 +2861,146 @@ fn infer_with_vals(tp: &TProgram, vals: List[CVal]) -> Res ! alloc
         infer_program_go(&mut c, 0, (&tp.fns).len())
     ic_free(&c)
     r
+
+# ---- threads (SPEC «Hilos»; mirror of `infer_sync_builtin` in src/infer.rs) ----
+
+fn infer_t_is_sync(name: &String) -> Int ! alloc
+    match name
+        "thread_spawn" => 1
+        "thread_join" => 1
+        "sem_new" => 1
+        "sem_acquire" => 1
+        "sem_try_acquire" => 1
+        "sem_release" => 1
+        "chan_new" => 1
+        "chan_send" => 1
+        "chan_recv" => 1
+        "chan_close" => 1
+        "mutex_new" => 1
+        "mutex_enter" => 1
+        "mutex_leave" => 1
+        _ => 0
+
+fn infer_t_sync_arity(name: &String) -> Int ! alloc
+    match name
+        "chan_new" => 0
+        "chan_send" => 2
+        _ => 1
+
+fn infer_t_sync(c: &mut IC, name: &String, tys: &List[String], targs: &String) -> String ! alloc
+    want = infer_t_sync_arity(name)
+    if tys.len() != want
+        ic_fail(c, &("E_TYPE: `" + name + "` expects " + want.to_str() + " argument(s), found " + tys.len().to_str()))
+        "Unknown"
+    else
+        infer_t_sync_go(c, name, tys, targs)
+
+fn infer_t_sync_go(c: &mut IC, name: &String, tys: &List[String], targs: &String) -> String ! alloc
+    a0 = infer_t_arg(tys, 0)
+    match name
+        "thread_spawn" => infer_t_thread_result(c, &a0)
+        "thread_join" => infer_t_join(c, &a0)
+        "sem_new" =>
+            if ty_compat(&a0, &"Int") == 0
+                ic_fail(c, &"E_TYPE: `Semaphore.new` expects an Int")
+            "Semaphore"
+        "sem_try_acquire" => "Bool"
+        "chan_new" => infer_t_chan_new(c, targs)
+        "chan_send" =>
+            elem = tt_arg(&ts_trim(&ty_deref(&a0)), 0)
+            if elem.len() > 0 && ty_compat(&infer_t_arg(tys, 1), &elem) == 0
+                ic_fail(c, &("E_TYPE: channel element type mismatch: expected " + ty_msg(&elem) + ", found " + ty_msg(&infer_t_arg(tys, 1))))
+            "Unit"
+        "chan_recv" => infer_t_wrap(&"Option", &tt_arg(&ts_trim(&ty_deref(&a0)), 0))
+        "mutex_new" => infer_t_mutex_new(c, &a0)
+        "mutex_enter" => "&mut " + tt_arg(&ts_trim(&ty_deref(&a0)), 0)
+        _ => "Unit"
+
+# `R` of `thread_spawn(f(a…))`: neither a reference nor a struct of two or more fields.
+fn infer_t_thread_result(c: &mut IC, r: &String) -> String ! alloc
+    if infer_t_is_ref(r) == 1
+        ic_fail(c, &"E_TYPE: a thread cannot return a reference")
+        "Unknown"
+    elsif infer_t_wide_struct(c, r) == 1
+        ic_fail(c, &"E_TYPE: a thread cannot return a struct of two or more fields")
+        "Unknown"
+    else
+        "Thread[" + r + "]"
+
+fn infer_t_join(c: &mut IC, t: &String) -> String ! alloc
+    if infer_t_is_ref(t) == 1
+        ic_fail(c, &"E_TYPE: `join` takes the Thread by value")
+        "Unknown"
+    else
+        r = tt_arg(&ts_trim(t), 0)
+        if r.len() == 0
+            "Unknown"
+        else
+            r
+
+fn infer_t_chan_new(c: &mut IC, targs: &String) -> String ! alloc
+    if targs.len() == 0
+        ic_fail(c, &"E_TYPE: `Channel.new` needs the element type: `Channel.new[T]()`")
+        "Unknown"
+    else
+        "Channel[" + targs + "]"
+
+fn infer_t_mutex_new(c: &mut IC, t: &String) -> String ! alloc
+    if infer_t_is_ref(t) == 1
+        ic_fail(c, &"E_TYPE: a Mutex cannot hold a reference")
+        "Unknown"
+    elsif infer_t_wide_struct(c, t) == 1
+        ic_fail(c, &"E_TYPE: a Mutex cannot hold a struct of two or more fields")
+        "Unknown"
+    else
+        "Mutex[" + t + "]"
+
+# A struct of the program with two or more fields (or a reference to one) does not fit the
+# one slot a thread or a mutex hands over.
+fn infer_t_wide_struct(c: &IC, t: &String) -> Int ! alloc
+    si = tt_struct_find(&c.env.structs, &ts_trim(&ty_deref(t)))
+    if si < 0
+        0
+    elsif (&c.env.structs).get(si).fields.len() >= 2
+        1
+    else
+        0
+
+# The argument of `thread_spawn` is the call of a fn of the program with at most 8 parameters,
+# none of them `&mut T` or a struct of two or more fields.
+fn infer_spawn_target(c: &mut IC, args: &List[Expr]) -> Int ! alloc
+    if args.len() != 1
+        0
+    else
+        match args.get(0)
+            XCall(f, _, _, _) => infer_spawn_fn(c, &f)
+            _ => ic_fail(c, &"E_TYPE: `Thread.spawn` takes the name of a fn first")
+
+fn infer_spawn_fn(c: &mut IC, f: &String) -> Int ! alloc
+    si = ic_get(&c.sigs, f)
+    if si == 0
+        ic_fail(c, &("E_TYPE: `Thread.spawn` takes the name of a fn first: `" + f + "` is not one"))
+    else
+        params = (&c.fns).get(si - 1).params.clone()
+        if params.len() > 8
+            ic_fail(c, &"E_TYPE: a thread takes at most 8 arguments")
+        else
+            infer_spawn_params(c, &params, 0)
+
+fn infer_spawn_params(c: &mut IC, ps: &List[TParam], i: Int) -> Int ! alloc
+    if i >= ps.len()
+        0
+    else
+        t = ps.get(i).ty
+        if ty_is_mut_ref(&t) == 1
+            ic_fail(c, &"E_TYPE: a thread cannot take a `&mut` argument: share it through a Mutex")
+        elsif infer_t_wide_struct(c, &t) == 1
+            ic_fail(c, &"E_TYPE: a thread cannot take a struct of two or more fields")
+        else
+            infer_spawn_params(c, ps, i + 1)
+
+fn infer_t_is_ref(t: &String) -> Int ! alloc
+    if ts_trim(t).slice(0, 1).eq("&") == 1
+        1
+    else
+        0

@@ -177,11 +177,11 @@ fn lambda_specialize_call(owner: &String, f: &TFn, ci: Int, args: &List[Expr], t
         if lambda_is_expr(&cb) == 0
             lambda_inline_fn(owner, f, ci, args, defs, depth, generated, errs)
         else
-            lambda_record_capture_violation(&cb, defs, errs)
+            lambda_record_capture_violation(owner, &cb, defs, errs)
             lambda_specialize_lambda(owner, f, ci, args, targs, xp, &cb, defs, depth, generated, errs)
 
-fn lambda_record_capture_violation(cb: &Expr, defs: &List[TFn], errs: &mut List[String]) -> Int ! alloc
-    if lambda_capture_violation(cb, defs) == 1
+fn lambda_record_capture_violation(owner: &String, cb: &Expr, defs: &List[TFn], errs: &mut List[String]) -> Int ! alloc
+    if lambda_capture_violation_in(owner, cb, defs) == 1
         errs.push("E_BORROW: callback moves or assigns a captured value")
     0
 
@@ -278,11 +278,26 @@ fn lambda_callback_type_binds(owner: &String, f: &TFn, ci: Int, args: &List[Expr
     vals = List.new[String]()
     lambda_fill_empty(&mut vals, tps.len())
     decl = lambda_fn_ret(&f.params.get(ci).ty)
-    actual = lambda_guess_callback_ret(cb, &lambda_callback_params(cb), &lambda_fn_param_types(&f.params.get(ci).ty), defs)
+    # The other arguments go first: what they bind types the callback's parameters
+    # (`m.lock x => *x` sees `x: &mut Int`, not `&mut T`).
+    lambda_bind_regular_args(owner, f, ci, args, &tps, &mut vals, defs, 0)
+    ptys = lambda_subst_bound(&lambda_fn_param_types(&f.params.get(ci).ty), &tps, &vals)
+    actual = lambda_guess_callback_ret(cb, &lambda_callback_params(cb), &ptys, defs)
     if tps.len() > 0 && actual.eq("Unknown") == 0
         tg_bind(&decl, &actual, &tps, &mut vals)
-    lambda_bind_regular_args(owner, f, ci, args, &tps, &mut vals, defs, 0)
     vals
+
+# `types` with the type parameters bound so far replaced; the unbound ones stay.
+fn lambda_subst_bound(types: &List[String], tps: &List[String], vals: &List[String]) -> List[String] ! alloc
+    bt = List.new[String]()
+    bv = List.new[String]()
+    i = 0
+    while i < tps.len() && i < vals.len()
+        if vals.get(i).len() > 0
+            bt.push(tps.get(i).dup())
+            bv.push(vals.get(i).dup())
+        i = i + 1
+    lambda_subst_types(types, &bt, &bv)
 
 fn lambda_fill_empty(out: &mut List[String], n: Int) -> Int ! alloc
     if n <= 0
@@ -396,11 +411,52 @@ fn lambda_guess_expr_type(e: &Expr, names: &List[String], tys: &List[String], lo
         XStr(_) => "String"
         XIdent(name) => lambda_name_type(names, tys, &name, 0)
         XBin(op, l, r) => lambda_guess_bin_type(&op, &l, &r, names, tys, defs)
-        XUnary(_, inner) => lambda_guess_expr_type(&inner, names, tys, locals, defs)
+        XUnary(op, inner) => lambda_guess_unary_type(&op, &lambda_guess_expr_type(&inner, names, tys, locals, defs))
         XTo(_, inner) => lambda_guess_expr_type(&inner, names, tys, locals, defs)
-        XCall(name, _, targs, _) => lambda_guess_call_type(&name, &targs, defs)
+        XCall(name, args, targs, _) => lambda_guess_sync_type(&name, &args, &targs, names, tys, locals, defs)
         XField(_, _) => "Unknown"
         _ => "Unknown"
+
+# The thread constructors (SPEC «Hilos»): their type follows from the argument.
+fn lambda_guess_sync_type(name: &String, args: &List[Expr], targs: &String, names: &List[String], tys: &List[String], locals: &List[String], defs: &List[TFn]) -> String ! alloc
+    if name.eq("mutex_new") + name.eq("thread_spawn") > 0 && args.len() == 1
+        inner = lambda_guess_expr_type(&args.get(0), names, tys, locals, defs)
+        if inner.eq("Unknown") == 1
+            inner
+        elsif name.eq("mutex_new") == 1
+            "Mutex[" + inner + "]"
+        else
+            "Thread[" + inner + "]"
+    elsif name.eq("chan_new") == 1 && targs.len() > 0
+        "Channel[" + targs + "]"
+    elsif name.eq("sem_new") == 1
+        "Semaphore"
+    else
+        lambda_guess_call_type(name, targs, defs)
+
+# `*x` reads through the reference, `&x` / `&mut x` make one, `not` is a Bool.
+fn lambda_guess_unary_type(op: &String, t: &String) -> String ! alloc
+    if t.eq("Unknown") == 1
+        "Unknown"
+    elsif op.eq("deref") == 1
+        lambda_strip_ref(t)
+    elsif op.eq("ref") == 1
+        "&" + t
+    elsif op.eq("refmut") == 1
+        "&mut " + t
+    elsif op.eq("not") == 1
+        "Bool"
+    else
+        t.dup()
+
+fn lambda_strip_ref(t: &String) -> String ! alloc
+    s = lambda_trim(t)
+    if s.slice(0, 5).eq("&mut ") == 1
+        lambda_trim(&s.slice(5, s.len()))
+    elsif s.slice(0, 1).eq("&") == 1
+        lambda_trim(&s.slice(1, s.len()))
+    else
+        s
 
 fn lambda_guess_call_type(name: &String, targs: &String, defs: &List[TFn]) -> String ! alloc
     if name.eq("list_new") == 1 && targs.len() > 0
@@ -751,17 +807,53 @@ fn lambda_stmts_have_free(stmts: &List[TStmt], names: &List[String], i: Int) -> 
         lambda_stmts_have_free(stmts, names, i + 1)
 
 fn lambda_capture_violation(cb: &Expr, defs: &List[TFn]) -> Int ! alloc
+    lambda_capture_violation_with(cb, defs, &List.new[String]())
+
+# A Copy capture passes by value (SPEC «Lambdas»): handing it to a by-value parameter or
+# returning it moves nothing. It goes in the name list as `=name`, which only those checks read.
+fn lambda_capture_violation_in(owner: &String, cb: &Expr, defs: &List[TFn]) -> Int ! alloc
+    sources = lambda_capture_names(cb)
+    caps = lambda_capture_params(owner, defs, &sources)
+    copies = List.new[String]()
+    i = 0
+    while i < caps.len() && i < sources.len()
+        if caps.get(i).ty.slice(0, 1).eq("&") == 0
+            copies.push("=" + sources.get(i))
+        i = i + 1
+    lambda_capture_violation_with(cb, defs, &copies)
+
+fn lambda_capture_violation_with(cb: &Expr, defs: &List[TFn], copies: &List[String]) -> Int ! alloc
     match cb
-        XLambda(params, body) => lambda_return_capture_violation(&body, &lambda_param_list(&params), defs)
+        XLambda(params, body) =>
+            names = lambda_param_list(&params)
+            lambda_append_names(&mut names, copies, 0)
+            lambda_return_capture_violation(&body, &names, defs)
         XLambdaBlock(params, body) =>
             names = lambda_param_list(&params)
             lambda_collect_let_names(&body.stmts, 0, &mut names)
+            lambda_append_names(&mut names, copies, 0)
             lambda_block_capture_violation(&body, &names, defs)
         _ => 0
 
+fn lambda_append_names(dst: &mut List[String], src: &List[String], i: Int) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        dst.push(src.get(i).dup())
+        lambda_append_names(dst, src, i + 1)
+
+# `name` is a parameter or local of the callback, or a Copy capture (`=name`).
+fn lambda_reads_free(params: &List[String], name: &String) -> Int ! alloc
+    if lambda_find_sub(params, name, 0) >= 0
+        1
+    elsif lambda_find_sub(params, &("=" + name), 0) >= 0
+        1
+    else
+        0
+
 fn lambda_return_capture_violation(body: &Expr, params: &List[String], defs: &List[TFn]) -> Int ! alloc
     match body
-        XIdent(name) => lambda_find_sub(params, &name, 0) < 0
+        XIdent(name) => lambda_reads_free(params, &name) == 0
         _ => lambda_expr_capture_violation(body, params, defs)
 
 fn lambda_expr_capture_violation(e: &Expr, params: &List[String], defs: &List[TFn]) -> Int ! alloc
@@ -797,7 +889,7 @@ fn lambda_arg_nested_violation(arg: &Expr, params: &List[String], defs: &List[TF
 fn lambda_arg_moves_capture(name: &String, i: Int, arg: &Expr, params: &List[String], defs: &List[TFn]) -> Int ! alloc
     match arg
         XIdent(captured) =>
-            if lambda_find_sub(params, &captured, 0) >= 0
+            if lambda_reads_free(params, &captured) == 1
                 0
             else
                 fi = lambda_find_fn(defs, name, 0)

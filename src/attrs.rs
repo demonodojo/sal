@@ -126,8 +126,32 @@ pub fn check_arena_fns(prog: &Program) -> DiagResult<()> {
                 f.span,
             )]);
         }
+        // SPEC «Hilos»: what a thread receives must outlive the arena's pages.
+        if f.arena {
+            if let Some(at) = spawn_span(&f.body) {
+                return Err(vec![Diagnostic::new(ErrorCode::EType, "@arena function cannot start a thread", at)]);
+            }
+        }
     }
     Ok(())
+}
+
+/// The span of a `Thread.spawn` (already `thread_spawn(…)`) in `b`, if any.
+fn spawn_span(b: &Block) -> Option<crate::span::Span> {
+    let mut found = None;
+    let mut body = b.clone();
+    crate::specialize::walk_block(
+        &mut body,
+        &mut |e: &mut Expr| {
+            if let Expr::Call { func, span, .. } = e {
+                if found.is_none() && matches!(func.as_ref(), Expr::Ident { name, .. } if name == "thread_spawn") {
+                    found = Some(*span);
+                }
+            }
+        },
+        &mut |_s: &mut Stmt| {},
+    );
+    found
 }
 
 pub fn check_no_heap_fns(prog: &Program, env: &StringEnv) -> DiagResult<()> {

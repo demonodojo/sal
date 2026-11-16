@@ -106,6 +106,27 @@ gh release view "vX.Y.Z" --repo demonodojo/sal
 
 Tienen que estar el tag, el título `sal X.Y.Z` y, en x86_64, los dos binarios.
 
+### 7. Paquete para soso
+
+Sal publica su propio paquete de soso (compilador nativo, backend LLVM y SDK) en
+`paquetes/`, servido por `https://raw.githubusercontent.com/demonodojo/sal/main/paquetes`;
+`soso-pkg` (0.4.0 en adelante) lo tiene como origen por defecto. Tras el tag:
+
+```bash
+scripts/paquete-soso.sh            # usa vX.Y.Z (la versión de Cargo.toml)
+git add paquetes
+git commit -m "Paquete soso vX.Y.Z"
+git push origin HEAD
+```
+
+Compila en un worktree limpio del tag junto a `../soso` con su receta
+(`cargo xtask sal-paquete`); necesita el checkout de soso y su toolchain nativa.
+No rehace una versión ya publicada (`FORZAR=1` sólo si nadie la ha bajado). Si
+el runtime del tag no compila para soso (`SAL_SOSO`, freestanding), arréglalo en
+una versión nueva: el paquete nunca sale de cambios sin commitear.
+
+En la máquina: `soso-pkg actualizar sal` (o `soso-pkg instalar sal`).
+
 ## Pin de soso
 
 `soso/config/sal-source.lock` fija el commit de sal con el que soso compila. No lo toques al publicar sal. Solo si el usuario pide mover ese pin, en el repo `soso`, con el checkout de sal ya en el commit publicado:

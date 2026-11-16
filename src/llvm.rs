@@ -606,6 +606,14 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_list_box_id(ptr)\n");
     s.push_str("declare void @sal_dict_free(ptr)\n");
     s.push_str("declare void @sal_bytes_free(ptr)\n");
+    // SPEC «Hilos»: every argument and result is an i64 handle.
+    s.push_str("declare i64 @sal_thread_spawn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)\n");
+    for (f, n) in SYNC_I64_FNS {
+        s.push_str(&format!("declare i64 @{f}({})\n", vec!["i64"; *n].join(", ")));
+    }
+    for f in SYNC_FREE_FNS {
+        s.push_str(&format!("declare void @{f}(i64)\n"));
+    }
     s.push_str("declare void @sal_tensor_free(i64)\n");
     s.push_str("declare ptr @sal_bytes_new(i64)\n");
     s.push_str("declare i64 @sal_bytes_len(ptr)\n");
@@ -4461,6 +4469,38 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }
         }
+        "sal_thread_spawn" => {
+            // The second argument names the sal function the thread runs: its address goes.
+            let list = args.first().map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
+            let target = args.get(1).cloned().unwrap_or_default();
+            *tmp += 1;
+            let fp = format!("thr_fn_{tmp}");
+            s.push_str(&format!("  %{fp} = ptrtoint ptr @{} to i64\n", llsym(&target)));
+            let mut ops = vec![format!("i64 {list}"), format!("i64 %{fp}")];
+            for a in args.iter().skip(2) {
+                ops.push(format!("i64 {}", i64_operand(a, consts)));
+            }
+            let call = format!("call i64 @sal_thread_spawn({})", ops.join(", "));
+            match dest {
+                Some(d) => s.push_str(&format!("  %{d} = {call}\n")),
+                None => s.push_str(&format!("  {call}\n")),
+            }
+        }
+        other if SYNC_I64_FNS.iter().any(|(f, _)| *f == other) => {
+            let ops: Vec<String> = args.iter().map(|a| format!("i64 {}", i64_operand(a, consts))).collect();
+            let call = format!("call i64 @{other}({})", ops.join(", "));
+            match dest {
+                Some(d) => s.push_str(&format!("  %{d} = {call}\n")),
+                None => s.push_str(&format!("  {call}\n")),
+            }
+        }
+        other if SYNC_FREE_FNS.contains(&other) => {
+            let a = args.first().map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
+            s.push_str(&format!("  call void @{other}(i64 {a})\n"));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
         other if user_fns.contains_key(other) => {
             let uf = user_fns[other];
             let mut arg_ops = Vec::new();
@@ -4496,6 +4536,26 @@ fn emit_runtime_or_user_call(
         }
     }
 }
+
+/// Runtime functions of SPEC «Hilos» that take and return i64 (name, arity).
+const SYNC_I64_FNS: &[(&str, usize)] = &[
+    ("sal_thread_join", 1),
+    ("sal_sem_new", 1),
+    ("sal_sem_acquire", 1),
+    ("sal_sem_try_acquire", 1),
+    ("sal_sem_release", 1),
+    ("sal_mutex_new", 1),
+    ("sal_mutex_new_cell", 1),
+    ("sal_mutex_enter", 1),
+    ("sal_mutex_leave", 1),
+    ("sal_chan_new", 1),
+    ("sal_chan_send", 2),
+    ("sal_chan_recv", 1),
+    ("sal_chan_close", 1),
+];
+
+/// Their drop glue: one i64 handle, no result.
+const SYNC_FREE_FNS: &[&str] = &["sal_thread_free", "sal_sem_free", "sal_mutex_free", "sal_chan_free"];
 
 fn field_is_tensor_f32(ty: &Type) -> bool {
     matches!(ty, Type::Tensor { elem: TensorElem::F32, .. })

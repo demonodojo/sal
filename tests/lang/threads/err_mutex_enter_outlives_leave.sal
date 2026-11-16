@@ -1,0 +1,11 @@
+# error: E_BORROW
+# The `&mut T` of `enter` is an exclusive loan of the mutex: leaving while it is still used
+# would let it outlive the lock.
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    let m = Mutex.new(1)
+    let v = m.enter()
+    m.leave()
+    *v = 2
+    0

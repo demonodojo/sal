@@ -1,0 +1,4 @@
+# error: E_TYPE
+fn main() -> Int ! alloc
+    let t = Thread.spawn(x => x + 1, 1)
+    t.join()

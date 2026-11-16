@@ -515,13 +515,13 @@ fn is_builtin_named_type(name: &str) -> bool {
     matches!(
         name,
         "Int" | "Float" | "Bool" | "String" | "Bytes" | "Unit" | "List" | "Dict" | "Unknown"
-            | "F32" | "F16" | "BF16" | "I8"
+            | "F32" | "F16" | "BF16" | "I8" | "Thread" | "Semaphore" | "Mutex" | "Channel"
     )
 }
 
 fn validate_builtin_type_args(name: &str, args: &[Type], span: Span) -> DiagResult<()> {
     let expected = match name {
-        "List" => Some(1),
+        "List" | "Thread" | "Mutex" | "Channel" => Some(1),
         "Dict" => Some(2),
         _ => None,
     };
@@ -1904,7 +1904,11 @@ fn infer_method_call(
                     return Ok(ty);
                 }
             }
-            if matches!(tname.as_str(), "List" | "Dict" | "Bytes" | "String" | "Int" | "Float" | "Bool")
+            if matches!(
+                tname.as_str(),
+                "List" | "Dict" | "Bytes" | "String" | "Int" | "Float" | "Bool" | "Thread" | "Semaphore" | "Mutex"
+                    | "Channel"
+            )
                 && !types.structs.contains_key(tname)
                 && !types.enums.contains_key(tname)
             {
@@ -2186,7 +2190,7 @@ fn infer_call(
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
         | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
         | "vec_len" | "vec_free" | "list_free" | "list_free_shell" | "list_push_share" | "dict_free" | "enum_free" | "enum_free_shell" | "enum_set" | "enum_owns" | "enum_box_id"
-        | "list_box_id" | "bytes_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
+        | "list_box_id" | "bytes_free" | "thread_free" | "sem_free" | "mutex_free" | "chan_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
         | "gated_exec_compile" | "place_matmul_ai_sum" | "place_launches" => {
             for a in args {
@@ -2356,6 +2360,11 @@ fn infer_call(
             }
             let ty = check_expr(&args[0], env, ctx, types, entries)?;
             Ok(peel_refs(&ty).clone())
+        }
+        // SPEC «Hilos».
+        "thread_spawn" | "thread_join" | "sem_new" | "sem_acquire" | "sem_try_acquire" | "sem_release"
+        | "chan_new" | "chan_send" | "chan_recv" | "chan_close" | "mutex_new" | "mutex_enter" | "mutex_leave" => {
+            infer_sync_builtin(name, type_args, args, env, ctx, types, entries, span)
         }
         "list_new" => {
             for a in args {
@@ -4014,6 +4023,186 @@ fn is_dict_key_type(ty: &Type) -> bool {
         peel_refs(ty),
         Type::Named { name, .. } if name == "Int" || name == "String"
     )
+}
+
+fn named0(name: &str, span: Span) -> Type {
+    Type::Named { name: name.into(), args: vec![], span }
+}
+
+/// The value of a type that fits one i64 slot: a struct of two or more fields goes in
+/// registers and comes back through a buffer, so it cannot cross into a thread in this cut.
+fn crosses_thread_in_one_slot(t: &Type, types: &TypeEnv) -> bool {
+    match peel_refs(t) {
+        Type::Named { name, .. } => types.structs.get(name).is_none_or(|sd| sd.fields.len() < 2),
+        Type::Tensor { .. } | Type::Fn { .. } => false,
+        _ => true,
+    }
+}
+
+/// `Thread`, `Semaphore` and `Channel` builtins (SPEC «Hilos»). The receivers of
+/// `acquire`, `release`, `send`, `recv` and `close` are lent (`&self`); `join` moves the thread.
+#[allow(clippy::too_many_arguments)]
+fn infer_sync_builtin(
+    name: &str,
+    type_args: &[TypeArg],
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+    entries: &mut Vec<ExprTypeEntry>,
+    span: Span,
+) -> DiagResult<Type> {
+    let err = |msg: String, at: Span| Err(vec![Diagnostic::new(ErrorCode::EType, msg, at)]);
+    if types.target == crate::target::Target::Soso {
+        return Err(vec![Diagnostic::new(
+            ErrorCode::ETarget,
+            format!("`{name}`: threads are not available on the soso target"),
+            span,
+        )]);
+    }
+    let want = match name {
+        "sem_acquire" | "sem_try_acquire" | "sem_release" | "thread_join" | "chan_recv" | "chan_close"
+        | "sem_new" | "thread_spawn" | "mutex_new" | "mutex_enter" | "mutex_leave" => 1,
+        "chan_send" => 2,
+        _ => 0,
+    };
+    if args.len() != want {
+        return err(format!("`{name}` expects {want} argument(s), found {}", args.len()), span);
+    }
+    let receiver = |ty: &Type, what: &str| -> Option<Type> {
+        match peel_refs(ty) {
+            Type::Named { name: n, args: a, .. } if n == what => a.first().cloned().or(Some(unit_type(span))),
+            _ => None,
+        }
+    };
+    match name {
+        "thread_spawn" => {
+            // `Thread.spawn(f, a…)` became `thread_spawn(f(a…))` (src/threads.rs).
+            let Expr::Call { func, args: fargs, .. } = &args[0] else {
+                return err("`Thread.spawn` takes the name of a fn first".into(), span);
+            };
+            let Expr::Ident { name: fname, .. } = func.as_ref() else {
+                return err("`Thread.spawn` takes the name of a fn first".into(), span);
+            };
+            if !types.fns.contains_key(fname) && !types.fn_defs.contains_key(fname) {
+                return err(format!("`Thread.spawn`: `{fname}` is not a fn"), func.span());
+            }
+            if fargs.len() > 8 {
+                return err("`Thread.spawn` passes at most 8 arguments".into(), span);
+            }
+            for a in fargs {
+                let at = check_expr(a, env, ctx, types, entries)?;
+                if matches!(at, Type::Ref { mutable: true, .. }) {
+                    return err(
+                        "`Thread.spawn` cannot lend `&mut` to a thread: pass the value, `&T` or a `Mutex`".into(),
+                        a.span(),
+                    );
+                }
+                if !crosses_thread_in_one_slot(&at, types) {
+                    return err(
+                        format!("`Thread.spawn`: a struct of several fields (`{}`) cannot be passed to a thread yet", type_name(&at)),
+                        a.span(),
+                    );
+                }
+            }
+            let r = check_expr(&args[0], env, ctx, types, entries)?;
+            if !crosses_thread_in_one_slot(&r, types) {
+                return err(
+                    format!("`Thread.spawn`: `{fname}` returns a struct of several fields (`{}`), which a thread cannot return yet", type_name(&r)),
+                    span,
+                );
+            }
+            if matches!(r, Type::Ref { .. }) {
+                return err(format!("`Thread.spawn`: `{fname}` returns a reference"), span);
+            }
+            Ok(Type::Named { name: "Thread".into(), args: vec![r], span })
+        }
+        "thread_join" => {
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
+            if matches!(t, Type::Ref { .. }) {
+                return err("`join` takes the thread by value: it moves `t`".into(), args[0].span());
+            }
+            receiver(&t, "Thread").ok_or_else(|| {
+                vec![Diagnostic::new(ErrorCode::EType, format!("`join` expects a Thread, found {}", type_name(&t)), args[0].span())]
+            })
+        }
+        "sem_new" => {
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
+            if !is_int_type(&t) {
+                return err(format!("`Semaphore.new` expects Int permits, found {}", type_name(&t)), args[0].span());
+            }
+            Ok(named0("Semaphore", span))
+        }
+        "sem_acquire" | "sem_try_acquire" | "sem_release" => {
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
+            if receiver(&t, "Semaphore").is_none() {
+                return err(format!("`{name}` expects a Semaphore, found {}", type_name(&t)), args[0].span());
+            }
+            Ok(if name == "sem_try_acquire" { named0("Bool", span) } else { unit_type(span) })
+        }
+        "mutex_new" => {
+            let v = check_expr(&args[0], env, ctx, types, entries)?;
+            if matches!(v, Type::Ref { .. }) {
+                return err("`Mutex.new` takes the value it guards, not a reference".into(), args[0].span());
+            }
+            if !crosses_thread_in_one_slot(&v, types) {
+                return err(
+                    format!("`Mutex.new`: a struct of several fields (`{}`) cannot be guarded yet", type_name(&v)),
+                    args[0].span(),
+                );
+            }
+            Ok(Type::Named { name: "Mutex".into(), args: vec![v], span })
+        }
+        "mutex_enter" | "mutex_leave" => {
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
+            let Some(elem) = receiver(&t, "Mutex") else {
+                return err(format!("`{name}` expects a Mutex, found {}", type_name(&t)), args[0].span());
+            };
+            if name == "mutex_leave" {
+                return Ok(unit_type(span));
+            }
+            Ok(Type::Ref { mutable: true, lifetime: None, inner: Box::new(elem), span })
+        }
+        "chan_new" => {
+            let elem = match type_args {
+                [TypeArg::Type(t)] => t.clone(),
+                _ => return err("`Channel.new` takes one type argument: `Channel.new[T]()`".into(), span),
+            };
+            Ok(Type::Named { name: "Channel".into(), args: vec![elem], span })
+        }
+        "chan_send" | "chan_recv" | "chan_close" => {
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
+            let Some(elem) = receiver(&t, "Channel") else {
+                return err(format!("`{name}` expects a Channel, found {}", type_name(&t)), args[0].span());
+            };
+            match name {
+                "chan_send" => {
+                    let v = check_expr(&args[1], env, ctx, types, entries)?;
+                    if !types_compatible(&v, &elem) {
+                        return err(
+                            format!("channel element type mismatch: expected {}, found {}", type_name(&elem), type_name(&v)),
+                            args[1].span(),
+                        );
+                    }
+                    Ok(unit_type(span))
+                }
+                "chan_recv" => {
+                    let option_ok = types.enums.get("Option").is_some_and(|e| {
+                        e.variants.len() == 2 && e.variants[0].name == "None" && e.variants[1].name == "Some"
+                    });
+                    if !option_ok {
+                        return err(
+                            "`recv` requires Option with variants None and Some, in that order (import std/prelude.sal)".into(),
+                            span,
+                        );
+                    }
+                    Ok(option_type(elem, span))
+                }
+                _ => Ok(unit_type(span)),
+            }
+        }
+        _ => err(format!("unknown builtin `{name}`"), span),
+    }
 }
 
 fn option_type(inner: Type, span: Span) -> Type {

@@ -80,6 +80,16 @@ pub fn builtin_method(ty: &str, method: &str) -> Option<&'static str> {
         ("Float", "exp") => "float_exp",
         ("Float", "log") => "float_log",
         ("Float", "pow") => "float_pow",
+        // SPEC «Hilos».
+        ("Thread", "join") => "thread_join",
+        ("Semaphore", "acquire") => "sem_acquire",
+        ("Semaphore", "try_acquire") => "sem_try_acquire",
+        ("Semaphore", "release") => "sem_release",
+        ("Channel", "send") => "chan_send",
+        ("Channel", "recv") => "chan_recv",
+        ("Channel", "close") => "chan_close",
+        ("Mutex", "enter") => "mutex_enter",
+        ("Mutex", "leave") => "mutex_leave",
         _ => return None,
     })
 }
@@ -96,6 +106,9 @@ pub fn builtin_static(ty: &str, name: &str) -> Option<(&'static str, usize)> {
         ("Bytes", "new") => ("bytes_new", 0),
         ("String", "from_char") => ("char_to_str", 0),
         ("Bytes", "view_mem") => ("bytes_view_mem", 0),
+        ("Semaphore", "new") => ("sem_new", 0),
+        ("Channel", "new") => ("chan_new", 1),
+        ("Mutex", "new") => ("mutex_new", 0),
         _ => return None,
     })
 }

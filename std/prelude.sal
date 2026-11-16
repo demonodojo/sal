@@ -168,3 +168,18 @@ fn now_ns() -> Int
 
 fn str_bytes(s: &String) -> Tensor[I8, ?] on cpu ! alloc
     str_bytes(s)
+
+# --- Hilos (SPEC «Hilos») ---
+# `m.lock(x => …)` runs the lambda with `&mut T` while it holds the lock. `enter` and
+# `leave` are the builtin methods of `Mutex`: the `&mut T` of `enter` is an exclusive loan of
+# the mutex until its last use, so `leave` cannot come before it.
+protocol Lockable[T]
+    method enter(&self) -> &mut T
+    method leave(&self) -> Unit
+    method lock[R](&self, f: fn(&mut T) -> R) -> R
+        v = self.enter()
+        r = f(v)
+        self.leave()
+        r
+
+impl Mutex[T] Lockable[T]

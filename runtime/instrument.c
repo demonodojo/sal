@@ -23,6 +23,17 @@ static Block *live = NULL;
 static Block *quarantine = NULL;
 static int enabled = 0;
 
+/* One lock for the live and quarantine lists: sal threads share them. */
+#ifdef SAL_SOSO
+#define INST_LOCK() ((void)0)
+#define INST_UNLOCK() ((void)0)
+#else
+#include <pthread.h>
+static pthread_mutex_t inst_lock = PTHREAD_MUTEX_INITIALIZER;
+#define INST_LOCK() pthread_mutex_lock(&inst_lock)
+#define INST_UNLOCK() pthread_mutex_unlock(&inst_lock)
+#endif
+
 static void copy_site(char *dst, size_t n, const char *site) {
     strncpy(dst, site ? site : "?", n - 1);
     dst[n - 1] = '\0';
@@ -79,6 +90,21 @@ void sal_instrument_init(void) {
     enabled = 1;
 }
 
+static Block *track_locked(void *p, int64_t size, int place, const char *site) {
+    Block *b = (Block *)malloc(sizeof(Block));
+    if (!b) {
+        return NULL;
+    }
+    b->user = p;
+    b->raw = NULL;
+    b->size = size;
+    b->place = place;
+    copy_site(b->site, sizeof(b->site), site);
+    b->next = live;
+    live = b;
+    return b;
+}
+
 void *sal_instrument_malloc(int64_t size, int place, const char *site) {
     if (!enabled) {
         return NULL;
@@ -94,11 +120,12 @@ void *sal_instrument_malloc(int64_t size, int place, const char *site) {
     poison(raw, SAL_REDZONE);
     poison(raw + SAL_REDZONE + size, SAL_REDZONE);
     void *user = raw + SAL_REDZONE;
-    sal_instrument_alloc(user, size, place, site);
-    Block *b = find_by_user(live, user);
+    INST_LOCK();
+    Block *b = track_locked(user, size, place, site);
     if (b) {
         b->raw = raw;
     }
+    INST_UNLOCK();
     return user;
 }
 
@@ -106,23 +133,16 @@ void sal_instrument_alloc(void *p, int64_t size, int place, const char *site) {
     if (!enabled || !p) {
         return;
     }
-    Block *b = (Block *)malloc(sizeof(Block));
-    if (!b) {
-        return;
-    }
-    b->user = p;
-    b->raw = NULL;
-    b->size = size;
-    b->place = place;
-    copy_site(b->site, sizeof(b->site), site);
-    b->next = live;
-    live = b;
+    INST_LOCK();
+    track_locked(p, size, place, site);
+    INST_UNLOCK();
 }
 
 void sal_instrument_free(void *p) {
     if (!enabled || !p) {
         return;
     }
+    INST_LOCK();
     Block *already = find_by_user(quarantine, p);
     if (already) {
         emit_and_die("DOUBLE_FREE", already->site);
@@ -139,6 +159,7 @@ void sal_instrument_free(void *p) {
     }
     b->next = quarantine;
     quarantine = b;
+    INST_UNLOCK();
 }
 
 void sal_instrument_check_index(int64_t index, int64_t len, const char *site) {
@@ -158,6 +179,7 @@ void sal_instrument_check_ptr(const void *p, int64_t nbytes, int place, const ch
         nbytes = 0;
     }
 
+    INST_LOCK();
     Block *q = find_covering(quarantine, p, nbytes);
     if (!q) {
         q = find_by_user(quarantine, p);
@@ -183,6 +205,7 @@ void sal_instrument_check_ptr(const void *p, int64_t nbytes, int place, const ch
     if (up < base || up + nbytes > base + b->size) {
         emit_and_die("OOB", site);
     }
+    INST_UNLOCK();
 }
 
 void sal_instrument_check_f32(const float *data, int64_t n, const char *site) {

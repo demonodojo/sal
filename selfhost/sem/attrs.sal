@@ -286,6 +286,9 @@ fn at_arena_head(structs: &List[TStruct], f: &TFn) -> Res ! alloc
             result_err_str(&"@arena function cannot be @no_heap")
         elsif at_ty_heap(structs, &f.ret) == 1
             result_err_str(&"@arena function cannot return a heap type")
+        elsif at_spawns_block(&f.body) == 1
+            # What a thread gets has to outlive the pages of the region (SPEC «Hilos»).
+            result_err_str(&"E_TYPE: @arena function cannot start a thread")
         else
             at_keep_params(f, 0, list_len(&f.params))
     else
@@ -327,3 +330,62 @@ fn check_attrs(tp: &TProgram) -> Res ! alloc
         env = tenv_new(tp)
         out = at_check_fns(tp, 0, tp.fns.len(), &mut env)
         out
+
+# ---- `thread_spawn` anywhere in a body (`spawn_span` in src/attrs.rs) ----
+
+fn at_spawns_block(b: &TBlock) -> Int ! alloc
+    if at_spawns_stmts(&b.stmts, 0) == 1
+        1
+    else
+        at_spawns(&b.tail)
+
+fn at_spawns_stmts(xs: &List[TStmt], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif at_spawns(&xs.get(i).expr) == 1
+        1
+    else
+        at_spawns_stmts(xs, i + 1)
+
+fn at_spawns_list(xs: &List[Expr], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif at_spawns(&xs.get(i)) == 1
+        1
+    else
+        at_spawns_list(xs, i + 1)
+
+fn at_spawns_elsifs(xs: &List[TElsif], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif at_spawns(&xs.get(i).cond) + at_spawns_block(&xs.get(i).body) > 0
+        1
+    else
+        at_spawns_elsifs(xs, i + 1)
+
+fn at_spawns_arms(xs: &List[TArm], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif at_spawns(&xs.get(i).body) + at_spawns_block(&xs.get(i).suite) > 0
+        1
+    else
+        at_spawns_arms(xs, i + 1)
+
+fn at_spawns(e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, _, _) =>
+            if name.eq("thread_spawn") == 1
+                1
+            else
+                at_spawns_list(&args, 0)
+        XBin(_, l, r) => at_spawns(&l) + at_spawns(&r)
+        XUnary(_, inner) => at_spawns(&inner)
+        XTo(_, inner) => at_spawns(&inner)
+        XTry(inner) => at_spawns(&inner)
+        XField(base, _) => at_spawns(&base)
+        XOn(_, body, _, _) => at_spawns_block(&body)
+        XBlock(body) => at_spawns_block(&body)
+        XWhile(cond, body) => at_spawns(&cond) + at_spawns_block(&body)
+        XIf(cond, then_b, else_b, _, elsifs) => at_spawns(&cond) + at_spawns_block(&then_b) + at_spawns_block(&else_b) + at_spawns_elsifs(&elsifs, 0)
+        XMatch(scrut, arms) => at_spawns(&scrut) + at_spawns_arms(&arms, 0)
+        _ => 0
