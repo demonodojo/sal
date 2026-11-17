@@ -9,9 +9,22 @@ fn specialize_lambdas(tp: &TProgram, errs: &mut List[String]) -> TProgram ! allo
 fn specialize_lambdas_with_defs(tp: &TProgram, defs: &List[TFn], keep_callback_defs: Int, errs: &mut List[String]) -> TProgram ! alloc
     out = List.new[TFn]()
     generated = List.new[TFn]()
-    lambda_specialize_fns(&tp.fns, defs, keep_callback_defs, 0, &mut out, &mut generated, errs)
+    # A constructor `S(…)` of a non-generic struct gives an `S`: it goes in as a fn without body,
+    # so the type guesses below see it (`Mutex.new(Name(…))` is a `Mutex[Name]`).
+    all_defs = defs.clone()
+    lambda_push_ctor_defs(&mut all_defs, &tp.structs, 0)
+    lambda_specialize_fns(&tp.fns, &all_defs, keep_callback_defs, 0, &mut out, &mut generated, errs)
     lambda_append_fns(&mut out, &generated, 0)
     TProgram(out, tp.imports.clone(), tp.structs.clone(), tp.aliases.clone(), tp.enums.clone(), tp.protocols.clone(), tp.consts.clone(), tp.impls.clone())
+
+fn lambda_push_ctor_defs(out: &mut List[TFn], structs: &List[TStruct], i: Int) -> Int ! alloc
+    if i >= structs.len()
+        0
+    else
+        s = structs.get(i)
+        if s.tparams.len() == 0 && lambda_find_fn(out, &s.name, 0) < 0
+            out.push(TFn(s.name.dup(), List.new[TParam](), TBlock(List.new[TStmt](), XNone), s.name.dup(), 0, 0, List.new[Int](), List.new[String](), "", 0, "", ""))
+        lambda_push_ctor_defs(out, structs, i + 1)
 
 fn lambda_append_fns(out: &mut List[TFn], src: &List[TFn], i: Int) -> Int ! alloc
     if i >= src.len()
@@ -29,7 +42,9 @@ fn lambda_specialize_fns(fns: &List[TFn], defs: &List[TFn], keep_callback_defs: 
         if ci >= 0 && keep_callback_defs == 1
             out.push(f.clone())
         elsif ci < 0
-            body = lambda_expand_block(&f.name, &f.body, defs, &List.new[String](), &List.new[Expr](), 0, generated, errs)
+            no_names = List.new[String]()
+            no_vals = List.new[Expr]()
+            body = lambda_expand_block(&f.name, &f.body, defs, &no_names, &no_vals, 0, generated, errs)
             out.push(TFn(f.name.dup(), f.params.clone(), body, f.ret.dup(), f.no_heap, f.arena, f.fx.clone(), f.tparams.clone(), f.recv.dup(), f.mkind, f.deprecated.dup(), f.tyat.dup()))
         lambda_specialize_fns(fns, defs, keep_callback_defs, i + 1, out, generated, errs)
 
@@ -143,15 +158,21 @@ fn lambda_sub_expr(name: &String, vals: &List[Expr], i: Int) -> Expr ! alloc
 fn lambda_expand_call(owner: &String, name: &String, args: &List[Expr], targs: &String, xp: Int, defs: &List[TFn], names: &List[String], vals: &List[Expr], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
     sub = lambda_find_sub(names, name, 0)
     expanded = lambda_expand_args(owner, args, defs, names, vals, depth, generated, errs)
+    # The paths that only lend `expanded` release it themselves: a value moved on one path only
+    # (into the `XCall` below) is not released on the others.
     if sub >= 0
-        lambda_apply_callback(owner, &vals.get(sub), &expanded, defs, depth, generated, errs)
+        r = lambda_apply_callback(owner, &vals.get(sub), &expanded, defs, depth, generated, errs)
+        list_free(expanded)
+        r
     else
         fi = lambda_find_fn(defs, name, 0)
         if fi >= 0 && depth < 64
             f = defs.get(fi)
             ci = lambda_callback_index(&f.params, 0)
             if ci >= 0 && ci < expanded.len()
-                lambda_specialize_call(owner, &f, ci, &expanded, &targs, xp, defs, depth, generated, errs)
+                r = lambda_specialize_call(owner, &f, ci, &expanded, &targs, xp, defs, depth, generated, errs)
+                list_free(expanded)
+                r
             else
                 XCall(name.dup(), expanded, targs.dup(), xp)
         else
@@ -186,6 +207,7 @@ fn lambda_record_capture_violation(owner: &String, cb: &Expr, defs: &List[TFn], 
     0
 
 fn lambda_specialize_lambda(owner: &String, f: &TFn, ci: Int, args: &List[Expr], targs: &String, xp: Int, cb: &Expr, defs: &List[TFn], depth: Int, generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    lambda_callback_ret_check(owner, f, ci, args, cb, defs, errs)
     sources = lambda_capture_names(cb)
     caps = lambda_capture_params(owner, defs, &sources)
     if caps.len() != sources.len() || lambda_capture_types_known(&caps, 0) == 0
@@ -196,13 +218,11 @@ fn lambda_specialize_lambda(owner: &String, f: &TFn, ci: Int, args: &List[Expr],
 
 fn lambda_lift_call(owner: &String, f: &TFn, ci: Int, args: &List[Expr], targs: &String, xp: Int, cb: &Expr, sources: &List[String], caps: &List[TParam], defs: &List[TFn], generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
     ty = f.params.get(ci).ty
-    param_names = match cb
-        XLambda(p, _) => lambda_param_list(&p)
-        XLambdaBlock(p, _) => lambda_param_list(&p)
-        _ => List.new[String]()
+    param_names = lambda_callback_params(cb)
     vals = lambda_callback_type_binds(owner, f, ci, args, cb, defs)
     tps = tg_type_params(&f.tparams)
-    ps_ty = lambda_subst_types(&lambda_fn_param_types(&ty), &tps, &vals)
+    pts = lambda_fn_param_types(&ty)
+    ps_ty = lambda_subst_types(&pts, &tps, &vals)
     if ps_ty.len() != lambda_param_count(&param_names) || lambda_generic_unbound(&tps, &vals) == 1
         lambda_inline_fn(owner, f, ci, args, defs, 0, generated, errs)
     else
@@ -236,15 +256,33 @@ fn lambda_param_count(params: &List[String]) -> Int ! alloc
 
 fn lambda_make_helper(owner: &String, name: &String, cb: &Expr, names: &List[String], tys: &List[String], sources: &List[String], caps: &List[TParam], defs: &List[TFn], generated: &mut List[TFn], errs: &mut List[String]) -> TFn ! alloc
     params = caps.clone()
-    lambda_append_params(&mut params, &lambda_typed_params(names, tys, 0), 0)
+    typed = lambda_typed_params(names, tys, 0)
+    lambda_append_params(&mut params, &typed, 0)
     cap_vals = lambda_helper_capture_refs(caps, 0)
-    body = match cb
-        XLambda(_, e) => TBlock(List.new[TStmt](), lambda_expand_expr(name, &e, defs, sources, &cap_vals, 0, generated, errs))
-        XLambdaBlock(_, b) => lambda_expand_block(name, &b, defs, sources, &cap_vals, 0, generated, errs)
-        _ => TBlock(List.new[TStmt](), XNone)
+    # The body is built from its parts (as `lambda_expand_block`): a `match` whose arms give a
+    # `TBlock` boxes it, and nothing releases that box.
+    ns = sources.clone()
+    vs = cap_vals.clone()
+    ss = List.new[TStmt]()
+    lambda_expand_cb_stmts(name, cb, defs, &mut ns, &mut vs, generated, errs, &mut ss)
+    tail = lambda_expand_cb_tail(name, cb, defs, &ns, &vs, generated, errs)
+    body = TBlock(ss, tail)
     fx = lambda_effects_for_cb(cb, defs)
+    if lambda_cb_concats(cb, &params) == 1
+        fx.set(1, 1)
     ret = lambda_guess_callback_ret(cb, names, tys, defs)
     TFn(name.dup(), params, body, ret, 0, 0, fx, List.new[String](), "", 0, "", "")
+
+fn lambda_expand_cb_stmts(owner: &String, cb: &Expr, defs: &List[TFn], names: &mut List[String], vals: &mut List[Expr], generated: &mut List[TFn], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
+    match cb
+        XLambdaBlock(_, b) => lambda_expand_stmts(owner, &b.stmts, 0, defs, names, vals, 0, generated, errs, out)
+        _ => 0
+
+fn lambda_expand_cb_tail(owner: &String, cb: &Expr, defs: &List[TFn], names: &List[String], vals: &List[Expr], generated: &mut List[TFn], errs: &mut List[String]) -> Expr ! alloc
+    match cb
+        XLambda(_, e) => lambda_expand_expr(owner, &e, defs, names, vals, 0, generated, errs)
+        XLambdaBlock(_, b) => lambda_expand_expr(owner, &b.tail, defs, names, vals, 0, generated, errs)
+        _ => XNone
 
 fn lambda_append_params(dst: &mut List[TParam], src: &List[TParam], i: Int) -> Int ! alloc
     if i >= src.len()
@@ -281,11 +319,36 @@ fn lambda_callback_type_binds(owner: &String, f: &TFn, ci: Int, args: &List[Expr
     # The other arguments go first: what they bind types the callback's parameters
     # (`m.lock x => *x` sees `x: &mut Int`, not `&mut T`).
     lambda_bind_regular_args(owner, f, ci, args, &tps, &mut vals, defs, 0)
-    ptys = lambda_subst_bound(&lambda_fn_param_types(&f.params.get(ci).ty), &tps, &vals)
-    actual = lambda_guess_callback_ret(cb, &lambda_callback_params(cb), &ptys, defs)
+    pts = lambda_fn_param_types(&f.params.get(ci).ty)
+    ptys = lambda_subst_bound(&pts, &tps, &vals)
+    names = lambda_callback_params(cb)
+    actual = lambda_guess_callback_ret(cb, &names, &ptys, defs)
     if tps.len() > 0 && actual.eq("Unknown") == 0
         tg_bind(&decl, &actual, &tps, &mut vals)
     vals
+
+# The lambda's value has to be the result the `fn(…) -> R` parameter declares: `xs.each x => x + 1`
+# gives an `Int` where `each` wants `Unit`, `E_TYPE` as in the bootstrap. Only checked when both
+# types are known scalars (or `Unit`): the body's type here is a guess.
+fn lambda_callback_ret_check(owner: &String, f: &TFn, ci: Int, args: &List[Expr], cb: &Expr, defs: &List[TFn], errs: &mut List[String]) -> Int ! alloc
+    # Each intermediate value is bound: a temporary lent as `f(&g())` is not released.
+    tps = tg_type_params(&f.tparams)
+    vals = lambda_callback_type_binds(owner, f, ci, args, cb, defs)
+    fty = f.params.get(ci).ty.dup()
+    ret = lambda_fn_ret(&fty)
+    decl = tg_subst(&ret, &tps, &vals)
+    pts = lambda_fn_param_types(&fty)
+    ptys = lambda_subst_bound(&pts, &tps, &vals)
+    names = lambda_callback_params(cb)
+    guess = lambda_guess_callback_ret(cb, &names, &ptys, defs)
+    # Arithmetic on a `&Int` parameter is guessed as `&Int`: the value is the `Int`.
+    actual = lambda_strip_ref(&guess)
+    if lambda_known_scalar(&decl) == 1 && lambda_known_scalar(&actual) == 1 && decl.eq(actual) == 0
+        errs.push("E_TYPE: expected " + decl + ", found " + actual)
+    0
+
+fn lambda_known_scalar(t: &String) -> Int ! alloc
+    t.eq("Unit") + t.eq("Int") + t.eq("Float") + t.eq("Bool") + t.eq("String") > 0
 
 # `types` with the type parameters bound so far replaced; the unbound ones stay.
 fn lambda_subst_bound(types: &List[String], tps: &List[String], vals: &List[String]) -> List[String] ! alloc
@@ -320,7 +383,7 @@ fn lambda_bind_regular_args(owner: &String, f: &TFn, skip: Int, args: &List[Expr
 fn lambda_regular_arg_type(owner: &String, arg: &Expr, defs: &List[TFn]) -> String ! alloc
     match arg
         XIdent(name) => lambda_owner_local_type(owner, &name, defs)
-        _ => lambda_guess_expr_type(arg, &List.new[String](), &List.new[String](), &List.new[String](), defs)
+        _ => lambda_guess_alone(arg, defs)
 
 fn lambda_owner_local_type(owner: &String, name: &String, defs: &List[TFn]) -> String ! alloc
     fi = lambda_find_fn(defs, owner, 0)
@@ -377,7 +440,7 @@ fn lambda_callback_params(cb: &Expr) -> List[String] ! alloc
 
 fn lambda_guess_callback_ret(cb: &Expr, names: &List[String], tys: &List[String], defs: &List[TFn]) -> String ! alloc
     match cb
-        XLambda(_, body) => lambda_guess_expr_type(&body, names, tys, &List.new[String](), defs)
+        XLambda(_, body) => lambda_guess_type(&body, names, tys, defs)
         XLambdaBlock(_, body) => lambda_guess_block_type(&body, names, tys, defs)
         _ => "Unknown"
 
@@ -387,7 +450,7 @@ fn lambda_guess_block_type(body: &TBlock, params: &List[String], tys: &List[Stri
     lambda_guess_block_stmts(&body.stmts, 0, &mut names, &mut types, defs)
     match body.tail
         XNone => "Unit"
-        _ => lambda_guess_expr_type(&body.tail, &names, &types, &List.new[String](), defs)
+        _ => lambda_guess_type(&body.tail, &names, &types, defs)
 
 fn lambda_guess_block_stmts(stmts: &List[TStmt], i: Int, names: &mut List[String], tys: &mut List[String], defs: &List[TFn]) -> Int ! alloc
     if i >= stmts.len()
@@ -398,10 +461,20 @@ fn lambda_guess_block_stmts(stmts: &List[TStmt], i: Int, names: &mut List[String
             ty = if s.ty.len() > 0
                 s.ty.dup()
             else
-                lambda_guess_expr_type(&s.expr, names, tys, &List.new[String](), defs)
+                lambda_guess_type(&s.expr, names, tys, defs)
             names.push(s.name.dup())
             tys.push(ty)
         lambda_guess_block_stmts(stmts, i + 1, names, tys, defs)
+
+# `lambda_guess_expr_type` with no locals, and with no names either. The empty lists are bound:
+# a temporary lent as `f(&g())` is not released.
+fn lambda_guess_type(e: &Expr, names: &List[String], tys: &List[String], defs: &List[TFn]) -> String ! alloc
+    locals = List.new[String]()
+    lambda_guess_expr_type(e, names, tys, &locals, defs)
+
+fn lambda_guess_alone(e: &Expr, defs: &List[TFn]) -> String ! alloc
+    none = List.new[String]()
+    lambda_guess_type(e, &none, &none, defs)
 
 fn lambda_guess_expr_type(e: &Expr, names: &List[String], tys: &List[String], locals: &List[String], defs: &List[TFn]) -> String ! alloc
     match e
@@ -461,6 +534,10 @@ fn lambda_strip_ref(t: &String) -> String ! alloc
 fn lambda_guess_call_type(name: &String, targs: &String, defs: &List[TFn]) -> String ! alloc
     if name.eq("list_new") == 1 && targs.len() > 0
         "List[" + targs + "]"
+    elsif name.eq("strdup") + name.eq("str_concat") + name.eq("str_slice") + name.eq("int_to_str") > 0
+        "String"
+    elsif name.eq("str_len") + name.eq("list_len") + name.eq("dict_len") + name.eq("str_index_of") + name.eq("str_eq") > 0
+        "Int"
     else
         lambda_fn_ret_of_name(defs, name, 0)
 
@@ -473,8 +550,8 @@ fn lambda_name_type(names: &List[String], tys: &List[String], name: &String, i: 
         lambda_name_type(names, tys, name, i + 1)
 
 fn lambda_guess_bin_type(op: &String, l: &Expr, r: &Expr, names: &List[String], tys: &List[String], defs: &List[TFn]) -> String ! alloc
-    lt = lambda_guess_expr_type(l, names, tys, &List.new[String](), defs)
-    rt = lambda_guess_expr_type(r, names, tys, &List.new[String](), defs)
+    lt = lambda_guess_type(l, names, tys, defs)
+    rt = lambda_guess_type(r, names, tys, defs)
     if op.eq("eq") + op.eq("ne") + op.eq("lt") + op.eq("le") + op.eq("gt") + op.eq("ge") + op.eq("and") + op.eq("or") > 0
         "Bool"
     elsif op.eq("add") == 1 && (lt.eq("String") == 1 || rt.eq("String") == 1)
@@ -624,18 +701,20 @@ fn lambda_effects_for_cb(cb: &Expr, defs: &List[TFn]) -> List[Int] ! alloc
         _ => 0
     fx
 
+# The bound names go in a local: a temporary lent as `f(&g())` is not released.
 fn lambda_has_capture(cb: &Expr, defs: &List[TFn]) -> Int ! alloc
+    bound = lambda_callback_params(cb)
     match cb
-        XLambda(params, body) => lambda_expr_has_capture(&body, &lambda_param_list(&params))
-        XLambdaBlock(params, body) => lambda_block_has_free(&body, &lambda_param_list(&params))
+        XLambda(_, body) => lambda_expr_has_capture(&body, &bound)
+        XLambdaBlock(_, body) => lambda_block_has_free(&body, &bound)
         _ => 1
 
 fn lambda_capture_names(cb: &Expr) -> List[String] ! alloc
     out = List.new[String]()
+    bound = lambda_callback_params(cb)
     match cb
-        XLambda(params, body) => lambda_collect_capture_expr(&body, &lambda_param_list(&params), &mut out)
-        XLambdaBlock(params, body) =>
-            bound = lambda_param_list(&params)
+        XLambda(_, body) => lambda_collect_capture_expr(&body, &bound, &mut out)
+        XLambdaBlock(_, body) =>
             lambda_collect_let_names(&body.stmts, 0, &mut bound)
             lambda_collect_capture_block(&body, &bound, &mut out)
         _ => 0
@@ -753,12 +832,12 @@ fn lambda_local_type_stmts(stmts: &List[TStmt], i: Int, names: &List[String], ty
             if s.ty.len() > 0
                 s.ty.dup()
             else
-                lambda_guess_expr_type(&s.expr, names, tys, &List.new[String](), defs)
+                lambda_guess_type(&s.expr, names, tys, defs)
         elsif s.kind == 1
             ty = if s.ty.len() > 0
                 s.ty.dup()
             else
-                lambda_guess_expr_type(&s.expr, names, tys, &List.new[String](), defs)
+                lambda_guess_type(&s.expr, names, tys, defs)
             ns = names.clone()
             ts = tys.clone()
             ns.push(s.name.dup())
@@ -807,7 +886,8 @@ fn lambda_stmts_have_free(stmts: &List[TStmt], names: &List[String], i: Int) -> 
         lambda_stmts_have_free(stmts, names, i + 1)
 
 fn lambda_capture_violation(cb: &Expr, defs: &List[TFn]) -> Int ! alloc
-    lambda_capture_violation_with(cb, defs, &List.new[String]())
+    none = List.new[String]()
+    lambda_capture_violation_with(cb, defs, &none)
 
 # A Copy capture passes by value (SPEC «Lambdas»): handing it to a by-value parameter or
 # returning it moves nothing. It goes in the name list as `=name`, which only those checks read.
@@ -823,13 +903,13 @@ fn lambda_capture_violation_in(owner: &String, cb: &Expr, defs: &List[TFn]) -> I
     lambda_capture_violation_with(cb, defs, &copies)
 
 fn lambda_capture_violation_with(cb: &Expr, defs: &List[TFn], copies: &List[String]) -> Int ! alloc
+    # Bound before the `match`: the scope end of the fn releases it.
+    names = lambda_callback_params(cb)
     match cb
-        XLambda(params, body) =>
-            names = lambda_param_list(&params)
+        XLambda(_, body) =>
             lambda_append_names(&mut names, copies, 0)
             lambda_return_capture_violation(&body, &names, defs)
-        XLambdaBlock(params, body) =>
-            names = lambda_param_list(&params)
+        XLambdaBlock(_, body) =>
             lambda_collect_let_names(&body.stmts, 0, &mut names)
             lambda_append_names(&mut names, copies, 0)
             lambda_block_capture_violation(&body, &names, defs)
@@ -1169,7 +1249,7 @@ fn lambda_effect_expr_overrun(e: &Expr, allowed: &String, defs: &List[TFn]) -> I
         XField(base, _) => lambda_effect_expr_overrun(&base, allowed, defs)
         XIf(cond, then_b, else_b, _, arms) => lambda_effect_if_overrun(&cond, &then_b, &else_b, &arms, allowed, defs)
         XBlock(body) => lambda_effect_block_overrun(&body, allowed, defs)
-        XWhile(cond, body) => lambda_effect_if_overrun(&cond, &body, &TBlock(List.new[TStmt](), XNone), &List.new[TElsif](), allowed, defs)
+        XWhile(cond, body) => lambda_effect_while_overrun(&cond, &body, allowed, defs)
         XOn(_, body, _, _) => lambda_effect_block_overrun(&body, allowed, defs)
         XMatch(scrut, arms) => lambda_effect_match_overrun(&scrut, &arms, allowed, defs)
         XLambda(_, body) => lambda_effect_expr_overrun(&body, allowed, defs)
@@ -1197,6 +1277,12 @@ fn lambda_effect_pair_overrun(l: &Expr, r: &Expr, allowed: &String, defs: &List[
         1
     else
         lambda_effect_expr_overrun(r, allowed, defs)
+
+# A `while` is an `if` with no `else` and no `elsif`.
+fn lambda_effect_while_overrun(cond: &Expr, body: &TBlock, allowed: &String, defs: &List[TFn]) -> Int ! alloc
+    no_else = TBlock(List.new[TStmt](), XNone)
+    no_arms = List.new[TElsif]()
+    lambda_effect_if_overrun(cond, body, &no_else, &no_arms, allowed, defs)
 
 fn lambda_effect_if_overrun(cond: &Expr, then_b: &TBlock, else_b: &TBlock, arms: &List[TElsif], allowed: &String, defs: &List[TFn]) -> Int ! alloc
     if lambda_effect_expr_overrun(cond, allowed, defs) == 1
@@ -1326,3 +1412,65 @@ fn lambda_expand_arms_go(owner: &String, xs: &List[TArm], i: Int, defs: &List[TF
         a = xs.get(i)
         out.push(TArm(tc_pat(&a.pat), lambda_expand_expr(owner, &a.body, defs, names, vals, depth, generated, errs), lambda_expand_block(owner, &a.suite, defs, names, vals, depth, generated, errs), a.has_suite))
         lambda_expand_arms_go(owner, xs, i + 1, defs, names, vals, depth, generated, errs, out)
+
+# `a + b` whose left operand is a `String` concatenates, so the lambda allocates. The left
+# operand is a literal, a `+` chain, or a parameter or capture typed `String` (also behind
+# `&`, `&mut` or `*`): what the arranque reads from the inferred types.
+fn lambda_cb_concats(cb: &Expr, ps: &List[TParam]) -> Int ! alloc
+    match cb
+        XLambda(_, e) => lambda_expr_concats(&e, ps)
+        XLambdaBlock(_, b) => lambda_block_concats(&b, ps)
+        _ => 0
+
+fn lambda_block_concats(b: &TBlock, ps: &List[TParam]) -> Int ! alloc
+    lambda_stmts_concat(&b.stmts, ps, 0) + lambda_expr_concats(&b.tail, ps) > 0
+
+fn lambda_stmts_concat(xs: &List[TStmt], ps: &List[TParam], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_expr_concats(&xs.get(i).expr, ps) == 1
+        1
+    else
+        lambda_stmts_concat(xs, ps, i + 1)
+
+fn lambda_exprs_concat(xs: &List[Expr], ps: &List[TParam], i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0
+    elsif lambda_expr_concats(&xs.get(i), ps) == 1
+        1
+    else
+        lambda_exprs_concat(xs, ps, i + 1)
+
+fn lambda_expr_concats(e: &Expr, ps: &List[TParam]) -> Int ! alloc
+    match e
+        XBin(op, l, r) =>
+            if op.eq("add") == 1 && lambda_is_string_operand(&l, ps) == 1
+                1
+            else
+                lambda_expr_concats(&l, ps) + lambda_expr_concats(&r, ps) > 0
+        XCall(_, args, _, _) => lambda_exprs_concat(&args, ps, 0)
+        XUnary(_, x) => lambda_expr_concats(&x, ps)
+        XField(base, _) => lambda_expr_concats(&base, ps)
+        XIf(cond, a, b, _, _) => lambda_expr_concats(&cond, ps) + lambda_block_concats(&a, ps) + lambda_block_concats(&b, ps) > 0
+        XBlock(body) => lambda_block_concats(&body, ps)
+        XWhile(cond, b) => lambda_expr_concats(&cond, ps) + lambda_block_concats(&b, ps) > 0
+        _ => 0
+
+fn lambda_is_string_operand(e: &Expr, ps: &List[TParam]) -> Int ! alloc
+    match e
+        XStr(_) => 1
+        XBin(op, l, _) => op.eq("add") == 1 && lambda_is_string_operand(&l, ps) == 1
+        XUnary(op, x) => op.eq("deref") == 1 && lambda_is_string_operand(&x, ps) == 1
+        XIdent(name) => lambda_param_is_string(ps, &name, 0)
+        _ => 0
+
+fn lambda_param_is_string(ps: &List[TParam], name: &String, i: Int) -> Int ! alloc
+    if i >= ps.len()
+        0
+    elsif ps.get(i).name.eq(name) == 1
+        lambda_ty_is_string(&ps.get(i).ty)
+    else
+        lambda_param_is_string(ps, name, i + 1)
+
+fn lambda_ty_is_string(ty: &String) -> Int ! alloc
+    ty_deref(&lambda_trim(ty)).eq("String")

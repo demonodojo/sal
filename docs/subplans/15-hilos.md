@@ -26,7 +26,7 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 | Préstamos | `src/borrowck.rs` | `Thread` lleva préstamos; `enter` presta en exclusiva |
 | Liberación | `src/drops.rs` | `thread_free`, `sem_free`, `mutex_free`, `chan_free`; resultado de `join` y de `recv` |
 | Bajada | `src/ir.rs`, `src/llvm.rs` | `thread_spawn`, `chan_new`, `mutex_new`; declaraciones i64 |
-| Runtime | `runtime/sal_runtime.c`, `runtime/instrument.c`, `src/compile.rs` | primitivas pthread; regiones y slab del lexer por hilo; candado en heaps de lugar e instrumentación; `-pthread` |
+| Runtime | `runtime/sal_threads.c` (hilos, semáforos, mutex, canales), `runtime/sal_runtime.c`, `runtime/instrument.c`, `src/compile.rs` | primitivas pthread en su fichero, enlazado por el arranque y por el selfhost (`sal_link_objs`); regiones y slab del lexer por hilo; candado en heaps de lugar e instrumentación; `sal_panic` vuelca stdout/stderr y sale con `_exit(1)` (en soso, `exit(1)`), así que el pánico de un hilo acaba el proceso sin correr destructores de otros hilos; `-pthread` |
 | Preludio | `std/prelude.sal` | `protocol Lockable[T]`, `impl Mutex[T] Lockable[T]` |
 
 ## Archivos (selfhost)
@@ -47,7 +47,8 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 ## Tests
 
 - `tests/lang/threads/*.sal`: ejecución (`spawn_join_sum`, `spawn_lends_list`, `spawn_moves_string`, `thread_drop_joins`, `thread_join_ends_loan`, `semaphore_*`, `mutex_*`, `channel_*`) y errores (`err_*`: `E_TYPE`, `E_BORROW`, `E_MOVED`, `E_EFFECT`). Los dos compiladores los cumplen sin `xfail` ni `selfhost-xfail`.
-- `tests/selfhost_ir.rs` (`PARITY_FILES`): IR idéntica en los programas de `tests/lang/threads` salvo `channel_producer` (ver «Pendiente»).
+- `tests/selfhost_ir.rs` (`PARITY_FILES`): IR idéntica en los programas válidos de `tests/lang/threads` (incluidos `channel_producer`, `channel_recv_match_temp`, `mutex_string` y `thread_panic_ends_process`).
+- `mutex_string` (`Mutex[String]`: la ranura de la lista es la celda de `&mut String`), `channel_recv_match_temp` (`match ch.recv()` suelta el `Some`), `thread_panic_ends_process` (`exit: 1`, `stdout` vaciado antes de salir).
 - `tests/memory_asan.rs` incluye el área `threads`.
 - `tests/runtime_str_threads.rs`: arnés TSan del runtime (`tests/support/sal_sync_threads.c`).
 - `tests/soso_target.rs` (`soso_rejects_threads`): `E_TARGET`.
@@ -61,8 +62,7 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 
 ## Pendiente
 
-- Selfhost: el brazo `None` de `match &r` sobre el `Option` de `recv` (y de `dict_get`) baja distinto que en el arranque; por eso `channel_producer` no está en `PARITY_FILES`.
 - Structs de varios campos como argumento o resultado de un hilo, y como `T` de `Mutex`.
 - `&mut T` como argumento de `Thread.spawn`.
 - soso.
-- `match ch.recv()` sin ligar el resultado (y `match r` que mueve el payload) fuga el `Some`, igual que `match d.get(k)`: es el hueco general de `match` sobre un temporal con dueño, no de los hilos. Los tests ligan el resultado y hacen `match &r`.
+- Selfhost: `match d.get(k)` sobre un `Dict[_, String]` con el preludio importado no resuelve el método (`drop_match_dict_get_temp.sal` lleva `selfhost-xfail`); `match ch.recv()` sí lo cumple.

@@ -1023,6 +1023,26 @@ thread_local! {
     static MUT_SIGS: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
 }
 
+fn string_type(span: crate::span::Span) -> Type {
+    Type::Named { name: "String".into(), args: Vec::new(), span }
+}
+
+/// `*r = v` with `r: &mut String`: the target is a `String` in a cell.
+fn deref_pointee_string(target: &Expr, strings: &StringEnv) -> bool {
+    let Expr::Unary { op: UnOp::Deref, expr, .. } = target else { return false };
+    let sp = expr.span();
+    matches!(strings.types.get(&(sp.start, sp.end)), Some(Type::Ref { inner, .. })
+        if matches!(inner.as_ref(), Type::Named { name, args, .. } if name == "String" && args.is_empty()))
+}
+
+/// SPEC «Memoria»: `*r = v` releases the `String` that `r` pointed at before writing `v`.
+fn drop_cell_string(target: &Expr, cell: &str, strings: &StringEnv, counter: &mut u32, instructions: &mut Vec<IrInst>) {
+    if deref_pointee_string(target, strings) {
+        let old = cell_get(cell, counter, instructions);
+        emit_owned_value_drop(&old, &string_type(target.span()), strings, counter, instructions);
+    }
+}
+
 /// `*p` with `p` a cell parameter, as an assignment target.
 fn deref_cell_target(target: &Expr) -> Option<String> {
     let Expr::Unary { op: UnOp::Deref, expr, .. } = target else { return None };
@@ -1069,12 +1089,23 @@ fn cell_param_alias(e: &Expr) -> Option<String> {
 
 /// The expression is a cell handle: `&mut x` of a cell local, a local holding one (`r`), or a
 /// struct field `&'a mut T` of a type without a box (`h.r`).
+/// `list_get(&mut xs, i)` (what `xs.get_mut(i)` becomes) typed `&mut T` with `T` a cell type.
+fn is_list_slot_call(e: &Expr, strings: &StringEnv) -> bool {
+    let Expr::Call { func, args, span, .. } = e else { return false };
+    matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get")
+        && matches!(args.first(), Some(Expr::Unary { op: UnOp::RefMut, .. }))
+        && matches!(strings.types.get(&(span.start, span.end)), Some(Type::Ref { mutable: true, inner, .. })
+            if crate::scalarize::is_cell_type(inner, &strings.structs))
+}
+
 fn is_cell_handle(e: &Expr, strings: &StringEnv) -> bool {
     match e {
         Expr::Unary { op: UnOp::RefMut, expr, .. } => {
             matches!(expr.as_ref(), Expr::Ident { name, .. } if cell_local(name).is_some())
         }
         Expr::Ident { name, .. } => is_ref_cell(name),
+        // `xs.get_mut(i)` of a `T` without a block of its own: the element's word (SPEC «Memoria»).
+        Expr::Call { .. } if is_list_slot_call(e, strings) => true,
         // SPEC «Hilos»: `m.enter()` of a `Mutex[T]` whose T has no block of its own is the
         // mutex's cell, which a `&mut T` parameter receives as is.
         Expr::Call { func, span, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "mutex_enter") => {
@@ -2048,6 +2079,12 @@ fn scan_struct_box_shell(
                         copies.remove(v);
                         shell.remove(v);
                     }
+                } else if func.starts_with("drop.") {
+                    // The glue releases the fields and the box (`p = xs.pop()` at scope end).
+                    if let Some(v) = args.first() {
+                        copies.remove(v);
+                        shell.remove(v);
+                    }
                 } else if !func.starts_with("sal_") {
                     if let Some(v) = args.first() {
                         if copies.get(v).is_some_and(|d| *d == 0) {
@@ -2169,6 +2206,12 @@ fn value_struct(value: &Expr, strings: &StringEnv, out: &HashMap<String, String>
     }
     match value {
         Expr::Ident { name: src, .. } => out.get(src).cloned(),
+        // `xs.pop()` hands the element over: the local owns it (SPEC «Memoria»). Its type is the
+        // one the call was given, as `struct_clone` below reads its receiver's.
+        Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop") => strings
+            .expr_type(value)
+            .and_then(struct_of_type)
+            .filter(|sn| strings.structs.contains_key(sn)),
         // `x.clone()` of a struct whose copy is made by its glue (`clone.<S>`): a fresh value the
         // local owns (SPEC «Memoria»). The clone of a describable struct is a `struct:<desc>`
         // box the drops pass releases (`struct_copy_kind`).
@@ -2179,7 +2222,9 @@ fn value_struct(value: &Expr, strings: &StringEnv, out: &HashMap<String, String>
             while let Expr::Unary { expr, .. } = src {
                 src = expr;
             }
-            let sn = value_struct(src, strings, out)?;
+            // A receiver that is not a bound local (`xs.get(i).clone()`) has the type the
+            // lowering reads to pick `clone.<S>`.
+            let sn = value_struct(src, strings, out).or_else(|| strings.expr_type(src).and_then(struct_of_type))?;
             struct_clone_glue(&sn, strings).then_some(sn)
         }
         Expr::Field { base, field, .. } => {
@@ -2975,9 +3020,12 @@ fn collect_moved_expr(
                             }
                         }
                     }
-                } else {
+                } else if !matches!(
+                    name.as_str(),
+                    "struct_clone" | "enum_copy" | "list_clone" | "dict_clone" | "bytes_clone" | "clone_copy" | "desc_copy"
+                ) {
                     // A builtin (`list_push`, `dict_put`, ...) or a struct/variant constructor
-                    // keeps what it is given.
+                    // keeps what it is given. `x.clone()` reads `x` through `&self` (SPEC «Memoria»).
                     for a in args {
                         if let Expr::Ident { name: arg, .. } = a {
                             moved.insert(arg.clone());
@@ -3459,6 +3507,7 @@ fn lower_stmt(
             } else if let Some(expr) = deref_field_cell(target, strings) {
                 let v = lower_expr(value, instructions, env, counter, regions, tensors, dim_params, fn_names, host_literals, strings);
                 let cell = lower_expr(expr, instructions, env, counter, regions, tensors, dim_params, fn_names, host_literals, strings);
+                drop_cell_string(target, &cell, strings, counter, instructions);
                 instructions.push(IrInst::Call { dest: None, func: "sal_cell_set".into(), args: vec![cell, v] });
             } else if let Some(name) = deref_cell_target(target) {
                 // `*p = v` with `p` a cell parameter: the old value is released, the new one
@@ -3482,6 +3531,8 @@ fn lower_stmt(
                             let old = cell_get(&cell, counter, instructions);
                             emit_owned_value_drop(&old, &fd.ty, strings, counter, instructions);
                         }
+                    } else {
+                        drop_cell_string(target, &cell, strings, counter, instructions);
                     }
                     instructions.push(IrInst::Call { dest: None, func: "sal_cell_set".into(), args: vec![cell, v] });
                     return false;
@@ -3491,6 +3542,8 @@ fn lower_stmt(
                         if let Some(fd) = strings.structs.get(&sn).and_then(|sd| sd.fields.first()).cloned() {
                             emit_owned_value_drop(&old, &fd.ty, strings, counter, instructions);
                         }
+                    } else if deref_pointee_string(target, strings) {
+                        emit_owned_value_drop(&old, &string_type(target.span()), strings, counter, instructions);
                     }
                 }
                 cell_write_back(&name, &v, instructions);
@@ -4721,7 +4774,9 @@ fn lower_expr(
                     let val = lower_expr_simple(v, instructions, env, counter, tensors, fn_names, host_literals, strings);
                     *counter += 1;
                     let dest = format!("t{counter}");
-                    if vt.as_ref().is_none_or(|t| crate::scalarize::is_cell_type(t, &strings.structs)) {
+                    let cell = vt.as_ref().is_none_or(|t| crate::scalarize::is_cell_type(t, &strings.structs));
+                    let owned = vt.as_ref().is_some_and(|t| crate::scalarize::cell_needs_drop(t, &strings.structs));
+                    if cell && !owned {
                         instructions.push(IrInst::Call {
                             dest: Some(dest.clone()),
                             func: "sal_mutex_new_cell".into(),
@@ -4742,7 +4797,8 @@ fn lower_expr(
                         func: "sal_list_push".into(),
                         args: vec![list.clone(), val],
                     });
-                    instructions.push(IrInst::Call { dest: Some(dest.clone()), func: "sal_mutex_new".into(), args: vec![list] });
+                    let ctor = if cell { "sal_mutex_new_slot" } else { "sal_mutex_new" };
+                    instructions.push(IrInst::Call { dest: Some(dest.clone()), func: ctor.into(), args: vec![list] });
                     return dest;
                 }
             }
@@ -4902,7 +4958,9 @@ fn lower_expr(
                             args: vec![dest.clone(), "sal_list_free_elem".into()],
                         });
                     }
-                    if args.is_empty() && fname == "list_new" && struct_glue_has(name, strings) {
+                    // An owned list whose descriptor cannot release the struct (a one-field struct
+                    // around a `String`, say) releases it with the glue as well.
+                    if args.is_empty() && struct_glue_has(name, strings) {
                         instructions.push(IrInst::Call {
                             dest: None,
                             func: "sal_list_set_drop".into(),
@@ -4941,6 +4999,15 @@ fn lower_expr(
             }
             if fname == "clone_copy" && arg_names.len() == 1 {
                 return arg_names.into_iter().next().unwrap_or(dest);
+            }
+            // `xs.get_mut(i)` of a cell type: the `&mut T` is the element's own word.
+            if fname == "list_get" && arg_names.len() == 2 && is_list_slot_call(e, strings) {
+                instructions.push(IrInst::Call {
+                    dest: Some(dest.clone()),
+                    func: "sal_list_slot".into(),
+                    args: arg_names,
+                });
+                return dest;
             }
             if fname == "struct_clone" && arg_names.len() == 1 {
                 // A struct with a `List`/`Dict` field has no descriptor: its glue copies it.
@@ -5019,6 +5086,18 @@ fn lower_expr(
                             dest: None,
                             func: "sal_enum_set_struct_glue".into(),
                             args: vec![dest.clone(), index, format!("drop.{name}"), format!("clone.{name}")],
+                        });
+                    } else if let Some(words) = enum_struct_flat_fields(field, strings) {
+                        *counter += 1;
+                        let index = format!("t{counter}");
+                        instructions.push(IrInst::ConstInt { dest: index.clone(), value: i as i64 });
+                        *counter += 1;
+                        let nfields = format!("t{counter}");
+                        instructions.push(IrInst::ConstInt { dest: nfields.clone(), value: words as i64 });
+                        instructions.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_enum_set_struct_flat".into(),
+                            args: vec![dest.clone(), index, nfields],
                         });
                     }
                 }
@@ -5842,6 +5921,7 @@ fn enum_owned_mask(
         );
         let kind = if matches!(field_ty, Some(crate::ast::Type::Named { name, .. }) if name == "List")
             || field_ty.is_some_and(|ty| enum_struct_glue_type(ty, strings).is_some())
+            || field_ty.is_some_and(|ty| enum_struct_flat_fields(ty, strings).is_some())
         {
             3
         } else if crate::drops::is_fresh_value(a) {
@@ -5865,6 +5945,16 @@ fn enum_owned_mask(
         mask |= kind << (2 * i);
     }
     mask
+}
+
+/// A boxed struct that frees nothing (scalar fields only): the enum box still owns it
+/// (`sal_enum_set_struct_flat` with its field count), as `Some(P)` owns its `P` in Rust.
+fn enum_struct_flat_fields(ty: &Type, strings: &StringEnv) -> Option<usize> {
+    let Type::Named { name, args, .. } = ty else { return None };
+    if !args.is_empty() || !struct_is_boxed(name, strings) || struct_glue_has(name, strings) {
+        return None;
+    }
+    strings.structs.get(name).map(|sd| sd.fields.len())
 }
 
 fn enum_struct_glue_type<'a>(ty: &'a Type, strings: &StringEnv) -> Option<&'a str> {

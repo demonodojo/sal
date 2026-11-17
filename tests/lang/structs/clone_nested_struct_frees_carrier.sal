@@ -1,0 +1,21 @@
+# exit: 20
+# `o.clone()` reads `o` through a temporary box, and `o.inner` goes in a box of its own
+# inside it: both are released after the copy, and `o` and the copy stay whole.
+struct Inner
+    tags: List[String]
+    n: Int
+
+struct Outer
+    name: String
+    inner: Inner
+    k: Int
+
+fn total(o: &Outer) -> Int
+    o.name.len() + o.inner.tags.len() + o.inner.n + o.k
+
+fn main() -> Int ! alloc
+    tags = List.new[String]()
+    tags.push("a")
+    o = Outer("xy", Inner(tags, 3), 4)
+    c = o.clone()
+    total(&o) + total(&c)

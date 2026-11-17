@@ -1,0 +1,14 @@
+# exit: 1
+# stdout: antes
+# A panic in a spawned thread ends the whole process; what was printed before is flushed.
+import "../../../std/prelude.sal"
+
+fn worker(xs: &List[Int]) -> Int ! panic
+    xs.get(5)
+
+fn main() -> Int ! io, alloc, panic
+    print_str("antes")
+    let xs = List.new[Int]()
+    xs.push(1)
+    let t = Thread.spawn(worker, &xs)
+    t.join()

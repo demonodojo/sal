@@ -1,0 +1,10 @@
+# error: E_BORROW
+# The `&mut Int` of `get_mut` points into the list: `push` (which may move its block) cannot
+# run while it lives.
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    xs.push(1)
+    let r = xs.get_mut(0)
+    xs.push(2)
+    *r = 5
+    0

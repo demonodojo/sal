@@ -39,12 +39,28 @@ pub struct FnSig {
     pub word_list_params: Vec<String>,
 }
 
-/// `T` in `&mut T` has no box of its own, so the callee writes through a cell.
+/// `T` in `&mut T` is reached through a cell: it has no box of its own (`Int`, `Float`, `Bool`,
+/// a one-field struct of a cell type), or it is a `String`, whose block `*s = v` replaces.
 pub fn is_cell_type(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
     match ty {
         Type::Named { name, args, .. } if args.is_empty() => {
-            matches!(name.as_str(), "Int" | "Float" | "Bool")
+            matches!(name.as_str(), "Int" | "Float" | "Bool" | "String")
                 || structs.get(name).is_some_and(|sd| sd.type_params.is_empty() && crate::layout::is_transparent_struct(sd))
+        }
+        _ => false,
+    }
+}
+
+/// A cell type whose value has to be released: a `String`, or a one-field struct around one.
+pub fn cell_needs_drop(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
+    match ty {
+        Type::Named { name, args, .. } if args.is_empty() => {
+            name == "String"
+                || structs.get(name).is_some_and(|sd| {
+                    sd.type_params.is_empty()
+                        && crate::layout::is_transparent_struct(sd)
+                        && sd.fields.first().is_some_and(|f| cell_needs_drop(&f.ty, structs))
+                })
         }
         _ => false,
     }
@@ -284,6 +300,9 @@ struct Pass<'a> {
     strs: HashMap<String, String>,
     /// `sal_desc_copy` of a struct (`S...`): the box is freed after its fields move out.
     copies: HashSet<String>,
+    /// Copies whose box `slots_of_moved` already released: a later `sal_struct_free_box` of the
+    /// same name (the box pass after a call that took it) is dropped.
+    released: HashSet<String>,
 }
 
 pub fn scalarize_module(
@@ -324,6 +343,7 @@ fn scalarize_fn(
         fresh: 0,
         strs: HashMap::new(),
         copies: HashSet::new(),
+        released: HashSet::new(),
     };
     let mut scope = Scope::default();
     let mut params = Vec::new();
@@ -429,6 +449,20 @@ impl<'a> Pass<'a> {
         }
         let name = self.plain(name, scope, out);
         self.unbox(&name, sn, out)
+    }
+
+    /// `slots_of` for a value moved into the slots (a field of a struct being built, a by-value
+    /// argument): when it is a fresh copy in heap form (`clone.<S>`, `sal_desc_copy` of a
+    /// struct), its contents now live in the slots and its boxes go.
+    fn slots_of_moved(&mut self, name: &str, sn: &str, scope: &mut Scope, out: &mut Vec<IrInst>) -> Vec<String> {
+        let copy = !scope.vals.contains_key(name) && self.copies.contains(name);
+        let slots = self.slots_of(name, sn, scope, out);
+        if copy {
+            self.free_carrier(sn, name, true, out);
+            self.copies.remove(name);
+            self.released.insert(name.to_string());
+        }
+        slots
     }
 
     fn unbox(&mut self, handle: &str, sn: &str, out: &mut Vec<IrInst>) -> Vec<String> {
@@ -645,7 +679,7 @@ impl<'a> Pass<'a> {
                         let mut slots = Vec::new();
                         for (f, k) in fields.iter().zip(kinds.iter()) {
                             match k {
-                                Some(inner) => slots.extend(self.slots_of(f, inner, scope, out)),
+                                Some(inner) => slots.extend(self.slots_of_moved(f, inner, scope, out)),
                                 None => {
                                     let p = self.plain(f, scope, out);
                                     slots.push(p);
@@ -747,9 +781,13 @@ impl<'a> Pass<'a> {
                 let pins = self.pin(inst, scope, out);
                 let scrut = self.plain(scrut, scope, out);
                 let mut new_arms = Vec::new();
+                // The struct every arm hands over in a box made here for the merge (an arm that
+                // returns does not count); `None` once an arm gives anything else.
+                let mut merged: Option<Option<String>> = Some(None);
                 for arm in arms {
                     let mut sc = scope.clone();
                     let mut body = self.list(&arm.body, &mut sc);
+                    merged = merge_switch_arm(merged, &arm.value, &sc, &body);
                     let value = self.plain_in_body(&arm.value, &mut sc, &mut body);
                     new_arms.push(SwitchArm {
                         tag: arm.tag,
@@ -759,6 +797,7 @@ impl<'a> Pass<'a> {
                 }
                 let mut sc = scope.clone();
                 let mut dbody = self.list(default_body, &mut sc);
+                merged = merge_switch_arm(merged, default_val, &sc, &dbody);
                 let dval = self.plain_in_body(default_val, &mut sc, &mut dbody);
                 out.push(IrInst::Switch {
                     scrut,
@@ -767,6 +806,13 @@ impl<'a> Pass<'a> {
                     default_val: dval,
                     dest: dest.clone(),
                 });
+                // Each arm boxed its struct only to cross the merge: the slots come back out and
+                // the box goes, as an `if` keeps the slots of both branches without a box.
+                if let Some(Some(sn)) = merged {
+                    let slots = self.unbox(dest, &sn, out);
+                    self.free_carrier(&sn, dest, true, out);
+                    scope.vals.insert(dest.clone(), Val { name: sn, slots });
+                }
                 self.unpin(pins, scope, out);
             }
             IrInst::KernelGrid { place, index_names, bounds, body, tail, dest } => {
@@ -810,21 +856,40 @@ impl<'a> Pass<'a> {
         let Some(sig) = self.sigs.get(func).cloned() else {
             // A scalarised value has no heap shell: field releases already ran on its slots.
             if func == "sal_struct_free_box"
-                && args.first().is_some_and(|a| scope.vals.contains_key(a))
+                && args.first().is_some_and(|a| scope.vals.contains_key(a) || self.released.contains(a))
             {
                 return;
             }
             // Boxing a scalarised alias for `desc_copy` allocates a shallow block.
             // The deep copy is what the second owner keeps; the shallow block is freed here.
-            let shallow = func == "sal_desc_copy"
-                && args.get(1).is_some_and(|a| scope.vals.contains_key(a));
-            let shallow_name = args.get(1).cloned();
+            // `clone.<S>` reads its receiver: the box made for a scalarised one is shallow too.
+            let src = match func.strip_prefix("clone.") {
+                Some(sn) if self.structs.contains_key(sn) => 0,
+                _ => 1,
+            };
+            let shallow = (func == "sal_desc_copy" || src == 0)
+                && args.get(src).is_some_and(|a| scope.vals.contains_key(a));
+            let shallow_name = args.get(src).cloned();
+            let shallow_struct = shallow_name.as_ref().and_then(|a| scope.vals.get(a)).map(|v| v.name.clone());
             let args = self.plain_all(args, scope, out);
             if func == "sal_desc_copy" {
                 if let (Some(d), Some(desc)) = (dest, args.first()) {
                     if self.strs.get(desc).is_some_and(|s| s.starts_with('S')) {
                         self.copies.insert(d.clone());
                     }
+                }
+            }
+            // `xs.pop()` hands its element's box over (SPEC «Memoria»): moved into the slots of a
+            // by-value argument, the box goes, as the box of a copy does (`slots_of_moved`).
+            if func == "sal_list_pop" {
+                if let Some(d) = dest {
+                    self.copies.insert(d.clone());
+                }
+            }
+            // `clone.<S>` is glue: it hands back a new box the caller owns.
+            if let (Some(d), Some(sn)) = (dest, func.strip_prefix("clone.")) {
+                if self.structs.contains_key(sn) {
+                    self.copies.insert(d.clone());
                 }
             }
             out.push(IrInst::Call {
@@ -836,12 +901,21 @@ impl<'a> Pass<'a> {
                 if let Some(name) = shallow_name {
                     scope.boxed.remove(&name);
                 }
-                if let Some(b) = args.get(1) {
-                    out.push(IrInst::Call {
-                        dest: None,
-                        func: "sal_struct_free_box".into(),
-                        args: vec![b.clone()],
-                    });
+                // The carrier holds the slots of nested structs in boxes of their own
+                // (`box_slots`): those go with it.
+                if let (Some(b), Some(sn)) = (args.get(src), shallow_struct) {
+                    self.free_carrier(&sn, b, true, out);
+                }
+            }
+            // The clone of a struct that lives in slots goes into slots at once, and its box goes:
+            // a later field write rebuilds the value from the slots and would leave the box behind.
+            if let (Some(d), Some(sn)) = (dest, func.strip_prefix("clone.")) {
+                let named = Type::Named { name: sn.to_string(), args: vec![], span: Default::default() };
+                if agg_struct(&named, self.structs).as_deref() == Some(sn) {
+                    let slots = self.unbox(d, sn, out);
+                    self.free_carrier(sn, d, true, out);
+                    self.copies.remove(d);
+                    scope.vals.insert(d.clone(), Val { name: sn.to_string(), slots });
                 }
             }
             return;
@@ -855,6 +929,9 @@ impl<'a> Pass<'a> {
         let mut reload: Vec<(String, String, String)> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             match sig.params.get(i).cloned().flatten() {
+                Some(sn) if sig.mut_ref.get(i) != Some(&true) && sig.shared_ref.get(i) != Some(&true) => {
+                    flat.extend(self.slots_of_moved(a, &sn, scope, out))
+                }
                 Some(sn) => flat.extend(self.slots_of(a, &sn, scope, out)),
                 None => {
                     // A pinned local already lives in its box: a borrow passes that box, which
@@ -1146,4 +1223,21 @@ impl<'a> Pass<'a> {
             }
         }
     }
+}
+
+/// Folds one arm of a `Switch` into the struct the merge carries: a scalarised value with no box
+/// yet (so the box `plain_in_body` makes is the arm's own), of the same struct as the other arms.
+/// An arm that ends in `Return`, and the empty default of an exhaustive `match`, never reach the
+/// merge.
+fn merge_switch_arm(acc: Option<Option<String>>, value: &str, sc: &Scope, body: &[IrInst]) -> Option<Option<String>> {
+    let acc = acc?;
+    // The `0` of an empty default is the arm an exhaustive `match` never takes.
+    if matches!(body.last(), Some(IrInst::Return { .. })) || (body.is_empty() && value == "0") {
+        return Some(acc);
+    }
+    let v = sc.vals.get(value)?;
+    if sc.boxed.contains_key(value) || acc.as_ref().is_some_and(|sn| *sn != v.name) {
+        return None;
+    }
+    Some(Some(v.name.clone()))
 }

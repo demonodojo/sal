@@ -1,0 +1,30 @@
+# exit: 11
+# `get_mut` lends the element of a `Float`, `Bool` or one-field struct list: writing through
+# the reference changes the list. 1.5 * 2.0 = 3.0, the Bool turns true (1) and 3 + 4 = 7.
+struct N
+    v: Int
+
+fn flip(b: &mut Bool) -> Int
+    if *b
+        *b = false
+    else
+        *b = true
+    0
+
+fn main() -> Int ! alloc
+    let fs = List.new[Float]()
+    fs.push(1.5)
+    let r = fs.get_mut(0)
+    *r = *r * 2.0
+    let bs = List.new[Bool]()
+    bs.push(false)
+    flip(bs.get_mut(0))
+    let ns = List.new[N]()
+    ns.push(N(3))
+    let n = ns.get_mut(0)
+    n.v = n.v + 4
+    let k = if bs.get(0)
+        1
+    else
+        0
+    fs.get(0).to_int() + k + ns.get(0).v

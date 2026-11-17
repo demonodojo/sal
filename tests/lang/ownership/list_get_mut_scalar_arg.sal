@@ -1,0 +1,11 @@
+# exit: 42
+# `xs.get_mut(i)` of an `Int` is `&mut Int` (SPEC «Memoria»): `bump` writes the element itself.
+fn bump(x: &mut Int) -> Int
+    *x = *x + 1
+    0
+
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    xs.push(41)
+    bump(xs.get_mut(0))
+    xs.get(0)

@@ -437,9 +437,12 @@ fn provided_builtin_impls(tp: &TProgram, i: Int, out: &mut List[TFn]) -> Int ! a
         0
     else
         imp = tp.impls.get(i)
-        if builtin_impl_target(&ty_base(&imp.target)) == 1
+        # Bound: a temporary lent or used as a receiver is not released.
+        base = ty_base(&imp.target)
+        targs = tg_args(&imp.target)
+        if builtin_impl_target(&base) == 1
             _a = provided_builtin_claims(tp, &imp, 0, out)
-        elsif tg_args(&imp.target).len() == 0
+        elsif targs.len() == 0
             _a = provided_claims(tp, &imp.target, &imp.protocols, 0, out)
         provided_builtin_impls(tp, i + 1, out)
 
@@ -555,7 +558,8 @@ fn attach_local_impls(tp: &mut TProgram, i: Int) -> Int ! alloc
         0
     else
         imp = tp.impls.get(i)
-        if tg_args(&imp.target).len() == 0
+        targs = tg_args(&imp.target)
+        if targs.len() == 0
             si = tt_struct_find(&tp.structs, &imp.target)
             ei = enum_find(&tp.enums, &imp.target, 0, tp.enums.len())
             if si >= 0

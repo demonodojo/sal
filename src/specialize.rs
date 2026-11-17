@@ -369,7 +369,7 @@ fn specialize_lambdas_inner(
             for f in env.fn_defs.values() {
                 if effect_names.insert(f.name.clone()) { effect_program.items.push(Item::Fn(f.clone())); }
             }
-            crate::effects::required_effects_for_block(&lambda_block, &[&effect_program])
+            crate::effects::required_effects_for_typed_block(&lambda_block, &[&effect_program], &local_entries)
         } else { declared_fx.clone() };
         let lifted = FnDef {
             name: lambda_name.clone(), receiver: None, self_mode: ParamMode::Inferred,

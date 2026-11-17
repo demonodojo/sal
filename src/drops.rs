@@ -117,8 +117,8 @@ fn is_enum_type(name: &str) -> bool {
     ENUM_TYPES.with(|f| f.borrow().contains(name))
 }
 
-/// Every return of the fn (and its tail) builds the enum: a variant constructor or a bare
-/// unit variant, possibly under a `match` / `if`. Such a fn hands the caller a fresh box;
+/// Every return of the fn (and its tail) builds the enum: a variant constructor, a bare
+/// unit variant or a `clone`, possibly under a `match` / `if`. Such a fn hands the caller a fresh box;
 /// one that returns a borrowed enum (a reference parameter, a field read, a local) does not.
 fn fresh_enum_return_fns(
     prog: &Program,
@@ -155,8 +155,9 @@ fn enum_block_fresh(b: &Block, has_fields: &HashSet<String>) -> bool {
 
 fn enum_expr_fresh(e: &Expr, has_fields: &HashSet<String>) -> bool {
     match e {
+        // `x.clone()` (`enum_copy` by now) is a new box the caller owns (SPEC «Memoria»).
         Expr::Call { func, .. } => {
-            matches!(func.as_ref(), Expr::Ident { name, .. } if has_fields.contains(name))
+            matches!(func.as_ref(), Expr::Ident { name, .. } if has_fields.contains(name) || name == "enum_copy")
         }
         Expr::Ident { name, .. } => has_fields.get(name).is_none() && VARIANT_CTORS.with(|c| c.borrow().contains(name)),
         Expr::Match { arms, .. } => arms.iter().all(|a| enum_expr_fresh(&a.body, has_fields)),
@@ -517,9 +518,18 @@ fn is_elem_read(e: &Expr) -> bool {
     matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_get" || name == "list_pop"))
 }
 
-/// `dict_get(..)`: the runtime hands out a fresh `Option` that owns a copy of the value.
-fn is_dict_get(e: &Expr) -> bool {
-    matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get"))
+/// `dict_get(..)` or `chan_recv(..)`: the runtime hands out a fresh `Option` that owns a copy
+/// of the value (or the value taken off the channel).
+fn is_fresh_option(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. }
+        if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get" || name == "chan_recv"))
+}
+
+/// A call of a user fn that hands back a fresh enum box (`user_call_kind`): matched without a
+/// local, nobody else releases it.
+fn is_fresh_enum_call(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. }
+        if matches!(func.as_ref(), Expr::Ident { name, .. } if user_call_kind(name, e) == Some("enum_free")))
 }
 
 impl Hoist {
@@ -622,11 +632,12 @@ impl Hoist {
                 };
                 Expr::Field { base: Box::new(base), field, span }
             }
-            // `match list_get(xs, i) { … }`: the element read is bound to a local first, so the
-            // scope-end release frees a copy that owned lists hand out (`candidate`).
+            // `match list_get(xs, i) { … }`, `match d.get(k) { … }`, `match ch.recv() { … }`: the
+            // scrutinee is bound to a local first, so the scope-end release frees a copy that
+            // owned lists hand out, or the fresh `Option` (`candidate`).
             Expr::Match { scrutinee, arms, span } => {
                 let scrutinee = self.expr(*scrutinee, out);
-                let scrutinee = if is_elem_read(&scrutinee) || is_dict_get(&scrutinee) {
+                let scrutinee = if is_elem_read(&scrutinee) || is_fresh_option(&scrutinee) || is_fresh_enum_call(&scrutinee) {
                     self.n += 1;
                     let name = format!("__tmp{}", self.n);
                     let ssp = scrutinee.span();
@@ -747,13 +758,14 @@ pub fn insert_drops(
             f.body = Hoist { n: 0, fn_name: f.name.clone(), elems }.block(body);
         }
     }
+    // Every enum the module sees, imported ones too: `None` of the prelude's `Option` is a
+    // variant pattern (it reads the box), not a binding of the whole scrutinee.
     let mut variants = Variants::new();
-    for item in &prog.items {
-        if let Item::Enum(e) = item {
-            for v in &e.variants {
-                let owned = v.fields.iter().map(|t| !is_copy_scalar(t)).collect();
-                variants.insert(v.name.clone(), owned);
-            }
+    let local_enums = prog.items.iter().filter_map(|i| if let Item::Enum(e) = i { Some(e) } else { None });
+    for e in enums.values().chain(local_enums) {
+        for v in &e.variants {
+            let owned = v.fields.iter().map(|t| !is_copy_scalar(t)).collect();
+            variants.insert(v.name.clone(), owned);
         }
     }
     let ro = read_only_params(prog, &variants, callees);
@@ -930,6 +942,12 @@ fn fixpoint_key(fns: &[&FnDef]) -> u64 {
     h.finish()
 }
 
+/// A parameter the fn owns: declared or inferred `take`, or a by-value parameter whose mode
+/// is not inferred yet (SPEC «Memoria»: passing by value moves).
+fn takes_by_value(p: &Param) -> bool {
+    p.mode == ParamMode::Take || (p.mode == ParamMode::Inferred && !matches!(p.ty, Type::Ref { .. }))
+}
+
 /// Optimistic fixpoint: every parameter starts read-only and loses that when its fn lets
 /// it escape under the current assumptions about the other fns.
 fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> ReadOnly {
@@ -977,7 +995,9 @@ fn read_only_params(prog: &Program, variants: &Variants, callees: &[&FnDef]) -> 
     for f in &fns {
         // A by-value parameter is owned by the fn (SPEC «Memoria»): the caller gave it up, so it
         // is never read-only. Only `&T` and inferred borrows leave the caller the release.
-        ro.insert(f.name.clone(), f.params.iter().map(|p| p.mode != ParamMode::Take).collect());
+        // A callee from another module of the graph has not been through `infer_param_modes`:
+        // its by-value parameters are still `Inferred`, and they move just the same.
+        ro.insert(f.name.clone(), f.params.iter().map(|p| !takes_by_value(p)).collect());
         cons.insert(f.name.clone(), vec![false; f.params.len()]);
         kept_map.insert(f.name.clone(), vec![false; f.params.len()]);
     }
@@ -1042,12 +1062,14 @@ fn fn_facts<'a>(f: &FnDef, variants: &'a Variants, ro: &'a ReadOnly, cons: &'a R
         opaque: 0,
         loop_depth: 0,
         bind_depth: HashMap::new(),
+        bind_branch: HashMap::new(),
         hard_move: 0,
         param_tys: HashMap::new(),
         box_shell: HashSet::new(),
         moved: crate::borrowck::published_moved_locals(&f.name),
         branch_depth: 0,
         branch_moved: HashSet::new(),
+        branch_matches: HashSet::new(),
     };
     for p in &f.params {
         facts.bind(&p.name);
@@ -1381,7 +1403,13 @@ struct Facts<'a> {
     branch_depth: u32,
     /// Locals moved as the tail of a branch (`branch_depth`): only some paths move them.
     branch_moved: HashSet<String>,
+    /// `match`es whose arms were walked as branches (`walk_match_top`): `xform_expr` gives the
+    /// block of each arm its own scope, as it does for the branches of an `if`.
+    branch_matches: HashSet<(u32, u32)>,
     bind_depth: HashMap<String, u32>,
+    /// The branch depth each name was first bound at: a move in a deeper branch moves it on
+    /// that path only (`branch_moved`).
+    bind_branch: HashMap<String, u32>,
     /// Inside a struct constructor call: value arguments move out fully (not soft).
     hard_move: u32,
     /// Parameter types. Storing one of these in a list moves a value this function owns.
@@ -1397,6 +1425,8 @@ impl Facts<'_> {
         *self.bindings.entry(name.to_string()).or_insert(0) += 1;
         let d = self.loop_depth;
         self.bind_depth.entry(name.to_string()).or_insert(d);
+        let b = self.branch_depth;
+        self.bind_branch.entry(name.to_string()).or_insert(b);
 
     }
 
@@ -1443,6 +1473,10 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
                 match f.cur {
                     Some(key) if f.bind_depth.get(name).is_some_and(|d| *d == f.loop_depth) => {
                         f.soft.insert(name.clone());
+                        // Moved in a branch below the one that bound it: on that path only.
+                        if f.bind_branch.get(name).is_some_and(|b| *b < f.branch_depth) {
+                            f.branch_moved.insert(name.clone());
+                        }
                         if f.user_take {
                             f.consumed.insert(name.clone());
                         }
@@ -1638,15 +1672,47 @@ fn walk_if(e: &Expr, discard: bool, f: &mut Facts) {
     };
     arg(cond, ArgMove::Read, f);
     f.branch_depth += 1;
+    let mut paths = PathBinds::start(f);
     block_with(then_block, discard, f);
+    paths.next(f);
     for a in elsifs {
         arg(&a.cond, ArgMove::Read, f);
         block_with(&a.body, discard, f);
+        paths.next(f);
     }
     if let Some(b) = else_block {
         block_with(b, discard, f);
+        paths.next(f);
     }
+    paths.finish(f);
     f.branch_depth -= 1;
+}
+
+/// Bindings counted per path through the branches of an `if` or a `match`: each branch starts
+/// from the count before them, and afterwards a name has the most any one branch gave it. The
+/// same name bound in two sibling branches is two locals, each bound once (SPEC «Memoria», as
+/// two `let`s in the arms of a Rust `if`), not a rebinding of one.
+struct PathBinds {
+    base: HashMap<String, u32>,
+    most: HashMap<String, u32>,
+}
+
+impl PathBinds {
+    fn start(f: &Facts) -> Self {
+        PathBinds { base: f.bindings.clone(), most: f.bindings.clone() }
+    }
+
+    /// Closes the branch just walked and starts the next one from the count before the branches.
+    fn next(&mut self, f: &mut Facts) {
+        for (n, c) in std::mem::replace(&mut f.bindings, self.base.clone()) {
+            let m = self.most.entry(n).or_insert(0);
+            *m = (*m).max(c);
+        }
+    }
+
+    fn finish(self, f: &mut Facts) {
+        f.bindings = self.most;
+    }
 }
 
 /// The local a `match` arm hands out whole: its body is the name (`0 => a`), or a block whose
@@ -1662,6 +1728,14 @@ fn arm_moved_local(arm: &MatchArm) -> Option<&Expr> {
     (!pattern_binds(&arm.pattern, name)).then_some(e)
 }
 
+/// The body of a `match` arm as a block: its own block, or one whose only content is the body.
+fn arm_block(body: &Expr) -> Block {
+    match body {
+        Expr::Block(b) => b.clone(),
+        e => Block { stmts: Vec::new(), tail: Some(Box::new(e.clone())), span: e.span() },
+    }
+}
+
 fn pattern_binds(p: &Pattern, name: &str) -> bool {
     match p {
         Pattern::Ident(n, _) => n == name,
@@ -1672,13 +1746,17 @@ fn pattern_binds(p: &Pattern, name: &str) -> bool {
 
 /// A `match` in a position `xform_expr` rewrites: an arm that hands out a local moves it on that
 /// path only, behind its flag, like the tail of an `if` branch. Any other arm stays opaque.
-fn walk_match_top(e: &Expr, f: &mut Facts) {
+fn walk_match_top(e: &Expr, discard: bool, f: &mut Facts) {
     let Expr::Match { arms, .. } = e else { return };
-    if !arms.iter().any(|a| arm_moved_local(a).is_some()) || f.opaque > 0 {
+    let block_arm = arms.iter().any(|a| matches!(a.body, Expr::Block(_)) && arm_moved_local(a).is_none());
+    if (!block_arm && !arms.iter().any(|a| arm_moved_local(a).is_some())) || f.opaque > 0 {
         expr(e, f);
         return;
     }
-    let Expr::Match { scrutinee, arms, .. } = e else { return };
+    let Expr::Match { scrutinee, arms, span } = e else { return };
+    if block_arm {
+        f.branch_matches.insert(stmt_key(*span));
+    }
     let binds_whole = arms
         .iter()
         .any(|a| matches!(&a.pattern, Pattern::Ident(n, _) if !f.variants.contains_key(n)));
@@ -1690,6 +1768,7 @@ fn walk_match_top(e: &Expr, f: &mut Facts) {
         f.matches.push((name.clone(), bound));
     }
     arg(scrutinee, if binds_whole { ArgMove::TakeFields } else { ArgMove::Read }, f);
+    let mut paths = block_arm.then(|| PathBinds::start(f));
     for a in arms {
         pattern(&a.pattern, f);
         if let Some(Expr::Ident { name, span }) = arm_moved_local(a) {
@@ -1698,11 +1777,24 @@ fn walk_match_top(e: &Expr, f: &mut Facts) {
             arg(&Expr::Ident { name: name.clone(), span: *span }, ArgMove::TakeFields, f);
             f.branch_moved.insert(name.clone());
             f.cur = outer;
+        } else if block_arm {
+            // With an arm that has a block of its own, every arm is a branch, as the blocks of
+            // an `if` are (`walk_if`): the locals its block binds are its own and go at its end
+            // (SPEC «Memoria»). An arm without a block is a block with only a tail (`arm_block`).
+            f.branch_depth += 1;
+            block_with(&arm_block(&a.body), discard, f);
+            f.branch_depth -= 1;
         } else {
             f.opaque += 1;
             expr(&a.body, f);
             f.opaque -= 1;
         }
+        if let Some(p) = paths.as_mut() {
+            p.next(f);
+        }
+    }
+    if let Some(p) = paths {
+        p.finish(f);
     }
 }
 
@@ -1711,7 +1803,7 @@ fn top(e: &Expr, mov: ArgMove, f: &mut Facts) {
     if matches!(e, Expr::If { .. }) {
         walk_if(e, false, f);
     } else if matches!(e, Expr::Match { .. }) {
-        walk_match_top(e, f);
+        walk_match_top(e, false, f);
     } else {
         arg(e, mov, f);
     }
@@ -1815,6 +1907,8 @@ fn expr_stmt(e: &Expr, f: &mut Facts) {
     if !push_stmt(e, f) {
         if matches!(e, Expr::If { .. }) {
             walk_if(e, true, f);
+        } else if matches!(e, Expr::Match { .. }) {
+            walk_match_top(e, true, f);
         } else {
             expr(e, f);
         }
@@ -1886,7 +1980,7 @@ fn block_with(b: &Block, discard_tail: bool, f: &mut Facts) {
         // before it runs). A tail `if`/`match` keys its moves in its branches instead.
         let live = f.opaque == 0;
         let branch_local = f.branch_depth > 0 && matches!(t.as_ref(), Expr::Ident { .. });
-        f.cur = (live && (is_call_tail(t) || branch_local)).then(|| stmt_key(t.span()));
+        f.cur = (live && (is_moving_tail(t) || branch_local)).then(|| stmt_key(t.span()));
         top(t, ArgMove::TakeFields, f);
         if let (true, Expr::Ident { name, .. }) = (branch_local && live, t.as_ref()) {
             f.branch_moved.insert(name.clone());
@@ -1897,6 +1991,13 @@ fn block_with(b: &Block, discard_tail: bool, f: &mut Facts) {
 
 fn is_control_expr(e: &Expr) -> bool {
     matches!(e, Expr::If { .. } | Expr::Match { .. })
+}
+
+/// A tail whose moves are its own statement's moves: a call of a fn, or an operator over
+/// operands that may call one (`keep(w) + 1`). Its flags are cleared before it runs, so a local
+/// it moves on one branch is still released behind its flag on the others (SPEC «Memoria»).
+fn is_moving_tail(e: &Expr) -> bool {
+    is_call_tail(e) || matches!(e, Expr::Binary { .. } | Expr::Unary { .. })
 }
 
 /// A tail that calls a function: the arguments it moves are its own statement's moves.
@@ -1939,6 +2040,9 @@ struct Ctx<'a> {
     owned_elems: HashMap<String, &'static str>,
     /// Struct copies whose box was freed right after a scalarizing call (`clear_moved`).
     shell_freed: HashSet<String>,
+    /// Locals bound to `xs.pop()`: the box of the element is theirs, and the scalarizing call
+    /// that moves one frees it (`slots_of_moved` in src/scalarize.rs), so `clear_moved` does not.
+    popped: HashSet<String>,
     /// Locals bound more than once whose every binding is a fresh value of one kind: a
     /// reassignment releases the old value first (SPEC «Liberación»).
     rebound: HashSet<String>,
@@ -2112,10 +2216,7 @@ impl Ctx<'_> {
             return Some(k);
         }
         if let Expr::Match { scrutinee, .. } = e {
-            if matches!(
-                scrutinee.as_ref(),
-                Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get")
-            ) {
+            if is_fresh_option(scrutinee) {
                 return Some("enum_free");
             }
         }
@@ -2195,16 +2296,19 @@ impl Ctx<'_> {
     }
 
     /// A struct local with glue that only some paths move (a branch tail returns it): released by
-    /// `drop.<S>` behind its flag on the others. One never moved stays with the struct tail of
-    /// the lowering; one always moved has nothing to release.
+    /// `drop.<S>` behind its flag on the others. One never moved stays
+    /// with the struct tail of the lowering; one always moved has nothing to release.
     fn struct_glue_candidate(&self, name: &str, ty: &Option<Type>, init: &Expr) -> Option<(&'static str, bool)> {
         let sp = init.span();
         let t = ty.clone().or_else(|| EXPR_TYPES.with(|m| m.borrow().get(&(sp.start, sp.end)).cloned()))?;
         let kind = struct_glue_release(&t)?;
         let moved = self.facts.moved.as_ref().is_some_and(|m| m.contains(name));
+        // Every move is keyed (none `escaped`): each clears the flag, so the release behind it
+        // never runs on a path that moved the value.
         let ok = moved
             && self.facts.soft.contains(name)
             && self.facts.branch_moved.contains(name)
+            && !self.facts.escaped.contains(name)
             && !self.params.contains(name)
             && self.binds_once(name);
         ok.then_some((kind, true))
@@ -2775,6 +2879,7 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         live: Vec::new(),
         tmp: 0,
         owned_elems: HashMap::new(),
+        popped: HashSet::new(),
         shell_freed: HashSet::new(),
         rebound: rebound_locals(&f.body, variants),
     };
@@ -2798,7 +2903,9 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
                     flags.push(p.name.clone());
                 }
             } else if let Some(k) =
-                struct_glue_release(&p.ty).filter(|_| tracked && cx.facts.branch_moved.contains(&p.name))
+                struct_glue_release(&p.ty).filter(|_| {
+                    tracked && cx.facts.branch_moved.contains(&p.name) && !cx.facts.escaped.contains(&p.name)
+                })
             {
                 cx.live.push((p.name.clone(), k, true));
                 flags.push(p.name.clone());
@@ -2917,7 +3024,7 @@ fn rebind(name: &str, value: Expr, span: Span, cx: &mut Ctx, stmts: &mut Vec<Stm
     stmts.push(Stmt::Let { name: t.clone(), ty: None, init: value, frozen: false, stack: false, span });
     clear_moved(cx, stmt_key(span), span, stmts);
     if !cx.facts.escaped.contains(name) && !cx.shell_freed.contains(name) {
-        stmts.push(release(name, k, fl, cx.facts.box_shell.contains(name), span));
+        stmts.push(release(name, k, fl, shell_box(cx, name), span));
     }
     stmts.push(Stmt::Assign {
         target: Expr::Ident { name: name.to_string(), span },
@@ -2968,13 +3075,26 @@ fn release(name: &str, kind: &str, flagged: bool, box_shell: bool, span: Span) -
     })
 }
 
+/// A local whose struct box goes apart from its fields (`box_shell`): not one bound to `xs.pop()`,
+/// whose box the callee that takes it releases with the fields (`drop.<S>`).
+fn shell_box(cx: &Ctx, name: &str) -> bool {
+    cx.facts.box_shell.contains(name) && !cx.popped.contains(name)
+}
+
+/// `name = xs.pop()`: the local owns the element's box (`Ctx::popped`).
+fn note_popped(name: &str, init: &Expr, cx: &mut Ctx) {
+    if matches!(init, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop")) {
+        cx.popped.insert(name.to_string());
+    }
+}
+
 /// Clears the flag of every flagged live local the statement at `key` moved.
 fn clear_moved(cx: &mut Ctx, key: (u32, u32), span: Span, out: &mut Vec<Stmt>) {
     if let Some(names) = cx.facts.sites.get(&key) {
         for n in names {
             if cx.live.iter().any(|(l, _, fl)| l == n && *fl) {
                 out.push(flag_clear(n, span));
-                if cx.facts.box_shell.contains(n)
+                if shell_box(cx, n)
                     && cx.live.iter().any(|(l, k, _)| l == n && k.starts_with("struct:"))
                 {
                     out.push(struct_box_free_call(n, span));
@@ -3004,14 +3124,26 @@ fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
             else_block: else_block.map(|b| xform_block(b, cx)),
             span,
         },
-        // An arm that hands out a local clears that local's flag first (`walk_match_top`).
+        // An arm that hands out a local clears that local's flag first (`walk_match_top`), and
+        // the block of an arm walked as a branch gets its own scope.
         Expr::Match { scrutinee, arms, span } => Expr::Match {
             scrutinee,
             arms: arms
                 .into_iter()
                 .map(|a| {
                     let Some(Expr::Ident { name, span: isp }) = arm_moved_local(&a).cloned() else {
-                        return a;
+                        if !cx.facts.branch_matches.contains(&stmt_key(span)) {
+                            return a;
+                        }
+                        let MatchArm { pattern, body, span: aspan } = a;
+                        let was_block = matches!(body, Expr::Block(_));
+                        let b = xform_block(arm_block(&body), cx);
+                        // An arm without a block keeps its shape when its scope adds nothing.
+                        let body = match (was_block, b.stmts.is_empty(), b.tail) {
+                            (false, true, Some(t)) => *t,
+                            (_, _, tail) => Expr::Block(Block { stmts: b.stmts, tail, span: b.span }),
+                        };
+                        return MatchArm { pattern, body, span: aspan };
                     };
                     let mut stmts = Vec::new();
                     clear_moved(cx, stmt_key(isp), isp, &mut stmts);
@@ -3051,6 +3183,7 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
             Stmt::Break { span } => stmts.push(Stmt::Break { span }),
             Stmt::Let { name, ty, init, frozen, stack, span } => {
                 let cand = cx.candidate(&name, &ty, &init);
+                note_popped(&name, &init, cx);
                 if cand.is_some() && cx.rebound.contains(&name) && cx.live.iter().any(|(l, _, _)| l == &name) {
                     rebind(&name, init, span, cx, &mut stmts);
                     continue;
@@ -3074,6 +3207,9 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                 }
             }
             Stmt::Assign { target, value, span } => {
+                if let Expr::Ident { name, .. } = &target {
+                    note_popped(name, &value, cx);
+                }
                 let decl = match &target {
                     Expr::Ident { name, .. } if !is_accumulate(name, &value) => {
                         cx.candidate(name, &None, &value).map(|(k, fl)| (name.clone(), k, fl))
@@ -3153,7 +3289,7 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                     clear_moved(cx, stmt_key(span), span, &mut stmts);
                     for (n, k, fl) in cx.live.iter().rev() {
                         if !cx.facts.escaped.contains(n) && !cx.shell_freed.contains(n) {
-                            stmts.push(release(n, k, *fl, cx.facts.box_shell.contains(n), span));
+                            stmts.push(release(n, k, *fl, shell_box(cx, n), span));
                         }
                     }
                     stmts.push(Stmt::Return { value, span });
@@ -3164,7 +3300,7 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
     }
     if let Some(t) = &b.tail {
         // A call tail, or a local moved as the tail of a branch (the facts keyed only those).
-        if is_call_tail(t) || matches!(t.as_ref(), Expr::Ident { .. }) {
+        if is_moving_tail(t) || matches!(t.as_ref(), Expr::Ident { .. }) {
             clear_moved(cx, stmt_key(t.span()), t.span(), &mut stmts);
         }
     }
@@ -3186,13 +3322,13 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                 });
                 for (n, k, fl) in own.iter().rev() {
                     if !cx.facts.escaped.contains(n) && !cx.shell_freed.contains(n) {
-                        stmts.push(release(n, k, *fl, cx.facts.box_shell.contains(n), span));
+                        stmts.push(release(n, k, *fl, shell_box(cx, n), span));
                     }
                 }
                 tail = Some(Box::new(Expr::Ident { name, span }));
             } else {
                 for (n, k, fl) in own.iter().rev() {
-                    if cx.facts.box_shell.contains(n)
+                    if shell_box(cx, n)
                         && k.starts_with("struct:")
                         && !cx.shell_freed.contains(n)
                     {
@@ -3200,7 +3336,7 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                         cx.shell_freed.insert(n.clone());
                     }
                     if !cx.facts.escaped.contains(n) && !cx.shell_freed.contains(n) {
-                        stmts.push(release(n, k, *fl, cx.facts.box_shell.contains(n), b.span));
+                        stmts.push(release(n, k, *fl, shell_box(cx, n), b.span));
                     }
                 }
             }
@@ -3209,3 +3345,4 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
     cx.live.truncate(mark);
     Block { stmts, tail, span: b.span }
 }
+

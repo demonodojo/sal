@@ -1,0 +1,43 @@
+# exit: 21
+# The same name bound in two sibling branches is two locals, each bound once (SPEC «Memoria», as
+# a `let` in each arm of a Rust `if` or `match`): each one is released at the end of its branch.
+enum E
+    A(String)
+    B(Int)
+
+fn mk(k: Int) -> E ! alloc
+    if k == 0
+        A("xyz".dup())
+    else
+        B(k)
+
+fn size(e: &E) -> Int
+    match e
+        A(s) => s.len()
+        B(n) => n
+
+fn pick(k: Int) -> Int ! alloc
+    if k == 0
+        0
+    elsif k == 1
+        r = mk(0)
+        size(&r)
+    elsif k == 2
+        r = mk(5)
+        size(&r) + 1
+    else
+        r = mk(0)
+        size(&r) + 2
+
+fn arm(k: Int) -> Int ! alloc
+    match k
+        1 =>
+            r = mk(0)
+            size(&r)
+        _ =>
+            r = mk(k)
+            size(&r)
+
+# pick(1) = 3, pick(2) = 6, pick(3) = 5, arm(1) = 3, arm(4) = 4
+fn main() -> Int ! alloc
+    pick(1) + pick(2) + pick(3) + arm(1) + arm(4)

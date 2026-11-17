@@ -1,0 +1,22 @@
+# exit: 3
+# A local bound in the block of a `match` arm is that arm's: it is released at the end of the arm
+# (SPEC «Memoria»), as the locals of an `if` branch are.
+enum E
+    A(String, List[Int])
+    B(Int)
+
+fn size(e: &E) -> Int
+    match e
+        A(s, xs) => s.len() + xs.len()
+        B(k) => k
+
+fn pick(e: &E, k: Int) -> Int ! alloc
+    match e
+        B(n) =>
+            c = A("abc".dup(), List.new[Int]())
+            size(&c)
+        _ => 0
+
+fn main() -> Int ! alloc
+    b = B(1)
+    pick(&b, 2)

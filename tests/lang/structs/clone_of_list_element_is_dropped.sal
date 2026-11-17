@@ -1,0 +1,18 @@
+# exit: 3
+# `xs.get(i).clone()` is a new value its local owns (SPEC «Memoria»): it goes at the end of
+# its scope after a `&mut` borrow, and the list keeps its own element.
+struct P
+    name: String
+    xs: List[String]
+
+fn touch(p: &mut P) -> Int ! alloc
+    p.xs.push("z".dup())
+    p.xs.len()
+
+fn main() -> Int ! alloc
+    ps = List.new[P]()
+    ps.push(P("a".dup(), List.new[String]()))
+    r = ps.get_mut(0).clone()
+    n = touch(&mut r)
+    q = ps.get(0).clone()
+    n + touch(&mut q) + ps.get(0).xs.len() + 1

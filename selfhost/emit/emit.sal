@@ -118,7 +118,8 @@ fn graph_impl_structs_go(all: &mut List[TStruct], tp: &TProgram, k: Int) -> Int 
         0
     else
         imp = tp.impls.get(k)
-        if tg_args(&imp.target).len() == 0 && tt_struct_find(&tp.structs, &imp.target) < 0
+        targs = tg_args(&imp.target)
+        if targs.len() == 0 && tt_struct_find(&tp.structs, &imp.target) < 0
             si = tt_struct_find(all, &imp.target)
             if si >= 0
                 st = all.get_mut(si)
@@ -138,7 +139,8 @@ fn graph_impl_enums_go(all: &mut List[TEnum], tp: &TProgram, k: Int) -> Int ! al
         0
     else
         imp = tp.impls.get(k)
-        if tg_args(&imp.target).len() == 0 && enum_find(&tp.enums, &imp.target, 0, tp.enums.len()) < 0
+        targs = tg_args(&imp.target)
+        if targs.len() == 0 && enum_find(&tp.enums, &imp.target, 0, tp.enums.len()) < 0
             ei = enum_find(all, &imp.target, 0, all.len())
             if ei >= 0
                 en = all.get_mut(ei)
@@ -221,7 +223,6 @@ fn emit_ir_from_graph(order: &mut Graph, source_path: String) -> Res ! alloc
     genums = graph_enums_t(order)
     seen = graph_fns(order)
     text = emit_ir_from_prog_with_types(&mut root_prog, extra, &genums, &env, &seen)
-    _h = list_free_shell(genums)
     result_ok_str(text)
 
 fn emit_ir_from_path(source_path: String) -> Res ! io, alloc
@@ -457,7 +458,8 @@ fn emit_vtables_impls(tp: &TProgram, i: Int, acc: String) -> String ! alloc
         acc
     else
         imp = tp.impls.get(i)
-        if tg_args(&imp.target).len() == 0 && tt_struct_find(&tp.structs, &imp.target) < 0 && enum_find(&tp.enums, &imp.target, 0, tp.enums.len()) < 0
+        targs = tg_args(&imp.target)
+        if targs.len() == 0 && tt_struct_find(&tp.structs, &imp.target) < 0 && enum_find(&tp.enums, &imp.target, 0, tp.enums.len()) < 0
             acc2 = emit_vtables_claims(tp, &imp.target, &imp.protocols, 0, imp.protocols.len(), acc)
             emit_vtables_impls(tp, i + 1, acc2)
         else
@@ -1028,16 +1030,21 @@ fn emit_c_thread_spawn(args_e: &List[Expr], user: Int, stmts: Int, tc: &mut Tc) 
         _ => "0"
 
 # `mutex_new(v)`: a `T` without a block of its own lives in a cell, any other in a one-element
-# owned `List[T]`.
+# owned `List[T]`; a cell `T` that owns a block (a `String`) too, and its slot is the cell.
 fn emit_c_mutex_new(arg: &Expr, v: &String, stmts: Int, tc: &mut Tc) -> String ! alloc
     t = ty_deref(&texpr_type(&tc.env, arg))
-    if t.len() == 0 || tt_is_cell(&tc.env.structs, &t) == 1
+    cell = t.len() == 0 || tt_is_cell(&tc.env.structs, &t) == 1
+    if cell && tt_cell_needs_drop(&tc.env.structs, &t) == 0
         emit_c_runtime1(&"sal_mutex_new_cell", v, stmts)
     else
         l = tmp_fresh(tc)
         line = "  int64_t " + l + " = " + emit_c_list_new(&t, 1, tc) + ";\n  extern int64_t sal_list_push();\n  sal_list_push(" + l + ", " + v + ");\n"
         vec_push(stmts, line.to_int())
-        emit_c_runtime1(&"sal_mutex_new", &l, stmts)
+        ctor = if cell
+            "sal_mutex_new_slot"
+        else
+            "sal_mutex_new"
+        emit_c_runtime1(&ctor, &l, stmts)
 
 fn emit_c_runtime1(rname: &String, a: &String, stmts: Int) -> String ! alloc
     vec_push(stmts, ("  extern int64_t " + rname + "();\n").to_int())
@@ -1697,11 +1704,14 @@ fn emit_c_owned(tp: &mut TProgram, user: Int, denv: Int, names: Int, fm: Int, en
         acc
     else
         f = list_get(&mut tp.fns, i).clone()
-        f.body = drops_body(&mut f, denv)
+        # As in `lower_fns`: the old body goes by hand (a field overwrite does not release it when
+        # the compiler builds the selfhost), and `f` is released whole at the end; moving `f.body`
+        # out would leave the rest of `f` behind.
+        nb = drops_body(&mut f, denv)
+        free_body_parts(&f.body.stmts, &f.body.tail)
+        f.body = nb
         irf = lower_fn(&f, names, fm, env, enums, denv, seen, &tp.protocols)
         piece = emit_c_one_fn(&f, &irf, user, linkable, allow_main, pool, env, enums)
-        old = f.body
-        f.body = TBlock(list_new[TStmt](), XNone)
         emit_c_owned(tp, user, denv, names, fm, env, enums, seen, allow_main, linkable, pool, i + 1, n, (acc + piece))
 
 # The per-type glue of the module's structs, emitted after the user fns. `all` are the module
@@ -1745,7 +1755,8 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     vec_push(denv, keep_old)
     body = emit_c_owned(tp, callables, denv, names, fm, env, &enums, seen, allow_main, linkable, &mut pool, 0, list_len(&tp.fns), "")
     body = emit_c_glue(tp, &env.structs, &enums, callables, &mut pool, 0, body)
-    _fe = list_free_shell(enums)
+    # The list owns its elements (clones from `enums_push`): they go with it.
+    _fe = list_free(enums)
     lits = pool.globals.clone()
     if str_len(lits) > 0
         acc = acc + lits
@@ -1828,7 +1839,7 @@ fn emit_c_compile_graph(order: &mut Graph, root_key: &String, out_path: &String,
     genums = graph_enums_t(order)
     seen = graph_fns(order)
     r = emit_c_compile_graph_go(order, 0, list_len(&order.mods), root_key, proot, out_path, &"", &genums, &mut env, &seen)
-    _h = list_free_shell(genums)
+    _h = list_free(genums)
     r
 
 fn emit_c(src: &String) -> Res ! alloc

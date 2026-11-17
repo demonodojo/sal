@@ -1,0 +1,34 @@
+# exit: 11
+# A `match` whose arms give a struct with glue: each arm's value crosses the merge in a box,
+# and the box goes once the struct is in its slots (returned, or moved into `Wrap`).
+enum Shape
+    Dot
+    Line(Int)
+    Box(Int, Int)
+
+struct Block
+    names: List[String]
+    n: Int
+
+struct Wrap
+    tag: String
+    body: Block
+
+fn block_of(s: &Shape) -> Block ! alloc
+    match s
+        Dot => Block(List.new[String](), 1)
+        Line(k) => Block(List.new[String](), k)
+        Box(a, b) => Block(List.new[String](), a * b)
+
+fn wrap(s: &Shape) -> Wrap ! alloc
+    body = match s
+        Dot => Block(List.new[String](), 1)
+        Line(k) => Block(List.new[String](), k + 1)
+        _ => block_of(s)
+    Wrap("w", body)
+
+fn main() -> Int ! alloc
+    a = wrap(&Line(2))
+    b = wrap(&Box(2, 3))
+    c = block_of(&Dot)
+    a.body.n + b.body.n + c.n + a.tag.len()

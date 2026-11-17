@@ -304,12 +304,41 @@ fn mr_call_in(e: &Expr, name: &String, args: &List[Expr], targs: &String, res: &
 
 fn mr_apply(e: &Expr, name: &String, args: &List[Expr], old_ta: &String, ta: &String, kind: Int, target: &String) -> Int ! alloc
     _t = mr_set_str(e, 2, old_ta, ta)
+    # Read before the rename, which releases `name`.
+    get_mut = mr_is_get_mut(name)
     if kind == 112
         0
     elsif kind == 108
         mr_prepend_local(e, name, args, target)
+        mr_get_mut_ref(e, get_mut)
     else
         mr_set_str(e, 0, name, target)
+        mr_get_mut_ref(e, get_mut)
+
+fn mr_is_get_mut(name: &String) -> Int ! alloc
+    n = name.len()
+    if n < 7
+        0
+    else
+        name.slice(n - 7, n).eq("get_mut")
+
+# `xs.get_mut(i)` is `list_get(&mut xs, i)`: the element comes as `&mut T` (`src/methods.rs`).
+fn mr_get_mut_ref(e: &Expr, get_mut: Int) -> Int ! alloc
+    if get_mut == 0
+        return 0
+    match e
+        XCall(f, args, targs, xp) =>
+            if f.eq("list_get") == 0 || args.len() == 0
+                0
+            else
+                nargs = List.new[Expr]()
+                nargs.push(XUnary("refmut".dup(), tc_expr(&args.get(0))))
+                mr_share_args(&mut nargs, &args, 1, args.len())
+                enum_set(e, 1, nargs)
+                # Mentioning `nargs` marks it escaped (see `mr_prepend_local`).
+                nargs
+                0
+        _ => 0
 
 # `q.name(args)` on a local `q`: the call takes `q` first and owns copies of the other arguments.
 fn mr_prepend_local(e: &Expr, name: &String, args: &List[Expr], target: &String) -> Int ! alloc

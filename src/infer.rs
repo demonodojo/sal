@@ -2842,6 +2842,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             include_str!("../runtime/sal_runtime.c"),
             include_str!("../runtime/kernels.c"),
             include_str!("../runtime/instrument.c"),
+            include_str!("../runtime/sal_threads.c"),
             include_str!("../runtime/gpu_driver.c"),
         ] {
             let bytes = src.as_bytes();
@@ -4305,8 +4306,10 @@ fn infer_list_get(
                 check_expr(&args[1], env, ctx, types, entries)?;
             }
             // SPEC «Memoria»: `get` lends the element. A `Copy` element is read by value; any
-            // other is `&T`, or `&mut T` when the list itself came as `&mut`.
-            if elem_is_copy(&elem, types) || matches!(elem, Type::Ref { .. }) {
+            // other is `&T`, or `&mut T` when the list itself came as `&mut`. `get_mut`
+            // (`list_get(&mut xs, i)` once rewritten) is `&mut T` for a `Copy` element too.
+            let get_mut = force_mut || matches!(args.first(), Some(Expr::Unary { op: UnOp::RefMut, .. }));
+            if matches!(elem, Type::Ref { .. }) || (elem_is_copy(&elem, types) && !get_mut) {
                 return Ok(elem);
             }
             let mutable = force_mut || matches!(xs_ty, Type::Ref { mutable: true, .. });

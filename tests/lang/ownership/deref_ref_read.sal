@@ -1,0 +1,8 @@
+# exit: 4
+# Reading through `*r` (a method receiver) does not move out of the reference.
+fn main() -> Int ! alloc
+    let s = d"ab"
+    let r = &s
+    let t = r.clone()
+    let u = (*r).len()
+    t.len() + u

@@ -659,6 +659,7 @@ fn link_binary_multi(
     rt_srcs.push(runtime.join("soso/linux_host_syscall.c"));
     rt_srcs.push(runtime.join("kernels.c"));
     rt_srcs.push(runtime.join("instrument.c"));
+    rt_srcs.push(runtime.join("sal_threads.c"));
     let rt_objs = runtime_objects(&out_dir, &rt_srcs, &defs, opt_flag, &opts.toolchain.cc)?;
 
     let mut link = Command::new(&opts.toolchain.cc);
@@ -793,7 +794,10 @@ pub fn bootstrap_ir_text(
     let graph_progs: Vec<&Program> = graph.order.iter().map(|m| &m.program).collect();
     let strings = StringEnv::from_module_graph(&graph_progs).with_infer(&infer_out);
     let callees = graph_callee_fns(&graph);
-    // The drops pass reads the moves the borrow checker publishes (SPEC «Memoria»).
+    // The drops pass reads the moves the borrow checker publishes (SPEC «Memoria»); a call moves
+    // its by-value arguments by the callee's parameter modes, which `check_ownership` loads when
+    // compiling. Without them `emit ir` showed a lowering other than the one compiled.
+    crate::ownership::load_param_modes(&root_mod.program);
     crate::borrowck::publish_moved_locals(&root_mod.program, &infer_out);
     let mut ir = lower_program_with_callables_env(&root_mod.program, &callables, strings, &callees);
     crate::fuse::fuse_module(&mut ir);

@@ -1,0 +1,16 @@
+# exit: 3
+# `match ch.recv()` without a local: the `Option` taken off the channel is released after the
+# match, together with the `String` inside it.
+import "../../../std/prelude.sal"
+
+fn take(ch: &Channel[String]) -> Int ! alloc
+    match ch.recv()
+        Some(s) => s.len()
+        None => 0
+
+fn main() -> Int ! alloc
+    let ch = Channel.new[String]()
+    ch.send(d"ab".dup())
+    ch.send(d"c".dup())
+    ch.close()
+    take(&ch) + take(&ch) + take(&ch)

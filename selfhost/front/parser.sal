@@ -508,6 +508,8 @@ fn parse_lambda_single(pr: &mut Parser) -> Expr ! alloc
         p_advance(pr)
         nm = ident_of(&left)
         if nm.len() > 0
+            # The parameter only lends its name, and the node goes here (as in `parse_method_target`).
+            enum_free(left)
             parse_lambda_body(pr, &nm)
         else
             p_set_err(pr, "parse error: lambda parameter must be an identifier")
@@ -666,13 +668,33 @@ fn parse_lambda_ahead(pr: &Parser) -> Int ! alloc
 # A trailing lambda: the last argument of the call before it (`fold(0) (a, x) => a + x`), or the
 # only argument of a bare fn name (`twice x => x + 1`, as `twice(x => x + 1)`).
 fn parse_trailing_postfix(pr: &mut Parser, e: Expr) -> Expr ! alloc
+    # `e` is read by reference and released whole: a `match` that moved the payloads out of it
+    # would leave its box behind.
+    name = parse_ident_text(&e)
+    if parse_is_call(&e) == 1
+        call = parse_call_with_lambda(pr, &e)
+        enum_free(e)
+        parse_postfix_go(pr, call)
+    elsif name.len() > 0
+        enum_free(e)
+        parse_trailing_bare(pr, &name)
+    else
+        e
+
+fn parse_is_call(e: &Expr) -> Int
+    match e
+        XCall(name, args, targs, xp) => 1
+        _ => 0
+
+# The call `e` with the trailing lambda as its last argument.
+fn parse_call_with_lambda(pr: &mut Parser, e: &Expr) -> Expr ! alloc
     match e
         XCall(name, args, targs, xp) =>
+            all = args.clone()
             if parse_lambda_ahead(pr) == 1
-                args.push(parse_lambda(pr))
-            parse_postfix_go(pr, XCall(name, args, targs, xp))
-        XIdent(name) => parse_trailing_bare(pr, &name)
-        _ => e
+                all.push(parse_lambda(pr))
+            XCall(name.dup(), all, targs.dup(), xp)
+        _ => XNone
 
 fn parse_trailing_bare(pr: &mut Parser, name: &String) -> Expr ! alloc
     xp = call_pos(pr)
@@ -725,9 +747,19 @@ fn p_note_dot(pr: &mut Parser) -> Int ! alloc
 
 # The call name for `base.fld`; a receiver that is not a bare identifier goes first in `args`.
 fn parse_method_target(base: Expr, fld: &String, args: &mut List[Expr]) -> String ! alloc
-    match base
-        XIdent(q) => qualified_name(&strdup(q), fld)
-        _ => parse_method_target_expr(base, fld, args)
+    # A bare receiver only lends its name, and the node goes here (as in `parse_assign_stmt`).
+    q = parse_ident_text(&base)
+    if q.len() > 0
+        enum_free(base)
+        qualified_name(&q, fld)
+    else
+        parse_method_target_expr(base, fld, args)
+
+# The name of a bare identifier; empty for any other expression.
+fn parse_ident_text(e: &Expr) -> String ! alloc
+    match e
+        XIdent(q) => q.dup()
+        _ => ""
 
 fn parse_method_target_expr(base: Expr, fld: &String, args: &mut List[Expr]) -> String ! alloc
     _a = list_push(args, base)

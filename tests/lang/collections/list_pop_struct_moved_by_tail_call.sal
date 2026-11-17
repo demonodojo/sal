@@ -1,0 +1,16 @@
+# exit: 5
+# `xs.pop()` hands the element over (SPEC «Memoria»): a call tail that moves it takes its box, and
+# the box is released once.
+struct P
+    name: String
+    n: Int
+
+fn use(p: P) -> Int
+    p.n
+
+fn main() -> Int ! alloc
+    ps = List.new[P]()
+    ps.push(P("abc".dup(), 4))
+    ps.push(P("de".dup(), 5))
+    q = ps.pop()
+    use(q)

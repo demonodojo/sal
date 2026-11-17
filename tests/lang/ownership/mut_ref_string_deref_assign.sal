@@ -1,0 +1,22 @@
+# exit: 9
+# `*s = v` through a `&mut String` replaces the caller's text and releases the old one;
+# `*s + "x"` lends `*s` to `+` (no move out of the reference).
+fn set(s: &mut String) -> Int ! alloc
+    *s = d"hola"
+    0
+
+fn grow(s: &mut String, n: Int) -> Int ! alloc
+    if n > 0
+        *s = *s + "x"
+        grow(s, n - 1)
+    else
+        0
+
+fn main() -> Int ! alloc
+    let s = d"a"
+    set(&mut s)
+    let r = &mut s
+    *r = *r + "!"
+    grow(&mut s, 3)
+    let t = d"b"
+    s.len() + t.len()

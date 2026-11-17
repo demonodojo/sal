@@ -581,6 +581,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_enum_new(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_set(i64, i64, i64)\n");
     s.push_str("declare void @sal_enum_set_struct_glue(i64, i64, ptr, ptr)\n");
+    s.push_str("declare i64 @sal_enum_set_struct_flat(i64, i64, i64)\n");
     s.push_str("declare void @sal_enum_free(i64)\n");
     s.push_str("declare void @sal_enum_free_shell(i64)\n");
     s.push_str("declare void @sal_struct_free(i64, ptr)\n");
@@ -633,6 +634,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_list_set_flat(ptr, i64, ptr, i64)\n");
     s.push_str("declare i64 @sal_list_len(ptr)\n");
     s.push_str("declare i64 @sal_list_get(ptr, i64)\n");
+    s.push_str("declare i64 @sal_list_slot(ptr, i64)\n");
     s.push_str("declare i64 @sal_desc_copy(ptr, i64)\n");
     s.push_str("declare i64 @sal_list_clone_val(i64)\n");
     s.push_str("declare i64 @sal_dict_clone_val(i64)\n");
@@ -3949,6 +3951,13 @@ fn emit_runtime_or_user_call(
             let clone = args.get(3).cloned().unwrap_or_default();
             s.push_str(&format!("  call void @sal_enum_set_struct_glue(i64 {v}, i64 {i}, ptr @{}, ptr @{})\n", llsym(&drop), llsym(&clone)));
         }
+        "sal_enum_set_struct_flat" => {
+            let ops: Vec<String> = args.iter().map(|a| format!("i64 {}", i64_operand(a, consts))).collect();
+            s.push_str(&format!("  call i64 @sal_enum_set_struct_flat({})\n", ops.join(", ")));
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
         "sal_list_set_clone" => {
             // The second argument names a `clone.<Struct>` function: its address is the glue.
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
@@ -4071,11 +4080,11 @@ fn emit_runtime_or_user_call(
                 ));
             }
         }
-        "sal_list_get" => {
+        "sal_list_get" | "sal_list_slot" => {
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             if let Some(d) = dest {
-                s.push_str(&format!("  %{d} = call i64 @sal_list_get(ptr {a}, i64 {b})\n"));
+                s.push_str(&format!("  %{d} = call i64 @{func}(ptr {a}, i64 {b})\n"));
             }
         }
         "sal_desc_copy" => {
@@ -4546,6 +4555,7 @@ const SYNC_I64_FNS: &[(&str, usize)] = &[
     ("sal_sem_release", 1),
     ("sal_mutex_new", 1),
     ("sal_mutex_new_cell", 1),
+    ("sal_mutex_new_slot", 1),
     ("sal_mutex_enter", 1),
     ("sal_mutex_leave", 1),
     ("sal_chan_new", 1),

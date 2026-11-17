@@ -1,4 +1,3 @@
-# selfhost-xfail: selfhost no resuelve items de módulo importado con alias (geo.mk)
 # exit: 7
 import "mods/method_pt.sal" as geo
 

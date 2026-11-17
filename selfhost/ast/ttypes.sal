@@ -323,7 +323,7 @@ fn tt_struct_find(structs: &List[TStruct], name: &String) -> Int ! alloc
 # not generic. A `&mut` to it goes in a cell (`sal_cell_new`), as `scalarize::is_cell_type`.
 fn tt_is_cell(structs: &List[TStruct], ty: &String) -> Int ! alloc
     t = trim_spaces(ty.dup())
-    if t.eq("Int") == 1 || t.eq("Float") == 1 || t.eq("Bool") == 1
+    if t.eq("Int") == 1 || t.eq("Float") == 1 || t.eq("Bool") == 1 || t.eq("String") == 1
         1
     elsif tt_find_byte(&t, 91, 0) >= 0
         0
@@ -333,6 +333,21 @@ fn tt_is_cell(structs: &List[TStruct], ty: &String) -> Int ! alloc
             0
         elsif structs.get(si).fields.len() == 1 && structs.get(si).tparams.len() == 0
             1
+        else
+            0
+
+# A cell type whose value has to be released: a `String`, or a one-field struct around one
+# (`scalarize::cell_needs_drop`).
+fn tt_cell_needs_drop(structs: &List[TStruct], ty: &String) -> Int ! alloc
+    t = trim_spaces(ty.dup())
+    if t.eq("String") == 1
+        1
+    else
+        si = tt_struct_find(structs, &t)
+        if si < 0
+            0
+        elsif structs.get(si).fields.len() == 1 && structs.get(si).tparams.len() == 0
+            tt_cell_needs_drop(structs, &structs.get(si).fields.get(0).ty)
         else
             0
 

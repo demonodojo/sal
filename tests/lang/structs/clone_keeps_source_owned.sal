@@ -1,0 +1,15 @@
+# exit: 5
+# `x.clone()` reads `x` through `&self` (SPEC «Memoria»): `p` is still its owner and goes
+# at the end of its scope, next to the copy.
+struct P
+    name: String
+    xs: List[String]
+
+fn look(p: &P) -> Int ! alloc
+    p.xs.len() + p.name.len()
+
+fn main() -> Int ! alloc
+    p = P("abc".dup(), List.new[String]())
+    p.xs.push("x".dup())
+    r = p.clone()
+    look(&r) + r.xs.len()

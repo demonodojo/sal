@@ -1,5 +1,4 @@
 # error: E_BORROW
-# selfhost-xfail: el selfhost todavía no ejecuta check_borrows
 fn f(n: &Int) -> &String
     s = "hi"
     &s

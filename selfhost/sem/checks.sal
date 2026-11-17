@@ -42,7 +42,9 @@ fn check_impl_imports(view: &mut TProgram, progs: &List[TProgram], i: Int) -> In
         0
     else
         imp = view.impls.get(i)
-        if tg_args(&imp.target).len() == 0 && tt_struct_find(&view.structs, &imp.target) < 0 && enum_find(&view.enums, &imp.target, 0, view.enums.len()) < 0
+        # Bound: a temporary used as a receiver is not released.
+        targs = tg_args(&imp.target)
+        if targs.len() == 0 && tt_struct_find(&view.structs, &imp.target) < 0 && enum_find(&view.enums, &imp.target, 0, view.enums.len()) < 0
             _a = check_impl_find_type(view, progs, &imp.target, 0)
         check_impl_imports(view, progs, i + 1)
 

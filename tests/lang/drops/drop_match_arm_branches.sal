@@ -1,0 +1,45 @@
+# exit: 10
+# Every arm of a `match` with a block is a branch (SPEC «Memoria»): the locals an arm binds go at
+# its end, and an outer local one arm moves is released behind its flag on the arms that keep it.
+enum E
+    A(String, List[Int])
+    B(Int)
+
+fn size(e: &E) -> Int
+    match e
+        A(s, xs) => s.len() + xs.len()
+        B(k) => k
+
+fn keep(s: String) -> Int ! alloc
+    s.len()
+
+# An arm that moves an outer local, beside an arm that keeps it.
+fn moves(e: &E) -> Int ! alloc
+    w = "ab".dup()
+    match e
+        B(n) =>
+            c = A("xyz".dup(), List.new[Int]())
+            keep(w) + size(&c) + n
+        _ =>
+            t = "q".dup()
+            t.len()
+
+# A `match` used as a statement, an arm with an `if` inside.
+fn stmt(e: &E) -> Int ! alloc
+    total = List.new[Int]()
+    match e
+        B(n) =>
+            if n > 1
+                c = A("no".dup(), List.new[Int]())
+                total.push(size(&c))
+            else
+                s = "x".dup()
+                total.push(s.len())
+        _ => total.push(0)
+    total.len()
+
+fn main() -> Int ! alloc
+    b1 = B(1)
+    b2 = B(2)
+    a = A("k".dup(), List.new[Int]())
+    moves(&b1) + moves(&a) + stmt(&b1) + stmt(&b2) + stmt(&a)

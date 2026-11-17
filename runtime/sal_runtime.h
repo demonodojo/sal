@@ -163,6 +163,7 @@ void *sal_dict_values(void *dp);
 int64_t sal_enum_new(int64_t tag, int64_t n);
 int64_t sal_enum_set(int64_t v, int64_t i, int64_t x);
 void sal_enum_set_struct_glue(int64_t v, int64_t i, int64_t (*drop)(int64_t), int64_t (*clone)(int64_t));
+int64_t sal_enum_set_struct_flat(int64_t v, int64_t i, int64_t nfields);
 void sal_enum_free(int64_t v);
 /* Frees the box only. Strings and child boxes stay with whoever still holds them. */
 void sal_enum_free_shell(int64_t v);
@@ -207,7 +208,10 @@ int64_t sal_write_png(const char *path, int64_t w, int64_t h, void *rgb);
 void *sal_list_new(void);
 void *sal_list_push(void *v, int64_t x);
 int64_t sal_list_len(void *v);
+int64_t sal_list_take_front(void *v);
+int64_t sal_list_holds_strings(void *v);
 int64_t sal_list_get(void *v, int64_t i);
+int64_t sal_list_slot(void *v, int64_t i);
 /* Deep copy of a borrowed element (`s`, `E` or `S(...)`). `list_get` does not copy. */
 int64_t sal_desc_copy(const char *desc, int64_t raw);
 void sal_list_set_clone(void *l, int64_t (*glue)(int64_t));
@@ -264,6 +268,7 @@ int64_t sal_sem_release(int64_t h);
 void sal_sem_free(int64_t h);
 int64_t sal_mutex_new(int64_t list);
 int64_t sal_mutex_new_cell(int64_t v);
+int64_t sal_mutex_new_slot(int64_t list);
 int64_t sal_mutex_enter(int64_t h);
 int64_t sal_mutex_leave(int64_t h);
 void sal_mutex_free(int64_t h);

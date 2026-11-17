@@ -482,15 +482,22 @@ fn load_module_recursive(path: &String, proot: &String, order: &mut Graph, visit
         tp = parse_program_deferred(&pre, &mut errs, &mut nd)
         msg = errs_take(&errs)
         if str_len(msg) > 0
+            # `tp` is taken on both paths: a value moved on one path only is not released on the other.
+            tp_discard(tp)
             result_err_str(&msg)
         else
             load_parsed_module(tp, list_get(&nd, 0), &key, path, proot, order, visited, stack, sp)
+
+# Takes a program nobody keeps and releases it at its end.
+fn tp_discard(tp: TProgram) -> Int ! alloc
+    tp.fns.len()
 
 # Loads the imports of the parsed module `tp`, then adds it to the graph after them.
 fn load_parsed_module(tp: TProgram, ndots: Int, key: &String, path: &String, proot: &String, order: &mut Graph, visited: Int, stack: Int, sp: Int) -> Res ! io, alloc
     _ps = stack_set_at(stack, sp, str_as_int(key))
     step = load_imports_of(&tp, path, proot, order, visited, stack, sp + 1)
     if result_is_err(&step) == 1
+        tp_discard(tp)
         step
     else
         _v = vec_push(visited, str_as_int(key))
@@ -779,16 +786,8 @@ fn methods_resolve_graph(order: &Graph) -> Int ! io, alloc
         graph_reindex_methods(&order.progs, 0)
         u = TProgram(list_new[TFn](), list_new[String](), list_new[TStruct](), list_new[String](), list_new[TEnum](), list_new[TProtocol](), list_new[TConst](), List.new[TImpl]())
         _u = union_progs(&order.progs, 0, list_len(&order.progs), &mut u)
-        _m = methods_resolve_modules(order, &u, 0, list_len(&order.progs))
-        # The elements are aliases of `order.progs` (`union_*` pushes `list_get`): only the shells go.
-        _a = list_free_shell(u.fns)
-        _b = list_free_shell(u.imports)
-        _c = list_free_shell(u.structs)
-        _d = list_free_shell(u.aliases)
-        _e = list_free_shell(u.enums)
-        _f = list_free_shell(u.protocols)
-        _g = list_free_shell(u.consts)
-        _m
+        # `u` owns copies (`union_*` pushes `.clone()`): its glue releases them at the end.
+        methods_resolve_modules(order, &u, 0, list_len(&order.progs))
 
 fn graph_reindex_methods(progs: &List[TProgram], i: Int) -> Int ! alloc
     if i >= progs.len()
@@ -805,13 +804,6 @@ fn lambda_specialize_graph(order: &mut Graph) -> Res ! alloc
     result = lambda_specialize_graph_go(order, &u.fns, 0, order.progs.len())
     if result_is_err(&result) == 0
         lambda_sweep_callback_graph(order, &u.fns, 0, order.progs.len())
-    _f = list_free_shell(u.fns)
-    _i = list_free_shell(u.imports)
-    _s = list_free_shell(u.structs)
-    _a = list_free_shell(u.aliases)
-    _e = list_free_shell(u.enums)
-    _p = list_free_shell(u.protocols)
-    _c = list_free_shell(u.consts)
     result
 
 fn lambda_specialize_graph_go(order: &mut Graph, defs: &List[TFn], i: Int, n: Int) -> Res ! alloc
@@ -821,10 +813,11 @@ fn lambda_specialize_graph_go(order: &mut Graph, defs: &List[TFn], i: Int, n: In
         tp = list_get(&order.progs, i)
         errs = List.new[String]()
         specialized = specialize_lambdas_with_defs(&tp, defs, 1, &mut errs)
+        # Stored on both paths: a value moved on one path only is not released on the other.
+        _s = order.progs.set(i, specialized)
         if errs.len() > 0
             result_err_str(&errs.get(0))
         else
-            _s = order.progs.set(i, specialized)
             lambda_specialize_graph_go(order, defs, i + 1, n)
 
 fn lambda_sweep_callback_graph(order: &mut Graph, defs: &List[TFn], i: Int, n: Int) -> Int ! alloc
@@ -955,10 +948,14 @@ fn mono_modules(order: &mut Graph, i: Int, n: Int, taken: &mut List[String], exi
         mono_others(&order.progs, i, 0, n, &mut ext)
         cur = order.progs.get(i)
         none = List.new[String]()
+        # `ext` goes into the context on every path: a value only one branch moves would not be
+        # released on the other.
+        cx = MonoCtx(ext, existing.clone(), taken.clone(), 0, List.new[String]())
         # Only a module with generic calls to specialize gets a new program.
-        if sp_count_generic(&cur.fns, &none, 0, cur.fns.len(), 0) > 0 || sp_calls_ext_generic(&cur, &ext) == 1
-            cx = MonoCtx(ext, existing.clone(), taken.clone(), 0, List.new[String]())
-            own = sp_union(&cur, &sp_empty_program())
+        if sp_count_generic(&cur.fns, &none, 0, cur.fns.len(), 0) > 0 || sp_calls_ext_generic(&cur, &cx.ext) == 1
+            # Bound: a temporary lent is not released.
+            blank = sp_empty_program()
+            own = sp_union(&cur, &blank)
             tp = monomorphize_ext(own, &mut cx, errs)
             mono_fn_names(&tp.fns, 0, taken)
             sp_append_strs(existing, &cx.made, 0, cx.made.len())
@@ -1008,10 +1005,13 @@ fn mono_struct_modules(order: &mut Graph, i: Int, n: Int, taken: &mut List[Strin
         gens = List.new[TStruct]()
         sp_generic_structs(&cur.structs, &mut gens)
         sp_generic_structs(&ext.structs, &mut gens)
+        # `ext` goes into the context on every path (see `mono_modules`).
+        cx = MonoCtx(ext, existing.clone(), taken.clone(), 0, List.new[String]())
         # Only a module with generic structs in view gets a new program.
         if gens.len() > 0
-            cx = MonoCtx(ext, existing.clone(), taken.clone(), 0, List.new[String]())
-            own = sp_union(&cur, &sp_empty_program())
+            # Bound: a temporary lent is not released.
+            none = sp_empty_program()
+            own = sp_union(&cur, &none)
             tp = monomorphize_structs(own.clone(), &mut cx, errs)
             sp_type_names(&tp, taken)
             sp_append_strs(existing, &cx.made, 0, cx.made.len())

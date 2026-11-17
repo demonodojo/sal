@@ -144,7 +144,7 @@ La emite `lower_fn` (y el C de `emit.sal`) después del cuerpo y antes del `retu
 
 ## Siguen sin liberarse (SPEC)
 
-Huecos medidos con ASan (`# asan-xfail:`; inventario y causas en [sal-memoria-asan](../sal-memoria-asan/SKILL.md)): struct/enum que devuelve una función de usuario y consume `main`; `Dict.get` de valor struct; `n = p.name` (campo `String` movido a un local); `String` por valor a una función genérica; `int_to_str` como clave de `Dict`; `f64_bits_to_str`.
+Huecos medidos con ASan (`# asan-xfail:`; inventario y causas en [sal-memoria-asan](../sal-memoria-asan/SKILL.md)): struct/enum que devuelve una función de usuario y consume `main`; `Dict.get` de valor struct; `n = p.name` (campo `String` movido a un local); `String` por valor a una función genérica; `int_to_str` como clave de `Dict`; `f64_bits_to_str`. Los locales del bloque de un brazo de `match` sí se sueltan (con un brazo bloque, cada brazo es una rama: `walk_match_top`), y un struct movido solo en una rama se suelta tras su bandera en las demás (`branch_moved`; ver subplan 13).
 
 Un struct multi-campo suelta su bloque en `drop.<Struct>` (`sal_struct_free_box`); un valor solo en registros (scalarize) no tiene caja que soltar. Siguen abiertos: el payload `List`/struct de una caja de enum copiada con `sal_enum_copy` (se comparte); campos de caja enum **no frescos**; **`list_pop`** de lista no dueña; **`String` como asa `Int`**; **`z = k`** sobre la misma copia. Tensores en región fusionada: `IrInst::Drop` + `sal_place_free` en bajada LLVM, no el mismo camino que un local escalar.
 

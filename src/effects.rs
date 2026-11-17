@@ -63,9 +63,23 @@ pub fn fn_body_uses_alloc(f: &FnDef, env: &StringEnv) -> bool {
 /// Effects required by a lifted lambda body, using the declared effects of this program's
 /// functions and the same builtin accounting as the regular effect pass.
 pub fn required_effects_for_block(block: &Block, programs: &[&Program]) -> Vec<Effect> {
+    required_effects_for_typed_block(block, programs, &[])
+}
+
+/// Like `required_effects_for_block`, with the types infer gave the block's expressions (a
+/// lifted lambda: `*x + "a"` with `x: &mut String` concatenates, so it allocates).
+pub fn required_effects_for_typed_block(
+    block: &Block,
+    programs: &[&Program],
+    types: &[crate::typed::ExprTypeEntry],
+) -> Vec<Effect> {
     let mut used = EffectsUsed::default();
     used.callees = callee_effects(programs);
     let mut strings = StringEnv::from_module_graph(programs);
+    if !types.is_empty() {
+        let map = types.iter().map(|e| ((e.span_start, e.span_end), e.ty.clone())).collect();
+        strings.types = std::rc::Rc::new(map);
+    }
     scan_block(block, &mut used, &mut strings);
     used.into_list()
 }

@@ -1,0 +1,14 @@
+# exit: 3
+# An `if` branch whose last statement is a `while` has no value of its own; the names the loop
+# assigns carry out of the branch.
+fn count(n: Int) -> Int
+    let i = 0
+    if n > 0
+        while i < n
+            i = i + 1
+    else
+        i = 7
+    i
+
+fn main() -> Int
+    count(3)

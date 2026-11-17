@@ -1,0 +1,17 @@
+# exit: 4
+# `match mk()` matches a fresh enum nobody else owns: it is released after the match, payload
+# included, as a local would be.
+enum E
+    A(String)
+    B
+
+fn mk() -> E ! alloc
+    A(d"xy".dup())
+
+fn one() -> Int ! alloc
+    match mk()
+        A(s) => s.len()
+        B => 0
+
+fn main() -> Int ! alloc
+    one() + one()

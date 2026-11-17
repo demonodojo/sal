@@ -48,6 +48,14 @@ fn nm_free(m: &NM) -> Int ! alloc
     _a = list_free(m.names)
     list_free(m.vals)
 
+fn nm_copy(m: &NM) -> NM ! alloc
+    out = nm_new()
+    i = 0
+    while i < m.names.len()
+        nm_put(&mut out, &(&m.names).get(i), (&m.vals).get(i))
+        i = i + 1
+    out
+
 # `esc` holds names that leave their scope, `defs` how often each is bound, `params` the
 # parameters, `kinds` how a fresh local is released, `tainted` containers that received a value
 # not known to be fresh, `soft` names that escape only at whole statements of their own loop
@@ -94,6 +102,12 @@ struct DC
     branch_moved: NM
     # Locals bound to `thread_spawn(f(..))`: name -> handle of `f`, whose result `join` hands out.
     spawned: NM
+    # Locals bound to `xs.pop()`: the callee that takes one releases its box with the fields, so
+    # its flagged release has no `struct_free_box` branch (`Ctx::popped` in src/drops.rs).
+    popped: NM
+    # The branch depth (+1) each name was first bound at: a move in a deeper branch moves it on
+    # that path only (`bind_branch` in src/drops.rs).
+    bbr: NM
 
 # An owned copy of the parameter list: the `TFn` it comes from keeps its own.
 fn tparams_copy(xs: &List[TParam]) -> List[TParam] ! alloc
@@ -119,7 +133,7 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
     _h = list_push(&mut cells, 0)
     # Branch depth, reset by loops: an identifier tail moves on that path only.
     cells.push(0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new(), nm_new(), nm_new())
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new())
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -149,6 +163,8 @@ fn dr_bind(c: &mut DC, name: &String) -> Int ! alloc
     if nm_get(&c.born, name) == 0
         h133_0 = dr_cell(c, 3) + 1
         _d = nm_put(&mut c.born, name, h133_0)
+        b = dr_cell(c, 8) + 1
+        nm_put(&mut c.bbr, name, b)
         h135_1 = nm_get(&c.defs, name) + 1
         nm_put(&mut c.defs, name, h135_1)
     else
@@ -158,6 +174,10 @@ fn dr_bind(c: &mut DC, name: &String) -> Int ! alloc
 # Records that statement `st` moves `name`.
 fn dr_soft(c: &mut DC, st: Int, name: &String) -> Int ! alloc
     _s = nm_put(&mut c.soft, name, 1)
+    # Moved in a branch below the one that bound it: on that path only.
+    bound_at = nm_get(&c.bbr, name)
+    if bound_at > 0 && bound_at - 1 < dr_cell(c, 8)
+        nm_put(&mut c.branch_moved, name, 1)
     if dr_site_has(c, st, name, 0, list_len(&c.site_ids)) == 1
         0
     else
@@ -246,6 +266,12 @@ fn dx_is_none(e: &Expr) -> Int ! alloc
 fn dx_is_while(e: &Expr) -> Int ! alloc
     match e
         XWhile(cond, body) => 1
+        _ => 0
+
+# 1 when `e` is a call of `name`.
+fn dx_is_call_named(e: &Expr, name: &String) -> Int ! alloc
+    match e
+        XCall(callee, args, targs, xp) => callee.eq(name)
         _ => 0
 
 fn dx_is_if(e: &Expr) -> Int ! alloc
@@ -570,10 +596,13 @@ fn tail_elsifs_return(elsifs: &List[TElsif], name: &String, i: Int, n: Int) -> I
 fn tail_arms_return(arms: &List[TArm], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
-    elsif tail_is_param(&tarm_value(&arms.get(i)), name) == 1
-        1
     else
-        tail_arms_return(arms, name, i + 1, n)
+        # Bound: a temporary lent is not released.
+        v = tarm_value(&arms.get(i))
+        if tail_is_param(&v, name) == 1
+            1
+        else
+            tail_arms_return(arms, name, i + 1, n)
 
 # `same(<fresh temporary>)` with `same` a pass-through fn, or a call `note_passthru_calls`
 # marked: the caller owns the result (`is_passthru_fresh` in src/drops.rs).
@@ -697,8 +726,8 @@ fn dr_ret_kind(m: Int, ret: &String) -> Int ! alloc
     else
         0
 
-# The body only `return`s (and ends in) a fresh enum construction: a variant constructor or a
-# bare unit variant, possibly under a `match` / `if` (`fresh_enum_return_fns` in src/drops.rs).
+# The body only `return`s (and ends in) a fresh enum construction: a variant constructor, a bare
+# unit variant or a `clone`, possibly under a `match` / `if` (`fresh_enum_return_fns` in src/drops.rs).
 fn dr_enum_block_fresh(m: Int, b: &TBlock) -> Int ! alloc
     if dr_enum_stmts_fresh(m, &b.stmts, 0, b.stmts.len()) == 0
         0
@@ -723,7 +752,8 @@ fn dr_enum_stmts_fresh(m: Int, stmts: &List[TStmt], i: Int, n: Int) -> Int ! all
 
 fn dr_enum_expr_fresh(m: Int, e: &Expr) -> Int ! alloc
     match e
-        XCall(name, args, targs, xp) => dr_enum_variant_has_fields(m, &name)
+        # `x.clone()` (`enum_copy` by now) is a new box the caller owns.
+        XCall(name, args, targs, xp) => dr_enum_variant_has_fields(m, &name) + name.eq("enum_copy")
         XIdent(nm) => dr_enum_variant_unit(m, &nm)
         XMatch(scrut, arms) => dr_enum_arms_fresh(m, &arms, 0, arms.len())
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_enum_if_fresh(m, &then_b, &else_b, has_else, &elsifs)
@@ -1270,6 +1300,14 @@ fn dr_tail_moves(c: &DC, name: &String) -> Int ! alloc
     else
         0
 
+# A tail whose moves are its own statement's: a call of a fn, or an operator over operands that
+# may call one (`keep(w) + 1`); `is_moving_tail` in src/drops.rs.
+fn dr_is_moving_tail(e: &Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) => 1
+        XUnary(op, x) => 1
+        _ => dr_is_call_tail(e)
+
 # A tail that is a call of a fn (not a struct or variant constructor, whose names start with an
 # uppercase letter).
 fn dr_is_call_tail(e: &Expr) -> Int ! alloc
@@ -1291,6 +1329,8 @@ fn dr_is_call_tail(e: &Expr) -> Int ! alloc
 fn dr_top(c: &mut DC, e: &Expr, mov: Int) -> Int ! alloc
     if dx_is_if(e) == 1
         dr_walk_if(c, e)
+    elsif dr_cell(c, 2) == 0 && dr_is_top_match(e) == 1
+        dr_walk_match_branches(c, e, 0)
     else
         dr_arg(c, e, mov)
 
@@ -1307,13 +1347,39 @@ fn dr_walk_if_with(c: &mut DC, e: &Expr, discard: Int) -> Int ! alloc
 fn dr_walk_if_parts(c: &mut DC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], discard: Int) -> Int ! alloc
     _a = dr_arg(c, cond, 1)
     dr_set(c, 8, dr_cell(c, 8) + 1)
+    base = nm_copy(&c.defs)
+    most = nm_copy(&c.defs)
     _b = dr_block_with(c, then_b, discard)
-    _c = dr_if_arms(c, elsifs, 0, list_len(elsifs), discard)
+    dr_path_next(c, &base, &mut most)
+    _c = dr_if_arms(c, elsifs, 0, list_len(elsifs), discard, &base, &mut most)
     if has_else == 1
         dr_block_with(c, else_b, discard)
-    else
-        0
+        dr_path_next(c, &base, &mut most)
+    dr_path_finish(c, &most)
     dr_set(c, 8, dr_cell(c, 8) - 1)
+
+# Bindings counted per path through the branches of an `if` or a `match` (`PathBinds` in
+# src/drops.rs): each branch starts from the count before them (`base`), and afterwards a name has
+# the most any one branch gave it (`most`). The same name bound in two sibling branches is two
+# locals, each bound once, not a rebinding of one.
+fn dr_path_next(c: &mut DC, base: &NM, most: &mut NM) -> Int ! alloc
+    i = 0
+    while i < c.defs.names.len()
+        v = (&c.defs.vals).get(i)
+        if v > nm_get(most, &(&c.defs.names).get(i))
+            nm_put(most, &(&c.defs.names).get(i), v)
+        b = nm_get(base, &(&c.defs.names).get(i))
+        c.defs.vals.set(i, b)
+        i = i + 1
+    0
+
+fn dr_path_finish(c: &mut DC, most: &NM) -> Int ! alloc
+    i = 0
+    while i < c.defs.names.len()
+        v = nm_get(most, &(&c.defs.names).get(i))
+        c.defs.vals.set(i, v)
+        i = i + 1
+    0
 
 # Arguments of a call: bare identifiers are only read when the callee borrows them
 # (`safe`) or its parameter at that position is read-only (`ro`, 0 when not a user fn).
@@ -1471,14 +1537,15 @@ fn dr_match_arms(c: &mut DC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
             _b = dr_expr(c, &arm.body)
         dr_match_arms(c, arms, i + 1, n)
 
-fn dr_if_arms(c: &mut DC, arms: &List[TElsif], i: Int, n: Int, discard: Int) -> Int ! alloc
+fn dr_if_arms(c: &mut DC, arms: &List[TElsif], i: Int, n: Int, discard: Int, base: &NM, most: &mut NM) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
         _a = dr_arg(c, &arm.cond, 1)
         _b = dr_block_with(c, &arm.body, discard)
-        dr_if_arms(c, arms, i + 1, n, discard)
+        dr_path_next(c, base, most)
+        dr_if_arms(c, arms, i + 1, n, discard, base, most)
 
 fn dr_ident_out(c: &mut DC, name: &String) -> Int ! alloc
     c.take(name)
@@ -1551,6 +1618,112 @@ fn dr_while(c: &mut DC, cond: &Expr, body: &TBlock) -> Int ! alloc
     dr_set(c, 1, outer)
 
 fn dr_match(c: &mut DC, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
+    dr_match_scrut(c, scrut, arms)
+    _o = dr_set(c, 2, dr_cell(c, 2) + 1)
+    dr_mark_match_moved(c, arms, 0, arms.len())
+    _x = dr_match_arms(c, arms, 0, list_len(arms))
+    dr_set(c, 2, dr_cell(c, 2) - 1)
+
+# A `match` in a position `dr_xform_expr` rewrites, with an arm that has a block of its own and
+# does not hand out a local (`walk_match_top` in src/drops.rs): every arm is a branch, as the
+# blocks of an `if` are, and the locals an arm binds go at its end.
+fn dr_is_branch_match(e: &Expr) -> Int ! alloc
+    match e
+        XMatch(scrut, arms) => dr_branch_arms(&arms, 0, arms.len())
+        _ => 0
+
+# A `match` in a position `dr_xform_expr` rewrites that `walk_match_top` in src/drops.rs walks on
+# its own: an arm has a block, or an arm hands out a local.
+fn dr_is_top_match(e: &Expr) -> Int ! alloc
+    match e
+        XMatch(scrut, arms) =>
+            if dr_branch_arms(&arms, 0, arms.len()) == 1
+                1
+            else
+                dr_moved_arms(&arms, 0, arms.len())
+        _ => 0
+
+fn dr_moved_arms(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = arms.get(i)
+        name = dr_arm_moved_local(&arm)
+        if name.len() > 0
+            1
+        else
+            dr_moved_arms(arms, i + 1, n)
+
+fn dr_branch_arms(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = arms.get(i)
+        name = dr_arm_moved_local(&arm)
+        if arm.has_suite == 1 && name.len() == 0
+            1
+        else
+            dr_branch_arms(arms, i + 1, n)
+
+fn dr_walk_match_branches(c: &mut DC, e: &Expr, discard: Int) -> Int ! alloc
+    match e
+        XMatch(scrut, arms) => dr_match_branches(c, &scrut, &arms, discard)
+        _ => 0
+
+fn dr_match_branches(c: &mut DC, scrut: &Expr, arms: &List[TArm], discard: Int) -> Int ! alloc
+    dr_match_scrut(c, scrut, arms)
+    dr_mark_match_moved(c, arms, 0, arms.len())
+    block = dr_branch_arms(arms, 0, arms.len())
+    base = nm_copy(&c.defs)
+    most = nm_copy(&c.defs)
+    dr_match_branch_arms(c, arms, 0, arms.len(), discard, block, &base, &mut most)
+    if block == 1
+        dr_path_finish(c, &most)
+    0
+
+# An arm that hands out a local moves it on that path only (`dr_mark_match_moved` keys its move);
+# with an arm that has a block of its own, any other arm is a branch, and one without a block is
+# a block with only its tail. Without one, the other arms stay opaque.
+fn dr_match_branch_arms(c: &mut DC, arms: &List[TArm], i: Int, n: Int, discard: Int, block: Int, base: &NM, most: &mut NM) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = arms.get(i)
+        dr_pattern(c, &arm.pat)
+        name = dr_arm_moved_local(&arm)
+        if name.len() > 0
+            # The arm hands the local out: a move keyed to the arm, as a statement's
+            # (`f.cur` and `arg(.., TakeFields)` in `walk_match_top`), not an escape.
+            nm_put(&mut c.branch_moved, &name, 1)
+            site = if arm.has_suite == 1
+                dr_tail_key(&arm.suite.tail)
+            else
+                dr_tail_key(&arm.body)
+            outer = dr_cell(c, 1)
+            dr_set(c, 1, site)
+            moved = XIdent(name.dup())
+            dr_arg(c, &moved, 3)
+            dr_set(c, 1, outer)
+        elsif block == 0
+            dr_set(c, 2, dr_cell(c, 2) + 1)
+            if arm.has_suite == 1
+                _b = dr_block(c, &arm.suite)
+            else
+                _b = dr_expr(c, &arm.body)
+            dr_set(c, 2, dr_cell(c, 2) - 1)
+        else
+            dr_set(c, 8, dr_cell(c, 8) + 1)
+            if arm.has_suite == 1
+                _w = dr_block_with(c, &arm.suite, discard)
+            else
+                _t = dr_tail_with(c, &arm.body, discard)
+            dr_set(c, 8, dr_cell(c, 8) - 1)
+        if block == 1
+            dr_path_next(c, base, most)
+        dr_match_branch_arms(c, arms, i + 1, n, discard, block, base, most)
+
+# The scrutinee of a `match`, as `dr_match` and `dr_match_branches` read it.
+fn dr_match_scrut(c: &mut DC, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
     # Variant patterns only read the box; a bare binding aliases the whole value.
     # A Copy payload (`Some(v) => v` of an `Option[Int]`) leaves the box releasable.
     if dx_is_ident(scrut) == 1 && nm_get(&c.copy_pay, &dx_ident(scrut)) != 2
@@ -1566,10 +1739,6 @@ fn dr_match(c: &mut DC, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
     else
         _s = dr_arg(c, scrut, 1)
         0
-    _o = dr_set(c, 2, dr_cell(c, 2) + 1)
-    dr_mark_match_moved(c, arms, 0, arms.len())
-    _x = dr_match_arms(c, arms, 0, list_len(arms))
-    dr_set(c, 2, dr_cell(c, 2) - 1)
 
 fn dr_mark_match_moved(c: &mut DC, arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1678,39 +1847,53 @@ fn dr_moved_clean_list(c: &DC, name: &String) -> Int ! alloc
         1
 
 # `list_new[String]()` becomes `list_new_owned[String]()` (`own_inline_string_list`).
+# Both rename the call where it sits (`enum_set`): a `match` that moved the payloads out of `e`
+# would leave its box behind.
 fn dr_own_inline_string_list(e: Expr) -> Expr ! alloc
-    match e
-        XCall(fname, args, targs, xp) =>
-            if fname.eq("list_new") == 1 && dx_list_string(&targs) == 1
-                XCall("list_new_owned", args, targs, xp)
-            else
-                XCall(fname, args, targs, xp)
-        _ => e
+    ta = dr_call_targs(&e)
+    if dr_is_list_new(&e) == 1 && dx_list_string(&ta) == 1
+        _r = dr_set_call_name(&e, &"list_new_owned")
+    e
 
 # An enum list the pass releases (kind 6) is built as `list_new_owned[E]()`: the lowering
 # stores the element descriptor `E` and the list frees its boxes. Other enum lists keep
 # `list_new` (their elements are borrowed). Remembers the owned locals (`dx_list_get_enum`).
 fn dr_own_enum_list(c: &mut DC, name: &String, cand: Int, e: Expr) -> Expr ! alloc
-    match e
-        XCall(fname, args, targs, xp) => dr_own_call(c, name, cand, fname, args, targs, xp)
-        _ => e
-
-fn dr_own_call(c: &mut DC, name: &String, cand: Int, fname: String, args: List[Expr], targs: String, xp: Int) -> Expr ! alloc
-    if cand != 6
-        XCall(fname, args, targs, xp)
-    elsif str_eq(&fname, "list_new") == 0
-        XCall(fname, args, targs, xp)
-    elsif dx_list_enum(c, &targs) == 1
-        _n = nm_put(&mut c.owned_enums, name, 5)
-        XCall("list_new_owned", args, targs, xp)
-    elsif dx_list_flat(c, &targs) == 1
-        nm_put(&mut c.owned_enums, name, 8)
-        XCall("list_new_owned", args, targs, xp)
-    elsif dx_list_string(&targs) == 1
-        _s = nm_put(&mut c.owned_enums, name, 1)
-        XCall("list_new_owned", args, targs, xp)
+    ta = dr_call_targs(&e)
+    k = if cand == 6 && dr_is_list_new(&e) == 1
+        dr_owned_list_kind(c, &ta)
     else
-        XCall(fname, args, targs, xp)
+        0
+    if k > 0
+        _n = nm_put(&mut c.owned_enums, name, k)
+        _r = dr_set_call_name(&e, &"list_new_owned")
+    e
+
+# What an owned `list_new[T]()` local holds: 5 enums, 8 flat structs, 1 strings, 0 none.
+fn dr_owned_list_kind(c: &DC, ta: &String) -> Int ! alloc
+    if dx_list_enum(c, ta) == 1
+        5
+    elsif dx_list_flat(c, ta) == 1
+        8
+    elsif dx_list_string(ta) == 1
+        1
+    else
+        0
+
+fn dr_is_list_new(e: &Expr) -> Int ! alloc
+    match e
+        XCall(fname, _, _, _) => fname.eq("list_new")
+        _ => 0
+
+# The type arguments of a call; empty for any other expression.
+fn dr_call_targs(e: &Expr) -> String ! alloc
+    match e
+        XCall(_, _, targs, _) => targs.dup()
+        _ => ""
+
+fn dr_set_call_name(e: &Expr, name: &String) -> Int ! alloc
+    enum_set(e, 0, name.dup())
+    0
 
 # `list_new[String]()`: the list owns its strings.
 fn dx_list_string(targs: &String) -> Int ! alloc
@@ -1817,6 +2000,8 @@ fn dr_stmt_expr(c: &mut DC, ex: &Expr) -> Int ! alloc
         0
     elsif dx_is_if(ex) == 1
         dr_walk_if_with(c, ex, 1)
+    elsif dr_cell(c, 2) == 0 && dr_is_top_match(ex) == 1
+        dr_walk_match_branches(c, ex, 1)
     else
         dr_expr(c, ex)
 
@@ -1894,23 +2079,27 @@ fn dr_block(c: &mut DC, b: &TBlock) -> Int ! alloc
 # `discard` 1: the block is a branch of an `if` statement and its tail is a statement.
 fn dr_block_with(c: &mut DC, b: &TBlock, discard: Int) -> Int ! alloc
     _a = dr_stmts(c, &b.stmts, 0, list_len(&b.stmts))
+    dr_tail_with(c, &b.tail, discard)
+
+# The tail of a block (`dr_block_with`), or the body of a `match` arm without a block.
+fn dr_tail_with(c: &mut DC, tail: &Expr, discard: Int) -> Int ! alloc
     outer = dr_cell(c, 1)
     _n = dr_set(c, 1, 0)
     tail_outer = dr_cell(c, 5)
-    _i = dr_set(c, 5, dr_tail_key(&b.tail))
+    _i = dr_set(c, 5, dr_tail_key(tail))
     call_outer = dr_cell(c, 7)
-    branch_local = discard == 0 && dr_cell(c, 8) > 0 && dx_is_ident(&b.tail) == 1
-    tail_moves = if dr_is_call_tail(&b.tail) == 1 || branch_local
+    branch_local = discard == 0 && dr_cell(c, 8) > 0 && dx_is_ident(tail) == 1
+    tail_moves = if dr_is_moving_tail(tail) == 1 || branch_local
         1
     else
         0
     _k = dr_set(c, 7, tail_moves)
     r = if discard == 1
-        dr_stmt_expr(c, &b.tail)
+        dr_stmt_expr(c, tail)
     else
-        dr_top(c, &b.tail, 3)
+        dr_top(c, tail, 3)
     if branch_local && dr_cell(c, 2) == 0
-        nm_put(&mut c.branch_moved, &dx_ident(&b.tail), 1)
+        nm_put(&mut c.branch_moved, &dx_ident(tail), 1)
     _l = dr_set(c, 7, call_outer)
     _j = dr_set(c, 5, tail_outer)
     _t = dr_set(c, 1, outer)
@@ -2205,15 +2394,16 @@ fn dr_release_stmt(c: &DC, name: &String) -> TStmt ! alloc
         flag = XIdent("__live_" + name)
         one = XInt(1)
         cond = XBin("eq", flag, one)
+        shell = nm_get(&c.box_shell, name) != 0 && nm_get(&c.popped, name) == 0
         else_b = if nm_get(&c.kinds, name) == 8
-            if nm_get(&c.box_shell, name) != 0
+            if shell
                 dr_box_shell_else(name)
             else
                 dr_empty_block()
         else
             dr_empty_block()
         has_else = if nm_get(&c.kinds, name) == 8
-            if nm_get(&c.box_shell, name) != 0
+            if shell
                 1
             else
                 0
@@ -2301,10 +2491,44 @@ fn dr_xform_expr(c: &mut DC, e: &Expr) -> Expr ! alloc
 # A match arm that returns an outer local moves it only on that path. Clear its live flag in the
 # arm block so lower_match_chain carries the flag across the branches, as xform_expr in drops.rs.
 fn dr_xform_match(c: &mut DC, e: &Expr, arms: &mut List[TArm]) -> Expr ! alloc
+    # The arms of a `match` walked as branches get their own scope first (`dr_match_branches`).
+    if dr_is_branch_match(e) == 1
+        dr_set(c, 8, dr_cell(c, 8) + 1)
+        dr_xform_branch_arms(c, arms, 0, arms.len())
+        dr_set(c, 8, dr_cell(c, 8) - 1)
     out = List.new[TArm]()
     dr_xform_match_arms(c, arms, 0, arms.len(), &mut out)
     enum_set(e, 1, out)
     dr_ret(e)
+
+# Each arm that does not hand out a local, as a branch: its block goes through `dr_xform_block`;
+# an arm without a block is a block with only its tail (`arm_block` in src/drops.rs), and takes a
+# block of its own only when its tail clears flags first.
+fn dr_xform_branch_arms(c: &mut DC, arms: &mut List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = (&mut arms).get(i)
+        name = dr_arm_moved_local(&arm)
+        if name.len() > 0
+            _z = 0
+        elsif arm.has_suite == 1
+            nb = dr_xform_block(c, &mut arm.suite)
+            dr_free_block(&arm.suite)
+            arm.suite = nb
+        else
+            pre = List.new[TStmt]()
+            dr_clear_tail_moved_expr(c, &arm.body, &mut pre)
+            nt = dr_xform_expr(c, &arm.body)
+            if pre.len() > 0
+                dr_free_block(&arm.suite)
+                arm.suite = TBlock(pre, nt)
+                arm.has_suite = 1
+            else
+                list_free(pre)
+                enum_free(arm.body)
+                arm.body = nt
+        dr_xform_branch_arms(c, arms, i + 1, n)
 
 fn dr_xform_match_arms(c: &DC, arms: &mut List[TArm], i: Int, n: Int, out: &mut List[TArm]) -> Int ! alloc
     if i >= n
@@ -2450,6 +2674,8 @@ fn dr_discard_free(name: &String, k: Int, sd: Int) -> TStmt ! alloc
     dr_plain(XCall(strdup(dr_free_fn(k)), args, "", 0))
 
 fn dr_xform_bind(c: &mut DC, st: &mut TStmt, out: &mut List[TStmt]) -> Int ! alloc
+    if dx_is_call_named(&st.expr, &"list_pop") == 1
+        nm_put(&mut c.popped, &st.name, 1)
     ordinary = dr_bind_candidate(c, st)
     cand = if ordinary == 0
         dr_branch_struct_kind(c, &st.name, &st.ty, &st.expr)
@@ -2463,7 +2689,8 @@ fn dr_xform_bind(c: &mut DC, st: &mut TStmt, out: &mut List[TStmt]) -> Int ! all
 # A struct moved by a branch is released by its per-type glue on the other paths.
 # Kinds above 10 are handles of the glue symbol; the existing numbered runtime kinds stay closed.
 fn dr_branch_struct_kind(c: &DC, name: &String, ty: &String, init: &Expr) -> Int ! alloc
-    if nm_get(&c.soft, name) == 0 || nm_get(&c.branch_moved, name) == 0 || nm_get(&c.params, name) != 0 || nm_get(&c.defs, name) != 1
+    # Every move is keyed (none escapes): each clears the flag (`struct_glue_candidate`).
+    if nm_get(&c.soft, name) == 0 || nm_get(&c.branch_moved, name) == 0 || nm_get(&c.esc, name) != 0 || nm_get(&c.params, name) != 0 || nm_get(&c.defs, name) != 1
         0
     elsif ty.len() > 0
         map_get(c.variants, str_own(&("dropkind:" + trim_spaces(ty.dup()))))
@@ -2616,7 +2843,7 @@ fn dr_seed_param_go(c: &mut DC, out: &mut List[TStmt], i: Int, n: Int) -> Int ! 
 
 fn dr_seed_one_param(c: &mut DC, out: &mut List[TStmt], name: &String, ty: &String) -> Int ! alloc
     ordinary = dr_param_kind(c, ty)
-    k = if ordinary == 0 && nm_get(&c.soft, name) != 0 && nm_get(&c.branch_moved, name) != 0
+    k = if ordinary == 0 && nm_get(&c.soft, name) != 0 && nm_get(&c.branch_moved, name) != 0 && nm_get(&c.esc, name) == 0
         map_get(c.variants, str_own(&("dropkind:" + trim_spaces(ty.dup()))))
     else
         ordinary
@@ -2680,15 +2907,18 @@ fn dr_tail_key(e: &Expr) -> Int ! alloc
 
 # Only a call tail is a statement of its own for the moves it makes (`is_call_tail`).
 fn dr_clear_tail_moved(c: &DC, b: &TBlock, out: &mut List[TStmt]) -> Int ! alloc
-    t = dr_tail_key(&b.tail)
-    if dr_cell(c, 8) > 0 && dx_is_ident(&b.tail) == 1
-        name = dx_ident(&b.tail)
+    dr_clear_tail_moved_expr(c, &b.tail, out)
+
+fn dr_clear_tail_moved_expr(c: &DC, tail: &Expr, out: &mut List[TStmt]) -> Int ! alloc
+    t = dr_tail_key(tail)
+    if dr_cell(c, 8) > 0 && dx_is_ident(tail) == 1
+        name = dx_ident(tail)
         if nm_get(&c.soft, &name) != 0 && dr_in_live(&c.live, &name, 0, c.live.len()) == 1
             out.push(dr_flag_clear(&name))
         0
     elsif t == 0
         0
-    elsif dr_is_call_tail(&b.tail) == 0
+    elsif dr_is_moving_tail(tail) == 0
         0
     else
         dr_clear_moved(c, t, out)
@@ -2749,8 +2979,12 @@ fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists:
 # `[read-only, consumed]`. Read-only is 1 when the fn only reads that parameter.
 # Consumed is 1 when the fn takes the parameter's data. A Copy field clears read-only
 # (the fn must not release the struct) without setting consumed. Optimistic fixpoint, as `drops.rs`.
-fn dr_read_only_t(tp: &TProgram, variants: Int, cons: &List[Int]) -> Int ! alloc
+# `seen` are the callees from the other modules of the graph (`callees` of `read_only_params`):
+# without them a call to an imported fn (`p.mkdir()` of an imported `StrPath`) moves every
+# argument, `&self` included.
+fn dr_read_only_t(tp: &TProgram, variants: Int, cons: &List[Int], seen: &List[TFn]) -> Int ! alloc
     ro = map_new()
+    dr_ro_init(ro, seen, variants, 0, seen.len())
     _i = dr_ro_init(ro, &tp.fns, variants, 0, tp.fns.len())
     scalars = list_new[String]()
     oks = list_new[Int]()
@@ -2921,6 +3155,9 @@ fn dr_param_caller_keeps(ty: &String, variants: Int) -> Int ! alloc
         open = ty_find_open(ty, 0)
         if open < 0
             if map_get(variants, str_own(&("enum:" + trim_spaces(ty.dup())))) != 0
+                0
+            elsif map_get(variants, str_own(&("dropkind:" + trim_spaces(ty.dup())))) != 0
+                # A struct with glue: the callee releases it with `drop.<S>` (`takes_by_value`).
                 0
             else
                 1
@@ -3191,10 +3428,12 @@ fn dr_hoist_expr(h: &mut HC, e: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
         XField(base, field) => dr_hoist_field(h, e, &base, &field, out)
         _ => dr_alias(e)
 
-# `match list_get(xs, i) { … }`: the element read is bound to a local first (`Hoist` in src/drops.rs).
+# `match list_get(xs, i) { … }`, `match d.get(k) { … }`, `match ch.recv() { … }`, `match f()`
+# with `f` handing back a fresh enum: the scrutinee is bound to a local first, so the scope-end
+# release frees it (`Hoist` in src/drops.rs).
 fn dr_hoist_match(h: &mut HC, e: &Expr, scrut: &Expr, arms: &mut List[TArm], out: &mut List[TStmt]) -> Expr ! alloc
     ns = dr_hoist_expr(h, scrut, out)
-    s2 = if dr_is_elem_read(&ns) + dr_is_dict_get(&ns) > 0
+    s2 = if dr_is_elem_read(&ns) + dr_is_dict_get(&ns) + dr_is_fresh_enum_call(h.vm, &ns) > 0
         k = list_get(&h.k, 0) + 1
         _s = list_set(h.k, 0, k)
         name = "__tmp" + int_to_str(k)
@@ -3230,7 +3469,9 @@ fn dr_elem_list_known(h: &HC, e: &Expr) -> Int ! alloc
         _ => 0
 
 fn dr_elem_list_call(h: &HC, name: &String, args: &List[Expr]) -> Int ! alloc
-    if dr_is_elem_read(&XCall(name.dup(), args.clone(), "", 0)) == 0
+    # Bound: a temporary lent is not released.
+    call = XCall(name.dup(), args.clone(), "", 0)
+    if dr_is_elem_read(&call) == 0
         0
     elsif list_len(args) == 0
         0
@@ -3333,10 +3574,17 @@ fn dr_is_elem_read(e: &Expr) -> Int ! alloc
         XCall(name, args, targs, xp) => str_eq(name, "list_get") + str_eq(name, "list_pop")
         _ => 0
 
-# `dict_get(..)`: the runtime hands out a fresh `Option` that owns a copy of the value.
+# `dict_get(..)` or `chan_recv(..)`: the runtime hands out a fresh `Option` that owns a copy of
+# the value (or the value taken off the channel).
 fn dr_is_dict_get(e: &Expr) -> Int ! alloc
     match e
-        XCall(name, args, targs, xp) => str_eq(name, "dict_get")
+        XCall(name, args, targs, xp) => name.eq("dict_get") + name.eq("chan_recv") > 0
+        _ => 0
+
+# A call of a user fn that builds the enum it returns (`retk:` kind 5, `is_fresh_enum_call`).
+fn dr_is_fresh_enum_call(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => map_get(vm, str_own(&("retk:" + name))) == 5
         _ => 0
 
 fn dr_hoist_call(h: &mut HC, e: &Expr, name: &String, args: &mut List[Expr], out: &mut List[TStmt]) -> Expr ! alloc
@@ -4077,10 +4325,17 @@ fn dr_joined_kind(c: &DC, e: &Expr) -> Int ! alloc
                         if f == 0
                             0
                         else
-                            fname = str_from_int(f).dup()
-                            dr_fresh_call(c, &XCall(fname.dup(), List.new[Expr](), "", 0), &fname, &"")
+                            dr_spawned_kind(c, f)
                     _ => 0
         _ => 0
+
+# What `f` hands back, as the release of a call to it. Out of the `match` of `dr_joined_kind`:
+# a local bound in an arm is not released.
+fn dr_spawned_kind(c: &DC, f: Int) -> Int ! alloc
+    fname = str_from_int(f).dup()
+    # Bound: a temporary lent is not released.
+    call = XCall(fname.dup(), List.new[Expr](), "", 0)
+    dr_fresh_call(c, &call, &fname, &"")
 
 # Records every `t = thread_spawn(f(..))` of the body, nested blocks included.
 fn dr_note_spawns(m: &mut NM, stmts: &List[TStmt], i: Int) -> Int ! alloc

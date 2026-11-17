@@ -118,7 +118,9 @@ method StructMono.rw_fns(&mut self, xs: &List[TFn], i: Int, out: &mut List[TFn])
         0
     else
         f = xs.get(i)
-        if tg_type_params(&f.tparams).len() > 0
+        # Bound: a temporary used as a receiver is not released.
+        tps = tg_type_params(&f.tparams)
+        if tps.len() > 0
             out.push(f.clone())
         else
             params = List.new[TParam]()

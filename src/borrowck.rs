@@ -770,12 +770,14 @@ impl Cx<'_> {
                     self.touch_root(&place, span.end);
                     self.attach(&place, ids);
                     self.event(place, *span, EventKind::Mutation);
-                } else {
-                    if let Expr::Unary { op: UnOp::Deref, expr, .. } = target {
-                        if let Some(place) = place_of(expr) {
-                            self.attach(&place, ids);
-                        }
+                } else if let Expr::Unary { op: UnOp::Deref, expr, .. } = target {
+                    // `*r = v` writes through `r`: nothing moves out of the reference, so only the
+                    // reference itself is used.
+                    if let Some(place) = place_of(expr) {
+                        self.attach(&place, ids);
                     }
+                    self.walk_expr(expr, Use::Read, limit);
+                } else {
                     self.walk_expr(target, Use::Read, limit);
                 }
             }
@@ -898,7 +900,9 @@ impl Cx<'_> {
                     }
                 }
                 UnOp::Deref => {
-                    if self.deref_moves_out(expr, e) {
+                    // Only a use by value moves out of the reference: `(*r).len()`, `*r + "x"`
+                    // (`+` lends its operands) and `*r = v` only read or write through it.
+                    if matches!(use_kind, Use::Move) && self.deref_moves_out(expr, e) {
                         self.diags.push(Diagnostic::new(
                             ErrorCode::EBorrow,
                             "cannot move a non-Copy value out of a reference",

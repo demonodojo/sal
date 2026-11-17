@@ -1,0 +1,14 @@
+# exit: 34
+# `xs.get_mut(i)` of a `List[String]` is `&mut String`: writing through it replaces the element.
+fn shout(s: &mut String) -> Int ! alloc
+    *s = *s + "!"
+    0
+
+fn main() -> Int ! alloc
+    let xs = List.new[String]()
+    xs.push(d"ab".dup())
+    xs.push(d"c".dup())
+    shout(xs.get_mut(0))
+    let r = xs.get_mut(1)
+    *r = d"defg".dup()
+    xs.get(0).len() * 10 + xs.get(1).len()

@@ -51,6 +51,13 @@ fn strict_moves() -> bool {
     STRICT_MOVES.with(|c| c.get())
 }
 
+/// Loads the parameter modes of `prog` as `check_ownership` does, for a lowering that runs
+/// without the checks (`bootstrap_ir_text`): `operand_is_moved` reads them, and the moves the
+/// borrow checker publishes for the drops pass depend on it.
+pub fn load_param_modes(prog: &Program) {
+    load_program(&infer_param_modes(prog));
+}
+
 fn load_program(prog: &Program) {
     TYPED.with(|t| {
         let mut t = t.borrow_mut();

@@ -79,6 +79,7 @@ fn selfhost_fingerprint(instrument: bool) -> u64 {
     walk(&root.join("selfhost"), &mut files);
     files.push(root.join("std/prelude.sal"));
     files.push(root.join("runtime/sal_runtime.c"));
+    files.push(root.join("runtime/sal_threads.c"));
     files.sort();
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -812,6 +813,43 @@ fn selfhost_instrumented_releases_rewritten_fn_bodies() {
     let _ = fs::remove_file(&program);
 }
 
+/// Programs with imports go through `qualify`, the module graph, monomorphization and the
+/// lambda specialization: the prelude with lambdas (`each`, `map`) and a generic from another
+/// module. The instrumented selfhost builds them with no event: no `LEAK` of the copies those
+/// passes make, and no `DOUBLE_FREE` of a `TProgram` handed by value (`sp_run`).
+#[test]
+fn selfhost_instrumented_clean_on_imports() {
+    let bin = compile_selfhost(true);
+    for rel in [
+        "tests/lang/collections/list_each.sal",
+        "tests/lang/collections/list_map_strings.sal",
+        "tests/lang/generics/generic_cross_module.sal",
+        "tests/lang/generics/generic_struct_cross_module.sal",
+        "tests/lang/collections/list_prelude_map_reduce.sal",
+        "tests/lang/modules/const_import.sal",
+        "tests/lang/modules/method_module.sal",
+        "tests/lang/threads/channel_producer.sal",
+    ] {
+        let program = root().join(rel);
+        let exe = PathBuf::from(format!("/tmp/sal-inst-imports-{}", std::process::id()));
+        let out = {
+            let mut cmd = Command::new(&bin);
+            cmd.arg(&program)
+                .arg("-o")
+                .arg(&exe)
+                .env("SAL_SELFHOST_CACHE", unique_cache_dir("inst-imports"))
+                .current_dir(root());
+            stage1_output(cmd)
+        };
+        let _ = fs::remove_file(&exe);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{rel}: instrumented selfhost failed: {stderr}");
+        for ev in ["LEAK", "OOB", "USE_AFTER_FREE", "DOUBLE_FREE", "BAD_PLACE"] {
+            assert!(!stderr.contains(ev), "{rel}: instrumented stderr contains {ev}: {stderr}");
+        }
+    }
+}
+
 #[test]
 fn selfhost_clones_and_drops_enum_struct_payload() {
     let stage1 = compile_selfhost(false);
@@ -1398,8 +1436,7 @@ const PARITY_FILES: &[&str] = &[
     "tests/lang/functions/lambda_trailing_two_params.sal",
     "tests/lang/ownership/lambda_capture_string.sal",
     "tests/lang/functions/lambda_trailing_method.sal",
-    // SPEC «Hilos». `channel_producer.sal` is left out: its `match &r` over the `Option` of
-    // `recv` lowers the `None` arm differently (the same gap as over `dict_get`).
+    // SPEC «Hilos».
     "tests/lang/threads/spawn_join_sum.sal",
     "tests/lang/threads/spawn_lends_list.sal",
     "tests/lang/threads/spawn_moves_string.sal",
@@ -1410,6 +1447,23 @@ const PARITY_FILES: &[&str] = &[
     "tests/lang/threads/mutex_counter.sal",
     "tests/lang/threads/mutex_list.sal",
     "tests/lang/threads/channel_pending_released.sal",
+    "tests/lang/threads/channel_producer.sal",
+    "tests/lang/threads/channel_recv_match_temp.sal",
+    "tests/lang/threads/mutex_string.sal",
+    "tests/lang/threads/thread_panic_ends_process.sal",
+    // A unit variant arm over a `&Option` (`None`) tests the tag; a `while` tail has no value.
+    "tests/lang/drops/drop_match_fresh_enum_call.sal",
+    "tests/lang/drops/drop_match_arm_block_local.sal",
+    "tests/lang/drops/drop_match_arm_branches.sal",
+    "tests/lang/drops/drop_string_moved_by_operator_tail.sal",
+    "tests/lang/drops/drop_enum_same_name_sibling_branches.sal",
+    "tests/lang/drops/drop_match_arm_moved_param.sal",
+    "tests/lang/drops/drop_struct_moved_on_one_branch.sal",
+    "tests/lang/control_flow/if_branch_ends_in_while.sal",
+    "tests/lang/control_flow/while_tail_has_no_value.sal",
+    // A struct of scalar fields in a variant is owned by the enum box (`sal_enum_set_struct_flat`).
+    "tests/lang/enums/enum_owns_flat_struct_payload.sal",
+    "tests/lang/structs/struct_enum_payload.sal",
 ];
 
 #[test]

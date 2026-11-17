@@ -874,7 +874,10 @@ fn monomorphize_structs(tp: TProgram, cx: &mut MonoCtx, errs: &mut List[String])
         tp3 = sm.rw_program(&tp2)
         tp4 = sp_place_structs(&tp3, &sm.news, &sm.news_from)
         sp_append_strs(&mut cx.made, &sm.made, 0, sm.made.len())
-        cx.taken = sm.taken.clone()
+        # `sm.taken` began as a copy of `cx.taken` and only grew: the new names go on the end (a
+        # field overwrite does not release the old list when the compiler builds the selfhost).
+        had = cx.taken.len()
+        sp_append_strs(&mut cx.taken, &sm.taken, had, sm.taken.len())
         sp_finish_structs(tp4.clone(), cx.remove)
 
 fn sp_generic_structs(xs: &List[TStruct], out: &mut List[TStruct]) -> Int ! alloc
@@ -966,12 +969,17 @@ fn sp_insert_struct(xs: &List[TStruct], i: Int, at: Int, ns: &TStruct, out: &mut
 
 fn sp_finish_structs(tp: TProgram, remove: Int) -> TProgram ! alloc
     if remove == 1
-        progs = List.new[TProgram]()
-        progs.push(tp.clone())
-        sp_sweep_structs(&mut progs)
-        progs.pop()
+        sp_swept(tp)
     else
         tp
+
+# `tp` without the generic structs nobody names. The result is a clone and the list releases its
+# element: the box `pop()` would hand back is not released when the compiler builds the selfhost.
+fn sp_swept(tp: TProgram) -> TProgram ! alloc
+    progs = List.new[TProgram]()
+    progs.push(tp)
+    sp_sweep_structs(&mut progs)
+    progs.get(0).clone()
 
 # Removes the generic structs that no type or call of the graph names any more.
 fn sp_sweep_structs(progs: &mut List[TProgram]) -> Int ! alloc

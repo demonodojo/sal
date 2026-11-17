@@ -1,0 +1,16 @@
+# exit: 5
+# selfhost-xfail: con el preludio importado, el selfhost no resuelve `d.get(k)` de un `Dict[_, String]` (queda `sal_d.get`) ni el `s.len()` del brazo
+# `match d.get(k)` without a local: the fresh `Option` (and the copy of the value inside) is
+# released after the match, also when an arm binds the payload.
+import "../../../std/prelude.sal"
+
+fn look(d: &Dict[String, String], k: String) -> Int ! alloc
+    match d.get(k)
+        Some(s) => s.len()
+        None => 0
+
+fn main() -> Int ! alloc
+    let d = Dict.new[String, String]()
+    d.put(d"k".dup(), d"vvv".dup())
+    d.put(d"j".dup(), d"ww".dup())
+    look(&d, d"k".dup()) + look(&d, d"j".dup()) + look(&d, d"x".dup())

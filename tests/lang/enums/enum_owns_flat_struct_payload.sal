@@ -1,0 +1,28 @@
+# exit: 7
+# A struct of scalar fields in a variant belongs to the enum box, as `Some(P)` owns its `P` in
+# Rust: releasing the enum (a temporary or a local) releases it.
+enum Opt
+    Non
+    Som(P)
+
+struct P
+    x: Int
+    y: Int
+
+fn find(n: Int) -> Opt ! alloc
+    if n > 0
+        return Som(P(n, n + 1))
+    Non
+
+fn main() -> Int ! alloc
+    let k = match find(3)
+        Som(q) => q.y
+        Non => 0
+    let r = find(1)
+    let s = match &r
+        Som(q) => q.x + q.y
+        Non => 0
+    let u = Som(P(4, 5))
+    k + s - 0 * match &u
+        Som(q) => q.x
+        Non => 0

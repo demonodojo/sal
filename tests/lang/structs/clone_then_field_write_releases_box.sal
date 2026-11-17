@@ -1,0 +1,25 @@
+# exit: 9
+# The clone of a list element is the caller's: writing one of its fields (`f.body = nb`) releases
+# the old field, and the box the clone came in goes too.
+struct B
+    stmts: List[String]
+    n: Int
+
+struct F
+    name: String
+    body: B
+    k: Int
+
+fn total(f: &F) -> Int
+    f.name.len() + f.body.stmts.len() + f.body.n + f.k
+
+fn redo(f: &mut F) -> B ! alloc
+    B(List.new[String](), f.k + 1)
+
+fn main() -> Int ! alloc
+    src = List.new[F]()
+    src.push(F("ab", B(List.new[String](), 2), 3))
+    f = src.get(0).clone()
+    nb = redo(&mut f)
+    f.body = nb
+    total(&f)

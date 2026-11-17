@@ -1,0 +1,21 @@
+# exit: 43
+# A `Mutex[String]`: each thread replaces the text through the `&mut String` of `lock`; the
+# mutex releases the last text. A `Mutex[Name]` (one field around a `String`) too.
+import "../../../std/prelude.sal"
+
+struct Name
+    s: String
+
+fn add(m: &Mutex[String], t: String) -> Int ! alloc
+    m.lock x =>
+        *x = *x + t
+        0
+
+fn main() -> Int ! alloc
+    let m = Mutex.new(d"a".dup())
+    let a = Thread.spawn(add, &m, d"bc".dup())
+    let b = Thread.spawn(add, &m, d"d".dup())
+    a.join() + b.join()
+    let n = Mutex.new(Name(d"xyz".dup()))
+    let k = n.lock y => y.s.len()
+    m.lock x => x.len() * 10 + k

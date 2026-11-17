@@ -1,0 +1,34 @@
+# exit: 8
+# A struct moved on only some paths is released behind its `__live` flag on the others (SPEC
+# «Memoria»): moved by a call tail, by an operator tail or by a statement of one branch.
+struct W
+    name: String
+    xs: List[String]
+
+fn keep(s: W) -> Int ! alloc
+    s.name.len() + s.xs.len()
+
+fn call_tail(k: Int) -> Int ! alloc
+    s = W("ab".dup(), List.new[String]())
+    if k > 1
+        keep(s)
+    else
+        0
+
+fn sum_tail(k: Int) -> Int ! alloc
+    s = W("ab".dup(), List.new[String]())
+    if k > 1
+        keep(s) + 1
+    else
+        0
+
+fn stmt_move(k: Int) -> Int ! alloc
+    s = W("ab".dup(), List.new[String]())
+    if k > 1
+        n = keep(s)
+        n + 1
+    else
+        0
+
+fn main() -> Int ! alloc
+    call_tail(2) + call_tail(0) + sum_tail(2) + sum_tail(0) + stmt_move(2) + stmt_move(0)

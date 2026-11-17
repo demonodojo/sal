@@ -1,0 +1,16 @@
+# exit: 3
+# `xs.set(i, v)` releases the element it replaces with the element's glue (SPEC «Memoria»): a
+# struct with an owned field and an inner list leave nothing behind.
+struct P
+    name: String
+    xs: List[Int]
+
+fn main() -> Int ! alloc
+    let ps = List.new[P]()
+    ps.push(P("a".dup(), List.new[Int]()))
+    ps.push(P("b".dup(), List.new[Int]()))
+    ps.set(0, P("c".dup(), List.new[Int]()))
+    let ls = List.new[List[Int]]()
+    ls.push(List.new[Int]())
+    ls.set(0, List.new[Int]())
+    ps.len() + ls.len()

@@ -29,11 +29,22 @@ struct BK
     w_start: List[Int]
     w_end: List[Int]
     cells: List[Int]
+    # The local whose uses keep each loan alive (its binding position), or -1 for a loan
+    # that ends where its range does (`Loan.uses` in src/borrowck.rs).
+    l_key: List[Int]
+    # Every use the scan noted: the binding position and the use.
+    ue_at: List[Int]
+    ue_pos: List[Int]
+    # The branches of each `if` / `match` (positions after `g_s`, up to `g_e`), by group.
+    g_id: List[Int]
+    g_s: List[Int]
+    g_e: List[Int]
 
 fn bk_new(tp: &TProgram) -> BK ! alloc
     cells = list_new[Int]()
     _c = list_push(&mut cells, 0)
-    BK(tenv_new(tp), list_new[String](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), cells)
+    _g = list_push(&mut cells, 0)
+    BK(tenv_new(tp), list_new[String](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), cells, List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int]())
 
 fn bk_clock(c: &BK) -> Int ! alloc
     list_get(&c.cells, 0)
@@ -152,6 +163,8 @@ fn bk_note(c: &mut BK, name: &String, end: Int) -> Int ! alloc
     if at < 0
         0
     else
+        c.ue_at.push(at)
+        c.ue_pos.push(end)
         bk_ne_set(c, at, end)
 
 fn bk_copy(c: &BK, ty: &String) -> Int ! alloc
@@ -321,6 +334,10 @@ fn bk_ranges(a0: Int, a1: Int, b0: Int, b1: Int) -> Int ! alloc
         0
 
 fn bk_loan(c: &mut BK, place: &String, mutable: Int, start: Int, end: Int) -> Int ! alloc
+    bk_loan_key(c, place, mutable, start, end, 0 - 1)
+
+# A loan that a local holds: the uses of the local bound at `key` keep it alive.
+fn bk_loan_key(c: &mut BK, place: &String, mutable: Int, start: Int, end: Int, key: Int) -> Int ! alloc
     if str_len(place) == 0
         0
     else
@@ -328,6 +345,7 @@ fn bk_loan(c: &mut BK, place: &String, mutable: Int, start: Int, end: Int) -> In
         _b = list_push(&mut c.l_mut, mutable)
         _c = list_push(&mut c.l_start, start)
         _d = list_push(&mut c.l_end, end)
+        c.l_key.push(key)
         0
 
 fn bk_move(c: &mut BK, place: &String, at: Int) -> Int ! alloc
@@ -416,8 +434,9 @@ fn bk_visit_ident(c: &mut BK, name: &String, mode: Int, pos: Int) -> Int ! alloc
         0
 
 fn bk_visit_unary(c: &mut BK, op: &String, inner: &Expr, mode: Int) -> Int ! alloc
+    # Only a use by value moves out of the reference: `*r + "x"` and `(*r).len()` read it.
     if str_eq(op, &"deref") == 1
-        if mode != 0
+        if mode == 2
             _d = bk_check_deref(c, inner)
             bk_visit(c, inner, bk_child(mode))
         else
@@ -442,21 +461,41 @@ fn bk_visit_bin(c: &mut BK, l: &Expr, r: &Expr, mode: Int) -> Int ! alloc
 
 fn bk_visit_if(c: &mut BK, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], mode: Int) -> Int ! alloc
     _a = bk_visit(c, cond, bk_child(mode))
+    gid = bk_group(c)
+    s = bk_clock(c)
     _b = bk_block(c, then_b, 0, mode)
-    _e = bk_elsifs(c, elsifs, 0, list_len(elsifs), mode)
+    bk_branch(c, mode, gid, s)
+    _e = bk_elsifs(c, elsifs, 0, list_len(elsifs), mode, gid)
     if has_else == 1
+        s2 = bk_clock(c)
         bk_block(c, else_b, 0, mode)
-    else
-        0
+        bk_branch(c, mode, gid, s2)
+    0
 
-fn bk_elsifs(c: &mut BK, elsifs: &List[TElsif], i: Int, n: Int, mode: Int) -> Int ! alloc
+# A new group of sibling branches (`groups` in src/borrowck.rs).
+fn bk_group(c: &mut BK) -> Int ! alloc
+    g = c.cells.get(1) + 1
+    c.cells.set(1, g)
+    g
+
+# The scan records the branch that began after `s` and ends now.
+fn bk_branch(c: &mut BK, mode: Int, gid: Int, s: Int) -> Int ! alloc
+    if mode == 0
+        c.g_id.push(gid)
+        c.g_s.push(s)
+        c.g_e.push(bk_clock(c))
+    0
+
+fn bk_elsifs(c: &mut BK, elsifs: &List[TElsif], i: Int, n: Int, mode: Int, gid: Int) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(elsifs, i)
         _a = bk_visit(c, &arm.cond, bk_child(mode))
+        s = bk_clock(c)
         _b = bk_block(c, &arm.body, 0, mode)
-        bk_elsifs(c, elsifs, i + 1, n, mode)
+        bk_branch(c, mode, gid, s)
+        bk_elsifs(c, elsifs, i + 1, n, mode, gid)
 
 fn bk_visit_while(c: &mut BK, cond: &Expr, body: &TBlock, mode: Int, pos: Int) -> Int ! alloc
     if mode == 0
@@ -472,15 +511,17 @@ fn bk_visit_while(c: &mut BK, cond: &Expr, body: &TBlock, mode: Int, pos: Int) -
 
 fn bk_visit_match(c: &mut BK, scrut: &Expr, arms: &List[TArm], mode: Int) -> Int ! alloc
     _a = bk_visit(c, scrut, bk_child(mode))
-    bk_arms(c, arms, 0, list_len(arms), mode)
+    bk_arms(c, arms, 0, list_len(arms), mode, bk_group(c))
 
-fn bk_arms(c: &mut BK, arms: &List[TArm], i: Int, n: Int, mode: Int) -> Int ! alloc
+fn bk_arms(c: &mut BK, arms: &List[TArm], i: Int, n: Int, mode: Int, gid: Int) -> Int ! alloc
     if i >= n
         0
     else
         arm = list_get(arms, i)
+        s = bk_clock(c)
         _a = bk_arm(c, &arm, mode)
-        bk_arms(c, arms, i + 1, n, mode)
+        bk_branch(c, mode, gid, s)
+        bk_arms(c, arms, i + 1, n, mode, gid)
 
 fn bk_arm(c: &mut BK, arm: &TArm, mode: Int) -> Int ! alloc
     if arm.has_suite == 1
@@ -639,8 +680,11 @@ fn bk_stmt_bind(c: &mut BK, st: &TStmt, mode: Int) -> Int ! alloc
         0
     elsif bk_is_call(&st.expr, &"thread_spawn") == 1
         bk_bind_thread(c, st, mode)
-    elsif bk_is_call(&st.expr, &"mutex_enter") == 1
-        # `m.enter()` lends the mutex exclusively while its `&mut T` lives (SPEC «Hilos»).
+    elsif bk_is_call(&st.expr, &"mutex_enter") + bk_is_get_mut(&st.expr) + bk_is_get_ref(c, st) > 0
+        # `m.enter()` and `xs.get_mut(i)` lend in exclusive while their `&mut T` lives, and
+        # `xs.get(i)` of a non-`Copy` element shared while its `&T` does (SPEC «Hilos»,
+        # «Memoria»). That loan covers the call's own `&mut xs`, which is dropped.
+        n0 = c.l_place.len()
         epos = bk_visit(c, &st.expr, bk_child(mode))
         mplace = bk_enter_place(&st.expr)
         if mode == 0
@@ -648,7 +692,8 @@ fn bk_stmt_bind(c: &mut BK, st: &TStmt, mode: Int) -> Int ! alloc
             ty = bk_bound_ty(c, st)
             bk_bind(c, &st.name, &ty, 2, &mplace, epos)
         else
-            bk_loan(c, &mplace, 1, epos, bk_ne_get(c, epos))
+            bk_void_loans(c, n0, &mplace)
+            bk_loan_key(c, &mplace, 1 - bk_is_get_ref(c, st), epos, bk_ne_get(c, epos), epos)
             ty = bk_bound_ty(c, st)
             bk_bind(c, &st.name, &ty, 2, &mplace, epos)
     else
@@ -662,7 +707,7 @@ fn bk_bind_ref(c: &mut BK, st: &TStmt, place: &String, epos: Int, mode: Int) -> 
         ty = bk_bound_ty(c, st)
         bk_bind(c, &st.name, &ty, 2, place, epos)
     else
-        _l = bk_loan(c, place, bk_ref_mut(&st.expr), epos, bk_ne_get(c, epos))
+        _l = bk_loan_key(c, place, bk_ref_mut(&st.expr), epos, bk_ne_get(c, epos), epos)
         ty = bk_bound_ty(c, st)
         bk_bind(c, &st.name, &ty, 2, place, epos)
 
@@ -784,6 +829,13 @@ fn bk_clear_fn(c: &mut BK) -> Int ! alloc
     _l = bk_clear_int(&mut c.o_at)
     _m = bk_clear_int(&mut c.w_start)
     _n = bk_clear_int(&mut c.w_end)
+    bk_clear_int(&mut c.l_key)
+    bk_clear_int(&mut c.ue_at)
+    bk_clear_int(&mut c.ue_pos)
+    bk_clear_int(&mut c.g_id)
+    bk_clear_int(&mut c.g_s)
+    bk_clear_int(&mut c.g_e)
+    c.cells.set(1, 0)
     _t = tenv_truncate(&mut c.env, 0)
     bk_reset_clock(c)
 
@@ -860,6 +912,8 @@ fn bk_conf_pair(c: &mut BK, i: Int, j: Int) -> Int ! alloc
         0
     elsif list_get(&c.l_mut, i) + list_get(&c.l_mut, j) == 0
         0
+    elsif bk_pair_live(c, i, j) == 0
+        0
     else
         bk_fail(c, &("E_BORROW: `" + bk_shorter(&pi, &pj) + "` is already borrowed"))
 
@@ -890,7 +944,7 @@ fn bk_moved_loans(c: &mut BK, i: Int, j: Int, n: Int) -> Int ! alloc
         if bk_overlaps(&place, &lp) == 0
             bk_moved_loans(c, i, j + 1, n)
         elsif at >= list_get(&c.l_start, j)
-            if at < list_get(&c.l_end, j)
+            if at < list_get(&c.l_end, j) && bk_live_after(c, j, at) == 1
                 bk_fail(c, &("E_BORROW: `" + place + "` is already borrowed"))
             else
                 bk_moved_loans(c, i, j + 1, n)
@@ -928,15 +982,58 @@ fn bk_inner_lent(c: &BK, e: &Expr) -> String ! alloc
         XCall(name, args, targs, xp) => bk_spawn_local(c, &args, 0)
         _ => ""
 
-# The mutex of `mutex_enter(m)`, or "".
+# What `mutex_enter(m)` or `list_get(&mut xs, i)` (`xs.get_mut(i)`) lends in exclusive, or "".
 fn bk_enter_place(e: &Expr) -> String ! alloc
     match e
         XCall(name, args, targs, xp) =>
             if name.eq("mutex_enter") == 1 && args.len() == 1
                 bk_place(&args.get(0))
+            elsif name.eq("list_get") == 1 && args.len() == 2
+                bk_list_place(&args.get(0))
             else
                 ""
         _ => ""
+
+# The loans from `n0` on `place` cover no position: they move before the first one.
+fn bk_void_loans(c: &mut BK, n0: Int, place: &String) -> Int ! alloc
+    i = n0
+    while i < c.l_place.len()
+        if c.l_place.get(i).eq(place) == 1
+            c.l_start.set(i, 0 - 2)
+            c.l_end.set(i, 0 - 2)
+        i = i + 1
+    0
+
+# The list of a `list_get`: `xs`, `&xs` or `&mut xs`.
+fn bk_list_place(e: &Expr) -> String ! alloc
+    place = bk_ref_place(e)
+    if place.len() > 0
+        place
+    else
+        bk_place(e)
+
+# `q = xs.get(i)` of an element that is not `Copy`: `q` is a `&T` into the list.
+fn bk_is_get_ref(c: &BK, st: &TStmt) -> Int ! alloc
+    match st.expr
+        XCall(name, args, targs, xp) =>
+            if name.eq("list_get") == 0 || args.len() != 2 || bk_ref_mut(&args.get(0)) == 1
+                0
+            else
+                ty = bk_bound_ty(c, st)
+                if ty.len() == 0 || ty.eq("Unknown") == 1 || bk_copy(c, &ty) == 1
+                    0
+                else
+                    1
+        _ => 0
+
+fn bk_is_get_mut(e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            if name.eq("list_get") == 1 && args.len() == 2 && bk_ref_mut(&args.get(0)) == 1
+                1
+            else
+                0
+        _ => 0
 
 # The first place lent to the thread whose root is not a parameter, or "".
 fn bk_spawn_local(c: &BK, args: &List[Expr], i: Int) -> String ! alloc
@@ -1026,3 +1123,75 @@ fn bk_escapes_spawn(c: &BK, e: &Expr) -> Int ! alloc
         1
     else
         0
+
+# ---- Reachability (`reachable` / `live_after` in src/borrowck.rs) ----
+
+# Loans `i` and `j` overlap in range: the earlier one is still live where the later one starts.
+fn bk_pair_live(c: &BK, i: Int, j: Int) -> Int ! alloc
+    if c.l_start.get(i) <= c.l_start.get(j)
+        bk_live_after(c, i, c.l_start.get(j))
+    else
+        bk_live_after(c, j, c.l_start.get(i))
+
+# A keyed loan is live after `at` when a use of its local after `at` is reachable from there;
+# a use inside a loop that began after the loan counts again at the loop's end.
+fn bk_live_after(c: &BK, k: Int, at: Int) -> Int ! alloc
+    key = c.l_key.get(k)
+    if key < 0
+        1
+    else
+        start = c.l_start.get(k)
+        i = 0
+        live = 0
+        while i < c.ue_at.len() && live == 0
+            if c.ue_at.get(i) == key
+                u = c.ue_pos.get(i)
+                if u > at && bk_reachable(c, at, u, start) == 1
+                    live = 1
+                elsif bk_loop_end_after(c, u, start, at) == 1
+                    live = 1
+            i = i + 1
+        live
+
+# `u` is in a loop that began after `start` and ends after `at`, reachable from `at`.
+fn bk_loop_end_after(c: &BK, u: Int, start: Int, at: Int) -> Int ! alloc
+    j = 0
+    found = 0
+    while j < c.w_start.len() && found == 0
+        ws = c.w_start.get(j)
+        we = c.w_end.get(j)
+        if start < ws && u >= ws && u <= we && we > at && bk_reachable(c, at, we, start) == 1
+            found = 1
+        j = j + 1
+    found
+
+# Sibling branches do not reach each other, unless a loop that began after the loan (at
+# `start`) brings the next iteration back.
+fn bk_reachable(c: &BK, at: Int, u: Int, start: Int) -> Int ! alloc
+    a = 0
+    ok = 1
+    while a < c.g_id.len() && ok == 1
+        if bk_within(c, a, at) == 1
+            b = 0
+            while b < c.g_id.len() && ok == 1
+                if b != a && c.g_id.get(b) == c.g_id.get(a) && bk_within(c, b, u) == 1 && bk_looped(c, a, start) == 0
+                    ok = 0
+                b = b + 1
+        a = a + 1
+    ok
+
+fn bk_within(c: &BK, g: Int, x: Int) -> Int ! alloc
+    if x > c.g_s.get(g) && x <= c.g_e.get(g)
+        1
+    else
+        0
+
+fn bk_looped(c: &BK, g: Int, start: Int) -> Int ! alloc
+    j = 0
+    found = 0
+    while j < c.w_start.len() && found == 0
+        ws = c.w_start.get(j)
+        if ws > start && ws <= c.g_s.get(g) && c.g_e.get(g) <= c.w_end.get(j)
+            found = 1
+        j = j + 1
+    found

@@ -1,0 +1,17 @@
+# exit: 6
+# `xs.pop()` hands the element over (SPEC «Memoria»): the local that receives it owns it and
+# releases it at the end of its scope, unless it is moved on (`use(q)`).
+struct P
+    name: String
+    n: Int
+
+fn use(p: P) -> Int
+    p.n
+
+fn main() -> Int ! alloc
+    ps = List.new[P]()
+    ps.push(P("abc".dup(), 4))
+    ps.push(P("de".dup(), 5))
+    p = ps.pop()
+    q = ps.pop()
+    use(q) + p.name.len()

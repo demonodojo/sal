@@ -172,14 +172,17 @@ fn ty_try_any_coerce(c: &mut IC, at: &String, pt: &String) -> Int ! alloc
         tname = ty_nominal(&ty_deref(at))
         if tname.len() == 0
             0
-        elsif type_claims_protocol(&ic_tp(c), &tname, &proto) == 0
-            _f = ic_fail(c, &("E_TYPE: type `" + tname + "` does not implement protocol `" + proto + "`"))
-            0
-        elsif fx_has_alloc(&c.cur_fx) == 0
-            _f = ic_fail(c, &("E_EFFECT: coercing `" + tname + "` to `any[" + proto + "]` requires effect `alloc`"))
-            0
         else
-            1
+            # Bound: a temporary lent is not released.
+            tp = ic_tp(c)
+            if type_claims_protocol(&tp, &tname, &proto) == 0
+                _f = ic_fail(c, &("E_TYPE: type `" + tname + "` does not implement protocol `" + proto + "`"))
+                0
+            elsif fx_has_alloc(&c.cur_fx) == 0
+                _f = ic_fail(c, &("E_EFFECT: coercing `" + tname + "` to `any[" + proto + "]` requires effect `alloc`"))
+                0
+            else
+                1
 
 # Clears what a fn leaves behind, so the context serves the next one.
 fn ic_reset(c: &mut IC) -> Int ! alloc
@@ -610,7 +613,7 @@ fn infer_dotted(c: &mut IC, name: &String, p: Int, args: &List[Expr], targs: &St
         infer_instance(c, &fld, args, &ta, &id, &"i")
     elsif infer_is_alias(&c.aliases, &q, 0) == 1
         # `alias.f(..)` names an item of the imported module, even when a local `alias` exists.
-        infer_module_item(c, &q, &fld, args, ta)
+        infer_module_item(c, &q, &fld, args, &ta)
     elsif tenv_type(&c.env, &q).len() > 0
         infer_instance(c, &fld, &infer_with_local(&q, args), &ta, &id, &"l")
     elsif infer_is_user_type(c, &q) == 1
@@ -630,7 +633,7 @@ fn infer_is_alias(aliases: &List[String], q: &String, i: Int) -> Int ! alloc
         infer_is_alias(aliases, q, i + 1)
 
 # `alias.f(args)`: the function `f` of the imported module (qualify links it by name).
-fn infer_module_item(c: &mut IC, q: &String, fld: &String, args: &List[Expr], ta: String) -> String ! alloc
+fn infer_module_item(c: &mut IC, q: &String, fld: &String, args: &List[Expr], ta: &String) -> String ! alloc
     if ic_get(&c.sigs, fld) > 0
         infer_call(c, fld, args)
     else

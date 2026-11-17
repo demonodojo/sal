@@ -1,0 +1,9 @@
+# error: E_TYPE
+# `each` takes a `fn(&T) -> Unit`: a lambda whose value is an `Int` does not fit it.
+import "../../../std/prelude.sal"
+
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    xs.push(1)
+    xs.each x => x + 1
+    0

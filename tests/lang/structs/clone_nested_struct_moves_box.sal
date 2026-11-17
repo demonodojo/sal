@@ -1,0 +1,30 @@
+# exit: 7
+# `x.clone()` of a struct with a struct field hands back a new box; moving the copy into another
+# struct or into a by-value parameter moves its fields, and the box it came in is released.
+struct B
+    stmts: List[String]
+    tail: String
+
+struct F
+    name: String
+    body: B
+    n: Int
+
+fn add(dst: &mut List[F], src: &List[F], i: Int) -> Int ! alloc
+    if i >= src.len()
+        0
+    else
+        dst.push(src.get(i).clone())
+        add(dst, src, i + 1)
+
+fn tail_len(b: B) -> Int
+    b.tail.len() + b.stmts.len()
+
+fn main() -> Int ! alloc
+    let src = List.new[F]()
+    src.push(F("a".dup(), B(List.new[String](), "t".dup()), 1))
+    src.push(F("b".dup(), B(List.new[String](), "uv".dup()), 2))
+    let fns = List.new[F]()
+    add(&mut fns, &src, 0)
+    let w = F("w".dup(), src.get(0).body.clone(), 3)
+    fns.len() + tail_len(src.get(1).body.clone()) + w.n

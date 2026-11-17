@@ -260,11 +260,11 @@ fn lower_field(cx: &mut Cx, base: &Expr, field: &String) -> Int ! alloc
         vec_push(argv, b)
         ir_push(cx, ir_call(val, "sal_cell_get".to_int(), argv, 1))
         b = val
-    si = tt_struct_find(&cx_structs(cx), &ty_deref(&texpr_type(&cx.env, base)))
+    si = tt_struct_find(&cx.env.structs, &ty_deref(&texpr_type(&cx.env, base)))
     if si < 0
         b
     else
-        lower_field_of(cx, b, &list_get(&cx_structs(cx), si), field)
+        lower_field_of(cx, b, &list_get(&cx.env.structs, si), field)
 
 fn lower_field_of(cx: &mut Cx, base: Int, sd: &TStruct, field: &String) -> Int ! alloc
     nf = list_len(&sd.fields)
@@ -437,10 +437,10 @@ fn lower_on_matmul(cx: &mut Cx, ops: Int, i: Int, n: Int) -> Int ! alloc
             lower_on_matmul(cx, ops, i + 1, n)
 
 fn is_struct_ctor_call(cx: &Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
-    si = tt_struct_find(&cx_structs(cx), fname)
+    si = tt_struct_find(&cx.env.structs, fname)
     if si < 0
         0
-    elsif list_len(&list_get(&cx_structs(cx), si).fields) == list_len(args)
+    elsif list_len(&list_get(&cx.env.structs, si).fields) == list_len(args)
         1
     else
         0
@@ -554,14 +554,15 @@ fn lower_list_new(cx: &mut Cx, txt: &String, d: Int, owned: Int) -> Int ! alloc
         1
     else
         owned
-    _a = ir_push(cx, ir_cs(dsc, str_own(&desc_type_text(&cx_structs(cx), &cx.enums, txt, effective_owned))))
+    _a = ir_push(cx, ir_cs(dsc, str_own(&desc_type_text(&cx.env.structs, &cx.enums, txt, effective_owned))))
     argv = vec_new()
     _b = vec_push(argv, dsc)
     _p = ir_push(cx, ir_call(d, str_as_int(&"sal_list_new_desc"), argv, 1))
     if owned == 0
         _s = lower_list_new_drop(cx, txt, d)
     else
-        _o = 0
+        # An owned list whose descriptor cannot release the struct releases it with the glue.
+        _o = lower_list_struct_drop(cx, txt, d)
     d
 
 # `dict_new[K, V]()` passes both runtime kinds (Int 0, Float 1, Bool 2, String 3).
@@ -575,7 +576,7 @@ fn lower_container_new(cx: &mut Cx, name: &String, txt: &String, d: Int, nkinds:
         k1 = scalar_kind_text(txt, 0, comma)
         k2 = scalar_kind_text(txt, comma + 1, str_len(txt))
         if str_eq(name, "dict_new") == 1
-            k2 = dict_val_kind_text(&cx_structs(cx), &cx.enums, txt, comma + 1, str_len(txt))
+            k2 = dict_val_kind_text(&cx.env.structs, &cx.enums, txt, comma + 1, str_len(txt))
     argv = vec_new()
     k1d = fresh(cx)
     _a = push_const_int(cx, k1d, k1)
@@ -593,6 +594,8 @@ fn lower_call_runtime(cx: &mut Cx, name: &String, args: &List[Expr], targs: &Str
         lower_chan_new(cx, targs)
     elsif name.eq("mutex_new") == 1 && args.len() == 1
         lower_mutex_new(cx, &args.get(0))
+    elsif list_slot_call(cx, name, args) == 1
+        lower_call_runtime_args(cx, &"list_slot", args, targs)
     else
         lower_call_runtime_args(cx, name, args, targs)
 
@@ -656,13 +659,15 @@ fn lower_chan_new(cx: &mut Cx, targs: &String) -> Int ! alloc
     d
 
 # `mutex_new(v)`: a `T` without a block of its own goes in a cell, any other in a one-element
-# owned `List[T]`.
+# owned `List[T]`. A cell `T` that owns a block (a `String`) goes in the list, whose slot is the
+# cell `lock` hands out (`sal_mutex_new_slot`).
 fn lower_mutex_new(cx: &mut Cx, v: &Expr) -> Int ! alloc
     t = ty_deref(&texpr_type(&cx.env, v))
     val = lower_expr(cx, v)
     d = fresh(cx)
     argv = vec_new()
-    if t.len() == 0 || tt_is_cell(&cx_structs(cx), &t) == 1
+    cell = t.len() == 0 || tt_is_cell(&cx.env.structs, &t) == 1
+    if cell && tt_cell_needs_drop(&cx.env.structs, &t) == 0
         vec_push(argv, val)
         ir_push(cx, ir_call(d, "sal_mutex_new_cell".to_int(), argv, 1))
         d
@@ -675,7 +680,11 @@ fn lower_mutex_new(cx: &mut Cx, v: &Expr) -> Int ! alloc
         pd = fresh(cx)
         ir_push(cx, ir_call(pd, "sal_list_push".to_int(), pargs, 1))
         vec_push(argv, lst)
-        ir_push(cx, ir_call(d, "sal_mutex_new".to_int(), argv, 1))
+        ctor = if cell
+            "sal_mutex_new_slot"
+        else
+            "sal_mutex_new"
+        ir_push(cx, ir_call(d, ctor.to_int(), argv, 1))
         d
 
 # `f(a)` with `f = x => body`: the body is lowered with `x` bound to the argument.
@@ -846,12 +855,12 @@ fn lower_call_runtime_rest(cx: &mut Cx, name: &String, targs: &String, args: &Li
 fn lower_struct_clone(cx: &mut Cx, args: &List[Expr], arg_names: Int, d: Int) -> Int ! alloc
     tname = ty_deref(&texpr_type(&cx.env, &list_get(args, 0)))
     argv = vec_new()
-    if struct_clone_glue_t(&cx_structs(cx), &cx.enums, &tname) == 1
+    if struct_clone_glue_t(&cx.env.structs, &cx.enums, &tname) == 1
         # A struct with a `List`/`Dict` field has no descriptor: its glue copies it.
         _b = vec_push(argv, vec_get(arg_names, 0))
         _p = ir_push(cx, ir_call(d, str_own(&("clone." + tname)), argv, 1))
     else
-        desc = desc_struct_or_i(&cx_structs(cx), &cx.enums, &tname)
+        desc = desc_struct_or_i(&cx.env.structs, &cx.enums, &tname)
         ds = fresh(cx)
         _c = ir_push(cx, ir_cs(ds, str_own(&desc)))
         _a = vec_push(argv, ds)
@@ -867,7 +876,7 @@ fn struct_clone_glue_t(structs: &List[TStruct], enums: &List[TEnum], name: &Stri
         0
     elsif structs.get(i).tparams.len() != 0
         0
-    elsif struct_glue_fn(&structs.get(i), structs, enums).name.len() == 0
+    elsif struct_frees_t(&structs.get(i), structs, enums) == 0
         0
     elsif str_len(desc_struct_text(structs, enums, name, 0)) > 0
         0
@@ -896,7 +905,7 @@ fn clone_fields(cx: &mut Cx, sd: &TStruct, i: Int, n: Int, out: Int) -> Int ! al
         0
     else
         fld = list_get(&sd.fields, i)
-        fnm = drop_field_fn(&cx_structs(cx), &cx.enums, &fld.ty, 3, 0, 0)
+        fnm = drop_field_fn(&cx.env.structs, &cx.enums, &fld.ty, 3, 0, 0)
         raw = drop_field_ssa(cx, str_as_int(&"v"), sd, i)
         if str_len(fnm) == 0
             _p = vec_push(out, raw)
@@ -927,7 +936,7 @@ fn clone_fn_of(release: &String) -> String ! alloc
 fn clone_nested(cx: &mut Cx, fty: &String, raw: Int) -> Int ! alloc
     t = trim_type_piece(fty)
     d = fresh(cx)
-    desc = desc_struct_text(&cx_structs(cx), &cx.enums, &t, 0)
+    desc = desc_struct_text(&cx.env.structs, &cx.enums, &t, 0)
     argv = vec_new()
     if str_len(desc) > 0
         ds = fresh(cx)
@@ -961,7 +970,7 @@ fn register_ret_text(cx: &Cx, d: Int, ret: &String) -> Int ! alloc
 
 # Handle of the struct type `ty` names, or 0.
 fn where_struct_type(cx: &Cx, ty: &String) -> Int ! alloc
-    if tt_struct_find(&cx_structs(cx), ty) >= 0
+    if tt_struct_find(&cx.env.structs, ty) >= 0
         str_own(ty)
     else
         0
@@ -974,7 +983,7 @@ fn frame_name_for_where(cx: &Cx, e: &Expr) -> Int ! alloc
         _ => where_struct_type(cx, &texpr_type(&cx.env, e))
 
 fn where_call_frame(cx: &Cx, e: &Expr, callee: &String) -> Int ! alloc
-    if tt_struct_find(&cx_structs(cx), callee) >= 0
+    if tt_struct_find(&cx.env.structs, callee) >= 0
         str_own(callee)
     else
         where_struct_type(cx, &texpr_type(&cx.env, e))
@@ -1052,6 +1061,8 @@ fn enum_owned_mask(cx: &Cx, vname: &String, args: &List[Expr], i: Int, n: Int, s
         a = list_get(args, i)
         kind = if variant_field_is_list(cx, vname, i) == 1 || variant_field_struct_glue(cx, vname, i).len() > 0
             3
+        elsif variant_field_struct_flat(cx, vname, i) > 0
+            3
         elsif dx_is_fresh_value(&a) == 1
             1
         elsif dx_is_ident(&a) == 1 && variant_field_is_string(cx, vname, i) == 1
@@ -1116,11 +1127,32 @@ fn variant_field_struct_glue(cx: &Cx, vname: &String, i: Int) -> String ! alloc
             else
                 ty
 
+# A boxed struct without glue (scalar fields only) in field `i`: its field count, else 0. The
+# enum box owns it all the same (`enum_struct_flat_fields` in src/ir.rs).
+fn variant_field_struct_flat(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
+    rec = variant_rec(cx, str_own(vname))
+    if rec == 0
+        return 0
+    en = enum_named(&cx.enums, vec_get(rec, 0), 0)
+    if en < 0
+        return 0
+    ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
+    si = struct_index_named(&cx.env.structs, &ty, 0)
+    if si < 0
+        0
+    elsif cx.env.structs.get(si).tparams.len() > 0 || struct_is_boxed_t(&cx.env.structs.get(si)) == 0
+        0
+    elsif struct_frees_t(&cx.env.structs.get(si), &cx.env.structs, &cx.enums) == 1
+        0
+    else
+        cx.env.structs.get(si).fields.len()
+
 fn enum_set_struct_glues(cx: &mut Cx, vname: &String, dest: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n || i >= 28
         0
     else
         ty = variant_field_struct_glue(cx, vname, i)
+        words = variant_field_struct_flat(cx, vname, i)
         if ty.len() > 0
             index = fresh(cx)
             push_const_int(cx, index, i)
@@ -1130,6 +1162,16 @@ fn enum_set_struct_glues(cx: &mut Cx, vname: &String, dest: Int, i: Int, n: Int)
             vec_push(args, str_own(&("drop." + ty)))
             vec_push(args, str_own(&("clone." + ty)))
             ir_push(cx, ir_call(0, "sal_enum_set_struct_glue".to_int(), args, 0))
+        elsif words > 0
+            index = fresh(cx)
+            push_const_int(cx, index, i)
+            count = fresh(cx)
+            push_const_int(cx, count, words)
+            args = vec_new()
+            vec_push(args, dest)
+            vec_push(args, index)
+            vec_push(args, count)
+            ir_push(cx, ir_call(0, "sal_enum_set_struct_flat".to_int(), args, 0))
         enum_set_struct_glues(cx, vname, dest, i + 1, n)
 
 fn nested_variant_kind(cx: &Cx, a: &Expr) -> Int ! alloc
@@ -1252,10 +1294,37 @@ fn match_arm_cond(cx: &mut Cx, scrut: Int, pat: &TPat) -> Int ! alloc
             "sal_regex_match"
         _p = ir_push(cx, ir_call(d, str_own(&fname), args, 1))
         d
+    elsif k == 1 && match_unit_variant(cx, &pat.name) == 1
+        # A unit variant of the scrutinee's enum (`None` of a `match &r` over an option) is the tag 0 value
+        # (`match_arm_cond` in src/ir.rs).
+        d = fresh(cx)
+        _p = ir_push(cx, ir_bin(d, "eq".to_int(), scrut, str_own(&"0")))
+        d
     else
         d = fresh(cx)
         _p = ir_push(cx, ir_ci(d, 1))
         d
+
+# `name` is a variant without fields of the enum the scrutinee has (`match:ty`, references peeled).
+fn match_unit_variant(cx: &Cx, name: &String) -> Int ! alloc
+    t = ty_base(&ty_deref(&tenv_type(&cx.env, &"match:ty")))
+    match_unit_in(&cx.enums, &t, name, 0)
+
+fn match_unit_in(enums: &List[TEnum], t: &String, name: &String, i: Int) -> Int ! alloc
+    if i >= enums.len()
+        0
+    elsif enums.get(i).name.eq(t) == 1
+        match_unit_variant_of(&enums.get(i).variants, name, 0)
+    else
+        match_unit_in(enums, t, name, i + 1)
+
+fn match_unit_variant_of(vs: &List[TVariant], name: &String, i: Int) -> Int ! alloc
+    if i >= vs.len()
+        0
+    elsif vs.get(i).name.eq(name) == 1
+        vs.get(i).fields.len() == 0
+    else
+        match_unit_variant_of(vs, name, i + 1)
 
 fn match_switchable(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -1550,8 +1619,13 @@ fn vs_call_struct(cx: &Cx, name: &String, args: &List[Expr], vs: &VS) -> String 
         name.dup()
     elsif ret.len() > 0 && vs_struct_of_type(cx, &ret).len() > 0
         vs_struct_of_type(cx, &ret)
+    elsif name.eq("list_pop") == 1 && args.len() == 1
+        # `xs.pop()` hands the element over: the local owns it (`value_struct` in src/ir.rs).
+        lt = vs_unref_type(cx, &args.get(0))
+        elem = tt_arg(&lt, 0)
+        vs_struct_of_type(cx, &elem)
     elsif name.eq("struct_clone") == 1 && args.len() == 1
-        sn = vs_value_struct(cx, &vs_unref(&args.get(0)), vs)
+        sn = vs_unref_clone_struct(cx, &args.get(0), vs)
         if sn.len() > 0 && struct_clone_glue_t(&cx.env.structs, &cx.enums, &sn) == 1
             sn
         else
@@ -1559,10 +1633,28 @@ fn vs_call_struct(cx: &Cx, name: &String, args: &List[Expr], vs: &VS) -> String 
     else
         ""
 
-fn vs_unref(e: &Expr) -> Expr ! alloc
+# The struct of a clone's receiver: a bound local, or else (`xs.get(i).clone()`) the receiver's
+# type, as `value_struct` in src/ir.rs reads it.
+fn vs_clone_struct(cx: &Cx, recv: &Expr, vs: &VS) -> String ! alloc
+    sn = vs_value_struct(cx, recv, vs)
+    if sn.len() > 0
+        sn
+    else
+        t = ty_deref(&texpr_type(&cx.env, recv))
+        vs_struct_of_type(cx, &t)
+
+# The receiver's type through `&`/`*`, read in place: a copy of the receiver would be a box
+# nobody releases.
+fn vs_unref_type(cx: &Cx, e: &Expr) -> String ! alloc
     match e
-        XUnary(op, inner) => vs_unref(&inner)
-        _ => tc_expr(e)
+        XUnary(op, inner) => vs_unref_type(cx, &inner)
+        _ => ts_trim(&ty_deref(&texpr_type(&cx.env, e)))
+
+# `vs_clone_struct` of the receiver through `&`/`*`, read in place.
+fn vs_unref_clone_struct(cx: &Cx, e: &Expr, vs: &VS) -> String ! alloc
+    match e
+        XUnary(op, inner) => vs_unref_clone_struct(cx, &inner, vs)
+        _ => vs_clone_struct(cx, e, vs)
 
 fn vs_fn_ret(cx: &Cx, name: &String) -> String ! alloc
     i = vs_index(&cx.env.fn_names, name, 0, cx.env.fn_names.len())
@@ -2212,6 +2304,11 @@ fn lower_block_value(cx: &mut Cx, b: &TBlock) -> Int ! alloc
 fn lower_value_tail(cx: &mut Cx, tail: &Expr) -> Int ! alloc
     match tail
         XNone => lower_const(cx, 0)
+        XWhile(_, _) =>
+            # A `while` has no value: the block's is `0`, as after a block without tail (the
+            # bootstrap lowers it as a statement and the block value is the placeholder).
+            lower_expr(cx, tail)
+            lower_const(cx, 0)
         _ => lower_expr(cx, tail)
 
 # `x = load[Tensor[...] on p](path)` binds a tensor of the declared type; any other
@@ -2399,6 +2496,7 @@ fn lower_deref_assign(cx: &mut Cx, st: &TStmt, inner: &Expr) -> Int ! alloc
             if is_local_cell_ref(cx, inner) == 1
                 v = lower_expr(cx, &st.expr)
                 cell = lower_expr(cx, inner)
+                deref_string_drop(cx, inner, cell)
                 args = vec_new()
                 vec_push(args, cell)
                 vec_push(args, v)
@@ -2410,8 +2508,10 @@ fn lower_deref_assign(cx: &mut Cx, st: &TStmt, inner: &Expr) -> Int ! alloc
 fn lower_deref_assign_named(cx: &mut Cx, st: &TStmt, name: &String) -> Int ! alloc
     if is_cell_ref_name(cx, name) == 1
         v = lower_expr(cx, &st.expr)
+        cell = cx_lookup(cx, str_own(name))
+        _d = deref_string_drop(cx, &XIdent(name.dup()), cell)
         argv = vec_new()
-        vec_push(argv, cx_lookup(cx, str_own(name)))
+        vec_push(argv, cell)
         vec_push(argv, v)
         ir_push(cx, ir_call(0, "sal_cell_set".to_int(), argv, 0))
         v
@@ -2420,12 +2520,25 @@ fn lower_deref_assign_named(cx: &mut Cx, st: &TStmt, name: &String) -> Int ! all
     else
         v = lower_expr(cx, &st.expr)
         old = cx_lookup(cx, str_own(name))
-        si = tt_struct_find(&cx_structs(cx), &ty_deref(&tenv_type(&cx.env, name)))
+        si = tt_struct_find(&cx.env.structs, &ty_deref(&tenv_type(&cx.env, name)))
         if si >= 0 && cx.keep_old == 0
-            _d = lower_field_drop_old(cx, &list_get(&cx_structs(cx), si).fields.get(0).ty, old)
+            _d = lower_field_drop_old(cx, &list_get(&cx.env.structs, si).fields.get(0).ty, old)
+        elsif ty_deref(&tenv_type(&cx.env, name)).eq("String") == 1 && cx.keep_old == 0
+            _s = lower_field_drop_old(cx, &"String", old)
         _w = cell_write_back(cx, name, v)
         _b = cx_bind(cx, str_own(name), v)
         v
+
+# SPEC «Memoria»: `*r = v` with `r: &mut String` releases the text the cell held before.
+fn deref_string_drop(cx: &mut Cx, inner: &Expr, cell: Int) -> Int ! alloc
+    if cx.keep_old == 1 || ty_deref(&texpr_type(&cx.env, inner)).eq("String") == 0
+        0
+    else
+        old = fresh(cx)
+        get_args = vec_new()
+        vec_push(get_args, cell)
+        ir_push(cx, ir_call(old, "sal_cell_get".to_int(), get_args, 1))
+        lower_field_drop_old(cx, &"String", old)
 
 fn cx_is_cell(cx: &Cx, name: &String) -> Int ! alloc
     i = 0
@@ -2456,8 +2569,26 @@ fn local_cell_ref_expr(cx: &Cx, e: &Expr) -> Int ! alloc
                 1
             else
                 0
-        XCall(name, args, targs, xp) => mutex_enter_cell(cx, &name, &args)
+        XCall(name, args, targs, xp) => mutex_enter_cell(cx, &name, &args) + list_slot_call(cx, &name, &args)
         _ => 0
+
+# `list_get(&mut xs, i)` (`xs.get_mut(i)`) of a `T` without a block of its own: the `&mut T` is
+# the element's word, a cell (`is_list_slot_call` in src/ir.rs).
+fn list_slot_call(cx: &Cx, name: &String, args: &List[Expr]) -> Int ! alloc
+    if name.eq("list_get") == 0 || args.len() != 2
+        0
+    else
+        match args.get(0)
+            XUnary(op, inner) =>
+                if op.eq("refmut") == 0
+                    0
+                else
+                    t = tt_list_elem(&trim_spaces(ty_deref(&texpr_type(&cx.env, &inner))))
+                    if t.len() == 0
+                        0
+                    else
+                        tt_is_cell(&cx.env.structs, &t)
+            _ => 0
 
 # SPEC «Hilos»: `m.enter()` of a `Mutex[T]` whose `T` has no block of its own is the mutex's
 # cell, which a `&mut T` parameter receives as is (`is_cell_handle` in src/ir.rs).
@@ -2652,11 +2783,11 @@ fn lower_field_assign_base(cx: &mut Cx, st: &TStmt, base: &Expr, field: &String)
         _ => lower_expr(cx, &st.expr)
 
 fn lower_field_assign_named(cx: &mut Cx, st: &TStmt, name: &String, field: &String) -> Int ! alloc
-    si = tt_struct_find(&cx_structs(cx), &ty_deref(&tenv_type(&cx.env, name)))
+    si = tt_struct_find(&cx.env.structs, &ty_deref(&tenv_type(&cx.env, name)))
     if si < 0
         lower_expr(cx, &st.expr)
     else
-        lower_field_assign_struct(cx, st, name, &list_get(&cx_structs(cx), si), field)
+        lower_field_assign_struct(cx, st, name, &list_get(&cx.env.structs, si), field)
 
 fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruct, field: &String) -> Int ! alloc
     nf = list_len(&sd.fields)
@@ -2712,7 +2843,7 @@ fn lower_field_rebuild(cx: &mut Cx, sd: &TStruct, base_ssa: Int, v: Int, idx: In
         lower_field_rebuild(cx, sd, base_ssa, v, idx, i + 1, n, acc)
 
 fn lower_field_drop_old(cx: &mut Cx, ty: &String, ssa: Int) -> Int ! alloc
-    fn_name = drop_field_fn(&cx_structs(cx), &cx.enums, ty, 3, 0, 0)
+    fn_name = drop_field_fn(&cx.env.structs, &cx.enums, ty, 3, 0, 0)
     if str_len(&fn_name) == 0
         0
     elsif str_eq(&fn_name, "struct") == 1
@@ -3098,9 +3229,21 @@ fn mv_call(name: &String, args: &List[Expr], names: Int, md: Int) -> Int ! alloc
     params = map_get(md, ck.to_int())
     if params != 0
         _t = mv_take_args(params, args, 0, list_len(args), names)
-    else
+    elsif mv_is_clone(name) == 0
+        # `x.clone()` reads `x` through `&self` (`collect_moved_expr` in src/ir.rs).
         _t = mv_all_args(args, 0, list_len(args), names)
     mv_args(args, 0, list_len(args), names, md)
+
+fn mv_is_clone(name: &String) -> Int
+    match name
+        "struct_clone" => 1
+        "enum_copy" => 1
+        "list_clone" => 1
+        "dict_clone" => 1
+        "bytes_clone" => 1
+        "clone_copy" => 1
+        "desc_copy" => 1
+        _ => 0
 
 fn mv_pair(l: &Expr, r: &Expr, names: Int, md: Int) -> Int ! alloc
     _a = mv_expr(l, names, md)
@@ -3188,14 +3331,14 @@ fn drop_local_one(cx: &mut Cx, fr: &FRC, moved: Int, nm: Int) -> Int ! alloc
     else
         b = cx_find(cx, nm)
         if b != 0
-            si = tt_struct_find(&cx_structs(cx), &trim_spaces(ty_deref(&tenv_type(&cx.env, &str_from_int(nm)))))
+            si = tt_struct_find(&cx.env.structs, &trim_spaces(ty_deref(&tenv_type(&cx.env, &str_from_int(nm)))))
             sd = list_get(&cx_structs(cx), si)
             base = bind_ssa(b)
             cell = local_cell(cx, &str_from_int(nm))
             if cell != 0
                 base = local_cell_get(cx, cell)
             # A clean local is released by the glue of its struct: one call, the same releases.
-            if drop_local_clean(fr, nm) == 1 && struct_glue_fn(&sd, &cx_structs(cx), &cx.enums).name.len() != 0
+            if drop_local_clean(fr, nm) == 1 && struct_frees_t(&sd, &cx.env.structs, &cx.enums) == 1
                 drop_glue_call(cx, &sd.name, base)
             else
                 drop_struct_fields(cx, base, &sd, drop_glue_bits(fr, nm), fr, &str_from_int(nm))
@@ -3332,6 +3475,10 @@ fn keep_stmts(xs: &List[TStmt]) -> Int ! alloc
 fn lower_fn_tail(cx: &mut Cx, tail: &Expr) -> Int ! alloc
     match tail
         XNone => 0 - 1
+        XWhile(_, _) =>
+            # A `while` tail is a statement: no `Return` follows it, as with no tail.
+            lower_expr(cx, tail)
+            0 - 1
         _ => lower_expr(cx, tail)
 
 fn try_lower_tensor_bin(cx: &mut Cx, op: &String, left_e: &Expr, right_e: &Expr, l: Int, r: Int, d: Int) -> Int ! alloc
@@ -3494,7 +3641,8 @@ fn struct_glue_emit(structs: &List[TStruct], all: &List[TStruct], enums: &List[T
             else
                 _k2 = 0
         else
-            _g = 0
+            # The empty glue goes here: `out` takes `body` on the other branch only.
+            _g = irfn_discard(body)
         struct_glue_emit(structs, all, enums, cand, p + 1, n, out)
 
 fn struct_glue_rank(structs: &List[TStruct], cand: &List[Int], p: Int, k: Int, n: Int) -> Int ! alloc
@@ -3522,6 +3670,10 @@ fn struct_glue_before(structs: &List[TStruct], cand: &List[Int], idx: Int, j: In
 fn ir_fn_empty() -> IrFn ! alloc
     IrFn("".dup(), List.new[String](), List.new[Inst](), List.new[Region](), List.new[Lit]())
 
+# Takes an `IrFn` nobody keeps and releases it at its end.
+fn irfn_discard(f: IrFn) -> Int ! alloc
+    f.name.len()
+
 fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> IrFn ! alloc
     fns0 = List.new[TFn]()
     prots0 = List.new[TProtocol]()
@@ -3532,6 +3684,8 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
     _d = drop_fields(&mut cx, str_as_int(&"v"), sd, &sd.fields, 0, sd.fields.len(), 0, 3, &fr, &sd.name, &"")
     insts = cx_end_body(&mut cx)
     if insts.len() == 0
+        # Both branches take `insts`: a value moved on one path only is not released on the other.
+        list_free(insts)
         ir_fn_empty()
     else
         if struct_is_boxed_t(sd) == 1
@@ -3543,6 +3697,11 @@ fn struct_glue_fn(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) ->
         _r = insts.push(ir_ci(str_as_int(&"r"), 0))
         _t = insts.push(ir_ret(str_as_int(&"r")))
         IrFn("drop." + sd.name, List.new[String](), insts, List.new[Region](), List.new[Lit]())
+
+# `drop.<Struct>` frees something. The glue is bound to a local, so its body goes at the end.
+fn struct_frees_t(sd: &TStruct, structs: &List[TStruct], enums: &List[TEnum]) -> Int ! alloc
+    glue = struct_glue_fn(sd, structs, enums)
+    glue.name.len() > 0
 
 # A struct of two or more fields is a block on the heap (`struct_is_boxed` in src/ir.rs).
 fn struct_is_boxed_t(sd: &TStruct) -> Int
@@ -3572,6 +3731,13 @@ fn lower_list_new_drop(cx: &mut Cx, txt: &String, d: Int) -> Int ! alloc
         else
             0
     else
+        lower_list_struct_drop(cx, txt, d)
+
+# A list of structs that have glue releases (and clones) each element with it.
+fn lower_list_struct_drop(cx: &mut Cx, txt: &String, d: Int) -> Int ! alloc
+    if find_char(txt, 91, 0, txt.len()) >= 0
+        0
+    else
         structs = cx_structs(cx)
         t = trim_type_piece(txt)
         i = struct_index_named(&structs, &t, 0)
@@ -3580,7 +3746,7 @@ fn lower_list_new_drop(cx: &mut Cx, txt: &String, d: Int) -> Int ! alloc
         else
             if structs.get(i).tparams.len() != 0
                 0
-            elsif struct_glue_fn(&structs.get(i), &structs, &cx.enums).name.len() == 0
+            elsif struct_frees_t(&structs.get(i), &structs, &cx.enums) == 0
                 0
             elsif struct_is_boxed_t(&structs.get(i)) == 1
                 _sd = list_set_drop_call(cx, d, &("drop.elem." + t))
@@ -3650,7 +3816,7 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     _rk = ret_kinds_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
     _rs = ret_kinds_put(vec_get(denv, 0), seen, 0, seen.len())
     cons = dr_cons_list(&tp.fns)
-    ro = dr_read_only_t(tp, vec_get(denv, 0), &cons)
+    ro = dr_read_only_t(tp, vec_get(denv, 0), &cons, seen)
     modes = map_new()
     table = own_mode_table(tp)
     _m = modes_fill_t(modes, &table, &cons, &tp.fns, structs, 0, tp.fns.len())
@@ -3992,6 +4158,9 @@ fn modes_vec(out: Int, text: &String, i: Int, n: Int) -> Int ! alloc
 # Variant name -> [1 when it has fields or 2 when unit, per-field "may own heap" flags].
 fn variant_map_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen: &List[TFn]) -> Int ! alloc
     m = map_new()
+    # Every enum of the module graph, then the module's own: `None` of the prelude's `Option`
+    # is a variant pattern, not a binding of the whole scrutinee (`insert_drops` in src/drops.rs).
+    variant_map_enums_t(m, enums, 0, enums.len())
     _a = variant_map_enums_t(m, &tp.enums, 0, list_len(&tp.enums))
     _k = enum_keys_t(m, enums, 0, list_len(enums))
     _g = graph_variant_keys_t(m, enums, 0, list_len(enums))
@@ -4056,7 +4225,7 @@ fn flat_map_structs_t(m: Int, sts: &List[TStruct], enums: &List[TEnum], i: Int, 
         0
     else
         sd = list_get(sts, i)
-        if struct_glue_fn(&sd, sts, enums).name.len() > 0
+        if struct_frees_t(&sd, sts, enums) == 1
             map_put(m, str_own(&("dropkind:" + sd.name)), str_own(&("drop." + sd.name)))
         if str_len(desc_struct_text(sts, enums, &sd.name, 0)) > 0
             flags = vec_new()
@@ -4134,6 +4303,13 @@ fn variant_field_flags_t(fields: &List[String], i: Int, n: Int, out: Int) -> Int
 fn free_old_body(b: &TBlock) -> Int ! alloc
     list_free(b.stmts)
     enum_free(b.tail)
+    0
+
+# `free_old_body` for a body whose `TBlock` lives in slots (a cloned `TFn`): lending the block
+# would box it in a carrier that `free_old_body` releases and the caller releases again.
+fn free_body_parts(stmts: &List[TStmt], tail: &Expr) -> Int ! alloc
+    list_free(stmts)
+    enum_free(tail)
     0
 
 fn lower_fns(fns: &mut List[TFn], names: Int, fm: Int, env_tpl: &TEnv, em: &List[TEnum], denv: Int, prog_fns: &List[TFn], prog_protocols: &List[TProtocol], i: Int, n: Int, out: &mut List[IrFn]) -> Int ! alloc
