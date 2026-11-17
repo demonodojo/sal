@@ -30,7 +30,7 @@
 #define SAL_LOCK(m) pthread_mutex_lock(&(m))
 #define SAL_UNLOCK(m) pthread_mutex_unlock(&(m))
 #endif
-#if __has_include(<execinfo.h>)
+#if !defined(SAL_SOSO) && __has_include(<execinfo.h>)
 #include <execinfo.h>
 #define SAL_HAVE_BACKTRACE 1
 #endif
