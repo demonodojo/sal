@@ -1,0 +1,17 @@
+# exit: 8
+# A struct with a `Float` field and more than two fields comes back from a fn with no parameters
+# through the caller's buffer.
+struct Medida
+    a: Int
+    b: Float
+    c: Int
+
+fn medida() -> Medida
+    Medida(3, 0.5, 4)
+
+fn main() -> Int
+    m = medida()
+    if m.b == 0.5
+        m.a + m.c + 1
+    else
+        0

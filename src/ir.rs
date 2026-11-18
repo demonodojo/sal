@@ -883,7 +883,7 @@ fn dispatchable_protocol(p: &crate::ast::ProtocolDef) -> bool {
 }
 
 fn collect_any_vtables(prog: &Program, strings: &StringEnv) -> Vec<AnyVtableDef> {
-    // The module's protocols, and the imported ones (`impl Reflect` of `std/reflect.sal`).
+    // The module's protocols, and the imported ones (`impl Reflect` of `std/reflect/reflect.sal`).
     let mut protocols: HashMap<String, crate::ast::ProtocolDef> = (*strings.protocols).clone();
     for item in &prog.items {
         if let Item::Protocol(p) = item {

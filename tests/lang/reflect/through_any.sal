@@ -1,6 +1,6 @@
 # exit: 49
 # stdout: Persona nombre,edad,pos Ana
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 struct Punto impl Reflect
     x: Int

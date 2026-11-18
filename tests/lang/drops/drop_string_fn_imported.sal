@@ -1,0 +1,13 @@
+# exit: 15
+# stdout: posts
+# The `String` that a looping fn of another module returns belongs to the caller here too.
+import "mods/texto.sal"
+
+fn main() -> Int ! alloc, io
+    n = 0
+    i = 0
+    while i < 3
+        n = n + (lower(&"Post") + "s").len()
+        i = i + 1
+    print(lower(&"POST") + "s")
+    n

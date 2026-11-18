@@ -1,6 +1,6 @@
 # exit: 88
 # stdout: ok|ok|field tags: expected String, found Int|ok|ok
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 struct Punto impl Reflect
     x: Int

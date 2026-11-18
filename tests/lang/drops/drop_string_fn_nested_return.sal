@@ -1,0 +1,20 @@
+# exit: 27
+# A fn that returns its `String` from inside a `while` and from an `if` statement hands the caller
+# an owned value on every path; the caller releases each one.
+fn pick(n: Int) -> String ! alloc
+    i = 0
+    while i < 10
+        if i == n
+            return i.to_str() + "!"
+        i = i + 1
+    if n < 0
+        return d"neg"
+    d"none"
+
+fn main() -> Int ! alloc
+    total = 0
+    k = 0
+    while k < 3
+        total = total + pick(3).len() + pick(0 - 1).len() + pick(20).len()
+        k = k + 1
+    total

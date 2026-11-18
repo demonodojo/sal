@@ -1,6 +1,6 @@
 # exit: 33
 # stdout: missing field edad|field edad: expected Int, found String
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 struct Punto impl Reflect
     x: Int

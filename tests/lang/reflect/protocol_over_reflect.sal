@@ -1,0 +1,19 @@
+# exit: 42
+# stdout: Posts|Hola|7|0
+# A protocol of another module that redeclares `Reflect` methods gets them from the ones `Reflect`
+# writes: the struct defines none of `id`, `tabla`, `attrs` or `desde`.
+import "mods/fila.sal"
+
+struct Post impl Fila, Reflect
+    id: Int
+    title: String
+    votos: Int
+
+fn main() -> Int ! alloc, io
+    kv = Dict.new[String, String]()
+    kv.put(d"title", d"Hola")
+    kv.put(d"votos", d"7")
+    p = Post.desde(&kv)
+    a = p.attrs()
+    print(p.tabla() + "|" + columna(&a, &"title") + "|" + columna(&a, &"votos") + "|" + p.id().to_str())
+    p.votos * 6

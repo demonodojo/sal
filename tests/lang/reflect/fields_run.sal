@@ -1,6 +1,6 @@
 # exit: 4
 # stdout: Persona nombre:String edad:Int notas:List[Int] pos:Punto
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 struct Punto impl Reflect
     x: Int

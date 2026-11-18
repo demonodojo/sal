@@ -1,7 +1,6 @@
 # Reflexión de structs (SPEC «Reflexión»): un `struct T impl Reflect` recibe del compilador los
 # métodos que no defina él mismo, y el código que lo recibe como `any[Reflect]` lee y escribe
 # sus campos sin conocer el tipo.
-import "prelude.sal"
 
 # Un valor de un campo, con dueño: `get_field` y `to_dict` clonan, y `set_field` lo mueve.
 enum Value
@@ -24,6 +23,7 @@ protocol Reflect
     method set_field(&mut self, name: &String, v: Value) -> Result[Unit, String] ! alloc
     method to_dict(&self) -> Dict[String, Value] ! alloc
     static from_dict(src: &Dict[String, Value]) -> Result[Self, String] ! alloc
+    static default() -> Self ! alloc
 
 # El nombre de la variante de `v`, para los mensajes de error de `set_field`.
 fn value_kind(v: &Value) -> String ! alloc

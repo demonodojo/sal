@@ -1,0 +1,26 @@
+# exit: 36
+# stdout: ABAB
+# A fn whose `String` result is built in a `while` hands it to the caller, who releases it like
+# any other owned value: bound, concatenated, borrowed, called a method on, discarded or printed.
+fn upper(s: &String) -> String ! alloc
+    out = d""
+    i = 0
+    while i < s.len()
+        out = out + String.from_char(s.char(i) - 32)
+        i = i + 1
+    out
+
+fn width(s: &String) -> Int
+    s.len()
+
+fn main() -> Int ! alloc, io
+    n = 0
+    i = 0
+    while i < 4
+        t = upper(&"ab")
+        u = upper(&"ab") + "s"
+        n = n + t.len() + u.len() + upper(&"ab").len() + width(&upper(&"ab"))
+        upper(&"ab")
+        i = i + 1
+    print(upper(&"ab") + upper(&"ab"))
+    n

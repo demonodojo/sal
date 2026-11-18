@@ -1,6 +1,6 @@
 # exit: 52
 # stdout: no field z in Punto|no field nombre in Persona
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 struct Punto impl Reflect
     x: Int

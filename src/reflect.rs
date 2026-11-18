@@ -191,6 +191,20 @@ fn ty_text(t: &Ty) -> String {
     }
 }
 
+/// The zero of a field for `default()`: `0`, `0.0`, `false`, `""`, an empty container, or the
+/// `default()` of a struct field.
+fn zero_of(t: &Ty) -> String {
+    match t {
+        Ty::Int => "0".into(),
+        Ty::Float => "0.0".into(),
+        Ty::Bool => "false".into(),
+        Ty::Str => "d\"\"".into(),
+        Ty::Struct(n) => format!("{n}.default()"),
+        Ty::List(e) => format!("List.new[{}]()", ty_text(e)),
+        Ty::Dict(e) => format!("Dict.new[String, {}]()", ty_text(e)),
+    }
+}
+
 /// The `Value` of a scalar or struct at `place` (a field read or a container element).
 fn value_of(t: &Ty, place: &str) -> String {
     match t {
@@ -325,6 +339,10 @@ fn generate(s: &RStruct, src: &str) -> String {
             "\nstatic {n}.from_dict(src: &Dict[String, Value]) -> Result[{n}, String] ! alloc\n"
         ));
         from_dict_body(&mut o, s, 0, 1);
+    }
+    if !has_own(src, "static", n, "default") {
+        let zeros: Vec<String> = s.fields.iter().map(|(_, t)| zero_of(t)).collect();
+        o.push_str(&format!("\nstatic {n}.default() -> {n} ! alloc\n    {n}({})\n", zeros.join(", ")));
     }
     for (f, t) in &s.fields {
         helpers(&mut o, n, f, t);

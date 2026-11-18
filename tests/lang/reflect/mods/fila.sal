@@ -1,0 +1,68 @@
+# A protocol of another module that builds on `Reflect`, like the model of an ORM: it declares the
+# `Reflect` methods its bodies use, and a `struct T impl Fila, Reflect` gets them from `Reflect`.
+import "../../../../std/reflect/reflect.sal"
+
+protocol Fila
+    method type_name(&self) -> String ! alloc
+    method fields(&self) -> List[Field] ! alloc
+    method get_field(&self, name: &String) -> Option[Value] ! alloc
+    method set_field(&mut self, name: &String, v: Value) -> Result[Unit, String] ! alloc
+    static default() -> Self ! alloc
+
+    method id(&self) -> Int ! alloc
+        match self.get_field(&"id")
+            Some(VInt(n)) => n
+            _ => 0
+
+    # `Post` -> `Posts`.
+    method tabla(&self) -> String ! alloc
+        self.type_name() + "s"
+
+    # The columns as text, without `id`.
+    method attrs(&self) -> Dict[String, String] ! alloc
+        out = Dict.new[String, String]()
+        fs = self.fields()
+        i = 0
+        while i < fs.len()
+            f = fs.get(i)
+            if f.name.eq("id") == 0
+                out.put(f.name.clone(), texto(&self.get_field(&f.name)))
+            i = i + 1
+        out
+
+    # A value from text columns; a missing one keeps its zero.
+    static desde(kv: &Dict[String, String]) -> Self ! alloc
+        v = Self.default()
+        fs = v.fields()
+        i = 0
+        while i < fs.len()
+            f = fs.get(i)
+            if kv.has(&f.name)
+                v.set_field(&f.name, valor(&f.ty, &columna(kv, &f.name)))
+            i = i + 1
+        v
+
+fn columna(kv: &Dict[String, String], k: &String) -> String ! alloc
+    match kv.get(k)
+        Some(s) => s.clone()
+        None => d""
+
+fn texto(o: &Option[Value]) -> String ! alloc
+    match o
+        Some(VInt(n)) => n.to_str()
+        Some(VStr(s)) => s.clone()
+        _ => d""
+
+fn valor(ty: &String, s: &String) -> Value ! alloc
+    if ty.eq("Int") == 1
+        VInt(entero(s))
+    else
+        VStr(s.clone())
+
+fn entero(s: &String) -> Int
+    n = 0
+    i = 0
+    while i < s.len()
+        n = n * 10 + s.char(i) - 48
+        i = i + 1
+    n

@@ -1,6 +1,6 @@
 # exit: 2
 # stdout: propio
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 # A `Reflect` method the struct defines is kept; the compiler writes only the others.
 struct Punto impl Reflect

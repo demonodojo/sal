@@ -412,11 +412,17 @@ fn emit_vtable_cells(syms: &List[String], i: Int, n: Int, acc: String) -> String
         acc2 = acc + "  (int64_t)(uintptr_t)" + sym + ",\n"
         emit_vtable_cells(syms, i + 1, n, acc2.clone())
 
-fn emit_one_vtable(type_name: &String, protocol_name: &String, p: &TProtocol, all: &List[TStruct], enums: &List[TEnum]) -> String ! alloc
+# `done` holds the vtables already written: a type that claims several protocols shares one
+# `sal_any_drop_<T>` (`made` in src/ir.rs), written with its first vtable.
+fn emit_one_vtable(type_name: &String, protocol_name: &String, p: &TProtocol, all: &List[TStruct], enums: &List[TEnum], done: &String) -> String ! alloc
     global = proto_vtable_global(type_name, protocol_name)
     drop = any_drop_thunk(type_name)
     syms = vtable_entry_symbols(type_name, p)
-    acc = "static void " + drop + "(int64_t p) {\n" + any_drop_body(type_name, all, enums) + "  (void)p;\n}\n"
+    head = "static void " + drop + "(int64_t p) {\n"
+    acc = if done.contains(&head) == 1
+        ""
+    else
+        head + any_drop_body(type_name, all, enums) + "  (void)p;\n}\n"
     acc = acc + "static int64_t " + global + "[] = {\n"
     emit_vtable_cells(&syms, 0, list_len(&syms), acc.clone())
 
@@ -449,7 +455,7 @@ fn emit_vtables_claims(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], 
             emit_vtables_claims(tp, all, enums, type_name, claims, i + 1, n, acc)
         else
             p = list_get(&tp.protocols, pi)
-            piece = emit_one_vtable(type_name, &claim, &p, all, enums)
+            piece = emit_one_vtable(type_name, &claim, &p, all, enums, &acc)
             emit_vtables_claims(tp, all, enums, type_name, claims, i + 1, n, (acc + piece))
 
 fn emit_vtables_structs(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], sts: &List[TStruct], i: Int, n: Int, acc: String) -> String ! alloc

@@ -15,9 +15,10 @@ Decisiones del usuario (2026-11-17):
 | Fase | Contenido | Estado |
 |------|-----------|--------|
 | 0 | Requisitos previos: fallos de `any[P]`, de `match` y de protocolos que impiden escribir `Reflect`; literal `()` | Hecha (2026-11-17), arranque y selfhost |
-| 1 | `std/reflect.sal` (`Reflect`, `Value`, `Field`) y síntesis de los métodos para cada `struct T impl Reflect` | Hecha (2026-11-18), arranque y selfhost; sin structs genéricos |
+| 1 | `std/reflect/reflect.sal` (`Reflect`, `Value`, `Field`) y síntesis de los métodos para cada `struct T impl Reflect` | Hecha (2026-11-18), arranque y selfhost; sin structs genéricos |
 | 2 | `from_dict` estático (construir un `T` desde un `Dict[String, Value]`) | Hecha (2026-11-18), arranque y selfhost |
 | 3 | Bucle en compilación sobre los campos (`inline for f in T.fields`, `x.[f]`) | Hecha (2026-11-18), arranque y selfhost; sin `Self` ni structs importados |
+| 4 | Uso desde otro proyecto y desde un protocolo: `std/reflect/` como dependencia `std`, `static default()`, protocolos que se apoyan en `Reflect` | Hecha (2026-11-18), arranque y selfhost |
 
 Cada fase se cierra en arranque **y** selfhost.
 
@@ -48,7 +49,7 @@ Una nota de redacción: la SPEC dice que `return` vale «anidado» en `match`. `
 
 ### Superficie
 
-Módulo nuevo `std/reflect.sal`, fuera del preludio, para que `Value` y `Field` no choquen con los nombres de quien no lo importa:
+Módulo nuevo `std/reflect/reflect.sal`, fuera del preludio, para que `Value` y `Field` no choquen con los nombres de quien no lo importa:
 
 ```sal
 enum Value
@@ -76,7 +77,7 @@ Los nombres son `get_field` y `set_field`, no `get` y `set`, para que un struct 
 Uso:
 
 ```sal
-import "std/reflect.sal"
+import "std/reflect/reflect.sal"
 
 struct Persona impl Reflect
     nombre: String
@@ -100,9 +101,9 @@ fn main() -> Int ! io, alloc
 
 ### Reglas (diseño previo; las que valen son las de la SPEC «Reflexión»)
 
-Diferencias entre este diseño y lo implementado: no se exige la forma de `Value` y `Field` (los métodos escritos nombran los de `std/reflect.sal`, y sin el import son `E_TYPE`); los structs genéricos y los enums con `impl Reflect` son `E_TYPE` en este corte; un campo struct de otro módulo se acepta y tiene que cumplir `Reflect` él mismo; y los contenedores de contenedores son `E_TYPE`.
+Diferencias entre este diseño y lo implementado: no se exige la forma de `Value` y `Field` (los métodos escritos nombran los de `std/reflect/reflect.sal`, y sin el import son `E_TYPE`); los structs genéricos y los enums con `impl Reflect` son `E_TYPE` en este corte; un campo struct de otro módulo se acepta y tiene que cumplir `Reflect` él mismo; y los contenedores de contenedores son `E_TYPE`.
 
-- El compilador reconoce el protocolo por su nombre, `Reflect`, igual que reconoce `Option` para `dict_get`, y exige que `Value` y `Field` tengan la forma de `std/reflect.sal`. Si no la tienen, `E_TYPE`.
+- El compilador reconoce el protocolo por su nombre, `Reflect`, igual que reconoce `Option` para `dict_get`, y exige que `Value` y `Field` tengan la forma de `std/reflect/reflect.sal`. Si no la tienen, `E_TYPE`.
 - Para un `struct T impl Reflect`, el compilador sintetiza los cinco métodos que `T` no defina él mismo, en el módulo de `T`. Un método propio prevalece si su firma coincide, como un método provisto.
 - **Campos admitidos** y su `Value`: `Int`, `Float`, `Bool`, `String`, `List[E]` con `E` admitido (→ `VList`), `Dict[String, V]` con `V` admitido (→ `VDict`), y un struct que también es `impl Reflect` (→ `VDict` con su `to_dict`). Cualquier otro campo (referencias, `Tensor`, `any[P]`, enums, asas de hilo, `Bytes`, structs sin `Reflect`) hace que `impl Reflect` sea `E_TYPE` en el span del campo, con el motivo.
 - **Memoria (Rust):** `get_field` y `to_dict` clonan: el `Value` es dueño y no presta de `self` (de ahí el efecto `alloc`). `set_field` mueve `v`; el valor anterior del campo se suelta con la glue de su tipo. No hay alias implícitos.
@@ -120,7 +121,7 @@ Los métodos se generan **como texto sal** y se añaden al final del fuente del 
 |------------|---------|--------|
 | arranque | `src/reflect.rs` | `with_reflect(src)`: busca las cabeceras `struct … impl …, Reflect`, lee los campos (`name: Tipo`), los clasifica (`parse_ty`) y escribe los métodos que el struct no define (`has_own`), más funciones auxiliares `reflect_<T>_<campo>_{value,from,entry}` para listas y dicts. `reflect_error(src)` da el `E_TYPE` de un campo no admitido o de un struct genérico o enum. Lo llaman `parse_program` y la carga de módulos |
 | selfhost | `selfhost/front/reflect/reflect.sal`, `reflect_header.sal`, `reflect_struct.sal` | Espejo de `src/reflect.rs`, con el mismo texto; `selfhost/front/parser.sal` llama a `reflect_error` antes de parsear |
-| std | `std/reflect.sal` | `Value`, `Field`, `Reflect` y las funciones que usa el texto generado (`value_kind`, `value_mismatch`, `value_field`, `value_in`…) |
+| std | `std/reflect/reflect.sal` | `Value`, `Field`, `Reflect` y las funciones que usa el texto generado (`value_kind`, `value_mismatch`, `value_field`, `value_in`…) |
 | SPEC | «Reflexión» | Las reglas |
 
 Arreglos de memoria y de tipos que salieron al probarlo con `--sanitize` (los dos compiladores, cada uno con su test en `tests/lang/reflect`):
@@ -138,7 +139,7 @@ Ninguno de estos tiene marca en `tests/lang/reflect` porque los tests no los eje
 - El selfhost tipa un `match` como `Unknown`: llamar un método sobre un local ligado a un `match` necesita anotarlo (`let antes: Int = match …`).
 - La IR de los programas con `any[P]` difiere entre compiladores (thunks y orden de temporales); el resultado y el código de salida coinciden.
 - Un `&d"…"` temporal dentro de un brazo de `match` usado como expresión fuga: el hoist de temporales no entra en los brazos.
-- `owned_return_fns` es conservador: una función con un `while` en el nivel superior o con un local religado no consta como dueña de su `String` devuelto, y el llamador fuga.
+- `owned_return_fns` es conservador: una función cuya cola o cuyo `return` es la llamada a otra función de usuario (`g()`) no consta como dueña de su `String`, y el llamador fuga. (Un `while` en el nivel superior y el acumulador `out = out + c` ya no la excluyen desde 2026-11-18: `drops/drop_string_fn_*.sal`.)
 - `try` y mover fuera de un enum fugan la cáscara de la caja.
 - El selfhost solo sigue los parámetros `any[P]`, no los locales.
 
@@ -187,6 +188,20 @@ Fuera de este corte, y por eso `E_TYPE`: `Self` en un protocolo (el cuerpo provi
 ### Tests
 
 `tests/lang/reflect/inline_for_*.sal` (suma, nombres y tipos, asignación por `&mut`, locales `String` por copia, `return`) y `err_inline_for_*.sal` (enum, genérico, variable suelta, campo de otro tipo, `.[f]` fuera, `T.campos` es `E_PARSE`, protocolo, `break`); `fmt_inline_for_and_field_of_loop_var` en `tests/parse_and_fmt.rs`.
+
+## Fase 4: uso desde otros proyectos y protocolos
+
+Motivo: los modelos de `seawater` (un ORM sobre PostgreSQL) obligaban a cada struct a escribir `init T(&Kv)`, `table`, `id`, `attrs`, `build` y `numeric_fields`. Con `Reflect`, el protocolo `Model` los da todos y el modelo se queda en sus campos y sus reglas.
+
+| Cambio | Archivos | Test |
+|--------|----------|------|
+| `std/reflect.sal` pasa a `std/reflect/reflect.sal`, sin imports: se enlaza con `reflect = { std = "reflect" }` y recibe `Option`/`Result` de la tabla de tipos (importar `std/prelude.sal` metía en el grafo sus envoltorios de builtins, y un módulo que no lo importa dejaba de ver `str_from_int`) | `std/reflect/`, SPEC «Reflexión» | los 13 tests de `tests/lang/reflect` con la ruta nueva |
+| `static default() -> Self`: cada campo a su cero (`#[derive(Default)]`); un campo struct usa su `default()` | `src/reflect.rs` (`zero_of`), `selfhost/front/reflect/reflect_struct.sal` (`rf_zero`), `std/reflect/reflect.sal`, SPEC | `reflect/default_run.sal` |
+| Un protocolo de otro módulo que redeclara métodos de `Reflect` (`type_name`, `fields`, `get_field`, `set_field`, `default`) los recibe de los que escribe `Reflect`: `struct T impl Fila, Reflect` | ninguno (ya funcionaba; se fija con un test) | `reflect/protocol_over_reflect.sal` con `reflect/mods/fila.sal` |
+| La cola de cada rama de un `if` que es sentencia se suelta (`if c` / `v.set_field(..)` fugaba el `Result`) | `src/drops.rs` (`discard_branch_tails`), `selfhost/ir/drops.sal` (`dr_discard_branch_tails`), SPEC «Liberación de locales» | `drops/drop_if_branch_tail_discard.sal` |
+| Un struct con un campo `Float` devuelto por `sret` desde una función sin parámetros daba LLVM inválido (`inttoptr i64 %sret`) | `src/llvm.rs` | `structs/struct_float_field_return.sal` |
+
+Lo que queda fuera: `inline for` sobre `Self` en un protocolo (ver el corte de la fase 3), así que un protocolo genérico sobre structs usa los `Value` de `Reflect` en ejecución.
 
 ## Reproducciones de la fase 0
 

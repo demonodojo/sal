@@ -59,7 +59,7 @@ Un local se libera si se liga una sola vez a un valor **fresco** (`fresh_kind`) 
 - **Enum** (caja de variante), **`Bytes`** (`bytes_new`; **`bytes_view`** / **`bytes_view_mem`**: solo cabecera de vista).
 - **`dict_get`**: `Option` fresco → `enum_free` si no escapa; `match dict_get(…)` descartado como sentencia igual. El `Hoist` también liga a un local el scrutinee `match dict_get(…)` (`is_dict_get`), como el de `list_get`/`list_pop`. Con payload `Int`/`Float`/`Bool`, un `Some(v) => v` no cuenta como escape (ver «Escalares» abajo). `sal_enum_free` solo suelta `String` y cajas de enum: la copia de un valor **struct** (`desc_copy`) sigue sin dueño (`asan-xfail` en `dict_owned_values`).
 - **Literal `tensor`**: `tensor_free` → `sal_tensor_free` / `sal_place_free` en programa escalar.
-- **`OWNED_FNS`**: retorno `String` siempre fresco; **`if`/`match` de nivel superior** vale si **cada** rama es fresca; un **`while` de nivel superior** excluye la función.
+- **`OWNED_FNS`**: retorno `String` siempre fresco; **`if`/`match` de nivel superior** vale si **cada** rama es fresca; todo `return` anidado (en un `while`, un `if` o un brazo) tiene que serlo; un local fresco ligado una vez arriba sigue siéndolo si en los bloques anidados solo recibe valores frescos (el acumulador `out = out + c` del bucle). Tests: `tests/lang/drops/drop_string_fn_{loop_result,nested_return,imported}.sal`. Hueco: una cola que es la llamada a otra función de usuario (`g()`) no cuenta.
 
 Los argumentos movidos a un **constructor de struct** (`hard_move` en el análisis de escapes) no se liberan otra vez como local en ese ámbito.
 

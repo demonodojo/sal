@@ -1127,6 +1127,11 @@ fn seed_tensor_ptrs_for_fn(
         }
     }
     for p in &f.params {
+        // The hidden buffer of a struct return is a `ptr` already (`param_decl`).
+        if p == "sret" {
+            ptrs.entry(p.clone()).or_insert_with(|| p.clone());
+            continue;
+        }
         if !ptrs.contains_key(p) {
             *uid += 1;
             let slot = format!("p{uid}");

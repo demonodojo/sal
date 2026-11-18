@@ -1,0 +1,38 @@
+# exit: 127
+# stdout: Todo
+# `T.default()` sets each field to its zero: `0`, `0.0`, `false`, `""`, an empty container, and
+# the `default()` of a struct field. Each check that holds adds its bit to the exit code.
+import "../../../std/reflect/reflect.sal"
+
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+struct Todo impl Reflect
+    n: Int
+    f: Float
+    b: Bool
+    s: String
+    xs: List[Int]
+    d: Dict[String, String]
+    p: Punto
+
+fn main() -> Int ! alloc, io
+    t = Todo.default()
+    print(t.type_name())
+    out = 0
+    if t.n == 0
+        out = out + 1
+    if t.f == 0.0
+        out = out + 2
+    if !t.b
+        out = out + 4
+    if t.s.len() == 0
+        out = out + 8
+    if t.xs.len() == 0
+        out = out + 16
+    if t.d.len() == 0
+        out = out + 32
+    if t.p.x + t.p.y == 0
+        out = out + 64
+    out

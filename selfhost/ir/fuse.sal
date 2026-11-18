@@ -4026,7 +4026,7 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     denv = vec_new()
     _a = vec_push(denv, variant_map_t(tp, structs, enums, seen))
     _o = owned_fns_put(vec_get(denv, 0), &tp.fns, 0, list_len(&tp.fns))
-    # The callees of other modules too (`value_kind` of std/reflect.sal), as `owned_return_fns`.
+    # The callees of other modules too (`value_kind` of std/reflect/reflect.sal), as `owned_return_fns`.
     owned_fns_put(vec_get(denv, 0), seen, 0, seen.len())
     _pf = passthru_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
     passthru_close(vec_get(denv, 0), &tp.fns)

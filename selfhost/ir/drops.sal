@@ -817,16 +817,164 @@ fn dr_enum_variant_unit(m: Int, name: &String) -> Int ! alloc
     else
         0
 
-# The body is `return`ed fresh values only: every binding is fresh and bound once, no `if`,
-# `match` or `while` sits at its top level, and so do the returns and the tail.
+# The body hands out fresh values only (`owned_return_body` in src/drops.rs): the tail and every
+# `return`, at any depth, is a fresh builtin value or a fresh local; a fresh local is bound once
+# at the top level and assigned only fresh values in nested blocks (`out = out + c` in a loop).
 fn owned_fn_body(f: &TFn) -> Int ! alloc
-    locals = list_new[String]()
-    if owned_scan(&f.body.stmts, 0, list_len(&f.body.stmts), &mut locals, &f.params) == 0
-        0
-    elsif owned_tail_ok(&f.body.tail, &locals, &f.params) == 0
+    locals = List.new[String]()
+    if owned_scan(&f.body.stmts, 0, f.body.stmts.len(), &mut locals, &f.params) == 0
         0
     else
-        owned_returns_ok(&f.body.stmts, 0, list_len(&f.body.stmts), &locals, &f.params)
+        kept = owned_keep_fresh(&f.body.stmts, &locals)
+        if owned_tail_ok(&f.body.tail, &kept, &f.params) == 0
+            0
+        else
+            on_and(on_stmts_returns(&f.body.stmts, &kept, &f.params), on_expr_returns(&f.body.tail, &kept, &f.params))
+
+# The locals that no nested block rebinds to something other than a fresh value.
+fn owned_keep_fresh(stmts: &List[TStmt], locals: &List[String]) -> List[String] ! alloc
+    out = List.new[String]()
+    i = 0
+    while i < locals.len()
+        name = locals.get(i)
+        if on_stmts_assigns(stmts, name, 0) == 1
+            out.push(name.dup())
+        i = i + 1
+    out
+
+fn on_and(a: Int, b: Int) -> Int
+    if a == 1 && b == 1
+        1
+    else
+        0
+
+# 1 when every assignment to `name` in a nested block of `stmts` is a fresh builtin value
+# (`nested_assigns_fresh`); `nested` 1 when `stmts` are already inside one.
+fn on_stmts_assigns(stmts: &List[TStmt], name: &String, nested: Int) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < stmts.len()
+        if on_stmt_assigns(&stmts.get(i), name, nested) == 0
+            ok = 0
+        i = i + 1
+    ok
+
+fn on_stmt_assigns(st: &TStmt, name: &String, nested: Int) -> Int ! alloc
+    if st.kind == 1 && nested == 1 && st.name.eq(name) == 1 && owned_fresh_builtin(&st.expr) == 0
+        0
+    else
+        on_expr_assigns(&st.expr, name)
+
+fn on_block_assigns(b: &TBlock, name: &String) -> Int ! alloc
+    on_and(on_stmts_assigns(&b.stmts, name, 1), on_expr_assigns(&b.tail, name))
+
+# The blocks inside `e` (`expr_blocks`: branches, arms, blocks, a `while` body; not a lambda).
+fn on_expr_assigns(e: &Expr, name: &String) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => on_and(on_and(on_expr_assigns(&cond, name), on_block_assigns(&then_b, name)), on_and(on_block_assigns(&else_b, name), on_elsifs_assigns(&elsifs, name)))
+        XMatch(scrut, arms) => on_and(on_expr_assigns(&scrut, name), on_arms_assigns(&arms, name))
+        XWhile(cond, body) => on_block_assigns(&body, name)
+        XBlock(body) => on_block_assigns(&body, name)
+        XOn(place, body, kern, idx) => on_block_assigns(&body, name)
+        XCall(fname, args, targs, xp) => on_list_assigns(&args, name)
+        XBin(op, l, r) => on_and(on_expr_assigns(&l, name), on_expr_assigns(&r, name))
+        XUnary(op, inner) => on_expr_assigns(&inner, name)
+        XTo(place, inner) => on_expr_assigns(&inner, name)
+        XTry(inner) => on_expr_assigns(&inner, name)
+        XField(base, field) => on_expr_assigns(&base, name)
+        _ => 1
+
+fn on_elsifs_assigns(xs: &List[TElsif], name: &String) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        ok = on_and(ok, on_and(on_expr_assigns(&a.cond, name), on_block_assigns(&a.body, name)))
+        i = i + 1
+    ok
+
+fn on_arms_assigns(arms: &List[TArm], name: &String) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < arms.len()
+        a = arms.get(i)
+        here = if a.has_suite == 1
+            on_block_assigns(&a.suite, name)
+        else
+            on_expr_assigns(&a.body, name)
+        ok = on_and(ok, here)
+        i = i + 1
+    ok
+
+fn on_list_assigns(xs: &List[Expr], name: &String) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < xs.len()
+        ok = on_and(ok, on_expr_assigns(&xs.get(i), name))
+        i = i + 1
+    ok
+
+# 1 when every `return` of `stmts`, at any depth, hands out an owned String (`stmts_returns`).
+fn on_stmts_returns(stmts: &List[TStmt], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < stmts.len()
+        st = stmts.get(i)
+        here = if st.kind == 2
+            on_and(owned_return_ok(&st.expr, locals, params), on_expr_returns(&st.expr, locals, params))
+        else
+            on_expr_returns(&st.expr, locals, params)
+        ok = on_and(ok, here)
+        i = i + 1
+    ok
+
+fn on_block_returns(b: &TBlock, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    on_and(on_stmts_returns(&b.stmts, locals, params), on_expr_returns(&b.tail, locals, params))
+
+fn on_expr_returns(e: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => on_and(on_and(on_expr_returns(&cond, locals, params), on_block_returns(&then_b, locals, params)), on_and(on_block_returns(&else_b, locals, params), on_elsifs_returns(&elsifs, locals, params)))
+        XMatch(scrut, arms) => on_and(on_expr_returns(&scrut, locals, params), on_arms_returns(&arms, locals, params))
+        XWhile(cond, body) => on_block_returns(&body, locals, params)
+        XBlock(body) => on_block_returns(&body, locals, params)
+        XOn(place, body, kern, idx) => on_block_returns(&body, locals, params)
+        XCall(fname, args, targs, xp) => on_list_returns(&args, locals, params)
+        XBin(op, l, r) => on_and(on_expr_returns(&l, locals, params), on_expr_returns(&r, locals, params))
+        XUnary(op, inner) => on_expr_returns(&inner, locals, params)
+        XTo(place, inner) => on_expr_returns(&inner, locals, params)
+        XTry(inner) => on_expr_returns(&inner, locals, params)
+        XField(base, field) => on_expr_returns(&base, locals, params)
+        _ => 1
+
+fn on_elsifs_returns(xs: &List[TElsif], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        ok = on_and(ok, on_and(on_expr_returns(&a.cond, locals, params), on_block_returns(&a.body, locals, params)))
+        i = i + 1
+    ok
+
+fn on_arms_returns(arms: &List[TArm], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < arms.len()
+        a = arms.get(i)
+        here = if a.has_suite == 1
+            on_block_returns(&a.suite, locals, params)
+        else
+            on_expr_returns(&a.body, locals, params)
+        ok = on_and(ok, here)
+        i = i + 1
+    ok
+
+fn on_list_returns(xs: &List[Expr], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < xs.len()
+        ok = on_and(ok, on_expr_returns(&xs.get(i), locals, params))
+        i = i + 1
+    ok
 
 fn owned_scan(stmts: &List[TStmt], i: Int, n: Int, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
     if i >= n
@@ -839,13 +987,13 @@ fn owned_scan(stmts: &List[TStmt], i: Int, n: Int, locals: &mut List[String], pa
         else
             owned_scan(stmts, i + 1, n, locals, params)
 
-# A `while` hides what it returns; an `if`/`match` statement does not. A binding to an
-# `if`/`match` must hand out an owned String on every branch (`owned_return_body`).
+# A binding to an `if`/`match` must hand out an owned String on every branch
+# (`owned_return_body`); the returns of nested blocks are checked by `on_stmts_returns`.
 fn owned_stmt(stmts: &List[TStmt], st: &TStmt, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
     if st.kind == 2
         1
     elsif st.kind == 0
-        1 - dx_is_while(&st.expr)
+        1
     elsif st.kind == 1
         if owned_branches(&st.expr) == 1
             if owned_return_ok(&st.expr, locals, params) == 0
@@ -2706,19 +2854,56 @@ fn dr_xform_stmts(c: &mut DC, stmts: &mut List[TStmt], i: Int, n: Int, out: &mut
 fn dr_xform_stmt(c: &mut DC, st: &mut TStmt, out: &mut List[TStmt]) -> Int ! alloc
     if st.kind == 1
         dr_xform_bind(c, st, out)
+    elsif st.kind == 0 && dx_is_if(&st.expr) == 1
+        e = dr_discard_branch_tails(c, &st.expr)
+        dr_xform_expr_stmt(c, st, &e, out)
     elsif st.kind == 0
-        _d = dr_discard(c, &st.expr, out)
-        if _d == 0
-            ne = dr_xform_expr(c, &st.expr)
-            dr_push_with_expr(out, st, ne)
-            0
-        else
-            0
-        dr_clear_moved(c, st.id, out)
+        dr_xform_expr_stmt(c, st, &st.expr, out)
     else
         ne = dr_xform_expr(c, &st.expr)
         dr_push_with_expr(out, st, ne)
         dr_clear_moved(c, st.id, out)
+
+# An expression statement `st` whose expression is `e`: a discarded fresh value is released.
+fn dr_xform_expr_stmt(c: &mut DC, st: &TStmt, e: &Expr, out: &mut List[TStmt]) -> Int ! alloc
+    _d = dr_discard(c, e, out)
+    if _d == 0
+        ne = dr_xform_expr(c, e)
+        dr_push_with_expr(out, st, ne)
+    dr_clear_moved(c, st.id, out)
+
+# The branch tails of an `if` statement that hold something to release become the last
+# statement of their branch (`discard_branch_tails` in src/drops.rs); a nested `if` tail stays
+# and gets the same treatment. The statement keeps the tail's key, the one the facts gave it.
+# Only for an `XIf`: every arm is a constructor, so the caller owns the result.
+fn dr_discard_branch_tails(c: &DC, e: &Expr) -> Expr ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(tc_expr(&cond), dr_discard_tail(c, &then_b), dr_discard_tail(c, &else_b), has_else, dr_discard_elsifs(c, &elsifs))
+        _ => XNone
+
+fn dr_discard_elsifs(c: &DC, xs: &List[TElsif]) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        out.push(TElsif(tc_expr(&a.cond), dr_discard_tail(c, &a.body)))
+        i = i + 1
+    out
+
+fn dr_discard_tail(c: &DC, b: &TBlock) -> TBlock ! alloc
+    if dx_is_if(&b.tail) == 1
+        TBlock(dr_copy_stmts(&b.stmts), dr_discard_branch_tails(c, &b.tail))
+    elsif dr_discard_kind(c, &b.tail) != 0
+        stmts = dr_copy_stmts(&b.stmts)
+        stmts.push(TStmt(0, "", tc_expr(&b.tail), "", 0, XNone, 0, 0, dr_tail_key(&b.tail)))
+        TBlock(stmts, XNone)
+    else
+        tc_block(b)
+
+fn dr_copy_stmts(xs: &List[TStmt]) -> List[TStmt] ! alloc
+    out = List.new[TStmt]()
+    tc_stmts(xs, 0, xs.len(), &mut out)
+    out
 
 # A fresh value discarded as a statement is bound to a `__dis` temporary and released there
 # (the same rule as the bootstrap's `discard_kind`). Returns 1 when it was handled.

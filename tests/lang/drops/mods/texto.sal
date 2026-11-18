@@ -1,0 +1,11 @@
+# Text helpers of another module for `drop_string_fn_imported.sal`.
+fn lower(s: &String) -> String ! alloc
+    out = d""
+    i = 0
+    while i < s.len()
+        c = s.char(i)
+        if c >= 65 && c <= 90
+            c = c + 32
+        out = out + String.from_char(c)
+        i = i + 1
+    out

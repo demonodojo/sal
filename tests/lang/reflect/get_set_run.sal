@@ -1,6 +1,6 @@
 # exit: 41
 # stdout: 30|ok|field edad: expected Int, found String|no field peso in Persona|Eva
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 struct Persona impl Reflect
     nombre: String

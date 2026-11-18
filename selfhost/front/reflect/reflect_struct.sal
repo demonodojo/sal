@@ -34,6 +34,15 @@ method ReflectStruct.generate(&self, src: &String) -> String ! alloc
     if rf_has_own(src, &"static", &n, &"from_dict") == 0
         o = o + "\nstatic " + n + ".from_dict(src: &Dict[String, Value]) -> Result[" + n + ", String] ! alloc\n"
         o = o + self.from_dict_text(0, 1)
+    if rf_has_own(src, &"static", &n, &"default") == 0
+        o = o + "\nstatic " + n + ".default() -> " + n + " ! alloc\n    " + n + "("
+        i = 0
+        while i < self.tys.len()
+            if i > 0
+                o = o + ", "
+            o = o + rf_zero(&self.tys.get(i))
+            i = i + 1
+        o = o + ")\n"
     i = 0
     while i < self.names.len()
         o = o + self.helpers(i)
@@ -196,6 +205,17 @@ fn rf_kind(t: &String) -> Int ! alloc
         6
     else
         4
+
+# The zero of a field for `default()` (`zero_of` in src/reflect.rs).
+fn rf_zero(t: &String) -> String ! alloc
+    match rf_kind(t)
+        0 => d"0"
+        1 => d"0.0"
+        2 => d"false"
+        3 => d"d\"\""
+        5 => "List.new[" + rf_elem(t) + "]()"
+        6 => "Dict.new[String, " + rf_elem(t) + "]()"
+        _ => t + ".default()"
 
 # The element type of `List[E]` / `Dict[String, E]`.
 fn rf_elem(t: &String) -> String ! alloc

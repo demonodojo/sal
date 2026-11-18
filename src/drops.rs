@@ -854,12 +854,13 @@ pub fn insert_drops(
     out
 }
 
-/// The user fns that return a `String` the caller owns: every `return` value and the tail is a
-/// fresh builtin value or a local bound once to one (and never assigned again). A fn with a
-/// branching or looping statement at the top level is not analysed, so no `return` hides in
-/// it. Computed from the builtins only, so the result does not depend on the fn order.
+/// The user fns that return a `String` the caller owns: every `return` value (at any depth: in
+/// a `while`, an `if` statement or a `match` arm) and the tail is a fresh builtin value or a
+/// fresh local. A fresh local is bound once at the top level to a fresh value, and every other
+/// assignment to it, in a nested block, is a fresh value too (`out = out + c` in a loop).
+/// Computed from the builtins only, so the result does not depend on the fn order.
 /// The module's functions, and the callees of other modules (`value_kind` of
-/// `std/reflect.sal`), that hand the caller a `String` it owns.
+/// `std/reflect/reflect.sal`), that hand the caller a `String` it owns.
 fn owned_return_fns(prog: &Program, callees: &[&FnDef]) -> HashSet<String> {
     let own = prog.items.iter().filter_map(|i| if let Item::Fn(f) = i { Some(f) } else { None });
     own.chain(callees.iter().copied())
@@ -931,21 +932,122 @@ fn owned_return_body(f: &FnDef) -> bool {
                     fresh_locals.insert(name.clone());
                 }
             }
-            Stmt::While { .. } => ok = false,
             _ => {}
         }
     }
+    fresh_locals.retain(|n| nested_assigns_fresh(&b.stmts, n, false));
     let mut returns = Vec::new();
-    for st in &b.stmts {
-        if let Stmt::Return { value: Some(v), .. } = st {
-            returns.push(v);
-        }
+    stmts_returns(&b.stmts, &mut returns);
+    if let Some(t) = &b.tail {
+        expr_returns(t, &mut returns);
     }
     let tail_ok = b
         .tail
         .as_ref()
         .is_some_and(|t| owned_string_expr(t, &params, &fresh_locals));
     ok && tail_ok && returns.iter().all(|v| owned_string_expr(v, &params, &fresh_locals))
+}
+
+/// Every assignment to `name` inside a nested block of `stmts` (`nested`: these statements are
+/// already inside one) is a fresh builtin value.
+fn nested_assigns_fresh(stmts: &[Stmt], name: &str, nested: bool) -> bool {
+    stmts.iter().all(|st| match st {
+        Stmt::Let { name: n, init, .. } => (!nested || n != name || fresh_builtin(init)) && expr_assigns_fresh(init, name),
+        Stmt::Assign { target, value, .. } => {
+            let own = matches!(target, Expr::Ident { name: n, .. } if n == name);
+            (!nested || !own || fresh_builtin(value)) && expr_assigns_fresh(value, name)
+        }
+        Stmt::Expr(e) => expr_assigns_fresh(e, name),
+        Stmt::Return { value: Some(v), .. } => expr_assigns_fresh(v, name),
+        Stmt::While { body, .. } => nested_assigns_fresh(&body.stmts, name, true),
+        _ => true,
+    })
+}
+
+/// The blocks inside `e` (`if` branches, `match` arms, blocks) assign `name` fresh values only.
+fn expr_assigns_fresh(e: &Expr, name: &str) -> bool {
+    let mut blocks = Vec::new();
+    expr_blocks(e, &mut blocks);
+    blocks.iter().all(|b| {
+        nested_assigns_fresh(&b.stmts, name, true) && b.tail.as_ref().is_none_or(|t| expr_assigns_fresh(t, name))
+    })
+}
+
+/// The `return` values of `stmts`, at any depth (not those of a lambda body).
+fn stmts_returns<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Expr>) {
+    for st in stmts {
+        match st {
+            Stmt::Return { value: Some(v), .. } => {
+                out.push(v);
+                expr_returns(v, out);
+            }
+            Stmt::Let { init: e, .. } | Stmt::Expr(e) | Stmt::Assign { value: e, .. } => expr_returns(e, out),
+            Stmt::While { body, .. } => block_returns(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn block_returns<'a>(b: &'a Block, out: &mut Vec<&'a Expr>) {
+    stmts_returns(&b.stmts, out);
+    if let Some(t) = &b.tail {
+        expr_returns(t, out);
+    }
+}
+
+fn expr_returns<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    let mut blocks = Vec::new();
+    expr_blocks(e, &mut blocks);
+    for b in blocks {
+        block_returns(b, out);
+    }
+}
+
+/// The blocks directly inside `e`, through any subexpression but not into a lambda: the branches
+/// of an `if`, the arms of a `match` (an arm body that is not a block is searched in turn), and
+/// `Expr::Block` / `on` bodies.
+fn expr_blocks<'a>(e: &'a Expr, out: &mut Vec<&'a Block>) {
+    match e {
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            expr_blocks(cond, out);
+            out.push(then_block);
+            for a in elsifs {
+                expr_blocks(&a.cond, out);
+                out.push(&a.body);
+            }
+            if let Some(b) = else_block {
+                out.push(b);
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            expr_blocks(scrutinee, out);
+            for a in arms {
+                match &a.body {
+                    Expr::Block(b) => out.push(b),
+                    other => expr_blocks(other, out),
+                }
+            }
+        }
+        Expr::Block(b) | Expr::On { body: b, .. } => out.push(b),
+        Expr::Call { func, args, .. } => {
+            expr_blocks(func, out);
+            args.iter().for_each(|a| expr_blocks(a, out));
+        }
+        Expr::Binary { left, right, .. } => {
+            expr_blocks(left, out);
+            expr_blocks(right, out);
+        }
+        Expr::Unary { expr: x, .. } | Expr::To { expr: x, .. } | Expr::Try { expr: x, .. } => expr_blocks(x, out),
+        Expr::Field { base, .. } => expr_blocks(base, out),
+        Expr::TensorLit { rows, .. } => rows.iter().flatten().for_each(|x| expr_blocks(x, out)),
+        Expr::Lambda { .. }
+        | Expr::Ident { .. }
+        | Expr::Unit { .. }
+        | Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Bool { .. }
+        | Expr::String { .. } => {}
+    }
 }
 
 /// A builtin whose result is a fresh `String` (see `fresh_kind`), without the user fns.
@@ -3270,6 +3372,28 @@ fn drop_escaped_from_live(cx: &mut Ctx) {
     });
 }
 
+/// The branch tails of an `if` statement that hold something to release become the last
+/// statement of their branch: nobody reads the value of the `if`. A nested `if` tail stays where
+/// it is and gets the same treatment.
+fn discard_branch_tails(e: &mut Expr, cx: &Ctx) {
+    let Expr::If { then_block, elsifs, else_block, .. } = e else {
+        return;
+    };
+    let blocks = std::iter::once(then_block)
+        .chain(elsifs.iter_mut().map(|a| &mut a.body))
+        .chain(else_block.iter_mut());
+    for b in blocks {
+        if let Some(t) = &mut b.tail {
+            if matches!(t.as_ref(), Expr::If { .. }) {
+                discard_branch_tails(t, cx);
+            } else if cx.discard_kind(t).is_some() {
+                let t = b.tail.take().expect("tail");
+                b.stmts.push(Stmt::Expr(*t));
+            }
+        }
+    }
+}
+
 fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
     match e {
         Expr::If { cond, then_block, elsifs, else_block, span } => Expr::If {
@@ -3404,8 +3528,11 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                     cx.live.push(d);
                 }
             }
-            Stmt::Expr(e) => {
+            Stmt::Expr(mut e) => {
                 let span = e.span();
+                // An `if` statement discards the tail of each branch too (`walk_if` with
+                // `discard`): it becomes a statement of the branch, released like any other.
+                discard_branch_tails(&mut e, cx);
                 // A fresh value discarded as a statement (`xs.pop()`, `int_to_str(n)`) has no name
                 // to be released by: bind it to a temporary and release it.
                 match cx.discard_kind(&e) {

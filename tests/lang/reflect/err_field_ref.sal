@@ -1,5 +1,5 @@
 # error: E_TYPE
-import "../../../std/reflect.sal"
+import "../../../std/reflect/reflect.sal"
 
 # A reference field has no owned `Value`.
 struct Vista impl Reflect
