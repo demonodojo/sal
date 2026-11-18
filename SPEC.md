@@ -126,8 +126,11 @@ line         → attr_list "let" IDENT (":" type | ε) "=" expr
              | "return" (expr | ε)
              | "break"
              | "while" expr suite
+             | "inline" "for" IDENT "in" IDENT "." "fields" suite
              | expr ("=" expr | ε)
 ```
+
+`inline` y `for` son contextuales: solo forman `inline for` al inicio de una línea de un bloque, y siguen valiendo como nombres. `in` es la palabra clave de los índices de `kernel`, y `fields` solo es una palabra en esa línea; otra en su lugar es `E_PARSE`. `x.[f]` es un postfijo de campo y cuenta como una cadena de campos para el lvalue. Su significado está en «Reflexión».
 
 Si hay `=`, la izquierda tiene que ser un lvalue: `IDENT`, un postfijo que solo sea una cadena de campos, o un prefijo `*` (escribir a través de una referencia). Si no lo es, `E_PARSE`. En un campo (`p.a.b = v`) o en `*r = v` con `r: &mut T`, el valor tiene que ser del tipo del lugar (el del campo, o `T`), como en Rust; si no, `E_TYPE`. Un `IDENT` sigue la regla de reasignación de «Liberación de locales». La última línea que es una expresión sin `=` es el valor del bloque en los caminos que no terminan con `return`. Sin esa línea el bloque vale `Unit`; si la función no devuelve `Unit`, el error es `E_TYPE`.
 
@@ -190,6 +193,7 @@ postfix      → postfix "(" arg_list ")"
              | postfix "(" ident_list ")" "=>" suite
              | postfix "[" type_arg_list "]" "(" arg_list ")"
              | postfix "." IDENT
+             | postfix "." "[" IDENT "]"
              | primary
 arg_list     → arg_list "," expr
              | expr
@@ -207,6 +211,7 @@ primary      → INT
              | DSTRING
              | FSTRING
              | IDENT
+             | "(" ")"
              | "(" expr ")"
              | tensor_lit
              | on_expr
@@ -245,12 +250,14 @@ elsif_list   → elsif_list "elsif" expr suite
              | ε
 ```
 
+`()` es el único valor de tipo `Unit` (como en Rust). Vale donde se espera un `Unit`: el payload de `Ok(())` en un `Result[Unit, E]`, un `let u: Unit = ()` o la cola de una función que devuelve `Unit`. En ejecución es la palabra `0`, el mismo valor que tiene un bloque sin cola. Donde se espera otro tipo es `E_TYPE`. Entre los paréntesis no cabe nada más: `(,)` es `E_PARSE`.
+
 `&&` y `||` son los operadores lógicos. Toman valores de verdad: `Bool`, o `Int` donde distinto de cero es verdadero (como la condición de `if` y `while`), y devuelven `Bool`. Cualquier otro tipo es `E_TYPE`. Cortocircuitan: `a && b` no evalúa `b` si `a` es falso, y `a || b` no evalúa `b` si `a` es verdadero. El valor es siempre `true` o `false`, aunque el operando sea `Int`. Una comparación escalar sigue valiendo `Int` (`0` o `1`).
 
 
 La lambda acepta `x => expr` y `(x, y) => expr`; el bloque indentado tras `=>` también vale. Puede pasarse a un parámetro `fn(…)` o ligarse a un local como macro; no se guarda en un struct ni se devuelve. Un tipo `fn(…)` solo se admite como tipo de parámetro. La lambda final `xs.map x => x * 2` equivale a `xs.map(x => x * 2)`, y `xs.reduce(0) (a, x) => a + x` equivale a `xs.reduce(0, (a, x) => a + x)`. La lambda final también acepta el bloque indentado tras `=>`, y su valor es la última expresión del bloque. Como la lambda final es el último argumento, el bloque cierra la llamada. Un bloque dentro de paréntesis, como en `xs.map(x =>` seguido de líneas, es `E_PARSE`. No hay lambdas entre llaves. `a + b => c` es `E_PARSE`. Dentro de `match`, `=>` pertenece a `arm`, no a `lambda`: `Some(x) =>` no se parsea como lambda. Dentro de una lambda, `return` y `break` son `E_TYPE`.
 
-Un `match` sobre un escalar distinto de enum elige el **primer** brazo cuyo patrón coincide. `_` coincide siempre. Un `INT` exige escrutado `Int` y `==`. Un `STRING` en el patrón exige escrutado `String` e igualdad exacta (`str_eq`). Un `RSTRING` exige escrutado `String` y encaja si la expresión regular POSIX ERE (como `regexec`, sin anclar salvo `^`/`$` en el patrón) coincide en algún punto; no liga grupos. Mezclar patrones de enteros, cadenas o regex con patrones de variantes de enum en el mismo `match` es `E_TYPE`. Mezclar enteros con cadenas o regex es `E_TYPE`. Un `IDENT` que no nombra variante del enum del escrutado liga el escrutado y coincide siempre. Si ningún brazo coincide, el valor es `0` (`Int`). Los literales y regex en el patrón no mueven el `String` del escrutado. Regex inválida: `E_TYPE`. En destino `soso`, un patrón `RSTRING` es `E_TARGET` (no hay `regcomp` en ese runtime).
+Un `match` sobre un escalar distinto de enum elige el **primer** brazo cuyo patrón coincide. `_` coincide siempre. Un `INT` exige escrutado `Int` y `==`. Un `STRING` en el patrón exige escrutado `String` e igualdad exacta (`str_eq`). Un `RSTRING` exige escrutado `String` y encaja si la expresión regular POSIX ERE (como `regexec`, sin anclar salvo `^`/`$` en el patrón) coincide en algún punto; no liga grupos. Mezclar patrones de enteros, cadenas o regex con patrones de variantes de enum en el mismo `match` es `E_TYPE`. Mezclar enteros con cadenas o regex es `E_TYPE`. Un `IDENT` que no nombra variante del enum del escrutado liga el escrutado y coincide siempre. Los patrones se anidan: `Some(Line(n))` coincide si el escrutado es `Some` **y** su payload es `Line`, y entonces liga `n`. Un subpatrón que puede fallar (una variante, también una variante sin campos escrita como `IDENT`, un `INT`, un `STRING` o un `RSTRING`) se comprueba sobre su campo solo después de que la variante de fuera haya coincidido, en el orden de los campos; un `IDENT` que no es variante y `_` coinciden siempre. Si el patrón de dentro no coincide, el brazo no coincide y se prueba el siguiente: `Some(Line(n)) => n` seguido de `_ => 7` vale `7` con `Some(Box(2, 5))`. Si ningún brazo coincide, el valor es `0` (`Int`). Los literales y regex en el patrón no mueven el `String` del escrutado. Regex inválida: `E_TYPE`. En destino `soso`, un patrón `RSTRING` es `E_TARGET` (no hay `regcomp` en ese runtime).
 
 `load[F32, 4, 4]("w.salt")` es un `postfix`: argumentos de tipo (`F32`, `4`, `4`) y luego la llamada. `4` y `?` son `type_arg`, no un tipo con el número por nombre.
 
@@ -376,11 +383,11 @@ Un protocolo también declara `static nombre(params) -> R`, requerido o provisto
 
 La cláusula `impl P, …` en un `struct` o `enum` reclama esos protocolos con sus argumentos concretos. El compilador comprueba que el tipo tiene un `method T.nombre` por cada método requerido o provisto, con la misma aridad, tipos, efectos y receptor tras sustituir los parámetros. Si falta una implementación propia para un método provisto, se añade una copia de su cuerpo; una implementación propia prevalece si su firma coincide. Falta un método requerido o la firma no coincide: `E_TYPE`. Un nombre que no es protocolo, o repetido en la misma cabecera, es `E_TYPE`. El item `impl Tipo P` se declara en el módulo del tipo o en el del protocolo; para tipos básicos, en el del protocolo. Incumplir esta regla de huérfanos es `E_TYPE`. Los tipos básicos que admiten `impl` son `List[T]` y `Mutex[T]`; sus métodos requeridos se cumplen con los métodos builtin de la tabla de «Métodos» (`len`, `get`, `set`, `push`, `pop` de `List`; `enter`, `leave` de `Mutex`). Otro método requerido es `E_TYPE`.
 
-Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Pasarlo donde se espera `any[P]` mueve el valor a una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. `x.m()` con `x: any[P]` llama por la vtable; efectos y préstamos salen de la firma del protocolo. La vtable lleva los métodos no genéricos que no son `static`, en orden de declaración, y luego el drop. Un método que el protocolo no declara, un método genérico, un static o un método cuya firma nombra `Self` llamados por `any`, o un `any[P[…]]` genérico es `E_TYPE`. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. `Tensor` y `frame` no admiten `impl` en este corte.
+Solo entra en `any[P]` un valor cuyo tipo nominal reclamó `P`. Ponerlo donde se espera `any[P]` lo mete en una caja `{vtable, payload}` y exige `alloc` en la función que coacciona. No hay coerción al revés. Un valor con dueño se **mueve** a la caja en cualquiera de esos sitios: un argumento, un `let` anotado (`let b: any[P] = T(..)`), una asignación, un `return`, la cola de la función y el payload de una variante o el campo de un struct declarados `any[P]`. La caja es entonces la dueña: al soltarla (como cualquier local, o con el enum o el struct que la guarda) se suelta el valor con la glue de su tipo (`drop.<T>`, el bloque de un struct de varios campos o el enum) y después la caja. Un préstamo (`&p` o `&mut p` donde se espera `&any[P]` o `&mut any[P]`) es como `&dyn P` en Rust: la caja apunta al valor de `p` y vive solo durante la llamada que la recibe; al volver se suelta la caja, no el valor, y lo que el método escribió queda en `p`. Por eso un préstamo coaccionado solo vale como argumento: ligarlo en un `let`, asignarlo o devolverlo es `E_TYPE`. `x.m()` con `x: any[P]` llama por la vtable; efectos y préstamos salen de la firma del protocolo. La vtable lleva los métodos no genéricos que no son `static`, en orden de declaración, y luego el drop. Un método que el protocolo no declara, un método genérico, un static, un método cuya firma nombra `Self` o uno que toma `self` por valor (sacaría el valor de la caja, como en `dyn`) llamados por `any`, o un `any[P[…]]` genérico es `E_TYPE`. Dentro del cuerpo provisto de un protocolo, `self` es el valor concreto, así que ahí sí se llaman los métodos con `self` por valor. `@no_heap` y `@stack` rechazan `any[P]` como cualquier tipo de heap. `Tensor` y `frame` no admiten `impl` en este corte.
 
 Los tipos nominales no se mezclan: `Int`, `String` y un `struct`/`enum` distinto son incompatibles salvo conversión explícita (p. ej. `.campo` en un newtype de un solo campo). `+` con `String` a la izquierda no es una excepción: exige `String` también a la derecha, y un asa `Int` se convierte explícitamente con `str_from_int` (o se formatea con `int_to_str`).
 
-Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos. Un `struct` de un solo campo es un **newtype transparente**: misma representación que el campo en IR/LLVM. Un `struct` de dos o más campos es un **valor que se mueve**: asignarlo, pasarlo o devolverlo no lo clona. `p.x = v` escribe ese valor: en registros sustituye el campo; si `p` es un elemento de lista (un bloque ya reservado), escribe ese hueco, como `xs[i].x = v`. No hay bloque nuevo ni copia de los hijos. Una cadena `p.a.b = v` escribe el campo de dentro: cada nivel en registros se recompone hasta `p`, y en cuanto un nivel es un bloque (un elemento de lista, un parámetro `&mut`, el referente de un campo `&mut`) se escribe ahí. Un nivel que es un struct de un campo es el valor de ese campo. Prestar un campo (`f(&mut p.a)`, o `p.a.m()` con `m(&mut self)`) es como prestar `p`: lo que el llamado escribe queda en `p.a`. Si el campo no tiene bloque propio, va en una celda (ver «Liberación de locales»). El compilador lo reparte en un registro por campo (los structs anidados, aplanados), sin reservar memoria: un parámetro struct son sus campos como parámetros, y un resultado struct se escribe en un búfer de pila del llamador. Solo se encajona en el heap (un bloque de `i64`, uno por campo) cuando entra en algo que guarda `i64` sin tipo: contenedores (`List`, `Dict`), el payload de un enum y las funciones del runtime. Leer un campo sigue prestando. Recomponer un struct con campos sacados de una referencia (`P(p.name, p.n)` con `p: &P`) es `E_BORROW` si un campo no es `Copy`; `p.name.clone()` lo hace válido. Copiar un struct es `x.clone()` (efecto `alloc`); no hay copia implícita. Pasar un struct por valor lo mueve: si el llamador lo usa después es `E_MOVED`. Para leerlo sin moverlo se pasa `&P`. Quedan fuera del reparto los structs genéricos sin monomorfizar («Genéricos») y los que tienen un campo `Tensor` (los `frame`). Un enum se construye con el nombre de variante (`None`, `Some(x)`, …); en ejecución vale un `i64`: una variante sin campos es su tag; una variante con campos (uno o varios) es la dirección de una caja del heap `[tag, campo0, campo1, …]`. El payload va siempre en caja, sea cual sea su tipo. La caja y sus campos con dueño se liberan al salir del ámbito mediante la glue de drop por tipo; los campos prestados no se liberan. La implementación de la glue para todos los tipos de payload está pendiente.
+Un `struct` se construye con `Nombre(arg, …)` en el mismo orden que los campos. Un `struct` de un solo campo es un **newtype transparente**: misma representación que el campo en IR/LLVM. Un `struct` de dos o más campos es un **valor que se mueve**: asignarlo, pasarlo o devolverlo no lo clona. `p.x = v` escribe ese valor: en registros sustituye el campo; si `p` es un elemento de lista (un bloque ya reservado), escribe ese hueco, como `xs[i].x = v`. No hay bloque nuevo ni copia de los hijos. Una cadena `p.a.b = v` escribe el campo de dentro: cada nivel en registros se recompone hasta `p`, y en cuanto un nivel es un bloque (un elemento de lista, un parámetro `&mut`, el referente de un campo `&mut`) se escribe ahí. Un nivel que es un struct de un campo es el valor de ese campo. Prestar un campo (`f(&mut p.a)`, o `p.a.m()` con `m(&mut self)`) es como prestar `p`: lo que el llamado escribe queda en `p.a`. Si el campo no tiene bloque propio, va en una celda (ver «Liberación de locales»). El compilador lo reparte en un registro por campo (los structs anidados, aplanados), sin reservar memoria: un parámetro struct son sus campos como parámetros, y un resultado struct se escribe en un búfer de pila del llamador. Solo se encajona en el heap (un bloque de `i64`, uno por campo) cuando entra en algo que guarda `i64` sin tipo: contenedores (`List`, `Dict`), el payload de un enum y las funciones del runtime. Leer un campo sigue prestando. Recomponer un struct con campos sacados de una referencia (`P(p.name, p.n)` con `p: &P`) es `E_BORROW` si un campo no es `Copy`; `p.name.clone()` lo hace válido. Copiar un struct es `x.clone()` (efecto `alloc`); no hay copia implícita. Pasar un struct por valor lo mueve: si el llamador lo usa después es `E_MOVED`. Para leerlo sin moverlo se pasa `&P`. Quedan fuera del reparto los structs genéricos sin monomorfizar («Genéricos») y los que tienen un campo `Tensor` (los `frame`). Un enum se construye con el nombre de variante (`None`, `Some(x)`, …); en ejecución vale un `i64`: una variante sin campos es su tag; una variante con campos (uno o varios) es la dirección de una caja del heap `[tag, campo0, campo1, …]`. El payload va siempre en caja, sea cual sea su tipo. La caja y sus campos con dueño se liberan al salir del ámbito mediante la glue de drop por tipo; los campos prestados no se liberan. Un payload de un parámetro de tipo (`Ok(x)` de `Result[T, E]`) se suelta con la glue del tipo del valor que lo llena: un `Dict`, un struct con glue (describible o no), una lista o un enum son de la caja igual que con un campo declarado de ese tipo.
 
 ### Métodos
 
@@ -430,6 +437,56 @@ Ningún método de `String` escribe en sus bytes («`String`» en «Memoria»). 
 
 Lugar: `cpu`, `gpu`, `tpu` o parámetro `p`.
 
+### Reflexión
+
+`std/reflect.sal`, fuera del preludio, declara el protocolo `Reflect` y los tipos con los que trabaja:
+
+```sal
+enum Value
+    VInt(Int)
+    VFloat(Float)
+    VBool(Bool)
+    VStr(String)
+    VList(List[Value])
+    VDict(Dict[String, Value])
+
+struct Field
+    name: String
+    ty: String
+
+protocol Reflect
+    method type_name(&self) -> String ! alloc
+    method fields(&self) -> List[Field] ! alloc
+    method get_field(&self, name: &String) -> Option[Value] ! alloc
+    method set_field(&mut self, name: &String, v: Value) -> Result[Unit, String] ! alloc
+    method to_dict(&self) -> Dict[String, Value] ! alloc
+    static from_dict(src: &Dict[String, Value]) -> Result[Self, String] ! alloc
+```
+
+Un `struct T impl Reflect` recibe, en su módulo y antes de analizarlo, los métodos de `Reflect` que `T` no define; uno propio prevalece si su firma coincide (reglas de «Protocolos»). El compilador reconoce `Reflect` por su nombre en la cláusula `impl` de la cabecera. Los métodos escritos nombran `Value`, `Field` y las funciones de `std/reflect.sal`, así que el módulo tiene que importarlo; si no, esos nombres son `E_TYPE`. Los métodos se escriben como texto sal y pasan por los mismos pases que el resto del módulo, sin reglas de tipos ni de memoria propias.
+
+Campos admitidos y su `Value`: `Int` (`VInt`), `Float` (`VFloat`), `Bool` (`VBool`), `String` (`VStr`), un struct `S` (`VDict` con `S.to_dict()`), `List[E]` (`VList`) y `Dict[String, E]` (`VDict`), con `E` un escalar de los cuatro anteriores o un struct. `S` es un struct del mismo módulo que también reclama `Reflect`, o un tipo importado que tiene que cumplirlo. Son `E_TYPE`: cualquier otro campo (una referencia, `Tensor`, `any[P]`, un enum, `Bytes`, `Unit`, las asas de hilo, un contenedor de contenedores, un struct del módulo sin `Reflect`), y `impl Reflect` en un struct con parámetros de tipo o en un enum.
+
+- `type_name()` es el nombre del struct. `fields()` da un `Field` por campo en orden de declaración; `ty` es el texto canónico del tipo (`Int`, `List[String]`, `Dict[String, Int]`, `Punto`).
+- `get_field(&n)` es `Some` con una copia del campo, o `None` si `T` no tiene `n`. `to_dict()` es un `Dict` con una entrada por campo, también con copias.
+- `set_field(&n, v)` mueve `v`. Si `v` cabe en el campo, el valor anterior se suelta, el campo toma el nuevo y el resultado es `Ok(())`. Si no, el campo queda igual y el resultado es `Err` con el texto: `no field n in T`, o `field n: expected K, found V`, donde `K` es el tipo del campo (el del elemento si falla un elemento de una lista o de un dict) y `V` la variante de `v` sin la `V` (`Int`, `String`, `List`, `Dict`…). Una lista o un dict se comprueban entero antes de construir el valor nuevo. Un struct anidado se escribe con un `VDict` que tiene todos sus campos.
+- Un nombre con punto, `a.b`, entra en el campo `a`, que tiene que ser un struct: `get_field` y `set_field` delegan en el `get_field(&"b")` o `set_field(&"b", v)` de ese campo. Si `a` no es un campo struct, `set_field` da `no field a in T` (`no field a.b in T` si `T` no tiene ningún campo struct) y `get_field`, `None`.
+- `T.from_dict(&d)` construye un `T` copiando cada campo de `d`. Una entrada que falta es `Err("missing field n")`, y una de otro tipo, el mismo error que en `set_field`.
+- Por `any[Reflect]` se llama todo menos `from_dict`, que es un static (`T.from_dict`). `set_field` necesita `&mut any[Reflect]`.
+
+Un `Value` es dueño de lo que lleva: nada de lo que devuelven estos métodos presta de `self`.
+
+#### `inline for`
+
+`inline for f in T.fields` repite su cuerpo una vez por campo de `T`, en orden de declaración, al compilar: no hay bucle en ejecución ni `Value`. `T` es un struct del módulo sin parámetros de tipo. Dentro del cuerpo:
+
+- `f.name` es el nombre del campo y `f.ty` el texto canónico de su tipo, como en `Field` (`"List[Int]"`). Los dos son literales `STRING`.
+- `x.[f]` es el campo `f` de `x`, igual que si se hubiera escrito `x.nombre`: se lee, se presta, se mueve y se asigna con las reglas de su tipo.
+
+Cada copia del cuerpo es un bloque propio: sus locales no se ven desde la copia siguiente ni desde fuera, y se sueltan al terminar la copia. Cada copia se comprueba con el tipo de su campo, así que el cuerpo tiene que valer para todos: `t = t + p.[f]` con un campo `String` es `E_TYPE`. La sentencia vale `Unit`. Un `break` en el cuerpo, fuera de un `while` del propio cuerpo, es `E_TYPE`: no diría si sale del `inline for` o del `while` de fuera. Un `return` sí vale.
+
+Son `E_TYPE`: un `T` que no es un struct del módulo (un enum, un tipo importado, `Self`, un parámetro de tipo) o que es genérico; `f` sin `.name`, `.ty` ni `x.[f]`; `f.otro`; `x.[g]` fuera de un `inline for` sobre `g`; repetir la variable de un `inline for` que lo encierra; e `inline for` en el cuerpo de un protocolo, que se comprueba una sola vez con un `Self` abstracto.
+
 ## Constantes
 
 Un item `NOMBRE = expr`, con el tipo opcional (`NOMBRE: Tipo = expr`), es una constante del módulo. El nombre cumple `^[A-Z][A-Z0-9_]*$`: una mayúscula ASCII y, detrás, mayúsculas, dígitos o `_`. `max = 1` o `Max = 1` es `E_PARSE`. No es una palabra clave. La mayúscula solo marca este item: un `let` y una `fn` con el mismo aspecto de nombre siguen siendo un local y una función. Una constante y otro item del módulo no pueden llamarse igual (`E_TYPE`).
@@ -440,7 +497,7 @@ Quien importa recibe el valor ya calculado, junto con el tipo: no se copia el it
 
 ## Módulos
 
-Un fichero es un módulo. `import path` enlaza las firmas de los módulos alcanzables. No se copia el cuerpo al AST del raíz. El preludio no se inyecta; hace falta `import "std/prelude.sal"` (o la ruta resuelta equivalente) para `Option`, `Result` y las primitivas documentadas allí.
+Un fichero es un módulo. `import path` enlaza las firmas de los módulos alcanzables. No se copia el cuerpo al AST del raíz. El preludio no se inyecta; hace falta `import "std/prelude.sal"` (o la ruta resuelta equivalente) para las primitivas documentadas allí. La excepción son `Option` y `Result` en un fichero sin ningún `import`: si usa `Option[` o `Result[` sin declarar ese `enum`, recibe la declaración de la tabla de tipos (`Option[T]`: `None`, `Some(T)`; `Result[T, E]`: `Ok(T)`, `Err(E)`). Un fichero con algún `import` no recibe nada: `Option` y `Result` le llegan del preludio, directamente o a través de lo que importa (un segundo `Option` en el grafo renombraría el del preludio, y su `dict_get` dejaría de encontrarlo).
 
 `import path as alias` importa ese módulo bajo un calificador: sus `fn`, `struct`, `enum` y constantes solo son accesibles como `alias.nombre` (llamadas, tipos, patrones de variante y constantes). No se aplanan en el entorno del que importa.
 
@@ -472,6 +529,7 @@ El modelo de memoria de sal es el de Rust, con `@arena` como única extensión. 
 - `x.clone()` toma `&self`: no mueve `x`. El clon no comparte nada con el original: un struct copia cada campo (sus `String`, `List`, `Dict`, `Bytes`, enums y structs anidados), y una lista o un dict copian cada elemento.
 - `xs.get(i)` es `&T`, `xs.get_mut(i)` es `&mut T`, `xs.pop()` mueve. Si `T` es `Copy`, `xs.get(i)` da el valor (la copia de `*r`); `xs.get_mut(i)` sigue siendo `&mut T`, y si `T` va en celda (ver más abajo) la celda es la ranura del elemento (`sal_list_slot`): escribir a través de ella cambia el elemento de la lista. `push`, `set` y `put` toman `&mut` del contenedor, mueven el valor y devuelven `Unit`. Un `Dict` posee sus claves `String`. Un contenedor posee siempre sus elementos.
 - En `p.m(…)`, `p` es el primer argumento: `&self`, `&mut self` o `self`.
+- `print(x)` presta `x`, como `println!` en Rust: no lo mueve ni lo suelta. Un temporal que se le pasa (`print(a + b)`, `print(f())`) se suelta al final de la sentencia.
 - Atributos admitidos: `@frozen`, `@stack`, `@no_heap`, `@arena`, `@layout(c)` (ver Atributos). `@resource` y el resto, reservados.
 - Un `struct` se mueve. Asignar un campo escribe ese valor: si es un elemento de lista, la lista ve el cambio. Los hijos siguen siendo de quien posee el struct, salvo que ese campo se mueva.
 
@@ -493,7 +551,7 @@ Una `List[Bool]` (descriptor `b`) guarda un byte por elemento, `0` o `1`; un `Bo
 
 Una lista de structs cuyo descriptor es `S(..)` guarda los campos de cada elemento en su propio bloque, con el paso del descriptor: no hay un bloque por elemento. `xs.get(i)` presta un puntero interior a esos campos; `push` y `set` copian los campos del valor y liberan la caja temporal que construyó el compilador; `pop` devuelve una caja nueva con los campos, que el llamante posee; `xs.clone()` copia cada elemento con `clone.<Struct>` a través de una caja temporal. Soltar la lista libera los campos en el sitio con el descriptor, sin liberar un bloque por elemento. Un struct sin descriptor (tiene `List`, `Dict`, `Bytes` o parámetros de tipo) sigue guardado en un bloque por elemento: la lista guarda `drop.elem.<Struct>`, que llama a `drop.<Struct>` (campos y bloque). Una lista de listas guarda `sal_list_free_elem`.
 
-Cada struct con glue y sin descriptor de elemento tiene además `clone.<Struct>`: copia cada campo con la copia de su tipo y devuelve un valor nuevo. `x.clone()` de ese struct la llama, y la lista de esos structs la guarda junto a su glue (`sal_list_set_clone`) para que `xs.clone()` copie cada elemento. El clon de un struct describible es `sal_desc_copy` con su descriptor.
+Cada struct con glue tiene además `clone.<Struct>`: copia cada campo con la copia de su tipo y devuelve un valor nuevo. Si el struct no tiene descriptor de elemento, `x.clone()` la llama, y la lista de esos structs la guarda junto a su glue (`sal_list_set_clone`) para que `xs.clone()` copie cada elemento; el clon de un struct describible es `sal_desc_copy` con su descriptor. La caja de un enum que guarda un struct con glue, describible o no, lo suelta con `drop.<Struct>` y lo copia con `clone.<Struct>` (`sal_enum_set_struct_glue`); un `Dict` en un payload, con `sal_dict_drop_glue` y `sal_dict_clone_glue`.
 
 El compilador inserta esa llamada al salir del ámbito, antes de cada `return` (el valor se calcula antes) y al reasignar un local, en orden inverso de declaración, para cada valor con dueño que en ese camino está inicializado y no se ha movido. Si está movido solo en algunas ramas, la llamada va detrás de la bandera `__live`. Al reasignar, el valor nuevo se calcula primero (puede leer el viejo), después se suelta el viejo y el nombre toma el nuevo. Un contenedor que una función devuelve por valor es del llamante, que lo suelta como cualquier otro local; lo mismo el resultado de `x.clone()`. Un temporal con dueño se suelta al final de la sentencia cuando el destino no se lo quedó. Un `free` escrito a mano consume el valor: no se suelta otra vez.
 

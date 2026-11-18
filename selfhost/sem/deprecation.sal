@@ -72,10 +72,12 @@ fn dep_hit(ds: &DepSet, w: &Where, out: Int, name: &String, xp: Int) -> Int ! al
 
 # `path:line:column` of offset `xp` in the file, or the path alone when there is no position.
 fn where_text(w: &Where, xp: Int) -> String ! alloc
+    # A call in a copy of an `inline for` body is shifted by a multiple of `len + 1` (`inline_for.sal`).
+    at = xp % (w.pre.len() + 1)
     if xp <= 0
         w.path.clone()
     else
-        w.path + ":" + int_to_str(loc_line(&w.pre, xp, 0, 1)) + ":" + int_to_str(loc_col(&w.pre, xp))
+        w.path + ":" + loc_line(&w.pre, at, 0, 1).to_str() + ":" + loc_col(&w.pre, at).to_str()
 
 # The line (1-based) of offset `off`: one more than the newlines before it.
 fn loc_line(pre: &String, off: Int, i: Int, line: Int) -> Int ! alloc

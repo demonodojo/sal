@@ -1,0 +1,25 @@
+# exit: 4
+# stdout: Persona nombre:String edad:Int notas:List[Int] pos:Punto
+import "../../../std/reflect.sal"
+
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+struct Persona impl Reflect
+    nombre: String
+    edad: Int
+    notas: List[Int]
+    pos: Punto
+
+fn main() -> Int ! alloc, io
+    p = Persona(d"Ana", 30, List.new[Int](), Punto(1, 2))
+    fs = p.fields()
+    out = p.type_name()
+    i = 0
+    while i < fs.len()
+        f = fs.get(i)
+        out = out + " " + f.name + ":" + f.ty
+        i = i + 1
+    print(out)
+    fs.len()

@@ -1,0 +1,16 @@
+# error: E_TYPE
+# A provided body is checked once, with an abstract `Self`: it cannot unroll over fields.
+protocol Contar
+    method contar(&self) -> Int
+        n = 0
+        inline for f in Self.fields
+            n = n + 1
+        n
+
+struct Punto impl Contar
+    x: Int
+    y: Int
+
+fn main() -> Int
+    p = Punto(1, 2)
+    p.contar()

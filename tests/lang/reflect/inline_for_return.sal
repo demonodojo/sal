@@ -1,0 +1,16 @@
+# exit: 12
+# A `return` in a copy of the body leaves the function, like in any block.
+struct Punto
+    x: Int
+    y: Int
+
+fn primero_grande(p: &Punto) -> Int
+    inline for f in Punto.fields
+        if p.[f] > 10
+            return p.[f]
+    0
+
+fn main() -> Int
+    a = Punto(4, 12)
+    b = Punto(1, 2)
+    primero_grande(&a) + primero_grande(&b)

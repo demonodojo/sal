@@ -116,6 +116,7 @@ pub fn builtin_static(ty: &str, name: &str) -> Option<(&'static str, usize)> {
 pub fn has_field_calls(prog: &Program) -> bool {
     fn blk(b: &Block) -> bool {
         b.stmts.iter().any(|st| match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Break { .. } => false,
             Stmt::Let { init, .. } => ex(init),
             Stmt::Expr(e) => ex(e),
@@ -287,6 +288,7 @@ pub type Resolved = HashMap<(u32, u32), (String, bool)>;
 fn block(b: &mut Block, r: &Resolved) {
     for st in &mut b.stmts {
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Break { .. } => {}
             Stmt::Let { init, .. } => expr(init, r),
             Stmt::Expr(e) => expr(e, r),

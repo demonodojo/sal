@@ -2812,6 +2812,38 @@ void sal_any_free(int64_t raw) {
     sal_xfree(b);
 }
 
+/* The box of a borrowed `&T` passed as `&any[P]`: the value belongs to the caller, so only
+ * the shell goes. */
+void sal_any_free_shell(int64_t raw) {
+    if (raw < 4096) {
+        return;
+    }
+    sal_xfree((SalAnyBox *)(uintptr_t)raw);
+}
+
+/* Glue of an `any[P]` payload field of an enum: the box owns the value. */
+int64_t sal_any_drop_glue(int64_t raw) {
+    sal_any_free(raw);
+    return 0;
+}
+
+/* An `any[P]` has no copy (Rust: `Box<dyn P>` is not `Clone`). */
+int64_t sal_any_clone_glue(int64_t raw) {
+    (void)raw;
+    fprintf(stderr, "sal: an any[P] value cannot be cloned\n");
+    abort();
+}
+
+/* Glue of a `Dict` payload field of an enum (`VDict(d)`): the box owns the dict. */
+int64_t sal_dict_drop_glue(int64_t raw) {
+    sal_dict_free((void *)(intptr_t)raw);
+    return 0;
+}
+
+int64_t sal_dict_clone_glue(int64_t raw) {
+    return sal_dict_clone_val(raw);
+}
+
 typedef int64_t (*SalAnyMethod0)(int64_t);
 typedef int64_t (*SalAnyMethod1)(int64_t, int64_t);
 typedef int64_t (*SalAnyMethod2)(int64_t, int64_t, int64_t);
@@ -3790,6 +3822,10 @@ int64_t sal_dict_get(void *dp, const char *key) {
     if (d->val_kind == 3) {
         int64_t *box = (int64_t *)(intptr_t)some;
         box[0] = 2 | ((int64_t)1 << 8);
+    } else if (d->val_kind == 5) {
+        /* The `Some` owns the copy of the enum value, as it owns the copy of a String. */
+        int64_t *box = (int64_t *)(intptr_t)some;
+        box[0] = 2 | ((int64_t)2 << 8);
     }
     sal_enum_set(some, 0, raw);
     return some;

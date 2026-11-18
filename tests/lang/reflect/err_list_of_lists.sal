@@ -1,0 +1,9 @@
+# error: E_TYPE
+import "../../../std/reflect.sal"
+
+# A container of containers is not converted: elements are scalars or structs.
+struct Tabla impl Reflect
+    filas: List[List[Int]]
+
+fn main() -> Int
+    0

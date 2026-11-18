@@ -1,0 +1,28 @@
+# exit: 23
+# Reasignar un local `any[P]` mete el valor nuevo en una caja (y suelta la vieja), y el campo
+# `any[P]` de un struct toma el valor en su caja.
+protocol Num
+    method n(&self) -> Int
+
+struct One impl Num
+    x: Int
+
+struct Two impl Num
+    x: Int
+    y: Int
+
+method One.n(&self) -> Int
+    self.x
+
+method Two.n(&self) -> Int
+    self.x + self.y
+
+struct Holder
+    item: any[Num]
+    tag: Int
+
+fn main() -> Int ! alloc
+    let a: any[Num] = One(1)
+    a = Two(2, 3)
+    h = Holder(Two(4, 5), 8)
+    a.n() + h.item.n() + h.tag + 1

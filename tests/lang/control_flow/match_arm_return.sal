@@ -1,0 +1,11 @@
+# exit: 16
+# Un brazo con bloque que hace `return` no aporta valor al `match`: el tipo es el del otro brazo.
+fn f(x: Int) -> Int
+    y = match x
+        1 =>
+            return 10
+        _ => x
+    y + 1
+
+fn main() -> Int
+    f(1) + f(5)

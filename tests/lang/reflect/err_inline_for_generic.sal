@@ -1,0 +1,10 @@
+# error: E_TYPE
+# A generic struct has no fixed field types to unroll over.
+struct Caja[T]
+    v: T
+
+fn main() -> Int
+    n = 0
+    inline for f in Caja.fields
+        n = n + 1
+    n

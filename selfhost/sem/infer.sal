@@ -158,6 +158,19 @@ fn ty_compat_or_any(c: &mut IC, at: &String, pt: &String) -> Int ! alloc
     else
         0
 
+# `ty_compat_or_any` where the value is kept (a `let`, an assignment, a returned value): only an
+# owned value goes into an `any[P]` there. A borrowed one (`&p` as `&any[P]`) is a box that
+# lives for one call, so it is only an argument (`types_compatible_or_any_coerce_owned` in
+# src/infer.rs).
+fn ty_compat_or_any_owned(c: &mut IC, at: &String, pt: &String) -> Int ! alloc
+    if ty_compat_or_any(c, at, pt) == 0
+        0
+    elsif ty_any_protocol(&ty_deref(pt)).len() > 0 && ty_any_protocol(&ty_deref(at)).len() == 0 && ts_trim(at).slice(0, 1).eq("&") == 1
+        _f = ic_fail(c, &("E_TYPE: a borrowed `" + ts_trim(pt) + "` only lives for the call it is passed to"))
+        0
+    else
+        1
+
 fn ty_compat_any_text(a: &String, b: &String) -> Int ! alloc
     if ts_trim(a).eq(ts_trim(b)) == 1
         1
@@ -762,6 +775,10 @@ fn infer_any_method(c: &mut IC, protocol: &String, fld: &String, args: &List[Exp
                 "Unknown"
             elsif pm.tparams.len() > 0
                 _f = ic_fail(c, &("E_TYPE: generic method `" + fld + "` cannot be called through `any`"))
+                "Unknown"
+            elsif pm.self_ref == 0 && c.cur.get(0).eq("__protocol_body") == 0
+                # As with `dyn` in Rust: `self` by value would move the value out of the box.
+                _f = ic_fail(c, &("E_TYPE: method `" + fld + "` takes `self` by value: it cannot be called through `any`"))
                 "Unknown"
             elsif args.len() != want
                 _f = ic_fail(c, &("method `" + fld + "` expects " + (&pm.params).len().to_str() + " argument(s), found " + (args.len() - 1).to_str()))
@@ -2613,7 +2630,7 @@ fn infer_stmt(c: &mut IC, st: &TStmt) -> Int ! alloc
 fn infer_place_assign(c: &mut IC, vt: &String, tt: &String) -> Int ! alloc
     if ic_failed(c) == 1
         0
-    elsif ty_compat_or_any(c, vt, tt) == 0
+    elsif ty_compat_or_any_owned(c, vt, tt) == 0
         ic_fail(c, &("expected " + ty_msg(tt) + ", found " + ty_msg(vt)))
     else
         0
@@ -2628,7 +2645,7 @@ fn infer_return(c: &mut IC, ex: &Expr) -> Int ! alloc
 
 fn infer_return_value(c: &mut IC, ex: &Expr) -> Int ! alloc
     vt = infer_expr(c, ex)
-    if ty_compat(&vt, &ic_ret(c)) == 0
+    if ty_compat_or_any_owned(c, &vt, &ic_ret(c)) == 0
         ic_fail(c, &("return type mismatch: expected " + ty_msg(&ic_ret(c)) + ", found " + ty_msg(&vt)))
     else
         0
@@ -2651,14 +2668,21 @@ fn infer_binding(c: &mut IC, st: &TStmt) -> Int ! alloc
         _b = tenv_bind(&mut c.env, &st.name, &st.ty)
         0
     else
-        infer_check_rebind(c, &st.name, &ty)
-        _b = tenv_bind(&mut c.env, &st.name, &ty)
-        0
+        old = tenv_type(&c.env, &st.name)
+        if ty_any_protocol(&old).len() > 0 && ty_any_protocol(&ty).len() == 0
+            # A local of type `any[P]` takes the new value in a box and keeps its type
+            # (`Stmt::Assign` in src/infer.rs).
+            _k = ty_compat_or_any_owned(c, &ty, &old)
+            0
+        else
+            infer_check_rebind(c, &st.name, &ty)
+            _b = tenv_bind(&mut c.env, &st.name, &ty)
+            0
 
 fn infer_declared(c: &mut IC, ty: &String, decl: &String) -> Int ! alloc
     if infer_is_fn_type(decl) == 1
         ic_fail(c, &"function types are only allowed as parameter types")
-    elsif ty_compat_or_any(c, ty, decl) == 0
+    elsif ty_compat_or_any_owned(c, ty, decl) == 0
         ic_fail(c, &"let binding type mismatch")
     else
         0
@@ -2707,7 +2731,7 @@ fn infer_while_value(c: &mut IC, tail: &Expr, ret: &String) -> Int ! alloc
 
 fn infer_tail_matches(c: &mut IC, tail: &Expr, ret: &String) -> Int ! alloc
     ty = infer_expr(c, tail)
-    if ty_compat(&ty, ret) == 0
+    if ty_compat_or_any_owned(c, &ty, ret) == 0
         ic_fail(c, &("expected " + ty_msg(ret) + ", found " + ty_msg(&ty)))
     else
         0

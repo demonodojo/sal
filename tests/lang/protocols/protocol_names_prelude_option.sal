@@ -1,0 +1,28 @@
+# exit: 7
+# Un protocolo del módulo raíz que nombra `Option`, con el preludio importado: el `Option` es
+# el del preludio (no se añade otro), y `dict_get` lo sigue encontrando.
+import "../../../std/prelude.sal"
+
+protocol Lookup
+    method find(&self, k: Int) -> Option[Int]
+
+struct Table impl Lookup
+    base: Int
+
+method Table.find(&self, k: Int) -> Option[Int]
+    if k > 0
+        Some(self.base + k)
+    else
+        None
+
+fn main() -> Int ! alloc
+    t = Table(4)
+    d = Dict.new[Int, Int]()
+    d.put(1, 2)
+    a = match t.find(3)
+        Some(v) => v
+        None => 0
+    b = match d.get(9)
+        Some(v) => v
+        None => 0
+    a + b

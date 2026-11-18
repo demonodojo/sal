@@ -1,0 +1,27 @@
+# exit: 52
+# stdout: no field z in Punto|no field nombre in Persona
+import "../../../std/reflect.sal"
+
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+struct Persona impl Reflect
+    nombre: String
+    pos: Punto
+
+fn texto(r: &Result[Unit, String]) -> String ! alloc
+    match r
+        Ok(_) => d"ok"
+        Err(e) => e.clone()
+
+fn main() -> Int ! alloc, io
+    p = Persona(d"Ana", Punto(1, 2))
+    p.set_field(&d"pos.x", VInt(5))
+    y = match p.get_field(&d"pos.y")
+        Some(VInt(n)) => n
+        _ => 0
+    a = texto(&p.set_field(&d"pos.z", VInt(1)))
+    b = texto(&p.set_field(&d"nombre.x", VInt(1)))
+    print(a + "|" + b)
+    p.pos.x * 10 + y

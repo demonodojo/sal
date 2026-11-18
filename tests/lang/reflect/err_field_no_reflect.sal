@@ -1,0 +1,12 @@
+# error: E_TYPE
+import "../../../std/reflect.sal"
+
+struct Punto
+    x: Int
+
+# `pos` is a struct of this module that does not claim `Reflect`.
+struct Persona impl Reflect
+    pos: Punto
+
+fn main() -> Int
+    0

@@ -2,6 +2,11 @@ use crate::ast::*;
 use crate::ownership::infer_param_modes;
 
 pub fn format_program(p: &Program) -> String {
+    // The mode analysis runs the semantic passes, which only see a program after
+    // `inline for` is unrolled; such a program is written as parsed.
+    if crate::inline_for::has_inline_for(p) {
+        return format_program_raw(p);
+    }
     let mut annotated = infer_param_modes(p);
     // `caller_param_modes` promotes an inferred borrow to take for callers when the
     // body consumes the parameter. Writing `borrow` would freeze the declared mode
@@ -356,6 +361,14 @@ fn format_stmt(st: &Stmt, indent: usize) -> String {
             None => "return".to_string(),
         },
         Stmt::Break { .. } => "break".to_string(),
+        Stmt::InlineFor { var, ty, body, .. } => {
+            let mut s = format!("inline for {var} in {ty}.fields\n");
+            s.push_str(&format_block(body, indent + 1));
+            if s.ends_with('\n') {
+                s.pop();
+            }
+            s
+        }
         Stmt::While { cond, body, .. } => {
             let mut s = format!("while {}\n", format_expr(cond, indent));
             s.push_str(&format_block(body, indent + 1));
@@ -372,6 +385,7 @@ fn format_expr(e: &Expr, indent: usize) -> String {
         Expr::Int { value, .. } => value.to_string(),
         Expr::Float { value, .. } => format_float(*value),
         Expr::Bool { value, .. } => value.to_string(),
+        Expr::Unit { .. } => "()".to_string(),
         Expr::String { value, parts, .. } => format_string_literal(value, parts),
         Expr::Ident { name, .. } => name.clone(),
         Expr::Lambda { params, body, .. } => {
@@ -598,6 +612,11 @@ fn format_type_arg(t: &TypeArg) -> String {
         TypeArg::Dim(Dim::Static(n)) => n.to_string(),
         TypeArg::Dim(Dim::Dynamic) => "?".to_string(),
     }
+}
+
+/// The canonical text of a type, as `sal fmt` writes it (`Dict[String, Int]`).
+pub fn type_text(t: &Type) -> String {
+    format_type(t)
 }
 
 fn format_type(t: &Type) -> String {

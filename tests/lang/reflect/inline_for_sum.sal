@@ -1,0 +1,16 @@
+# exit: 23
+# `inline for` repeats the body once per field; `p.[f]` is that field, with its own type.
+struct Punto
+    x: Int
+    y: Int
+    z: Int
+
+fn suma(p: &Punto) -> Int
+    t = 0
+    inline for f in Punto.fields
+        t = t + p.[f]
+    t
+
+fn main() -> Int
+    p = Punto(3, 5, 15)
+    suma(&p)

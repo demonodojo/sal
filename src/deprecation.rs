@@ -174,6 +174,7 @@ impl Walk<'_> {
 
     fn stmt(&mut self, st: &Stmt) {
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Let { ty, init, .. } => {
                 if let Some(t) = ty {
                     self.ty(t);
@@ -262,7 +263,7 @@ impl Walk<'_> {
                     self.block(b);
                 }
             }
-            Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {}
+            Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {}
             Expr::Ident { name, span } => {
                 if self.const_names.contains(name) {
                     self.hit(name, *span);

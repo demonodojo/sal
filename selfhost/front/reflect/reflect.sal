@@ -1,0 +1,284 @@
+# `struct T impl Reflect` (SPEC «Reflexión»): the `Reflect` methods `T` does not define, written
+# as sal text and appended to the module before it is lexed. Mirror of src/reflect.rs, with the
+# same text, so both compilers lower the same tree. `reflect_error` gives the `E_TYPE` of a field
+# `Reflect` does not convert; `with_reflect` then leaves the source as it is.
+import reflect_header
+import reflect_struct
+
+fn with_reflect(src: String) -> String ! alloc
+    if src.contains("Reflect") == 0
+        return src
+    err = List.new[String]()
+    structs = rf_scan(&src, &mut err)
+    if err.len() > 0 || structs.len() == 0
+        return src
+    out = src.clone()
+    if out.slice(out.len() - 1, out.len()).eq("\n") == 0
+        out = out + "\n"
+    i = 0
+    while i < structs.len()
+        out = out + structs.get(i).generate(&src)
+        i = i + 1
+    out
+
+# `E_TYPE: …` for a `struct impl Reflect` that `with_reflect` cannot write, or "".
+fn reflect_error(src: &String) -> String ! alloc
+    if src.contains("Reflect") == 0
+        d""
+    else
+        err = List.new[String]()
+        structs = rf_scan(src, &mut err)
+        msg = if err.len() > 0
+            "E_TYPE: " + err.get(0)
+        else
+            d""
+        structs.len()
+        msg
+
+# The `impl Reflect` structs of `src` with their field types; the first problem goes to `err`.
+fn rf_scan(src: &String, err: &mut List[String]) -> List[ReflectStruct] ! alloc
+    lines = rf_lines(src)
+    hs = List.new[ReflectHeader]()
+    i = 0
+    while i < lines.len()
+        h = rf_header(&lines.get(i), i)
+        if h.name.len() > 0
+            hs.push(h)
+        i = i + 1
+    out = List.new[ReflectStruct]()
+    k = 0
+    while k < hs.len() && err.len() == 0
+        h = hs.get(k)
+        if h.reflect == 1
+            if h.generic == 1 || h.is_struct == 0
+                what = if h.is_struct == 1
+                    d"a generic struct"
+                else
+                    d"an enum"
+                err.push("impl Reflect on " + what + " (" + h.name + ") is not supported")
+            else
+                rs = rf_fields(&lines, &hs, h.line, &h.name, err)
+                out.push(rs)
+        k = k + 1
+    out
+
+# The `name: Type` lines under the header at `line` (`with_reflect` in src/reflect.rs).
+fn rf_fields(lines: &List[String], hs: &List[ReflectHeader], line: Int, sname: &String, err: &mut List[String]) -> ReflectStruct ! alloc
+    names = List.new[String]()
+    tys = List.new[String]()
+    i = line + 1
+    go = 1
+    while go == 1 && i < lines.len()
+        l = lines.get(i).clone()
+        t = rf_trim(&l)
+        if t.len() == 0 || t.index_of("#") == 0
+            i = i + 1
+        elsif l.index_of(" ") != 0
+            go = 0
+        else
+            hash = t.index_of("#")
+            body = if hash >= 0
+                rf_trim(&t.slice(0, hash))
+            else
+                t.clone()
+            colon = body.index_of(":")
+            if colon < 0
+                go = 0
+            else
+                fname = rf_trim(&body.slice(0, colon))
+                fty = rf_trim(&body.slice(colon + 1, body.len()))
+                canon = rf_parse(&rf_nospace(&fty), hs, 1)
+                if canon.len() == 0
+                    err.push("impl Reflect: field " + fname + " of " + sname + " has type " + fty + ", which Reflect does not convert")
+                    go = 0
+                else
+                    names.push(fname)
+                    tys.push(canon)
+                    i = i + 1
+    ReflectStruct(sname.clone(), names, tys)
+
+fn rf_lines(src: &String) -> List[String] ! alloc
+    out = List.new[String]()
+    i = 0
+    go = 1
+    while go == 1
+        j = src.index_from("\n", i)
+        if j < 0
+            out.push(src.slice(i, src.len()))
+            go = 0
+        else
+            out.push(src.slice(i, j))
+            i = j + 1
+    out
+
+# A `struct` / `enum` header, or one with an empty name (`header` in src/reflect.rs).
+fn rf_header(line: &String, i: Int) -> ReflectHeader ! alloc
+    is_struct = if line.index_of("struct ") == 0
+        1
+    else
+        0
+    is_enum = if line.index_of("enum ") == 0
+        1
+    else
+        0
+    if is_struct + is_enum == 0
+        ReflectHeader(d"", i, 0, 0, 0)
+    else
+        skip = if is_struct == 1
+            7
+        else
+            5
+        rest0 = line.slice(skip, line.len())
+        hash = rest0.index_of("#")
+        rest = if hash >= 0
+            rest0.slice(0, hash)
+        else
+            rest0.clone()
+        at = rest.index_of(" impl ")
+        head = if at >= 0
+            rf_trim(&rest.slice(0, at))
+        else
+            rf_trim(&rest)
+        claims = if at >= 0
+            rest.slice(at + 6, rest.len())
+        else
+            d""
+        k = 0
+        while k < head.len() && rf_ident_char(head.char(k)) == 1
+            k = k + 1
+        after = rf_trim(&head.slice(k, head.len()))
+        generic = if after.index_of("[") == 0
+            1
+        else
+            0
+        ReflectHeader(head.slice(0, k), i, rf_claims_reflect(&claims), generic, is_struct)
+
+fn rf_claims_reflect(claims: &String) -> Int ! alloc
+    found = 0
+    i = 0
+    go = 1
+    while go == 1
+        j = claims.index_from(",", i)
+        piece = if j < 0
+            claims.slice(i, claims.len())
+        else
+            claims.slice(i, j)
+        if rf_trim(&piece).eq("Reflect") == 1
+            found = 1
+        if j < 0
+            go = 0
+        else
+            i = j + 1
+    found
+
+# The canonical text of a field type `Reflect` converts, or "" (`parse_ty` in src/reflect.rs).
+fn rf_parse(t: &String, hs: &List[ReflectHeader], outer: Int) -> String ! alloc
+    if t.eq("Int") == 1 || t.eq("Float") == 1 || t.eq("Bool") == 1 || t.eq("String") == 1
+        t.clone()
+    elsif t.index_of("List[") == 0 && rf_ends_bracket(t) == 1
+        if outer == 0
+            d""
+        else
+            e = rf_parse(&t.slice(5, t.len() - 1), hs, 0)
+            if e.len() == 0
+                d""
+            else
+                "List[" + e + "]"
+    elsif t.index_of("Dict[String,") == 0 && rf_ends_bracket(t) == 1
+        if outer == 0
+            d""
+        else
+            e = rf_parse(&t.slice(12, t.len() - 1), hs, 0)
+            if e.len() == 0
+                d""
+            else
+                "Dict[String, " + e + "]"
+    else
+        rf_named(t, hs)
+
+fn rf_ends_bracket(t: &String) -> Int ! alloc
+    if t.len() == 0
+        0
+    elsif t.char(t.len() - 1) == 93
+        1
+    else
+        0
+
+# A struct name: one of this module that claims `Reflect`, or one of another module.
+fn rf_named(t: &String, hs: &List[ReflectHeader]) -> String ! alloc
+    if t.len() == 0 || rf_upper(t.char(0)) == 0 || rf_all_ident(t) == 0 || rf_builtin(t) == 1
+        d""
+    else
+        found = 0 - 1
+        i = 0
+        while i < hs.len()
+            if hs.get(i).name.eq(t) == 1 && found < 0
+                found = i
+            i = i + 1
+        if found < 0
+            t.clone()
+        elsif hs.get(found).is_struct == 1 && hs.get(found).reflect == 1 && hs.get(found).generic == 0
+            t.clone()
+        else
+            d""
+
+fn rf_builtin(t: &String) -> Int ! alloc
+    match t
+        "Bytes" => 1
+        "Unit" => 1
+        "Tensor" => 1
+        "Thread" => 1
+        "Semaphore" => 1
+        "Mutex" => 1
+        "Channel" => 1
+        "Value" => 1
+        "Field" => 1
+        "List" => 1
+        "Dict" => 1
+        _ => 0
+
+fn rf_all_ident(t: &String) -> Int ! alloc
+    ok = 1
+    i = 0
+    while i < t.len()
+        if rf_ident_char(t.char(i)) == 0
+            ok = 0
+        i = i + 1
+    ok
+
+fn rf_upper(c: Int) -> Int
+    if c >= 65 && c <= 90
+        1
+    else
+        0
+
+fn rf_ident_char(c: Int) -> Int
+    if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+        1
+    else
+        0
+
+fn rf_space(c: Int) -> Int
+    if c == 32 || c == 9 || c == 13 || c == 10
+        1
+    else
+        0
+
+fn rf_trim(s: &String) -> String ! alloc
+    a = 0
+    b = s.len()
+    while a < b && rf_space(s.char(a)) == 1
+        a = a + 1
+    while b > a && rf_space(s.char(b - 1)) == 1
+        b = b - 1
+    s.slice(a, b)
+
+fn rf_nospace(s: &String) -> String ! alloc
+    out = d""
+    i = 0
+    while i < s.len()
+        c = s.char(i)
+        if rf_space(c) == 0
+            out = out + String.from_char(c)
+        i = i + 1
+    out

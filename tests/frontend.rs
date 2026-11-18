@@ -23,7 +23,7 @@ fn assert_fmt_idempotent(src: &str) {
 #[test]
 fn module_const_parses_without_annotation() {
     let p = assert_parse("MAX = 1 + 2\nNAME: String = \"sal\"\n");
-    assert_eq!(p.schema_version, 7);
+    assert_eq!(p.schema_version, 8);
     let Item::Const(a) = &p.items[0] else { panic!("expected const") };
     assert_eq!(a.name, "MAX");
     assert!(a.ty.is_none());
@@ -31,7 +31,7 @@ fn module_const_parses_without_annotation() {
     assert_eq!(b.name, "NAME");
     assert!(matches!(&b.ty, Some(Type::Named { name, .. }) if name == "String"));
     let j = serde_json::to_string(&p).unwrap();
-    assert!(j.contains("\"schema_version\":7") || j.contains("\"schema_version\": 7"));
+    assert!(j.contains("\"schema_version\":8") || j.contains("\"schema_version\": 8"));
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }
@@ -58,7 +58,7 @@ fn examples_parse() {
         let src = std::fs::read_to_string(format!("examples/{name}.sal")).unwrap();
         let p = assert_parse(&src);
         assert!(!p.items.is_empty(), "{name} has no items");
-        assert_eq!(p.schema_version, 7);
+        assert_eq!(p.schema_version, 8);
     }
 }
 
@@ -331,9 +331,9 @@ fn id[T](x: T) -> T
 fn ast_json_roundtrip_with_schema() {
     let src = std::fs::read_to_string("examples/gpu_roundtrip.sal").unwrap();
     let p = assert_parse(&src);
-    assert_eq!(p.schema_version, 7);
+    assert_eq!(p.schema_version, 8);
     let j = serde_json::to_string(&p).unwrap();
-    assert!(j.contains("\"schema_version\":7") || j.contains("\"schema_version\": 7"));
+    assert!(j.contains("\"schema_version\":8") || j.contains("\"schema_version\": 8"));
     let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
     assert_eq!(p, p2);
 }
@@ -995,4 +995,19 @@ fn main() -> Int
     assert!(formatted.contains("&'a String"), "{formatted}");
     assert!(formatted.contains("&mut self"), "{formatted}");
     assert!(formatted.contains("&mut x"), "{formatted}");
+}
+
+#[test]
+fn unit_literal_parses_and_formats() {
+    let src = "fn f() -> Result[Unit, String]\n    Ok(())\n";
+    let p = assert_parse(src);
+    let Item::Fn(f) = &p.items[0] else { panic!("expected fn") };
+    let Some(tail) = &f.body.tail else { panic!("expected a tail") };
+    let Expr::Call { args, .. } = tail.as_ref() else { panic!("expected a call, got {tail:?}") };
+    assert!(matches!(args.as_slice(), [Expr::Unit { .. }]), "got {args:?}");
+    assert!(format_program(&p).contains("Ok(())"));
+    assert_fmt_idempotent(src);
+    let j = serde_json::to_string(&p).unwrap();
+    let p2: sal_compiler::ast::Program = serde_json::from_str(&j).unwrap();
+    assert_eq!(p, p2);
 }

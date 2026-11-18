@@ -1,0 +1,35 @@
+# exit: 44
+import "../../../std/reflect.sal"
+
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+struct Persona impl Reflect
+    nombre: String
+    edad: Int
+    tags: List[String]
+    pos: Punto
+
+fn entero(d: &Dict[String, Value], k: &String) -> Int ! alloc
+    match d.get(k)
+        Some(VInt(n)) => n
+        _ => 0 - 1
+
+fn y_de(d: &Dict[String, Value]) -> Int ! alloc
+    match d.get(&"pos")
+        Some(VDict(pd)) => entero(&pd, &"y")
+        _ => 0 - 1
+
+fn cuantas(d: &Dict[String, Value]) -> Int ! alloc
+    match d.get(&"tags")
+        Some(VList(xs)) => xs.len()
+        _ => 0 - 1
+
+fn main() -> Int ! alloc
+    tags = List.new[String]()
+    tags.push(d"a")
+    tags.push(d"b")
+    p = Persona(d"Ana", 30, tags, Punto(1, 2))
+    d = p.to_dict()
+    d.len() * 10 + y_de(&d) + cuantas(&d)

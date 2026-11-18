@@ -1,0 +1,37 @@
+# exit: 18
+# Un struct de varios campos (repartido en registros) por `any`: prestado, con dueño en un
+# `let`, devuelto por una función, y prestado `&mut` (lo que escribe el método queda en `q`).
+protocol Named
+    method name(&self) -> String ! alloc
+    method bump(&mut self) -> Unit
+
+struct Person impl Named
+    first: String
+    age: Int
+    tag: String
+
+method Person.name(&self) -> String ! alloc
+    self.first + " " + self.tag
+
+method Person.bump(&mut self) -> Unit
+    self.age = self.age + 1
+
+fn size(x: &any[Named]) -> Int ! alloc
+    x.name().len()
+
+fn grow(x: &mut any[Named]) -> Unit
+    x.bump()
+
+fn keep(p: Person) -> any[Named] ! alloc
+    p
+
+fn main() -> Int ! alloc
+    p = Person(d"Ana", 30, d"x")
+    a = size(&p)
+    let b: any[Named] = Person(d"Eva", 40, d"yy")
+    c = size(&b)
+    k = keep(Person(d"Rui", 1, d"z"))
+    d = size(&k)
+    q = Person(d"Bo", 7, d"w")
+    grow(&mut q)
+    a * 1000 + c * 100 + d * 10 + q.age - 8

@@ -1,0 +1,11 @@
+# error: E_PARSE
+# `inline for` walks `T.fields`; any other member is a parse error.
+struct Punto
+    x: Int
+    y: Int
+
+fn main() -> Int
+    n = 0
+    inline for f in Punto.campos
+        n = n + 1
+    n

@@ -1,0 +1,8 @@
+# A top-level `struct` / `enum` header of a module, as `with_reflect` reads it
+# (`Header` in src/reflect.rs). `name` is empty for a line that is not a header.
+struct ReflectHeader
+    name: String
+    line: Int
+    reflect: Int
+    generic: Int
+    is_struct: Int

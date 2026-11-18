@@ -303,6 +303,10 @@ struct Pass<'a> {
     /// Copies whose box `slots_of_moved` already released: a later `sal_struct_free_box` of the
     /// same name (the box pass after a call that took it) is dropped.
     released: HashSet<String>,
+    /// `any` boxes holding a scalarised local in a carrier box: any box -> (local, struct,
+    /// carrier, whether the carrier was made for it). A borrowed box (`&p` as `&any[P]`) reads
+    /// the carrier back into the local's slots when its shell goes (`sal_any_free_shell`).
+    any_carriers: HashMap<String, (String, String, String, bool)>,
 }
 
 pub fn scalarize_module(
@@ -344,6 +348,7 @@ fn scalarize_fn(
         strs: HashMap::new(),
         copies: HashSet::new(),
         released: HashSet::new(),
+        any_carriers: HashMap::new(),
     };
     let mut scope = Scope::default();
     let mut params = Vec::new();
@@ -743,8 +748,64 @@ impl<'a> Pass<'a> {
                     field_index: *field_index,
                 });
             }
+            IrInst::Call { dest: None, func, args }
+                if func == "sal_any_free_shell" && args.first().is_some_and(|a| self.any_carriers.contains_key(a)) =>
+            {
+                out.push(inst.clone());
+                let (local, sn, handle, fresh_box) = self.any_carriers.remove(&args[0]).expect("carrier");
+                // The callee may have written through `&mut self`: the slots come from the box.
+                let slots = self.unbox(&handle, &sn, out);
+                scope.vals.insert(local.clone(), Val { name: sn.clone(), slots });
+                scope.boxed.remove(&local);
+                self.free_carrier(&sn, &handle, fresh_box, out);
+            }
             IrInst::Call { dest, func, args } => self.call(dest, func, args, scope, out),
-            IrInst::AnyBox { .. } | IrInst::AnyCall { .. } => out.push(inst.clone()),
+            IrInst::AnyBox { dest, vtable, payload, drop_slot } => {
+                // The box holds the value in heap form: a scalarised one goes into a carrier.
+                let local = scope.vals.get(payload).cloned();
+                let fresh_box = !scope.boxed.contains_key(payload);
+                let p = self.plain(payload, scope, out);
+                if let Some(v) = local {
+                    self.any_carriers.insert(dest.clone(), (payload.clone(), v.name, p.clone(), fresh_box));
+                }
+                out.push(IrInst::AnyBox {
+                    dest: dest.clone(),
+                    vtable: vtable.clone(),
+                    payload: p,
+                    drop_slot: *drop_slot,
+                });
+            }
+            IrInst::AnyCall { dest, receiver, slot, args } => {
+                let receiver = self.plain(receiver, scope, out);
+                // A scalarised argument goes in a carrier for the call; the slots are read back
+                // from it afterwards (the method may take `&mut`) and the carrier goes.
+                let mut carried = Vec::new();
+                let mut flat = Vec::new();
+                for a in args {
+                    match scope.vals.get(a).cloned() {
+                        Some(v) => {
+                            let fresh_box = !scope.boxed.contains_key(a);
+                            let h = self.plain(a, scope, out);
+                            carried.push((a.clone(), v.name, h.clone(), fresh_box));
+                            flat.push(h);
+                        }
+                        None => flat.push(self.plain(a, scope, out)),
+                    }
+                }
+                out.push(IrInst::AnyCall {
+                    dest: dest.clone(),
+                    receiver,
+                    slot: *slot,
+                    args: flat,
+                });
+                for (local, sn, handle, fresh_box) in carried {
+                    let slots = self.unbox(&handle, &sn, out);
+                    scope.vals.insert(local.clone(), Val { name: sn.clone(), slots });
+                    scope.boxed.remove(&local);
+                    self.free_carrier(&sn, &handle, fresh_box, out);
+                }
+            }
+
             IrInst::CallSret { .. } | IrInst::SretStore { .. } => out.push(inst.clone()),
             IrInst::Return { value } => {
                 let copy = self.copies.contains(value);

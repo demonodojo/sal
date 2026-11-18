@@ -369,20 +369,34 @@ fn dx_key_ok(k: &String) -> Int ! alloc
     else
         0
 
-fn dx_val_ok(v: &String) -> Int ! alloc
-    if dr_tm(v, &"Int") == 1
+fn dx_val_ok(v: &String, variants: Int) -> Int ! alloc
+    if dx_val_owned(v, variants) == 1
+        1
+    elsif dr_tm(v, &"Int") == 1
         1
     elsif dr_tm(v, &"Float") == 1
         1
     elsif dr_tm(v, &"Bool") == 1
         1
-    elsif dr_tm(v, &"String") == 1
+    else
+        0
+
+# A dict of `V` owns its values: `String`, an enum or a describable struct
+# (`dict_owns_values` in src/drops.rs).
+fn dx_val_owned(v: &String, variants: Int) -> Int ! alloc
+    t = trim_spaces(v.dup())
+    if dr_tm(&t, &"String") == 1
+        1
+    elsif map_get(variants, str_own(&("enum:" + t))) != 0
+        1
+    elsif map_get(variants, str_own(&("desc:" + t))) != 0
         1
     else
         0
 
-# `dict_new[K, V]()` with K Int or String and V Int, Float, Bool or String.
-fn dx_dict_args(targs: &String) -> Int ! alloc
+# `dict_new[K, V]()` with K Int or String and V Int, Float, Bool, String, an enum or a
+# describable struct (`dict_args` in src/drops.rs).
+fn dx_dict_args(targs: &String, variants: Int) -> Int ! alloc
     if str_len(targs) == 0
         0
     else
@@ -390,14 +404,14 @@ fn dx_dict_args(targs: &String) -> Int ! alloc
         if comma < 0
             0
         elsif dx_key_ok(&trim_spaces(str_slice(targs, 0, comma))) == 1
-            dx_val_ok(&trim_spaces(str_slice(targs, comma + 1, str_len(targs))))
+            dx_val_ok(&trim_spaces(targs.slice(comma + 1, targs.len())), variants)
         else
             0
 
-# `dict_new[K, String]()`: the dict owns its values.
-fn dx_dict_owns(targs: &String) -> Int ! alloc
+# `dict_new[K, V]()` whose dict owns its values (`dx_val_owned`).
+fn dx_dict_owns(targs: &String, variants: Int) -> Int ! alloc
     comma = dx_find_comma(targs, 0)
-    dr_tm(&trim_spaces(str_slice(targs, comma + 1, str_len(targs))), &"String")
+    dx_val_owned(&trim_spaces(targs.slice(comma + 1, targs.len())), variants)
 
 # `list_new[String]()`: the list owns its elements.
 fn dx_list_owns(targs: &String) -> Int ! alloc
@@ -1007,7 +1021,7 @@ fn dr_fresh_call(c: &DC, e: &Expr, name: &String, targs: &String) -> Int ! alloc
     elsif str_eq(name, "list_new") == 1
         dr_fresh_list(c, targs)
     elsif str_eq(name, "dict_new") == 1
-        dr_fresh_dict(targs)
+        dr_fresh_dict(targs, c.variants)
     elsif str_eq(name, "dict_keys") + str_eq(name, "dict_values") == 1
         # A fresh list whose String elements are copies the list owns.
         6
@@ -1026,8 +1040,76 @@ fn dr_fresh_call(c: &DC, e: &Expr, name: &String, targs: &String) -> Int ! alloc
         4
     elsif name.eq("bytes_clone") == 1
         3
+    elsif dr_any_call_kind(c.variants, &c.ps, name) != 0
+        dr_any_call_kind(c.variants, &c.ps, name)
     else
         map_get(c.variants, str_own(&("retk:" + name)))
+
+# `x.m(..)` on a parameter `x` of type `any[P]` (or a reference to one): the release kind of the
+# result of `P.m`, which the caller owns (`any_call_kind` in src/drops.rs). An `any` local is not
+# tracked here (subplan 16, known gaps).
+fn dr_any_call_kind(vm: Int, ps: &List[TParam], name: &String) -> Int ! alloc
+    dot = name.index_of(".")
+    if dot <= 0
+        0
+    else
+        recv = name.slice(0, dot)
+        proto = ty_any_protocol(&ty_deref(&dr_param_ty(ps, &recv, 0, ps.len())))
+        if proto.len() == 0
+            0
+        else
+            map_get(vm, str_own(&("anyret:" + proto + "." + name.slice(dot + 1, name.len()))))
+
+fn dr_any_temp(h: &HC, a: &Expr) -> Int ! alloc
+    match a
+        XCall(name, args, targs, xp) => dr_any_temp_call(h, &name)
+        _ => 0
+
+# `x.fields().len()`, `g().len()`: a container an `any` method or a user fn hands over
+# (`user_container_call` in src/drops.rs).
+fn dr_any_temp_call(h: &HC, name: &String) -> Int ! alloc
+    k = map_get(h.vm, str_own(&("retk:" + name)))
+    if dr_any_call_kind(h.vm, &h.ps, name) != 0
+        1
+    elsif k == 2 || k == 3 || k == 4
+        1
+    else
+        0
+
+# The first argument of a builtin that only reads a container (`xs.len()`, `d.get(k)`): a
+# temporary passed there is still the caller's to release (`reads_container_arg` in src/drops.rs).
+fn dr_reads_container_arg(name: &String, i: Int) -> Int ! alloc
+    if i != 0
+        0
+    else
+        match name
+            "list_len" => 1
+            "list_get" => 1
+            "dict_len" => 1
+            "dict_get" => 1
+            "dict_has" => 1
+            "dict_keys" => 1
+            "dict_values" => 1
+            _ => 0
+
+# `anyret:P.m` for every protocol method whose result the caller owns: 1 a `String`, else the
+# kind of `dr_ret_kind`.
+fn any_ret_kinds_put(m: Int, ps: &List[TProtocol]) -> Int ! alloc
+    i = 0
+    while i < ps.len()
+        p = ps.get(i)
+        j = 0
+        while j < p.methods.len()
+            pm = p.methods.get(j)
+            k = if ty_is_string(&pm.ret) == 1
+                1
+            else
+                dr_ret_kind(m, &pm.ret)
+            if k != 0
+                map_put(m, str_own(&("anyret:" + p.name + "." + pm.name)), k)
+            j = j + 1
+        i = i + 1
+    0
 
 # The builtins `x.clone()` lowers to, one per type.
 fn dr_is_clone(name: &String) -> Int ! alloc
@@ -1055,9 +1137,9 @@ fn dr_fresh_list(c: &DC, targs: &String) -> Int ! alloc
     else
         0
 
-fn dr_fresh_dict(targs: &String) -> Int ! alloc
-    if dx_dict_args(targs) == 1
-        if dx_dict_owns(targs) == 1
+fn dr_fresh_dict(targs: &String, variants: Int) -> Int ! alloc
+    if dx_dict_args(targs, variants) == 1
+        if dx_dict_owns(targs, variants) == 1
             7
         else
             4
@@ -1074,7 +1156,7 @@ fn dr_note_copy_payload(c: &mut DC, name: &String, e: &Expr) -> Int ! alloc
 
 fn dr_copy_payload_of(c: &DC, callee: &String, args: &List[Expr], targs: &String) -> Int ! alloc
     match callee
-        "dict_new" => dx_dict_args(targs) * dr_copy_scalar(&dr_dict_val(targs))
+        "dict_new" => dx_dict_args(targs, c.variants) * dr_copy_scalar(&dr_dict_val(targs))
         "dict_get" => dr_copy_dict_arg(c, args) * 2
         _ => 0
 
@@ -3353,6 +3435,8 @@ struct HC
     k: List[Int]
     lists: NM
     vm: Int
+    # The parameters of the fn: an `any[P]` one tells `dr_any_call_kind` the protocol.
+    ps: List[TParam]
 
 fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &String, out: &mut List[TStmt]) -> Int ! alloc
     if i >= n
@@ -3360,20 +3444,23 @@ fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &Str
     else
         old = list_get(args, i)
         a = dr_hoist_expr(h, &old, out)
-        if dr_reads_string_arg(callee) + dr_reads_key_arg(callee, i) > 0
-            if dx_is_fresh_temp_v(h.vm, &a) == 1
-                k = list_get(&h.k, 0) + 1
-                _s = list_set(h.k, 0, k)
-                name = "__tmp" + int_to_str(k)
-                _l = list_push(out, TStmt(1, strdup(name), a, "", 1, XNone, 0, 0, 0 - k))
-                _r = list_set(args, i, XIdent(strdup(name)))
-                dr_hoist_args(h, args, i + 1, n, callee, out)
-            else
-                _r = dr_set_arg(args, i, &old, a)
-                dr_hoist_args(h, args, i + 1, n, callee, out)
+        # The result of `x.m()` on `any[P]` read by a container builtin (`x.fields().len()`).
+        hoist = if dr_reads_container_arg(callee, i) == 1 && dr_any_temp(h, &a) == 1
+            1
+        elsif dr_reads_string_arg(callee) + dr_reads_key_arg(callee, i) > 0
+            dx_is_fresh_temp_v(h.vm, &a)
         else
-            _r = dr_set_arg(args, i, &old, a)
-            dr_hoist_args(h, args, i + 1, n, callee, out)
+            0
+        if hoist == 1
+            k = h.k.get(0) + 1
+            h.k.set(0, k)
+            name = "__tmp" + k.to_str()
+            out.push(TStmt(1, name.dup(), a, "", 1, XNone, 0, 0, 0 - k))
+            args.set(i, XIdent(name.dup()))
+        else
+            dr_set_arg(args, i, &old, a)
+            ()
+        dr_hoist_args(h, args, i + 1, n, callee, out)
 
 fn dr_hoist_arms(h: &mut HC, arms: &mut List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -3419,7 +3506,7 @@ fn dr_hoist_unary(h: &mut HC, e: &Expr, op: &String, inner: &Expr, out: &mut Lis
 fn dr_hoist_expr(h: &mut HC, e: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
     match e
         XCall(name, args, targs, xp) => dr_hoist_call(h, e, &name, &mut args, out)
-        XBin(op, l, r) => dr_hoist_bin(h, e, &l, &r, out)
+        XBin(op, l, r) => dr_hoist_bin(h, e, &op, &l, &r, out)
         XUnary(op, inner) => dr_hoist_unary(h, e, &op, &inner, out)
         XBlock(_) => dr_alias(e)
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_hoist_if(h, e, &cond, &mut then_b, &mut else_b, has_else, &mut elsifs, out)
@@ -3591,12 +3678,40 @@ fn dr_hoist_call(h: &mut HC, e: &Expr, name: &String, args: &mut List[Expr], out
     _a = dr_hoist_args(h, args, 0, list_len(args), name, out)
     dr_ret(e)
 
-fn dr_hoist_bin(h: &mut HC, e: &Expr, l: &Expr, r: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
-    nl = dr_hoist_expr(h, l, out)
-    nr = dr_hoist_expr(h, r, out)
+fn dr_hoist_bin(h: &mut HC, e: &Expr, op: &String, l: &Expr, r: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
+    nl0 = dr_hoist_expr(h, l, out)
+    nr0 = dr_hoist_expr(h, r, out)
+    nl = dr_owned_operand(h, op, nl0, out)
+    nr = dr_owned_operand(h, op, nr0, out)
     _a = dr_set_expr(e, 1, l, &nl)
     _b = dr_set_expr(e, 2, r, &nr)
     dr_ret(e)
+
+# `f() + "x"`: the `String` a user fn (or an `any` method) hands over is an operand the
+# concatenation copies from; bound to a local, the scope end releases it (`owned_operand` in
+# src/drops.rs).
+fn dr_owned_operand(h: &mut HC, op: &String, x: Expr, out: &mut List[TStmt]) -> Expr ! alloc
+    if op.eq("add") + dx_op_typed_string_add(op) == 0 || dr_owned_call(h, &x) == 0
+        x
+    else
+        k = h.k.get(0) + 1
+        h.k.set(0, k)
+        name = "__tmp" + k.to_str()
+        out.push(TStmt(1, name.dup(), x, "", 1, XNone, 0, 0, 0 - k))
+        XIdent(name.dup())
+
+fn dr_owned_call(h: &HC, x: &Expr) -> Int ! alloc
+    match x
+        XCall(name, args, targs, xp) => dr_owned_call_named(h, &name)
+        _ => 0
+
+fn dr_owned_call_named(h: &HC, name: &String) -> Int ! alloc
+    if dr_owned_name(h.vm, name) == 1
+        1
+    elsif dr_any_call_kind(h.vm, &h.ps, name) == 1
+        1
+    else
+        0
 
 fn dr_hoist_while(h: &mut HC, e: &Expr, body: &mut TBlock) -> Expr ! alloc
     nb = dr_hoist_block(h, body)
@@ -4058,7 +4173,7 @@ fn dr_claim_fn(f: &TFn, body: &mut TBlock, variants: Int, lists: &NM, took: Int)
 # One body, moved. Hoist, claim and xform reuse the nodes and drop the previous list vector.
 fn drops_body(f: &mut TFn, denv: Int) -> TBlock ! alloc
     note_passthru_body(vec_get(denv, 0), &f.body)
-    h = HC(list_new[Int](), dr_lists_of(&f.params, &f.body, vec_get(denv, 0)), vec_get(denv, 0))
+    h = HC(List.new[Int](), dr_lists_of(&f.params, &f.body, vec_get(denv, 0)), vec_get(denv, 0), tparams_copy(&f.params))
     _h = list_push(&mut h.k, 0)
     hoisted = dr_hoist_block(&mut h, &mut f.body)
     claimed = dr_claim_fn(f, &mut hoisted, vec_get(denv, 0), &h.lists, vec_get(denv, 3))
@@ -4114,6 +4229,9 @@ fn dr_borrows(name: &String) -> Int ! alloc
     elsif str_eq(name, "str_concat") == 1
         1
     elsif str_eq(name, "str_to_f64_bits") == 1
+        1
+    # `print(s)` reads `s` as `println!` does in Rust: `sal_print_str` does not free it.
+    elsif name.eq("print") == 1
         1
     elsif str_eq(name, "print_str") == 1
         1
@@ -4261,6 +4379,8 @@ fn dr_reads_string_arg(name: &String) -> Int ! alloc
     elsif str_eq(name, "str_hash") == 1
         1
     elsif str_eq(name, "str_to_f64_bits") == 1
+        1
+    elsif name.eq("print") == 1
         1
     elsif str_eq(name, "print_str") == 1
         1

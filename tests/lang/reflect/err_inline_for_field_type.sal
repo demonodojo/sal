@@ -1,0 +1,15 @@
+# error: E_TYPE
+# Each copy is typed with its own field: `t + p.[f]` with the `String` field is `Int + String`.
+struct Fila
+    n: Int
+    etiqueta: String
+
+fn suma(p: &Fila) -> Int
+    t = 0
+    inline for f in Fila.fields
+        t = t + p.[f]
+    t
+
+fn main() -> Int ! alloc
+    p = Fila(1, d"a")
+    suma(&p)

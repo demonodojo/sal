@@ -1,0 +1,9 @@
+# error: E_TYPE
+import "../../../std/reflect.sal"
+
+# `Reflect` does not convert a `Tensor` field.
+struct Capa impl Reflect
+    pesos: Tensor[F32, 2]
+
+fn main() -> Int
+    0

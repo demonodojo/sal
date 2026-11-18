@@ -341,6 +341,7 @@ fn reads_string_arg(name: &str) -> bool {
             | "str_skip"
             | "str_hash"
             | "str_to_f64_bits"
+            | "print"
             | "print_str"
             | "eprint_str"
             | "write_file"
@@ -360,7 +361,53 @@ fn reads_key_arg(name: &str, i: usize) -> bool {
 
 /// A fresh string that is not a literal: a temporary somebody must release.
 fn is_fresh_temp(e: &Expr) -> bool {
-    !matches!(e, Expr::String { .. }) && (is_fresh_value(e) || is_owned_call(e) || is_passthru_fresh(e))
+    !matches!(e, Expr::String { .. }) && (is_fresh_value(e) || is_owned_call(e) || is_passthru_fresh(e) || is_any_string_call(e))
+}
+
+/// `x.m(…)` with `x: any[P]` (or a reference to one) and a `String` result: the method hands
+/// over a value the caller owns, as any `-> String` does (SPEC «Memoria»).
+fn is_any_string_call(e: &Expr) -> bool {
+    let Expr::Call { func, .. } = e else { return false };
+    let Expr::Field { base, .. } = func.as_ref() else { return false };
+    let ty_of = |x: &Expr| {
+        let sp = x.span();
+        EXPR_TYPES.with(|m| m.borrow().get(&(sp.start, sp.end)).cloned())
+    };
+    let mut bt = ty_of(base);
+    while let Some(Type::Ref { inner, .. }) = bt {
+        bt = Some(*inner);
+    }
+    matches!(&bt, Some(Type::Named { name, .. }) if name == "any")
+        && ty_of(e).is_some_and(|t| crate::string_expr::is_string_type(&t))
+}
+
+/// `x.m(…)` with `x: any[P]` (or a reference to one): the release of the value the method
+/// hands over by value, which the caller owns (SPEC «Memoria»), by its type.
+fn any_call_kind(e: &Expr) -> Option<&'static str> {
+    let Expr::Call { func, .. } = e else { return None };
+    let Expr::Field { base, .. } = func.as_ref() else { return None };
+    let sp = base.span();
+    let mut bt = EXPR_TYPES.with(|m| m.borrow().get(&(sp.start, sp.end)).cloned());
+    while let Some(Type::Ref { inner, .. }) = bt {
+        bt = Some(*inner);
+    }
+    if !matches!(&bt, Some(Type::Named { name, .. }) if name == "any") {
+        return None;
+    }
+    joined_kind(e).filter(|k| matches!(*k, "free" | "list_free" | "dict_free" | "bytes_free" | "enum_free"))
+}
+
+/// A call of a user fn that hands over a fresh `List`, `Dict` or `Bytes` (`user_call_kind`).
+fn user_container_call(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. }
+        if matches!(func.as_ref(), Expr::Ident { name, .. }
+            if matches!(user_call_kind(name, e), Some("list_free" | "dict_free" | "bytes_free"))))
+}
+
+/// The first argument of a builtin that only reads a container (`xs.len()`, `d.get(k)`): a
+/// temporary passed there is still the caller's to release.
+fn reads_container_arg(name: &str, i: usize) -> bool {
+    i == 0 && matches!(name, "list_len" | "list_get" | "dict_len" | "dict_get" | "dict_has" | "dict_keys" | "dict_values")
 }
 
 /// `same(<fresh temporary>)` where `same` returns that by-value parameter: the caller owns
@@ -530,6 +577,7 @@ fn is_fresh_option(e: &Expr) -> bool {
 fn is_fresh_enum_call(e: &Expr) -> bool {
     matches!(e, Expr::Call { func, .. }
         if matches!(func.as_ref(), Expr::Ident { name, .. } if user_call_kind(name, e) == Some("enum_free")))
+        || any_call_kind(e) == Some("enum_free")
 }
 
 impl Hoist {
@@ -549,7 +597,11 @@ impl Hoist {
                     .enumerate()
                     .map(|(i, a)| {
                         let a = self.expr(a, out);
-                        if (reads || reads_key_arg(&callee, i)) && is_fresh_temp(&a) {
+                        // `x.fields().len()`, `g().len()`: a container a call hands over and a
+                        // reader builtin only reads (an `any` method or a user fn).
+                        let any_temp = reads_container_arg(&callee, i)
+                            && (any_call_kind(&a).is_some() || user_container_call(&a));
+                        if ((reads || reads_key_arg(&callee, i)) && is_fresh_temp(&a)) || any_temp {
                             self.n += 1;
                             let name = format!("__tmp{}", self.n);
                             let asp = a.span();
@@ -571,9 +623,17 @@ impl Hoist {
                 Expr::Call { func, type_args, args, span }
             }
             Expr::Binary { op, left, right, span } => {
-                let left = Box::new(self.expr(*left, out));
-                let right = Box::new(self.expr(*right, out));
-                Expr::Binary { op, left, right, span }
+                let left = self.expr(*left, out);
+                let right = self.expr(*right, out);
+                // `f() + "x"`: the `String` a user fn (or an `any` method) hands over is an
+                // operand the concatenation copies from; bound to a local, the scope end
+                // releases it (Rust: the temporary is dropped after the statement).
+                let (left, right) = if op == BinOp::Add {
+                    (self.owned_operand(left, out), self.owned_operand(right, out))
+                } else {
+                    (left, right)
+                };
+                Expr::Binary { op, left: Box::new(left), right: Box::new(right), span }
             }
             // `&g()` / `&mut g()`: the rvalue is not a place, so bind it (Rust temporary).
             Expr::Unary { op, expr, span } => {
@@ -666,10 +726,25 @@ impl Hoist {
         }
     }
 
+    /// A `String` operand of `+` that a call hands over (`is_owned_call`, or an `any` method
+    /// returning one), bound to its own local ahead of the statement.
+    fn owned_operand(&mut self, x: Expr, out: &mut Vec<Stmt>) -> Expr {
+        if !expr_is_string(&x) || !(is_owned_call(&x) || any_call_kind(&x) == Some("free")) {
+            return x;
+        }
+        self.n += 1;
+        let name = format!("__tmp{}", self.n);
+        let xsp = x.span();
+        let fake = Span { start: u32::MAX - self.n, end: u32::MAX - self.n, line: 0, col: 0 };
+        out.push(Stmt::Let { name: name.clone(), ty: None, init: x, frozen: false, stack: false, span: fake });
+        Expr::Ident { name, span: xsp }
+    }
+
     fn block(&mut self, b: Block) -> Block {
         let mut stmts = Vec::new();
         for st in b.stmts {
             match st {
+                Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
                 Stmt::Break { span } => stmts.push(Stmt::Break { span }),
                 Stmt::Let { name, ty, init, frozen, stack, span } => {
                     let init = self.expr(init, &mut stmts);
@@ -709,7 +784,7 @@ pub fn insert_drops(
     collect_ownable(structs, enums);
     STRUCT_NAMES.with(|n| *n.borrow_mut() = structs.keys().cloned().collect());
     collect_enum_types(enums);
-    OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog));
+    OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog, callees));
     FRESH_ENUM_FNS.with(|f| *f.borrow_mut() = fresh_enum_return_fns(prog, callees, enums));
     PASSTHRU_CALLS.with(|c| c.borrow_mut().clear());
     PASSTHRU_FNS.with(|m| {
@@ -783,16 +858,14 @@ pub fn insert_drops(
 /// fresh builtin value or a local bound once to one (and never assigned again). A fn with a
 /// branching or looping statement at the top level is not analysed, so no `return` hides in
 /// it. Computed from the builtins only, so the result does not depend on the fn order.
-fn owned_return_fns(prog: &Program) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for item in &prog.items {
-        if let Item::Fn(f) = item {
-            if crate::string_expr::is_string_type(&f.ret) && owned_return_body(f) {
-                out.insert(f.name.clone());
-            }
-        }
-    }
-    out
+/// The module's functions, and the callees of other modules (`value_kind` of
+/// `std/reflect.sal`), that hand the caller a `String` it owns.
+fn owned_return_fns(prog: &Program, callees: &[&FnDef]) -> HashSet<String> {
+    let own = prog.items.iter().filter_map(|i| if let Item::Fn(f) = i { Some(f) } else { None });
+    own.chain(callees.iter().copied())
+        .filter(|f| crate::string_expr::is_string_type(&f.ret) && owned_return_body(f))
+        .map(|f| f.name.clone())
+        .collect()
 }
 
 fn owned_block_string(b: &Block, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
@@ -883,7 +956,7 @@ fn fresh_builtin(e: &Expr) -> bool {
 /// A `String` the caller owns: a fresh builtin, a fresh local, or a field read of a parameter
 /// (`return n.name` after `take`).
 fn owned_string_return(e: &Expr, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
-    if fresh_builtin(e) {
+    if fresh_builtin(e) || is_any_string_call(e) {
         return true;
     }
     if matches!(e, Expr::Ident { name, .. } if fresh_locals.contains(name)) {
@@ -1101,6 +1174,8 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "str_slice"
             | "str_concat"
             | "str_to_f64_bits"
+            // `print(s)` reads `s` as `println!` does in Rust: `sal_print_str` does not free it.
+            | "print"
             | "print_str"
             | "eprint_str"
             | "write_file"
@@ -1178,7 +1253,7 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
         Expr::String { .. } => Some(("free", false)),
         Expr::Call { func, type_args, .. } => {
             let Expr::Ident { name, .. } = func.as_ref() else {
-                return None;
+                return any_call_kind(init).map(|k| (k, false));
             };
             if returns_fresh(name) || OWNED_FNS.with(|f| f.borrow().contains(name)) || is_passthru_fresh(init) {
                 Some(("free", false))
@@ -1507,7 +1582,7 @@ fn arg(a: &Expr, mov: ArgMove, f: &mut Facts) {
 
 fn expr(e: &Expr, f: &mut Facts) {
     match e {
-        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {}
+        Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } => {}
         // A Copy scalar read aliases nothing on the heap, so it neither escapes nor consumes
         // (a payload `Some(v) => v` of an `Option[Int]` leaves the box releasable).
         Expr::Ident { name, .. } => {
@@ -1925,6 +2000,7 @@ fn block_with(b: &Block, discard_tail: bool, f: &mut Facts) {
         let outer = f.cur;
         let live = f.opaque == 0;
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Break { .. } => {}
             Stmt::Let { name, init, span, .. } => {
                 f.cur = live.then(|| stmt_key(*span));
@@ -2046,6 +2122,9 @@ struct Ctx<'a> {
     /// Locals bound more than once whose every binding is a fresh value of one kind: a
     /// reassignment releases the old value first (SPEC «Liberación»).
     rebound: HashSet<String>,
+    /// Locals declared `let x: any[P] = …`: each binding is a box the local owns, and a
+    /// reassignment (`x = T(..)`, boxed by the coercion) releases the old box first.
+    any_locals: HashSet<String>,
 }
 
 /// Names bound first to references and then exactly once to an owned value, every binding a
@@ -2113,6 +2192,7 @@ fn binding_inits<'a>(b: &'a Block, out: &mut HashMap<String, Vec<&'a Expr>>) {
     }
     for st in &b.stmts {
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Let { name, init, .. } => {
                 out.entry(name.clone()).or_default().push(init);
                 in_expr(init, out);
@@ -2134,6 +2214,58 @@ fn binding_inits<'a>(b: &'a Block, out: &mut HashMap<String, Vec<&'a Expr>>) {
     if let Some(t) = &b.tail {
         in_expr(t, out);
     }
+}
+
+/// The locals declared with an `any[P]` type (`let b: any[P] = …`), at any depth.
+fn any_locals(body: &Block) -> HashSet<String> {
+    fn walk(b: &Block, out: &mut HashSet<String>) {
+        for st in &b.stmts {
+            if let Stmt::Let { name, ty: Some(Type::Named { name: t, .. }), .. } = st {
+                if t == "any" {
+                    out.insert(name.clone());
+                }
+            }
+            let e = match st {
+                Stmt::Let { init, .. } => Some(init),
+                Stmt::Expr(e) => Some(e),
+                Stmt::Assign { value, .. } => Some(value),
+                Stmt::While { body, .. } => {
+                    walk(body, out);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(e) = e {
+                walk_expr(e, out);
+            }
+        }
+        if let Some(t) = &b.tail {
+            walk_expr(t, out);
+        }
+    }
+    fn walk_expr(e: &Expr, out: &mut HashSet<String>) {
+        match e {
+            Expr::Block(b) | Expr::On { body: b, .. } => walk(b, out),
+            Expr::If { then_block, elsifs, else_block, .. } => {
+                walk(then_block, out);
+                for el in elsifs {
+                    walk(&el.body, out);
+                }
+                if let Some(b) = else_block {
+                    walk(b, out);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for a in arms {
+                    walk_expr(&a.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = HashSet::new();
+    walk(body, &mut out);
+    out
 }
 
 fn rebound_locals(body: &Block, variants: &Variants) -> HashSet<String> {
@@ -2243,13 +2375,25 @@ impl Ctx<'_> {
                 return Some((*k, self.facts.soft.contains(name)));
             }
         }
-        if let Some(Type::Named { name: n, args, .. }) = ty {
-            if n == "any" && !args.is_empty() {
-                let flagged = self.facts.bindings.get(name) == Some(&1)
-                    && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
-                if !self.params.contains(name) && flagged {
-                    return Some(("any_free", true));
-                }
+        // An `any[P]` local owns its box: annotated (`let b: any[P] = p`), or the result of a
+        // call that hands one over (`k = keep(p)`).
+        let any_ty = ty.clone().or_else(|| {
+            let sp = init.span();
+            if matches!(init, Expr::Call { .. }) {
+                EXPR_TYPES.with(|m| m.borrow().get(&(sp.start, sp.end)).cloned())
+            } else {
+                None
+            }
+        });
+        let any_local = self.any_locals.contains(name);
+        if any_local || matches!(&any_ty, Some(Type::Named { name: n, args, .. }) if n == "any" && !args.is_empty()) {
+            let flagged = (self.facts.bindings.get(name) == Some(&1) || self.rebound.contains(name))
+                && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
+            if !self.params.contains(name) && flagged {
+                return Some(("any_free", true));
+            }
+            if any_local {
+                return None;
             }
         }
         // `list_pop(xs)` moves the element out of the list: a fresh value of the owned
@@ -2781,6 +2925,7 @@ fn shared_list_names(f: &FnDef) -> HashSet<String> {
 fn collect_shared_block(b: &Block, out: &mut HashSet<String>) {
     for st in &b.stmts {
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Let { init, .. } => collect_shared_expr(init, out),
             Stmt::Expr(e) => collect_shared_expr(e, out),
             Stmt::Assign { target, value, .. } => {
@@ -2806,7 +2951,7 @@ fn collect_shared_block(b: &Block, out: &mut HashSet<String>) {
 
 fn collect_shared_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
-        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
         Expr::Call { func, args, .. } => {
             if let (Expr::Ident { name, .. }, Some(Expr::Ident { name: xs, .. })) = (func.as_ref(), args.first()) {
                 if name == "list_push_share" {
@@ -2882,7 +3027,17 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         popped: HashSet::new(),
         shell_freed: HashSet::new(),
         rebound: rebound_locals(&f.body, variants),
+        any_locals: any_locals(&f.body),
     };
+    {
+        let mut inits = HashMap::new();
+        binding_inits(&f.body, &mut inits);
+        for n in &cx.any_locals {
+            if inits.get(n).map_or(0, Vec::len) >= 2 {
+                cx.rebound.insert(n.clone());
+            }
+        }
+    }
     // A by-value `String`/`List`/`Dict` parameter moves into the fn: the fn releases it at
     // scope end unless it moved it. Without the moved set there is nothing to decide by.
     let mark = cx.live.len();
@@ -2897,7 +3052,10 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
             if moved.contains(&p.name) && !tracked {
                 continue;
             }
-            if let Some(k) = owned_param_release(&p.ty) {
+            // An escaped parameter leaves `live` at the first `drop_escaped_from_live`; pushing
+            // it would let that happen inside a nested block, below the block's mark.
+            let escaped = cx.facts.escaped.contains(&p.name) && !cx.facts.box_shell.contains(&p.name);
+            if let Some(k) = owned_param_release(&p.ty).filter(|_| !escaped) {
                 cx.live.push((p.name.clone(), k, tracked));
                 if tracked {
                     flags.push(p.name.clone());
@@ -3180,6 +3338,7 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
             continue;
         }
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Break { span } => stmts.push(Stmt::Break { span }),
             Stmt::Let { name, ty, init, frozen, stack, span } => {
                 let cand = cx.candidate(&name, &ty, &init);

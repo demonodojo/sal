@@ -12,6 +12,8 @@ pub mod fmt;
 pub mod fuse;
 pub mod incremental;
 pub mod interp;
+pub mod reflect;
+pub mod inline_for;
 pub mod loops;
 pub mod threads;
 pub mod infer;

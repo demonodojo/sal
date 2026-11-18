@@ -1,0 +1,11 @@
+# error: E_TYPE
+# The loop variable is not a value: only `f.name`, `f.ty` and `x.[f]`.
+struct Punto
+    x: Int
+    y: Int
+
+fn main() -> Int
+    n = 0
+    inline for f in Punto.fields
+        g = f
+    n

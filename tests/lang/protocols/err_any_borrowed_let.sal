@@ -1,0 +1,16 @@
+# error: E_TYPE
+# Una caja prestada (`&p` como `&any[P]`) solo vive en la llamada que la recibe.
+protocol Num
+    method n(&self) -> Int
+
+struct P impl Num
+    x: Int
+    y: Int
+
+method P.n(&self) -> Int
+    self.x + self.y
+
+fn main() -> Int ! alloc
+    p = P(1, 2)
+    let b: &any[Num] = &p
+    b.n()

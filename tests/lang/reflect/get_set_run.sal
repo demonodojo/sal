@@ -1,0 +1,27 @@
+# exit: 41
+# stdout: 30|ok|field edad: expected Int, found String|no field peso in Persona|Eva
+import "../../../std/reflect.sal"
+
+struct Persona impl Reflect
+    nombre: String
+    edad: Int
+
+fn texto(r: &Result[Unit, String]) -> String ! alloc
+    match r
+        Ok(_) => d"ok"
+        Err(e) => e.clone()
+
+fn main() -> Int ! alloc, io
+    p = Persona(d"Ana", 30)
+    let antes: Int = match p.get_field(&d"edad")
+        Some(VInt(n)) => n
+        _ => 0
+    a = texto(&p.set_field(&d"edad", VInt(41)))
+    b = texto(&p.set_field(&d"edad", VStr(d"x")))
+    c = texto(&p.set_field(&d"peso", VInt(1)))
+    p.set_field(&d"nombre", VStr(d"Eva"))
+    nombre = match p.get_field(&d"nombre")
+        Some(VStr(s)) => s.clone()
+        _ => d"?"
+    print(antes.to_str() + "|" + a + "|" + b + "|" + c + "|" + nombre)
+    p.edad

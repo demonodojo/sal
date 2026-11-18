@@ -50,6 +50,7 @@ fn check_stmt_devices(
     string_frames: &HashSet<String>,
 ) -> DiagResult<()> {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { .. } => Ok(()),
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr_devices(init, env, expected, string_frames)?;
@@ -98,6 +99,7 @@ fn check_expr_devices(
         Expr::Int { span, .. } => Ok(named("Int", *span)),
         Expr::Float { span, .. } => Ok(named("Float", *span)),
         Expr::Bool { span, .. } => Ok(named("Bool", *span)),
+        Expr::Unit { span } => Ok(named("Unit", *span)),
         Expr::String { span, .. } => {
             let ty = named("String", *span);
             reject_string_off_cpu(&ty, expected.as_ref(), *span)?;

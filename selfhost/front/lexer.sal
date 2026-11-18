@@ -1,4 +1,5 @@
 # Lexer: tokens, indentation, and source scan.
+import "reflect/reflect.sal"
 
 fn TK_EOF() -> Int
     0
@@ -858,15 +859,23 @@ fn preprocess_qdyn_ok(src: &String, i: Int) -> Int ! alloc
         1 - is_ident_char(prev)
 
 fn preprocess(src: &String) -> String ! alloc
-    n = src.len()
+    # The `Reflect` methods first, so the text they add is read like the rest (src/reflect.rs).
+    full = with_reflect(src.clone())
+    n = full.len()
     acc = ""
-    with_prelude_enums(preprocess_go(src, 0, n, acc, 0))
+    with_prelude_enums(preprocess_go(&full, 0, n, acc, 0))
 
 # `Option` / `Result` are part of the language: append the standard enums when
 # a program uses them without declaring them. Skip `Result` when `result.sal`
-# is imported (that module owns the enum; a second copy is `E_TYPE`).
+# is imported (that module owns the enum; a second copy is `E_TYPE`), and both
+# when the prelude is imported: it defines them, and a second `Option` would
+# rename the prelude's (SPEC «Módulos»).
 fn with_prelude_enums(src: String) -> String ! alloc
-    r = if src.contains("Result[") == 1 && src.contains("enum Result") == 0 && src_imports_result(&src) == 0
+    # A file with an `import` gets `Option` and `Result` from the prelude, directly or through
+    # what it imports (`with_prelude_enums` in src/interp.rs).
+    if src.slice(0, 7).eq("import ") == 1 || src.contains("\nimport ") == 1
+        return src
+    r = if src.contains("Result[") == 1 && src.contains("enum Result") == 0
         "\nenum Result[T, E]\n    Ok(T)\n    Err(E)\n"
     else
         ""
@@ -878,14 +887,6 @@ fn with_prelude_enums(src: String) -> String ! alloc
         src
     else
         src + "\n" + r + o
-
-fn src_imports_result(src: &String) -> Int ! alloc
-    if src.contains("import result") == 1
-        1
-    elsif src.contains("result.sal") == 1
-        1
-    else
-        0
 
 fn find_char(s: &String, ch: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n

@@ -819,6 +819,7 @@ pub fn walk_block(b: &mut Block, fe: &mut dyn FnMut(&mut Expr), fs: &mut dyn FnM
     for st in &mut b.stmts {
         fs(st);
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Break { .. } => {}
             Stmt::Let { init, .. } => walk_expr(init, fe, fs),
             Stmt::Expr(e) => walk_expr(e, fe, fs),
@@ -845,7 +846,7 @@ pub fn walk_block(b: &mut Block, fe: &mut dyn FnMut(&mut Expr), fs: &mut dyn FnM
 pub fn walk_expr(e: &mut Expr, fe: &mut dyn FnMut(&mut Expr), fs: &mut dyn FnMut(&mut Stmt)) {
     fe(e);
     match e {
-        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
         Expr::Call { func, args, .. } => {
             walk_expr(func, fe, fs);
             for a in args {

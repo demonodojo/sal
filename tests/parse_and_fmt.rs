@@ -157,3 +157,31 @@ fn fmt_keeps_multiline_tail_operand_bare() {
         assert_eq!(format_program(&p2), f1);
     }
 }
+
+#[test]
+fn fmt_inline_for_and_field_of_loop_var() {
+    let src = "\
+fn suma(p: &Punto) -> Int
+    t = 0
+    inline for f in Punto.fields
+        t = t + p.[f]
+        print(f.name)
+    t
+";
+    let p1 = parse(src).expect("parse");
+    let body = match &p1.items[0] {
+        sal_compiler::ast::Item::Fn(f) => &f.body,
+        _ => panic!("expected fn"),
+    };
+    assert!(matches!(
+        &body.stmts[1],
+        sal_compiler::ast::Stmt::InlineFor { var, ty, body, .. }
+            if var == "f" && ty == "Punto" && body.stmts.len() == 1 && body.tail.is_some()
+    ));
+    let f1 = format_program(&p1);
+    assert_eq!(f1, src);
+    let f2 = format_program(&parse(&f1).expect("re-parse"));
+    assert_eq!(f1, f2);
+    // `inline` and `for` stay ordinary names outside `inline for`.
+    parse("fn g(inline: Int) -> Int\n    for = inline\n    for\n").expect("contextual words");
+}

@@ -1,0 +1,9 @@
+# error: E_TYPE
+# `x.[f]` only means something inside an `inline for` over `f`.
+struct Punto
+    x: Int
+    y: Int
+
+fn main() -> Int
+    p = Punto(1, 2)
+    p.[f]

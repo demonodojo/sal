@@ -19,6 +19,7 @@ pub fn expand_interpolation(prog: &mut Program) {
 fn block(b: &mut Block) {
     for st in &mut b.stmts {
         match st {
+            Stmt::InlineFor { body, .. } => block(body),
             Stmt::Break { .. } => {}
             Stmt::Let { init, .. } => expr(init),
             Stmt::Expr(e) => expr(e),
@@ -125,9 +126,16 @@ fn chain(parts: Vec<StringPart>, sp: Span) -> Expr {
 /// so spans of the user's code do not move).
 ///
 /// `Result` is not injected when the file imports `result.sal` / `result`
-/// (selfhost owns the enum there; a second copy is `E_TYPE`).
+/// (selfhost owns the enum there; a second copy is `E_TYPE`). Neither is injected when the
+/// file imports the prelude, which defines both: a second `Option` would clash with it and
+/// rename the prelude's (SPEC «Módulos»).
 pub fn with_prelude_enums(src: &str) -> std::borrow::Cow<'_, str> {
-    let imports_result = src.contains("import result") || src.contains("result.sal");
+    // A file with an `import` gets `Option` and `Result` from the prelude, directly or through
+    // what it imports: a second `Option` in the graph would rename the prelude's, and its
+    // `dict_get` would no longer find it (SPEC «Módulos»).
+    if src.starts_with("import ") || src.contains("\nimport ") {
+        return std::borrow::Cow::Borrowed(src);
+    }
     let mut extra = String::new();
     for (name, def) in [
         ("Result", "\nenum Result[T, E]\n    Ok(T)\n    Err(E)\n"),
@@ -135,8 +143,7 @@ pub fn with_prelude_enums(src: &str) -> std::borrow::Cow<'_, str> {
     ] {
         let uses = src.contains(&format!("{name}["));
         let declares = src.contains(&format!("enum {name}"));
-        let skip_result = name == "Result" && imports_result;
-        if uses && !declares && !skip_result {
+        if uses && !declares {
             extra.push_str(def);
         }
     }

@@ -1,0 +1,9 @@
+# error: E_TYPE
+import "../../../std/reflect.sal"
+
+# `impl Reflect` on a generic struct is not supported.
+struct Caja[T] impl Reflect
+    v: T
+
+fn main() -> Int
+    0

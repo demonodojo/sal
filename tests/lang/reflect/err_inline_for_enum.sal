@@ -1,0 +1,11 @@
+# error: E_TYPE
+# `inline for` walks the fields of a struct of this module: an enum has none.
+enum Color
+    Rojo
+    Verde
+
+fn main() -> Int
+    n = 0
+    inline for f in Color.fields
+        n = n + 1
+    n

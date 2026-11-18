@@ -1041,6 +1041,34 @@ impl Parser {
         }
     }
 
+    /// `inline` and `for` are contextual: `inline for` only starts a line of a block.
+    fn at_inline_for(&self) -> bool {
+        let word = |k: &TokenKind, w: &str| matches!(k, TokenKind::Ident(n) if n == w);
+        word(&self.peek().kind, "inline")
+            && self.tokens.get(self.pos + 1).is_some_and(|t| word(&t.kind, "for"))
+    }
+
+    /// `"inline" "for" IDENT "in" IDENT "." "fields" suite`
+    fn parse_inline_for(&mut self) -> Result<Stmt, Diagnostic> {
+        let sp = self.bump().span;
+        self.bump();
+        let var = self.parse_ident()?;
+        self.expect(TokenKind::In, "expected `in` after the `inline for` variable")?;
+        let ty = self.parse_ident()?;
+        self.expect(TokenKind::Dot, "expected `.fields` in `inline for`")?;
+        let what_sp = self.peek().span;
+        if self.parse_ident()? != "fields" {
+            return Err(Diagnostic::new(ErrorCode::EParse, "`inline for` walks `T.fields`", what_sp));
+        }
+        self.expect(TokenKind::Newline, "expected newline after inline for")?;
+        self.expect(TokenKind::Indent, "expected indented inline for body")?;
+        let body = self.parse_block_inner()?;
+        if self.at(TokenKind::Dedent) {
+            self.bump();
+        }
+        Ok(Stmt::InlineFor { var, ty, body, span: sp })
+    }
+
     fn parse_block_inner(&mut self) -> Result<Block, Diagnostic> {
         let start = self.peek().span;
         let mut stmts = Vec::new();
@@ -1070,6 +1098,14 @@ impl Parser {
                 }
                 let sp = self.bump().span;
                 stmts.push(Stmt::Break { span: sp });
+                self.skip_newlines();
+                continue;
+            }
+            if self.at_inline_for() {
+                if let Some(e) = pending_expr.take() {
+                    stmts.push(Stmt::Expr(e));
+                }
+                stmts.push(self.parse_inline_for()?);
                 self.skip_newlines();
                 continue;
             }
@@ -1633,7 +1669,15 @@ impl Parser {
                 TokenKind::Dot => {
                     self.bump();
                     let field_sp = self.peek().span;
-                    let field = self.parse_ident()?;
+                    // `x.[f]`: the field `f` of an `inline for` (`inline_for.rs`).
+                    let field = if self.at(TokenKind::LBracket) {
+                        self.bump();
+                        let v = self.parse_ident()?;
+                        self.expect(TokenKind::RBracket, "expected ] after the inline for variable")?;
+                        format!("[{v}]")
+                    } else {
+                        self.parse_ident()?
+                    };
                     let sp = Span::merge(e.span(), field_sp);
                     e = Expr::Field {
                         base: Box::new(e),
@@ -1734,7 +1778,13 @@ impl Parser {
             TokenKind::Match => self.parse_match(),
             TokenKind::If => self.parse_if(),
             TokenKind::LParen => {
+                let start = self.peek().span;
                 self.bump();
+                if self.at(TokenKind::RParen) {
+                    let end = self.peek().span;
+                    self.bump();
+                    return Ok(Expr::Unit { span: Span { start: start.start, end: end.end, line: start.line, col: start.col } });
+                }
                 self.enter_group();
                 let e = self.parse_expr()?;
                 self.skip_group_newlines();

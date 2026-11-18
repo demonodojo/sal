@@ -1,0 +1,5 @@
+# error: E_TYPE
+# `()` es de tipo `Unit`: no vale donde se espera un `Int`.
+fn main() -> Int
+    let n: Int = ()
+    n

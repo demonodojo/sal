@@ -1,0 +1,24 @@
+# exit: 7
+# Un payload de tipo `any[P]` toma el valor en una caja, como un `let`.
+protocol Num
+    method n(&self) -> Int
+
+struct Two impl Num
+    x: Int
+    y: Int
+
+method Two.n(&self) -> Int
+    self.x + self.y
+
+enum Slot
+    Empty
+    Full(any[Num])
+
+fn read(s: &Slot) -> Int
+    match s
+        Full(v) => v.n()
+        Empty => 0
+
+fn main() -> Int ! alloc
+    s = Full(Two(3, 4))
+    read(&s)

@@ -152,6 +152,7 @@ fn last_span(out: &[Stmt]) -> Span {
 
 fn stmt_span(st: &Stmt) -> Span {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Let { span, .. }
         | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }
@@ -165,6 +166,7 @@ fn stmt_span(st: &Stmt) -> Span {
 /// a `break` of the enclosing loop, and whether it is a bare `break`.
 fn stmt(st: Stmt, flag: Option<&str>, cx: &mut Cx) -> DiagResult<(Vec<Stmt>, bool, bool)> {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { span } => match flag {
             Some(f) => Ok((vec![set_flag(f, 1, span)], true, true)),
             None => Err(misplaced(span)),

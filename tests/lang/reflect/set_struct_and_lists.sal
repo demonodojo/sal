@@ -1,0 +1,44 @@
+# exit: 88
+# stdout: ok|ok|field tags: expected String, found Int|ok|ok
+import "../../../std/reflect.sal"
+
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+struct Ficha impl Reflect
+    tags: List[String]
+    notas: Dict[String, Int]
+    pos: Punto
+    ruta: List[Punto]
+
+fn texto(r: &Result[Unit, String]) -> String ! alloc
+    match r
+        Ok(_) => d"ok"
+        Err(e) => e.clone()
+
+fn punto(x: Int, y: Int) -> Value ! alloc
+    d = Dict.new[String, Value]()
+    d.put(d"x", VInt(x))
+    d.put(d"y", VInt(y))
+    VDict(d)
+
+fn main() -> Int ! alloc, io
+    f = Ficha(List.new[String](), Dict.new[String, Int](), Punto(1, 2), List.new[Punto]())
+    xs = List.new[Value]()
+    xs.push(VStr(d"p"))
+    xs.push(VStr(d"q"))
+    a = texto(&f.set_field(&d"tags", VList(xs)))
+    ns = Dict.new[String, Value]()
+    ns.put(d"k", VInt(7))
+    b = texto(&f.set_field(&d"notas", VDict(ns)))
+    malos = List.new[Value]()
+    malos.push(VInt(1))
+    c = texto(&f.set_field(&d"tags", VList(malos)))
+    d = texto(&f.set_field(&d"pos", punto(7, 8)))
+    rs = List.new[Value]()
+    rs.push(punto(3, 4))
+    rs.push(punto(5, 6))
+    e = texto(&f.set_field(&d"ruta", VList(rs)))
+    print(a + "|" + b + "|" + c + "|" + d + "|" + e)
+    f.tags.len() * 10 + f.notas.len() * 7 + f.pos.x * 7 + f.ruta.get(1).y + f.ruta.len() * 3

@@ -1,0 +1,15 @@
+# error: E_TYPE
+# A `break` in the body would not say whether it leaves the `inline for` or the `while`: an error.
+struct Punto
+    x: Int
+    y: Int
+
+fn main() -> Int
+    p = Punto(1, 2)
+    n = 0
+    while n < 10
+        inline for f in Punto.fields
+            if p.[f] > 1
+                break
+        n = n + 1
+    n

@@ -1,0 +1,16 @@
+# exit: 2
+# stdout: propio
+import "../../../std/reflect.sal"
+
+# A `Reflect` method the struct defines is kept; the compiler writes only the others.
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+method Punto.type_name(&self) -> String ! alloc
+    d"propio"
+
+fn main() -> Int ! alloc, io
+    p = Punto(1, 2)
+    print(p.type_name())
+    p.fields().len()

@@ -1,0 +1,25 @@
+# exit: 45
+# `let b: any[P] = valor` mete el valor en la caja: las llamadas por la vtable lo leen.
+protocol Num
+    method n(&self) -> Int
+
+struct One impl Num
+    x: Int
+
+struct Two impl Num
+    x: Int
+    y: Int
+
+method One.n(&self) -> Int
+    self.x + 1
+
+method Two.n(&self) -> Int
+    self.x + self.y
+
+fn read(v: &any[Num]) -> Int
+    v.n()
+
+fn main() -> Int ! alloc
+    let a: any[Num] = One(41)
+    let b: any[Num] = Two(1, 2)
+    read(&a) + read(&b)

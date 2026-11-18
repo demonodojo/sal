@@ -182,6 +182,9 @@ fn drop_field_fn(structs: &List[TStruct], enums: &List[TEnum], ty: &String, g: I
     base = ty_base(&t)
     if t.eq("String") == 1
         "sal_free"
+    elsif base.eq("any") == 1
+        # The box owns its value: `sal_any_free` releases both (`field_drop` in src/ir.rs).
+        "sal_any_free"
     elsif enum_named_t(enums, &t, 0, enums.len()) == 1
         "sal_enum_free"
     elsif g < 2
@@ -262,6 +265,19 @@ fn drop_struct_fn(structs: &List[TStruct], enums: &List[TEnum], t: &String, g: I
         "struct"
     else
         ""
+
+# The field type `ty` is a non-generic struct of two or more fields, and the glue may release
+# nested structs (`nested_flat_block` in src/ir.rs).
+fn nested_flat_block_t(structs: &List[TStruct], ty: &String, g: Int, depth: Int) -> Int ! alloc
+    si = tt_struct_find(structs, &trim_type_piece(ty))
+    if g % 2 == 0 || depth >= 8 || si < 0
+        0
+    elsif (&structs.get(si).tparams).len() > 0
+        0
+    elsif (&structs.get(si).fields).len() > 1
+        1
+    else
+        0
 
 # A Copy scalar type name (`Int`, `Float`, `Bool`).
 fn flat_value_text(t: &String) -> Int ! alloc

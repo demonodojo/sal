@@ -1,0 +1,19 @@
+# exit: 7
+# `Some(Line(n))` no encaja con `Some(Box(2, 5))`: el patrón de dentro también se comprueba,
+# y el brazo siguiente decide.
+enum Shape
+    Dot
+    Line(Int)
+    Box(Int, Int)
+
+enum Option[T]
+    None
+    Some(T)
+
+fn score(o: Option[Shape]) -> Int
+    match o
+        Some(Line(n)) => n
+        _ => 7
+
+fn main() -> Int ! alloc
+    score(Some(Box(2, 5)))

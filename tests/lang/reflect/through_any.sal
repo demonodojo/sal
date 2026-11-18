@@ -1,0 +1,49 @@
+# exit: 49
+# stdout: Persona nombre,edad,pos Ana
+import "../../../std/reflect.sal"
+
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+struct Persona impl Reflect
+    nombre: String
+    edad: Int
+    pos: Punto
+
+# Prints the type and the fields of a value it does not know, then `extra`.
+fn describir(x: &any[Reflect], extra: &String) -> Int ! alloc, io
+    fs = x.fields()
+    out = x.type_name() + " "
+    i = 0
+    while i < fs.len()
+        f = fs.get(i)
+        if i > 0
+            out = out + ","
+        out = out + f.name
+        i = i + 1
+    print(out + " " + extra)
+    fs.len()
+
+fn texto(x: &any[Reflect], k: &String) -> String ! alloc
+    match x.get_field(k)
+        Some(VStr(s)) => s.clone()
+        _ => d"?"
+
+fn entero(x: &any[Reflect], k: &String) -> Int ! alloc
+    match x.get_field(k)
+        Some(VInt(n)) => n
+        _ => 0
+
+# Writes a field through `&mut any[Reflect]`.
+fn cumplir(x: &mut any[Reflect]) -> Int ! alloc
+    r = x.set_field(&d"edad", VInt(41))
+    match &r
+        Ok(_) => 1
+        Err(_) => 0
+
+fn main() -> Int ! alloc, io
+    p = Persona(d"Ana", 30, Punto(1, 2))
+    ok = cumplir(&mut p)
+    n = describir(&p, &texto(&p, &d"nombre"))
+    entero(&p, &"edad") + entero(&p, &"pos.y") * 2 + ok + n

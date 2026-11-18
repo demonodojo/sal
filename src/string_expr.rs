@@ -33,6 +33,9 @@ pub struct StringEnv {
     pub accumulate: Option<String>,
     pub protocol_calls: Rc<HashMap<(u32, u32), (String, String, u32)>>,
     pub any_coercions: Rc<HashMap<(u32, u32), (String, String)>>,
+    /// Boxes made for a borrowed `&T` passed as `&any[P]`, still to release: the call that
+    /// takes them frees their shell (`sal_any_free_shell`) and leaves the value to its owner.
+    pub any_shells: Vec<String>,
     pub protocols: Rc<HashMap<String, crate::ast::ProtocolDef>>,
     /// Struct and enum variant constructors across the module graph (`P(…)`, `V(…)` with fields).
     pub ctor_names: Rc<HashSet<String>>,
@@ -130,6 +133,7 @@ impl StringEnv {
             accumulate: None,
             protocol_calls: Rc::new(HashMap::new()),
             any_coercions: Rc::new(HashMap::new()),
+            any_shells: Vec::new(),
             protocols: Rc::new(protocols),
             ctor_names: Rc::new(ctor_names),
             returns_param: Rc::new(returns_param),

@@ -1,0 +1,45 @@
+# exit: 33
+# stdout: missing field edad|field edad: expected Int, found String
+import "../../../std/reflect.sal"
+
+struct Punto impl Reflect
+    x: Int
+    y: Int
+
+struct Persona impl Reflect
+    nombre: String
+    edad: Int
+    pos: Punto
+
+fn punto(x: Int, y: Int) -> Value ! alloc
+    d = Dict.new[String, Value]()
+    d.put(d"x", VInt(x))
+    d.put(d"y", VInt(y))
+    VDict(d)
+
+fn error(r: &Result[Persona, String]) -> String ! alloc
+    match r
+        Ok(_) => d"ok"
+        Err(e) => e.clone()
+
+fn main() -> Int ! alloc, io
+    d = Dict.new[String, Value]()
+    d.put(d"nombre", VStr(d"Ana"))
+    d.put(d"edad", VInt(30))
+    d.put(d"pos", punto(1, 2))
+    bien = match Persona.from_dict(&d)
+        Ok(p) => p.edad + p.pos.y
+        Err(_) => 0
+    # Round trip: `to_dict` then `from_dict`.
+    q = Persona(d"Eva", 0, Punto(0, 1))
+    vuelta = match Persona.from_dict(&q.to_dict())
+        Ok(p) => p.pos.y + p.nombre.len() - 3
+        Err(_) => 100
+    falta = Dict.new[String, Value]()
+    falta.put(d"nombre", VStr(d"Ana"))
+    otro = Dict.new[String, Value]()
+    otro.put(d"nombre", VStr(d"Ana"))
+    otro.put(d"edad", VStr(d"x"))
+    otro.put(d"pos", punto(1, 2))
+    print(error(&Persona.from_dict(&falta)) + "|" + error(&Persona.from_dict(&otro)))
+    bien + vuelta

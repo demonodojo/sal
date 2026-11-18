@@ -370,12 +370,19 @@ fn struct_glue_fns(strings: &StringEnv, own: &HashSet<&str>) -> Vec<IrFunction> 
             if boxed {
                 out.push(struct_elem_glue_fn(name));
             }
-            if struct_clone_glue(name, strings) {
+            if struct_enum_glue(name, strings) {
                 out.push(struct_clone_fn(name, strings));
             }
         }
     }
     out
+}
+
+/// Whether `clone.<name>` exists: the struct has glue. An enum box that holds one (`Ok(p)`)
+/// releases and copies it with `drop.<name>` / `clone.<name>`, descriptor or not
+/// (`enum_struct_glue_type`); `x.clone()` itself follows `struct_clone_glue`.
+fn struct_enum_glue(name: &str, strings: &StringEnv) -> bool {
+    struct_glue_has(name, strings)
 }
 
 /// Whether `x.clone()` of struct `name` goes through `clone.<name>`: the struct has glue (it
@@ -540,7 +547,7 @@ pub fn struct_glue_externs(strings: &StringEnv, program: &Program) -> HashMap<St
             if struct_is_boxed(n, strings) {
                 names.push((format!("drop.elem.{n}"), 1usize));
             }
-            if struct_clone_glue(n, strings) {
+            if struct_enum_glue(n, strings) {
                 names.push((format!("clone.{n}"), 1usize));
             }
             names
@@ -700,10 +707,93 @@ pub fn lower_program_with_callables_env(
         })
         .collect();
     functions.extend(struct_glue_fns(&strings, &own));
+    let mut any_vtables = collect_any_vtables(prog, &strings);
+    functions.extend(any_glue_fns(prog, &mut any_vtables, &strings));
     IrModule {
         functions,
-        any_vtables: collect_any_vtables(prog),
+        any_vtables,
     }
+}
+
+/// The functions an `any[P]` vtable points at besides the methods (SPEC «Protocolos»):
+///
+/// - `sal_any_drop_<T>(v)`: releases the boxed value with the glue of `T`;
+/// - for a struct passed in registers (two or more fields, see `scalarize`), `<T>__<m>__any`:
+///   the box holds the struct in heap form, and the thunk hands it to `T__m`, which takes
+///   its fields. The vtable entry is the thunk.
+fn any_glue_fns(prog: &Program, vtables: &mut [AnyVtableDef], strings: &StringEnv) -> Vec<IrFunction> {
+    let mut protocols: HashMap<String, crate::ast::ProtocolDef> = (*strings.protocols).clone();
+    for item in &prog.items {
+        if let Item::Protocol(p) = item {
+            protocols.insert(p.name.clone(), p.clone());
+        }
+    }
+    let mut out = Vec::new();
+    let mut made: HashSet<String> = HashSet::new();
+    for vt in vtables.iter_mut() {
+        let tname = vt.type_name.clone();
+        let named = Type::Named { name: tname.clone(), args: vec![], span: crate::span::Span::default() };
+        let agg = crate::scalarize::agg_struct(&named, &strings.structs).is_some();
+        if agg {
+            if let Some(pdef) = protocols.get(&vt.protocol) {
+                let arity: HashMap<String, usize> = pdef
+                    .methods
+                    .iter()
+                    .map(|m| (format!("{tname}__{}", m.name), m.params.len() + 1))
+                    .collect();
+                for entry in vt.entries.iter_mut() {
+                    let Some(&n) = arity.get(entry.as_str()) else { continue };
+                    let thunk = format!("{entry}__any");
+                    if made.insert(thunk.clone()) {
+                        let params: Vec<String> = (0..n).map(|i| format!("a{i}")).collect();
+                        out.push(IrFunction {
+                            name: thunk.clone(),
+                            params: params.clone(),
+                            instructions: vec![
+                                IrInst::Call { dest: Some("r".into()), func: entry.clone(), args: params },
+                                IrInst::Return { value: "r".into() },
+                            ],
+                            regions: Vec::new(),
+                            dim_params: Vec::new(),
+                            host_literals: Vec::new(),
+                        });
+                    }
+                    *entry = thunk;
+                }
+            }
+        }
+        let drop = format!("sal_any_drop_{tname}");
+        if made.insert(drop.clone()) {
+            let mut ins = Vec::new();
+            let release = if let Some(sd) = strings.structs.get(&tname) {
+                if struct_glue_has(&tname, strings) {
+                    Some(format!("drop.{tname}"))
+                } else if is_transparent_struct(sd) {
+                    None
+                } else {
+                    Some("sal_struct_free_box".to_string())
+                }
+            } else if strings.enums.contains_key(&tname) {
+                Some("sal_enum_free".to_string())
+            } else {
+                None
+            };
+            if let Some(func) = release {
+                ins.push(IrInst::Call { dest: None, func, args: vec!["v".into()] });
+            }
+            ins.push(IrInst::ConstInt { dest: "r".into(), value: 0 });
+            ins.push(IrInst::Return { value: "r".into() });
+            out.push(IrFunction {
+                name: drop,
+                params: vec!["v".into()],
+                instructions: ins,
+                regions: Vec::new(),
+                dim_params: Vec::new(),
+                host_literals: Vec::new(),
+            });
+        }
+    }
+    out
 }
 
 /// The modes written in the source, before `infer_param_modes`.
@@ -784,13 +874,23 @@ fn caller_param_modes(
     out
 }
 
-fn collect_any_vtables(prog: &Program) -> Vec<AnyVtableDef> {
-    let mut protocols = HashMap::new();
+/// A protocol whose dynamic methods all lower to one fn each: none takes a function, which is
+/// specialized per lambda at each call (`each` of `Collection`) and so has no single entry.
+fn dispatchable_protocol(p: &crate::ast::ProtocolDef) -> bool {
+    p.methods.iter().filter(|m| crate::protocols::dynamic(m)).all(|m| {
+        !m.params.iter().any(|q| matches!(q.ty, Type::Fn { .. }))
+    })
+}
+
+fn collect_any_vtables(prog: &Program, strings: &StringEnv) -> Vec<AnyVtableDef> {
+    // The module's protocols, and the imported ones (`impl Reflect` of `std/reflect.sal`).
+    let mut protocols: HashMap<String, crate::ast::ProtocolDef> = (*strings.protocols).clone();
     for item in &prog.items {
         if let Item::Protocol(p) = item {
             protocols.insert(p.name.clone(), p.clone());
         }
     }
+    protocols.retain(|_, p| dispatchable_protocol(p));
     let mut out = Vec::new();
     for item in &prog.items {
         let (type_name, claims) = match item {
@@ -845,6 +945,7 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
     fn blk(b: &Block, out: &mut HashSet<String>) {
         for st in &b.stmts {
             match st {
+                Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
                 Stmt::Break { .. } => {}
                 Stmt::Let { init, .. } => ex(init, out),
                 Stmt::Assign { target, value, .. } => {
@@ -1400,6 +1501,7 @@ fn arena_keep_names(f: &FnDef) -> HashSet<String> {
 fn arena_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
     for st in &b.stmts {
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Let { name, init, .. } => {
                 if let Expr::Ident { name: rhs, .. } = init {
                     out.push((name.clone(), rhs.clone()));
@@ -1433,7 +1535,7 @@ fn arena_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
 
 fn arena_alias_pairs_expr(e: &Expr, out: &mut Vec<(String, String)>) {
     match e {
-        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
         Expr::Call { func, args, .. } => {
             arena_alias_pairs_expr(func, out);
             for a in args {
@@ -1870,7 +1972,7 @@ fn alias_root(e: &Expr, alias: &HashSet<String>) -> bool {
 
 fn piece_of_alias(e: &Expr, alias: &HashSet<String>) -> bool {
     match e {
-        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } => true,
+        Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } => true,
         Expr::Ident { name, .. } => alias.contains(name),
         Expr::Field { base, .. } => alias_root(base, alias),
         _ => false,
@@ -2139,10 +2241,15 @@ fn fn_struct_bindings(f: &FnDef, strings: &StringEnv) -> HashMap<String, String>
             out.insert(p.name.clone(), sn);
         }
     }
-    fn walk(b: &Block, strings: &StringEnv, out: &mut HashMap<String, String>) {
+    // `anys`: locals declared `any[P]`. A struct assigned to one goes into a box the local owns
+    // (`sal_any_free` releases it), so it is not a struct local.
+    fn walk(b: &Block, strings: &StringEnv, out: &mut HashMap<String, String>, anys: &mut HashSet<String>) {
         for st in &b.stmts {
             match st {
                 Stmt::Let { name, ty, init, .. } => {
+                    if matches!(ty, Some(Type::Named { name: t, .. }) if t == "any") {
+                        anys.insert(name.clone());
+                    }
                     let sn = match ty {
                         Some(t) => struct_of_type(t),
                         None => value_struct(init, strings, out),
@@ -2157,18 +2264,18 @@ fn fn_struct_bindings(f: &FnDef, strings: &StringEnv) -> HashMap<String, String>
                     }
                 }
                 // `x = value` binds `x` too (the language's first binding is an assignment).
-                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } => {
+                Stmt::Assign { target: Expr::Ident { name, .. }, value, .. } if !anys.contains(name) => {
                     if let Some(sn) = value_struct(value, strings, out) {
                         out.insert(name.clone(), sn);
                     }
                 }
-                Stmt::While { body, .. } => walk(body, strings, out),
+                Stmt::While { body, .. } => walk(body, strings, out, anys),
                 // Locals of an `if` branch are released when the branch ends (`block_struct_drops`).
                 _ => {}
             }
         }
     }
-    walk(&f.body, strings, &mut out);
+    walk(&f.body, strings, &mut out, &mut HashSet::new());
     out
 }
 
@@ -2504,6 +2611,8 @@ fn field_drop<'a>(
     };
     match (name.as_str(), args.as_slice()) {
         ("String", []) => Some(FieldDrop::Call("sal_free")),
+        // An `any[P]` field owns its box, which releases the value with the type's glue.
+        ("any", [_]) => Some(FieldDrop::Call("sal_any_free")),
         ("Bytes", []) if glue.containers => Some(FieldDrop::Call("sal_bytes_free")),
         (_, []) if strings.enums.contains_key(name) => Some(FieldDrop::Call("sal_enum_free")),
         ("List", [e]) if glue.containers && flat(e) => Some(FieldDrop::Call("sal_list_free")),
@@ -2626,6 +2735,23 @@ fn emit_owned_value_drop(
     }
 }
 
+/// The block of a nested multi-field struct without heap fields that a field overwrite
+/// replaces: `emit_owned_value_drop` has no glue for it, and the owner's glue would only
+/// release the new one (`nested_flat_block`, as `free_struct_strings` does at scope end).
+fn emit_flat_block_drop(ssa: &str, ty: &Type, owner_transparent: bool, strings: &StringEnv, instructions: &mut Vec<IrInst>) {
+    if !FIELD_OVERWRITE_DROPS.with(|c| c.get()) {
+        return;
+    }
+    let glue = Glue { nested: true, containers: true };
+    if field_drop(ty, strings, glue, 0, None, "", "").is_none() && nested_flat_block(ty, owner_transparent, glue, 0, strings) {
+        instructions.push(IrInst::Call {
+            dest: None,
+            func: "sal_struct_free_box".into(),
+            args: vec![ssa.to_string()],
+        });
+    }
+}
+
 /// Frees the heap fields of the struct value `base` (of type `sdef`) and, when
 /// `glue.nested`, those of the structs held in its fields, recursively. A field of a
 /// transparent (single-field) struct is the value itself; otherwise it is read
@@ -2651,6 +2777,19 @@ fn free_struct_strings(
             format!("{path_prefix}.{}", field.name)
         };
         let Some(action) = field_drop(&field.ty, strings, glue, depth, reads, root, &path) else {
+            // A nested struct of two or more fields with nothing else to release is still a
+            // block of its own inside a block (`pos: Punto` of a `Persona`): free it.
+            if nested_flat_block(&field.ty, transparent, glue, depth, strings) {
+                *counter += 1;
+                let d = format!("t{counter}");
+                instructions.push(IrInst::Extract {
+                    dest: d.clone(),
+                    base: base.to_string(),
+                    struct_name: sdef.name.clone(),
+                    field_index: i as u32,
+                });
+                instructions.push(IrInst::Call { dest: None, func: "sal_struct_free_box".into(), args: vec![d] });
+            }
             continue;
         };
         if matches!(action, FieldDrop::Call("sal_free") | FieldDrop::Call("sal_enum_free"))
@@ -2703,6 +2842,16 @@ fn free_struct_strings(
             }
         }
     }
+}
+
+/// A field of a multi-field owner whose type is a multi-field struct without heap fields.
+fn nested_flat_block(ty: &Type, owner_transparent: bool, glue: Glue, depth: u32, strings: &StringEnv) -> bool {
+    if owner_transparent || !glue.nested || depth >= 8 {
+        return false;
+    }
+    let Type::Named { name, args, .. } = ty else { return false };
+    args.is_empty()
+        && strings.structs.get(name).is_some_and(|d| d.type_params.is_empty() && !is_transparent_struct(d))
 }
 
 /// Does a struct hold anything its glue releases, directly or in a nested struct?
@@ -2892,6 +3041,7 @@ fn field_reads(
         fn blk(&mut self, b: &Block) {
             for st in &b.stmts {
                 match st {
+                    Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
                     Stmt::Let { init, .. } => self.ex(init, true),
                     Stmt::Expr(e) => self.ex(e, false),
                     Stmt::Assign { target, value, .. } => {
@@ -2975,6 +3125,7 @@ fn collect_moved_stmt(
     moved: &mut HashSet<String>,
 ) {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { .. } => {}
         Stmt::Let { init, .. } => {
             if let Expr::Ident { name, .. } = init {
@@ -3124,6 +3275,7 @@ fn collect_assigned_block(body: &Block, names: &mut HashSet<String>) {
 
 fn collect_assigned_stmt(st: &Stmt, names: &mut HashSet<String>) {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { .. } => {}
         Stmt::Assign { target, value, .. } => {
             match target {
@@ -3260,6 +3412,7 @@ fn lower_stmt(
         _ => {}
     }
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { .. } => return false,
         Stmt::Let { name, ty, init, .. } => {
             let param_cell = cell_param_alias(init);
@@ -3421,6 +3574,7 @@ fn lower_stmt(
                                         counter,
                                         instructions,
                                     );
+                                    emit_flat_block_drop(&old, &fd.ty, false, strings, instructions);
                                 }
                                 // `list_get` aliases and `&mut` params share a heap box: write
                                 // in place. Owned locals are rebuilt so scalarize keeps slots.
@@ -3913,11 +4067,12 @@ fn maybe_box_for_any(
     payload: String,
     instructions: &mut Vec<IrInst>,
     counter: &mut u32,
-    strings: &StringEnv,
+    strings: &mut StringEnv,
 ) -> String {
     let Some((tname, protocol)) = strings.any_coercion(e.span()) else {
         return payload;
     };
+    let borrowed = strings.expr_is_ref(e);
     let vtable = crate::protocols::vtable_global(&tname, &protocol);
     let drop_slot = strings
         .protocols
@@ -3932,7 +4087,22 @@ fn maybe_box_for_any(
         payload,
         drop_slot,
     });
+    if borrowed {
+        strings.any_shells.push(dest.clone());
+    }
     dest
+}
+
+/// Frees the shells of the borrowed `any` boxes made since `mark` (the arguments of the call
+/// just emitted): the value inside still belongs to the caller.
+fn free_any_shells(mark: usize, instructions: &mut Vec<IrInst>, strings: &mut StringEnv) {
+    for shell in strings.any_shells.split_off(mark) {
+        instructions.push(IrInst::Call {
+            dest: None,
+            func: "sal_any_free_shell".into(),
+            args: vec![shell],
+        });
+    }
 }
 
 fn lower_expr_simple(
@@ -4321,7 +4491,42 @@ fn is_runtime_builtin(name: &str) -> bool {
     )
 }
 
+/// Lowers `e`. A call frees, once it is emitted, the shells of the borrowed `any` boxes its
+/// arguments made (a temporary that lives for the call, as in Rust).
 fn lower_expr(
+    e: &Expr,
+    instructions: &mut Vec<IrInst>,
+    env: &mut HashMap<String, String>,
+    counter: &mut u32,
+    regions: &mut Vec<FusedRegion>,
+    tensors: &mut HashMap<String, TensorInfo>,
+    dim_params: &mut Vec<String>,
+    fn_names: &HashMap<String, ()>,
+    host_literals: &mut Vec<IrHostLiteral>,
+    strings: &mut StringEnv,
+) -> String {
+    let shells = strings.any_shells.len();
+    let v = lower_expr_inner(
+        e,
+        instructions,
+        env,
+        counter,
+        regions,
+        tensors,
+        dim_params,
+        fn_names,
+        host_literals,
+        strings,
+    );
+    if strings.any_shells.len() > shells && matches!(e, Expr::Call { .. }) {
+        free_any_shells(shells, instructions, strings);
+    }
+    // Where `e` goes into an `any[P]` (an argument, a `let`, a returned value, a field or a
+    // payload), its value is boxed here: infer registered the coercion on `e`'s span.
+    maybe_box_for_any(e, v, instructions, counter, strings)
+}
+
+fn lower_expr_inner(
     e: &Expr,
     instructions: &mut Vec<IrInst>,
     env: &mut HashMap<String, String>,
@@ -4359,6 +4564,13 @@ fn lower_expr(
                 dest: dest.clone(),
                 value: if *value { 1 } else { 0 },
             });
+            dest
+        }
+        // `()`: a `Unit` value is the word 0, as the value of a block without a tail.
+        Expr::Unit { .. } => {
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::ConstInt { dest: dest.clone(), value: 0 });
             dest
         }
         Expr::Float { value, .. } => {
@@ -4652,7 +4864,7 @@ fn lower_expr(
                     );
                     let mut arg_names = Vec::new();
                     for a in args {
-                        let mut n = lower_expr_simple(
+                        let n = lower_expr_simple(
                             a,
                             instructions,
                             env,
@@ -4662,7 +4874,6 @@ fn lower_expr(
                             host_literals,
                             strings,
                         );
-                        n = maybe_box_for_any(a, n, instructions, counter, strings);
                         arg_names.push(n);
                     }
                     instructions.push(IrInst::AnyCall {
@@ -4721,7 +4932,7 @@ fn lower_expr(
                                 host_literals,
                                 strings,
                             );
-                            call_args.push(maybe_box_for_any(a, n, instructions, counter, strings));
+                            call_args.push(n);
                         }
                         if inner_args.len() < 8 {
                             *counter += 1;
@@ -4823,7 +5034,6 @@ fn lower_expr(
                 {
                     n = cell_get(&n, counter, instructions);
                 }
-                n = maybe_box_for_any(a, n, instructions, counter, strings);
                 arg_names.push(n);
             }
             export_keep_args(&fname, args, &mut arg_names, instructions, counter, strings);
@@ -5075,10 +5285,31 @@ fn lower_expr(
                     enum_name: edef.name.clone(),
                     variant_index: vidx,
                     payload: arg_names.clone(),
-                    owned: enum_owned_mask(args, vdef, strings),
+                    owned: enum_owned_mask(args, edef, vdef, strings),
                 });
-                for (i, field) in vdef.fields.iter().enumerate().take(28) {
-                    if let Some(name) = enum_struct_glue_type(field, strings) {
+                for (i, a) in args.iter().enumerate().take(28) {
+                    let Some(field) = payload_field_type(a, edef, vdef.fields.get(i), strings) else { continue };
+                    let field = &field;
+                    if matches!(field, Type::Named { name, args, .. } if name == "Dict" && args.len() == 2) {
+                        // A `Dict` payload is the box's to release and to copy (`VDict(d)`).
+                        *counter += 1;
+                        let index = format!("t{counter}");
+                        instructions.push(IrInst::ConstInt { dest: index.clone(), value: i as i64 });
+                        instructions.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_enum_set_struct_glue".into(),
+                            args: vec![dest.clone(), index, "sal_dict_drop_glue".into(), "sal_dict_clone_glue".into()],
+                        });
+                    } else if matches!(field, Type::Named { name, .. } if name == "any") {
+                        *counter += 1;
+                        let index = format!("t{counter}");
+                        instructions.push(IrInst::ConstInt { dest: index.clone(), value: i as i64 });
+                        instructions.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_enum_set_struct_glue".into(),
+                            args: vec![dest.clone(), index, "sal_any_drop_glue".into(), "sal_any_clone_glue".into()],
+                        });
+                    } else if let Some(name) = enum_struct_glue_type(field, strings) {
                         *counter += 1;
                         let index = format!("t{counter}");
                         instructions.push(IrInst::ConstInt { dest: index.clone(), value: i as i64 });
@@ -5906,20 +6137,38 @@ fn lower_expr(
 /// alias leaves a dangling name in the box (stage1 SEGV in `strdup` / `str_slice`
 /// on `XCall` names). An enum field owns its value regardless of how it was
 /// produced; reference fields stay at kind 0.
+/// The type a payload argument moves into: the declared field type, or, for a field whose type
+/// is a parameter of the enum (`Ok(T)`), the type of the local passed there (`Ok(out)` with
+/// `out: List[Value]`), so the box owns it like a field declared with that type (SPEC «Memoria»).
+fn payload_field_type(a: &Expr, edef: &crate::ast::EnumDef, declared: Option<&Type>, strings: &StringEnv) -> Option<Type> {
+    let declared = declared?;
+    let generic = matches!(declared, Type::Named { name, args, .. } if args.is_empty() && edef.type_params.contains(name));
+    if !generic {
+        return Some(declared.clone());
+    }
+    let Expr::Ident { span, .. } = a else { return Some(declared.clone()) };
+    match strings.types.get(&(span.start, span.end)) {
+        Some(t @ Type::Named { .. }) => Some(t.clone()),
+        _ => Some(declared.clone()),
+    }
+}
+
 fn enum_owned_mask(
     args: &[Expr],
+    edef: &crate::ast::EnumDef,
     vdef: &crate::ast::EnumVariant,
     strings: &StringEnv,
 ) -> u64 {
     let mut mask = 0u64;
     for (i, a) in args.iter().enumerate().take(28) {
-        let field_ty = vdef.fields.get(i);
+        let field_owned = payload_field_type(a, edef, vdef.fields.get(i), strings);
+        let field_ty = field_owned.as_ref();
         let is_string_field = matches!(
             field_ty,
             Some(crate::ast::Type::Named { name, args: ta, .. })
                 if name == "String" && ta.is_empty()
         );
-        let kind = if matches!(field_ty, Some(crate::ast::Type::Named { name, .. }) if name == "List")
+        let kind = if matches!(field_ty, Some(crate::ast::Type::Named { name, .. }) if name == "List" || name == "Dict" || name == "any")
             || field_ty.is_some_and(|ty| enum_struct_glue_type(ty, strings).is_some())
             || field_ty.is_some_and(|ty| enum_struct_flat_fields(ty, strings).is_some())
         {
@@ -5959,7 +6208,7 @@ fn enum_struct_flat_fields(ty: &Type, strings: &StringEnv) -> Option<usize> {
 
 fn enum_struct_glue_type<'a>(ty: &'a Type, strings: &StringEnv) -> Option<&'a str> {
     let Type::Named { name, args, .. } = ty else { return None };
-    (args.is_empty() && struct_is_boxed(name, strings) && struct_clone_glue(name, strings))
+    (args.is_empty() && struct_is_boxed(name, strings) && struct_enum_glue(name, strings))
         .then_some(name.as_str())
 }
 
@@ -6101,6 +6350,7 @@ fn store_field_path(
     if drop_old {
         let leaf = steps.last().expect("one or more fields");
         emit_owned_value_drop(&vals[steps.len()], &leaf.ty, strings, counter, instructions);
+        emit_flat_block_drop(&vals[steps.len()], &leaf.ty, leaf.transparent, strings, instructions);
     }
     // Up: write the new value into each container, innermost first.
     let mut cur = new_val.to_string();
@@ -6280,6 +6530,9 @@ fn match_should_use_switch(
         return false;
     }
     if type_named_is("String", scrut_ty) {
+        return false;
+    }
+    if match_has_nested_tests(arms, strings) {
         return false;
     }
     if arms
@@ -6733,27 +6986,91 @@ fn match_arm_cond(
             });
             (dest, env)
         }
-        Pattern::Variant { name, .. } => {
+        Pattern::Variant { .. } => (nested_pattern_cond(scrut, pat, counter, instructions, strings), env),
+    }
+}
+
+/// A sub-pattern that can fail: a variant (or a unit variant written as a name), a literal or
+/// a regex. `Some(Line(n))` has one; `Some(x)` and `Some(_)` do not.
+fn pattern_refutable(pat: &Pattern, strings: &StringEnv) -> bool {
+    match pat {
+        Pattern::Variant { .. } | Pattern::Int(..) | Pattern::Str(..) | Pattern::Regex(..) => true,
+        Pattern::Ident(name, _) => unit_variant(name, strings).is_some(),
+        Pattern::Wild(_) => false,
+    }
+}
+
+fn unit_variant<'a>(name: &str, strings: &'a StringEnv) -> Option<(&'a crate::ast::EnumDef, &'a crate::ast::EnumVariant)> {
+    find_variant_in_enums(name, &strings.enums).filter(|(_, v)| v.fields.is_empty())
+}
+
+/// Some arm tests a payload: a `switch` on the outer tag alone would pick the wrong arm.
+fn match_has_nested_tests(arms: &[MatchArm], strings: &StringEnv) -> bool {
+    arms.iter().any(|a| match &a.pattern {
+        Pattern::Variant { args, .. } => args.iter().any(|p| pattern_refutable(p, strings)),
+        _ => false,
+    })
+}
+
+/// Whether `v` matches the variant pattern `pat`: its tag, and then, only when the tag is
+/// right (the payload exists), each refutable sub-pattern in order (SPEC «Expresiones»:
+/// the first arm whose whole pattern matches).
+fn nested_pattern_cond(
+    v: &str,
+    pat: &Pattern,
+    counter: &mut u32,
+    instructions: &mut Vec<IrInst>,
+    strings: &StringEnv,
+) -> String {
+    let tag_eq = |v: &str, vtag: i64, counter: &mut u32, instructions: &mut Vec<IrInst>| {
+        *counter += 1;
+        let low = format!("t{counter}");
+        instructions.push(IrInst::EnumTag { dest: low.clone(), value: v.to_string() });
+        *counter += 1;
+        let eq = format!("t{counter}");
+        instructions.push(IrInst::Binary { dest: eq.clone(), op: "eq".into(), left: low, right: vtag.to_string() });
+        eq
+    };
+    match pat {
+        Pattern::Variant { name, args, .. } => {
             let vtag = match find_variant_in_enums(name, &strings.enums) {
                 Some((edef, vdef)) => enum_variant_tag(edef, vdef),
                 None => variant_tag_for_name(name) + 1,
             };
-            *counter += 1;
-            let low = format!("t{counter}");
-            instructions.push(IrInst::EnumTag {
-                dest: low.clone(),
-                value: scrut.to_string(),
-            });
-            *counter += 1;
-            let tag_tmp = format!("t{counter}");
-            instructions.push(IrInst::Binary {
-                dest: tag_tmp.clone(),
-                op: "eq".into(),
-                left: low,
-                right: vtag.to_string(),
-            });
-            (tag_tmp, env)
+            let mut cond = tag_eq(v, vtag, counter, instructions);
+            for (i, sub) in args.iter().enumerate() {
+                if !pattern_refutable(sub, strings) {
+                    continue;
+                }
+                let mut body = Vec::new();
+                *counter += 1;
+                let field = format!("t{counter}");
+                body.push(IrInst::EnumField { dest: field.clone(), value: v.to_string(), index: i as u32 });
+                let sub_cond = nested_pattern_cond(&field, sub, counter, &mut body, strings);
+                *counter += 1;
+                let dest = format!("t{counter}");
+                instructions.push(IrInst::If {
+                    cond,
+                    then_body: body,
+                    else_body: Vec::new(),
+                    then_val: sub_cond,
+                    else_val: "0".into(),
+                    dest: dest.clone(),
+                    carried: Vec::new(),
+                });
+                cond = dest;
+            }
+            cond
         }
+        Pattern::Ident(name, _) => match unit_variant(name, strings) {
+            Some((edef, vdef)) => tag_eq(v, enum_variant_tag(edef, vdef), counter, instructions),
+            None => "1".into(),
+        },
+        Pattern::Int(..) | Pattern::Str(..) | Pattern::Regex(..) => {
+            let (c, _) = match_arm_cond(v, pat, None, counter, instructions, strings);
+            c
+        }
+        Pattern::Wild(_) => "1".into(),
     }
 }
 

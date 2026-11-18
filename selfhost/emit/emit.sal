@@ -153,6 +153,7 @@ fn tenv_graph_fill(env: &mut TEnv, order: &Graph, i: Int, n: Int) -> Int ! alloc
     else
         tp = order.progs.get(i)
         tenv_fill(env, &tp.fns, 0, tp.fns.len())
+        tenv_fill_protocols(env, &tp.protocols)
         tenv_graph_fill(env, order, i + 1, n)
 
 fn tenv_push_structs(out: &mut List[TStruct], src: &List[TStruct], i: Int, n: Int) -> Int ! alloc
@@ -411,59 +412,80 @@ fn emit_vtable_cells(syms: &List[String], i: Int, n: Int, acc: String) -> String
         acc2 = acc + "  (int64_t)(uintptr_t)" + sym + ",\n"
         emit_vtable_cells(syms, i + 1, n, acc2.clone())
 
-fn emit_one_vtable(type_name: &String, protocol_name: &String, p: &TProtocol) -> String ! alloc
+fn emit_one_vtable(type_name: &String, protocol_name: &String, p: &TProtocol, all: &List[TStruct], enums: &List[TEnum]) -> String ! alloc
     global = proto_vtable_global(type_name, protocol_name)
     drop = any_drop_thunk(type_name)
     syms = vtable_entry_symbols(type_name, p)
-    acc = "static void " + drop + "(int64_t p) { (void)p; }\n"
+    acc = "static void " + drop + "(int64_t p) {\n" + any_drop_body(type_name, all, enums) + "  (void)p;\n}\n"
     acc = acc + "static int64_t " + global + "[] = {\n"
     emit_vtable_cells(&syms, 0, list_len(&syms), acc.clone())
 
-fn emit_vtables_claims(tp: &TProgram, type_name: &String, claims: &List[String], i: Int, n: Int, acc: String) -> String ! alloc
+# What `sal_any_free` runs on the payload (`any_glue_fns` in src/ir.rs): the struct's glue, or
+# the heap block of a struct of several fields without glue, or the enum value.
+fn any_drop_body(type_name: &String, all: &List[TStruct], enums: &List[TEnum]) -> String ! alloc
+    si = tt_struct_find(all, type_name)
+    if si >= 0
+        sd = all.get(si)
+        glue = struct_glue_fn(&sd, all, enums)
+        if glue.name.len() > 0
+            sym = "R_" + cir_cname(&glue.name)
+            "  extern int64_t " + sym + "(int64_t) __asm__(\"" + glue.name + "\");\n  " + sym + "(p);\n"
+        elsif struct_is_boxed_t(&sd) == 1
+            "  extern void sal_struct_free_box(int64_t);\n  sal_struct_free_box(p);\n"
+        else
+            ""
+    elsif enum_find(enums, type_name, 0, enums.len()) >= 0
+        "  sal_enum_free(p);\n"
+    else
+        ""
+
+fn emit_vtables_claims(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], type_name: &String, claims: &List[String], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         claim = list_get(claims, i)
         pi = proto_find(&tp.protocols, &claim, 0, list_len(&tp.protocols))
         if pi < 0
-            emit_vtables_claims(tp, type_name, claims, i + 1, n, acc)
+            emit_vtables_claims(tp, all, enums, type_name, claims, i + 1, n, acc)
         else
             p = list_get(&tp.protocols, pi)
-            piece = emit_one_vtable(type_name, &claim, &p)
-            emit_vtables_claims(tp, type_name, claims, i + 1, n, (acc + piece))
+            piece = emit_one_vtable(type_name, &claim, &p, all, enums)
+            emit_vtables_claims(tp, all, enums, type_name, claims, i + 1, n, (acc + piece))
 
-fn emit_vtables_structs(tp: &TProgram, sts: &List[TStruct], i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_vtables_structs(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], sts: &List[TStruct], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         st = list_get(sts, i)
-        acc2 = emit_vtables_claims(tp, &st.name, &st.protocols, 0, list_len(&st.protocols), acc)
-        emit_vtables_structs(tp, sts, i + 1, n, acc2)
+        acc2 = emit_vtables_claims(tp, all, enums, &st.name, &st.protocols, 0, list_len(&st.protocols), acc)
+        emit_vtables_structs(tp, all, enums, sts, i + 1, n, acc2)
 
-fn emit_vtables_enums(tp: &TProgram, es: &List[TEnum], i: Int, n: Int, acc: String) -> String ! alloc
+fn emit_vtables_enums(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], es: &List[TEnum], i: Int, n: Int, acc: String) -> String ! alloc
     if i >= n
         acc
     else
         e = list_get(es, i)
-        acc2 = emit_vtables_claims(tp, &e.name, &e.protocols, 0, list_len(&e.protocols), acc)
-        emit_vtables_enums(tp, es, i + 1, n, acc2)
+        acc2 = emit_vtables_claims(tp, all, enums, &e.name, &e.protocols, 0, list_len(&e.protocols), acc)
+        emit_vtables_enums(tp, all, enums, es, i + 1, n, acc2)
 
-fn emit_any_vtables_module(tp: &TProgram, acc: String) -> String ! alloc
-    acc2 = emit_vtables_structs(tp, &tp.structs, 0, list_len(&tp.structs), acc)
-    acc3 = emit_vtables_enums(tp, &tp.enums, 0, tp.enums.len(), acc2)
-    emit_vtables_impls(tp, 0, acc3)
+# `all` and `enums` are the module graph's: the drop thunk of a vtable releases the payload with
+# the glue of its type, which may live in another module.
+fn emit_any_vtables_module(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], acc: String) -> String ! alloc
+    acc2 = emit_vtables_structs(tp, all, enums, &tp.structs, 0, list_len(&tp.structs), acc)
+    acc3 = emit_vtables_enums(tp, all, enums, &tp.enums, 0, tp.enums.len(), acc2)
+    emit_vtables_impls(tp, all, enums, 0, acc3)
 
-fn emit_vtables_impls(tp: &TProgram, i: Int, acc: String) -> String ! alloc
+fn emit_vtables_impls(tp: &TProgram, all: &List[TStruct], enums: &List[TEnum], i: Int, acc: String) -> String ! alloc
     if i >= tp.impls.len()
         acc
     else
         imp = tp.impls.get(i)
         targs = tg_args(&imp.target)
         if targs.len() == 0 && tt_struct_find(&tp.structs, &imp.target) < 0 && enum_find(&tp.enums, &imp.target, 0, tp.enums.len()) < 0
-            acc2 = emit_vtables_claims(tp, &imp.target, &imp.protocols, 0, imp.protocols.len(), acc)
-            emit_vtables_impls(tp, i + 1, acc2)
+            acc2 = emit_vtables_claims(tp, all, enums, &imp.target, &imp.protocols, 0, imp.protocols.len(), acc)
+            emit_vtables_impls(tp, all, enums, i + 1, acc2)
         else
-            emit_vtables_impls(tp, i + 1, acc)
+            emit_vtables_impls(tp, all, enums, i + 1, acc)
 
 fn collect_assigns_block(b: &TBlock, names: Int) -> Int ! alloc
     _a = collect_assigns_stmts(&b.stmts, 0, list_len(&b.stmts), names)
@@ -1360,11 +1382,7 @@ fn emit_c_match_arms(arms: &List[TArm], i: Int, n: Int, sname: &String, sty: &St
             _e = vec_push(stmts, str_as_int(&"  } else {\n"))
             1 + emit_c_match_arms(arms, i + 1, n, sname, sty, tname, user, stmts, tc)
         elsif kind == 3
-            code = variant_code(tc, &arm.pat.name)
-            cond = if code == 0
-                "0"
-            else
-                "sal_enum_tag(" + sname + ") == " + int_to_str(variant_tag(code)) + "LL"
+            cond = pat_test_c(tc, &arm.pat, sname)
             _h = vec_push(stmts, str_as_int(&("  if (" + cond + ") {\n")))
             _pb = emit_c_variant_binds(&arm.pat.args, 0, sname, stmts, tc, &arm.pat.name, sty)
             _x = emit_c_arm_body(&arm, tname, user, stmts, tc, slen)
@@ -1430,13 +1448,62 @@ fn emit_c_variant_binds(args: &List[TPat], i: Int, sname: &String, stmts: Int, t
         0
     else
         sub = list_get(args, i)
-        if sub.kind == 1
+        if sub.kind == 1 && ident_pat_is_variant(&sub, tc) == 0
             _b = vec_push(stmts, str_as_int(&("    int64_t " + sub.name + " = sal_enum_field(" + sname + ", " + int_to_str(i) + "LL);\n")))
             h1275_0 = variant_field_type(tc, vname, i, sty)
             _t = tenv_bind(&mut tc.env, &sub.name, &h1275_0)
             emit_c_variant_binds(args, i + 1, sname, stmts, tc, vname, sty)
+        elsif sub.kind == 3
+            # A nested variant binds from the payload field it names (`XField(XIdent(name), f)`).
+            inner = tmp_fresh(tc)
+            _b = vec_push(stmts, str_as_int(&("    int64_t " + inner + " = sal_enum_field(" + sname + ", " + int_to_str(i) + "LL);\n")))
+            fty = variant_field_type(tc, vname, i, sty)
+            _n = emit_c_variant_binds(&sub.args, 0, &inner, stmts, tc, &sub.name, &fty)
+            emit_c_variant_binds(args, i + 1, sname, stmts, tc, vname, sty)
         else
             emit_c_variant_binds(args, i + 1, sname, stmts, tc, vname, sty)
+
+# A sub-pattern that can fail: a variant (also a unit variant written as a name), a literal
+# or a regex.
+fn pat_refutable(p: &TPat, tc: &Tc) -> Int ! alloc
+    if p.kind == 3 || p.kind == 2 || p.kind == 4 || p.kind == 5
+        1
+    else
+        ident_pat_is_variant(p, tc)
+
+# C condition for `v` matching `p`: the tag, and then each refutable sub-pattern on its
+# payload field. `&&` reads a field only once the tag says it exists (SPEC «Expresiones»:
+# the first arm whose whole pattern matches).
+fn pat_test_c(tc: &mut Tc, p: &TPat, v: &String) -> String ! alloc
+    if p.kind == 3 || ident_pat_is_variant(p, tc) == 1
+        code = variant_code(tc, &p.name)
+        if code == 0
+            "0"
+        else
+            head = "sal_enum_tag(" + v + ") == " + int_to_str(variant_tag(code)) + "LL"
+            pat_test_args(tc, &p.args, 0, v, head)
+    elsif p.kind == 2
+        "(" + v + ") == " + int_to_str(p.ival) + "LL"
+    elsif p.kind == 4
+        plit = tc.pool.ensure(&p.name)
+        "sal_str_eq((const char*)(uintptr_t)(" + v + "), (const char*)(uintptr_t)" + plit + ") == 1LL"
+    elsif p.kind == 5
+        plit = tc.pool.ensure(&p.name)
+        "sal_regex_match((const char*)(uintptr_t)(" + v + "), (const char*)(uintptr_t)" + plit + ") == 1LL"
+    else
+        "1"
+
+fn pat_test_args(tc: &mut Tc, args: &List[TPat], i: Int, v: &String, acc: String) -> String ! alloc
+    if i >= args.len()
+        acc
+    else
+        sub = args.get(i)
+        if pat_refutable(&sub, tc) == 1
+            field = "sal_enum_field(" + v + ", " + i.to_str() + "LL)"
+            test = pat_test_c(tc, &sub, &field)
+            pat_test_args(tc, args, i + 1, v, acc + " && (" + test + ")")
+        else
+            pat_test_args(tc, args, i + 1, v, acc)
 
 fn append_stmts(dst: Int, src: Int) -> Int ! alloc
     append_stmts_go(dst, src, 0, vec_len(src))
@@ -1746,7 +1813,7 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     acc = emit_extern_decls(externs, 0, vec_len(externs), acc)
     acc = emit_forward_decls(&tp.fns, 0, list_len(&tp.fns), acc, allow_main, linkable)
     acc = acc + "\n"
-    acc = emit_any_vtables_module(tp, acc)
+    acc = emit_any_vtables_module(tp, &env.structs, &enums, acc)
     names = collect_fn_names_t(&tp.fns, 0, list_len(&tp.fns), vec_new())
     names = merge_callable_names(callables, names)
     fm = map_new()

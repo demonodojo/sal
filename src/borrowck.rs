@@ -747,6 +747,7 @@ impl Cx<'_> {
     fn walk_stmt(&mut self, st: &Stmt) {
         let limit = stmt_end(st);
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Let { name, init, ty, span, .. } => {
                 self.bind_value(name, ty, init, *span, limit);
             }
@@ -1053,7 +1054,7 @@ impl Cx<'_> {
                     }
                 }
             }
-            Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } => {}
+            Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } => {}
         }
     }
 
@@ -1205,6 +1206,7 @@ fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
 
 fn stmt_end(st: &Stmt) -> u32 {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Let { span, .. }
         | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }

@@ -349,6 +349,7 @@ fn track_stmt(
     frozen: &mut HashSet<String>,
 ) -> DiagResult<bool> {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { .. } => Ok(false),
         Stmt::Let {
             name,
@@ -471,6 +472,7 @@ fn track_expr(
         Expr::Int { span, .. } => Ok(named("Int", *span)),
         Expr::Float { span, .. } => Ok(named("Float", *span)),
         Expr::Bool { span, .. } => Ok(named("Bool", *span)),
+        Expr::Unit { span } => Ok(named("Unit", *span)),
         Expr::String { parts, span, .. } => {
             for part in parts {
                 if let StringPart::Interp(name) = part {
@@ -1001,6 +1003,7 @@ fn ident_name(e: &Expr) -> Option<&str> {
 fn collect_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
     for st in &b.stmts {
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Let { name, init, .. } => {
                 if let Some(rhs) = ident_name(init) {
                     out.push((name.clone(), rhs.to_string()));
@@ -1034,7 +1037,7 @@ fn collect_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
 
 fn collect_alias_pairs_expr(e: &Expr, out: &mut Vec<(String, String)>) {
     match e {
-        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
         Expr::Call { func, args, .. } => {
             collect_alias_pairs_expr(func, out);
             for a in args {
@@ -1127,6 +1130,7 @@ fn walk_calls(
 ) -> DiagResult<()> {
     for st in &b.stmts {
         match st {
+            Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
             Stmt::Let { init, .. } => walk_calls_expr(init, f)?,
             Stmt::Expr(e) => walk_calls_expr(e, f)?,
             Stmt::Assign { target, value, .. } => {
@@ -1156,7 +1160,7 @@ fn walk_calls_expr(
     f: &mut dyn FnMut(&str, &[Expr], Span) -> DiagResult<()>,
 ) -> DiagResult<()> {
     match e {
-        Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
+        Expr::Unit { .. } | Expr::Int { .. } | Expr::Float { .. } | Expr::Bool { .. } | Expr::String { .. } | Expr::Ident { .. } => {}
         Expr::Call { func, args, span, .. } => {
             for a in args {
                 walk_calls_expr(a, f)?;

@@ -280,6 +280,7 @@ fn lower_field_of(cx: &mut Cx, base: Int, sd: &TStruct, field: &String) -> Int !
 fn lower_struct_ctor(cx: &mut Cx, fname: &String, args: &List[Expr]) -> Int ! alloc
     owned_args = ctor_own_args(args, 0, List.new[Expr]())
     arg_names = lower_args(cx, &owned_args, 0, list_len(&owned_args), vec_new())
+    box_struct_fields(cx, fname, &owned_args, arg_names, 0)
     shared_cells_ctor(cx, fname, args, arg_names)
     d = fresh(cx)
     if vec_len(arg_names) == 1
@@ -287,6 +288,20 @@ fn lower_struct_ctor(cx: &mut Cx, fname: &String, args: &List[Expr]) -> Int ! al
     else
         _p = ir_push(cx, ir_agg(d, str_own(fname), arg_names))
         d
+
+# A field declared `any[P]` takes its value in a box, as a payload does.
+fn box_struct_fields(cx: &mut Cx, sname: &String, args: &List[Expr], arg_names: Int, i: Int) -> Int ! alloc
+    si = tt_struct_find(&cx.env.structs, sname)
+    if si < 0 || i >= args.len()
+        0
+    else
+        fields = cx.env.structs.get(si).fields.clone()
+        if i < fields.len()
+            old = vec_get(arg_names, i)
+            neu = box_into(cx, &fields.get(i).ty, &args.get(i), old)
+            if neu != old
+                vec_set(arg_names, i, neu)
+        box_struct_fields(cx, sname, args, arg_names, i + 1)
 
 # A `List.new[String]()` written inline as a constructor argument is owned by the struct, whose
 # glue releases the strings: it is built as `list_new_owned` (the bootstrap does the same).
@@ -487,14 +502,17 @@ fn maybe_box_any(cx: &mut Cx, pt: &String, arg: &Expr, payload: Int) -> Int ! al
                 _p = ir_push(cx, ir_anybox(boxd, vtab, payload, slot))
                 boxd
 
-fn maybe_box_user_args(cx: &mut Cx, name: &String, args: &List[Expr], arg_names: Int) -> Int ! alloc
+# Boxes each argument passed where the callee takes `any[P]`. A borrowed value (`&x` for
+# `&any[P]`) gets a box that lives for the call: its shell goes in `shells`, which
+# `free_any_shells` releases after it (`maybe_box_for_any` in src/ir.rs).
+fn maybe_box_user_args(cx: &mut Cx, name: &String, args: &List[Expr], arg_names: Int, shells: Int) -> Int ! alloc
     fi = cx_fn_index(cx, name)
     if fi < 0
         0
     else
-        maybe_box_user_go(cx, &list_get(&cx.fns, fi).params, args, arg_names, 0, list_len(args))
+        maybe_box_user_go(cx, &cx.fns.get(fi).params, args, arg_names, shells, 0, args.len())
 
-fn maybe_box_user_go(cx: &mut Cx, params: &List[TParam], args: &List[Expr], arg_names: Int, i: Int, n: Int) -> Int ! alloc
+fn maybe_box_user_go(cx: &mut Cx, params: &List[TParam], args: &List[Expr], arg_names: Int, shells: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     elsif i >= list_len(params)
@@ -504,8 +522,35 @@ fn maybe_box_user_go(cx: &mut Cx, params: &List[TParam], args: &List[Expr], arg_
         old = vec_get(arg_names, i)
         neu = maybe_box_any(cx, &pt, &list_get(args, i), old)
         if neu != old
-            _s = vec_set(arg_names, i, neu)
-        maybe_box_user_go(cx, params, args, arg_names, i + 1, n)
+            vec_set(arg_names, i, neu)
+            if texpr_type(&cx.env, &list_get(args, i)).slice(0, 1).eq("&") == 1
+                _h = vec_push(shells, neu)
+        maybe_box_user_go(cx, params, args, arg_names, shells, i + 1, n)
+
+fn free_any_shells(cx: &mut Cx, shells: Int, i: Int) -> Int ! alloc
+    if i >= vec_len(shells)
+        0
+    else
+        a = vec_new()
+        _a = vec_push(a, vec_get(shells, i))
+        ir_push(cx, ir_call(0, "sal_any_free_shell".to_int(), a, 0))
+        free_any_shells(cx, shells, i + 1)
+
+# `v`, the value of `e`, boxed when the place it goes to (`want`) is `any[P]` and `e` is not
+# one already: a `let` with that type, a `return`, the tail of the function, a payload.
+fn box_into(cx: &mut Cx, want: &String, e: &Expr, v: Int) -> Int ! alloc
+    if ty_any_protocol(&ty_deref(want)).len() == 0
+        v
+    elsif ty_any_protocol(&ty_deref(&texpr_type(&cx.env, e))).len() > 0
+        v
+    else
+        maybe_box_any(cx, want, e, v)
+
+fn fn_ret_type(cx: &Cx) -> String ! alloc
+    if cx.fn_self.len() > 0
+        cx.fn_self.get(0).ret.clone()
+    else
+        ""
 
 fn lower_protocol_call(cx: &mut Cx, recv: &String, fld: &String, args: &List[Expr], proto: &String) -> Int ! alloc
     d = fresh(cx)
@@ -518,10 +563,21 @@ fn lower_protocol_call(cx: &mut Cx, recv: &String, fld: &String, args: &List[Exp
         if slot < 0
             d
         else
-            argv = vec_new()
-            _a = lower_args(cx, args, 1, list_len(args), argv)
-            recv_nm = str_own(recv)
-            _p = ir_push(cx, ir_anycall(d, recv_nm, slot, argv))
+            # The receiver, then the arguments, as the bootstrap lowers them. A local holds the
+            # box in its SSA value (`a = pick(..)` binds `a` to the call); a receiver expression
+            # (`.m` on `h.item`) is the first argument and is lowered.
+            recv_nm = if recv.len() == 0
+                lower_expr(cx, &args.get(0))
+            elsif cx_find(cx, str_own(recv)) != 0
+                lower_ident(cx, str_own(recv))
+            else
+                str_own(recv)
+            first = if recv.len() == 0
+                1
+            else
+                0
+            argv = lower_args(cx, args, first, args.len(), vec_new())
+            ir_push(cx, ir_anycall(d, recv_nm, slot, argv))
             d
 
 fn lower_call(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> Int ! alloc
@@ -529,7 +585,11 @@ fn lower_call(cx: &mut Cx, name: &String, args: &List[Expr], targs: &String) -> 
     if dot >= 0
         recv = str_slice(name, 0, dot)
         fld = str_slice(name, dot + 1, str_len(name))
-        rty = trim_spaces(tenv_type(&cx.env, &recv))
+        rty = if dot == 0 && args.len() > 0
+            # `.m` on an expression (`h.item.n()`): the receiver is the first argument.
+            trim_spaces(texpr_type(&cx.env, &args.get(0)))
+        else
+            trim_spaces(tenv_type(&cx.env, &recv))
         proto = ty_any_protocol(&ty_deref(&rty))
         if str_len(proto) > 0
             lower_protocol_call(cx, &recv, &fld, args, &proto)
@@ -838,13 +898,15 @@ fn lower_call_runtime_rest(cx: &mut Cx, name: &String, targs: &String, args: &Li
     elsif str_eq(name, "struct_clone") == 1
         lower_struct_clone(cx, args, arg_names, d)
     else
+        shells = vec_new()
         if is_user_fn(cx, fname) == 1
-            _b = maybe_box_user_args(cx, name, args, arg_names)
+            _b = maybe_box_user_args(cx, name, args, arg_names, shells)
         rname = runtime_name(cx, fname)
         shared_cells_call(cx, name, args, arg_names)
         places = place_args_new(cx, name, args, arg_names)
         cells = cell_args_new(cx, name, args, arg_names)
         _p = ir_push(cx, ir_call(d, rname, arg_names, 1))
+        free_any_shells(cx, shells, 0)
         _cb = cell_args_back(cx, &cells)
         place_args_back(cx, args, &places)
         _r = register_ret_tensor(cx, d, name)
@@ -870,6 +932,18 @@ fn lower_struct_clone(cx: &mut Cx, args: &List[Expr], arg_names: Int, d: Int) ->
 
 # Whether `x.clone()` of the struct `name` goes through `clone.<name>` (`struct_clone_glue` in
 # src/ir.rs): the struct has glue (it owns heap fields) and no descriptor.
+# `clone.<name>` exists: the struct has glue. An enum box that holds one (`Ok(p)`) releases and
+# copies it with `drop.<name>` / `clone.<name>`, descriptor or not (`struct_enum_glue` in
+# src/ir.rs); `x.clone()` itself follows `struct_clone_glue_t`.
+fn struct_enum_glue_t(structs: &List[TStruct], enums: &List[TEnum], name: &String) -> Int ! alloc
+    i = struct_index_named(structs, name, 0)
+    if i < 0
+        0
+    elsif structs.get(i).tparams.len() != 0
+        0
+    else
+        struct_frees_t(&structs.get(i), structs, enums)
+
 fn struct_clone_glue_t(structs: &List[TStruct], enums: &List[TEnum], name: &String) -> Int ! alloc
     i = struct_index_named(structs, name, 0)
     if i < 0
@@ -929,6 +1003,8 @@ fn clone_fn_of(release: &String) -> String ! alloc
         "sal_enum_copy"
     elsif str_eq(release, "sal_dict_free") == 1
         "sal_dict_clone_val"
+    elsif release.eq("sal_any_free") == 1
+        "sal_any_clone_glue"
     else
         "sal_list_clone_val"
 
@@ -1043,15 +1119,29 @@ fn lower_ident(cx: &mut Cx, name: Int) -> Int ! alloc
 fn lower_variant_ctor(cx: &mut Cx, fname: Int, args: &List[Expr]) -> Int ! alloc
     rec = variant_rec(cx, fname)
     arg_names = lower_args(cx, args, 0, list_len(args), vec_new())
+    box_payloads(cx, &str_from_int(fname), args, arg_names, 0)
     d = fresh(cx)
     mask = enum_owned_mask(cx, &str_from_int(fname), args, 0, list_len(args), 1, 0)
     _p = ir_push(cx, ir_emake(d, vec_get(rec, 0), vec_get(rec, 1), arg_names, mask))
-    enum_set_struct_glues(cx, &str_from_int(fname), d, 0, args.len())
+    enum_set_struct_glues(cx, &str_from_int(fname), args, d, 0, args.len())
     d
 
+# A payload declared `any[P]` takes its value in a box.
+fn box_payloads(cx: &mut Cx, vname: &String, args: &List[Expr], arg_names: Int, i: Int) -> Int ! alloc
+    if i >= args.len()
+        0
+    else
+        ft = fuse_variant_field_type(cx, vname, i)
+        old = vec_get(arg_names, i)
+        neu = box_into(cx, &ft, &args.get(i), old)
+        if neu != old
+            _s = vec_set(arg_names, i, neu)
+        box_payloads(cx, vname, args, arg_names, i + 1)
+
 # Two bits per field (first 28): 1 a fresh value or a local moved into a `String` field, 2 an
-# enum value moved into an enum field, 3 a list or supported struct moved into its field
-# (`enum_owned_mask` in src/ir.rs).
+# enum value moved into an enum field, 3 a list, dict or supported struct moved into its field
+# (`enum_owned_mask` in src/ir.rs). A field of a type parameter takes the type of the local
+# that fills it (`payload_field_type`).
 fn enum_owned_mask(cx: &Cx, vname: &String, args: &List[Expr], i: Int, n: Int, scale: Int, acc: Int) -> Int ! alloc
     if i >= n
         acc
@@ -1059,85 +1149,86 @@ fn enum_owned_mask(cx: &Cx, vname: &String, args: &List[Expr], i: Int, n: Int, s
         acc
     else
         a = list_get(args, i)
-        kind = if variant_field_is_list(cx, vname, i) == 1 || variant_field_struct_glue(cx, vname, i).len() > 0
+        ty = payload_field_text(cx, vname, i, &a)
+        base = ty_base(&ty)
+        kind = if base.eq("List") + base.eq("Dict") > 0 || field_struct_glue(cx, &ty).len() > 0
             3
-        elsif variant_field_struct_flat(cx, vname, i) > 0
+        elsif ty_any_protocol(&ty).len() > 0
+            3
+        elsif field_struct_flat(cx, &ty) > 0
             3
         elsif dx_is_fresh_value(&a) == 1
             1
-        elsif dx_is_ident(&a) == 1 && variant_field_is_string(cx, vname, i) == 1
+        elsif dx_is_ident(&a) == 1 && ty.eq("String") == 1
             1
-        elsif variant_field_is_enum(cx, vname, i) == 1
+        elsif enum_named_t(&cx.enums, &base, 0, cx.enums.len()) == 1
             2
         else
             nested_variant_kind(cx, &a)
         enum_owned_mask(cx, vname, args, i + 1, n, scale * 4, acc + kind * scale)
 
-# Field `i` of the variant `vname` is declared `String`.
-fn variant_field_is_string(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
+# The declared type of field `i` of the variant `vname`; when it is a type parameter of the
+# enum and the argument is a local of a named type, that type (`payload_field_type` in src/ir.rs).
+fn payload_field_text(cx: &Cx, vname: &String, i: Int, a: &Expr) -> String ! alloc
     rec = variant_rec(cx, str_own(vname))
     if rec == 0
-        0
-    else
-        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
-        if en < 0
-            0
-        else
-            trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0)).eq("String")
-
-fn variant_field_is_enum(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
-    rec = variant_rec(cx, str_own(vname))
-    if rec == 0
-        0
-    else
-        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
-        if en < 0
-            0
-        else
-            ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
-            enum_named_t(&cx.enums, &ty_base(&ty), 0, cx.enums.len())
-
-fn variant_field_is_list(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
-    rec = variant_rec(cx, str_own(vname))
-    if rec == 0
-        0
-    else
-        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
-        if en < 0
-            0
-        else
-            ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
-            ty_base(&ty).eq("List")
-
-fn variant_field_struct_glue(cx: &Cx, vname: &String, i: Int) -> String ! alloc
-    rec = variant_rec(cx, str_own(vname))
-    if rec == 0
-        ""
-    else
-        en = enum_named(&cx.enums, vec_get(rec, 0), 0)
-        if en < 0
-            ""
-        else
-            ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
-            si = struct_index_named(&cx.env.structs, &ty, 0)
-            if si < 0
-                ""
-            elsif struct_is_boxed_t(&cx.env.structs.get(si)) == 0 || struct_clone_glue_t(&cx.env.structs, &cx.enums, &ty) == 0
-                ""
-            else
-                ty
-
-# A boxed struct without glue (scalar fields only) in field `i`: its field count, else 0. The
-# enum box owns it all the same (`enum_struct_flat_fields` in src/ir.rs).
-fn variant_field_struct_flat(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
-    rec = variant_rec(cx, str_own(vname))
-    if rec == 0
-        return 0
+        return d""
     en = enum_named(&cx.enums, vec_get(rec, 0), 0)
     if en < 0
-        return 0
-    ty = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
-    si = struct_index_named(&cx.env.structs, &ty, 0)
+        return d""
+    ft = trim_spaces(variant_field_text(&cx.enums.get(en).variants, vname, i, 0))
+    if tparam_index(&cx.enums.get(en).tparams, &ft, 0) < 0 || dx_is_ident(a) == 0
+        ft
+    else
+        at0 = trim_spaces(texpr_type(&cx.env, a))
+        at = if at0.len() > 0
+            at0
+        else
+            match a
+                XIdent(n) => tenv_type(&cx.env, &("vty:" + n))
+                _ => d""
+        if at.len() == 0 || ascii_upper(at.char(0)) == 0 || at.eq("Unknown") == 1 || ty_base(&at).eq("Tensor") == 1
+            ft
+        else
+            at
+
+# The enum built by a variant constructor of a non-generic enum, else "": the type the lowering
+# keeps for `v = VInt(n)`, which the inferred types of src/ir.rs give `payload_field_type`.
+fn variant_enum_type(cx: &Cx, e: &Expr) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) => variant_enum_named(cx, &name)
+        _ => d""
+
+fn variant_enum_named(cx: &Cx, name: &String) -> String ! alloc
+    rec = variant_rec(cx, str_own(name))
+    if rec == 0
+        return d""
+    en = enum_named(&cx.enums, vec_get(rec, 0), 0)
+    if en < 0 || cx.enums.get(en).tparams.len() > 0
+        d""
+    else
+        cx.enums.get(en).name.clone()
+
+fn ascii_upper(c: Int) -> Int
+    if c >= 65 && c <= 90
+        1
+    else
+        0
+
+# A boxed struct with glue of the program in a field of type `ty`: its name, else "".
+fn field_struct_glue(cx: &Cx, ty: &String) -> String ! alloc
+    si = struct_index_named(&cx.env.structs, ty, 0)
+    if si < 0
+        ""
+    elsif struct_is_boxed_t(&cx.env.structs.get(si)) == 0 || struct_enum_glue_t(&cx.env.structs, &cx.enums, ty) == 0
+        ""
+    else
+        ty.clone()
+
+# A boxed struct without glue (scalar fields only) in a field of type `ty`: its field count, else 0.
+# The enum box owns it all the same (`enum_struct_flat_fields` in src/ir.rs).
+fn field_struct_flat(cx: &Cx, ty: &String) -> Int ! alloc
+    si = struct_index_named(&cx.env.structs, ty, 0)
     if si < 0
         0
     elsif cx.env.structs.get(si).tparams.len() > 0 || struct_is_boxed_t(&cx.env.structs.get(si)) == 0
@@ -1147,32 +1238,42 @@ fn variant_field_struct_flat(cx: &Cx, vname: &String, i: Int) -> Int ! alloc
     else
         cx.env.structs.get(si).fields.len()
 
-fn enum_set_struct_glues(cx: &mut Cx, vname: &String, dest: Int, i: Int, n: Int) -> Int ! alloc
+fn enum_set_struct_glues(cx: &mut Cx, vname: &String, args: &List[Expr], dest: Int, i: Int, n: Int) -> Int ! alloc
     if i >= n || i >= 28
         0
     else
-        ty = variant_field_struct_glue(cx, vname, i)
-        words = variant_field_struct_flat(cx, vname, i)
-        if ty.len() > 0
-            index = fresh(cx)
-            push_const_int(cx, index, i)
-            args = vec_new()
-            vec_push(args, dest)
-            vec_push(args, index)
-            vec_push(args, str_own(&("drop." + ty)))
-            vec_push(args, str_own(&("clone." + ty)))
-            ir_push(cx, ir_call(0, "sal_enum_set_struct_glue".to_int(), args, 0))
+        fty = payload_field_text(cx, vname, i, &args.get(i))
+        ty = field_struct_glue(cx, &fty)
+        words = field_struct_flat(cx, &fty)
+        if ty_base(&fty).eq("Dict") == 1
+            # A `Dict` payload is the box's to release and to copy (`VDict(d)`).
+            enum_set_glue(cx, dest, i, "sal_dict_drop_glue".to_int(), "sal_dict_clone_glue".to_int())
+        elsif ty_any_protocol(&fty).len() > 0
+            # The enum releases an `any` payload with `sal_any_free` (its box and value).
+            enum_set_glue(cx, dest, i, "sal_any_drop_glue".to_int(), "sal_any_clone_glue".to_int())
+        elsif ty.len() > 0
+            enum_set_glue(cx, dest, i, str_own(&("drop." + ty)), str_own(&("clone." + ty)))
         elsif words > 0
             index = fresh(cx)
             push_const_int(cx, index, i)
             count = fresh(cx)
             push_const_int(cx, count, words)
-            args = vec_new()
-            vec_push(args, dest)
-            vec_push(args, index)
-            vec_push(args, count)
-            ir_push(cx, ir_call(0, "sal_enum_set_struct_flat".to_int(), args, 0))
-        enum_set_struct_glues(cx, vname, dest, i + 1, n)
+            args2 = vec_new()
+            vec_push(args2, dest)
+            vec_push(args2, index)
+            vec_push(args2, count)
+            ir_push(cx, ir_call(0, "sal_enum_set_struct_flat".to_int(), args2, 0))
+        enum_set_struct_glues(cx, vname, args, dest, i + 1, n)
+
+fn enum_set_glue(cx: &mut Cx, dest: Int, i: Int, drop: Int, clone: Int) -> Int ! alloc
+    index = fresh(cx)
+    push_const_int(cx, index, i)
+    gargs = vec_new()
+    vec_push(gargs, dest)
+    vec_push(gargs, index)
+    vec_push(gargs, drop)
+    vec_push(gargs, clone)
+    ir_push(cx, ir_call(0, "sal_enum_set_struct_glue".to_int(), gargs, 0))
 
 fn nested_variant_kind(cx: &Cx, a: &Expr) -> Int ! alloc
     match a
@@ -1201,6 +1302,8 @@ fn lower_match_arms(cx: &mut Cx, scrut: Int, arms: &List[TArm]) -> Int ! alloc
     if list_len(arms) == 0
         fresh(cx)
     elsif match_switchable(arms, 0, list_len(arms)) == 0
+        lower_match_chain(cx, scrut, arms, 0)
+    elsif match_has_nested_tests(cx, arms, 0) == 1
         lower_match_chain(cx, scrut, arms, 0)
     elsif arms_assign_outer(cx, arms, 0) == 1
         lower_match_chain(cx, scrut, arms, 0)
@@ -1235,7 +1338,7 @@ fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int 
     _b = cx_begin_body(cx)
     else_val = if i + 1 >= arms.len()
         str_as_int(&"0")
-    elsif match_tail_switch(arms, i + 1) == 1 && arms_assign_outer(cx, arms, i + 1) == 0
+    elsif match_tail_switch(arms, i + 1) == 1 && arms_assign_outer(cx, arms, i + 1) == 0 && match_has_nested_tests(cx, arms, i + 1) == 0
         lower_match_switch(cx, scrut, arms, i + 1)
     else
         lower_match_chain(cx, scrut, arms, i + 1)
@@ -1272,11 +1375,7 @@ fn match_has_text_pat(arms: &List[TArm], i: Int, n: Int) -> Int ! alloc
 fn match_arm_cond(cx: &mut Cx, scrut: Int, pat: &TPat) -> Int ! alloc
     k = pat.kind
     if k == 3
-        low = fresh(cx)
-        ir_push(cx, ir_etag(low, scrut))
-        d = fresh(cx)
-        ir_push(cx, ir_bin(d, str_as_int(&"eq"), low, str_own(&switch_pattern_tag(cx, pat).to_str())))
-        d
+        nested_pattern_cond(cx, scrut, pat)
     elsif k == 2
         d = fresh(cx)
         _p = ir_push(cx, ir_bin(d, str_as_int(&"eq"), scrut, str_own(&pat.ival.to_str())))
@@ -1304,6 +1403,82 @@ fn match_arm_cond(cx: &mut Cx, scrut: Int, pat: &TPat) -> Int ! alloc
         d = fresh(cx)
         _p = ir_push(cx, ir_ci(d, 1))
         d
+
+# Whether `v` matches the variant pattern `pat`: its tag, and then, only when the tag is right
+# (the payload exists), each refutable sub-pattern in order (`nested_pattern_cond` in src/ir.rs).
+fn nested_pattern_cond(cx: &mut Cx, v: Int, pat: &TPat) -> Int ! alloc
+    if pat.kind == 3
+        cond = tag_eq_cond(cx, v, switch_pattern_tag(cx, pat))
+        nested_args_cond(cx, v, &pat.args, 0, cond)
+    elsif pat.kind == 1
+        if pattern_unit_variant(cx, &pat.name) == 1
+            tag_eq_cond(cx, v, switch_pattern_tag(cx, pat))
+        else
+            str_as_int(&"1")
+    elsif pat.kind == 2 || pat.kind == 4 || pat.kind == 5
+        match_arm_cond(cx, v, pat)
+    else
+        str_as_int(&"1")
+
+fn tag_eq_cond(cx: &mut Cx, v: Int, tag: Int) -> Int ! alloc
+    low = fresh(cx)
+    ir_push(cx, ir_etag(low, v))
+    d = fresh(cx)
+    ir_push(cx, ir_bin(d, str_as_int(&"eq"), low, str_own(&tag.to_str())))
+    d
+
+fn nested_args_cond(cx: &mut Cx, v: Int, args: &List[TPat], i: Int, cond: Int) -> Int ! alloc
+    if i >= args.len()
+        cond
+    elsif pattern_refutable(cx, &args.get(i)) == 0
+        nested_args_cond(cx, v, args, i + 1, cond)
+    else
+        cx_begin_body(cx)
+        field = fresh(cx)
+        ir_push(cx, ir_efield(field, v, i))
+        sub = nested_pattern_cond(cx, field, &args.get(i))
+        body = cx_end_body(cx)
+        d = fresh(cx)
+        ir_push(cx, ir_if(d, cond, body, List.new[Inst](), sub, "0".to_int(), List.new[Inst]()))
+        nested_args_cond(cx, v, args, i + 1, d)
+
+# A sub-pattern that can fail: a variant (also a unit variant written as a name), a literal or a
+# regex (`pattern_refutable` in src/ir.rs).
+fn pattern_refutable(cx: &Cx, pat: &TPat) -> Int ! alloc
+    if pat.kind == 3 || pat.kind == 2 || pat.kind == 4 || pat.kind == 5
+        1
+    elsif pat.kind == 1
+        pattern_unit_variant(cx, &pat.name)
+    else
+        0
+
+# `name` is a variant without fields of any enum of the module graph (the record is
+# `[enum, index, fields, tag]`, see `variant_map` in selfhost/ir/ir.sal).
+fn pattern_unit_variant(cx: &Cx, name: &String) -> Int ! alloc
+    rec = variant_rec(cx, str_own(name))
+    if rec == 0
+        0
+    elsif vec_get(rec, 2) == 0
+        1
+    else
+        0
+
+# Some arm tests a payload: a `Switch` on the outer tag alone would pick the wrong arm.
+fn match_has_nested_tests(cx: &Cx, arms: &List[TArm], i: Int) -> Int ! alloc
+    if i >= arms.len()
+        0
+    elsif arms.get(i).pat.kind == 3 && args_refutable(cx, &arms.get(i).pat.args, 0) == 1
+        1
+    else
+        match_has_nested_tests(cx, arms, i + 1)
+
+fn args_refutable(cx: &Cx, args: &List[TPat], i: Int) -> Int ! alloc
+    if i >= args.len()
+        0
+    elsif pattern_refutable(cx, &args.get(i)) == 1
+        1
+    else
+        args_refutable(cx, args, i + 1)
 
 # `name` is a variant without fields of the enum the scrutinee has (`match:ty`, references peeled).
 fn match_unit_variant(cx: &Cx, name: &String) -> Int ! alloc
@@ -1424,12 +1599,17 @@ fn bind_variant_payloads(cx: &mut Cx, scrut: Int, vname: &String, args: &List[TP
             h1061_1 = fuse_variant_field_type(cx, vname, i)
             _t = tenv_bind(&mut cx.env, &a.name, &h1061_1)
             bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
-        elsif a.kind == 0
-            # `_` still reads its field, as the bootstrap's `EnumField` per payload slot does.
+        elsif a.kind == 3
+            # A nested variant binds from the field it names (`bind_one_match_payload` in src/ir.rs).
             d = fresh(cx)
-            ir_push(cx, ir_efield(d, scrut, i))
+            _p = ir_push(cx, ir_efield(d, scrut, i))
+            _n = bind_variant_payloads(cx, d, &a.name, &a.args, 0, a.args.len(), 3)
             bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
         else
+            # `_` or a literal still reads its field, as the bootstrap's `EnumField` per payload
+            # slot does.
+            d = fresh(cx)
+            ir_push(cx, ir_efield(d, scrut, i))
             bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
 
 # The declared type of field `i` of the variant `vname` ("" when unknown): a payload bound by a
@@ -2416,18 +2596,29 @@ fn lower_stmt_assign(cx: &mut Cx, st: &TStmt) -> Int ! alloc
         _sa = cx_set_acc(cx, 0)
     _lm = note_lambda(cx, &st.name, &st.expr)
     param_cell = local_cell_param(cx, &st.expr)
-    v = if param_cell.len() > 0
+    v0 = if param_cell.len() > 0
         param_cell.to_int()
     else
         lower_expr(cx, &st.expr)
+    # A reassignment of a local declared `any[P]` boxes the new value too.
+    want = if st.ty.len() == 0 && st.is_let == 0
+        tenv_type(&cx.env, &st.name)
+    else
+        st.ty.clone()
+    v = box_into(cx, &want, &st.expr, v0)
     _za = cx_set_acc(cx, 0)
     # Rebinding a struct local releases its previous value first (`reassign_struct_drop` in
     # src/ir.rs): the new value was computed above, so it may read the old one.
     if st.is_let == 0
         reassign_old(cx, &st.name, name, v)
     _b = cx_bind(cx, name, v)
-    h1574_2 = texpr_type(&cx.env, &st.expr)
+    h1574_2 = if v != v0
+        want.clone()
+    else
+        texpr_type(&cx.env, &st.expr)
     _ns = tenv_bind(&mut cx.env, &st.name, &h1574_2)
+    vty = variant_enum_type(cx, &st.expr)
+    tenv_bind(&mut cx.env, &("vty:" + st.name), &vty)
     marker = if param_cell.len() > 0 || is_local_cell_ref(cx, &st.expr) == 1 || local_cell_ref_expr(cx, &st.expr) == 1
         "cell"
     else
@@ -2821,6 +3012,7 @@ fn lower_field_assign_struct(cx: &mut Cx, st: &TStmt, name: &String, sd: &TStruc
         _e = ir_push(cx, ir_extract(old, base_ssa, str_own(&sd.name), idx))
         if cx.keep_old == 0
             lower_field_drop_old(cx, &list_get(&sd.fields, idx).ty, old)
+            lower_field_drop_flat(cx, &sd.fields.get(idx).ty, old, 0)
         # `list_get` alias: write in place. Owned locals rebuild (scalarize slots).
         if is_box_place(cx, name) == 1
             lower_field_store(cx, base_ssa, idx, v)
@@ -2852,6 +3044,18 @@ fn lower_field_drop_old(cx: &mut Cx, ty: &String, ssa: Int) -> Int ! alloc
         args = vec_new()
         _a = vec_push(args, ssa)
         ir_push(cx, ir_call(0, str_as_int(&fn_name), args, 0))
+
+# The block of a nested multi-field struct without heap fields that an overwrite replaces: it
+# has no glue, so `lower_field_drop_old` leaves it (`emit_flat_block_drop` in src/ir.rs).
+fn lower_field_drop_flat(cx: &mut Cx, ty: &String, ssa: Int, owner_one: Int) -> Int ! alloc
+    if owner_one == 1 || drop_field_fn(&cx.env.structs, &cx.enums, ty, 3, 0, 0).len() > 0
+        0
+    elsif nested_flat_block_t(&cx.env.structs, ty, 3, 0) == 0
+        0
+    else
+        args = vec_new()
+        vec_push(args, ssa)
+        ir_push(cx, ir_call(0, "sal_struct_free_box".to_int(), args, 0))
 
 fn lower_field_store(cx: &mut Cx, base_ssa: Int, idx: Int, v: Int) -> Int ! alloc
     ix = fresh(cx)
@@ -2972,6 +3176,11 @@ fn store_field_path(cx: &mut Cx, target: &Expr, v: Int, drop_old: Int) -> Int ! 
         if drop_old == 1 && cx.keep_old == 0
             leaf = structs.get(sis.get(k - 1))
             lower_field_drop_old(cx, &leaf.fields.get(idxs.get(k - 1)).ty, vals.get(k))
+            one = if leaf.fields.len() == 1
+                1
+            else
+                0
+            lower_field_drop_flat(cx, &leaf.fields.get(idxs.get(k - 1)).ty, vals.get(k), one)
         cur = v
         done = 0
         j = k - 1
@@ -3121,7 +3330,9 @@ fn lower_stmt_return(cx: &mut Cx, st: &TStmt) -> Int ! alloc
 fn lower_return_value(cx: &mut Cx, st: &TStmt) -> Int ! alloc
     match st.expr
         XNone => lower_return_unit(cx)
-        _ => lower_expr(cx, &st.expr)
+        _ =>
+            v = lower_expr(cx, &st.expr)
+            box_into(cx, &fn_ret_type(cx), &st.expr, v)
 
 fn lower_return_unit(cx: &mut Cx) -> Int ! alloc
     d = fresh(cx)
@@ -3443,7 +3654,11 @@ fn lower_fn(f: &TFn, fn_names: Int, fm: Int, env_tpl: &TEnv, enums: &List[TEnum]
     _cp = lower_cell_params(&mut cx, &f.params)
     stopped = lower_fn_stmts(&mut cx, &f.body.stmts, 0, f.body.stmts.len())
     ret = if stopped == 0 - 1
-        lower_fn_tail(&mut cx, &f.body.tail)
+        tv = lower_fn_tail(&mut cx, &f.body.tail)
+        if tv == 0 - 1
+            tv
+        else
+            box_into(&mut cx, &f.ret, &f.body.tail, tv)
     else
         stopped
     name = f.name.dup()
@@ -3636,7 +3851,7 @@ fn struct_glue_emit(structs: &List[TStruct], all: &List[TStruct], enums: &List[T
                 _e = out.push(struct_elem_glue_fn(&structs.get(idx).name))
             else
                 _k = 0
-            if struct_clone_glue_t(all, enums, &structs.get(idx).name) == 1
+            if struct_enum_glue_t(all, enums, &structs.get(idx).name) == 1
                 _cl = out.push(struct_clone_fn(&structs.get(idx), all, enums))
             else
                 _k2 = 0
@@ -3811,10 +4026,13 @@ fn drop_env_t(tp: &TProgram, structs: &List[TStruct], enums: &List[TEnum], seen:
     denv = vec_new()
     _a = vec_push(denv, variant_map_t(tp, structs, enums, seen))
     _o = owned_fns_put(vec_get(denv, 0), &tp.fns, 0, list_len(&tp.fns))
+    # The callees of other modules too (`value_kind` of std/reflect.sal), as `owned_return_fns`.
+    owned_fns_put(vec_get(denv, 0), seen, 0, seen.len())
     _pf = passthru_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
     passthru_close(vec_get(denv, 0), &tp.fns)
     _rk = ret_kinds_put(vec_get(denv, 0), &tp.fns, 0, tp.fns.len())
     _rs = ret_kinds_put(vec_get(denv, 0), seen, 0, seen.len())
+    any_ret_kinds_put(vec_get(denv, 0), &tp.protocols)
     cons = dr_cons_list(&tp.fns)
     ro = dr_read_only_t(tp, vec_get(denv, 0), &cons, seen)
     modes = map_new()

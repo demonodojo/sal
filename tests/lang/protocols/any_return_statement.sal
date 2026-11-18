@@ -1,0 +1,20 @@
+# exit: 9
+# `return valor` donde se espera `any[P]` también lo mete en la caja.
+protocol Num
+    method n(&self) -> Int
+
+struct Two impl Num
+    x: Int
+    y: Int
+
+method Two.n(&self) -> Int
+    self.x + self.y
+
+fn pick(big: Bool) -> any[Num] ! alloc
+    if big
+        return Two(4, 5)
+    Two(1, 1)
+
+fn main() -> Int ! alloc
+    a = pick(true)
+    a.n()

@@ -689,7 +689,7 @@ pub fn any_coerce_vtable(type_name: &str, protocol: &str) -> String {
 }
 
 /// A slot of the vtable: neither generic nor `static`.
-fn dynamic(m: &ProtocolMethod) -> bool {
+pub(crate) fn dynamic(m: &ProtocolMethod) -> bool {
     m.type_params.is_empty() && !m.is_static
 }
 

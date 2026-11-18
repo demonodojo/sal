@@ -28,7 +28,7 @@ fn emit_any_vtables(m: &IrModule, user_fns: &HashMap<String, &IrFunction>, s: &m
         s.push_str(&format!("@{} = global [{} x i64] [", vt.global, n));
         for (i, entry) in vt.entries.iter().enumerate() {
             let sep = if i + 1 == n { "" } else { ", " };
-            if entry.starts_with("sal_any_drop_") {
+            if entry.starts_with("sal_any_drop_") && !user_fns.contains_key(entry) {
                 drop_thunks.insert(entry.clone());
                 s.push_str(&format!("i64 ptrtoint (void (i64)* @{entry} to i64){sep}"));
             } else {
@@ -667,6 +667,11 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare i64 @sal_list_pop(ptr)\n");
     s.push_str("declare i64 @sal_any_box(i64, i64, i64)\n");
     s.push_str("declare void @sal_any_free(i64)\n");
+    s.push_str("declare void @sal_any_free_shell(i64)\n");
+    s.push_str("declare i64 @sal_any_drop_glue(i64)\n");
+    s.push_str("declare i64 @sal_any_clone_glue(i64)\n");
+    s.push_str("declare i64 @sal_dict_drop_glue(i64)\n");
+    s.push_str("declare i64 @sal_dict_clone_glue(i64)\n");
     s.push_str("declare i64 @sal_any_call(i64, i64, i64, i64, i64, i64, i64)\n\n");
 
     for (name, nparams) in extern_user_fns {
@@ -3949,7 +3954,9 @@ fn emit_runtime_or_user_call(
             let i = args.get(1).map(|a| i64_operand(a, consts)).unwrap_or_else(|| "0".into());
             let drop = args.get(2).cloned().unwrap_or_default();
             let clone = args.get(3).cloned().unwrap_or_default();
-            s.push_str(&format!("  call void @sal_enum_set_struct_glue(i64 {v}, i64 {i}, ptr @{}, ptr @{})\n", llsym(&drop), llsym(&clone)));
+            // `sal_*` names are runtime glue (`sal_any_drop_glue`); the rest are this program's.
+            let sym = |n: &str| if n.starts_with("sal_") { n.to_string() } else { llsym(n) };
+            s.push_str(&format!("  call void @sal_enum_set_struct_glue(i64 {v}, i64 {i}, ptr @{}, ptr @{})\n", sym(&drop), sym(&clone)));
         }
         "sal_enum_set_struct_flat" => {
             let ops: Vec<String> = args.iter().map(|a| format!("i64 {}", i64_operand(a, consts))).collect();
@@ -3991,9 +3998,9 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = call i64 @sal_list_box_id(ptr {a})\n"));
             }
         }
-        "sal_any_free" => {
+        "sal_any_free" | "sal_any_free_shell" => {
             let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
-            s.push_str(&format!("  call void @sal_any_free(i64 {a})\n"));
+            s.push_str(&format!("  call void @{func}(i64 {a})\n"));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
             }

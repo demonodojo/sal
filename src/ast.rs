@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
 
-pub const AST_SCHEMA_VERSION: u32 = 7;
+pub const AST_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Program {
@@ -289,6 +289,15 @@ pub enum Stmt {
     Break {
         span: Span,
     },
+    /// `inline for var in Ty.fields` newline indent body: one copy of the body per field of the
+    /// struct `Ty`. `inline_for::unroll_inline_for` unrolls it before type checking, so later
+    /// passes never see it. Inside the body, `x.[var]` is an `Expr::Field` named `[var]`.
+    InlineFor {
+        var: String,
+        ty: String,
+        body: Block,
+        span: Span,
+    },
     /// `while cond` newline indent body. The condition is evaluated each iteration.
     While {
         cond: Expr,
@@ -299,6 +308,10 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Expr {
+    /// `()`, the only value of `Unit`.
+    Unit {
+        span: Span,
+    },
     Int {
         value: i64,
         span: Span,
@@ -563,7 +576,8 @@ pub struct ProtocolMethod {
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
-            Expr::Int { span, .. }
+            Expr::Unit { span }
+            | Expr::Int { span, .. }
             | Expr::Float { span, .. }
             | Expr::Bool { span, .. }
             | Expr::String { span, .. }

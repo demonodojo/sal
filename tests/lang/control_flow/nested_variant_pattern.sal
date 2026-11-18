@@ -1,5 +1,4 @@
 # exit: 5
-# selfhost-xfail: el selfhost no enlaza cargas de patrones anidados
 enum Inner
     XIdent(String)
     XNone

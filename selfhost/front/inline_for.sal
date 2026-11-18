@@ -1,0 +1,319 @@
+# `inline for f in T.fields`: a loop over the fields of a struct, unrolled at compile time. Mirror
+# of `src/inline_for.rs` (SPEC «Reflexión», `inline for`).
+#
+# The pass runs right after the parse, before `desugar_break`, and replaces the statement (kind 5:
+# the variable in `name`, the struct in `ty`, the body in an `XBlock`) with one block per field of
+# `T`, in declaration order. Inside each copy, `f.name` and `f.ty` are string literals and `x.[f]`
+# (an `XField` named `[f]`) is the field itself. Each copy is the branch of an `if true`, so its
+# locals are released at its end, and it is typed on its own. A `break` in the body outside a
+# `while` of its own is an error.
+#
+# Every copy gets call offsets and statement ids of its own (the bootstrap shifts its spans): later
+# passes key calls by offset (`specialize`, `drops`) and statements by id. A copy number `k` adds
+# `k * (len(src) + 1)` to each call offset (`deprecation.sal` takes it modulo to place a warning)
+# and `k * 2^32` to each statement id.
+#
+# `cx = [copies, offset stride, failed]`; `errs` takes the first message. `vs` holds the loop
+# variables in scope as triples: variable, field name, field type.
+import "../ast/tast.sal"
+
+fn unroll_inline_for(tp: TProgram, src: &String, errs: &mut List[String]) -> TProgram ! alloc
+    cx = List.new[Int]()
+    cx.push(0)
+    cx.push(src.len() + 1)
+    cx.push(0)
+    vs = List.new[String]()
+    i = 0
+    while i < tp.fns.len()
+        f = tp.fns.get_mut(i)
+        f.body = if_block(&f.body, &vs, &tp.structs, &mut cx, errs)
+        i = i + 1
+    k = 0
+    while k < tp.protocols.len()
+        p = tp.protocols.get(k)
+        j = 0
+        while j < p.methods.len()
+            m = p.methods.get(j)
+            if m.has_body == 1 && if_has_loop(&m.body) == 1
+                if_fail(errs, &mut cx, &"`inline for` is not allowed in a protocol body")
+            j = j + 1
+        k = k + 1
+    tp
+
+fn if_fail(errs: &mut List[String], cx: &mut List[Int], msg: &String) -> Int ! alloc
+    if cx.get(2) == 0
+        cx.set(2, 1)
+        errs.push(msg.dup())
+    0
+
+fn if_has_loop(b: &TBlock) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < b.stmts.len()
+        if b.stmts.get(i).kind == 5
+            found = 1
+        i = i + 1
+    found
+
+# ---- unrolling ----
+fn if_block(b: &TBlock, vs: &List[String], structs: &List[TStruct], cx: &mut List[Int], errs: &mut List[String]) -> TBlock ! alloc
+    out = List.new[TStmt]()
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        if st.kind == 5
+            if_unroll(&st, vs, structs, cx, errs, &mut out)
+            ()
+        else
+            out.push(TStmt(st.kind, st.name.dup(), if_expr(&st.expr, vs, structs, cx, errs), st.ty.dup(), st.is_let, if_expr(&st.target, vs, structs, cx, errs), st.frozen, st.stack, st.id))
+        i = i + 1
+    TBlock(out, if_expr(&b.tail, vs, structs, cx, errs))
+
+# One `XBlock` statement per field of the struct named in `st.ty`.
+fn if_unroll(st: &TStmt, vs: &List[String], structs: &List[TStruct], cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
+    if if_bound(vs, &st.name) >= 0
+        return if_fail(errs, cx, &("`" + st.name + "` is already a loop variable here"))
+    si = if_struct(structs, &st.ty)
+    if si < 0
+        return if_fail(errs, cx, &("`inline for` needs a struct of this module, found " + st.ty))
+    sd = structs.get(si)
+    if sd.tparams.len() > 0
+        return if_fail(errs, cx, &("`inline for` over the generic struct " + st.ty))
+    body = if_body(&st.expr)
+    if if_loose_break(&body) == 1
+        return if_fail(errs, cx, &"`break` in an `inline for` body (outside a `while` of its own)")
+    i = 0
+    while i < sd.fields.len()
+        fd = sd.fields.get(i)
+        k = cx.get(0) + 1
+        cx.set(0, k)
+        copy = if_shift_block(&body, k * cx.get(1), k * 4294967296)
+        inner = vs.clone()
+        inner.push(st.name.dup())
+        inner.push(fd.name.dup())
+        inner.push(if_ty_text(&fd.ty))
+        nb = if_block(&copy, &inner, structs, cx, errs)
+        # `if true` around the copy: its locals are released at its end, as in any `if` branch.
+        out.push(TStmt(0, "", XIf(XBool(1), nb, TBlock(List.new[TStmt](), XNone), 0, List.new[TElsif]()), "", 0, XNone, 0, 0, 0))
+        i = i + 1
+    0
+
+# 1 when the body has a `break` outside a `while` of its own (`loose_break` in src/inline_for.rs).
+fn if_loose_break(b: &TBlock) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < b.stmts.len() && found == 0
+        st = b.stmts.get(i)
+        found = match st.kind
+            4 => 1
+            5 => if_loose_break(&if_body(&st.expr))
+            0 => if_loose_in(&st.expr)
+            _ => 0
+        i = i + 1
+    found
+
+fn if_loose_in(e: &Expr) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) =>
+            found = if_loose_break(&then_b) + if_loose_break(&else_b)
+            j = 0
+            while j < elsifs.len()
+                found = found + if_loose_break(&elsifs.get(j).body)
+                j = j + 1
+            if found > 0
+                1
+            else
+                0
+        XBlock(b) => if_loose_break(&b)
+        _ => 0
+
+fn if_body(e: &Expr) -> TBlock ! alloc
+    match e
+        XBlock(b) => tc_block(&b)
+        _ => TBlock(List.new[TStmt](), XNone)
+
+fn if_struct(structs: &List[TStruct], name: &String) -> Int ! alloc
+    found = 0 - 1
+    i = 0
+    while i < structs.len() && found < 0
+        if structs.get(i).name.eq(name) == 1
+            found = i
+        i = i + 1
+    found
+
+# The index of the triple of variable `v` in `vs` (the innermost one), or -1.
+fn if_bound(vs: &List[String], v: &String) -> Int ! alloc
+    found = 0 - 1
+    i = 0
+    while i + 2 < vs.len()
+        if vs.get(i).eq(v) == 1
+            found = i
+        i = i + 3
+    found
+
+# The type text as `sal fmt` writes it (the parser leaves a space after each token): one space
+# after each comma, and between two words (`&mut T`, `&'a T`), none elsewhere.
+fn if_ty_text(t: &String) -> String ! alloc
+    out = d""
+    gap = 0
+    last = 0
+    i = 0
+    while i < t.len()
+        c = t.char(i)
+        if c == 32
+            gap = 1
+        elsif c == 44
+            out = out + ", "
+            gap = 0
+            last = 0
+        else
+            sep = if gap == 1 && if_word(last) == 1 && if_word(c) == 1
+                " "
+            else
+                ""
+            out = out + sep + String.from_char(c)
+            gap = 0
+            last = c
+        i = i + 1
+    out
+
+fn if_word(c: Int) -> Int
+    if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 39
+        1
+    else
+        0
+
+fn if_exprs(xs: &List[Expr], vs: &List[String], structs: &List[TStruct], cx: &mut List[Int], errs: &mut List[String]) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    i = 0
+    while i < xs.len()
+        out.push(if_expr(&xs.get(i), vs, structs, cx, errs))
+        i = i + 1
+    out
+
+fn if_expr(e: &Expr, vs: &List[String], structs: &List[TStruct], cx: &mut List[Int], errs: &mut List[String]) -> Expr ! alloc
+    match e
+        XIdent(name) =>
+            if if_bound(vs, &name) >= 0
+                if_fail(errs, cx, &("`" + name + "` is a field of `inline for`: use `" + name + ".name`, `" + name + ".ty` or `x.[" + name + "]`"))
+            XIdent(name.dup())
+        XField(base, field) => if_field(&base, &field, vs, structs, cx, errs)
+        XBin(op, l, r) => XBin(op.dup(), if_expr(&l, vs, structs, cx, errs), if_expr(&r, vs, structs, cx, errs))
+        XCall(name, args, targs, xp) => XCall(name.dup(), if_exprs(&args, vs, structs, cx, errs), targs.dup(), xp)
+        XTo(place, inner) => XTo(place.dup(), if_expr(&inner, vs, structs, cx, errs))
+        XOn(place, body, kern, idx) => XOn(place.dup(), if_block(&body, vs, structs, cx, errs), kern, idx)
+        XBlock(body) => XBlock(if_block(&body, vs, structs, cx, errs))
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(if_expr(&cond, vs, structs, cx, errs), if_block(&then_b, vs, structs, cx, errs), if_block(&else_b, vs, structs, cx, errs), has_else, if_elsifs(&elsifs, vs, structs, cx, errs))
+        XWhile(cond, body) => XWhile(if_expr(&cond, vs, structs, cx, errs), if_block(&body, vs, structs, cx, errs))
+        XLambda(param, body) => XLambda(param.dup(), if_expr(&body, vs, structs, cx, errs))
+        XLambdaBlock(param, body) => XLambdaBlock(param.dup(), if_block(&body, vs, structs, cx, errs))
+        XUnary(op, inner) => XUnary(op.dup(), if_expr(&inner, vs, structs, cx, errs))
+        XMatch(scrut, arms) => XMatch(if_expr(&scrut, vs, structs, cx, errs), if_arms(&arms, vs, structs, cx, errs))
+        XTry(inner) => XTry(if_expr(&inner, vs, structs, cx, errs))
+        _ => tc_expr(e)
+
+# `f.name` and `f.ty` of a loop variable are literals; `x.[f]` is the field `f` stands for.
+fn if_field(base: &Expr, field: &String, vs: &List[String], structs: &List[TStruct], cx: &mut List[Int], errs: &mut List[String]) -> Expr ! alloc
+    bi = match base
+        XIdent(name) => if_bound(vs, &name)
+        _ => 0 - 1
+    if bi >= 0
+        if field.eq("name") == 1
+            XStr(vs.get(bi + 1).dup())
+        elsif field.eq("ty") == 1
+            XStr(vs.get(bi + 2).dup())
+        else
+            if_fail(errs, cx, &("a field of `inline for` has `.name` and `.ty`, not `." + field + "`"))
+            XStr(d"")
+    elsif field.index_of("[") == 0
+        v = field.slice(1, field.len() - 1)
+        vi = if_bound(vs, &v)
+        if vi < 0
+            if_fail(errs, cx, &("`.[" + v + "]` outside an `inline for` over `" + v + "`"))
+            XField(if_expr(base, vs, structs, cx, errs), field.dup())
+        else
+            XField(if_expr(base, vs, structs, cx, errs), vs.get(vi + 1).dup())
+    else
+        XField(if_expr(base, vs, structs, cx, errs), field.dup())
+
+fn if_elsifs(xs: &List[TElsif], vs: &List[String], structs: &List[TStruct], cx: &mut List[Int], errs: &mut List[String]) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        out.push(TElsif(if_expr(&a.cond, vs, structs, cx, errs), if_block(&a.body, vs, structs, cx, errs)))
+        i = i + 1
+    out
+
+fn if_arms(xs: &List[TArm], vs: &List[String], structs: &List[TStruct], cx: &mut List[Int], errs: &mut List[String]) -> List[TArm] ! alloc
+    out = List.new[TArm]()
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        out.push(TArm(a.pat.clone(), if_expr(&a.body, vs, structs, cx, errs), if_block(&a.suite, vs, structs, cx, errs), a.has_suite))
+        i = i + 1
+    out
+
+# ---- shifting a copy ----
+# A deep copy of `b` with `dxp` added to every call offset and `did` to every statement id (both
+# only when set: 0 stays 0).
+fn if_shift_block(b: &TBlock, dxp: Int, did: Int) -> TBlock ! alloc
+    out = List.new[TStmt]()
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        id = if st.id > 0
+            st.id + did
+        else
+            st.id
+        out.push(TStmt(st.kind, st.name.dup(), if_shift(&st.expr, dxp, did), st.ty.dup(), st.is_let, if_shift(&st.target, dxp, did), st.frozen, st.stack, id))
+        i = i + 1
+    TBlock(out, if_shift(&b.tail, dxp, did))
+
+fn if_shift_list(xs: &List[Expr], dxp: Int, did: Int) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    i = 0
+    while i < xs.len()
+        out.push(if_shift(&xs.get(i), dxp, did))
+        i = i + 1
+    out
+
+fn if_shift(e: &Expr, dxp: Int, did: Int) -> Expr ! alloc
+    match e
+        XCall(name, args, targs, xp) =>
+            at = if xp > 0
+                xp + dxp
+            else
+                xp
+            XCall(name.dup(), if_shift_list(&args, dxp, did), targs.dup(), at)
+        XField(base, field) => XField(if_shift(&base, dxp, did), field.dup())
+        XBin(op, l, r) => XBin(op.dup(), if_shift(&l, dxp, did), if_shift(&r, dxp, did))
+        XTo(place, inner) => XTo(place.dup(), if_shift(&inner, dxp, did))
+        XOn(place, body, kern, idx) => XOn(place.dup(), if_shift_block(&body, dxp, did), kern, idx)
+        XBlock(body) => XBlock(if_shift_block(&body, dxp, did))
+        XIf(cond, then_b, else_b, has_else, elsifs) => XIf(if_shift(&cond, dxp, did), if_shift_block(&then_b, dxp, did), if_shift_block(&else_b, dxp, did), has_else, if_shift_elsifs(&elsifs, dxp, did))
+        XWhile(cond, body) => XWhile(if_shift(&cond, dxp, did), if_shift_block(&body, dxp, did))
+        XLambda(param, body) => XLambda(param.dup(), if_shift(&body, dxp, did))
+        XLambdaBlock(param, body) => XLambdaBlock(param.dup(), if_shift_block(&body, dxp, did))
+        XUnary(op, inner) => XUnary(op.dup(), if_shift(&inner, dxp, did))
+        XMatch(scrut, arms) => XMatch(if_shift(&scrut, dxp, did), if_shift_arms(&arms, dxp, did))
+        XTry(inner) => XTry(if_shift(&inner, dxp, did))
+        _ => tc_expr(e)
+
+fn if_shift_elsifs(xs: &List[TElsif], dxp: Int, did: Int) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        out.push(TElsif(if_shift(&a.cond, dxp, did), if_shift_block(&a.body, dxp, did)))
+        i = i + 1
+    out
+
+fn if_shift_arms(xs: &List[TArm], dxp: Int, did: Int) -> List[TArm] ! alloc
+    out = List.new[TArm]()
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        out.push(TArm(a.pat.clone(), if_shift(&a.body, dxp, did), if_shift_block(&a.suite, dxp, did), a.has_suite))
+        i = i + 1
+    out

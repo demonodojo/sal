@@ -328,8 +328,10 @@ fn load_module_recursive(
             Default::default(),
         )]
     })?;
+    let src = crate::reflect::with_reflect(&src).map_err(|d| vec![d])?;
     let mut program = parse(&crate::interp::with_prelude_enums(&src)).map_err(|d| vec![d])?;
     crate::interp::expand_interpolation(&mut program);
+    crate::inline_for::unroll_inline_for(&mut program)?;
     crate::loops::desugar_break(&mut program)?;
     crate::threads::desugar_thread_spawn(&mut program)?;
     let has_methods = crate::methods::has_methods(&program);

@@ -1,0 +1,318 @@
+# A `struct T impl Reflect` and the text of the `Reflect` methods it does not define
+# (`RStruct` and `generate` in src/reflect.rs). `tys` holds each field type as `sal fmt` writes
+# it: `Int`, `List[String]`, `Dict[String, Punto]`, `Punto`.
+struct ReflectStruct
+    name: String
+    names: List[String]
+    tys: List[String]
+
+# The methods `src` does not define for this struct, then the helper fns of its fields.
+method ReflectStruct.generate(&self, src: &String) -> String ! alloc
+    n = self.name.clone()
+    o = d""
+    if rf_has_own(src, &"method", &n, &"type_name") == 0
+        o = o + "\nmethod " + n + ".type_name(&self) -> String ! alloc\n    d\"" + n + "\"\n"
+    if rf_has_own(src, &"method", &n, &"fields") == 0
+        o = o + "\nmethod " + n + ".fields(&self) -> List[Field] ! alloc\n    out = List.new[Field]()\n"
+        i = 0
+        while i < self.names.len()
+            o = o + "    out.push(Field(d\"" + self.names.get(i) + "\", d\"" + self.tys.get(i) + "\"))\n"
+            i = i + 1
+        o = o + "    out\n"
+    if rf_has_own(src, &"method", &n, &"get_field") == 0
+        o = o + self.get_field_text()
+    if rf_has_own(src, &"method", &n, &"set_field") == 0
+        o = o + self.set_field_text()
+    if rf_has_own(src, &"method", &n, &"to_dict") == 0
+        o = o + "\nmethod " + n + ".to_dict(&self) -> Dict[String, Value] ! alloc\n    out = Dict.new[String, Value]()\n"
+        i = 0
+        while i < self.names.len()
+            fv = self.field_value(i)
+            o = o + "    out.put(d\"" + self.names.get(i) + "\", " + fv + ")\n"
+            i = i + 1
+        o = o + "    out\n"
+    if rf_has_own(src, &"static", &n, &"from_dict") == 0
+        o = o + "\nstatic " + n + ".from_dict(src: &Dict[String, Value]) -> Result[" + n + ", String] ! alloc\n"
+        o = o + self.from_dict_text(0, 1)
+    i = 0
+    while i < self.names.len()
+        o = o + self.helpers(i)
+        i = i + 1
+    o
+
+# 1 when some field is a struct: a dotted name (`pos.x`) goes to that field's own method.
+method ReflectStruct.has_struct_field(&self) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < self.tys.len()
+        if rf_kind(&self.tys.get(i)) == 4
+            found = 1
+        i = i + 1
+    found
+
+# The `Value` of field `i` (`get_field` / `to_dict`).
+method ReflectStruct.field_value(&self, i: Int) -> String ! alloc
+    f = self.names.get(i).clone()
+    t = self.tys.get(i).clone()
+    k = rf_kind(&t)
+    if k == 5 || k == 6
+        "reflect_" + self.name + "_" + f + "_value(&self." + f + ")"
+    else
+        place = "self." + f
+        rf_value_of(&t, &place)
+
+# The dotted-name prefix of `get_field` / `set_field` (`dotted` in src/reflect.rs).
+method ReflectStruct.dotted(&self, call: &String, ok: &String, miss: &String) -> String ! alloc
+    o = d"    dot = name.index_of(\".\")\n    if dot >= 0\n"
+    o = o + "        head = name.slice(0, dot)\n        rest = name.slice(dot + 1, name.len())\n"
+    kw = d"if"
+    i = 0
+    while i < self.names.len()
+        if rf_kind(&self.tys.get(i)) == 4
+            f = self.names.get(i).clone()
+            o = o + "        " + kw + " head.eq(\"" + f + "\") == 1\n"
+            o = o + "            r = self." + f + "." + call + "\n            match &r\n"
+            o = o + ok
+            kw = d"elsif"
+        i = i + 1
+    o = o + "        else\n"
+    o + miss
+
+method ReflectStruct.get_field_text(&self) -> String ! alloc
+    o = "\nmethod " + self.name + ".get_field(&self, name: &String) -> Option[Value] ! alloc\n"
+    kw = d"if"
+    if self.has_struct_field() == 1
+        ok = d"                Some(x) =>\n                    c = x.clone()\n                    Some(c)\n                None => None\n"
+        o = o + self.dotted(&"get_field(&rest)", &ok, &"            None\n")
+        kw = d"elsif"
+    i = 0
+    while i < self.names.len()
+        fv = self.field_value(i)
+        o = o + "    " + kw + " name.eq(\"" + self.names.get(i) + "\") == 1\n        v = " + fv + "\n        Some(v)\n"
+        kw = d"elsif"
+        i = i + 1
+    if kw.eq("if") == 1
+        o + "    None\n"
+    else
+        o + "    else\n        None\n"
+
+method ReflectStruct.set_field_text(&self) -> String ! alloc
+    n = self.name.clone()
+    o = "\nmethod " + n + ".set_field(&mut self, name: &String, v: Value) -> Result[Unit, String] ! alloc\n"
+    kw = d"if"
+    if self.has_struct_field() == 1
+        ok = d"                Ok(_) => Ok(())\n                Err(e) =>\n                    m = e.clone()\n                    Err(m)\n"
+        miss = "            e = d\"no field \" + head + \" in " + n + "\"\n            Err(e)\n"
+        o = o + self.dotted(&"set_field(&rest, v.clone())", &ok, &miss)
+        kw = d"elsif"
+    i = 0
+    while i < self.names.len()
+        f = self.names.get(i).clone()
+        t = self.tys.get(i).clone()
+        item = "reflect_" + n + "_" + f + "_from"
+        call = rf_conv(&t, &"&v", &f, &item)
+        o = o + "    " + kw + " name.eq(\"" + f + "\") == 1\n        r = " + call + "\n        match &r\n"
+        cp = rf_copy_of(&t, &"x")
+        o = o + "            Ok(x) =>\n                self." + f + " = " + cp + "\n                Ok(())\n"
+        o = o + "            Err(e) =>\n                m = e.clone()\n                Err(m)\n"
+        kw = d"elsif"
+        i = i + 1
+    miss = "e = d\"no field \" + name + \" in " + n + "\"\n"
+    if kw.eq("if") == 1
+        o + "    " + miss + "    Err(e)\n"
+    else
+        o + "    else\n        " + miss + "        Err(e)\n"
+
+# Field `k` of `from_dict`, one nested `match` per step (`from_dict_body` in src/reflect.rs).
+method ReflectStruct.from_dict_text(&self, k: Int, depth: Int) -> String ! alloc
+    pad = rf_pad(depth)
+    if k == self.names.len()
+        args = d""
+        i = 0
+        while i < self.tys.len()
+            if i > 0
+                args = args + ", "
+            x = "x" + i.to_str()
+            args = args + rf_copy_of(&self.tys.get(i), &x)
+            i = i + 1
+        pad + "o = " + self.name + "(" + args + ")\n" + pad + "Ok(o)\n"
+    else
+        f = self.names.get(k).clone()
+        t = self.tys.get(k).clone()
+        ks = k.to_str()
+        o = pad + "r" + ks + " = value_field(src, &\"" + f + "\")\n" + pad + "match &r" + ks + "\n" + pad + "    Ok(v" + ks + ") =>\n"
+        pad2 = rf_pad(depth + 2)
+        arg = "&v" + ks
+        item = "reflect_" + self.name + "_" + f + "_from"
+        call = rf_conv(&t, &arg, &f, &item)
+        o = o + pad2 + "q" + ks + " = " + call + "\n" + pad2 + "match &q" + ks + "\n" + pad2 + "    Ok(x" + ks + ") =>\n"
+        o = o + self.from_dict_text(k + 1, depth + 4)
+        o = o + rf_err_arm(&pad2, &ks)
+        o + rf_err_arm(&pad, &ks)
+
+# The fns field `i` needs (`helpers` in src/reflect.rs).
+method ReflectStruct.helpers(&self, i: Int) -> String ! alloc
+    n = self.name.clone()
+    f = self.names.get(i).clone()
+    t = self.tys.get(i).clone()
+    k = rf_kind(&t)
+    item = "reflect_" + n + "_" + f + "_item"
+    if k == 4
+        nm = "reflect_" + n + "_" + f + "_from"
+        rf_struct_from(&nm, &t, &f)
+    elsif k == 5 || k == 6
+        rf_container_helpers(&n, &f, &t, &item)
+    else
+        d""
+
+fn rf_has_own(src: &String, kw: &String, s: &String, m: &String) -> Int ! alloc
+    needle = kw + " " + s + "." + m + "("
+    src.contains(needle)
+
+fn rf_pad(depth: Int) -> String ! alloc
+    o = d""
+    i = 0
+    while i < depth
+        o = o + "    "
+        i = i + 1
+    o
+
+fn rf_err_arm(pad: &String, ks: &String) -> String ! alloc
+    pad + "    Err(e" + ks + ") =>\n" + pad + "        m" + ks + " = e" + ks + ".clone()\n" + pad + "        Err(m" + ks + ")\n"
+
+# 0 Int, 1 Float, 2 Bool, 3 String, 4 struct, 5 List, 6 Dict.
+fn rf_kind(t: &String) -> Int ! alloc
+    if t.eq("Int") == 1
+        0
+    elsif t.eq("Float") == 1
+        1
+    elsif t.eq("Bool") == 1
+        2
+    elsif t.eq("String") == 1
+        3
+    elsif t.index_of("List[") == 0
+        5
+    elsif t.index_of("Dict[") == 0
+        6
+    else
+        4
+
+# The element type of `List[E]` / `Dict[String, E]`.
+fn rf_elem(t: &String) -> String ! alloc
+    if rf_kind(t) == 5
+        t.slice(5, t.len() - 1)
+    else
+        t.slice(13, t.len() - 1)
+
+fn rf_value_of(t: &String, place: &String) -> String ! alloc
+    match rf_kind(t)
+        0 => "VInt(" + place + ")"
+        1 => "VFloat(" + place + ")"
+        2 => "VBool(" + place + ")"
+        3 => "VStr(" + place + ".clone())"
+        4 => "VDict(" + place + ".to_dict())"
+        _ => d""
+
+fn rf_conv(t: &String, arg: &String, label: &String, item_fn: &String) -> String ! alloc
+    match rf_kind(t)
+        0 => "value_int(" + arg + ", &\"" + label + "\")"
+        1 => "value_float(" + arg + ", &\"" + label + "\")"
+        2 => "value_bool(" + arg + ", &\"" + label + "\")"
+        3 => "value_str(" + arg + ", &\"" + label + "\")"
+        _ => item_fn + "(" + arg + ")"
+
+fn rf_copy_of(t: &String, x: &String) -> String ! alloc
+    if rf_kind(t) < 3
+        "*" + x
+    else
+        x + ".clone()"
+
+fn rf_mismatch(f: &String, want: &String) -> String ! alloc
+    "        _ =>\n            e = value_mismatch(&\"" + f + "\", &\"" + want + "\", v)\n            Err(e)\n"
+
+fn rf_struct_from(name: &String, s: &String, f: &String) -> String ! alloc
+    o = "\nfn " + name + "(v: &Value) -> Result[" + s + ", String] ! alloc\n    match v\n"
+    o = o + "        VDict(dd) =>\n            r = " + s + ".from_dict(&dd)\n            match &r\n"
+    o = o + "                Ok(x) =>\n                    c = x.clone()\n                    Ok(c)\n"
+    o = o + "                Err(e) =>\n                    m = e.clone()\n                    Err(m)\n"
+    o + rf_mismatch(f, s)
+
+fn rf_container_helpers(n: &String, f: &String, t: &String, item: &String) -> String ! alloc
+    is_list = if rf_kind(t) == 5
+        1
+    else
+        0
+    e = rf_elem(t)
+    pre = "reflect_" + n + "_" + f
+    vk = if is_list == 1
+        d"VList"
+    else
+        d"VDict"
+    coll = if is_list == 1
+        d"items"
+    else
+        d"entries"
+    o = "\nfn " + pre + "_value(xs: &" + t + ") -> Value ! alloc\n"
+    if is_list == 1
+        o = o + "    out = List.new[Value]()\n    i = 0\n    while i < xs.len()\n"
+        o = o + "        out.push(" + rf_value_of(&e, &"xs.get(i)") + ")\n        i = i + 1\n    VList(out)\n"
+    else
+        o = o + "    out = Dict.new[String, Value]()\n    ks = xs.keys()\n    i = 0\n    while i < ks.len()\n"
+        o = o + "        k = ks.get(i)\n        o = xs.get(k)\n"
+        o = o + "        out.put(k, " + pre + "_entry(&o))\n        i = i + 1\n    VDict(out)\n"
+        # `_entry`: the `Value` of an entry, through a typed `&Option[E]`.
+        o = o + "\nfn " + pre + "_entry(o: &Option[" + e + "]) -> Value ! alloc\n    match o\n"
+        o = o + "        Some(x) => " + rf_value_of(&e, &"x") + "\n        None => VInt(0)\n"
+    src_ty = if is_list == 1
+        d"List[Value]"
+    else
+        d"Dict[String, Value]"
+    o = o + "\nfn " + pre + "_from(v: &Value) -> Result[" + t + ", String] ! alloc\n    match v\n"
+    o = o + "        " + vk + "(" + coll + ") =>\n            errs = " + pre + "_check(&" + coll + ")\n"
+    o = o + "            if errs.len() == 0\n                out = " + pre + "_build(&" + coll + ")\n                Ok(out)\n"
+    o = o + "            else\n                m = errs.get(0).clone()\n                Err(m)\n"
+    o = o + rf_mismatch(f, t)
+    call = rf_conv(&e, &"&y", f, item)
+    pad = if is_list == 1
+        d"            "
+    else
+        d"                    "
+    bound = if is_list == 1
+        d"items.len()"
+    else
+        d"ks.len()"
+    o = o + "\nfn " + pre + "_check(" + coll + ": &" + src_ty + ") -> List[String] ! alloc\n    errs = List.new[String]()\n"
+    cond = "i < " + bound + " && errs.len() == 0"
+    o = o + rf_walk_head(is_list, &cond, &call)
+    o = o + pad + "Ok(_) => ()\n" + pad + "Err(e) => errs.push(e.clone())\n"
+    if is_list == 0
+        o = o + "            None => ()\n"
+    o = o + "        i = i + 1\n    errs\n"
+    new = if is_list == 1
+        "List.new[" + e + "]()"
+    else
+        "Dict.new[String, " + e + "]()"
+    o = o + "\nfn " + pre + "_build(" + coll + ": &" + src_ty + ") -> " + t + " ! alloc\n    out = " + new + "\n"
+    cond2 = "i < " + bound
+    o = o + rf_walk_head(is_list, &cond2, &call)
+    cp = rf_copy_of(&e, &"x")
+    put = if is_list == 1
+        "out.push(" + cp + ")"
+    else
+        "out.put(k, " + cp + ")"
+    o = o + pad + "Ok(x) => " + put + "\n" + pad + "Err(_) => ()\n"
+    if is_list == 0
+        o = o + "            None => ()\n"
+    o = o + "        i = i + 1\n    out\n"
+    if rf_kind(&e) == 4
+        o + rf_struct_from(item, &e, f)
+    else
+        o
+
+fn rf_walk_head(is_list: Int, cond: &String, call: &String) -> String ! alloc
+    if is_list == 1
+        "    i = 0\n    while " + cond + "\n        y = items.get(i)\n" + "        r = " + call + "\n        match &r\n"
+    else
+        o = "    ks = entries.keys()\n    i = 0\n    while " + cond + "\n"
+        o = o + "        k = ks.get(i)\n        match entries.get(k)\n            Some(y) =>\n"
+        o + "                r = " + call + "\n                match &r\n"

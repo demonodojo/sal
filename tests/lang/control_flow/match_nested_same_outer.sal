@@ -1,0 +1,21 @@
+# exit: 52
+# Varios brazos con el mismo constructor externo y otro patrón dentro: se prueban en orden,
+# como en Rust, y el primero que encaja gana.
+enum Shape
+    Dot
+    Line(Int)
+    Box(Int, Int)
+
+enum Option[T]
+    None
+    Some(T)
+
+fn score(o: Option[Shape]) -> Int
+    match o
+        Some(Line(n)) => n
+        Some(Box(w, h)) => w * h
+        Some(Dot) => 1
+        None => 0
+
+fn main() -> Int ! alloc
+    score(Some(Line(40))) + score(Some(Box(2, 5))) + score(Some(Dot)) + score(None) + 1

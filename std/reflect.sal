@@ -1,0 +1,121 @@
+# Reflexión de structs (SPEC «Reflexión»): un `struct T impl Reflect` recibe del compilador los
+# métodos que no defina él mismo, y el código que lo recibe como `any[Reflect]` lee y escribe
+# sus campos sin conocer el tipo.
+import "prelude.sal"
+
+# Un valor de un campo, con dueño: `get_field` y `to_dict` clonan, y `set_field` lo mueve.
+enum Value
+    VInt(Int)
+    VFloat(Float)
+    VBool(Bool)
+    VStr(String)
+    VList(List[Value])
+    VDict(Dict[String, Value])
+
+# Un campo: su nombre y su tipo como lo escribe `sal fmt`.
+struct Field
+    name: String
+    ty: String
+
+protocol Reflect
+    method type_name(&self) -> String ! alloc
+    method fields(&self) -> List[Field] ! alloc
+    method get_field(&self, name: &String) -> Option[Value] ! alloc
+    method set_field(&mut self, name: &String, v: Value) -> Result[Unit, String] ! alloc
+    method to_dict(&self) -> Dict[String, Value] ! alloc
+    static from_dict(src: &Dict[String, Value]) -> Result[Self, String] ! alloc
+
+# El nombre de la variante de `v`, para los mensajes de error de `set_field`.
+fn value_kind(v: &Value) -> String ! alloc
+    match v
+        VInt(_) => d"Int"
+        VFloat(_) => d"Float"
+        VBool(_) => d"Bool"
+        VStr(_) => d"String"
+        VList(_) => d"List"
+        VDict(_) => d"Dict"
+
+# The message of a `set_field` (or `from_dict`) whose `Value` has another variant.
+fn value_mismatch(field: &String, want: &String, v: &Value) -> String ! alloc
+    k = value_kind(v)
+    "field " + field + ": expected " + want + ", found " + k
+
+fn value_int(v: &Value, field: &String) -> Result[Int, String] ! alloc
+    match v
+        VInt(n) => Ok(*n)
+        _ =>
+            e = value_mismatch(field, &"Int", v)
+            Err(e)
+
+fn value_float(v: &Value, field: &String) -> Result[Float, String] ! alloc
+    match v
+        VFloat(x) => Ok(*x)
+        _ =>
+            e = value_mismatch(field, &"Float", v)
+            Err(e)
+
+fn value_bool(v: &Value, field: &String) -> Result[Bool, String] ! alloc
+    match v
+        VBool(b) => Ok(*b)
+        _ =>
+            e = value_mismatch(field, &"Bool", v)
+            Err(e)
+
+fn value_str(v: &Value, field: &String) -> Result[String, String] ! alloc
+    match v
+        VStr(s) =>
+            c = s.clone()
+            Ok(c)
+        _ =>
+            e = value_mismatch(field, &"String", v)
+            Err(e)
+
+# A copy of the elements of a `VList`, last first: `pop` hands them over in order.
+fn value_items(v: &Value, field: &String) -> Result[List[Value], String] ! alloc
+    match v
+        VList(xs) =>
+            out = values_reversed(&xs)
+            Ok(out)
+        _ =>
+            e = value_mismatch(field, &"List", v)
+            Err(e)
+
+# A copy of the entries of a `VDict`.
+fn value_entries(v: &Value, field: &String) -> Result[Dict[String, Value], String] ! alloc
+    match v
+        VDict(d) =>
+            c = d.clone()
+            Ok(c)
+        _ =>
+            e = value_mismatch(field, &"Dict", v)
+            Err(e)
+
+# A copy of the entry `name` of `d`; a missing one is `Err` (`from_dict`).
+fn value_field(d: &Dict[String, Value], name: &String) -> Result[Value, String] ! alloc
+    o = d.get(name)
+    r = value_in(&o, name)
+    match &r
+        Ok(v) =>
+            c = v.clone()
+            Ok(c)
+        Err(e) =>
+            m = e.clone()
+            Err(m)
+
+# A copy of the value in `o`, or `Err` naming the missing field.
+fn value_in(o: &Option[Value], name: &String) -> Result[Value, String] ! alloc
+    match o
+        Some(v) =>
+            c = v.clone()
+            Ok(c)
+        None =>
+            e = "missing field " + name
+            Err(e)
+
+fn values_reversed(xs: &List[Value]) -> List[Value] ! alloc
+    out = List.new[Value]()
+    i = xs.len()
+    while i > 0
+        i = i - 1
+        out.push(xs.get(i).clone())
+    out

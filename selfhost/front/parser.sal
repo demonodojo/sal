@@ -3,6 +3,7 @@ import "../pkg/result.sal"
 import lexer
 import "../ast/tast.sal"
 import loops
+import inline_for
 import threads
 import "../sem/methods.sal"
 import "../sem/protocols.sal"
@@ -636,6 +637,17 @@ fn parse_postfix_go(pr: &mut Parser, e: Expr) -> Expr ! alloc
         if tok_kind(pr, p_peek(pr)) == TK_IDENT()
             t = p_advance(pr)
             parse_postfix_member(pr, e, &tok_own(pr, t))
+        elsif tok_kind(pr, p_peek(pr)) == TK_LBRACK()
+            # `x.[f]`: the field `f` of an `inline for` (`inline_for.sal`).
+            p_advance(pr)
+            if tok_kind(pr, p_peek(pr)) != TK_IDENT()
+                p_set_err(pr, "parse error: expected identifier")
+                e
+            else
+                v = tok_own(pr, p_advance(pr))
+                if p_accept(pr, TK_RBRACK()) == 0
+                    p_set_err(pr, "parse error: expected ] after the inline for variable")
+                parse_postfix_go(pr, XField(e, "[" + v + "]"))
         else
             e
     elsif tok_kind(pr, p_peek(pr)) == TK_LPAREN() && parse_lambda_group_ahead(pr) == 0
@@ -918,6 +930,12 @@ fn parse_primary(pr: &mut Parser) -> Expr ! alloc
         parse_ident_primary(pr)
     elsif k == TK_FN()
         parse_ident_primary(pr)
+    elsif k == TK_LPAREN() && tok_kind(pr, p_peek(pr) + 1) == TK_RPAREN()
+        # `()`, the only value of `Unit`: a block without statements or tail (`Expr::Unit` in
+        # src/parser.rs).
+        p_advance(pr)
+        p_advance(pr)
+        XBlock(TBlock(List.new[TStmt](), XNone))
     elsif k == TK_LPAREN()
         _a = p_advance(pr)
         _g = p_enter_group(pr)
@@ -1242,6 +1260,11 @@ fn parse_block_go(pr: &mut Parser, stmts: List[TStmt]) -> TBlock ! alloc
         parse_block_go(pr, stmts)
     elsif tok_kind(pr, p_peek(pr)) == TK_LET()
         parse_let(pr, stmts, 0)
+    elsif at_inline_for(pr) == 1
+        st = parse_inline_for(pr)
+        stmts.push(st)
+        p_skip_nls(pr)
+        parse_block_go(pr, stmts)
     elsif tok_kind(pr, p_peek(pr)) == TK_AT()
         flags = parse_stmt_attrs(pr, 0)
         if flags < 0
@@ -1253,6 +1276,38 @@ fn parse_block_go(pr: &mut Parser, stmts: List[TStmt]) -> TBlock ! alloc
             parse_let(pr, stmts, flags)
     else
         parse_block_expr(pr, stmts)
+
+# `inline` and `for` are contextual: `inline for` only starts a line of a block.
+fn at_inline_for(pr: &Parser) -> Int ! alloc
+    t = p_peek(pr)
+    if tok_kind(pr, t) == TK_IDENT() && tok_kind(pr, t + 1) == TK_IDENT() && tok_text(pr, t).eq("inline") == 1 && tok_text(pr, t + 1).eq("for") == 1
+        1
+    else
+        0
+
+# `"inline" "for" IDENT "in" IDENT "." "fields" suite`: statement kind 5, with the variable in
+# `name`, the struct in `ty` and the body in an `XBlock` (`inline_for.sal` unrolls it).
+fn parse_inline_for(pr: &mut Parser) -> TStmt ! alloc
+    p_advance(pr)
+    p_advance(pr)
+    var = tok_own(pr, p_peek(pr))
+    ok = p_accept(pr, TK_IDENT())
+    if ok == 1 && tok_kind(pr, p_peek(pr)) == TK_IN()
+        p_advance(pr)
+    else
+        p_set_err(pr, "parse error: expected `in` after the `inline for` variable")
+    ty = tok_own(pr, p_peek(pr))
+    ok2 = p_accept(pr, TK_IDENT()) + p_accept(pr, TK_DOT())
+    what = tok_own(pr, p_peek(pr))
+    if ok2 < 2 || what.eq("fields") == 0
+        p_set_err(pr, "parse error: `inline for` walks `T.fields`")
+    p_advance(pr)
+    body = if p_accept(pr, TK_NL()) == 1 && p_accept(pr, TK_INDENT()) == 1
+        parse_block_after_indent(pr)
+    else
+        p_set_err(pr, "parse error: expected indented inline for body")
+        empty_block()
+    TStmt(5, var, XBlock(body), ty, 0, XNone, 0, 0, p_next_id(pr))
 
 # `@frozen` (1) and `@stack` (2) before a `let`; -1 on error.
 fn parse_stmt_attrs(pr: &mut Parser, flags: Int) -> Int ! alloc
@@ -2220,9 +2275,18 @@ fn parse_program_deferred_post(tp: TProgram, src: &String, errs: &mut List[Strin
     if list_len(errs) > 0
         tp
     elsif str_contains(src, "break") == 1
-        parse_program_check(desugar_spawn(desugar_break(tp, errs), src, errs), errs, ndots)
+        parse_program_check(desugar_spawn(desugar_break(desugar_inline(tp, src, errs), errs), src, errs), errs, ndots)
     else
-        parse_program_check(desugar_spawn(tp, src, errs), errs, ndots)
+        parse_program_check(desugar_spawn(desugar_inline(tp, src, errs), src, errs), errs, ndots)
+
+# `inline for` and `x.[f]` unrolled (`inline_for.sal`), before `desugar_break`.
+fn desugar_inline(tp: TProgram, src: &String, errs: &mut List[String]) -> TProgram ! alloc
+    if errs.len() > 0
+        tp
+    elsif src.contains("inline") == 1 || src.contains(".[") == 1
+        unroll_inline_for(tp, src, errs)
+    else
+        tp
 
 # `Thread.spawn(f, a…)` → `thread_spawn(f(a…))` (`threads.sal`), after `desugar_break`.
 fn desugar_spawn(tp: TProgram, src: &String, errs: &mut List[String]) -> TProgram ! alloc
@@ -2256,9 +2320,9 @@ fn parse_program_post(tp: TProgram, src: &String, errs: &mut List[String], flags
     if list_len(errs) > 0
         tp
     elsif str_contains(src, "break") == 1
-        parse_program_methods(desugar_spawn(desugar_break(tp, errs), src, errs), errs, ndots)
+        parse_program_methods(desugar_spawn(desugar_break(desugar_inline(tp, src, errs), errs), src, errs), errs, ndots)
     else
-        parse_program_methods(desugar_spawn(tp, src, errs), errs, ndots)
+        parse_program_methods(desugar_spawn(desugar_inline(tp, src, errs), src, errs), errs, ndots)
 
 fn parse_program_methods(tp: TProgram, errs: &mut List[String], ndots: Int) -> TProgram ! alloc
     if list_len(errs) > 0
@@ -2291,7 +2355,14 @@ fn parse_program_raw(src: &String, errs: &mut List[String], flags: &mut List[Int
     it = Items(list_new[TFn](), list_new[TStruct](), list_new[TEnum](), list_new[TProtocol](), list_new[String](), list_new[String](), list_new[TConst](), list_new[TImpl]())
     _a = p_skip_nls(&mut pr)
     _b = parse_program_go(&mut pr, &mut it)
-    msg = parse_program_error(&pr, it.fns.len(), it.structs.len(), it.enums.len(), it.consts.len(), it.protocols.len(), it.impls.len(), src)
+    msg0 = parse_program_error(&pr, it.fns.len(), it.structs.len(), it.enums.len(), it.consts.len(), it.protocols.len(), it.impls.len(), src)
+    # A `struct impl Reflect` that `with_reflect` cannot write: the bootstrap reports it before
+    # parsing (src/reflect.rs), so it comes first.
+    rmsg = reflect_error(src)
+    msg = if rmsg.len() > 0
+        rmsg
+    else
+        msg0
     _n = list_set(flags, 0, list_get(&pr.st, 4))
     _f = parser_free(&pr)
     if str_len(msg) > 0

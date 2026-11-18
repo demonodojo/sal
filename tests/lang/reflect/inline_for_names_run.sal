@@ -1,0 +1,21 @@
+# exit: 3
+# stdout: nombre:String,edad:Int,notas:List[Int]
+# `f.name` and `f.ty` are the field name and the text of its type, in declaration order.
+struct Persona
+    nombre: String
+    edad: Int
+    notas: List[Int]
+
+fn esquema() -> Int ! alloc, io
+    out = d""
+    n = 0
+    inline for f in Persona.fields
+        if out.len() > 0
+            out = out + ","
+        out = out + f.name + ":" + f.ty
+        n = n + 1
+    print(out)
+    n
+
+fn main() -> Int ! alloc, io
+    esquema()

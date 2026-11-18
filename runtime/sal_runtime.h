@@ -179,6 +179,12 @@ void *sal_list_push_share(void *v, int64_t x);
 char *sal_str_share(const char *s);
 int64_t sal_any_box(int64_t vtable, int64_t drop_slot, int64_t payload);
 void sal_any_free(int64_t box);
+void sal_any_free_shell(int64_t box);
+int64_t sal_any_drop_glue(int64_t raw);
+int64_t sal_any_clone_glue(int64_t raw);
+int64_t sal_dict_clone_val(int64_t v);
+int64_t sal_dict_drop_glue(int64_t raw);
+int64_t sal_dict_clone_glue(int64_t raw);
 int64_t sal_any_call(int64_t box, int64_t slot, int64_t argc, int64_t a0, int64_t a1, int64_t a2,
                      int64_t a3);
 void sal_dict_free(void *v);

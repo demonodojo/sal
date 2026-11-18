@@ -1,0 +1,26 @@
+# exit: 9
+# `()` es el único valor de `Unit`: el payload de `Ok(())`, el valor de un `let` y la cola de
+# una función que devuelve `Unit`.
+enum Result[T, E]
+    Ok(T)
+    Err(E)
+
+fn check(n: Int) -> Result[Unit, String] ! alloc
+    if n > 0
+        Ok(())
+    else
+        Err(d"negative")
+
+fn nothing() -> Unit
+    ()
+
+fn main() -> Int ! alloc
+    let u: Unit = ()
+    nothing()
+    a = match check(1)
+        Ok(_) => 1
+        Err(e) => e.len() + 100
+    b = match check(0)
+        Ok(_) => 100
+        Err(e) => e.len()
+    a + b

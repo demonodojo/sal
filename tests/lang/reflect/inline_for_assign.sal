@@ -1,0 +1,15 @@
+# exit: 7
+# `p.[f] = v` writes the field through `&mut`, like `p.x = v`.
+struct Punto
+    x: Int
+    y: Int
+
+fn llenar(p: &mut Punto, v: Int) -> Unit
+    inline for f in Punto.fields
+        p.[f] = v
+
+fn main() -> Int
+    p = Punto(1, 2)
+    llenar(&mut p, 0)
+    llenar(&mut p, 3)
+    p.x + p.y + 1

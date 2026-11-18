@@ -566,6 +566,7 @@ fn unit_type(span: Span) -> Type {
 
 fn stmt_span(st: &Stmt) -> Span {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { span } => *span,
         Stmt::Let { span, .. } => *span,
         Stmt::Expr(e) => e.span(),
@@ -648,7 +649,7 @@ fn check_block(
             )]);
         }
         let ty = check_expr(t, env, &ctx, types, entries)?;
-        if let Err(d) = types_compatible_or_any_coerce(&ty, expected, t.span(), ctx, types) {
+        if let Err(d) = types_compatible_or_any_coerce_owned(&ty, expected, t.span(), ctx, types) {
             return Err(vec![d]);
         }
     } else if !diverged && !is_unit_type(expected) {
@@ -672,6 +673,7 @@ fn check_stmt(
     entries: &mut Vec<ExprTypeEntry>,
 ) -> DiagResult<bool> {
     match st {
+        Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
         Stmt::Break { .. } => Ok(false),
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr(init, env, ctx, types, entries)?;
@@ -680,7 +682,7 @@ fn check_stmt(
                     return Err(vec![Diagnostic::new(ErrorCode::EType, "function types are only allowed as parameter types", decl.span())]);
                 }
                 check_type_well_formed(decl, types)?;
-                if let Err(d) = types_compatible_or_any_coerce(&ity, decl, init.span(), ctx, types) {
+                if let Err(d) = types_compatible_or_any_coerce_owned(&ity, decl, init.span(), ctx, types) {
                     return Err(vec![d]);
                 }
             }
@@ -701,7 +703,18 @@ fn check_stmt(
                         *span,
                     )]);
                 }
-                if let Some(old) = env.get(name) {
+                if let Some(old) = env.get(name).cloned() {
+                    // A local of type `any[P]` takes a new value of a type that claims `P` in a
+                    // fresh box, as a `let` with that type does (SPEC «Protocolos»).
+                    let old_is_any = matches!(&old, Type::Named { name, .. } if name == "any");
+                    let new_is_any = matches!(&vty, Type::Named { name, .. } if name == "any");
+                    if old_is_any && !new_is_any {
+                        if let Err(d) = types_compatible_or_any_coerce_owned(&vty, &old, value.span(), ctx, types) {
+                            return Err(vec![d]);
+                        }
+                        return Ok(false);
+                    }
+                    let old = &old;
                     if binding_kinds_clash(old, &vty, name.starts_with('_')) {
                         return Err(vec![Diagnostic::new(
                             ErrorCode::EType,
@@ -718,7 +731,7 @@ fn check_stmt(
             } else {
                 // `p.a.b = v` and `*r = v`: the value has the place's type (Rust E0308).
                 let tty = check_expr(target, env, ctx, types, entries)?;
-                if let Err(d) = types_compatible_or_any_coerce(&vty, &tty, value.span(), ctx, types) {
+                if let Err(d) = types_compatible_or_any_coerce_owned(&vty, &tty, value.span(), ctx, types) {
                     return Err(vec![d]);
                 }
             }
@@ -735,7 +748,15 @@ fn check_stmt(
             match value {
                 Some(v) => {
                     let vty = check_expr(v, env, ctx, types, entries)?;
-                    if !types_compatible(&vty, ctx.fn_ret) {
+                    let coerced = !types_compatible(&vty, ctx.fn_ret)
+                        && match types_compatible_or_any_coerce_owned(&vty, ctx.fn_ret, v.span(), ctx, types) {
+                            Ok(()) => true,
+                            Err(d) if types.any_coercions.borrow().contains_key(&(v.span().start, v.span().end)) => {
+                                return Err(vec![d]);
+                            }
+                            Err(_) => false,
+                        };
+                    if !coerced && !types_compatible(&vty, ctx.fn_ret) {
                         return Err(vec![Diagnostic::new(
                             ErrorCode::EType,
                             format!(
@@ -800,6 +821,11 @@ Expr::Int { .. } => Type::Named {
         },
         Expr::Bool { .. } => Type::Named {
             name: "Bool".into(),
+            args: vec![],
+            span: e.span(),
+        },
+        Expr::Unit { .. } => Type::Named {
+            name: "Unit".into(),
             args: vec![],
             span: e.span(),
         },
@@ -1071,13 +1097,31 @@ Expr::Int { .. } => Type::Named {
             for arm in arms {
                 let mut local = env.clone();
                 bind_pattern(&arm.pattern, &scrut_ty, types, &mut local)?;
-                arm_tys.push(check_expr(&arm.body, &local, ctx, types, entries)?);
+                // An arm whose block always returns gives no value to the `match` (SPEC «Bloque»).
+                if let Expr::Block(b) = &arm.body {
+                    let (div, ty) = check_branch_block(b, &local, ctx, types, entries)?;
+                    let ty = ty.unwrap_or_else(|| unit_type(b.span));
+                    entries.push(ExprTypeEntry {
+                        span_start: arm.body.span().start,
+                        span_end: arm.body.span().end,
+                        ty: ty.clone(),
+                    });
+                    if !div {
+                        arm_tys.push(ty);
+                    }
+                } else {
+                    arm_tys.push(check_expr(&arm.body, &local, ctx, types, entries)?);
+                }
             }
-            arm_tys.first().cloned().unwrap_or_else(|| Type::Named {
-                name: "Unknown".into(),
-                args: vec![],
-                span: *span,
-            })
+            if arm_tys.is_empty() && !arms.is_empty() {
+                unit_type(*span)
+            } else {
+                arm_tys.first().cloned().unwrap_or_else(|| Type::Named {
+                    name: "Unknown".into(),
+                    args: vec![],
+                    span: *span,
+                })
+            }
         }
         Expr::If {
             cond,
@@ -1549,6 +1593,11 @@ fn infer_struct_constructor(
     for (arg, field) in args.iter().zip(def.fields.iter()) {
         let aty = check_expr(arg, env, ctx, types, entries)?;
         if !types_compatible(&aty, &field.ty) {
+            // A field `any[P]` takes an owned value of a type that claims `P` in a box.
+            if matches!(&field.ty, Type::Named { name, .. } if name == "any") {
+                types_compatible_or_any_coerce_owned(&aty, &field.ty, arg.span(), ctx, types).map_err(|d| vec![d])?;
+                continue;
+            }
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
                 format!(
@@ -1686,6 +1735,13 @@ fn infer_enum_variant_constructor(
         if let Some(i) = param_idx {
             type_args[i] = aty.clone();
         } else if !types_compatible(&aty, &expected) {
+            // A payload of type `any[P]` takes the value into a box, as a `let` does.
+            let at = arg.span();
+            match types_compatible_or_any_coerce_owned(&aty, &expected, at, ctx, types) {
+                Ok(()) => continue,
+                Err(d) if types.any_coercions.borrow().contains_key(&(at.start, at.end)) => return Err(vec![d]),
+                Err(_) => {}
+            }
             return Err(vec![Diagnostic::new(
                 ErrorCode::EType,
                 format!(
@@ -1727,6 +1783,27 @@ fn types_compatible_or_any_coerce(
         ),
         at,
     ))
+}
+
+/// `types_compatible_or_any_coerce` where the value is kept (a `let`, an assignment, a returned
+/// value): only an owned value goes into an `any[P]` there. A borrowed one (`&p` as
+/// `&any[P]`) is a box that lives for one call, so it is only an argument (SPEC «Protocolos»).
+fn types_compatible_or_any_coerce_owned(
+    aty: &Type,
+    pt: &Type,
+    at: Span,
+    ctx: &ReturnCtx<'_>,
+    types: &TypeEnv,
+) -> Result<(), Diagnostic> {
+    types_compatible_or_any_coerce(aty, pt, at, ctx, types)?;
+    if matches!(aty, Type::Ref { .. }) && types.any_coercions.borrow().contains_key(&(at.start, at.end)) {
+        return Err(Diagnostic::new(
+            ErrorCode::EType,
+            format!("a borrowed `{}` only lives for the call it is passed to", type_name(pt)),
+            at,
+        ));
+    }
+    Ok(())
 }
 
 fn try_register_any_coercion(
@@ -1830,6 +1907,14 @@ fn infer_any_method_call(
     }
     if crate::protocols::mentions_self(pm) {
         return err(format!("method `{field}` names `Self`: it cannot be called through `any`"), span);
+    }
+    // As with `dyn` in Rust, a method that takes `self` by value would move the value out of
+    // the box, which stays owned by the `any` (SPEC «Protocolos»).
+    // A provided body is checked with `self: any[P]` standing for the implementing type, where
+    // `self` by value is the type's own value: the rule is for a real `any` only.
+    let in_provided_body = types.current_fn.borrow().starts_with("__protocol_body_");
+    if pm.self_ref == 0 && !in_provided_body {
+        return err(format!("method `{field}` takes `self` by value: it cannot be called through `any`"), span);
     }
     let Some(slot) = crate::protocols::method_slot(pdef, field) else {
         return err(format!("generic method `{field}` cannot be called through `any`"), span);

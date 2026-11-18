@@ -704,7 +704,13 @@ fn drop_fields(cx: &mut Cx, base: Int, sd: &TStruct, fields: &List[TField], i: I
         taint = fr_ct_has(fr, root, &path)
         fnm = drop_field_fn(&cx_structs(cx), &cx.enums, &fld.ty, g, depth, taint)
         if str_len(fnm) == 0
-            _z = 0
+            # A nested struct of two or more fields with nothing else to release is still a
+            # block of its own inside a block (`nested_flat_block` in src/ir.rs): free it.
+            if sd.fields.len() > 1 && nested_flat_block_t(&cx_structs(cx), &fld.ty, g, depth) == 1
+                ssa = drop_field_ssa(cx, base, sd, i)
+                args = vec_new()
+                vec_push(args, ssa)
+                ir_push(cx, ir_call(0, "sal_struct_free_box".to_int(), args, 0))
         elsif str_eq(fnm, "sal_free") == 1
             if fr_sm_has(fr, root, &path) == 1
                 _z = 0
