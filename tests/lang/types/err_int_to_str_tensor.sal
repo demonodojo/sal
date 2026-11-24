@@ -1,0 +1,6 @@
+# error: E_TYPE
+# a tensor is not an `Int`: `int_to_str` does not take it
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0]]
+    s = int_to_str(a)
+    s.len()

@@ -1,5 +1,6 @@
-# exit: 1
-# a shape only known at run time aborts instead of silently returning 0
+# exit: 2
+# the row count of `a` is only known at run time: `f` reads it from the buffer it is handed, and
+# relu keeps [1, 2, 3], whose largest is the third
 fn f(a: &Tensor[F32, ?, 3] on cpu) -> Int ! alloc
     argmax(relu(a), 3)
 

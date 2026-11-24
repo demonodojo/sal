@@ -1,0 +1,15 @@
+# exit: 17
+# `forward` is generic over its place and its row count: it runs on the gpu, where its
+# arguments are, and reads two rows; relu keeps [1, 0, 3, 4, 5, 6, 0, 8], whose largest is
+# the 8th, plus one gpu launch
+fn forward(x: &Tensor[F32, ?, 4] on p, w: &Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
+    on p
+        relu(matmul(x, w))
+
+fn main() -> Int ! alloc, gpu
+    x = tensor[[1.0, -2.0, 3.0, 4.0], [5.0, 6.0, -7.0, 8.0]]
+    w = tensor[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    gx = to gpu x
+    gw = to gpu w
+    y = to cpu forward(&gx, &gw)
+    argmax(y, 8) + place_launches(1) * 10

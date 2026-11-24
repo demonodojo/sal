@@ -4,14 +4,12 @@ import "../ast/ttypes.sal"
 import cenv
 import lit_pool
 
-# Emission state of one function. The counter, the accumulator name and the small-matmul quirk live
-# in lists so callees can update them; `env` is the typed local environment shared by the program;
+# Emission state of one function. The counter and the accumulator name live in lists so callees
+# can update them; `env` is the typed local environment shared by the program;
 # `lam_*` are the locals bound to a lambda (`f = x => body`), searched newest first.
 struct Tc['a]
     ctr: List[Int]
     acc: List[Int]
-    mm_out: List[Int]
-    mm_n: List[Int]
     lam_names: List[String]
     lam_params: List[String]
     lam_bodies: List[Expr]
@@ -24,12 +22,8 @@ fn tc_new['a](pool: &'a mut LitPool, env: &mut TEnv, enums: &List[TEnum]) -> Tc[
     ctr.push(0)
     acc = List.new[Int]()
     acc.push(0)
-    mm_out = List.new[Int]()
-    mm_out.push(0)
-    mm_n = List.new[Int]()
-    mm_n.push(0)
     tenv_truncate(env, 0)
-    Tc(ctr, acc, mm_out, mm_n, List.new[String](), List.new[String](), List.new[Expr](), pool, tenv_clone(env), enums.clone())
+    Tc(ctr, acc, List.new[String](), List.new[String](), List.new[Expr](), pool, tenv_clone(env), enums.clone())
 
 # The local `Tc` is dropped with its scope, which releases these lists. Freeing them
 # here as well is a double free. Lambda boxes are released first; the list header stays

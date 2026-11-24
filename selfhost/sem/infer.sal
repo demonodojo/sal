@@ -252,8 +252,17 @@ fn ty_is_tensor(t: &String) -> Int ! alloc
 fn ty_compat(a: &String, b: &String) -> Int ! alloc
     if ty_is_scalar(a) == 1 && ty_is_scalar(b) == 1
         ts_trim(a).eq(ts_trim(b))
+    elsif ty_is_mut_ref(b) == 1 && ty_is_shared_ref(a) == 1
+        # A `&T` does not lend what a `&mut T` asks for.
+        0
     else
         1
+
+fn ty_is_shared_ref(t: &String) -> Int ! alloc
+    if ts_trim(t).slice(0, 1).eq("&") == 1 && ty_is_mut_ref(t) == 0
+        1
+    else
+        0
 
 fn ty_numeric(t: &String) -> Int ! alloc
     if ty_is_scalar(t) == 0
@@ -1073,7 +1082,9 @@ fn infer_call_ta(c: &mut IC, name: &String, args: &List[Expr], targs: &String) -
 fn infer_call_go(c: &mut IC, name: &String, args: &List[Expr], tys: &mut List[String], targs: &String) -> String ! alloc
     si = ic_get(&c.sigs, name)
     at = c.xp.get(0)
-    if name.eq("list_new") == 1 || infer_t_is_list(name) == 1
+    if name.eq("list_new") + name.eq("dict_new") > 0 || infer_t_is_list(name) + infer_t_is_dict(name) > 0
+        # The container builtins keep their own typing over the prelude's stubs (`dict_get` there
+        # is declared over `Dict[String, Int]`).
         infer_args(c, args, 0, args.len(), tys)
         c.xp.set(0, at)
         infer_builtin_call(c, name, args, tys, targs)
@@ -1486,18 +1497,74 @@ fn ic_join_concrete(vals: &List[String], i: Int, acc: String) -> String ! alloc
 fn infer_builtin_call(c: &mut IC, name: &String, args: &List[Expr], tys: &List[String], targs: &String) -> String ! alloc
     if name.eq("thread_spawn") == 1
         _s = infer_spawn_target(c, args)
+    if name.eq("int_to_str") == 1
+        _i = infer_int_to_str_arg(c, tys)
+    match name
+        "list_push" => infer_stored_get(c, args, tys, 1)
+        "list_set" => infer_stored_get(c, args, tys, 2)
+        _ => 0
     t = infer_typed_builtin(c, name, tys, targs)
     if t.len() > 0
         t
     else
         infer_builtin_call_old(c, name, args, tys)
 
+# SPEC «Memoria»: `xs.get(i)` lends a non-`Copy` element (`&T`, `infer_list_get` in src/infer.rs),
+# so the list cannot store it: that takes a `.clone()`.
+fn infer_stored_get(c: &mut IC, args: &List[Expr], tys: &List[String], i: Int) -> Int ! alloc
+    if i >= args.len() || i >= tys.len()
+        0
+    else
+        match args.get(i)
+            XCall(gname, gargs, gtargs, gxp) => infer_stored_get_go(c, &gname, &tys.get(i))
+            _ => 0
+
+fn infer_stored_get_go(c: &mut IC, gname: &String, elem: &String) -> Int ! alloc
+    if gname.eq("list_get") == 1 && ts_trim(elem).slice(0, 1).eq("&") == 0 && infer_is_copy(c, elem, 0) == 0
+        ic_fail(c, &("list element type mismatch: expected " + ty_msg(elem) + ", found &" + ty_msg(elem)))
+    else
+        0
+
+# `Int`, `Float`, `Bool`, `Unit`, an unknown type, or a struct whose fields all are.
+fn infer_is_copy(c: &IC, t: &String, depth: Int) -> Int ! alloc
+    tt = ts_trim(t)
+    if tt.len() == 0 || tt.eq("Int") + tt.eq("Float") + tt.eq("Bool") + tt.eq("Unit") + tt.eq("Unknown") > 0
+        1
+    elsif depth > 8
+        0
+    else
+        si = tt_struct_find(&c.env.structs, &tt)
+        if si < 0
+            0
+        else
+            infer_fields_copy(c, &(&c.env.structs).get(si).fields, 0, depth)
+
+fn infer_fields_copy(c: &IC, fs: &List[TField], i: Int, depth: Int) -> Int ! alloc
+    if i >= fs.len()
+        1
+    elsif infer_is_copy(c, &fs.get(i).ty, depth + 1) == 0
+        0
+    else
+        infer_fields_copy(c, fs, i + 1, depth)
+
+# `Int.to_str` takes an `Int` (a `Bool` is 0 or 1): a tensor, a `String` or a `Float` is `E_TYPE`,
+# as `int_to_str` in src/infer.rs.
+fn infer_int_to_str_arg(c: &mut IC, tys: &List[String]) -> Int ! alloc
+    if tys.len() == 1
+        t = ty_deref(&tys.get(0))
+        if t.slice(0, 6).eq("Tensor") + t.eq("String") + t.eq("Float") > 0
+            ic_fail(c, &("int_to_str expects Int, found " + t))
+        else
+            0
+    else
+        0
+
 # The builtins that are only checked for their arguments; their result is `Int` (the group in
 # `check_expr` of src/infer.rs).
 fn infer_check_only_int(name: &String) -> Int ! alloc
     if name.eq("print") + name.eq("print_str") + name.eq("eprint_str") + name.eq("argc") + name.eq("str_eq") + name.eq("str_contains") + name.eq("str_index_of") + name.eq("str_index_from") + name.eq("str_len") + name.eq("str_char") + name.eq("str_skip") + name.eq("str_hash") + name.eq("map_get") + name.eq("map_put") + name.eq("not") + name.eq("free") + name.eq("copy_file") + name.eq("copy_self") + name.eq("gated_print_str") > 0
         1
-    elsif name.eq("gated_copy_self") + name.eq("write_file") + name.eq("path_readable") + name.eq("mkdir_p") + name.eq("vec_push") + name.eq("vec_get") + name.eq("vec_set") + name.eq("vec_len") + name.eq("vec_free") + name.eq("list_free") + name.eq("list_free_shell") + name.eq("list_push_share") + name.eq("dict_free") + name.eq("enum_free") > 0
+    elsif name.eq("gated_copy_self") + name.eq("write_file") + name.eq("path_readable") + name.eq("regex_valid") + name.eq("mkdir_p") + name.eq("vec_push") + name.eq("vec_get") + name.eq("vec_set") + name.eq("vec_len") + name.eq("vec_free") + name.eq("list_free") + name.eq("list_free_shell") + name.eq("list_push_share") + name.eq("dict_free") + name.eq("enum_free") > 0
         1
     elsif name.eq("enum_free_shell") + name.eq("enum_set") + name.eq("enum_owns") + name.eq("enum_box_id") + name.eq("list_box_id") + name.eq("bytes_free") + name.eq("tensor_free") + name.eq("clang") + name.eq("clang_obj") + name.eq("link_objs") + name.eq("exec_compile") + name.eq("write_png") > 0
         1
@@ -2281,9 +2348,22 @@ fn infer_scalar_kind(t: &String) -> Int ! alloc
     else
         0
 
+# The type a reassignment gives its local: `xs.push(v)`, typed as its list here, is `Unit` in
+# src/infer.rs, so `n = xs.push(v)` then `n = 1` is valid.
+fn infer_rebind_ty(e: &Expr, ty: &String) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) => infer_rebind_call_ty(&name, ty)
+        _ => ty.clone()
+
+fn infer_rebind_call_ty(name: &String, ty: &String) -> String ! alloc
+    if name.eq("list_push") + name.eq("list_set") + name.eq("dict_put") + name.eq("dict_remove") > 0
+        "Unit"
+    else
+        ty.clone()
+
 # Kind of the value a local holds, for reassignment checks: the scalar kind, the name of a
-# declared struct or enum, or "" when the type does not take part (`Unit`, a reference, a
-# container: `xs.push(v)` is typed as its list here, so `n = xs.push(v)` then `n = 1` is valid).
+# declared struct or enum or of a `List` or `Dict`, or "" when the type does not take part
+# (`Unit`, a reference, an unknown type).
 fn infer_bind_kind(c: &IC, t: &String) -> String ! alloc
     k = infer_scalar_kind(t)
     tt = ts_trim(t)
@@ -2295,7 +2375,7 @@ fn infer_bind_kind(c: &IC, t: &String) -> String ! alloc
         ""
     else
         base = ty_base(&tt)
-        if ic_get(&c.tnames, &base) != 0
+        if ic_get(&c.tnames, &base) != 0 || base.eq("List") + base.eq("Dict") > 0
             base
         else
             ""
@@ -2341,7 +2421,12 @@ fn infer_try(c: &mut IC, inner: &Expr) -> String ! alloc
             _f = ic_fail(c, &("`try` on " + tb + " needs the function to return " + tb))
             "Unknown"
         else
-            "Unknown"
+            # The payload of the success variant (the first type argument), as src/infer.rs.
+            payload = ty_type_arg(&ts_trim(&t), 0)
+            if payload.len() == 0
+                "Unknown"
+            else
+                payload
 
 fn infer_if(c: &mut IC, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> String ! alloc
     infer_cond(c, cond)
@@ -2546,7 +2631,10 @@ fn infer_match_pat_ok(c: &mut IC, p: &TPat, sty: &String) -> Int ! alloc
         else
             ic_fail(c, &"pattern does not match Int scrutinee")
     elsif cls == 1
-        if pat_kind_scalar_string(k) == 1
+        if k == 5 && regex_valid(p.name) == 0
+            # The pattern is compiled with regcomp, as `posix_regex_valid` in src/infer.rs.
+            ic_fail(c, &"invalid regex pattern")
+        elsif pat_kind_scalar_string(k) == 1
             0
         else
             ic_fail(c, &"pattern does not match String scrutinee")
@@ -2675,8 +2763,9 @@ fn infer_binding(c: &mut IC, st: &TStmt) -> Int ! alloc
             _k = ty_compat_or_any_owned(c, &ty, &old)
             0
         else
-            infer_check_rebind(c, &st.name, &ty)
-            _b = tenv_bind(&mut c.env, &st.name, &ty)
+            rty = infer_rebind_ty(&st.expr, &ty)
+            infer_check_rebind(c, &st.name, &rty)
+            _b = tenv_bind(&mut c.env, &st.name, &rty)
             0
 
 fn infer_declared(c: &mut IC, ty: &String, decl: &String) -> Int ! alloc

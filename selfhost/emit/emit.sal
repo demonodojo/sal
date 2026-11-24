@@ -1231,22 +1231,7 @@ fn emit_c_matmul_parts(arg_parts: &List[String], stmts: Int, tc: &mut Tc, pa: &L
         _e = vec_push(stmts, str_as_int(&"  extern void sal_matmul_f32();\n"))
         _p = vec_push(stmts, str_as_int(&("  float *" + out + " = (float *)sal_place_malloc(" + int_to_str(m * n * 4) + ", 0);\n")))
         _q = vec_push(stmts, str_as_int(&("  sal_matmul_f32((const float *)(uintptr_t)" + arg_at(arg_parts, 0) + ", (const float *)(uintptr_t)" + arg_at(arg_parts, 1) + ", " + out + ", " + int_to_str(m) + ", " + int_to_str(k) + ", " + int_to_str(n) + ");\n")))
-        if m * n <= 16
-            _r = list_set(tc.mm_out, 0, str_as_int(&out))
-            _t = list_set(tc.mm_n, 0, m * n)
         "((int64_t)(uintptr_t)" + out + ")"
-
-# The bootstrap returns the element sum of the last (small) matmul from `main`.
-fn emit_c_matmul_exit(tc: &Tc, is_main: Int, val: &String) -> String ! alloc
-    q = list_get(&tc.mm_out, 0)
-    if q == 0
-        val.dup()
-    elsif is_main == 0
-        val.dup()
-    else
-        out = str_from_int(q)
-        cnt = int_to_str(list_get(&tc.mm_n, 0))
-        "({ double __s = 0; for (int __i = 0; __i < " + cnt + "; __i++) __s += " + out + "[__i]; (int64_t)__s; })"
 
 # `print` of a String prints its text, of anything else the integer.
 fn emit_c_print(args_e: &List[Expr], arg_parts: &List[String], tc: &Tc) -> String ! alloc
@@ -1719,7 +1704,6 @@ fn emit_c_fn_body(tf: &TFn, user: Int, is_main: Int, acc: String, pool: &mut Lit
     _sp = seed_string_params(&tf.params, 0, list_len(&tf.params), &mut tc.env)
     val = emit_c_block(&body, user, stmts, &mut tc)
     acc = append_stmt_strings(acc, stmts, 0, vec_len(stmts))
-    val = emit_c_matmul_exit(&tc, is_main, &val)
     if tf.arena == 1
         acc = acc + "  sal_arena_leave();\n"
     else

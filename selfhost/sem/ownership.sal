@@ -7,12 +7,13 @@ import "../ast/tast.sal"
 import "../ast/tytext.sal"
 import "../ast/ttypes.sal"
 import "../ast/thash.sal"
+import "../ast/tygeneric.sal"
 
 # `moved` is the set of moved names and `name.field` keys; `err` is empty or holds the first
 # message; `params` are the names of the function's parameters, `taken` those moved out of and
 # `used` those read (for the parameter modes); `table` maps a fn name to "m" + one digit per
 # parameter mode and `ctors` holds the struct and enum-variant constructor names, whose
-# arguments move into the value.
+# arguments move into the value; `enums` gives the payload types a `match` binds.
 struct OC
     moved: List[String]
     err: List[String]
@@ -22,12 +23,11 @@ struct OC
     used: List[String]
     table: HT
     ctors: List[String]
+    enums: List[TEnum]
 
 fn oc_new(tp: &TProgram, table: HT) -> OC ! alloc
-    ctors = list_new[String]()
-    _a = own_ctor_structs(&mut ctors, &tp.structs, 0, list_len(&tp.structs))
-    _b = own_ctor_enums(&mut ctors, &tp.enums, 0, list_len(&tp.enums))
-    OC(list_new[String](), list_new[String](), tenv_new(tp), list_new[String](), list_new[String](), list_new[String](), table, ctors)
+    ctors = own_ctor_names(tp)
+    OC(List.new[String](), List.new[String](), tenv_new(tp), List.new[String](), List.new[String](), List.new[String](), table, ctors, tp.enums.clone())
 
 # `drop.OC` releases direct lists and nested `TEnv` fields. Manual `tenv_free` here
 # would double-free with that glue; keep this a no-op.
@@ -42,6 +42,13 @@ fn oc_reset(c: &mut OC) -> Int ! alloc
     _d = own_clear(&mut c.taken)
     _e = own_clear(&mut c.used)
     tenv_truncate(&mut c.env, 0)
+
+# The struct and enum-variant constructors of `tp` (a `frame`'s does not move its columns).
+fn own_ctor_names(tp: &TProgram) -> List[String] ! alloc
+    ctors = List.new[String]()
+    own_ctor_structs(&mut ctors, &tp.structs, 0, tp.structs.len())
+    own_ctor_enums(&mut ctors, &tp.enums, 0, tp.enums.len())
+    ctors
 
 fn own_ctor_structs(out: &mut List[String], structs: &List[TStruct], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -463,9 +470,23 @@ fn track_call(c: &mut OC, name: &String, args: &List[Expr], e: &Expr) -> String 
 fn own_call_ret(c: &OC, e: &Expr) -> String ! alloc
     t = texpr_type(&c.env, e)
     if str_len(t) == 0
-        "Unknown"
+        own_variant_enum(c, e)
     else
         t
+
+# The enum a variant constructor builds (`Yes(s)` is an `Opt`), Unknown for any other call.
+fn own_variant_enum(c: &OC, e: &Expr) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) => own_enum_of_variant(&c.enums, &own_last_seg(&name), 0)
+        _ => "Unknown"
+
+fn own_enum_of_variant(es: &List[TEnum], vname: &String, i: Int) -> String ! alloc
+    if i >= es.len()
+        "Unknown"
+    elsif es.get(i).tparams.len() == 0 && own_variant_at(&es.get(i).variants, vname, 0) >= 0
+        es.get(i).name.clone()
+    else
+        own_enum_of_variant(es, vname, i + 1)
 
 # Parameter mode `i` out of a table entry ("m" + digits): 0 when out of range.
 fn own_mode_at(modes: &String, i: Int) -> Int ! alloc
@@ -477,7 +498,13 @@ fn own_mode_at(modes: &String, i: Int) -> Int ! alloc
 # 1 when the call moves its argument at position `i`: the value stored by `list_push`,
 # `list_set` and `dict_put`, any constructor argument, or an argument at a `take` parameter.
 fn call_moves_arg(c: &OC, name: &String, i: Int, modes: &String) -> Int ! alloc
-    if str_eq(name, "list_push") == 1
+    own_call_moves_arg(&c.ctors, name, i, modes)
+
+# `call_moves_arg` given the constructor names (`operand_is_moved` in src/ownership.rs).
+fn own_call_moves_arg(ctors: &List[String], name: &String, i: Int, modes: &String) -> Int ! alloc
+    if is_move_fn(name) == 1
+        1
+    elsif name.eq("list_push") == 1
         if i == 1
             1
         else
@@ -508,7 +535,7 @@ fn call_moves_arg(c: &OC, name: &String, i: Int, modes: &String) -> Int ! alloc
             1
         else
             0
-    elsif own_has(&c.ctors, name, 0, list_len(&c.ctors)) == 1
+    elsif own_has(ctors, name, 0, ctors.len()) == 1
         1
     elsif own_mode_at(modes, i) == 2
         1
@@ -630,24 +657,29 @@ fn track_lambda(c: &mut OC, param: &String, body: &Expr) -> String ! alloc
 # one arm does not move the value in another. What falls through is the union.
 fn track_match(c: &mut OC, scrut: &Expr, arms: &List[TArm]) -> String ! alloc
     _s = track_expr(c, scrut)
+    sty = own_match_owned_ty(c, scrut)
     base = own_copy(&c.moved)
     acc = list_new[String]()
-    _a = track_match_arms(c, arms, 0, list_len(arms), &base, &mut acc)
+    track_match_arms(c, scrut, &sty, arms, 0, arms.len(), &base, &mut acc)
     _u = own_union(&mut c.moved, &acc, 0, list_len(&acc))
     _f1 = list_free(base)
     _f2 = list_free(acc)
     "Unknown"
 
-fn track_match_arms(c: &mut OC, arms: &List[TArm], i: Int, n: Int, base: &List[String], acc: &mut List[String]) -> Int ! alloc
+fn track_match_arms(c: &mut OC, scrut: &Expr, sty: &String, arms: &List[TArm], i: Int, n: Int, base: &List[String], acc: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
-        _a = track_match_arm(c, &list_get(arms, i), base, acc)
-        track_match_arms(c, arms, i + 1, n, base, acc)
+        track_match_arm(c, scrut, sty, &arms.get(i), base, acc)
+        track_match_arms(c, scrut, sty, arms, i + 1, n, base, acc)
 
-fn track_match_arm(c: &mut OC, arm: &TArm, base: &List[String], acc: &mut List[String]) -> Int ! alloc
+# SPEC «Memoria»: an arm whose pattern binds a non-`Copy` payload of an owned scrutinee moves
+# it; only that arm sees it moved (`match_moves` in src/borrowck.rs).
+fn track_match_arm(c: &mut OC, scrut: &Expr, sty: &String, arm: &TArm, base: &List[String], acc: &mut List[String]) -> Int ! alloc
     saved = own_copy(&c.moved)
     _s = oc_set_moved(c, base)
+    if sty.len() > 0 && own_pat_moves(c, &arm.pat, sty) == 1
+        _m = consume_if_unique(c, scrut, sty)
     mark = tenv_len(&c.env)
     _b = own_bind_pattern(c, &arm.pat)
     div = track_match_arm_body(c, arm)
@@ -667,6 +699,102 @@ fn track_match_arm_body(c: &mut OC, arm: &TArm) -> Int ! alloc
     else
         _t = track_expr(c, &arm.body)
         0
+
+# The type of a scrutinee that is an owned place (a name or a field, not a reference), or "".
+fn own_match_owned_ty(c: &OC, scrut: &Expr) -> String ! alloc
+    match scrut
+        XIdent(name) => own_owned_or_empty(&own_ident_ty(c, &name))
+        XField(base, field) => own_owned_or_empty(&texpr_type(&c.env, scrut))
+        _ => ""
+
+fn own_owned_or_empty(ty: &String) -> String ! alloc
+    if ty.len() == 0 || own_ty_is_ref(ty) == 1
+        ""
+    else
+        ty.clone()
+
+# A variant pattern that binds a name to a payload that moves out of a value of type `sty`.
+fn own_pat_moves(c: &OC, p: &TPat, sty: &String) -> Int ! alloc
+    if p.kind == 3
+        own_pat_args_move(c, p, sty, 0, p.args.len())
+    else
+        0
+
+fn own_pat_args_move(c: &OC, p: &TPat, sty: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    elsif p.args.get(i).kind == 1 && own_payload_moves(c, &p.name, i, sty) == 1
+        1
+    else
+        own_pat_args_move(c, p, sty, i + 1, n)
+
+# Whether field `i` of variant `vname` of the enum `sty` names is not `Copy` (with `sty`'s type
+# arguments for a type parameter). An unknown variant or an unresolved argument does not move.
+fn own_payload_moves(c: &OC, vname: &String, i: Int, sty: &String) -> Int ! alloc
+    ename = own_last_seg(&ty_base_name(sty))
+    ei = own_enum_at(&c.enums, &ename, 0)
+    if ei < 0
+        0
+    else
+        en = c.enums.get(ei)
+        vi = own_variant_at(&en.variants, &own_last_seg(vname), 0)
+        if vi < 0
+            0
+        else
+            fields = en.variants.get(vi).fields.clone()
+            if i >= fields.len()
+                0
+            else
+                own_field_moves(c, &fields.get(i), &en.tparams, sty)
+
+fn own_field_moves(c: &OC, ft: &String, tparams: &List[String], sty: &String) -> Int ! alloc
+    k = own_str_index(tparams, ft, 0)
+    if k < 0
+        1 - own_is_copy_ext(ft, &c.env.structs, 0)
+    else
+        sargs = tg_args(sty)
+        if k >= sargs.len()
+            0
+        elsif tt_matches(&sargs.get(k), &"Unknown") == 1
+            0
+        else
+            1 - own_is_copy_ext(&sargs.get(k), &c.env.structs, 0)
+
+fn own_enum_at(es: &List[TEnum], name: &String, i: Int) -> Int ! alloc
+    if i >= es.len()
+        0 - 1
+    elsif own_last_seg(&es.get(i).name).eq(name) == 1
+        i
+    else
+        own_enum_at(es, name, i + 1)
+
+fn own_variant_at(vs: &List[TVariant], name: &String, i: Int) -> Int ! alloc
+    if i >= vs.len()
+        0 - 1
+    elsif own_last_seg(&vs.get(i).name).eq(name) == 1
+        i
+    else
+        own_variant_at(vs, name, i + 1)
+
+fn own_str_index(xs: &List[String], s: &String, i: Int) -> Int ! alloc
+    if i >= xs.len()
+        0 - 1
+    elsif xs.get(i).eq(s) == 1
+        i
+    else
+        own_str_index(xs, s, i + 1)
+
+# The part of `modid__name` after its last `__` (the whole name when it has none).
+fn own_last_seg(name: &String) -> String ! alloc
+    name.slice(own_last_seg_start(name, name.len() - 2, 0), name.len())
+
+fn own_last_seg_start(name: &String, i: Int, acc: Int) -> Int ! alloc
+    if i < 0
+        acc
+    elsif name.char(i) == 95 && name.char(i + 1) == 95
+        i + 2
+    else
+        own_last_seg_start(name, i - 1, acc)
 
 fn own_bind_pattern(c: &mut OC, p: &TPat) -> Int ! alloc
     if p.kind == 1
@@ -832,6 +960,8 @@ fn track_tail(c: &mut OC, tail: &Expr, consume: Int) -> Int ! alloc
 
 # `return t` moves that parameter. `own_param_mode` still leaves a Copy type inferred.
 fn track_tail_name(c: &mut OC, name: &String, consume: Int) -> Int ! alloc
+    if is_moved_any(c, name) == 1
+        _f = oc_fail(c, &("use of moved value `" + name + "`"))
     _u = own_note_param(c, &mut c.used, name)
     if consume == 1
         own_note_param(c, &mut c.taken, name)
@@ -905,13 +1035,19 @@ fn own_param_mode(c: &OC, pm: &TParam, arena: Int) -> Int ! alloc
     if pm.mode != 0
         pm.mode
     elsif str_len(&pm.ty) > 0 && pm.ty.char(0) == 38
-        0
+        # Inside `@arena`, `&mut List` / `&mut Dict` is the writable container parameter (`keep`).
+        if arena == 1 && ty_is_mut_ref(&pm.ty) == 1 && own_is_list_or_dict(&ty_deref(&pm.ty)) == 1
+            3
+        else
+            0
     elsif own_is_copy_ext(&pm.ty, &c.env.structs, 0) == 1
         0
-    elsif arena == 1
-        1
     else
         2
+
+fn own_is_list_or_dict(t: &String) -> Int ! alloc
+    b = ty_base_name(t)
+    b.eq("List") + b.eq("Dict")
 
 fn own_mode_text(c: &OC, params: &List[TParam], i: Int, n: Int, acc: String, arena: Int) -> String ! alloc
     if i >= n
@@ -1448,7 +1584,7 @@ fn ar_param_err(f: &TFn, table: &HT, flags: &String, i: Int, n: Int) -> String !
     else
         pm = list_get(&f.params, i)
         mode = ar_mode_at(table, &f.name, i)
-        if pm.mode == 3
+        if pm.mode == 3 || mode == 3
             ar_param_err(f, table, flags, i + 1, n)
         elsif ar_bit(flags, i) == 1
             "@arena parameter `" + pm.name + "` is read-only"

@@ -1,0 +1,8 @@
+# exit: 7
+# a matmul in `main` does not change what `main` returns: its last expression
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    i = tensor[[1.0, 0.0], [0.0, 1.0]]
+    on cpu
+        matmul(a, i)
+    7

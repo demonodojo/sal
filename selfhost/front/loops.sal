@@ -241,8 +241,17 @@ fn lp_unit_arms(xs: &mut List[TElsif], i: Int, n: Int) -> Int ! alloc
         0
     else
         a = (&mut xs).get(i)
-        a.body = lp_unit(a.body.clone())
+        nb = lp_unit(a.body.clone())
+        lp_free_block(&a.body)
+        a.body = nb
         lp_unit_arms(xs, i + 1, n)
+
+# The arm's old body, before the rewritten copy takes its place: overwriting a field does not
+# release it when the compiler builds the selfhost (`dr_free_block` in selfhost/ir/drops.sal).
+fn lp_free_block(b: &TBlock) -> Int ! alloc
+    list_free(b.stmts)
+    enum_free(b.tail)
+    0
 
 # Rewrites the arms in place. Leaves in `cx[1]` whether the last one may break; the caller ors them.
 fn lp_elsifs(xs: &mut List[TElsif], i: Int, n: Int, flag: &String, cx: &mut List[Int], errs: &mut List[String]) -> Int ! alloc
@@ -252,7 +261,9 @@ fn lp_elsifs(xs: &mut List[TElsif], i: Int, n: Int, flag: &String, cx: &mut List
     else
         a = (&mut xs).get(i)
         lp_expr(&a.cond, cx, errs)
-        a.body = lp_block(&a.body, flag, cx, errs)
+        nb = lp_block(&a.body, flag, cx, errs)
+        lp_free_block(&a.body)
+        a.body = nb
         here = cx.get(1)
         lp_elsifs(xs, i + 1, n, flag, cx, errs)
         _s = cx.set(1, here | cx.get(1))

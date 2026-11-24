@@ -6,6 +6,9 @@ use crate::ir::{FusedOp, IrFunction, IrInst, IrModule};
 use crate::layout::{is_transparent_struct, llvm_struct_symbol};
 
 thread_local! {
+    /// The place parameters (`p` of `on p`) of the fn being emitted, each read at entry from the
+    /// buffer of its first tensor argument.
+    static GENERIC_PLACES: RefCell<HashMap<String, u8>> = RefCell::new(HashMap::new());
     static EMIT_STRUCT_DEFS: RefCell<HashMap<String, StructDef>> = RefCell::new(HashMap::new());
     static EMIT_AGG: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     /// Struct values built only to be pushed: `dest` -> (alloca of its slots, slot count).
@@ -507,7 +510,11 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_place_malloc(i64, i32)\n");
     s.push_str("declare void @sal_place_free(ptr)\n");
     s.push_str("declare ptr @sal_place_copy(ptr, i64, i32)\n");
-    s.push_str("declare void @sal_on_enter(i32)\n");
+    s.push_str("declare ptr @sal_place_move(ptr, i32)\n");
+    s.push_str("declare i64 @sal_place_size(ptr)\n");
+    s.push_str("declare i32 @sal_place_of(ptr)\n");
+    s.push_str("declare ptr @sal_region_escape(ptr)\n");
+    s.push_str("declare void @sal_on_enter(i64)\n");
     // A null list is read as this page: the inlined `list_len`/`list_get` touch offsets
     // 40 (data), 64 (count) and 72 at most, so the page covers them.
     s.push_str("@sal_zero_page = internal global [80 x i8] zeroinitializer, align 8\n");
@@ -528,6 +535,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_argv(i64)\n");
     s.push_str("declare ptr @sal_read_file(ptr)\n");
     s.push_str("declare i64 @sal_path_readable(ptr)\n");
+    s.push_str("declare i64 @sal_regex_valid(ptr)\n");
     s.push_str("declare i64 @sal_write_file(ptr, ptr)\n");
     s.push_str("declare i64 @sal_write_png(ptr, i64, i64, ptr)\n");
     s.push_str("declare ptr @sal_image_new(i64, i64)\n");
@@ -594,6 +602,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare void @sal_cell_free(i64)\n");
     s.push_str("declare i64 @sal_enum_tag(i64)\n");
     s.push_str("declare i64 @sal_enum_owns(i64, i64)\n");
+    s.push_str("declare i64 @sal_enum_take(i64, i64)\n");
     s.push_str("declare i64 @sal_enum_box_id(i64)\n");
     s.push_str("declare i64 @sal_enum_copy(i64)\n");
     s.push_str("declare i64 @sal_enum_field(i64, i64)\n");
@@ -665,6 +674,7 @@ pub fn emit_llvm_with_externs(
     s.push_str("declare ptr @sal_dict_values(ptr)\n");
     s.push_str("declare ptr @sal_list_set(ptr, i64, i64)\n");
     s.push_str("declare i64 @sal_list_pop(ptr)\n");
+    s.push_str("declare i64 @sal_list_pop_drop(ptr)\n");
     s.push_str("declare i64 @sal_any_box(i64, i64, i64)\n");
     s.push_str("declare void @sal_any_free(i64)\n");
     s.push_str("declare void @sal_any_free_shell(i64)\n");
@@ -880,7 +890,7 @@ fn fn_has_tensor_call(f: &IrFunction) -> bool {
                 "sal_softmax" | "sal_softmax_f32" | "sal_softmax_axis_f32" | "sal_silu"
                     | "sal_silu_f32" | "sal_rope" | "sal_attention_f32" | "sal_qmatmul_f32"
                     | "sal_argmax" | "sal_argmax_axis_f32" | "sal_relu" | "sal_rms_norm"
-                    | "sal_reduce"
+                    | "sal_reduce" | "sal_tensor_elems"
             )
         )
     })
@@ -1373,7 +1383,12 @@ fn emit_host_tensor_fn(
     let mut ptrs: HashMap<String, String> = HashMap::new();
     let mut buf_bytes: HashMap<String, u64> = HashMap::new();
     let mut ssa_elems: HashMap<String, u64> = HashMap::new();
+    // Element counts known only at run time (a `?` axis): the LLVM operand that holds them.
+    let mut ssa_rt_elems: HashMap<String, String> = HashMap::new();
     let mut owned: Vec<String> = Vec::new();
+    // The place (0 cpu, 1 gpu, 2 tpu) of each buffer this fn allocates off the cpu: an
+    // elementwise op's result goes where its input lives.
+    let mut buf_place: HashMap<String, Pl> = HashMap::new();
     let mut uid = 0u32;
     let mut consts_seed = const_int_map(f);
     if matches!(entry, HostFnEntry::User) {
@@ -1430,7 +1445,7 @@ fn emit_host_tensor_fn(
                 if matches!(
                     func.as_str(),
                     "sal_transpose_f32" | "sal_silu" | "sal_softmax" | "sal_softmax_axis_f32" | "sal_softmax_f32" | "sal_silu_f32" | "sal_transpose" | "sal_reshape" | "sal_rope"
-                        | "sal_argmax" | "sal_relu" | "sal_rms_norm" | "sal_reduce"
+                        | "sal_argmax" | "sal_relu" | "sal_rms_norm" | "sal_reduce" | "sal_tensor_elems"
                 ) =>
             {
                 let operands = if func == "sal_rms_norm" { 2 } else { 1 };
@@ -1532,8 +1547,7 @@ fn emit_host_tensor_fn(
     // Buffer handed back to the caller: it must outlive this function.
     let mut returned: Option<String> = None;
     let mut matmul_ordinal = 0usize;
-    let mut region_open: HashMap<i32, bool> = HashMap::new();
-    let mut last_out: Option<(String, DimOperand)> = None; // ptr name, elem count
+    let mut region_open: HashMap<Pl, bool> = HashMap::new();
     let host_i64: HashSet<String> = f
         .host_literals
         .iter()
@@ -1541,11 +1555,74 @@ fn emit_host_tensor_fn(
         .collect();
     let consts = const_int_map(f);
     let floats = const_float_map(f);
+    // A body generic over `on p` runs where its arguments are: each place parameter is read
+    // from the buffer of the first tensor argument on it, and every tensor argument records its
+    // place, so a result goes where its input lives.
+    GENERIC_PLACES.with(|g| g.borrow_mut().clear());
+    let tensor_params: Vec<crate::scalarize::TensorParamSig> = opts
+        .fn_sigs
+        .get(&f.name)
+        .map(|g| g.tensor_params.iter().flatten().cloned().collect())
+        .unwrap_or_default();
+    if matches!(entry, HostFnEntry::User) {
+        for tp in &tensor_params {
+            let Some(ptr) = ptrs.get(&tp.name).cloned() else {
+                continue;
+            };
+            let pl = match tp.generic_place.then_some(&tp.place) {
+                Some(name) => {
+                    let known = GENERIC_PLACES.with(|g| g.borrow().get(name).copied());
+                    let i = known.unwrap_or_else(|| {
+                        GENERIC_PLACES.with(|g| {
+                            let mut g = g.borrow_mut();
+                            let i = g.len() as u8;
+                            g.insert(name.clone(), i);
+                            i
+                        })
+                    });
+                    if known.is_none() {
+                        s.push_str(&format!(
+                            "  %place_g{i} = call i32 @sal_place_of(ptr %{ptr})\n"
+                        ));
+                        s.push_str(&format!(
+                            "  %place_g{i}_64 = sext i32 %place_g{i} to i64\n"
+                        ));
+                    }
+                    Pl::Dyn(i)
+                }
+                None => place_to_i32(&tp.place),
+            };
+            buf_place.insert(ptr, pl);
+        }
+    }
     // Dim params are names (`x_d0`), not ConstInt temps. The fused stub aliases
-    // them to %m/%k/%n; the host body still has to define the SSA before use.
+    // them to %m/%k/%n; the host body still has to define the SSA before use. A `?` axis of a
+    // tensor parameter is the length of the buffer it was handed over the other axes.
     for dp in &f.dim_params {
-        if !consts.contains_key(dp) {
-            s.push_str(&format!("  %{dp} = add i64 0, 0\n"));
+        if consts.contains_key(dp) {
+            continue;
+        }
+        // (buffer, bytes of one row, elements of one row, parameter) of a parameter with one `?`.
+        let from_buf = dp.rsplit_once("_d").and_then(|(name, axis)| {
+            let axis: usize = axis.parse().ok()?;
+            let tp = tensor_params.iter().find(|t| t.name == name)?;
+            if tp.dims.iter().filter(|d| d.is_none()).count() != 1 || tp.dims.get(axis)?.is_some() {
+                return None;
+            }
+            let per_row: u64 = tp.dims.iter().flatten().product();
+            Some((ptrs.get(name)?.clone(), (per_row * tp.elem_bytes).max(1), per_row, name))
+        });
+        match from_buf {
+            Some((ptr, row_bytes, per_row, name)) if matches!(entry, HostFnEntry::User) => {
+                s.push_str(&format!("  %{dp}_sz = call i64 @sal_place_size(ptr %{ptr})\n"));
+                s.push_str(&format!("  %{dp}_q = sdiv i64 %{dp}_sz, {row_bytes}\n"));
+                s.push_str(&format!("  %{dp}_ok = icmp sgt i64 %{dp}_sz, 0\n"));
+                s.push_str(&format!("  %{dp} = select i1 %{dp}_ok, i64 %{dp}_q, i64 0\n"));
+                // The parameter's element count, for an elementwise op on it.
+                s.push_str(&format!("  %{dp}_n = mul i64 %{dp}, {per_row}\n"));
+                ssa_rt_elems.insert(name.to_string(), format!("%{dp}_n"));
+            }
+            _ => s.push_str(&format!("  %{dp} = add i64 0, 0\n")),
         }
     }
 
@@ -1710,7 +1787,8 @@ fn emit_host_tensor_fn(
                     let peak = region_peak_for_matmul(f, matmul_ordinal);
                     if peak > 0 && !region_open.get(&place_i).copied().unwrap_or(false) {
                         s.push_str(&format!(
-                            "  call void @sal_region_begin(i64 {place_i}, i64 {peak})\n"
+                            "  call void @sal_region_begin(i64 {}, i64 {peak})\n",
+                            place_i.i64()
                         ));
                         region_open.insert(place_i, true);
                     }
@@ -1743,8 +1821,8 @@ fn emit_host_tensor_fn(
                         uid += 1;
                         let out = format!("out_{uid}");
                         // Same numeric kernel on cpu/gpu/tpu; allocate on the region's place heap.
-                        if place_i != 0 {
-                            s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+                        if !place_i.is_cpu() {
+                            s.push_str(&format!("  call void @sal_on_enter(i64 {})\n", place_i.i64()));
                         }
                         match (&m, &n) {
                             (DimOperand::Imm(mv), DimOperand::Imm(nv)) => {
@@ -1773,6 +1851,7 @@ fn emit_host_tensor_fn(
                             }
                         }
                         owned.push(out.clone());
+                        buf_place.insert(out.clone(), place_i);
                         if opts.instrument {
                             emit_instrument_matmul_ptrs(
                                 &a_ptr, &b_ptr, &m, &k, &n, place_i, s,
@@ -1844,48 +1923,8 @@ fn emit_host_tensor_fn(
                             }
                         }
                         if let Some(d) = dest {
-                            // Expose element sum as the SSA value so `s = on … matmul(…)`
-                            // can print the numeric product (A×I → 10).
-                            let sum_imm = match (&m, &n) {
-                                (DimOperand::Imm(mv), DimOperand::Imm(nv)) => {
-                                    let ne = mv.saturating_mul(*nv);
-                                    if ne > 0 && ne <= 16 {
-                                        Some(ne)
-                                    } else {
-                                        None
-                                    }
-                                }
-                                _ => None,
-                            };
-                            if let Some(ne) = sum_imm {
-                                s.push_str(&format!(
-                                    "  %{d}_sum0 = fpext float 0.0 to double\n"
-                                ));
-                                let mut prev = format!("{d}_sum0");
-                                for i in 0..ne {
-                                    s.push_str(&format!(
-                                        "  %{d}_sg{i} = getelementptr float, ptr %{out}, i64 {i}\n"
-                                    ));
-                                    s.push_str(&format!(
-                                        "  %{d}_sv{i} = load float, ptr %{d}_sg{i}\n"
-                                    ));
-                                    s.push_str(&format!(
-                                        "  %{d}_sd{i} = fpext float %{d}_sv{i} to double\n"
-                                    ));
-                                    let next = format!("{d}_sum{}", i + 1);
-                                    s.push_str(&format!(
-                                        "  %{next} = fadd double %{prev}, %{d}_sd{i}\n"
-                                    ));
-                                    prev = next;
-                                }
-                                s.push_str(&format!(
-                                    "  %{d} = fptosi double %{prev} to i64\n"
-                                ));
-                            } else {
-                                s.push_str(&format!(
-                                    "  %{d} = ptrtoint ptr %{out} to i64\n"
-                                ));
-                            }
+                            // The value of a matmul is its buffer, like any other tensor.
+                            s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
                             ptrs.insert(d.clone(), out.clone());
                         }
                         let out_elems = match (&m, &n) {
@@ -1894,10 +1933,15 @@ fn emit_host_tensor_fn(
                             }
                             _ => DimOperand::Runtime(format!("{out}_elems")),
                         };
-                        if let (Some(d), DimOperand::Imm(ne)) = (dest.as_ref(), &out_elems) {
-                            ssa_elems.insert(d.clone(), *ne);
+                        match (dest.as_ref(), &out_elems) {
+                            (Some(d), DimOperand::Imm(ne)) => {
+                                ssa_elems.insert(d.clone(), *ne);
+                            }
+                            (Some(d), DimOperand::Runtime(ne)) => {
+                                ssa_rt_elems.insert(d.clone(), format!("%{ne}"));
+                            }
+                            _ => {}
                         }
-                        last_out = Some((out, out_elems));
                     } else {
                         s.push_str(
                             "  ; matmul dims unknown (no IR lengths / host shapes); skipped\n",
@@ -1943,12 +1987,23 @@ fn emit_host_tensor_fn(
                     let src = ptrs.get(&args[0]).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
                     uid += 1;
                     let out = format!("tr_{uid}");
+                    let place_i = place_of_arg(&ptrs, &buf_place, &args[0]);
+                    buf_place.insert(out.clone(), place_i);
                     s.push_str(&format!("  %{out}_n = mul i64 {rows}, {cols}\n"));
                     s.push_str(&format!("  %{out}_b = mul i64 %{out}_n, 4\n"));
-                    s.push_str(&format!("  %{out} = call ptr @sal_place_malloc(i64 %{out}_b, i32 0)\n"));
+                    s.push_str(&tensor_malloc(opts, &out, &format!("%{out}_b"), place_i));
                     s.push_str(&format!(
                         "  call void @sal_transpose_f32(ptr %{out}, ptr {src}, i64 {rows}, i64 {cols})\n"
                     ));
+                    // `transpose(t)` moves `t` (`is_move_fn` in src/ownership.rs) and this
+                    // backend copies: the input this fn owns is released here, once.
+                    if let Some(p) = ptrs.get(&args[0]).cloned() {
+                        if fn_owns_buffer(f, &opts.fn_sigs, &ptrs, &owned, &args[0], &p) {
+                            emit_free(opts, &p, s);
+                            owned.retain(|x| x != &p);
+                            ptrs.retain(|_, x| x != &p);
+                        }
+                    }
                     owned.push(out.clone());
                     if let Some(d) = dest {
                         ptrs.insert(d.clone(), out.clone());
@@ -2015,17 +2070,24 @@ fn emit_host_tensor_fn(
                     });
                     uid += 1;
                     let out = format!("silu_{uid}");
-                    if len > 0 {
-                        let nbytes = len.saturating_mul(4);
-                        emit_alloc_place(opts, &out, nbytes, 0, "silu", s);
+                    let place_i = place_of_arg(&ptrs, &buf_place, input);
+                    // A length only known at run time (a `?` axis) comes as an operand.
+                    let len_op = if len > 0 {
+                        Some(len.to_string())
+                    } else {
+                        ssa_rt_elems.get(input).cloned()
+                    };
+                    if let Some(len_op) = len_op {
+                        emit_len_alloc(opts, &out, len, &len_op, place_i, "silu", s);
+                        buf_place.insert(out.clone(), place_i);
                         owned.push(out.clone());
                         let in_ptr = ptrs.get(input).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
                         s.push_str(&format!(
-                            "  call void @sal_silu_f32(ptr %{out}, ptr {in_ptr}, i64 {len})\n"
+                            "  call void @sal_silu_f32(ptr %{out}, ptr {in_ptr}, i64 {len_op})\n"
                         ));
                         if let Some(d) = dest {
                             ptrs.insert(d.clone(), out.clone());
-                            ssa_elems.insert(d.clone(), len);
+                            record_len(&mut ssa_elems, &mut ssa_rt_elems, d, len, &len_op);
                             s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
                         }
                     } else {
@@ -2044,14 +2106,21 @@ fn emit_host_tensor_fn(
                     });
                     uid += 1;
                     let out = format!("elt_{uid}");
-                    if len > 0 {
-                        let nbytes = len.saturating_mul(4);
-                        emit_alloc_place(opts, &out, nbytes, 0, "elt", s);
+                    let place_i = place_of_arg(&ptrs, &buf_place, input);
+                    // A length only known at run time (a `?` axis) comes as an operand.
+                    let len_op = if len > 0 {
+                        Some(len.to_string())
+                    } else {
+                        ssa_rt_elems.get(input).cloned()
+                    };
+                    if let Some(len_op) = len_op {
+                        emit_len_alloc(opts, &out, len, &len_op, place_i, "elt", s);
+                        buf_place.insert(out.clone(), place_i);
                         owned.push(out.clone());
                         let in_ptr = ptrs.get(input).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
                         if func == "sal_relu" {
                             s.push_str(&format!(
-                                "  call void @sal_relu_f32(ptr %{out}, ptr {in_ptr}, i64 {len})\n"
+                                "  call void @sal_relu_f32(ptr %{out}, ptr {in_ptr}, i64 {len_op})\n"
                             ));
                         } else {
                             let w_ptr = args
@@ -2060,12 +2129,12 @@ fn emit_host_tensor_fn(
                                 .map(|p| format!("%{p}"))
                                 .unwrap_or_else(|| "null".into());
                             s.push_str(&format!(
-                                "  call void @sal_rms_norm_f32(ptr %{out}, ptr {in_ptr}, ptr {w_ptr}, i64 {len}, double 0x3EE4F8B588E368F1)\n"
+                                "  call void @sal_rms_norm_f32(ptr %{out}, ptr {in_ptr}, ptr {w_ptr}, i64 {len_op}, double 0x3EE4F8B588E368F1)\n"
                             ));
                         }
                         if let Some(d) = dest {
                             ptrs.insert(d.clone(), out.clone());
-                            ssa_elems.insert(d.clone(), len);
+                            record_len(&mut ssa_elems, &mut ssa_rt_elems, d, len, &len_op);
                             s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
                         }
                     } else {
@@ -2095,7 +2164,9 @@ fn emit_host_tensor_fn(
                     match dims {
                         Some((outer, axis_len, inner)) if total > 0 => {
                             let n = outer.saturating_mul(inner);
-                            emit_alloc_place(opts, &out, n.saturating_mul(4), 0, "red", s);
+                            let place_i = place_of_arg(&ptrs, &buf_place, input);
+                            buf_place.insert(out.clone(), place_i);
+                            emit_alloc_place(opts, &out, n.saturating_mul(4), place_i, "red", s);
                             owned.push(out.clone());
                             let in_ptr = ptrs.get(input).map(|p| format!("%{p}")).unwrap_or_else(|| "null".into());
                             s.push_str(&format!(
@@ -2129,9 +2200,9 @@ fn emit_host_tensor_fn(
                     s.push_str(&format!(
                         "  %{out}_bytes = mul i64 {seq}, {heads}\n  %{out}_b2 = mul i64 %{out}_bytes, {hd}\n  %{out}_b3 = mul i64 %{out}_b2, 4\n"
                     ));
-                    s.push_str(&format!(
-                        "  %{out} = call ptr @sal_place_malloc(i64 %{out}_b3, i32 0)\n"
-                    ));
+                    let place_i = place_of_arg(&ptrs, &buf_place, &args[0]);
+                    buf_place.insert(out.clone(), place_i);
+                    s.push_str(&tensor_malloc(opts, &out, &format!("%{out}_b3"), place_i));
                     owned.push(out.clone());
                     s.push_str(&format!(
                         "  call void @sal_attention_f32(ptr %{out}, ptr {q}, ptr {k}, ptr {v}, i64 {seq}, i64 {heads}, i64 {kv}, i64 {hd}, i64 {causal})\n"
@@ -2154,9 +2225,9 @@ fn emit_host_tensor_fn(
                     s.push_str(&format!(
                         "  %{out}_elems = mul i64 {m}, {n}\n  %{out}_bytes = mul i64 %{out}_elems, 4\n"
                     ));
-                    s.push_str(&format!(
-                        "  %{out} = call ptr @sal_place_malloc(i64 %{out}_bytes, i32 0)\n"
-                    ));
+                    let place_i = place_of_arg(&ptrs, &buf_place, &args[0]);
+                    buf_place.insert(out.clone(), place_i);
+                    s.push_str(&tensor_malloc(opts, &out, &format!("%{out}_bytes"), place_i));
                     owned.push(out.clone());
                     s.push_str(&format!(
                         "  call void @sal_qmatmul_f32(ptr {a_ptr}, ptr {w_ptr}, ptr {sc_ptr}, ptr %{out}, i64 {m}, i64 {k}, i64 {n}, i64 {group})\n"
@@ -2164,6 +2235,21 @@ fn emit_host_tensor_fn(
                     if let Some(d) = dest {
                         ptrs.insert(d.clone(), out.clone());
                         s.push_str(&format!("  %{d} = ptrtoint ptr %{out} to i64\n"));
+                    }
+                } else if func == "sal_tensor_elems" && !args.is_empty() {
+                    // Elements of a buffer whose `?` axis only the runtime knows: its recorded
+                    // size over the bytes of one element (0 when the runtime does not know it).
+                    if let Some(d) = dest {
+                        let eb = args.get(1).map(|a| i64_operand(a, &consts)).unwrap_or_else(|| "4".into());
+                        match ptrs.get(&args[0]) {
+                            Some(p) => {
+                                s.push_str(&format!("  %{d}_sz = call i64 @sal_place_size(ptr %{p})\n"));
+                                s.push_str(&format!("  %{d}_q = sdiv i64 %{d}_sz, {eb}\n"));
+                                s.push_str(&format!("  %{d}_ok = icmp sgt i64 %{d}_sz, 0\n"));
+                                s.push_str(&format!("  %{d} = select i1 %{d}_ok, i64 %{d}_q, i64 0\n"));
+                            }
+                            None => s.push_str(&format!("  %{d} = add i64 0, 0\n")),
+                        }
                     }
                 } else if (func == "sal_argmax_axis_f32" || func == "sal_argmax") && !args.is_empty() {
                     let p = ptrs.get(&args[0]).map(|x| format!("%{x}")).unwrap_or_else(|| "null".into());
@@ -2201,7 +2287,16 @@ fn emit_host_tensor_fn(
                     if let Some(d) = dest {
                         s.push_str(&format!("  %{d} = add i64 0, 0\n"));
                     }
+                } else if let (true, Some(p)) = (func == "sal_tensor_free", args.first().and_then(|a| ptrs.get(a)).cloned()) {
+                    // The IR releases a buffer this fn tracks (`xg = to gpu x` at scope end): it
+                    // leaves `owned`, as with `Drop`, so the exit does not free it again.
+                    emit_free(opts, &p, s);
+                    owned.retain(|x| x != &p);
+                    if let Some(d) = dest {
+                        s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+                    }
                 } else {
+                    release_moved_tensor_args(func, args, &opts.fn_sigs, &ptrs, &mut owned);
                     let mut tmp = uid;
                     emit_runtime_or_user_call(
                         dest.as_deref(),
@@ -2267,26 +2362,24 @@ fn emit_host_tensor_fn(
                                 "  call void @sal_instrument_check_ptr(ptr %{dst}, i64 {nbytes}, i32 {place_i}, ptr @.site.access)\n"
                             ));
                         }
-                        ptrs.insert(dest.clone(), dst.clone());
-                        buf_bytes.insert(dest.clone(), nbytes);
-                        owned.push(dst);
                         s.push_str(&format!(
                             "  ; place_copy {from} -> {dest} on {to_place} ({nbytes} bytes)\n"
                         ));
+                        s.push_str(&format!("  %{dest} = ptrtoint ptr %{dst} to i64\n"));
+                        ptrs.insert(dest.clone(), dst.clone());
+                        buf_bytes.insert(dest.clone(), nbytes);
+                        buf_place.insert(dst.clone(), place_i);
+                        owned.push(dst);
                     } else {
-                        // Unknown size: alias (no device driver).
+                        uid += 1;
+                        let dst = format!("pmove_{uid}");
                         s.push_str(&format!(
-                            "  ; place_copy {from} -> {dest} on {to_place} (alias, size unknown)\n"
+                            "  ; place_copy {from} -> {dest} on {to_place} (size known at run time)\n"
                         ));
-                        if opts.instrument {
-                            s.push_str(&format!(
-                                "  call void @sal_instrument_check_ptr(ptr %{p}, i64 0, i32 {place_i}, ptr @.site.access)\n"
-                            ));
-                        }
-                        ptrs.insert(dest.clone(), p);
-                        if let Some(n) = buf_bytes.get(from).copied() {
-                            buf_bytes.insert(dest.clone(), n);
-                        }
+                        emit_place_move(opts, &p, &dst, place_i, s);
+                        s.push_str(&format!("  %{dest} = ptrtoint ptr %{dst} to i64\n"));
+                        take_moved_tensor(&mut ptrs, &mut owned, &p, dest, &dst);
+                        buf_place.insert(dst, place_i);
                     }
                 } else {
                     s.push_str(&format!(
@@ -2307,8 +2400,8 @@ fn emit_host_tensor_fn(
                 dest,
             } => {
                 let place_i = place_to_i32(place);
-                if place_i != 0 {
-                    s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+                if !place_i.is_cpu() {
+                    s.push_str(&format!("  call void @sal_on_enter(i64 {})\n", place_i.i64()));
                 }
                 let kconsts = consts.clone();
                 emit_kernel_grid_body(
@@ -2376,64 +2469,151 @@ fn emit_host_tensor_fn(
         }
     }
 
-    // Prefer returning a distinctive checksum of the last matmul output when present
-    // so exec tests can assert the numeric product (matmul_test.c identity case → sum 10).
-    if let Some((out, nelems)) = &last_out {
-        if let DimOperand::Imm(nelems) = nelems {
-            if *nelems > 0 && *nelems <= 16 {
-                s.push_str(&format!("  %{out}_sum0 = fpext float 0.0 to double\n"));
-                let mut prev = format!("{out}_sum0");
-                for i in 0..*nelems {
-                    s.push_str(&format!(
-                        "  %{out}_sg{i} = getelementptr float, ptr %{out}, i64 {i}\n"
-                    ));
-                    s.push_str(&format!(
-                        "  %{out}_sv{i} = load float, ptr %{out}_sg{i}\n"
-                    ));
-                    s.push_str(&format!(
-                        "  %{out}_sd{i} = fpext float %{out}_sv{i} to double\n"
-                    ));
-                    let next = format!("{out}_sum{}", i + 1);
-                    s.push_str(&format!(
-                        "  %{next} = fadd double %{prev}, %{out}_sd{i}\n"
-                    ));
-                    prev = next;
-                }
-                s.push_str(&format!(
-                    "  %matmul_exit = fptosi double %{prev} to i64\n"
-                ));
-                ret = "%matmul_exit".into();
-            }
+    // A fused region dies with the fn: a result allocated in it is copied to the place heap
+    // before the region ends.
+    if matches!(entry, HostFnEntry::User) && !region_open.is_empty() {
+        if let Some(p) = returned.as_deref() {
+            s.push_str(&format!("  %ret_esc = call ptr @sal_region_escape(ptr %{p})\n"));
+            s.push_str("  %ret_esc_i = ptrtoint ptr %ret_esc to i64\n");
+            ret = "%ret_esc_i".into();
         }
     }
 
-    // Non-instrumented builds free owned buffers; instrumented builds leave them
-    // live so shutdown can report LEAK when the source never Drop'd them.
-    if !opts.instrument {
-        for p in &owned {
-            if returned.as_deref() == Some(p.as_str()) {
-                continue;
-            }
-            emit_free(opts, p, s);
+    // The buffers the compiler allocated for this fn (temporaries of `t + t`, a matmul's
+    // output) are released here, with or without `--instrument`: the instrumented binary
+    // frees what the real one frees, so a LEAK is one the real binary has too.
+    for p in &owned {
+        if returned.as_deref() == Some(p.as_str()) {
+            continue;
         }
+        emit_free(opts, p, s);
     }
 
     for pl in region_open.keys() {
-        s.push_str(&format!("  call void @sal_region_end(i64 {pl})\n"));
+        s.push_str(&format!("  call void @sal_region_end(i64 {})\n", pl.i64()));
     }
 
-    if opts.instrument {
+    // Only the end of the program checks for leaks: a user fn returns with the caller's blocks
+    // still live.
+    if opts.instrument && matches!(entry, HostFnEntry::Main) {
         s.push_str("  call void @sal_instrument_shutdown()\n");
     }
     s.push_str(&format!("  ret i64 {ret}\n"));
     s.push_str("}\n");
 }
 
-fn place_to_i32(place: &str) -> i32 {
+/// `to place x` whose size the compiler does not know (a `load`, a tensor a fn returns): the
+/// runtime moves the block onto `place_i` by the size its heap recorded, and frees `src`.
+fn emit_place_move(opts: &LlvmOptions, src: &str, dst: &str, place_i: Pl, s: &mut String) {
+    s.push_str(&format!(
+        "  %{dst} = call ptr @sal_place_move(ptr %{src}, i32 {place_i})\n"
+    ));
+    if opts.instrument {
+        s.push_str(&format!(
+            "  call void @sal_instrument_check_ptr(ptr %{dst}, i64 0, i32 {place_i}, ptr @.site.access)\n"
+        ));
+    }
+}
+
+/// `to` moves its operand (an owned value: `to` of a borrow is `E_TYPE`), so after
+/// `sal_place_move` the new block belongs to `dest` alone: no name keeps the old pointer (a
+/// later `Drop` of the source would free it twice), and the fn frees the new one at exit unless
+/// the IR releases it first.
+fn take_moved_tensor(
+    ptrs: &mut HashMap<String, String>,
+    owned: &mut Vec<String>,
+    src: &str,
+    dest: &str,
+    dst: &str,
+) {
+    ptrs.retain(|_, p| p != src);
+    ptrs.insert(dest.to_string(), dst.to_string());
+    owned.retain(|p| p != src);
+    owned.push(dst.to_string());
+}
+
+/// A tensor passed by value to a user fn moves into it (SPEC «Memoria»): the callee releases
+/// it, so this fn no longer frees that buffer at exit.
+fn release_moved_tensor_args(
+    func: &str,
+    args: &[String],
+    sigs: &HashMap<String, crate::scalarize::FnSig>,
+    ptrs: &HashMap<String, String>,
+    owned: &mut Vec<String>,
+) {
+    let Some(sig) = sigs.get(func) else { return };
+    for (a, _) in args.iter().zip(&sig.tensor_by_value).filter(|(_, by_value)| **by_value) {
+        if let Some(p) = ptrs.get(a) {
+            owned.retain(|x| x != p);
+        }
+    }
+}
+
+/// The buffer `p` behind IR value `arg` is this fn's to release: one it allocated (`owned`), a
+/// tensor parameter taken by value, or a tensor a user fn handed back (`pret_`). A `&T`
+/// parameter's buffer stays the caller's.
+fn fn_owns_buffer(
+    f: &IrFunction,
+    sigs: &HashMap<String, crate::scalarize::FnSig>,
+    ptrs: &HashMap<String, String>,
+    owned: &[String],
+    arg: &str,
+    p: &str,
+) -> bool {
+    if owned.iter().any(|x| x == p) || p.starts_with("pret_") {
+        return true;
+    }
+    let by_value = sigs.get(&f.name).map(|g| g.tensor_by_value.as_slice()).unwrap_or(&[]);
+    f.params
+        .iter()
+        .enumerate()
+        .any(|(i, name)| by_value.get(i) == Some(&true) && (name == arg || ptrs.get(name).is_some_and(|x| x == p)))
+}
+
+/// The place of the buffer behind IR value `arg` (cpu when this fn did not place it).
+fn place_of_arg(ptrs: &HashMap<String, String>, buf_place: &HashMap<String, Pl>, arg: &str) -> Pl {
+    ptrs.get(arg).and_then(|p| buf_place.get(p)).copied().unwrap_or(Pl::C(0))
+}
+
+/// The place operand of a buffer: a constant (0 cpu, 1 gpu, 2 tpu) or, in a body generic over
+/// `on p`, the place its argument was found on at entry (`%place_g{i}`, from `sal_place_of`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Pl {
+    C(i32),
+    Dyn(u8),
+}
+
+impl std::fmt::Display for Pl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Pl::C(n) => write!(f, "{n}"),
+            Pl::Dyn(i) => write!(f, "%place_g{i}"),
+        }
+    }
+}
+
+impl Pl {
+    /// The same place as an `i64` operand (`sal_region_begin` / `sal_region_end`).
+    fn i64(self) -> String {
+        match self {
+            Pl::C(n) => n.to_string(),
+            Pl::Dyn(i) => format!("%place_g{i}_64"),
+        }
+    }
+
+    fn is_cpu(self) -> bool {
+        self == Pl::C(0)
+    }
+}
+
+fn place_to_i32(place: &str) -> Pl {
     match place {
-        "gpu" => 1,
-        "tpu" => 2,
-        _ => 0,
+        "gpu" => Pl::C(1),
+        "tpu" => Pl::C(2),
+        "cpu" => Pl::C(0),
+        other => GENERIC_PLACES
+            .with(|g| g.borrow().get(other).copied())
+            .map_or(Pl::C(0), Pl::Dyn),
     }
 }
 
@@ -2443,7 +2623,7 @@ fn emit_instrument_matmul_ptrs(
     m: &DimOperand,
     k: &DimOperand,
     n: &DimOperand,
-    place_i: i32,
+    place_i: Pl,
     s: &mut String,
 ) {
     match (m, k) {
@@ -2467,14 +2647,14 @@ fn emit_instrument_matmul_ptrs(
 }
 
 fn emit_alloc(opts: &LlvmOptions, ptr: &str, nbytes: u64, site: &str, s: &mut String) {
-    emit_alloc_place(opts, ptr, nbytes, 0, site, s);
+    emit_alloc_place(opts, ptr, nbytes, Pl::C(0), site, s);
 }
 
 fn emit_alloc_place(
     opts: &LlvmOptions,
     ptr: &str,
     nbytes: u64,
-    place_i: i32,
+    place_i: Pl,
     site: &str,
     s: &mut String,
 ) {
@@ -2494,12 +2674,53 @@ fn emit_alloc_place(
     }
 }
 
-fn emit_free(opts: &LlvmOptions, ptr: &str, s: &mut String) {
-    if opts.instrument {
-        s.push_str(&format!("  call void @sal_instrument_free(ptr %{ptr})\n"));
+/// A buffer of `len_op` floats: `len` when the compiler knows it, else an operand read at run time.
+fn emit_len_alloc(
+    opts: &LlvmOptions,
+    out: &str,
+    len: u64,
+    len_op: &str,
+    place_i: Pl,
+    site: &str,
+    s: &mut String,
+) {
+    if len > 0 {
+        emit_alloc_place(opts, out, len.saturating_mul(4), place_i, site, s);
     } else {
-        s.push_str(&format!("  call void @sal_place_free(ptr %{ptr})\n"));
+        s.push_str(&format!("  %{out}_nb = mul i64 {len_op}, 4\n"));
+        s.push_str(&tensor_malloc(opts, out, &format!("%{out}_nb"), place_i));
     }
+}
+
+/// The element count of `d`: a constant, or the run-time operand `len_op` when `len` is 0.
+fn record_len(
+    known: &mut HashMap<String, u64>,
+    at_run_time: &mut HashMap<String, String>,
+    d: &str,
+    len: u64,
+    len_op: &str,
+) {
+    if len > 0 {
+        known.insert(d.to_string(), len);
+    } else {
+        at_run_time.insert(d.to_string(), len_op.to_string());
+    }
+}
+
+/// A tensor buffer of `bytes` (an LLVM operand) on `place_i`: with `--instrument` it comes from
+/// the instrumented allocator, so the bounds checks know the block.
+fn tensor_malloc(opts: &LlvmOptions, out: &str, bytes: &str, place_i: Pl) -> String {
+    if opts.instrument {
+        format!("  %{out} = call ptr @sal_instrument_malloc(i64 {bytes}, i32 {place_i}, ptr @.site.alloc)\n")
+    } else {
+        format!("  %{out} = call ptr @sal_place_malloc(i64 {bytes}, i32 {place_i})\n")
+    }
+}
+
+/// `sal_place_free` releases a buffer from either allocator: with `--instrument`, a block of
+/// `sal_instrument_malloc` goes back to it (a second release is DOUBLE_FREE).
+fn emit_free(_opts: &LlvmOptions, ptr: &str, s: &mut String) {
+    s.push_str(&format!("  call void @sal_place_free(ptr %{ptr})\n"));
 }
 
 fn emit_load(
@@ -2565,15 +2786,15 @@ fn fmt_double(v: f64) -> String {
     }
 }
 
+/// A `float` constant in LLVM text. LLVM reads a decimal as a double and rejects it unless the
+/// double is exactly a float (`0.1` is not), so anything else goes as the hex of the double the
+/// f32 widens to, which is always exact.
 fn fmt_float(v: f32) -> String {
-    if v.is_nan() {
-        return "0x7FF8000000000000".into(); // LLVM double nan bitcast used carefully — use hex float
-    }
-    // LLVM textual float: decimal is fine for ordinary values.
-    if v.fract() == 0.0 {
-        format!("{v:.1}")
+    let dec = if v.fract() == 0.0 { format!("{v:.1}") } else { format!("{v}") };
+    if v.is_finite() && dec.parse::<f64>().ok() == Some(f64::from(v)) {
+        dec
     } else {
-        format!("{v}")
+        format!("0x{:016X}", f64::from(v).to_bits())
     }
 }
 
@@ -2593,8 +2814,8 @@ fn emit_matmul_fn(f: &IrFunction, s: &mut String) {
         llsym(&f.name)
     ));
     s.push_str("entry:\n");
-    if place_i != 0 {
-        s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+    if !place_i.is_cpu() {
+        s.push_str(&format!("  call void @sal_on_enter(i64 {})\n", place_i.i64()));
     }
     // Alias IR-named dynamic axes onto the ABI dim formals.
     for (i, dp) in f.dim_params.iter().enumerate() {
@@ -3390,6 +3611,12 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  %{d} = call i64 @sal_path_readable(ptr {p})\n"));
             }
         }
+        "sal_regex_valid" => {
+            let p = args.first().map(|a| ptr_arg(a, s, tmp)).unwrap_or_else(|| "null".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_regex_valid(ptr {p})\n"));
+            }
+        }
         "sal_image_new" => {
             let w = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
             let h = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
@@ -3822,6 +4049,15 @@ fn emit_runtime_or_user_call(
             s.push_str(&format!("  call void @sal_vec_free(ptr {a})\n"));
             if let Some(d) = dest {
                 s.push_str(&format!("  %{d} = add i64 0, 0\n"));
+            }
+        }
+        "sal_enum_take" => {
+            let a = args.first().map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            let b = args.get(1).map(|x| i64_operand(x, consts)).unwrap_or_else(|| "0".into());
+            if let Some(d) = dest {
+                s.push_str(&format!("  %{d} = call i64 @sal_enum_take(i64 {a}, i64 {b})\n"));
+            } else {
+                s.push_str(&format!("  call i64 @sal_enum_take(i64 {a}, i64 {b})\n"));
             }
         }
         "sal_enum_owns" => {
@@ -4326,12 +4562,12 @@ fn emit_runtime_or_user_call(
                 s.push_str(&format!("  call ptr @sal_list_set(ptr {a}, i64 {b}, i64 {c})\n"));
             }
         }
-        "sal_list_pop" => {
+        "sal_list_pop" | "sal_list_pop_drop" => {
             let a = args.first().map(|x| ptr_arg(x, s, tmp)).unwrap_or_else(|| "null".into());
             if let Some(d) = dest {
-                s.push_str(&format!("  %{d} = call i64 @sal_list_pop(ptr {a})\n"));
+                s.push_str(&format!("  %{d} = call i64 @{func}(ptr {a})\n"));
             } else {
-                s.push_str(&format!("  call i64 @sal_list_pop(ptr {a})\n"));
+                s.push_str(&format!("  call i64 @{func}(ptr {a})\n"));
             }
         }
         "sal_dict_has" => {
@@ -4472,7 +4708,15 @@ fn emit_runtime_or_user_call(
             let out = format!("trg_{tmp}");
             s.push_str(&format!("  %{out}_n = mul i64 {rows}, {cols}\n"));
             s.push_str(&format!("  %{out}_b = mul i64 %{out}_n, 4\n"));
-            s.push_str(&format!("  %{out} = call ptr @sal_place_malloc(i64 %{out}_b, i32 0)\n"));
+            // With `--instrument` the result comes from the instrumented allocator, so the bounds
+            // checks of whoever reads it (the caller's matmul) know the block.
+            if EMIT_INSTRUMENT.with(|f| f.get()) {
+                s.push_str(&format!(
+                    "  %{out} = call ptr @sal_instrument_malloc(i64 %{out}_b, i32 0, ptr @.site.alloc)\n"
+                ));
+            } else {
+                s.push_str(&format!("  %{out} = call ptr @sal_place_malloc(i64 %{out}_b, i32 0)\n"));
+            }
             s.push_str(&format!(
                 "  call void @sal_transpose_f32(ptr %{out}, ptr {src}, i64 {rows}, i64 {cols})\n"
             ));
@@ -5429,6 +5673,7 @@ fn emit_inst_list(
                         s.push_str(&format!("  %{d} = add i64 0, 0\n"));
                     }
                 } else if let Some(te) = tensor.as_deref_mut() {
+                    release_moved_tensor_args(func, args, &te.opts.fn_sigs, te.ptrs, te.owned);
                     emit_runtime_or_user_call(
                         dest.as_deref(),
                         func,
@@ -5492,8 +5737,11 @@ fn emit_inst_list(
                             te.ptrs.insert(dest.clone(), dst.clone());
                             te.buf_bytes.insert(dest.clone(), nbytes);
                             te.owned.push(dst);
-                        } else if te.ptrs.contains_key(from) {
-                            te.ptrs.insert(dest.clone(), p);
+                        } else {
+                            *te.uid += 1;
+                            let dst = format!("pmove_{}", te.uid);
+                            emit_place_move(te.opts, &p, &dst, place_i, s);
+                            take_moved_tensor(te.ptrs, te.owned, &p, dest, &dst);
                         }
                         s.push_str(&format!(
                             "  %{dest} = ptrtoint ptr {} to i64\n",
@@ -5912,25 +6160,45 @@ fn emit_general_fn(
         } else {
             None
         };
-        let tensor_ref = tctx.as_mut();
         let mut label_id = 0u32;
         let mut tmp = 0u32;
         let mut cur_block = "entry".to_string();
         if let Some(IrInst::Return { value }) = f.instructions.last() {
             let prefix = &f.instructions[..f.instructions.len() - 1];
-            emit_value_as_return(
-                prefix,
-                value,
-                str_globals,
-                user_fns,
-                s,
-                &mut label_id,
-                &mut tmp,
-                &mut cur_block,
-                tensor_ref,
-            );
+            if tctx.is_some() && !is_tail_return(prefix, value, user_fns) {
+                // A tensor fn releases the buffers it allocated for its temporaries (`v * 2.0` of
+                // `v * 2.0 + v`) before it returns, as `emit_host_tensor_fn` does.
+                let (_, _, term) = emit_inst_list(
+                    prefix,
+                    str_globals,
+                    user_fns,
+                    s,
+                    &mut label_id,
+                    &mut tmp,
+                    &mut cur_block,
+                    tctx.as_mut(),
+                );
+                drop(tctx);
+                if !term {
+                    free_fn_temporaries(f, prefix, value, opts, &ptrs, &owned, s);
+                    let op = i64_operand(value, &const_int_map_from(prefix));
+                    s.push_str(&format!("  ret i64 {op}\n"));
+                }
+            } else {
+                emit_value_as_return(
+                    prefix,
+                    value,
+                    str_globals,
+                    user_fns,
+                    s,
+                    &mut label_id,
+                    &mut tmp,
+                    &mut cur_block,
+                    tctx.as_mut(),
+                );
+            }
         } else {
-            let ret = emit_body_insts(f, str_globals, user_fns, s, tensor_ref);
+            let ret = emit_body_insts(f, str_globals, user_fns, s, tctx.as_mut());
             s.push_str(&format!("  ret i64 {ret}\n"));
         }
     });
@@ -6015,6 +6283,7 @@ fn emit_value_as_return(
             }
             let consts = const_int_map_from(body);
             if let Some(te) = tensor.as_deref_mut() {
+                release_moved_tensor_args(func, args, &te.opts.fn_sigs, te.ptrs, te.owned);
                 emit_runtime_or_user_call(
                     Some(d),
                     func,
@@ -6192,6 +6461,10 @@ fn emit_main_general(
             &mut cur_block,
             tctx.as_mut(),
         );
+        drop(tctx);
+        if !term {
+            free_main_buffers(f, opts, &ptrs, &owned, s);
+        }
         if opts.instrument {
             s.push_str("  call void @sal_instrument_shutdown()\n");
         }
@@ -6210,6 +6483,117 @@ fn emit_main_general(
     FUSED_AGG.with(|m| m.borrow_mut().clear());
     KNOWN_LISTS.with(|m| m.borrow_mut().clear());
     s.push_str("}\n");
+}
+
+/// The buffers `main` allocated for tensor results (`u = -t`, `t + t`) that nothing released:
+/// freed before it returns, as `emit_host_tensor_fn` does. A buffer the IR already frees
+/// (`sal_tensor_free`, `Drop`) is left alone.
+fn free_main_buffers(f: &IrFunction, opts: &LlvmOptions, ptrs: &HashMap<String, String>, owned: &[String], s: &mut String) {
+    let mut freed: HashSet<String> = HashSet::new();
+    collect_tensor_frees(&f.instructions, &mut freed);
+    let freed: HashSet<&String> = freed.iter().filter_map(|n| ptrs.get(n)).collect();
+    for p in owned {
+        if !freed.contains(p) {
+            emit_free(opts, p, s);
+        }
+    }
+}
+
+/// The body ends in the `if` or the user call whose value it returns: `emit_value_as_return`
+/// turns it into a tail.
+fn is_tail_return(body: &[IrInst], val: &str, user_fns: &HashMap<String, &IrFunction>) -> bool {
+    match body.last() {
+        Some(IrInst::If { dest, .. }) => dest == val,
+        Some(IrInst::Call { dest: Some(d), func, .. }) => d == val && user_fns.contains_key(func),
+        _ => false,
+    }
+}
+
+/// The buffers a tensor fn allocated at its top level for temporaries, released before it
+/// returns `val`. Kept: the returned buffer, one the IR releases (`sal_tensor_free`, `Drop`), and
+/// one passed to a call (the callee may keep it). A buffer of a branch does not dominate the
+/// return, so only the top-level results count.
+fn free_fn_temporaries(
+    f: &IrFunction,
+    top: &[IrInst],
+    val: &str,
+    opts: &LlvmOptions,
+    ptrs: &HashMap<String, String>,
+    owned: &[String],
+    s: &mut String,
+) {
+    let mut keep: HashSet<String> = HashSet::new();
+    collect_tensor_frees(&f.instructions, &mut keep);
+    collect_call_args(&f.instructions, &mut keep);
+    keep.insert(val.to_string());
+    let keep: HashSet<&String> = keep.iter().filter_map(|n| ptrs.get(n)).collect();
+    let top: HashSet<&String> = top
+        .iter()
+        .filter_map(|i| match i {
+            IrInst::TensorBin { dest, .. } | IrInst::TensorUnary { dest, .. } | IrInst::PlaceCopy { dest, .. } => ptrs.get(dest),
+            _ => None,
+        })
+        .collect();
+    for p in owned {
+        if top.contains(p) && !keep.contains(p) {
+            emit_free(opts, p, s);
+        }
+    }
+}
+
+/// Every name passed to a call (other than `sal_tensor_free`) or returned, in any block.
+fn collect_call_args(insts: &[IrInst], out: &mut HashSet<String>) {
+    for inst in insts {
+        match inst {
+            IrInst::Call { func, args, .. } if func != "sal_tensor_free" => out.extend(args.iter().cloned()),
+            IrInst::Return { value } => {
+                out.insert(value.clone());
+            }
+            IrInst::If { then_body, else_body, then_val, else_val, .. } => {
+                out.insert(then_val.clone());
+                out.insert(else_val.clone());
+                collect_call_args(then_body, out);
+                collect_call_args(else_body, out);
+            }
+            IrInst::While { cond_insts, body, .. } => {
+                collect_call_args(cond_insts, out);
+                collect_call_args(body, out);
+            }
+            IrInst::Switch { arms, default_body, .. } => {
+                for arm in arms {
+                    collect_call_args(&arm.body, out);
+                }
+                collect_call_args(default_body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_tensor_frees(insts: &[IrInst], out: &mut HashSet<String>) {
+    for inst in insts {
+        match inst {
+            IrInst::Call { func, args, .. } if func == "sal_tensor_free" => out.extend(args.first().cloned()),
+            IrInst::Drop { name } => {
+                out.insert(name.clone());
+            }
+            IrInst::If { then_body, else_body, .. } => {
+                collect_tensor_frees(then_body, out);
+                collect_tensor_frees(else_body, out);
+            }
+            IrInst::While { cond_insts, body, .. } => {
+                collect_tensor_frees(cond_insts, out);
+                collect_tensor_frees(body, out);
+            }
+            IrInst::Switch { arms, default_body, .. } => {
+                for arm in arms {
+                    collect_tensor_frees(&arm.body, out);
+                }
+                collect_tensor_frees(default_body, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn emit_kernel_grid_body(
@@ -6358,8 +6742,8 @@ fn emit_one_tensor_bin(
         return;
     }
     let place_i = place_to_i32(place);
-    if place_i != 0 {
-        s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+    if !place_i.is_cpu() {
+        s.push_str(&format!("  call void @sal_on_enter(i64 {})\n", place_i.i64()));
     }
     let len_op = i64_operand(len, consts);
     *uid += 1;
@@ -6424,8 +6808,8 @@ fn emit_one_tensor_unary(
     elem: TensorElem,
 ) {
     let place_i = place_to_i32(place);
-    if place_i != 0 {
-        s.push_str(&format!("  call void @sal_on_enter(i32 {place_i})\n"));
+    if !place_i.is_cpu() {
+        s.push_str(&format!("  call void @sal_on_enter(i64 {})\n", place_i.i64()));
     }
     let len_op = i64_operand(len, consts);
     *uid += 1;

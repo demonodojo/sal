@@ -2273,7 +2273,7 @@ fn infer_call(
         "print" | "print_str" | "eprint_str" | "argc" | "str_eq" | "str_contains" | "str_index_of"
         | "str_index_from" | "str_len"
         | "str_char" | "str_skip" | "str_hash" | "map_get" | "map_put" | "not" | "free" | "copy_file" | "copy_self" | "gated_print_str"
-        | "gated_copy_self" | "write_file" | "path_readable" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
+        | "gated_copy_self" | "write_file" | "path_readable" | "regex_valid" | "mkdir_p" | "vec_push" | "vec_get" | "vec_set"
         | "vec_len" | "vec_free" | "list_free" | "list_free_shell" | "list_push_share" | "dict_free" | "enum_free" | "enum_free_shell" | "enum_set" | "enum_owns" | "enum_box_id"
         | "list_box_id" | "bytes_free" | "thread_free" | "sem_free" | "mutex_free" | "chan_free" | "clang" | "clang_obj" | "link_objs" | "exec_compile"
         | "write_png"
@@ -2413,7 +2413,32 @@ fn infer_call(
                 span,
             })
         }
-        "argv" | "read_file" | "str_concat" | "str_slice" | "int_to_str"
+        "int_to_str" => {
+            // `Int.to_str`: a tensor, a `String` or a struct is not an `Int` (SPEC «Tipos»); a
+            // `Bool` lowers as the integer 0 or 1.
+            if args.len() != 1 {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    "int_to_str expects one Int",
+                    span,
+                )]);
+            }
+            let t = check_expr(&args[0], env, ctx, types, entries)?;
+            let is_bool = matches!(peel_refs(&t), Type::Named { name, .. } if name == "Bool");
+            if !is_int_type(&t) && !is_bool {
+                return Err(vec![Diagnostic::new(
+                    ErrorCode::EType,
+                    format!("int_to_str expects Int, found {}", type_name(&t)),
+                    args[0].span(),
+                )]);
+            }
+            Ok(Type::Named {
+                name: "String".into(),
+                args: vec![],
+                span,
+            })
+        }
+        "argv" | "read_file" | "str_concat" | "str_slice"
         | "char_to_str" | "strdup" | "str_share" | "select_str" | "tmp_path" | "exec_capture" | "getenv"
         | "realpath" | "ir_text" => {
             for a in args {

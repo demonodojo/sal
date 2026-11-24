@@ -1,0 +1,26 @@
+# exit: 8
+# `try` on a call moves the payload out of the call's box and releases the box; on `Err` the box
+# goes back to the caller whole.
+fn name_of(n: Int) -> Result[String, String] ! alloc
+    if n > 0
+        Ok(n.to_str() + "!")
+    else
+        e = d"neg"
+        Err(e)
+
+fn total(n: Int) -> Result[Int, String] ! alloc
+    s = try name_of(n)
+    Ok(s.len())
+
+fn len_or_zero(r: Result[Int, String]) -> Int
+    match r
+        Ok(k) => k
+        Err(e) => 0
+
+fn main() -> Int ! alloc
+    t = 0
+    i = 0
+    while i <= 4
+        t = t + len_or_zero(total(i))
+        i = i + 1
+    t

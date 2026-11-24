@@ -593,7 +593,22 @@ int64_t sal_regex_match(const char *s, const char *pat) {
     regfree(&re);
     return ok;
 }
+
+int64_t sal_regex_valid(const char *pat) {
+    regex_t re;
+    if (regcomp(&re, pat ? pat : g_sal_empty, REG_EXTENDED | REG_NOSUB) != 0) {
+        return 0;
+    }
+    regfree(&re);
+    return 1;
+}
 #else
+/* soso has no regcomp: a regex pattern is E_TARGET there before anything asks. */
+int64_t sal_regex_valid(const char *pat) {
+    (void)pat;
+    return 0;
+}
+
 int64_t sal_regex_match(const char *s, const char *pat) {
     (void)s;
     (void)pat;
@@ -2270,6 +2285,16 @@ static void sal_enum_release_field(int64_t *b, int64_t i) {
         sal_free((void *)(intptr_t)x);
     } else if (k == 2) {
         sal_enum_free(x);
+    } else if (k == 3 && x != 0 && b[2 + 2 * b[1] + i] < 0) {
+        /* A flat struct box: `-(nfields | strings << 8)`, bit f of `strings` a String field. */
+        int64_t enc = -b[2 + 2 * b[1] + i];
+        int64_t *blk = (int64_t *)(intptr_t)x;
+        for (int64_t f = 0; f < (enc & 255) && f < 48; f++) {
+            if ((enc >> (8 + f)) & 1) {
+                sal_free((void *)(intptr_t)blk[f]);
+            }
+        }
+        sal_struct_free_box(x);
     } else if (k == 3 && x != 0) {
         int64_t (*drop)(int64_t) = (int64_t (*)(int64_t))(intptr_t)b[2 + b[1] + i];
         if (drop) {
@@ -2303,7 +2328,8 @@ static int64_t sal_struct_free_box_glue(int64_t raw) {
 
 /* A payload struct that frees nothing (scalar fields only) is still a box the enum owns:
  * `sal_struct_free_box` releases it and `sal_enum_copy` copies its `nfields` words. The clone
- * slot holds `-nfields`, which no function address can be. */
+ * slot holds `-nfields`, which no function address can be (`sal_dict_get` adds the String
+ * fields above bit 8: `-(nfields | strings << 8)`). */
 int64_t sal_enum_set_struct_flat(int64_t v, int64_t i, int64_t nfields) {
     int64_t *b = (int64_t *)(intptr_t)v;
     int64_t n = b[1];
@@ -2323,6 +2349,20 @@ void sal_enum_free(int64_t v) {
         sal_enum_release_field(b, i);
     }
     sal_xfree(b);
+}
+
+/* `match t { V(s) => s }` on a box the caller owns: field `i` moves out to the new owner, and
+ * the box no longer releases it (Rust's drop flag of a moved field, kept in the box). */
+int64_t sal_enum_take(int64_t v, int64_t i) {
+    if (v < 4096 || i < 0) {
+        return 0;
+    }
+    int64_t *b = (int64_t *)(intptr_t)v;
+    int64_t x = b[2 + i];
+    if (i < 28) {
+        b[0] &= ~((int64_t)3 << (8 + 2 * i));
+    }
+    return x;
 }
 
 /* The box only. A moved child still lives in the node that received it. */
@@ -2355,10 +2395,17 @@ int64_t sal_enum_copy(int64_t v) {
         } else if (k == 2) {
             c[2 + i] = sal_enum_copy(x);
         } else if (k == 3 && b[2 + 2 * n + i] < 0) {
-            int64_t words = -b[2 + 2 * n + i];
+            int64_t enc = -b[2 + 2 * n + i];
+            int64_t words = enc & 255;
             int64_t copy = x ? sal_struct_new(words) : 0;
             if (x) {
-                memcpy((void *)(intptr_t)copy, (void *)(intptr_t)x, (size_t)words * sizeof(int64_t));
+                int64_t *dst = (int64_t *)(intptr_t)copy;
+                memcpy(dst, (void *)(intptr_t)x, (size_t)words * sizeof(int64_t));
+                for (int64_t f = 0; f < words && f < 48; f++) {
+                    if ((enc >> (8 + f)) & 1) {
+                        dst[f] = (int64_t)(intptr_t)sal_strdup((const char *)(intptr_t)dst[f]);
+                    }
+                }
             }
             c[2 + i] = copy;
         } else if (k == 3) {
@@ -3296,6 +3343,37 @@ int64_t sal_list_pop(void *vp) {
     return l->vec.data[--l->vec.len];
 }
 
+/* `xs.pop()` whose value a statement discards: the element is released the way `sal_list_free`
+ * would release it (only by a list that owns its elements), and nothing is handed out. */
+int64_t sal_list_pop_drop(void *vp) {
+    SalList *l = (SalList *)vp;
+    if (!l || l->count == 0) {
+        sal_panic("list_pop: empty list");
+    }
+    if (l->flat) {
+        l->vec.len -= (size_t)l->stride;
+        l->count--;
+        if (l->owned && !l->plain) {
+            desc_free_fields(l->desc, l->vec.data + l->vec.len);
+        }
+        return 0;
+    }
+    if (sal_list_bytes(l)) {
+        l->count--;
+        return 0;
+    }
+    l->count--;
+    int64_t x = l->vec.data[--l->vec.len];
+    if (l->owned && !l->plain) {
+        if (l->elem_drop && !desc_owns_elem(l->desc)) {
+            l->elem_drop(x);
+        } else {
+            desc_free(l->desc, x);
+        }
+    }
+    return 0;
+}
+
 /* Removes the oldest element and moves it out (a flat struct comes back in a new box,
  * like sal_list_pop): the queue of a Channel (sal_threads.c). */
 int64_t sal_list_take_front(void *vp) {
@@ -3826,6 +3904,13 @@ int64_t sal_dict_get(void *dp, const char *key) {
         /* The `Some` owns the copy of the enum value, as it owns the copy of a String. */
         int64_t *box = (int64_t *)(intptr_t)some;
         box[0] = 2 | ((int64_t)2 << 8);
+    } else if ((d->val_kind & 15) == 4 && ((d->val_kind >> 4) & 255) >= 2) {
+        /* And the copy of a struct value: its box and its String fields. */
+        int64_t nf = ((int64_t)d->val_kind >> 4) & 255;
+        int64_t strings = ((int64_t)d->val_kind >> 12) & (((int64_t)1 << nf) - 1);
+        int64_t *box = (int64_t *)(intptr_t)some;
+        box[0] = 2 | ((int64_t)3 << 8);
+        sal_enum_set_struct_flat(some, 0, nf | (strings << 8));
     }
     sal_enum_set(some, 0, raw);
     return some;
@@ -4279,13 +4364,14 @@ void *sal_load_f32(const char *path, int64_t *out_elems) {
         }
         count *= (int64_t)d;
     }
-    float *buf = (float *)malloc((size_t)count * sizeof(float));
+    /* On the cpu heap, so `to gpu` knows its size and `sal_tensor_free` releases it. */
+    float *buf = (float *)sal_place_malloc(count * (int64_t)sizeof(float), 0);
     if (!buf) {
         fclose(f);
         return NULL;
     }
     if (fread(buf, sizeof(float), (size_t)count, f) != (size_t)count) {
-        free(buf);
+        sal_place_free(buf);
         fclose(f);
         return NULL;
     }
@@ -4383,6 +4469,7 @@ enum { SAL_PLACE_N = 3 };
 
 typedef struct SalPlaceBlock {
     void *ptr;
+    int64_t size;
     int place;
     struct SalPlaceBlock *next;
 } SalPlaceBlock;
@@ -4398,6 +4485,10 @@ typedef struct {
     int64_t cap;
     int64_t off;
     int active;
+    /* Offset and size of each block handed out, so `sal_region_escape` can copy one out. */
+    int64_t *blocks;
+    int nblocks;
+    int capblocks;
 } SalRegion;
 
 /* A fused region belongs to the thread that opened it. */
@@ -4447,6 +4538,10 @@ void sal_region_end(int64_t place) {
     g_regions[place].off = 0;
     g_regions[place].base = NULL;
     g_regions[place].cap = 0;
+    free(g_regions[place].blocks);
+    g_regions[place].blocks = NULL;
+    g_regions[place].nblocks = 0;
+    g_regions[place].capblocks = 0;
     if (base) {
         if (place == 1 && sal_gpu_enabled()) {
             sal_gpu_free(base);
@@ -4476,20 +4571,45 @@ int sal_mem_place(const void *p) {
     return -1;
 }
 
+static void *place_heap_malloc(int64_t size, int place);
+
+/* Records a block of the region of `place` (offset, size); 0 when out of memory. */
+static int region_record(SalRegion *r, int64_t off, int64_t size) {
+    if (r->nblocks == r->capblocks) {
+        int cap = r->capblocks ? r->capblocks * 2 : 8;
+        int64_t *nb = (int64_t *)realloc(r->blocks, (size_t)cap * 2 * sizeof(int64_t));
+        if (!nb) {
+            return 0;
+        }
+        r->blocks = nb;
+        r->capblocks = cap;
+    }
+    r->blocks[2 * r->nblocks] = off;
+    r->blocks[2 * r->nblocks + 1] = size;
+    r->nblocks++;
+    return 1;
+}
+
 void *sal_place_malloc(int64_t size, int place) {
     place = clamp_place(place);
     if (size < 0) {
         size = 0;
     }
-    if (g_regions[place].active && g_regions[place].base && size > 0) {
-        int64_t off = g_regions[place].off;
+    SalRegion *r = &g_regions[place];
+    if (r->active && r->base && size > 0) {
+        int64_t off = r->off;
         int64_t need = off + size;
-        if (need <= g_regions[place].cap) {
-            void *p = (char *)g_regions[place].base + off;
-            g_regions[place].off = need;
+        if (need <= r->cap && region_record(r, off, size)) {
+            void *p = (char *)r->base + off;
+            r->off = need;
             return p;
         }
     }
+    return place_heap_malloc(size, place);
+}
+
+/* A block of the place heap, outside any region: it lives until `sal_place_free`. */
+static void *place_heap_malloc(int64_t size, int place) {
     void *p = NULL;
     if (place == 1 && sal_gpu_enabled()) {
         p = sal_gpu_alloc((size_t)size);
@@ -4506,6 +4626,7 @@ void *sal_place_malloc(int64_t size, int place) {
         return NULL;
     }
     b->ptr = p;
+    b->size = size;
     b->place = place;
     SAL_LOCK(g_place_lock);
     b->next = g_place_heaps[place];
@@ -4547,6 +4668,14 @@ void sal_place_free(void *p) {
     if (ptr_in_active_region(p)) {
         return;
     }
+#ifdef SAL_INSTRUMENT
+    /* A tensor of an instrumented build comes from `sal_instrument_malloc` (red zones around
+     * it): only the instrumented allocator can release it. A block it only tracks is untracked
+     * here and freed below. */
+    if (sal_instrument_free_owned(p)) {
+        return;
+    }
+#endif
     SAL_LOCK(g_place_lock);
     for (int pl = 0; pl < SAL_PLACE_N; pl++) {
         SalPlaceBlock **cur = &g_place_heaps[pl];
@@ -4604,6 +4733,118 @@ void *sal_place_copy(const void *src, int64_t nbytes, int to_place) {
         sal_gpu_sync();
     }
     return dst;
+}
+
+int64_t sal_place_size(const void *p) {
+    if (!p) {
+        return -1;
+    }
+    int64_t n = -1;
+#ifdef SAL_INSTRUMENT
+    /* An instrumented build hands out tensors from its own allocator, not the place heaps. */
+    int ipl = 0;
+    if (sal_instrument_block_info(p, &n, &ipl)) {
+        return n;
+    }
+    n = -1;
+#endif
+    SAL_LOCK(g_place_lock);
+    for (int pl = 0; pl < SAL_PLACE_N && n < 0; pl++) {
+        for (SalPlaceBlock *cur = g_place_heaps[pl]; cur; cur = cur->next) {
+            if (cur->ptr == p) {
+                n = cur->size;
+                break;
+            }
+        }
+    }
+    SAL_UNLOCK(g_place_lock);
+    return n;
+}
+
+void *sal_place_move(void *src, int to_place) {
+    if (!src || ptr_in_active_region(src)) {
+        return src;
+    }
+    to_place = clamp_place(to_place);
+    int64_t n = -1;
+    int from_place = -1;
+#ifdef SAL_INSTRUMENT
+    /* An instrumented build hands out tensors from its own allocator, not the place heaps. */
+    if (!sal_instrument_block_info(src, &n, &from_place)) {
+        n = -1;
+    }
+#endif
+    if (n < 0) {
+        n = sal_place_size(src);
+        from_place = sal_mem_place(src);
+    }
+    if (n < 0 || from_place == to_place) {
+        return src;
+    }
+    void *dst = sal_place_copy(src, n, to_place);
+    if (!dst) {
+        sal_panic("out of memory moving a tensor between places");
+    }
+#ifdef SAL_INSTRUMENT
+    sal_instrument_alloc(dst, n, to_place, "access");
+#endif
+    sal_place_free(src);
+    return dst;
+}
+
+int sal_place_of(const void *p) {
+#ifdef SAL_INSTRUMENT
+    int64_t n = 0;
+    int ipl = 0;
+    if (sal_instrument_block_info(p, &n, &ipl)) {
+        return ipl;
+    }
+#endif
+    if (p) {
+        const char *x = (const char *)p;
+        for (int pl = 0; pl < SAL_PLACE_N; pl++) {
+            const char *b = (const char *)g_regions[pl].base;
+            if (g_regions[pl].active && b && x >= b && x < b + g_regions[pl].cap) {
+                return pl;
+            }
+        }
+    }
+    int pl = sal_mem_place(p);
+    return pl < 0 ? 0 : pl;
+}
+
+void *sal_region_escape(void *p) {
+    if (!p) {
+        return p;
+    }
+    const char *x = (const char *)p;
+    for (int pl = 0; pl < SAL_PLACE_N; pl++) {
+        SalRegion *r = &g_regions[pl];
+        const char *b = (const char *)r->base;
+        if (!r->active || !b || x < b || x >= b + r->cap) {
+            continue;
+        }
+        int64_t off = (int64_t)(x - b);
+        for (int i = 0; i < r->nblocks; i++) {
+            if (r->blocks[2 * i] != off) {
+                continue;
+            }
+            int64_t n = r->blocks[2 * i + 1];
+            void *dst = place_heap_malloc(n, pl);
+            if (!dst) {
+                sal_panic("out of memory");
+            }
+            if (pl == 1 && sal_gpu_enabled()) {
+                if (sal_gpu_copy_d2d(dst, p, (size_t)n) != 0) {
+                    sal_panic("out of memory");
+                }
+            } else {
+                memcpy(dst, p, (size_t)n);
+            }
+            return dst;
+        }
+    }
+    return p;
 }
 
 void sal_on_enter(int64_t place) {

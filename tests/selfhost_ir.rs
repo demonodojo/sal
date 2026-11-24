@@ -1127,8 +1127,8 @@ fn selfhost_model_package_tests_exit_zero() {
     let art = compile_file(&root().join("selfhost/models.sal"), &opts).expect("compile models.sal");
     assert!(
         art.llvm.contains("call void @sal_matmul_f32")
-            && art.llvm.contains("call void @sal_on_enter(i32 1)")
-            && art.llvm.contains("call void @sal_on_enter(i32 2)"),
+            && art.llvm.contains("call void @sal_on_enter(i64 1)")
+            && art.llvm.contains("call void @sal_on_enter(i64 2)"),
         "expected gpu/tpu on-enter + matmul in LLVM:\n{}",
         art.llvm
     );
@@ -1140,15 +1140,15 @@ fn selfhost_model_package_tests_exit_zero() {
     let models_out = Command::new(&models_bin).output().expect("run models");
     assert_eq!(
         models_out.status.code(),
-        Some(10),
-        "models.sal should exit with matmul element sum: stderr={} stdout={}",
+        Some(0),
+        "models.sal returns its last expression (0): stderr={} stdout={}",
         String::from_utf8_lossy(&models_out.stderr),
         String::from_utf8_lossy(&models_out.stdout)
     );
     let models_stdout = String::from_utf8_lossy(&models_out.stdout);
     assert!(
-        models_stdout.contains("sum=10"),
-        "expected sum=10 from on-gpu/tpu matmul, got: {models_stdout}"
+        models_stdout.contains("argmax=3"),
+        "expected argmax=3 from on-gpu/tpu matmul, got: {models_stdout}"
     );
     assert!(
         models_stdout.contains("gpu=1") && models_stdout.contains("tpu=1"),
@@ -1175,8 +1175,8 @@ fn selfhost_model_package_tests_exit_zero() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("sum=10"),
-        "expected numeric sum=10 from gpu/tpu place matmul, got: {stdout}"
+        stdout.contains("argmax=3"),
+        "expected argmax=3 from gpu/tpu place matmul, got: {stdout}"
     );
     assert!(
         stdout.contains("gpu=1") && stdout.contains("tpu=1"),
@@ -1932,11 +1932,8 @@ fn selfhost_matches_bootstrap_on_every_repo_program() {
     for src in files {
         let rel = src.strip_prefix(root()).unwrap().display().to_string();
         let stem = rel.replace(['/', '.'], "_");
-        // `transformer_gpu`: las regiones `on gpu` (lanzamientos contados y suma del tensor) son
-        // del backend LLVM; el selfhost no las emite en C (subplan 07-selfhost, punto 5).
         if stem.contains("tiny_prefill")
             || stem.contains("tiny_decode")
-            || stem.contains("transformer_gpu")
             || rel.contains("/support/")
         {
             continue;

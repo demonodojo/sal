@@ -1,0 +1,10 @@
+# exit: 4
+# `a` has a `?` axis: `a - 2.0` and `b * b` cover its six elements, and the one nearest to 2 is
+# 2.5, the fifth
+fn f(a: &Tensor[F32, ?, 3] on cpu) -> Int ! alloc
+    b = a - 2.0
+    argmax(-(b * b), 6)
+
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 5.0, 3.0], [4.0, 2.5, 0.0]]
+    f(&a)

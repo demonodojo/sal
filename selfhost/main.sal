@@ -58,8 +58,8 @@ fn run_model_package_tests() -> Int ! io, alloc
                 lastc = built.char(blen - 1)
                 binp = select_str(lastc == 10, str_slice(built, 0, blen - 1), built)
                 out = exec_capture(binp, "")
-                if out.contains("sum=10") == 0
-                    _e = eprint_str("Err(model package missing sum=10)\n")
+                if out.contains("argmax=3") == 0
+                    _e = eprint_str("Err(model package missing argmax=3)\n")
                     1
                 elsif str_contains(out, "gpu=1") == 0
                     _e = eprint_str("Err(model package missing gpu=1)\n")
@@ -78,8 +78,8 @@ fn run_model_package_tests() -> Int ! io, alloc
                     1
                 else
                     out = exec_capture(outp, "")
-                    if out.contains("sum=10") == 0
-                        _e = eprint_str("Err(model package missing sum=10)\n")
+                    if out.contains("argmax=3") == 0
+                        _e = eprint_str("Err(model package missing argmax=3)\n")
                         1
                     elsif out.contains("gpu=1") == 0
                         _e = eprint_str("Err(model package missing gpu=1)\n")

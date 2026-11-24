@@ -29,9 +29,9 @@ fn write_minimal_salt(path: &PathBuf, dims: &[u64], payload: &[f32]) {
 }
 
 /// Same operands as `tests/exec_matmul.rs` / `matmul_test.c`, loaded from `.salt`.
-/// A×I = A → elems 1,2,3,4 (sum 10).
+/// A×I = A → elems 1,2,3,4; `main` returns the index of the one nearest to 3 (2).
 #[test]
-fn exec_salt_matmul_2x2_exit_sum() {
+fn exec_salt_matmul_2x2_exit_argmax() {
     let fixtures = root().join("target/salt_matmul");
     write_minimal_salt(
         &fixtures.join("a.salt"),
@@ -69,7 +69,7 @@ fn exec_salt_matmul_2x2_exit_sum() {
         .expect("run");
     assert_eq!(
         out.status.code(),
-        Some(10),
+        Some(2),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)

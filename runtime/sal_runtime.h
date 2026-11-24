@@ -64,6 +64,17 @@ void *sal_place_malloc(int64_t size, int place);
 void sal_place_free(void *p);
 /* Copy `nbytes` onto `to_place` heap; returns dest pointer. */
 void *sal_place_copy(const void *src, int64_t nbytes, int to_place);
+/* Bytes of the place-heap block that starts at `p`, or -1 when no heap knows it. */
+int64_t sal_place_size(const void *p);
+/* The place a buffer lives on (0 cpu when unknown): an `on p` body runs where its argument is. */
+int sal_place_of(const void *p);
+/* A buffer a fn returns from inside its fused region, copied to the place heap (the region dies
+ * with the fn); any other buffer comes back as is. */
+void *sal_region_escape(void *p);
+/* `to place x` when the compiler does not know the size: moves the block onto `to_place` (copy,
+ * then frees `src`) and returns the new one. A block already there, or one no heap knows (an
+ * arena region), stays put and comes back as is. */
+void *sal_place_move(void *src, int to_place);
 /* Record a device-region launch on `place` (gpu/tpu heaps). */
 void sal_on_enter(int64_t place);
 int64_t sal_place_launches(int64_t place);
@@ -87,6 +98,8 @@ char *sal_argv(int64_t i);
 /* Read entire file into a heap buffer (NUL-terminated). Caller sal_free. */
 char *sal_read_file(const char *path);
 int64_t sal_path_readable(const char *path);
+/* 1 when `pat` compiles as a POSIX extended regex (the check of a `r"…"` match pattern). */
+int64_t sal_regex_valid(const char *pat);
 /* Write bytes to path (or stdout when path is NULL / "-"). */
 int64_t sal_write_file(const char *path, const char *data);
 /* Print NUL-terminated string to stdout (no extra newline). */
@@ -155,6 +168,7 @@ int64_t sal_vec_len(void *v);
 void sal_vec_free(void *v);
 void *sal_list_set(void *vp, int64_t i, int64_t x);
 int64_t sal_list_pop(void *vp);
+int64_t sal_list_pop_drop(void *vp);
 int64_t sal_dict_has(void *dp, const char *key);
 int64_t sal_dict_len(void *dp);
 int64_t sal_dict_remove(void *dp, const char *key);
@@ -169,6 +183,7 @@ void sal_enum_free(int64_t v);
 void sal_enum_free_shell(int64_t v);
 int64_t sal_enum_tag(int64_t v);
 int64_t sal_enum_owns(int64_t v, int64_t i);
+int64_t sal_enum_take(int64_t v, int64_t i);
 int64_t sal_enum_field(int64_t v, int64_t i);
 void sal_list_free(void *v);
 /* Frees the list header and its vector, not the elements. */
@@ -256,6 +271,8 @@ void sal_instrument_init(void);
 void sal_instrument_shutdown(void);
 void sal_instrument_alloc(void *p, int64_t size, int place, const char *site);
 void sal_instrument_free(void *p);
+int sal_instrument_free_owned(void *p);
+int sal_instrument_block_info(const void *p, int64_t *size, int *place);
 void sal_instrument_check_f32(const float *data, int64_t n, const char *site);
 void *sal_instrument_malloc(int64_t size, int place, const char *site);
 void sal_instrument_check_ptr(const void *p, int64_t nbytes, int place, const char *site);

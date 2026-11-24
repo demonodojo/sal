@@ -1,26 +1,212 @@
 use crate::ast::*;
+use crate::lexer::Comment;
 use crate::ownership::infer_param_modes;
+use crate::span::Span;
 
 pub fn format_program(p: &Program) -> String {
+    strip_markers(&format_marked(p, None))
+}
+
+/// `sal fmt` with the source at hand: every `#…` comment goes back in place,
+/// above the node that starts on the following line, or on its own line when it
+/// trailed code. The AST does not hold comments, so they are matched by line.
+pub fn format_program_with_comments(p: &Program, source: &str) -> String {
+    let Ok((tokens, comments)) = crate::lexer::lex_with_comments(source) else {
+        return strip_markers(&format_marked(p, None));
+    };
+    let starts = top_level_item_lines(&tokens);
+    let elses = else_lines(&tokens);
+    let marked = format_marked(p, Some(&starts));
+    apply_comments(&marked, &comments, &elses)
+}
+
+fn format_marked(p: &Program, item_starts: Option<&[u32]>) -> String {
     // The mode analysis runs the semantic passes, which only see a program after
     // `inline for` is unrolled; such a program is written as parsed.
     if crate::inline_for::has_inline_for(p) {
-        return format_program_raw(p);
+        return format_program_raw(p, item_starts);
     }
     let mut annotated = infer_param_modes(p);
     // `caller_param_modes` promotes an inferred borrow to take for callers when the
     // body consumes the parameter. Writing `borrow` would freeze the declared mode
     // and the caller would free the value again. Leave that mode unwritten.
     hide_consumed_inferred_borrows(p, &mut annotated);
-    format_program_raw(&annotated)
+    format_program_raw(&annotated, item_starts)
+}
+
+/// Line of the first token of each top-level item, in source order. An item's
+/// own span does not always start at its first line (`FnDef.span` is the body's),
+/// and `sal fmt` needs that line to put the comments written above it back.
+fn top_level_item_lines(tokens: &[crate::lexer::Token]) -> Vec<u32> {
+    let mut lines = Vec::new();
+    let mut depth = 0usize;
+    let mut expect_start = true;
+    for tok in tokens {
+        match tok.kind {
+            crate::lexer::TokenKind::Indent => depth += 1,
+            crate::lexer::TokenKind::Dedent => depth = depth.saturating_sub(1),
+            crate::lexer::TokenKind::Newline if depth == 0 => expect_start = true,
+            crate::lexer::TokenKind::Eof => {}
+            _ if depth == 0 && expect_start => {
+                lines.push(tok.span.line);
+                expect_start = false;
+            }
+            _ => {}
+        }
+    }
+    lines
+}
+
+/// Line of each `else` keyword, in source order. The AST keeps the else block
+/// but not the line of its keyword, and `sal fmt` needs it to keep the comments
+/// written above the `else` out of the block it opens. The formatter emits the
+/// `else` keywords in that same order, so `apply_comments` pairs them up.
+fn else_lines(tokens: &[crate::lexer::Token]) -> Vec<u32> {
+    tokens
+        .iter()
+        .filter(|t| t.kind == crate::lexer::TokenKind::Else)
+        .map(|t| t.span.line)
+        .collect()
+}
+
+/// Sentinel marks the intermediate text carries so that a comment knows where it
+/// goes: `\u{1}<line>\u{1}` before the text of a node, `\u{2}<line>\u{2}` right
+/// after it when the node fits in one line. `format_program` strips them.
+const START_MARK: char = '\u{1}';
+const END_MARK: char = '\u{2}';
+
+fn start_marker(line: u32) -> String {
+    format!("{START_MARK}{line}{START_MARK}")
+}
+
+fn end_marker(line: u32) -> String {
+    format!("{END_MARK}{line}{END_MARK}")
+}
+
+/// The first well-formed marker of the given kind: byte range and line.
+fn find_marker(s: &str, mark: char) -> Option<(usize, usize, u32)> {
+    let mut from = 0usize;
+    while let Some(rel) = s[from..].find(mark) {
+        let start = from + rel;
+        let after = start + mark.len_utf8();
+        let digits = s[after..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(s.len() - after, |n| n);
+        if digits > 0 && s[after + digits..].starts_with(mark) {
+            let line = s[after..after + digits].parse().ok()?;
+            return Some((start, after + digits + mark.len_utf8(), line));
+        }
+        from = after;
+    }
+    None
+}
+
+/// A marker is only ours when it owns the line edge it sits on: the indentation
+/// and nothing else before a start marker, nothing else after an end marker. A
+/// string literal may hold the sentinel characters too, and those stay put.
+fn marker_at_line_edge(s: &str, start: usize, end: usize) -> bool {
+    let line_start = s[..start].rfind('\n').map_or(0, |p| p + 1);
+    let line_end = s[end..].find('\n').map_or(s.len(), |p| end + p);
+    s[line_start..start].chars().all(|c| c == ' ')
+        || s[end..line_end].chars().all(|c| c == ' ')
+}
+
+fn strip_markers(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < s.len() {
+        let c = s[i..].chars().next().unwrap();
+        if c == START_MARK || c == END_MARK {
+            if let Some((0, end, _)) = find_marker(&s[i..], c) {
+                if marker_at_line_edge(s, i, i + end) {
+                    i += end;
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// Remove the first marker of the given kind from `text`, returning its line.
+fn take_marker(text: &mut String, mark: char) -> Option<u32> {
+    let mut from = 0usize;
+    while let Some((rel, rel_end, line)) = find_marker(&text[from..], mark) {
+        let (start, end) = (from + rel, from + rel_end);
+        if marker_at_line_edge(text, start, end) {
+            text.replace_range(start..end, "");
+            return Some(line);
+        }
+        from = end;
+    }
+    None
+}
+
+/// Put each comment above the node that starts after it, and every trailing
+/// comment back at the end of its line. A comment the AST gives no anchor for
+/// (between the parameters of a signature, say) still survives: it goes to the
+/// end with its original indentation.
+fn apply_comments(marked: &str, comments: &[Comment], else_lines: &[u32]) -> String {
+    let mut out = String::with_capacity(marked.len());
+    let mut next = 0usize;
+    let mut next_else = 0usize;
+    for line in marked.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let mut text = body.to_string();
+        let mut anchored = take_marker(&mut text, START_MARK);
+        // An `else` keyword is no node of its own in the AST, so it carries no
+        // line marker: take the next one of the source, in emission order.
+        let mut else_at = None;
+        if anchored.is_none() && text.trim() == "else" {
+            let at = else_lines.get(next_else).copied();
+            next_else += 1;
+            if let Some(at) = at {
+                anchored = Some(at);
+                else_at = Some(at);
+            }
+        }
+        if let Some(cutoff) = anchored {
+            let indent: String = text.chars().take_while(|c| *c == ' ').collect();
+            while next < comments.len() && comments[next].line < cutoff {
+                out.push_str(&indent);
+                out.push_str(&comments[next].text);
+                out.push('\n');
+                next += 1;
+            }
+        }
+        let line_end = take_marker(&mut text, END_MARK);
+        out.push_str(&text);
+        if let Some(at) = else_at.or(line_end) {
+            while next < comments.len() && comments[next].line == at && comments[next].trailing {
+                out.push_str("  ");
+                out.push_str(&comments[next].text);
+                next += 1;
+            }
+        }
+        if line.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    while next < comments.len() {
+        out.push_str(&" ".repeat(comments[next].indent));
+        out.push_str(&comments[next].text);
+        out.push('\n');
+        next += 1;
+    }
+    out
 }
 
 fn hide_consumed_inferred_borrows(source: &Program, annotated: &mut Program) {
-    let Ok(inferred) = crate::infer::infer_program(annotated) else {
+    // `insert_drops` rewrites the program it is given, spans included; `annotated`
+    // keeps the spans of the source because `sal fmt` matches comments by line.
+    let mut probe = annotated.clone();
+    let Ok(inferred) = crate::infer::infer_program(&probe) else {
         return;
     };
-    let env = crate::string_expr::StringEnv::from_program(annotated).with_infer(&inferred);
-    let _ = crate::drops::insert_drops(annotated, &env.types, &env.structs, &env.enums, &[]);
+    let env = crate::string_expr::StringEnv::from_program(&probe).with_infer(&inferred);
+    let _ = crate::drops::insert_drops(&mut probe, &env.types, &env.structs, &env.enums, &[]);
     let consumed = crate::drops::last_consumed_params();
     for (src_item, ann_item) in source.items.iter().zip(annotated.items.iter_mut()) {
         let (Item::Fn(src), Item::Fn(ann)) = (src_item, ann_item) else {
@@ -41,14 +227,18 @@ fn hide_consumed_inferred_borrows(source: &Program, annotated: &mut Program) {
     }
 }
 
-fn format_program_raw(p: &Program) -> String {
+fn format_program_raw(p: &Program, item_starts: Option<&[u32]>) -> String {
     let mut out = String::new();
     let mut first = true;
-    for item in &p.items {
+    for (i, item) in p.items.iter().enumerate() {
         if !first {
             out.push('\n');
         }
         first = false;
+        let line = item_starts
+            .and_then(|s| s.get(i).copied())
+            .unwrap_or_else(|| item_line(item));
+        out.push_str(&start_marker(line));
         match item {
             Item::Import(imp) => {
                 let path = format_import_path(&imp.path);
@@ -129,7 +319,13 @@ fn format_struct(s: &StructDef) -> String {
     out.push_str(&format_impl_clause(&s.protocols));
     out.push('\n');
     for f in &s.fields {
-        out.push_str(&format!("    {}: {}\n", f.name, format_type(&f.ty)));
+        out.push_str(&format!(
+            "    {}{}: {}{}\n",
+            start_marker(f.span.line),
+            f.name,
+            format_type(&f.ty),
+            end_marker(f.span.line)
+        ));
     }
     out
 }
@@ -142,15 +338,16 @@ fn format_enum(e: &EnumDef) -> String {
         out.push_str(&e.type_params.join(", "));
         out.push(']');
     }
-    out.push_str(&format_impl_clause(&e.protocols));
-    out.push('\n');
+    out.push_str(&format_impl_clause(&e.protocols));    out.push('\n');
     for v in &e.variants {
         out.push_str("    ");
+        out.push_str(&start_marker(v.span.line));
         out.push_str(&v.name);
         if !v.fields.is_empty() {
             out.push('(');
             out.push_str(
-                &v.fields
+                &v
+                    .fields
                     .iter()
                     .map(format_type)
                     .collect::<Vec<_>>()
@@ -158,6 +355,7 @@ fn format_enum(e: &EnumDef) -> String {
             );
             out.push(')');
         }
+        out.push_str(&end_marker(v.span.line));
         out.push('\n');
     }
     out
@@ -172,6 +370,7 @@ fn format_protocol(p: &ProtocolDef) -> String {
     }
     out.push('\n');
     for m in &p.methods {
+        out.push_str(&start_marker(m.span.line));
         out.push_str(if m.is_static { "    static " } else { "    method " });
         out.push_str(&m.name);
         if !m.type_params.is_empty() {
@@ -211,6 +410,9 @@ fn format_protocol(p: &ProtocolDef) -> String {
                     .join(", "),
             );
         }
+        // The signature is printed on one line, so a comment that trailed it in
+        // the source goes back at the end of that line.
+        out.push_str(&end_marker(m.span.line));
         out.push('\n');
         if let Some(body) = &m.body {
             out.push_str(&format_block(body, 2));
@@ -229,6 +431,7 @@ fn format_frame(f: &FrameDef) -> String {
     out.push('\n');
     for c in &f.columns {
         out.push_str("    ");
+        out.push_str(&start_marker(c.span.line));
         out.push_str(&c.name);
         out.push_str(": ");
         out.push_str(match c.elem {
@@ -238,6 +441,7 @@ fn format_frame(f: &FrameDef) -> String {
             ColumnElem::I8 => "I8",
             ColumnElem::String => "String",
         });
+        out.push_str(&end_marker(c.span.line));
         out.push('\n');
     }
     out
@@ -316,16 +520,72 @@ fn format_block(b: &Block, indent: usize) -> String {
     let pad = "    ".repeat(indent);
     let mut s = String::new();
     for stmt in &b.stmts {
+        let line = stmt_span(stmt).line;
         s.push_str(&pad);
-        s.push_str(&format_stmt(stmt, indent));
+        s.push_str(&start_marker(line));
+        let text = format_stmt(stmt, indent);
+        s.push_str(&text);
+        if !text.contains('\n') {
+            s.push_str(&end_marker(line));
+        }
         s.push('\n');
     }
     if let Some(t) = &b.tail {
         s.push_str(&pad);
+        s.push_str(&start_marker(expr_span(t).line));
         s.push_str(&format_expr(t, indent));
         s.push('\n');
     }
     s
+}
+
+/// Start of a statement, used to place the comments written above it.
+fn stmt_span(st: &Stmt) -> &Span {
+    match st {
+        Stmt::Let { span, .. }
+        | Stmt::Assign { span, .. }
+        | Stmt::Return { span, .. }
+        | Stmt::Break { span }
+        | Stmt::InlineFor { span, .. }
+        | Stmt::While { span, .. } => span,
+        Stmt::Expr(e) => expr_span(e),
+    }
+}
+
+fn expr_span(e: &Expr) -> &Span {
+    match e {
+        Expr::Unit { span }
+        | Expr::Int { span, .. }
+        | Expr::Float { span, .. }
+        | Expr::Bool { span, .. }
+        | Expr::String { span, .. }
+        | Expr::Ident { span, .. }
+        | Expr::Call { span, .. }
+        | Expr::Lambda { span, .. }
+        | Expr::Binary { span, .. }
+        | Expr::Unary { span, .. }
+        | Expr::On { span, .. }
+        | Expr::To { span, .. }
+        | Expr::TensorLit { span, .. }
+        | Expr::Field { span, .. }
+        | Expr::Match { span, .. }
+        | Expr::If { span, .. }
+        | Expr::Try { span, .. } => span,
+        Expr::Block(b) => &b.span,
+    }
+}
+
+fn item_line(item: &Item) -> u32 {
+    match item {
+        Item::Fn(f) => f.span.line,
+        Item::Import(i) => i.span.line,
+        Item::Struct(s) => s.span.line,
+        Item::Enum(e) => e.span.line,
+        Item::Frame(f) => f.span.line,
+        Item::Protocol(p) => p.span.line,
+        Item::Impl(i) => i.span.line,
+        Item::Const(c) => c.span.line,
+    }
 }
 
 fn format_stmt(st: &Stmt, indent: usize) -> String {
@@ -507,6 +767,7 @@ fn format_expr(e: &Expr, indent: usize) -> String {
                     s.push('\n');
                 }
                 s.push_str(&pad);
+                s.push_str(&start_marker(arm.span.line));
                 s.push_str(&format_pattern(&arm.pattern));
                 s.push_str(" =>");
                 if matches!(arm.body, Expr::Block(_)) {
@@ -531,6 +792,7 @@ fn format_expr(e: &Expr, indent: usize) -> String {
             s.push_str(&format_block(then_block, indent + 1));
             for arm in elsifs {
                 s.push_str(&pad);
+                s.push_str(&start_marker(arm.span.line));
                 s.push_str(&format!("elsif {}\n", format_expr(&arm.cond, indent)));
                 s.push_str(&format_block(&arm.body, indent + 1));
             }

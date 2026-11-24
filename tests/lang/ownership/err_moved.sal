@@ -1,4 +1,3 @@
-# selfhost-xfail: selfhost no implementa la comprobación E_MOVED (check_borrows)
 # error: E_MOVED
 fn main() -> String
     s = "hi"

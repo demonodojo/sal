@@ -1,0 +1,47 @@
+# exit: 26
+# Un brazo que devuelve el payload de un enum propio lo mueve: el resultado es del que lo
+# liga y el enum se libera sin ese campo (SPEC «Memoria»).
+enum Tag
+    Named(String)
+    Code(Int)
+
+fn label(t: Tag) -> String ! alloc
+    match t
+        Named(s) => s
+        Code(k) => k.to_str()
+
+fn first(o: Option[String]) -> String ! alloc
+    match o
+        Some(s) => s
+        None => "none"
+
+fn make(n: Int) -> Tag ! alloc
+    if n > 0
+        Named(n.to_str())
+    else
+        Code(n)
+
+fn local_name(n: Int) -> String ! alloc
+    t = make(n)
+    match t
+        Named(s) => s
+        Code(k) => k.to_str()
+
+fn bound_len(n: Int) -> Int ! alloc
+    t = make(n)
+    r = match t
+        Named(s) => s
+        Code(k) => k.to_str()
+    size(&r)
+
+fn size(s: &String) -> Int
+    s.len()
+
+fn main() -> Int ! alloc
+    a = label(Named("abc"))
+    b = label(make(12345))
+    c = label(make(0))
+    d = first(Some("hello"))
+    e = first(None)
+    f = local_name(77)
+    a.len() + b.len() + c.len() + d.len() + e.len() + f.len() + bound_len(-5) + 4

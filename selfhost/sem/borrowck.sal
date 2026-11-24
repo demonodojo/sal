@@ -5,6 +5,7 @@
 import "../pkg/result.sal"
 import "../ast/tast.sal"
 import "../ast/ttypes.sal"
+import "../ast/tytext.sal"
 import ownership
 
 # Positions are a counter shared by the scan (last use of each loan) and the
@@ -39,12 +40,25 @@ struct BK
     g_id: List[Int]
     g_s: List[Int]
     g_e: List[Int]
+    # The parameter modes and constructors of the program: which call arguments move.
+    table: HT
+    ctors: List[String]
+    # `r = &b` writing an outer `r` with a `b` of the inner scope: the binding position of that
+    # `r` (whose later uses keep the loan), `b`, and the scope depth that ends `b`.
+    sc_key: List[Int]
+    sc_place: List[String]
+    sc_depth: List[Int]
+    # The fns that return a reference, the argument it borrows from (by elision or by its
+    # lifetime) and whether it is `&mut`.
+    rf_name: List[String]
+    rf_arg: List[Int]
+    rf_mut: List[Int]
 
 fn bk_new(tp: &TProgram) -> BK ! alloc
     cells = list_new[Int]()
     _c = list_push(&mut cells, 0)
     _g = list_push(&mut cells, 0)
-    BK(tenv_new(tp), list_new[String](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[String](), list_new[Int](), list_new[String](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), list_new[Int](), cells, List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int]())
+    BK(tenv_new(tp), List.new[String](), List.new[String](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[String](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[String](), List.new[Int](), List.new[String](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), cells, List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), List.new[Int](), own_mode_table(tp), own_ctor_names(tp), List.new[Int](), List.new[String](), List.new[Int](), List.new[String](), List.new[Int](), List.new[Int]())
 
 fn bk_clock(c: &BK) -> Int ! alloc
     list_get(&c.cells, 0)
@@ -57,6 +71,97 @@ fn bk_tick(c: &mut BK) -> Int ! alloc
 fn bk_reset_clock(c: &mut BK) -> Int ! alloc
     _s = list_set(&mut c.cells, 0, 0)
     0
+
+# Records each fn of `fns` whose result is a reference and the parameter it borrows from: the
+# one whose lifetime the result names, else `&self`, else the only reference parameter.
+fn bk_ref_fns(c: &mut BK, fns: &List[TFn]) -> Int ! alloc
+    i = 0
+    while i < fns.len()
+        f = fns.get(i)
+        if own_ty_is_ref(&f.ret) == 1
+            k = bk_ref_source(&f.params, &bk_life_of(&f.ret))
+            if k >= 0
+                c.rf_name.push(f.name.clone())
+                c.rf_arg.push(k)
+                c.rf_mut.push(ty_is_mut_ref(&f.ret))
+        i = i + 1
+    0
+
+# The lifetime `'a` of a reference type `&'a T`, or "".
+fn bk_life_of(ty: &String) -> String ! alloc
+    if ty.len() > 2 && ty.char(0) == 38 && ty.char(1) == 39
+        ty.slice(1, bk_life_end(ty, 2))
+    else
+        ""
+
+fn bk_life_end(ty: &String, i: Int) -> Int ! alloc
+    if i >= ty.len() || ty.char(i) == 32
+        i
+    else
+        bk_life_end(ty, i + 1)
+
+fn bk_ref_source(ps: &List[TParam], life: &String) -> Int ! alloc
+    i = 0
+    found = 0 - 1
+    refs = 0
+    only = 0 - 1
+    while i < ps.len()
+        t = ps.get(i).ty.clone()
+        if own_ty_is_ref(&t) == 1
+            refs = refs + 1
+            only = i
+            if life.len() > 0 && found < 0 && bk_life_of(&t).eq(life) == 1
+                found = i
+            if life.len() == 0 && found < 0 && i == 0 && ps.get(i).name.eq("self") == 1
+                found = i
+        i = i + 1
+    if found >= 0
+        found
+    elsif life.len() == 0 && refs == 1
+        only
+    else
+        0 - 1
+
+fn bk_rf_find(c: &BK, name: &String) -> Int ! alloc
+    i = 0
+    found = 0 - 1
+    while i < c.rf_name.len() && found < 0
+        if c.rf_name.get(i).eq(name) == 1
+            found = i
+        i = i + 1
+    found
+
+# The place a call that returns a reference borrows (`name(&p)` borrows `p`), or "".
+fn bk_call_ref_place(c: &BK, e: &Expr) -> String ! alloc
+    match e
+        XCall(name, args, targs, xp) => bk_call_ref_place_go(c, &name, &args)
+        _ => ""
+
+fn bk_call_ref_place_go(c: &BK, name: &String, args: &List[Expr]) -> String ! alloc
+    k = bk_rf_find(c, name)
+    if k < 0 || c.rf_arg.get(k) >= args.len()
+        ""
+    else
+        a = args.get(c.rf_arg.get(k))
+        place = bk_ref_place(&a)
+        if place.len() > 0
+            place
+        else
+            match a
+                XIdent(n) => bk_origin_place(c, &n)
+                _ => ""
+
+fn bk_call_ref_mut(c: &BK, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => bk_call_ref_mut_go(c, &name)
+        _ => 0
+
+fn bk_call_ref_mut_go(c: &BK, name: &String) -> Int ! alloc
+    k = bk_rf_find(c, name)
+    if k < 0
+        0
+    else
+        c.rf_mut.get(k)
 
 fn bk_failed(c: &BK) -> Int ! alloc
     if list_len(&c.err) == 0
@@ -87,8 +192,41 @@ fn bk_trunc(c: &mut BK, n: Int) -> Int ! alloc
         bk_trunc(c, n)
 
 fn bk_pop(c: &mut BK) -> Int ! alloc
+    bk_scope_ends(c, c.scope_o.len(), bk_clock(c))
     _a = bk_trunc(c, list_pop(&mut c.scope_o))
     tenv_truncate(&mut c.env, list_pop(&mut c.scope_t))
+
+# The scope at `depth` ends at `end`: a reference into one of its locals that an outer local
+# holds must not be used after it (`referent_end` in src/borrowck.rs).
+fn bk_scope_ends(c: &mut BK, depth: Int, end: Int) -> Int ! alloc
+    while c.sc_depth.len() > 0 && c.sc_depth.get(c.sc_depth.len() - 1) >= depth
+        key = c.sc_key.pop()
+        place = c.sc_place.pop()
+        c.sc_depth.pop()
+        if bk_used_after(c, key, end) == 1
+            bk_fail(c, &("E_BORROW: `" + place + "` does not live long enough: a reference to it is used after its scope"))
+    0
+
+fn bk_used_after(c: &BK, key: Int, end: Int) -> Int ! alloc
+    i = 0
+    found = 0
+    while i < c.ue_at.len() && found == 0
+        if c.ue_at.get(i) == key && c.ue_pos.get(i) > end
+            found = 1
+        i = i + 1
+    found
+
+# `name = &place` writes a local of an outer scope with a loan of a local of this one.
+fn bk_note_scoped_ref(c: &mut BK, st: &TStmt, place: &String) -> Int ! alloc
+    here = c.scope_o.get(c.scope_o.len() - 1)
+    oi = bk_idx(c, &st.name)
+    ri = bk_idx(c, &bk_root(place))
+    key = bk_at(c, &st.name)
+    if st.is_let == 0 && oi >= 0 && oi < here && ri >= here && key >= 0
+        c.sc_key.push(key)
+        c.sc_place.push(place.clone())
+        c.sc_depth.push(c.scope_o.len())
+    0
 
 fn bk_find(c: &BK, name: &String, i: Int) -> Int ! alloc
     if i < 0
@@ -253,12 +391,20 @@ fn bk_ref_mut(e: &Expr) -> Int ! alloc
 fn bk_bound_ty(c: &BK, st: &TStmt) -> String ! alloc
     if str_len(&st.ty) > 0
         strdup(st.ty)
+    elsif bk_is_ref_expr(&st.expr) == 1
+        # `texpr_type` erases the reference of `&x` (the C emitter does not need it).
+        bk_expr_ty(c, &st.expr)
     else
         known = texpr_type(&c.env, &st.expr)
         if str_len(&known) > 0
             known
         else
             bk_expr_ty(c, &st.expr)
+
+fn bk_is_ref_expr(e: &Expr) -> Int ! alloc
+    match e
+        XUnary(op, inner) => op.eq("ref") + op.eq("refmut")
+        _ => 0
 
 fn bk_expr_ty(c: &BK, e: &Expr) -> String ! alloc
     match e
@@ -448,12 +594,43 @@ fn bk_visit_field(c: &mut BK, e: &Expr, base: &Expr, mode: Int, pos: Int) -> Int
     if mode == 2
         ty = texpr_type(&c.env, e)
         if bk_copy(c, &ty) == 0
+            # SPEC «Memoria»: a non-`Copy` value does not move out of a reference.
+            if ty.len() > 0 && tt_matches(&ty, &"Unknown") == 0 && own_ty_is_ref(&ty) == 0 && bk_behind_ref(c, base) == 1
+                _f = bk_fail(c, &("E_BORROW: cannot move `" + bk_place(e) + "` out of a reference: use `.clone()`"))
             _m = bk_move(c, &bk_place(e), pos)
             bk_visit(c, base, bk_child(mode))
         else
             bk_visit(c, base, bk_child(mode))
     else
         bk_visit(c, base, bk_child(mode))
+
+# `e` is reached through a reference (`r.f` with `r: &T`, or deeper): `behind_ref` in Rust.
+fn bk_behind_ref(c: &BK, e: &Expr) -> Int ! alloc
+    match e
+        XIdent(name) => own_ty_is_ref(&tenv_type(&c.env, &name))
+        XField(base, field) => bk_behind_ref(c, &base)
+        XUnary(op, inner) => op.eq("ref") + op.eq("refmut")
+        _ => 0
+
+# Writing through `e` goes through a shared reference: `behind_shared` in Rust.
+fn bk_behind_shared(c: &BK, e: &Expr) -> Int ! alloc
+    match e
+        XIdent(name) => bk_shared_ty(&tenv_type(&c.env, &name))
+        XField(base, field) => bk_behind_shared(c, &base)
+        XUnary(op, inner) => bk_behind_shared_deref(c, &op, &inner)
+        _ => 0
+
+fn bk_behind_shared_deref(c: &BK, op: &String, inner: &Expr) -> Int ! alloc
+    if op.eq("deref") == 1
+        bk_behind_shared(c, inner)
+    else
+        0
+
+fn bk_shared_ty(ty: &String) -> Int ! alloc
+    if own_ty_is_ref(ty) == 1 && ty_is_mut_ref(ty) == 0
+        1
+    else
+        0
 
 fn bk_visit_bin(c: &mut BK, l: &Expr, r: &Expr, mode: Int) -> Int ! alloc
     _a = bk_visit(c, l, bk_child(mode))
@@ -543,9 +720,19 @@ fn bk_call_args(c: &mut BK, name: &String, args: &List[Expr], i: Int, n: Int, mo
         0
     else
         a = list_get(args, i)
-        apos = bk_visit(c, &a, bk_child(mode))
+        apos = bk_visit(c, &a, bk_arg_mode(c, name, &a, i, mode))
         _l = bk_call_arg_loan(c, &a, mode, apos)
         bk_call_args(c, name, args, i + 1, n, mode)
+
+# An argument the call moves (a `take` parameter, a constructor, the value `push` stores) is a
+# use by value; any other is read. A `&x` argument lends instead.
+fn bk_arg_mode(c: &BK, name: &String, a: &Expr, i: Int, mode: Int) -> Int ! alloc
+    if mode == 0 || bk_is_ref_expr(a) == 1
+        bk_child(mode)
+    elsif own_call_moves_arg(&c.ctors, name, i, &c.table.get(name)) == 1
+        2
+    else
+        bk_child(mode)
 
 # The receiver of a builtin method lent by autoref (`xs.push(v)` is `list_push(xs, v)`): a
 # mutating one takes `&mut` (`mutates_container` in src/ownership.rs), a thread primitive `&`.
@@ -559,6 +746,8 @@ fn bk_recv_loan(c: &mut BK, name: &String, args: &List[Expr], mode: Int, at: Int
         if place.len() == 0
             0
         elsif bk_mutates_container(name) == 1
+            if bk_behind_shared(c, &args.get(0)) == 1
+                _f = bk_fail(c, &("E_BORROW: cannot mutate `" + place + "` through a `&` reference: it must be `&mut`"))
             bk_loan(c, &place, 1, at, at + 1)
         elsif bk_sync_shared(name) == 1
             bk_loan(c, &place, 0, at, at + 1)
@@ -674,10 +863,20 @@ fn bk_stmt_bind(c: &mut BK, st: &TStmt, mode: Int) -> Int ! alloc
     if mode != 0 && st.is_let == 0 && bk_idx(c, &st.name) >= 0
         bk_move(c, &st.name, bk_clock(c))
     place = bk_ref_place(&st.expr)
+    cplace = bk_call_ref_place(c, &st.expr)
     if str_len(&place) > 0
         epos = bk_visit(c, &st.expr, bk_child(mode))
         _n = bk_bind_ref(c, st, &place, epos, mode)
         0
+    elsif cplace.len() > 0
+        # The reference a call returns keeps the loan of the argument it borrows from.
+        epos = bk_visit(c, &st.expr, bk_child(mode))
+        if mode == 0
+            bk_ne_set(c, epos, epos)
+        else
+            bk_loan_key(c, &cplace, bk_call_ref_mut(c, &st.expr), epos, bk_ne_get(c, epos), epos)
+        ty = bk_bound_ty(c, st)
+        bk_bind(c, &st.name, &ty, 2, &cplace, epos)
     elsif bk_is_call(&st.expr, &"thread_spawn") == 1
         bk_bind_thread(c, st, mode)
     elsif bk_is_call(&st.expr, &"mutex_enter") + bk_is_get_mut(&st.expr) + bk_is_get_ref(c, st) > 0
@@ -707,6 +906,7 @@ fn bk_bind_ref(c: &mut BK, st: &TStmt, place: &String, epos: Int, mode: Int) -> 
         ty = bk_bound_ty(c, st)
         bk_bind(c, &st.name, &ty, 2, place, epos)
     else
+        bk_note_scoped_ref(c, st, place)
         _l = bk_loan_key(c, place, bk_ref_mut(&st.expr), epos, bk_ne_get(c, epos), epos)
         ty = bk_bound_ty(c, st)
         bk_bind(c, &st.name, &ty, 2, place, epos)
@@ -953,6 +1153,7 @@ fn bk_moved_loans(c: &mut BK, i: Int, j: Int, n: Int) -> Int ! alloc
 
 fn check_borrows(tp: &TProgram) -> Res ! alloc
     c = bk_new(tp)
+    bk_ref_fns(&mut c, &tp.fns)
     bk_fns(&mut c, &tp.fns, 0, list_len(&tp.fns))
 
 # ---- Threads (SPEC «Hilos», `keep_threads_to_drop` in src/borrowck.rs) ----

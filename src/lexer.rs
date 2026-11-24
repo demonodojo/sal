@@ -84,8 +84,45 @@ pub struct Token {
     pub span: Span,
 }
 
+/// A `#…` comment of the source, kept apart from the tokens so that `sal fmt`
+/// can put it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub line: u32,
+    /// Spaces before the `#` in the source.
+    pub indent: usize,
+    /// The text, including the leading `#`.
+    pub text: String,
+    /// `true` when code precedes it on the same line (`x = 1  # note`).
+    pub trailing: bool,
+}
+
+/// Record `source[start..end]` as a comment of `line`; it is trailing when
+/// anything but spaces precedes it on its line.
+pub(crate) fn push_comment(
+    source: &str,
+    start: usize,
+    end: usize,
+    line: u32,
+    comments: &mut Vec<Comment>,
+) {
+    let line_start = source[..start].rfind('\n').map_or(0, |p| p + 1);
+    let before = &source[line_start..start];
+    comments.push(Comment {
+        line,
+        indent: before.len(),
+        text: source[start..end].trim_end().to_string(),
+        trailing: before.chars().any(|c| c != ' '),
+    });
+}
+
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    lex_with_comments(source).map(|(tokens, _)| tokens)
+}
+
+pub fn lex_with_comments(source: &str) -> Result<(Vec<Token>, Vec<Comment>), Diagnostic> {
     let mut tokens = Vec::new();
+    let mut comments: Vec<Comment> = Vec::new();
     let bytes = source.as_bytes();
     let mut i = 0usize;
     let mut line = 1u32;
@@ -96,9 +133,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     while i < bytes.len() {
         // Skip comment
         if bytes[i] == b'#' {
+            let start = i;
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
+            push_comment(source, start, i, line, &mut comments);
             continue;
         }
 
@@ -142,9 +181,12 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     j += 1;
                 }
                 if j < bytes.len() && bytes[j] == b'#' {
+                    let start = j;
                     while j < bytes.len() && bytes[j] != b'\n' {
                         j += 1;
                     }
+                    // The line only holds spaces before the `#`: not a trailing one.
+                    push_comment(source, start, j, line, &mut comments);
                 }
                 if j < bytes.len() && bytes[j] == b'\n' {
                     j += 1;
@@ -497,7 +539,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             col,
         },
     });
-    Ok(tokens)
+    Ok((tokens, comments))
 }
 
 fn read_quoted_string(

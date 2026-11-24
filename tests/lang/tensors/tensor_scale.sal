@@ -1,9 +1,9 @@
-# exit: 30
+# exit: 1
+# (A * 3) x I = [[3, 6], [9, 12]]: the element nearest to 6 is the second
 fn main() -> Int ! alloc
     a = tensor[[1.0, 2.0], [3.0, 4.0]]
     i = tensor[[1.0, 0.0], [0.0, 1.0]]
-    e = tensor[[1.0, 0.0], [0.0, 0.0]]
     b = a * 3
-    on cpu
-        matmul(b, i)
-    0
+    c = matmul(b, i)
+    d = c - 6.0
+    argmax(-(d * d), 4)

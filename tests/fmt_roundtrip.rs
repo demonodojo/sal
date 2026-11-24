@@ -154,6 +154,158 @@ fn fields(p: Pair) -> Int
     p.a + u.triple(1)
 "#;
 
+/// `sal fmt` prints the AST, which has no comments: they are put back by line.
+/// Every `#…` of the source survives, above the node that follows it, or at the
+/// end of its line when it trailed code.
+#[test]
+fn fmt_keeps_comments() {
+    use sal_compiler::fmt::format_program_with_comments;
+    let src = r"# module comment
+import std.io
+
+# struct
+struct P
+    # field
+    x: Int  # trailing field
+    y: Int
+
+# fn
+fn main() -> Int
+    # before the first statement
+    x = 1 + 2  # trailing statement
+    if x > 0
+        # inside then
+        y = x
+    else
+        y = 0
+    match y
+        # arm
+        0 => 1
+        _ => y
+";
+    let prog = parse(src).expect("parse");
+    let out = format_program_with_comments(&prog, src);
+    for comment in [
+        "# module comment",
+        "# struct",
+        "# field",
+        "# trailing field",
+        "# fn",
+        "# before the first statement",
+        "# trailing statement",
+        "# inside then",
+        "# arm",
+    ] {
+        assert!(out.contains(comment), "{comment} lost:\n{out}");
+    }
+    // A trailing comment stays on the line it trailed.
+    assert!(out.contains("    x = 1 + 2  # trailing statement"), "{out}");
+    assert!(out.contains("    x: Int  # trailing field"), "{out}");
+    // A comment above a statement stays inside its block.
+    assert!(out.contains("    # before the first statement\n    x = 1 + 2"), "{out}");
+    assert!(out.contains("        # inside then\n        y = x"), "{out}");
+    // Formatting the output again is a fixed point.
+    let again = format_program_with_comments(&parse(&out).expect("reparse"), &out);
+    assert_eq!(out, again, "fmt with comments is not idempotent");
+
+    // The formatter marks lines with \u{1}/\u{2}; a string literal that holds
+    // those bytes is not a marker and survives both entry points.
+    let tricky = "fn main() -> Int\n    s = \"a\u{1}1\u{1}b\"\n    # note\n    s.len()\n";
+    let prog = parse(tricky).expect("parse");
+    assert!(format_program_with_comments(&prog, tricky).contains("a\u{1}1\u{1}b"));
+    assert!(format_program(&prog).contains("a\u{1}1\u{1}b"));
+}
+
+/// A comment written above `else` belongs above it, outside the else block. The
+/// `else` keyword is no AST node, so the formatter takes its line from the token
+/// stream, in the order it emits the `else` keywords.
+#[test]
+fn fmt_keeps_comment_above_else() {
+    use sal_compiler::fmt::format_program_with_comments;
+    let src = r"fn main() -> Int
+    x = 1
+    if x == 1
+        y = 1
+    # above the else
+    else
+        # first in the else block
+        y = 2
+    if y == 1
+        z = 1
+    else  # trailing else
+        z = 2
+    z
+";
+    let prog = parse(src).expect("parse");
+    let out = format_program_with_comments(&prog, src);
+    assert!(
+        out.contains("    # above the else\n    else\n        # first in the else block\n        y = 2"),
+        "the comment above the else moved into its block:\n{out}"
+    );
+    assert!(
+        out.contains("    else  # trailing else\n        z = 2"),
+        "the trailing comment on the else line moved:\n{out}"
+    );
+    let again = format_program_with_comments(&parse(&out).expect("reparse"), &out);
+    assert_eq!(out, again, "fmt with comments is not idempotent");
+
+    // Nested ifs: each `else` pairs with its own line, outer one last.
+    let nested = r"fn main() -> Int
+    a = 1
+    if a == 1
+        if a == 2
+            b = 1
+        # inner else
+        else
+            b = 2
+    # outer else
+    else
+        b = 3
+    b
+";
+    let prog = parse(nested).expect("parse");
+    let out = format_program_with_comments(&prog, nested);
+    assert!(
+        out.contains("        # inner else\n        else\n") && out.contains("    # outer else\n    else\n"),
+        "nested else comments did not stay on their own else:\n{out}"
+    );
+}
+
+/// Protocol signatures are nodes of their own (`ProtocolMethod.span`), so a
+/// comment written above a `method`/`static` signature stays above it instead of
+/// drifting to the end of the file.
+#[test]
+fn fmt_keeps_comments_in_protocol() {
+    use sal_compiler::fmt::format_program_with_comments;
+    let src = r"# the protocol
+protocol Sized[T]
+    # above len
+    method len(&self) -> Int
+    static unit() -> Int  # trailing signature
+    # above twice
+    method twice(&self) -> Int
+        # inside the provided body
+        self.len() + self.len()
+";
+    let prog = parse(src).expect("parse");
+    let out = format_program_with_comments(&prog, src);
+    assert!(out.starts_with("# the protocol\nprotocol Sized[T]\n"), "{out}");
+    assert!(
+        out.contains("    # above len\n    method len(&self) -> Int\n"),
+        "the comment above a signature did not stay there:\n{out}"
+    );
+    assert!(
+        out.contains("    static unit() -> Int  # trailing signature\n"),
+        "the trailing comment on a signature moved:\n{out}"
+    );
+    assert!(
+        out.contains("    # above twice\n    method twice(&self) -> Int\n        # inside the provided body\n        self.len() + self.len()"),
+        "the comment above a provided method moved:\n{out}"
+    );
+    let again = format_program_with_comments(&parse(&out).expect("reparse"), &out);
+    assert_eq!(out, again, "fmt with comments is not idempotent");
+}
+
 #[test]
 fn fmt_kitchen_sink_is_a_fixed_point() {
     // Some forms may not parse in the bootstrap; find out which, one item at a time.

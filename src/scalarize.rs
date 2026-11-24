@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{FnDef, Item, Program, StructDef, Type};
+use crate::ast::{Dim, FnDef, Item, Place, Program, StructDef, TensorElem, Type};
 use crate::ir::{IfCarry, IrFunction, IrInst, IrModule, SwitchArm, WhileCarry};
 
 /// Scalarised view of a function signature. `None` entries are ordinary `i64` values.
@@ -37,6 +37,56 @@ pub struct FnSig {
     /// such list keeps one word per element and nothing to release, so the LLVM emitter
     /// accesses it in place (`KNOWN_LISTS` in src/llvm.rs).
     pub word_list_params: Vec<String>,
+    /// Per parameter: a tensor taken by value. The argument moves into the callee, which
+    /// releases it (SPEC «Memoria»), so the caller's tensor emitter stops owning that buffer.
+    pub tensor_by_value: Vec<bool>,
+    /// Per parameter: the shape of a tensor (also behind `&` / `&mut`). A callee reads the
+    /// length of a `?` axis and the place of an `on p` from the buffer it is handed.
+    pub tensor_params: Vec<Option<TensorParamSig>>,
+}
+
+/// The declared shape of a tensor parameter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorParamSig {
+    /// The parameter's name, which the IR keeps.
+    pub name: String,
+    /// Bytes of one element.
+    pub elem_bytes: u64,
+    /// Each axis: its length, or `None` for `?`.
+    pub dims: Vec<Option<u64>>,
+    /// Its place: `cpu`, `gpu`, `tpu`, or the name of a place parameter (`p` in `on p`).
+    pub place: String,
+    /// The place is a parameter, known only at run time.
+    pub generic_place: bool,
+}
+
+fn tensor_param_sig(name: &str, ty: &Type) -> Option<TensorParamSig> {
+    match ty {
+        Type::Ref { inner, .. } => tensor_param_sig(name, inner),
+        Type::Tensor { elem, dims, place, .. } => Some(TensorParamSig {
+            name: name.to_string(),
+            elem_bytes: match elem {
+                TensorElem::F32 => 4,
+                TensorElem::F16 | TensorElem::BF16 => 2,
+                TensorElem::I8 => 1,
+            },
+            dims: dims
+                .iter()
+                .map(|d| match d {
+                    Dim::Static(n) => Some(*n),
+                    Dim::Dynamic => None,
+                })
+                .collect(),
+            place: match place {
+                Place::Cpu => "cpu".into(),
+                Place::Gpu => "gpu".into(),
+                Place::Tpu => "tpu".into(),
+                Place::Param(p) => p.clone(),
+            },
+            generic_place: matches!(place, Place::Param(_)),
+        }),
+        _ => None,
+    }
 }
 
 /// `T` in `&mut T` is reached through a cell: it has no box of its own (`Int`, `Float`, `Bool`,
@@ -206,6 +256,8 @@ pub fn fn_sig(f: &FnDef, structs: &HashMap<String, StructDef>) -> FnSig {
             .filter(|p| is_word_list_type(&p.ty))
             .map(|p| p.name.clone())
             .collect(),
+        tensor_by_value: f.params.iter().map(|p| matches!(p.ty, Type::Tensor { .. })).collect(),
+        tensor_params: f.params.iter().map(|p| tensor_param_sig(&p.name, &p.ty)).collect(),
     }
 }
 
@@ -338,6 +390,8 @@ fn scalarize_fn(
             shared_ref: vec![false; f.params.len()],
             cell: vec![false; f.params.len()],
             word_list_params: Vec::new(),
+            tensor_by_value: vec![false; f.params.len()],
+            tensor_params: vec![None; f.params.len()],
         },
     };
     let mut p = Pass {

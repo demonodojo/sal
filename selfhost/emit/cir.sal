@@ -7,7 +7,7 @@ import "../ir/tensorops.sal"
 import "../pkg/qualify.sal"
 
 # ---- IR -> C (functions that touch tensors) ----
-# Context: [literals, user, locals, consts, floats, strs, lines, quirk_out, quirk_n, uid, is_main,
+# Context: [literals, user, locals, consts, floats, strs, lines, unused, unused, uid, is_main,
 # fills, first literal id]. `literals` are the string literals this function asked for, in order;
 # `cir_commit_lits` declares them in the pool once the function is done.
 fn cc_new(pool: &LitPool, user: Int, is_main: Int) -> Int ! alloc
@@ -25,6 +25,8 @@ fn cc_new(pool: &LitPool, user: Int, is_main: Int) -> Int ! alloc
     vec_push(c, is_main)
     vec_push(c, map_new())
     vec_push(c, pool.nid)
+    # 13: `,lhs=place,` for each matmul of an `on` region that does not run on the host.
+    vec_push(c, "".to_int())
     c
 
 fn cc_line(cc: Int, s: &String) -> Int ! alloc
@@ -218,18 +220,15 @@ fn cir_shaped(cc: Int, dest: &String, fname: &String, ops: &List[String], shape:
         "sal_relu" => cir_relu(cc, dest, ops, shape)
         _ => cir_reduce(cc, dest, ops, shape)
 
-# `relu` of a buffer whose shape is not known at compile time panics, as the bootstrap does.
+# `relu` of a buffer: its length is in the buffer's header, also when a `?` axis leaves the
+# shape unknown at compile time (the bootstrap reads it from the runtime the same way).
 fn cir_relu(cc: Int, dest: &String, ops: &List[String], shape: Int) -> Int ! alloc
     input = cir_arg(ops, 0)
-    if vec_get(shape, 0) < 0
-        cc_line(cc, &"  { extern void sal_panic(const char *); sal_panic(\"tensor op needs a shape known at compile time\"); }\n")
-        cir_set(cc, dest.to_int(), &"0")
-    else
-        n = "sal_tn_len(" + input + ")"
-        cc_line(cc, &("  " + dest + " = " + cir_tn_alloc(&n) + ";\n"))
-        vv = cir_vec3(dest, &input, &n)
-        _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_relu_f32", &vv) + ";\n"))
-        0
+    n = "sal_tn_len(" + input + ")"
+    cc_line(cc, &("  " + dest + " = " + cir_tn_alloc(&n) + ";\n"))
+    vv = cir_vec3(dest, &input, &n)
+    _b = cc_line(cc, &("  " + cir_call_expr(cc, &"sal_relu_f32", &vv) + ";\n"))
+    0
 
 # `softmax` over the last axis of a matrix, in place: the kernel takes (rows, row length). Unknown
 # shapes are one row of the whole buffer (the bootstrap leaves them to the length of the input).
@@ -327,7 +326,7 @@ fn cir_call_dest(cc: Int, dest: Int, fname: &String, args: Int, ops: &List[Strin
         _b = map_put(vec_get(cc, 5), dest, 0)
         0
     elsif fname.eq("sal_matmul_f32") == 1
-        cir_matmul(cc, dest, args, ops)
+        cir_matmul(cc, dest, ops)
     elsif fname.eq("sal_rope") == 1
         argv = List.new[String]()
         argv.push(cir_arg(ops, 0))
@@ -375,6 +374,9 @@ fn cir_call_dest2(cc: Int, dest: Int, fname: &String, args: Int, ops: &List[Stri
     elsif fname.eq("sal_argmax") == 1
         vv = cir_vec2(&cir_arg(ops, 0), &cir_arg(ops, 1))
         cir_set(cc, dest, &cir_call_expr(cc, &"sal_argmax_axis_f32", &vv))
+    elsif fname.eq("sal_tensor_elems") == 1
+        # A tensor of the C path keeps its element count in its header.
+        cir_set(cc, dest, &sal_tn_len_text(&cir_arg(ops, 0)))
     elsif fname.eq("sal_attention_f32") == 1
         cir_attention(cc, dest, ops)
     elsif fname.eq("sal_load") == 1
@@ -440,11 +442,12 @@ fn cir_print(cc: Int, dest: Int, args: Int, ops: &List[String]) -> Int ! alloc
     else
         cir_set(cc, dest, &"0")
 
-fn cir_matmul(cc: Int, dest: Int, args: Int, ops: &List[String]) -> Int ! alloc
+fn cir_matmul(cc: Int, dest: Int, ops: &List[String]) -> Int ! alloc
     d = str_from_int(dest)
     m = cir_arg(ops, 2)
     k = cir_arg(ops, 3)
     n = cir_arg(ops, 4)
+    cir_enter_place(cc, &cir_arg(ops, 0))
     cc_line(cc, &("  " + d + " = " + cir_tn_alloc(&("(" + m + ") * (" + n + ")")) + ";\n"))
     argv = List.new[String]()
     argv.push(cir_arg(ops, 0))
@@ -454,13 +457,129 @@ fn cir_matmul(cc: Int, dest: Int, args: Int, ops: &List[String]) -> Int ! alloc
     argv.push(k)
     argv.push(n)
     cc_line(cc, &("  " + cir_rt(cc, &"sal_matmul_f32", &argv) + ";\n"))
-    mv = cir_const(cc, vec_get(args, 2))
-    nv = cir_const(cc, vec_get(args, 4))
-    if mv > 0 && nv > 0 && mv * nv <= 16
-        vec_set(cc, 7, dest)
-        vec_set(cc, 8, mv * nv)
-    else
+
+# A matmul in an `on gpu` / `on tpu` region is a launch there (`sal_on_enter`, as the bootstrap
+# counts it); in a generic `on p` the place is the one its left operand records.
+fn cir_enter_place(cc: Int, lhs: &String) -> Int ! alloc
+    rp = cir_matmul_place(&str_from_int(vec_get(cc, 13)), lhs)
+    code = cir_place_code(&rp)
+    if rp.len() == 0
         0
+    elsif code > 0
+        cc_line(cc, &("  sal_on_enter(" + code.to_str() + ");\n"))
+    else
+        cc_line(cc, &("  { int64_t __pl = (" + lhs + ") ? ((int64_t *)(uintptr_t)(" + lhs + "))[-1] : 0; if (__pl > 0) sal_on_enter(__pl); }\n"))
+
+# 1 gpu, 2 tpu, 0 any other place (the host, or a generic one only the runtime knows).
+fn cir_place_code(p: &String) -> Int ! alloc
+    match p
+        "gpu" => 1
+        "tpu" => 2
+        _ => 0
+
+# `,lhs=place,` for the matmuls (`FOp.kind` 0, `FO_MATMUL`) of the regions off the host.
+fn cir_region_places(rs: &List[Region]) -> String ! alloc
+    out = ","
+    i = 0
+    while i < rs.len()
+        r = rs.get(i)
+        if r.place.len() > 0 && r.place.eq("cpu") == 0
+            j = 0
+            while j < r.ops.len()
+                op = r.ops.get(j)
+                if op.kind == 0
+                    out = out + op.a + "=" + r.place + ","
+                j = j + 1
+        i = i + 1
+    out
+
+# The place recorded for the matmul whose left operand is `lhs`, or "" when it runs on the host.
+fn cir_matmul_place(map: &String, lhs: &String) -> String ! alloc
+    key = "," + lhs + "="
+    at = cir_find_text(map, &key, 0)
+    if at < 0
+        return ""
+    from = at + key.len()
+    stop = cir_find_char(map, 44, from)
+    map.slice(from, stop)
+
+fn cir_find_text(s: &String, key: &String, i: Int) -> Int ! alloc
+    if i + key.len() > s.len()
+        0 - 1
+    elsif s.slice(i, i + key.len()).eq(key) == 1
+        i
+    else
+        cir_find_text(s, key, i + 1)
+
+# The `?` extents of the tensor parameters (`x_d0`): the buffer's length over the product of its
+# other extents (the bootstrap reads the size of the block with `sal_place_size`).
+fn cir_dim_params(cc: Int, f: &TFn, dps: &List[String]) -> Int ! alloc
+    i = 0
+    while i < dps.len()
+        dp = dps.get(i).clone()
+        cut = cir_dim_cut(&dp, dp.len() - 2)
+        if cut > 0
+            pname = dp.slice(0, cut)
+            axis = cir_parse_int(&dp.slice(cut + 2, dp.len()))
+            div = cir_other_extents(&cir_param_ty(&f.params, &pname), axis)
+            kept = dp.dup()
+            cir_add_local(cc, kept.to_int())
+            cc_line(cc, &("  " + dp + " = (" + pname + " ? sal_tn_len(" + pname + ") : 0) / " + div.to_str() + ";\n"))
+        i = i + 1
+    0
+
+# The index of the last `_d` of `dp`, or -1.
+fn cir_dim_cut(dp: &String, i: Int) -> Int ! alloc
+    if i < 1
+        0 - 1
+    elsif dp.char(i) == 95 && dp.char(i + 1) == 100
+        i
+    else
+        cir_dim_cut(dp, i - 1)
+
+fn cir_parse_int(s: &String) -> Int ! alloc
+    i = 0
+    acc = 0
+    while i < s.len() && s.char(i) >= 48 && s.char(i) <= 57
+        acc = acc * 10 + s.char(i) - 48
+        i = i + 1
+    acc
+
+fn cir_param_ty(ps: &List[TParam], name: &String) -> String ! alloc
+    i = 0
+    out = ""
+    while i < ps.len()
+        if ps.get(i).name.eq(name) == 1
+            out = ps.get(i).ty.clone()
+        i = i + 1
+    out
+
+# The product of the known extents of the tensor type `ty` other than `axis` (1 when none is).
+# `Tensor[F32, ?, 4]`: the element type comes first, then one extent per axis.
+fn cir_other_extents(ty: &String, axis: Int) -> Int ! alloc
+    open = cir_find_char(ty, 91, 0)
+    close = cir_find_char(ty, 93, 0)
+    if open < 0 || close < open
+        return 1
+    prod = 1
+    field = 0
+    i = open + 1
+    while i < close
+        c = ty.char(i)
+        if c == 44
+            field = field + 1
+        elsif c >= 48 && c <= 57 && field >= 1 && field - 1 != axis && (ty.char(i - 1) < 48 || ty.char(i - 1) > 57)
+            prod = prod * cir_parse_int(&ty.slice(i, close))
+        i = i + 1
+    prod
+
+fn cir_find_char(s: &String, c: Int, i: Int) -> Int ! alloc
+    if i >= s.len()
+        0 - 1
+    elsif s.char(i) == c
+        i
+    else
+        cir_find_char(s, c, i + 1)
 
 fn cir_attention(cc: Int, dest: Int, ops: &List[String]) -> Int ! alloc
     d = str_from_int(dest)
@@ -580,7 +699,11 @@ fn cir_inst(cc: Int, inst: &Inst) -> Int ! alloc
     elsif k == II_REBIND()
         cir_set(cc, dest, &cir_op(cc, ih(&inst.s1)))
     elsif k == II_PLACE()
-        cir_set(cc, dest, &("(int64_t)(uintptr_t)sal_tn_copy(" + cir_op(cc, ih(&inst.s1)) + ")"))
+        # The copy records its place in the free word of the header (`[-1]`): a generic `on p`
+        # reads it to know where it runs.
+        copy = "(int64_t)(uintptr_t)sal_tn_copy(" + cir_op(cc, ih(&inst.s1)) + ")"
+        pl = cir_place_code(&inst.s2).to_str()
+        cir_set(cc, dest, &("({ int64_t __t = " + copy + "; if (__t) ((int64_t *)(uintptr_t)__t)[-1] = " + pl + "; __t; })"))
     elsif k == II_DROP()
         0
     elsif k == II_RET()
@@ -637,12 +760,7 @@ fn cir_agg(cc: Int, inst: &Inst) -> Int ! alloc
     cir_set(cc, ih(&inst.dest), &emit_c_struct_ctor(&ops))
 
 fn cir_ret(cc: Int, v: Int) -> Int ! alloc
-    q = vec_get(cc, 7)
     val = cir_op(cc, v)
-    if q != 0
-        if vec_get(cc, 10) == 1
-            out = str_from_int(q)
-            val = "({ double __s = 0; float *__o = (float *)(uintptr_t)" + out + "; for (int __i = 0; __i < " + vec_get(cc, 8).to_str() + "; __i++) __s += __o[__i]; (int64_t)__s; })"
     if vec_get(cc, 10) == 1
         cc_line(cc, &("  return (int)(" + val + ");\n"))
     else
@@ -819,6 +937,9 @@ fn cir_fn(f: &TFn, irf: &IrFn, user: Int, linkable: Int, allow_main: Int, pool: 
         is_main = select_main(f, allow_main)
         cc = cc_new(pool, user, is_main)
         cir_seed_params(cc, pnames, 0, vec_len(pnames))
+        rp = cir_region_places(&irf.regions)
+        vec_set(cc, 13, rp.to_int())
+        cir_dim_params(cc, f, &irf.dps)
         cir_collect(cc, &irf.insts)
         cir_collect_lits(cc, &irf.lits)
         cir_literals(cc, &irf.lits, 0, irf.lits.len())

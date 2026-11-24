@@ -1,9 +1,9 @@
-# exit: 5
+# exit: 3
+# (A / 2) x I = [[0.5, 1], [1.5, 2]]: the element nearest to 2 is the fourth
 fn main() -> Int ! alloc
     a = tensor[[1.0, 2.0], [3.0, 4.0]]
     i = tensor[[1.0, 0.0], [0.0, 1.0]]
-    e = tensor[[1.0, 0.0], [0.0, 0.0]]
     b = a / 2
-    on cpu
-        matmul(b, i)
-    0
+    c = matmul(b, i)
+    d = c - 2.0
+    argmax(-(d * d), 4)

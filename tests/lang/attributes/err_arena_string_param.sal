@@ -1,4 +1,3 @@
-# selfhost-xfail: selfhost no implementa la comprobación de parámetros @arena de String
 # error: E_TYPE
 @arena
 fn f(s: String) -> Int

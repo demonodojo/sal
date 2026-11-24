@@ -139,8 +139,7 @@ Ninguno de estos tiene marca en `tests/lang/reflect` porque los tests no los eje
 - El selfhost tipa un `match` como `Unknown`: llamar un método sobre un local ligado a un `match` necesita anotarlo (`let antes: Int = match …`).
 - La IR de los programas con `any[P]` difiere entre compiladores (thunks y orden de temporales); el resultado y el código de salida coinciden.
 - Un `&d"…"` temporal dentro de un brazo de `match` usado como expresión fuga: el hoist de temporales no entra en los brazos.
-- `owned_return_fns` es conservador: una función cuya cola o cuyo `return` es la llamada a otra función de usuario (`g()`) no consta como dueña de su `String`, y el llamador fuga. (Un `while` en el nivel superior y el acumulador `out = out + c` ya no la excluyen desde 2026-11-18: `drops/drop_string_fn_*.sal`.)
-- `try` y mover fuera de un enum fugan la cáscara de la caja.
+- Cerrados el 2026-11-23: una cola o un `return` que llama a otra función dueña (`owned_return_fns` itera hasta el punto fijo; `drops/drop_string_fn_tail_call.sal`), la cáscara de la caja tras `try` (`sal_enum_free_shell`; `try/try_string_payload.sal`) y el payload que un brazo saca de un enum propio (`sal_enum_take`; `drops/drop_enum_payload_moved.sal`, `drops/drop_enum_deep.sal`).
 - El selfhost solo sigue los parámetros `any[P]`, no los locales.
 
 ### Tests

@@ -31,12 +31,20 @@ fn spawn_io_argv(path: &String, argv_count: Int, argv_tab: &Bytes, stdin: Int, s
     opts = Bytes.new(SPAWNIO_SIZE)
     opts.set_i64(SPAWNIO_OFF_PATH_PTR, pbuf.ptr())
     opts.set_i64(SPAWNIO_OFF_PATH_LEN, plen)
+    # `Bytes.new` reutiliza memoria sin limpiarla: los campos opcionales deben
+    # quedar a cero o el hijo del fork lee punteros y longitudes basura.
+    opts.set_i64(SPAWNIO_OFF_ARGS_PTR, 0)
+    opts.set_i64(SPAWNIO_OFF_ARGS_LEN, 0)
     opts.set_i64(SPAWNIO_OFF_STDIN, stdin)
     opts.set_i64(SPAWNIO_OFF_STDOUT, stdout)
     opts.set_i64(SPAWNIO_OFF_STDERR, stderr)
     opts.set_i64(SPAWNIO_OFF_ARGV_PTR, argv_tab.ptr())
     opts.set_i64(SPAWNIO_OFF_ARGV_COUNT, argv_count)
+    opts.set_i64(SPAWNIO_OFF_ENVP_PTR, 0)
+    opts.set_i64(SPAWNIO_OFF_ENVP_COUNT, 0)
     opts.set_i64(SPAWNIO_OFF_LOG_FD, log_fd)
+    opts.set_i64(SPAWNIO_OFF_CWD_PTR, 0)
+    opts.set_i64(SPAWNIO_OFF_CWD_LEN, 0)
     cl = cwd.len()
     if cl > 0
         cbuf = spawn_string_buf(cwd)

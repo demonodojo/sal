@@ -22,8 +22,8 @@ fn assigned_has(names: Int, name: Int, i: Int, n: Int) -> Int ! alloc
         assigned_has(names, name, i + 1, n)
 
 # ---- field reads (`field_reads` in src/ir.rs) ----
-# `sv`: locals read whole through a field, a struct value (`q = w.p`); `hm`: locals whose
-# List/Dict/Bytes field is handed on. Maps from the local's name to 1.
+# `sv`: locals read whole through a field, a struct value (`q = w.p`), from the local's name to 1;
+# `sm`: the field paths handed on by value (a String, enum or container moved out).
 # The lists of the environment the walk needs, not the TEnv itself: a struct local's glue would
 # release the flat lists of a TEnv it only borrows. `bparams` is a fresh list of dup'd names: the
 # glue must not see the `TFn` being lowered, whose body is the same pointer the later `tc_block`
@@ -37,7 +37,6 @@ struct FRC
     tys: List[String]
     md: Int
     sv: Int
-    hm: Int
     al: Int
     sm: Int
     ct: Int
@@ -45,7 +44,7 @@ struct FRC
     fsum: Int
 
 fn fr_new(env: &TEnv, enums: &List[TEnum], md: Int, params: &List[TParam], fsum: Int) -> FRC ! alloc
-    FRC(tstructs_copy(&env.structs), enums.clone(), env.names.clone(), env.tys.clone(), md, vec_new(), vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fsum)
+    FRC(tstructs_copy(&env.structs), enums.clone(), env.names.clone(), env.tys.clone(), md, vec_new(), vec_new(), vec_new(), vec_new(), FRC.borrowed_params(params), fsum)
 
 # Names of parameters whose mode is not take. Each name is dup'd, so freeing this list does not
 # free the function the caller still owns.
@@ -434,7 +433,7 @@ fn fr_walk_fields(c: &FRC, cur: &TStruct, root: &String, fl: &List[String], k: I
             0
         else
             t = trim_type_piece(&ty)
-            _h = fr_mark_heap(c, root, &t, last, moving)
+            _h = fr_mark_heap(c, root, &t, fl, last * moving)
             if last == 1
                 if moving == 1
                     if str_eq(t, "String") == 1
@@ -459,17 +458,11 @@ fn fr_walk_fields(c: &FRC, cur: &TStruct, root: &String, fl: &List[String], k: I
                 fr_walk_fields(c, &list_get(&c.structs, si), root, fl, k + 1, n, moving)
 
 # A List/Dict/Bytes field handed on (the last link of a moving chain): the local is not released.
-fn fr_mark_heap(c: &FRC, root: &String, t: &String, last: Int, moving: Int) -> Int ! alloc
-    if last == 1
-        if moving == 1
-            if fr_is_container(t) == 1
-                fr_add(c.hm, root)
-            elsif str_eq(trim_type_piece(t), "String") == 1
-                0
-            else
-                0
-        else
-            0
+# A List/Dict/Bytes field handed on (the last link of a moving chain) is the new owner's; the
+# other fields of the local are still its own (`field_reads` in src/ir.rs: partial move).
+fn fr_mark_heap(c: &FRC, root: &String, t: &String, fl: &List[String], moved: Int) -> Int ! alloc
+    if moved == 1 && fr_is_container(t) == 1
+        fr_mark_string_moved(c, root, fl)
     else
         0
 
@@ -685,11 +678,7 @@ fn drop_glue_bits(fr: &FRC, nm: Int) -> Int ! alloc
         1
     else
         0
-    containers = if assigned_has(fr.hm, nm, 0, vec_len(fr.hm)) == 0
-        2
-    else
-        0
-    nested + containers
+    nested + 2
 
 # Frees the released fields of the struct value `base` (of type `sd`), in field order.
 fn drop_fields(cx: &mut Cx, base: Int, sd: &TStruct, fields: &List[TField], i: Int, n: Int, depth: Int, g: Int, fr: &FRC, root: &String, path_p: &String) -> Int ! alloc
@@ -725,6 +714,9 @@ fn drop_fields(cx: &mut Cx, base: Int, sd: &TStruct, fields: &List[TField], i: I
                 _c = ir_push(cx, ir_call_named(ssa, str_own(&fnm)))
         elsif str_eq(fnm, "struct") == 1
             _n = drop_nested(cx, base, sd, i, &fld.ty, depth, g, fr, root, &path)
+        elsif fr_sm_has(fr, root, &path) == 1
+            # A container moved out (`xs = b.xs`): the new owner releases it.
+            _z = 0
         else
             ssa = drop_field_ssa(cx, base, sd, i)
             _c = ir_push(cx, ir_call_named(ssa, str_own(&fnm)))

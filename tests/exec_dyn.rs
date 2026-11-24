@@ -9,16 +9,16 @@ fn root() -> PathBuf {
 }
 
 /// Batch axis typed as `?` but resolved by a 1×2 literal → LLVM must pass i64 1,2,2
-/// (not three zeros, and not skip the call). Product vs identity sums to 3.
+/// (not three zeros, and not skip the call). The product with the identity is [1, 2], whose
+/// largest is the second.
 #[test]
 fn exec_dyn_batch1_literal_dims() {
     let src = r#"
 fn main() -> Int ! alloc
     let a: Tensor[F32, ?, 2] on cpu = tensor[[1.0, 2.0]]
     let b = tensor[[1.0, 0.0], [0.0, 1.0]]
-    on cpu
-        matmul(a, b)
-    0
+    c = matmul(a, b)
+    argmax(c, 2)
 "#;
     let opts = CompileOptions {
         toolchain: Default::default(),
@@ -45,8 +45,8 @@ fn main() -> Int ! alloc
     let out = Command::new(bin).output().expect("run");
     assert_eq!(
         out.status.code(),
-        Some(3),
-        "1×2 × I → [1,2] sum 3; stdout={} stderr={}",
+        Some(1),
+        "1×2 × I → [1,2], argmax 1; stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );

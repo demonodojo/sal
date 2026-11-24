@@ -1,9 +1,9 @@
 # exit: 0
+# (A - A) x I is all zeros; minus [[0, 1], [1, 1]] only the first element stays at 0, the largest
 fn main() -> Int ! alloc
     a = tensor[[1.0, 2.0], [3.0, 4.0]]
     i = tensor[[1.0, 0.0], [0.0, 1.0]]
-    e = tensor[[1.0, 0.0], [0.0, 0.0]]
+    k = tensor[[0.0, 1.0], [1.0, 1.0]]
     b = a - a
-    on cpu
-        matmul(b, i)
-    0
+    c = matmul(b, i)
+    argmax(c - k, 4)

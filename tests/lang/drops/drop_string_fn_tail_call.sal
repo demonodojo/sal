@@ -1,0 +1,25 @@
+# exit: 30
+# A fn whose `String` is the call of another fn that hands out an owned one (`wrap` returns
+# `base(n)`), directly, through a local or from a `return`, hands the caller an owned value too.
+fn base(n: Int) -> String ! alloc
+    n.to_str() + "x"
+
+fn wrap(n: Int) -> String ! alloc
+    base(n)
+
+fn twice(n: Int) -> String ! alloc
+    a = wrap(n)
+    a + a
+
+fn pick(n: Int) -> String ! alloc
+    if n > 5
+        return wrap(n)
+    base(n + 1)
+
+fn main() -> Int ! alloc
+    total = 0
+    k = 0
+    while k < 3
+        total = total + wrap(7).len() + twice(7).len() + pick(9).len() + pick(1).len()
+        k = k + 1
+    total

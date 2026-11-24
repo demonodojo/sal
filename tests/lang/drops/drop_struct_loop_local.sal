@@ -1,0 +1,20 @@
+# exit: 3
+# A struct local bound in a `while` body is released at the end of each pass, as in Rust: its
+# list goes with it.
+struct B
+    xs: List[Int]
+    n: Int
+
+fn mk(i: Int) -> B ! alloc
+    xs = List.new[Int]()
+    xs.push(i)
+    B(xs, i)
+
+fn main() -> Int ! alloc
+    i = 0
+    t = 0
+    while i < 3
+        c = mk(i)
+        t = t + c.n
+        i = i + 1
+    t

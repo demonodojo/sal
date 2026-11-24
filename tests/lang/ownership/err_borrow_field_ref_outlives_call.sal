@@ -1,5 +1,4 @@
 # error: E_BORROW
-# selfhost-xfail: el borrowck del selfhost no sigue el préstamo que devuelve una llamada
 struct P
     name: String
     n: Int

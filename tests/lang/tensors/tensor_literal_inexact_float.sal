@@ -1,0 +1,6 @@
+# exit: 2
+# 0.1, 0.2, 0.7 and 0.3 have no exact F32: each element is the nearest F32 and the program
+# compiles; the largest is the third
+fn main() -> Int ! alloc
+    a = tensor[[0.1, 0.2, 0.7, 0.3]]
+    argmax(a, 4)

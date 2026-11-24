@@ -8,7 +8,6 @@ use sal_compiler::target::{Target, Toolchain};
 use sal_compiler::ast::Program;
 use sal_compiler::compile::{compile_file, compile_program, CompileOptions};
 use sal_compiler::diag::Diagnostic;
-use sal_compiler::fmt::format_program;
 use sal_compiler::fuse::fuse_module;
 use sal_compiler::infer::infer_program;
 use sal_compiler::ir::lower_program;
@@ -214,7 +213,7 @@ fn main() {
         Commands::Fmt { file } => {
             let src = std::fs::read_to_string(&file).expect("read");
             let prog = parse(&src).expect("parse");
-            print!("{}", format_program(&prog));
+            print!("{}", sal_compiler::fmt::format_program_with_comments(&prog, &src));
         }
         Commands::Emit { kind, file } => {
             if kind == "ir" {

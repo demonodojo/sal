@@ -1,5 +1,4 @@
 # error: E_BORROW
-# selfhost-xfail: el borrowck del selfhost no rechaza mover un campo fuera de una referencia
 struct P
     name: String
     n: Int

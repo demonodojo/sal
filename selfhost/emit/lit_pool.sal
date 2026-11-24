@@ -4,6 +4,7 @@
 import "../ast/tast.sal"
 import "../ast/thash.sal"
 import "../ast/ttypes.sal"
+import "../ast/tytext.sal"
 import cenv
 
 # `globals`: the `static const` declarations of every literal so far. `texts` / `syms`: the
@@ -115,10 +116,11 @@ method LitPool.set_arena(&mut self, v: Int) -> Int ! alloc
     self.arena = v
     0
 
-# Starts the `keep` names of one function from its `keep` parameters.
+# Starts the `keep` names of one function from its `keep` parameters: the declared ones and,
+# in an `@arena` fn, a `&mut List` / `&mut Dict` (`infer_fn_modes` in src/ownership.rs).
 method LitPool.reset_keep(&mut self, params: &List[TParam]) -> Int ! alloc
     self.keep = List.new[String]()
-    pool_seed_keep(&mut self.keep, params, 0, params.len())
+    pool_seed_keep(&mut self.keep, params, 0, params.len(), self.arena)
 
 method LitPool.keep_add(&mut self, name: &String) -> Int ! alloc
     self.keep.push(name.dup())
@@ -177,14 +179,24 @@ fn pool_find(texts: &List[String], s: &String, i: Int, n: Int) -> Int ! alloc
     else
         pool_find(texts, s, i + 1, n)
 
-fn pool_seed_keep(keep: &mut List[String], params: &List[TParam], i: Int, n: Int) -> Int ! alloc
+fn pool_seed_keep(keep: &mut List[String], params: &List[TParam], i: Int, n: Int, arena: Int) -> Int ! alloc
     if i >= n
         0
     else
         pm = params.get(i)
-        if pm.mode == 3
+        if pm.mode == 3 || (arena == 1 && pool_mut_container(&pm.ty) == 1)
             keep.push(pm.name.dup())
-        pool_seed_keep(keep, params, i + 1, n)
+        pool_seed_keep(keep, params, i + 1, n, arena)
+
+fn pool_mut_container(ty: &String) -> Int ! alloc
+    if ty_is_mut_ref(ty) == 0
+        0
+    else
+        t = ty_deref(ty)
+        if t.slice(0, 4).eq("List") + t.slice(0, 4).eq("Dict") > 0
+            1
+        else
+            0
 
 fn pool_has(names: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
     if i >= n

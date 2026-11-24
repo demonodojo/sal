@@ -1,5 +1,4 @@
 # exit: 18
-# asan-xfail: Dict.get de un valor struct: el Option libera su caja, pero la copia del struct (desc_copy) no tiene quién la libere (sal_enum_free solo conoce String y enum)
 enum Option[T]
     None
     Some(T)

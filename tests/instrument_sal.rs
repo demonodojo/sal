@@ -139,6 +139,141 @@ fn run_strict(src: &str, tag: &str) -> std::process::Output {
         .expect("run")
 }
 
+/// SPEC «Memoria»: the constructor of a `frame` does not move its columns, so the column
+/// local is still released at scope end (the frame owns nothing).
+#[test]
+fn instrument_strict_frame_column_is_freed() {
+    let out = run_strict(
+        "frame Rows\n    val: F32\n\nfn main() -> Int ! alloc\n    v = tensor[[1.0, 2.0, 3.0]]\n    r = Rows(v)\n    mask = v != 2.0\n    _ = where(r, mask)\n    0\n",
+        "frame_column",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "frame column: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+}
+
+/// `xg = to gpu x` owns the tensor `x` moved into it; a tensor a user fn returns is the
+/// caller's, bound or discarded; the fn releases its own temporaries (`v * 2.0`).
+#[test]
+fn instrument_strict_tensor_moves_and_results_are_freed() {
+    let out = run_strict(
+        "fn scale(v: &Tensor[F32, 4] on gpu) -> Tensor[F32, 4] on gpu ! gpu\n    on gpu\n        v * 2.0 + v\n\nfn main() -> Int ! alloc, gpu\n    x = tensor[[1.0, 2.0, 3.0, 4.0]]\n    xg = to gpu x\n    _ = scale(&xg)\n    y = scale(&xg)\n    _ = scale(&y)\n    0\n",
+        "tensor_moves",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "tensor moves: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+}
+
+/// A tensor fn that goes through `emit_host_tensor_fn` (`relu`) returns mid-program: only the
+/// end of `main` checks for leaks, and every buffer moved through `to` is released once.
+#[test]
+fn instrument_strict_tensor_fn_through_places_is_clean() {
+    let src = std::fs::read_to_string(root().join("corpus/places.sal")).expect("read");
+    let out = run_strict(&src, "places");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "places: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+}
+
+/// `to cpu f(&g)`: the tensor `f` returns moves to the cpu (the runtime copies it by the size
+/// its heap recorded and frees the gpu one), so neither block outlives `main`.
+#[test]
+fn instrument_strict_to_of_fn_result_moves_it() {
+    let file = PathBuf::from(format!("/tmp/sal-strict-{}-to_fn_result.sal", std::process::id()));
+    std::fs::write(
+        &file,
+        "fn scale(v: &Tensor[F32, 4] on p) -> Tensor[F32, 4] on p\n    on p\n        v * 2.0\n\nfn main() -> Int ! alloc, gpu\n    x = tensor[[1.0, 2.0, 3.0, 4.0]]\n    g = to gpu x\n    y = to cpu scale(&g)\n    z = to cpu scale(&g)\n    _ = to gpu z\n    0\n",
+    )
+    .expect("write source");
+    let (llvm, bin) = compile_instrumented(&file);
+    assert!(llvm.contains("call ptr @sal_place_move("), "`to` of a fn result must move it:\n{llvm}");
+    let out = Command::new(&bin)
+        .env("SAL_INSTRUMENT_STRICT", "1")
+        .current_dir(root())
+        .output()
+        .expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "to of a fn result: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+}
+
+/// SPEC «Memoria»: a tensor passed by value moves into the callee, which releases it at scope
+/// end, or hands it back when it returns it (then the caller releases it once).
+#[test]
+fn instrument_strict_tensor_param_by_value_is_freed() {
+    let out = run_strict(
+        "fn total(v: Tensor[F32, 4] on cpu) -> Int ! alloc\n    on cpu\n        w = v * 2.0\n    0\n\nfn keep(v: Tensor[F32, 4] on cpu) -> Tensor[F32, 4] on cpu\n    v\n\nfn main() -> Int ! alloc\n    x = tensor[[1.0, 2.0, 3.0, 4.0]]\n    y = keep(x)\n    _ = keep(y)\n    a = tensor[[5.0, 6.0, 7.0, 8.0]]\n    total(a)\n",
+        "tensor_param",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "tensor param: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+}
+
+/// `to gpu load(..)` moves the loaded block to the gpu heap (the compiler does not know its
+/// size; the runtime does), and an elementwise op (`relu`) keeps its result on the place of
+/// its input: every bounds check of the gpu matmuls finds its block on the gpu.
+#[test]
+fn instrument_strict_transformer_gpu_keeps_places() {
+    let src = std::fs::read_to_string(root().join("examples/transformer_gpu.sal")).expect("read");
+    let out = run_strict(&src, "transformer_gpu");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stderr.contains("BAD_PLACE"), "bad place: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(stdout.contains("argmax=1 gpu=8"), "stdout={stdout} stderr={stderr}");
+}
+
+/// A body generic over `on p` with a `?` axis runs where its arguments are (the gpu) and reads
+/// the row count from the buffer it is handed; its result leaves the fused region before the
+/// region ends.
+#[test]
+fn instrument_strict_place_generic_fn_runs_where_its_args_are() {
+    let path = root().join("tests/lang/tensors/tensor_place_generic_dynamic_rows.sal");
+    let src = std::fs::read_to_string(path).expect("read");
+    let out = run_strict(&src, "place_generic");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("BAD_PLACE"), "bad place: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert_eq!(out.status.code(), Some(17), "place generic: {stderr}");
+}
+
+/// `corpus/load_salt.sal`: two `.salt` files loaded on the cpu, moved to the gpu and handed to a
+/// fn generic over its place and its rows; the result comes back to the cpu.
+#[test]
+fn instrument_strict_corpus_load_salt_runs() {
+    fn salt(path: &Path, dims: &[u64], payload: &[f32]) {
+        let mut b = b"SALT".to_vec();
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&[0u8, dims.len() as u8]);
+        for d in dims {
+            b.extend_from_slice(&d.to_le_bytes());
+        }
+        for v in payload {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        std::fs::write(path, b).expect("write salt");
+    }
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let eye: Vec<f32> = (0..16).map(|i| if i % 5 == 0 { 1.0 } else { 0.0 }).collect();
+    salt(&tmp.path().join("w.salt"), &[4, 4], &eye);
+    salt(&tmp.path().join("x.salt"), &[1, 4], &[1.0, -2.0, 3.0, 4.0]);
+    let (_llvm, bin) = compile_instrumented(&root().join("corpus/load_salt.sal"));
+    let out = Command::new(&bin)
+        .env("SAL_INSTRUMENT_STRICT", "1")
+        .current_dir(tmp.path())
+        .output()
+        .expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "load_salt: {stderr}");
+    assert!(!stderr.contains("\"code\""), "instrument event: {stderr}");
+}
+
 /// Locals the compiler frees at scope end leave no live block, even in strict mode.
 #[test]
 fn instrument_strict_freed_locals_are_clean() {
@@ -161,6 +296,20 @@ fn instrument_strict_arena_pages_are_clean() {
     assert!(out.status.code().is_some(), "arena crashed: {stderr}");
     assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
     assert!(!stderr.contains("DOUBLE_FREE"), "arena double free: {stderr}");
+}
+
+/// A second `@arena` call can map its page at the address the first one unmapped: the probe
+/// takes it as a new block, not a free of the old one (`sal_instrument_alloc`).
+#[test]
+fn instrument_strict_arena_page_reused_is_clean() {
+    let out = run_strict(
+        "@arena\nfn f(early: Int) -> Int\n    a = 1\n    r = &mut a\n    *r = 5\n    if early == 1\n        return *r\n    a\n\nfn main() -> Int\n    f(1) + f(0) + f(1)\n",
+        "arena_reuse",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(15), "arena reuse: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "arena double free: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
 }
 
 /// A string whose handle escapes (`str_as_int(&s)`) is never freed by the pass, and strict

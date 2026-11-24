@@ -1,0 +1,10 @@
+# exit: 2
+# the value of `on cpu` with a matmul is a tensor: `c - 3.0` subtracts from every element of
+# A x I = [[1, 2], [3, 4]], and the element nearest to 3 is the third
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    i = tensor[[1.0, 0.0], [0.0, 1.0]]
+    c = on cpu
+        matmul(a, i)
+    d = c - 3.0
+    argmax(-(d * d), 4)

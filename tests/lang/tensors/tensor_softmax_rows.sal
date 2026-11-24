@@ -1,10 +1,10 @@
-# exit: 2
-# each softmax row sums to 1 -> total 2
+# exit: 1
+# softmax over each row turns both rows into [0.269, 0.731]; minus 0.1 on the last element, the
+# largest is the second (over the columns it would be the third)
 fn main() -> Int ! alloc
     a = tensor[[1.0, 2.0], [3.0, 4.0]]
     i = tensor[[1.0, 0.0], [0.0, 1.0]]
-    e = tensor[[1.0, 0.0], [0.0, 0.0]]
+    k = tensor[[0.0, 0.0], [0.0, 0.1]]
     b = softmax(a, 1)
-    on cpu
-        matmul(b, i)
-    0
+    c = matmul(b, i)
+    argmax(c - k, 4)

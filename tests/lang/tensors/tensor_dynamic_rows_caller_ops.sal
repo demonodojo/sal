@@ -1,0 +1,11 @@
+# exit: 2
+# `double` returns a tensor with a `?` axis: in `main`, `y - 6.0` covers its four elements
+# [2, 4, 6, 8], and the one nearest to 6 is the third
+fn double(x: &Tensor[F32, ?, 2] on cpu) -> Tensor[F32, ?, 2] on cpu
+    x * 2.0
+
+fn main() -> Int ! alloc
+    a = tensor[[1.0, 2.0], [3.0, 4.0]]
+    y = double(&a)
+    d = y - 6.0
+    argmax(-(d * d), 4)

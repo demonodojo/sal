@@ -1,5 +1,4 @@
 # error: E_TYPE
-# selfhost-xfail: el infer del selfhost tipa `get` como `T`, no como `&T`
 fn main() -> Int ! alloc
     xs = List.new[String]()
     xs.push(d"ab".dup())

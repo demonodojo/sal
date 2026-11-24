@@ -40,6 +40,11 @@ thread_local! {
     static VARIANT_CTORS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns whose `String` result is always fresh: the caller owns it (see `owned_return_fns`).
     static OWNED_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// Per user fn, which parameters are references (`&T`/`&mut T`): a temporary passed there is
+    /// still the caller's to release.
+    static REF_PARAMS: std::cell::RefCell<HashMap<String, Vec<bool>>> = std::cell::RefCell::new(HashMap::new());
+    /// The owned fns found so far while `owned_return_fns` reaches its fixed point.
+    static OWNED_SEED: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns whose enum result is built by the fn on every path: the caller owns the box.
     /// A fn that hands back a borrowed enum (a reference parameter or its field) is not one.
     static FRESH_ENUM_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
@@ -57,6 +62,13 @@ thread_local! {
     /// Names of the user fns (of the program and of the modules it calls). A container one
     /// returns by value is moved to the caller (SPEC «Memoria»): the caller owns and releases it.
     static USER_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// Frames (a `frame` item, or a struct with a `Tensor` field): their constructor does not
+    /// move its columns (SPEC «Memoria»), so the columns stay their locals' to release.
+    static FRAMES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
+fn is_frame_ctor(name: &str) -> bool {
+    FRAMES.with(|f| f.borrow().contains(name))
 }
 
 /// The release of the container a user fn returns by value, from the type of the call.
@@ -76,8 +88,36 @@ fn user_call_kind(name: &str, call: &Expr) -> Option<&'static str> {
             _ if is_ownable_enum(&ty) && fresh_enum => Some("enum_free"),
             _ => None,
         },
+        // A tensor a user fn returns by value is the caller's (SPEC «Memoria»): a borrowed
+        // parameter cannot be handed back, so it is a buffer the callee allocated or was given.
+        Type::Tensor { .. } => Some("tensor_free"),
         _ => None,
     }
+}
+
+/// The release of the payload `try f()` moves out of the box `f` built (`retk:`/`tryk:` in
+/// selfhost/ir/drops.sal): a `String`, container or ownable enum by value.
+fn try_payload_kind(init: &Expr, inner: &Expr) -> Option<(&'static str, bool)> {
+    let Expr::Call { func, .. } = inner else { return None };
+    let Expr::Ident { name, .. } = func.as_ref() else { return None };
+    if !matches!(user_call_kind(name, inner), Some("enum_free")) {
+        return None;
+    }
+    if !matches!(type_at(inner)?, Type::Named { name: ty, .. } if ty == "Option" || ty == "Result") {
+        return None;
+    }
+    let kind = match type_at(init)? {
+        Type::Named { name: ty, .. } => match ty.as_str() {
+            "String" => "free",
+            "List" => "list_free",
+            "Dict" => "dict_free",
+            "Bytes" => "bytes_free",
+            _ if is_ownable_enum(&ty) => "enum_free",
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((kind, false))
 }
 
 /// The release of what `t.join()` hands back: the value `f` returned on the thread.
@@ -347,9 +387,12 @@ fn reads_string_arg(name: &str) -> bool {
             | "write_file"
             | "mkdir_p"
             | "path_readable"
+            | "regex_valid"
             | "getenv"
             | "str_slice"
             | "read_file"
+            // `load(path)` reads the path, as `read_file` does.
+            | "load"
     )
 }
 
@@ -468,6 +511,19 @@ fn is_place(e: &Expr) -> bool {
 }
 
 /// A call to a user fn whose `String` result the caller owns (see `owned_return_fns`).
+/// Argument `i` of the user fn `name` is a reference parameter (`REF_PARAMS`).
+fn lends_to_user_fn(name: &str, i: usize) -> bool {
+    REF_PARAMS.with(|r| r.borrow().get(name).and_then(|v| v.get(i)).copied().unwrap_or(false))
+}
+
+/// A user fn call that hands over a value the caller releases: a fresh enum box, an owned
+/// `String`, or a container (`retk:`/`ownfn:` in selfhost/ir/drops.sal).
+fn user_owned_temp(e: &Expr) -> bool {
+    let Expr::Call { func, .. } = e else { return false };
+    let Expr::Ident { name, .. } = func.as_ref() else { return false };
+    is_owned_call(e) || matches!(user_call_kind(name, e), Some("enum_free" | "list_free" | "dict_free" | "bytes_free"))
+}
+
 fn is_owned_call(e: &Expr) -> bool {
     matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if OWNED_FNS.with(|f| f.borrow().contains(name))))
 }
@@ -601,7 +657,10 @@ impl Hoist {
                         // reader builtin only reads (an `any` method or a user fn).
                         let any_temp = reads_container_arg(&callee, i)
                             && (any_call_kind(&a).is_some() || user_container_call(&a));
-                        if ((reads || reads_key_arg(&callee, i)) && is_fresh_temp(&a)) || any_temp {
+                        // `Opt.of(3).get()`: a value a user fn hands over, lent to another
+                        // user fn's `&self` / `&T` parameter, is dropped after the statement.
+                        let lent = lends_to_user_fn(&callee, i) && user_owned_temp(&a);
+                        if ((reads || reads_key_arg(&callee, i)) && is_fresh_temp(&a)) || any_temp || lent {
                             self.n += 1;
                             let name = format!("__tmp{}", self.n);
                             let asp = a.span();
@@ -783,9 +842,35 @@ pub fn insert_drops(
     EXPR_TYPES.with(|t| *t.borrow_mut() = types.clone());
     collect_ownable(structs, enums);
     STRUCT_NAMES.with(|n| *n.borrow_mut() = structs.keys().cloned().collect());
+    let frames: HashSet<String> = structs
+        .values()
+        .filter(|sd| sd.fields.iter().any(|f| matches!(f.ty, Type::Tensor { .. })))
+        .map(|sd| sd.name.clone())
+        .chain(prog.items.iter().filter_map(|i| if let Item::Frame(f) = i { Some(f.name.clone()) } else { None }))
+        .collect();
+    FRAMES.with(|f| *f.borrow_mut() = frames);
     collect_enum_types(enums);
-    OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog, callees));
+    // Every enum the module sees, imported ones too: `None` of the prelude's `Option` is a
+    // variant pattern (it reads the box), not a binding of the whole scrutinee.
+    let mut variants = Variants::new();
+    let mut defs: VariantDefs = HashMap::new();
+    let local_enums = prog.items.iter().filter_map(|i| if let Item::Enum(e) = i { Some(e) } else { None });
+    for e in enums.values().chain(local_enums) {
+        for v in &e.variants {
+            let owned = v.fields.iter().map(|t| !is_copy_scalar(t)).collect();
+            variants.insert(v.name.clone(), owned);
+            defs.entry(v.name.clone()).or_insert_with(|| (e.type_params.clone(), v.fields.clone()));
+        }
+    }
+    let user_fns: HashSet<String> = prog
+        .items
+        .iter()
+        .filter_map(|i| if let Item::Fn(f) = i { Some(f.name.clone()) } else { None })
+        .chain(callees.iter().map(|f| f.name.clone()))
+        .collect();
+    USER_FNS.with(|f| *f.borrow_mut() = user_fns);
     FRESH_ENUM_FNS.with(|f| *f.borrow_mut() = fresh_enum_return_fns(prog, callees, enums));
+    OWNED_FNS.with(|f| *f.borrow_mut() = owned_return_fns(prog, callees, &variants, &defs));
     PASSTHRU_CALLS.with(|c| c.borrow_mut().clear());
     PASSTHRU_FNS.with(|m| {
         let mut out = crate::ir::returns_param_map(prog);
@@ -797,13 +882,15 @@ pub fn insert_drops(
         out.retain(|_, v| !v.is_empty());
         *m.borrow_mut() = out;
     });
-    let user_fns: HashSet<String> = prog
-        .items
-        .iter()
-        .filter_map(|i| if let Item::Fn(f) = i { Some(f.name.clone()) } else { None })
-        .chain(callees.iter().map(|f| f.name.clone()))
-        .collect();
-    USER_FNS.with(|f| *f.borrow_mut() = user_fns);
+    REF_PARAMS.with(|r| {
+        *r.borrow_mut() = prog
+            .items
+            .iter()
+            .filter_map(|i| if let Item::Fn(f) = i { Some(f) } else { None })
+            .chain(callees.iter().copied())
+            .map(|f| (f.name.clone(), f.params.iter().map(|p| matches!(p.ty, Type::Ref { .. })).collect()))
+            .collect();
+    });
     let mut hoisted = prog.clone();
     for item in &mut hoisted.items {
         if let Item::Fn(f) = item {
@@ -833,14 +920,9 @@ pub fn insert_drops(
             f.body = Hoist { n: 0, fn_name: f.name.clone(), elems }.block(body);
         }
     }
-    // Every enum the module sees, imported ones too: `None` of the prelude's `Option` is a
-    // variant pattern (it reads the box), not a binding of the whole scrutinee.
-    let mut variants = Variants::new();
-    let local_enums = prog.items.iter().filter_map(|i| if let Item::Enum(e) = i { Some(e) } else { None });
-    for e in enums.values().chain(local_enums) {
-        for v in &e.variants {
-            let owned = v.fields.iter().map(|t| !is_copy_scalar(t)).collect();
-            variants.insert(v.name.clone(), owned);
+    for item in &mut hoisted.items {
+        if let Item::Fn(f) = item {
+            take_moved_payloads(f, &variants, &defs);
         }
     }
     let ro = read_only_params(prog, &variants, callees);
@@ -861,12 +943,31 @@ pub fn insert_drops(
 /// Computed from the builtins only, so the result does not depend on the fn order.
 /// The module's functions, and the callees of other modules (`value_kind` of
 /// `std/reflect/reflect.sal`), that hand the caller a `String` it owns.
-fn owned_return_fns(prog: &Program, callees: &[&FnDef]) -> HashSet<String> {
+/// A call to a fn already in the set counts as fresh too (`OWNED_SEED`): the set grows to a fixed
+/// point, so `fn f() -> String` whose tail is `g()` is owned when `g` is.
+fn owned_return_fns(prog: &Program, callees: &[&FnDef], variants: &Variants, defs: &VariantDefs) -> HashSet<String> {
     let own = prog.items.iter().filter_map(|i| if let Item::Fn(f) = i { Some(f) } else { None });
-    own.chain(callees.iter().copied())
-        .filter(|f| crate::string_expr::is_string_type(&f.ret) && owned_return_body(f))
-        .map(|f| f.name.clone())
-        .collect()
+    // Read after `take_moved_payloads`: `match t { V(s) => s }` hands over the payload.
+    let fns: Vec<FnDef> = own
+        .chain(callees.iter().copied())
+        .filter(|f| crate::string_expr::is_string_type(&f.ret))
+        .map(|f| {
+            let mut f = f.clone();
+            take_moved_payloads(&mut f, variants, defs);
+            f
+        })
+        .collect();
+    let mut set = HashSet::new();
+    loop {
+        OWNED_SEED.with(|s| *s.borrow_mut() = set.clone());
+        let next: HashSet<String> = fns.iter().filter(|f| owned_return_body(f)).map(|f| f.name.clone()).collect();
+        if next == set {
+            break;
+        }
+        set = next;
+    }
+    OWNED_SEED.with(|s| s.borrow_mut().clear());
+    set
 }
 
 fn owned_block_string(b: &Block, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
@@ -916,7 +1017,7 @@ fn owned_return_body(f: &FnDef) -> bool {
                     } else if binds_once(&b.stmts, name) {
                         fresh_locals.insert(name.clone());
                     }
-                } else if fresh_builtin(init) && binds_once(&b.stmts, name) {
+                } else if owned_fresh(init) && binds_once(&b.stmts, name) {
                     fresh_locals.insert(name.clone());
                 }
             }
@@ -928,7 +1029,7 @@ fn owned_return_body(f: &FnDef) -> bool {
                     } else if binds_once(&b.stmts, name) {
                         fresh_locals.insert(name.clone());
                     }
-                } else if fresh_builtin(value) && binds_once(&b.stmts, name) {
+                } else if owned_fresh(value) && binds_once(&b.stmts, name) {
                     fresh_locals.insert(name.clone());
                 }
             }
@@ -952,10 +1053,10 @@ fn owned_return_body(f: &FnDef) -> bool {
 /// already inside one) is a fresh builtin value.
 fn nested_assigns_fresh(stmts: &[Stmt], name: &str, nested: bool) -> bool {
     stmts.iter().all(|st| match st {
-        Stmt::Let { name: n, init, .. } => (!nested || n != name || fresh_builtin(init)) && expr_assigns_fresh(init, name),
+        Stmt::Let { name: n, init, .. } => (!nested || n != name || owned_fresh(init)) && expr_assigns_fresh(init, name),
         Stmt::Assign { target, value, .. } => {
             let own = matches!(target, Expr::Ident { name: n, .. } if n == name);
-            (!nested || !own || fresh_builtin(value)) && expr_assigns_fresh(value, name)
+            (!nested || !own || owned_fresh(value)) && expr_assigns_fresh(value, name)
         }
         Stmt::Expr(e) => expr_assigns_fresh(e, name),
         Stmt::Return { value: Some(v), .. } => expr_assigns_fresh(v, name),
@@ -1050,6 +1151,12 @@ fn expr_blocks<'a>(e: &'a Expr, out: &mut Vec<&'a Block>) {
     }
 }
 
+/// A fresh builtin value, or a call to a fn `owned_return_fns` has already found owned.
+fn owned_fresh(e: &Expr) -> bool {
+    fresh_builtin(e)
+        || matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if OWNED_SEED.with(|s| s.borrow().contains(name))))
+}
+
 /// A builtin whose result is a fresh `String` (see `fresh_kind`), without the user fns.
 fn fresh_builtin(e: &Expr) -> bool {
     matches!(fresh_kind_builtin(e), Some("free"))
@@ -1058,7 +1165,7 @@ fn fresh_builtin(e: &Expr) -> bool {
 /// A `String` the caller owns: a fresh builtin, a fresh local, or a field read of a parameter
 /// (`return n.name` after `take`).
 fn owned_string_return(e: &Expr, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
-    if fresh_builtin(e) || is_any_string_call(e) {
+    if owned_fresh(e) || is_any_string_call(e) {
         return true;
     }
     if matches!(e, Expr::Ident { name, .. } if fresh_locals.contains(name)) {
@@ -1077,6 +1184,7 @@ fn fresh_kind_builtin(e: &Expr) -> Option<&'static str> {
         Expr::String { .. } => Some("free"),
         Expr::Call { func, .. } => match func.as_ref() {
             Expr::Ident { name, .. } if returns_fresh(name) => Some("free"),
+            Expr::Ident { name, .. } if name == "enum_take" => taken_kind(e),
             _ => None,
         },
         Expr::Binary { op: BinOp::Add, .. } if add_is_string_chain(e) => Some("free"),
@@ -1283,6 +1391,7 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "write_file"
             | "mkdir_p"
             | "path_readable"
+            | "regex_valid"
             | "getenv"
             | "map_get"
             | "read_file"
@@ -1298,6 +1407,7 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "dict_keys"
             | "dict_values"
             | "enum_owns"
+            | "enum_take"
             | "enum_box_id"
             | "list_push_share"
             | "str_share"
@@ -1325,6 +1435,10 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "rope"
             | "softmax"
             | "argmax"
+            // `reduce` reads its input as `is_borrow_fn` in src/ownership.rs says.
+            | "reduce"
+            // `load(path)` reads the path, as `read_file` does.
+            | "load"
     )
 }
 
@@ -1357,7 +1471,10 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             let Expr::Ident { name, .. } = func.as_ref() else {
                 return any_call_kind(init).map(|k| (k, false));
             };
-            if returns_fresh(name) || OWNED_FNS.with(|f| f.borrow().contains(name)) || is_passthru_fresh(init) {
+            if name == "enum_take" {
+                // The payload `take_moved_payloads` moved out of a box the fn owns.
+                taken_kind(init).map(|k| (k, false))
+            } else if returns_fresh(name) || OWNED_FNS.with(|f| f.borrow().contains(name)) || is_passthru_fresh(init) {
                 Some(("free", false))
             } else if variants.get(name.as_str()).is_some_and(|f| !f.is_empty()) {
                 Some(("enum_free", false))
@@ -1406,14 +1523,21 @@ fn fresh_kind(init: &Expr, variants: &Variants) -> Option<(&'static str, bool)> 
             }
         }
         Expr::Binary { op: BinOp::Add, .. } if add_is_string_chain(init) => Some(("free", false)),
+        // `try f()` on the `Option`/`Result` a user fn builds on every path: the IR releases the
+        // box's shell and the payload moves out to whoever binds it.
+        Expr::Try { expr: inner, .. } => try_payload_kind(init, inner),
         Expr::TensorLit { .. } => Some(("tensor_free", false)),
-        Expr::Match { scrutinee, .. } => match scrutinee.as_ref() {
-            Expr::Call { func, .. } => {
-                matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get" || name == "chan_recv")
-                    .then_some(("enum_free", false))
-            }
-            _ => None,
-        },
+        // `r = match t { V(s) => s, W => d"x" }` (after `take_moved_payloads`) or
+        // `match o { Some(s) => s.clone(), _ => d"?" }`: every arm hands over a fresh value of
+        // one release kind, which whoever binds the `match` owns.
+        Expr::Match { scrutinee, arms, .. }
+            if !arms.is_empty() && !is_recv_call(scrutinee) && arms.iter().all(|a| fresh_kind(&a.body, variants).is_some()) =>
+        {
+            let mut kinds = arms.iter().map(|a| fresh_kind(&a.body, variants).map(|(k, _)| k));
+            let first = kinds.next()??;
+            kinds.all(|k| k == Some(first)).then_some((first, false))
+        }
+        Expr::Match { scrutinee, .. } => is_recv_call(scrutinee).then_some(("enum_free", false)),
         _ => None,
     }
 }
@@ -1694,7 +1818,8 @@ fn expr(e: &Expr, f: &mut Facts) {
             }
         }
         Expr::Call { func, args, .. } => {
-            let borrow = matches!(func.as_ref(), Expr::Ident { name, .. } if borrows_args(name));
+            // `Rows(v)` of a frame reads its columns: `v` stays the local's (SPEC «Memoria»).
+            let borrow = matches!(func.as_ref(), Expr::Ident { name, .. } if borrows_args(name) || is_frame_ctor(name));
             // Constructor arguments are hard moves. Names of another module are qualified (`mod__P`).
             let hard = matches!(func.as_ref(), Expr::Ident { name, .. }
                 if is_ownable_struct(name) || is_ownable_struct(name.rsplit("__").next().unwrap_or(name)));
@@ -2036,8 +2161,8 @@ fn pattern(p: &Pattern, f: &mut Facts) {
     }
 }
 
-/// `list_push(xs, v)` (also `list_set`, `dict_put`) as a statement, or bound to
-/// a `_name`, discards the returned alias of `xs`, so `xs` is only borrowed there.
+/// `list_push(xs, v)` (also `list_set`, `dict_put`) as a statement, or bound to a name, gives
+/// `Unit` (SPEC «Tipos»), not an alias of `xs`: `xs` is only borrowed there.
 fn push_stmt(e: &Expr, f: &mut Facts) -> bool {
     let Expr::Call { func, args, .. } = e else {
         return false;
@@ -2107,7 +2232,9 @@ fn block_with(b: &Block, discard_tail: bool, f: &mut Facts) {
             Stmt::Let { name, init, span, .. } => {
                 f.cur = live.then(|| stmt_key(*span));
                 f.bind(name);
-                top(init, ArgMove::TakeFields, f);
+                if !push_stmt(init, f) {
+                    top(init, ArgMove::TakeFields, f);
+                }
             }
             Stmt::Expr(e) => {
                 f.cur = live.then(|| stmt_key(e.span()));
@@ -2122,8 +2249,8 @@ fn block_with(b: &Block, discard_tail: bool, f: &mut Facts) {
                 } else {
                     expr(target, f);
                 }
-                let discard = matches!(target, Expr::Ident { name, .. } if name.starts_with('_'));
-                if !(discard && push_stmt(value, f)) {
+                let bound = matches!(target, Expr::Ident { .. });
+                if !(bound && push_stmt(value, f)) {
                     top(value, ArgMove::TakeFields, f);
                 }
             }
@@ -2227,6 +2354,30 @@ struct Ctx<'a> {
     /// Locals declared `let x: any[P] = …`: each binding is a box the local owns, and a
     /// reassignment (`x = T(..)`, boxed by the coercion) releases the old box first.
     any_locals: HashSet<String>,
+    /// Struct values the fn owns (a by-value parameter, a local bound once to a constructor or
+    /// to a user fn's result): `n = p.name` moves the field out, the struct tail of the lowering
+    /// skips it (`FieldReads`), and `n` releases it (SPEC «Memoria»: partial move).
+    owned_structs: HashSet<String>,
+}
+
+/// The struct values `f` owns whose fields can be moved out (`Ctx::owned_structs`).
+fn owned_struct_locals(f: &FnDef) -> HashSet<String> {
+    let is_struct = |t: &Type| {
+        matches!(t, Type::Named { name, args, .. } if args.is_empty() && STRUCT_NAMES.with(|s| s.borrow().contains(name)))
+    };
+    let mut out: HashSet<String> = f.params.iter().filter(|p| is_struct(&p.ty)).map(|p| p.name.clone()).collect();
+    let mut inits = HashMap::new();
+    binding_inits(&f.body, &mut inits);
+    for (name, es) in inits {
+        let [init] = es.as_slice() else { continue };
+        let Expr::Call { func, .. } = init else { continue };
+        let Expr::Ident { name: callee, .. } = func.as_ref() else { continue };
+        let maker = STRUCT_NAMES.with(|s| s.borrow().contains(callee)) || USER_FNS.with(|u| u.borrow().contains(callee));
+        if maker && type_at(init).is_some_and(|t| is_struct(&t)) && !f.params.iter().any(|p| p.name == name) {
+            out.insert(name);
+        }
+    }
+    out
 }
 
 /// Names bound first to references and then exactly once to an owned value, every binding a
@@ -2380,7 +2531,7 @@ fn rebound_locals(body: &Block, variants: &Variants) -> HashSet<String> {
                 return false;
             }
             let Some((k, _)) = fresh_kind(es[0], variants) else { return false };
-            matches!(k, "free" | "list_free" | "dict_free" | "bytes_free")
+            matches!(k, "free" | "list_free" | "dict_free" | "bytes_free" | "tensor_free")
                 && es.iter().all(|e| {
                     struct_copy_kind(name, e).is_none()
                         && !matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop"))
@@ -2515,7 +2666,10 @@ impl Ctx<'_> {
         };
         let (kind, owned) = match elem_release.or_else(|| struct_copy_kind(name, init)) {
             Some(k) => (k, false),
-            None => match fresh_kind(init, &self.facts.variants) {
+            None => match fresh_kind(init, &self.facts.variants)
+                .or_else(|| self.moved_field_kind(init))
+                .or_else(|| self.to_tensor_kind(init).then_some(("tensor_free", false)))
+            {
                 Some(k) => k,
                 None => return self.struct_glue_candidate(name, ty, init),
             },
@@ -2539,6 +2693,46 @@ impl Ctx<'_> {
             && (self.binds_once(name) || self.rebound.contains(name))
             && (!self.facts.escaped.contains(name) || self.facts.box_shell.contains(name));
         ok.then_some((kind, self.facts.soft.contains(name)))
+    }
+
+    /// `y = to p e` hands `y` a tensor it owns when `e` is one: a literal, a user fn's tensor
+    /// result, or a local released with `tensor_free` (`to` moves it, SPEC «Memoria»).
+    fn to_tensor_kind(&self, init: &Expr) -> bool {
+        let Expr::To { expr, .. } = init else { return false };
+        match expr.as_ref() {
+            Expr::TensorLit { .. } => true,
+            Expr::To { .. } => self.to_tensor_kind(expr),
+            Expr::Call { func, .. } => {
+                matches!(func.as_ref(), Expr::Ident { name, .. } if user_call_kind(name, expr) == Some("tensor_free"))
+            }
+            Expr::Ident { name: src, .. } => self.live.iter().rev().any(|(l, k, _)| l == src && *k == "tensor_free"),
+            _ => false,
+        }
+    }
+
+    /// `n = p.name` (`p.a.b`) on a struct the fn owns: the release of the field moved out.
+    fn moved_field_kind(&self, init: &Expr) -> Option<(&'static str, bool)> {
+        let Expr::Field { .. } = init else { return None };
+        let mut root = init;
+        while let Expr::Field { base, .. } = root {
+            root = base;
+        }
+        let Expr::Ident { name: r, .. } = root else { return None };
+        if !self.owned_structs.contains(r) {
+            return None;
+        }
+        let kind = match type_at(init)? {
+            Type::Named { name: ty, args, .. } => match ty.as_str() {
+                "String" if args.is_empty() => "free",
+                "List" => "list_free",
+                "Dict" => "dict_free",
+                "Bytes" => "bytes_free",
+                _ if args.is_empty() && is_ownable_enum(&ty) => "enum_free",
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some((kind, false))
     }
 
     /// A struct local with glue that only some paths move (a branch tail returns it): released by
@@ -3130,6 +3324,7 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
         shell_freed: HashSet::new(),
         rebound: rebound_locals(&f.body, variants),
         any_locals: any_locals(&f.body),
+        owned_structs: owned_struct_locals(f),
     };
     {
         let mut inits = HashMap::new();
@@ -3140,7 +3335,7 @@ fn drop_fn(f: &mut FnDef, variants: &Variants, ro: &ReadOnly) {
             }
         }
     }
-    // A by-value `String`/`List`/`Dict` parameter moves into the fn: the fn releases it at
+    // A by-value `String`/`List`/`Dict`/tensor parameter moves into the fn: the fn releases it at
     // scope end unless it moved it. Without the moved set there is nothing to decide by.
     let mark = cx.live.len();
     // A parameter moved on some path is released behind its flag, set on entry (see `soft`).
@@ -3208,6 +3403,8 @@ fn owned_param_release(ty: &Type) -> Option<&'static str> {
         // A generic enum (`Option[String]`, `Tree[T]` instantiated) has one representation for
         // every type argument: its box is released alike.
         Type::Named { name, .. } if is_ownable_enum(name) => Some("enum_free"),
+        // A tensor is an owned buffer: given by value, the callee releases it (SPEC «Memoria»).
+        Type::Tensor { .. } => Some("tensor_free"),
         _ => None,
     }
 }
@@ -3375,6 +3572,19 @@ fn drop_escaped_from_live(cx: &mut Ctx) {
 /// The branch tails of an `if` statement that hold something to release become the last
 /// statement of their branch: nobody reads the value of the `if`. A nested `if` tail stays where
 /// it is and gets the same treatment.
+/// `xs.pop()` as a statement of its own, from a list this fn does not own (a `&mut List`
+/// parameter, a field): the popped element is dropped where it is discarded, as in Rust. The
+/// runtime releases it only when the list owns its elements (`sal_list_pop_drop`).
+fn pop_drop(e: Expr) -> Expr {
+    match e {
+        Expr::Call { func, type_args, args, span } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "list_pop") && args.len() == 1 => {
+            let fspan = func.span();
+            Expr::Call { func: Box::new(Expr::Ident { name: "list_pop_drop".into(), span: fspan }), type_args, args, span }
+        }
+        e => e,
+    }
+}
+
 fn discard_branch_tails(e: &mut Expr, cx: &Ctx) {
     let Expr::If { then_block, elsifs, else_block, .. } = e else {
         return;
@@ -3543,7 +3753,7 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
                         stmts.push(Stmt::Let { name: t.clone(), ty: None, init, frozen: false, stack: false, span });
                         stmts.push(release(&t, k, false, false, span));
                     }
-                    None => stmts.push(Stmt::Expr(xform_expr(e, cx))),
+                    None => stmts.push(Stmt::Expr(xform_expr(pop_drop(e), cx))),
                 }
                 clear_moved(cx, stmt_key(span), span, &mut stmts);
                 drop_escaped_from_live(cx);
@@ -3632,3 +3842,140 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
     Block { stmts, tail, span: b.span }
 }
 
+
+/// The release of what `enum_take(t, i)` moves out: by the payload's type.
+fn taken_kind(e: &Expr) -> Option<&'static str> {
+    match type_at(e)? {
+        Type::Named { name, args, .. } => match name.as_str() {
+            "String" if args.is_empty() => Some("free"),
+            "List" => Some("list_free"),
+            "Dict" => Some("dict_free"),
+            "Bytes" => Some("bytes_free"),
+            _ if is_ownable_enum(&name) => Some("enum_free"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Enum values the fn owns whose payload a `match` can move out: a by-value parameter of an enum
+/// type, or a local bound once to a variant with fields or to a user fn that builds the enum.
+/// The value is `Some(true)` when its type arguments are known from a signature (the parameter's
+/// type, the fn's result), which a generic payload (`Some(s)` of `Option[String]`) needs.
+fn owned_enum_locals(f: &FnDef, variants: &Variants) -> HashMap<String, bool> {
+    let mut out = HashMap::new();
+    for p in &f.params {
+        if let Type::Named { name, .. } = &p.ty {
+            if is_ownable_enum(name) {
+                out.insert(p.name.clone(), true);
+            }
+        }
+    }
+    let mut inits = HashMap::new();
+    binding_inits(&f.body, &mut inits);
+    for (name, es) in inits {
+        if f.params.iter().any(|p| p.name == name) {
+            continue;
+        }
+        let [Expr::Call { func, .. }] = es.as_slice() else { continue };
+        let Expr::Ident { name: callee, .. } = func.as_ref() else { continue };
+        if variants.get(callee.as_str()).is_some_and(|v| !v.is_empty()) {
+            out.insert(name, false);
+        } else if FRESH_ENUM_FNS.with(|s| s.borrow().contains(callee)) && USER_FNS.with(|u| u.borrow().contains(callee)) {
+            out.insert(name, true);
+        }
+    }
+    out
+}
+
+/// Variant name -> (type parameters of its enum, declared field types).
+type VariantDefs = HashMap<String, (Vec<String>, Vec<Type>)>;
+
+/// `match t { V(s, ..) => s, … }` on an enum value the fn owns: the arm moves the payload out
+/// (`enum_take(t, i)` clears the box's ownership of that field), so the scope end releases `t`
+/// with what it still owns and whoever binds the result owns the payload (SPEC «Memoria»). A
+/// generic field needs the type arguments of `t` from a signature (`owned_enum_locals`).
+fn take_moved_payloads(f: &mut FnDef, variants: &Variants, defs: &VariantDefs) {
+    let owned = owned_enum_locals(f, variants);
+    if !owned.is_empty() {
+        take_block(&mut f.body, &owned, variants, defs);
+    }
+}
+
+fn take_block(b: &mut Block, owned: &HashMap<String, bool>, variants: &Variants, defs: &VariantDefs) {
+    for st in &mut b.stmts {
+        match st {
+            Stmt::Let { init: e, .. } | Stmt::Expr(e) | Stmt::Assign { value: e, .. } => take_expr(e, owned, variants, defs),
+            Stmt::Return { value: Some(e), .. } => take_expr(e, owned, variants, defs),
+            Stmt::While { cond, body, .. } => {
+                take_expr(cond, owned, variants, defs);
+                take_block(body, owned, variants, defs);
+            }
+            _ => {}
+        }
+    }
+    if let Some(t) = &mut b.tail {
+        take_expr(t, owned, variants, defs);
+    }
+}
+
+fn take_expr(e: &mut Expr, owned: &HashMap<String, bool>, variants: &Variants, defs: &VariantDefs) {
+    match e {
+        Expr::Match { scrutinee, arms, .. } => {
+            take_expr(scrutinee, owned, variants, defs);
+            let scrut = match scrutinee.as_ref() {
+                Expr::Ident { name, span } => owned.get(name).map(|known| (name.clone(), *span, *known)),
+                _ => None,
+            };
+            for a in arms.iter_mut() {
+                if let Some((t, tsp, known)) = &scrut {
+                    if let Some(i) = taken_field(a, variants, defs, *known) {
+                        let sp = a.body.span();
+                        a.body = Expr::Call {
+                            func: Box::new(Expr::Ident { name: "enum_take".into(), span: sp }),
+                            type_args: vec![],
+                            args: vec![Expr::Ident { name: t.clone(), span: *tsp }, Expr::Int { value: i as i64, span: sp }],
+                            span: sp,
+                        };
+                        continue;
+                    }
+                }
+                take_expr(&mut a.body, owned, variants, defs);
+            }
+        }
+        Expr::Block(b) | Expr::On { body: b, .. } => take_block(b, owned, variants, defs),
+        Expr::If { cond, then_block, elsifs, else_block, .. } => {
+            take_expr(cond, owned, variants, defs);
+            take_block(then_block, owned, variants, defs);
+            for el in elsifs {
+                take_block(&mut el.body, owned, variants, defs);
+            }
+            if let Some(b) = else_block {
+                take_block(b, owned, variants, defs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The arm is `V(.., s, ..) => s` with `s` an owned field the release kinds cover: its index.
+fn taken_field(a: &MatchArm, variants: &Variants, defs: &VariantDefs, known: bool) -> Option<usize> {
+    let Expr::Ident { name: s, .. } = &a.body else { return None };
+    let Pattern::Variant { name: v, args, .. } = &a.pattern else { return None };
+    let i = args.iter().position(|p| matches!(p, Pattern::Ident(n, _) if n == s))?;
+    if !variants.get(v.as_str()).and_then(|o| o.get(i)).copied().unwrap_or(false) {
+        return None;
+    }
+    let (tparams, fields) = defs.get(v)?;
+    let generic = matches!(fields.get(i)?, Type::Named { name, args, .. } if args.is_empty() && tparams.contains(name));
+    if generic && !known {
+        return None;
+    }
+    taken_kind(&a.body)?;
+    Some(i)
+}
+
+/// `dict_get(..)` / `chan_recv(..)`: a fresh `Option` box.
+fn is_recv_call(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. } if matches!(func.as_ref(), Expr::Ident { name, .. } if name == "dict_get" || name == "chan_recv"))
+}

@@ -57,4 +57,4 @@ Un test que solo pasa con el código viejo no cuenta; ver [sal-autoridad](../sal
 
 ## Huecos conocidos hoy
 
-Hay ficheros con `xfail` o `selfhost-xfail` (p. ej. `struct_value_alias`, `struct_enum_payload`, varios `tensor_*`). Antes de afirmar que algo está soportado, mira si su test lleva la marca. El subplan 07 dice que `tests/lang` ya no tiene huecos del arranque; eso quedó atrás: manda lo que hay en los ficheros (`grep -rl 'xfail' tests/lang`).
+Hoy (2026-11-24) ningún fichero de `tests/lang` lleva `# xfail:` ni `# selfhost-xfail:`: el selfhost cumple toda la conformidad (borrowck, `@arena` con `keep`, calificación entre módulos, regex inválidas, tensores con filas `?` y `on p`). Un hueco nuevo se marca como arriba. Antes de afirmar que algo está soportado, mira si su test lleva la marca: manda lo que hay en los ficheros (`grep -rl 'xfail' tests/lang`).

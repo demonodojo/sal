@@ -65,7 +65,7 @@ fn exec_column_gpu_emulated_links() {
         art.llvm
     );
     assert!(
-        art.llvm.contains("call void @sal_on_enter(i32 1)"),
+        art.llvm.contains("call void @sal_on_enter(i64 1)"),
         "expected gpu on_enter in LLVM:\n{}",
         art.llvm
     );

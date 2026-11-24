@@ -1,0 +1,25 @@
+# exit: 12
+# `Dict.get` de un valor struct con un campo `String` da un `Some` dueño de una copia: el
+# `Some` libera la copia con su cadena y el diccionario conserva la suya (SPEC «Memoria»).
+enum Option[T]
+    None
+    Some(T)
+
+struct Q
+    name: String
+    n: Int
+
+fn main() -> Int ! alloc
+    qs = Dict.new[String, Q]()
+    qs.put(&"a", Q("hello".clone(), 3))
+    qs.put(&"b", Q("xy".clone(), 2))
+    first = match qs.get(&"a")
+        Some(q) => q.name.len() + q.n
+        None => 0
+    second = match qs.get(&"b")
+        Some(q) => q.name.len() + q.n
+        None => 0
+    again = match qs.get(&"a")
+        Some(q) => q.name.len() - q.n
+        None => 0
+    first + second + again - 2

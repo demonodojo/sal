@@ -1,7 +1,7 @@
 # Model package checks for the selfhost compiler (`selfhost test`).
 # Covers load, matmul, softmax, fused peak_bytes, and places cpu/gpu/tpu.
 # Execution runs 2×2 A×I (literals below) on gpu and tpu via `on` + `matmul`;
-# the printed sum is the element sum of that product (10).
+# the product is A, whose largest element is the fourth (printed as argmax=3).
 
 fn forward(x: &Tensor[F32, ?, 4] on p, w: &Tensor[F32, 4, 4] on p) -> Tensor[F32, ?, 4] on p
     on p
@@ -26,6 +26,6 @@ fn main() -> Int ! io, alloc, gpu, tpu
         matmul(at, bt)
     g = place_launches(1)
     tp = place_launches(2)
-    msg = "sum=" + int_to_str(s) + " gpu=" + int_to_str(g) + " tpu=" + int_to_str(tp) + "\n"
+    msg = "argmax=" + int_to_str(argmax(s, 4)) + " gpu=" + int_to_str(g) + " tpu=" + int_to_str(tp) + "\n"
     _p = print_str(msg)
     0

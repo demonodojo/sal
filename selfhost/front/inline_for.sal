@@ -26,7 +26,9 @@ fn unroll_inline_for(tp: TProgram, src: &String, errs: &mut List[String]) -> TPr
     i = 0
     while i < tp.fns.len()
         f = tp.fns.get_mut(i)
-        f.body = if_block(&f.body, &vs, &tp.structs, &mut cx, errs)
+        nb = if_block(&f.body, &vs, &tp.structs, &mut cx, errs)
+        if_free_body(&f.body)
+        f.body = nb
         i = i + 1
     k = 0
     while k < tp.protocols.len()
@@ -39,6 +41,13 @@ fn unroll_inline_for(tp: TProgram, src: &String, errs: &mut List[String]) -> TPr
             j = j + 1
         k = k + 1
     tp
+
+# The fn body `if_block` rewrote out of copies: overwriting a field does not release it when the
+# compiler builds the selfhost (`lp_free_body` in loops.sal).
+fn if_free_body(b: &TBlock) -> Int ! alloc
+    list_free(b.stmts)
+    enum_free(b.tail)
+    0
 
 fn if_fail(errs: &mut List[String], cx: &mut List[Int], msg: &String) -> Int ! alloc
     if cx.get(2) == 0

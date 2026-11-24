@@ -1,5 +1,4 @@
 # exit: 0
-# asan-xfail: struct/enum devuelto por una función de usuario y consumido en main no se libera
 enum Tree
     Leaf(Int)
     Name(String, Int)

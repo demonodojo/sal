@@ -8,9 +8,10 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Same operands as `tests/support/matmul_test.c`: A×I = A → elems 1,2,3,4 (sum 10).
+/// Same operands as `tests/support/matmul_test.c`: A×I = A → elems 1,2,3,4; `main` returns the
+/// index of the one nearest to 3 (2).
 #[test]
-fn exec_matmul_2x2_exit_sum() {
+fn exec_matmul_2x2_exit_argmax() {
     let file = root().join("examples/cpu_matmul.sal");
     let opts = CompileOptions {
         toolchain: Default::default(),
@@ -32,7 +33,7 @@ fn exec_matmul_2x2_exit_sum() {
     let out = Command::new(bin).output().expect("run");
     assert_eq!(
         out.status.code(),
-        Some(10),
+        Some(2),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)

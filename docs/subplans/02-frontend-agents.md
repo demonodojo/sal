@@ -85,6 +85,8 @@ Un `@` o la palabra `parallel` en el arranque es `E_PARSE`.
 
 `sal fmt` imprime el árbol, no el texto original. Una segunda pasada sobre esa salida devuelve los mismos bytes. Imprime lambdas, `struct`, `enum`, `on`, `to`, `tensor`, `borrow` y `take`. No reordena operadores: el árbol izquierdo se imprime izquierdo, así que `1 - 2 - 3` no se reasocia.
 
+El AST no guarda comentarios: el lexer los devuelve aparte (`lex_with_comments`), con su línea, y `format_program_with_comments` los vuelve a poner al formatear. Un comentario va encima del nodo que empieza en la línea siguiente, con la sangría de ese nodo; uno que sigue a código (`x = 1  # nota`) se queda al final de su línea. El `else` no es un nodo del AST, así que su línea se toma del flujo de tokens (`else_lines`) y se empareja con cada `else` emitido, en el mismo orden: un comentario encima del `else` queda encima del `else`, no dentro del bloque. Las firmas de un `protocol` se anclan con su propio `span` (`ProtocolMethod.span`, la línea de `method`/`static`), así que un comentario encima de una firma se queda encima. Un comentario para el que el árbol no da ancla va al final de la salida, con su sangría: no se pierde ninguno.
+
 ## Tests
 
 En `tests/frontend.rs` y `tests/parse_and_fmt.rs`:

@@ -124,6 +124,8 @@ thread_local! {
     /// Enums of the other modules of the graph, and of the program being checked.
     static EXTERN_ENUMS: std::cell::RefCell<Vec<EnumDef>> = const { std::cell::RefCell::new(Vec::new()) };
     static LOCAL_ENUMS: std::cell::RefCell<Vec<EnumDef>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The `frame`s of the program being checked: their constructor does not move its columns.
+    static LOCAL_FRAMES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
 /// The enums of every module of the graph: a `match` needs the payload types of a variant.
@@ -221,13 +223,16 @@ fn collect_structs(prog: &Program) -> HashMap<String, StructDef> {
     let enums = prog.items.iter().filter_map(|i| if let Item::Enum(e) = i { Some(e.clone()) } else { None }).collect();
     LOCAL_ENUMS.with(|s| *s.borrow_mut() = enums);
     let mut structs = HashMap::new();
+    let mut frames = HashSet::new();
     for item in &prog.items {
         if let Item::Struct(s) = item {
             structs.insert(s.name.clone(), s.clone());
         } else if let Item::Frame(f) = item {
             structs.insert(f.name.clone(), crate::infer::frame_as_struct(f));
+            frames.insert(f.name.clone());
         }
     }
+    LOCAL_FRAMES.with(|s| *s.borrow_mut() = frames);
     structs
 }
 
@@ -360,6 +365,19 @@ fn is_ref(ty: &Type) -> bool {
 }
 
 impl Cx<'_> {
+    /// A constructor call: not a declared fn, even one whose specialized name ends in a type
+    /// (`List__twice__Int`, `pair__Int`).
+    fn is_ctor(&self, n: &str) -> bool {
+        !self.sigs.contains_key(n) && is_ctor_name(n, self.structs)
+    }
+
+    /// `Rows(v)` of a frame (or of a struct with a `Tensor` field): SPEC «Memoria», the
+    /// constructor of a `frame` does not move its columns.
+    fn is_frame_ctor(&self, n: &str) -> bool {
+        LOCAL_FRAMES.with(|f| f.borrow().contains(n))
+            || self.structs.get(n).is_some_and(|s| s.fields.iter().any(|f| matches!(f.ty, Type::Tensor { .. })))
+    }
+
     fn ref_of(&self, e: &Expr) -> Option<(String, bool)> {
         ref_of(e)
     }
@@ -938,7 +956,9 @@ impl Cx<'_> {
                         self.temp_loan(a, call_end);
                     } else if fname
                         .as_deref()
-                        .is_some_and(|n| crate::ownership::operand_is_moved(n, i, args.len()) || is_ctor_name(n, &self.structs))
+                        .is_some_and(|n| {
+                            crate::ownership::operand_is_moved(n, i, args.len()) || (self.is_ctor(n) && !self.is_frame_ctor(n))
+                        })
                     {
                         self.walk_expr(a, Use::Move, call_end);
                     } else if kind == ParamKind::Mut && place_of(a).is_some() && fname.as_deref() != Some("mutex_enter") {

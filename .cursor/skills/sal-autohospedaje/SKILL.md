@@ -20,8 +20,9 @@ La fuente de verdad del estado es la tabla «Estado» de [docs/subplans/07-selfh
 - **El backend (`emit.sal`, texto en `irtext.sal`, C en `tcstate.sal` / `cenv.sal` / `cbuiltin.sal` / `cir.sal`) emite IR de texto y C**, no LLVM ni objeto propio. Dos caminos a C: desde el AST (escalares, strings, structs, bytes, `syscall`) y, para funciones con tensores, desde la IR (`cir_*`). La cola de campos de struct en C (`emit_c_struct_scope_frees`) debe coincidir con `fuse.sal` / `frc.sal`. Tensores: región fusionada libera con el camino IR/`sal_place_free`; literal `tensor` escalar sigue [sal-memoria](../sal-memoria/SKILL.md).
 - **`infer.sal` modela escalares y parte de los tensores** (`matmul`, `transpose`, `reshape`, `softmax`, `relu`/`silu`/`rope`). `attention`, `qmatmul`, `reduce`, `rms_norm`, genéricos y builtins sin firma son `Unknown`.
 - Los pases se aplican solo al compilar (`-o`); `emit ir` no comprueba. Los tipos del AST siguen siendo texto.
-- Los métodos de tipos básicos (`x.sqrt()`, `xs.push(v)`) y `Tipo.nuevo[T]()` solo están en el arranque: los tests que los usan llevan `# selfhost-xfail:`.
-- Los structs se pasan como puntero a slots `int64_t`: una semántica de valor completa (copias, alias en llamadas) es hueco conocido (`# selfhost-xfail:`).
+- Los métodos de tipos básicos (`x.sqrt()`, `xs.push(v)`) y `Tipo.nuevo[T]()` están en los dos compiladores.
+- Los structs se pasan como puntero a slots `int64_t`; `p.x = v` copia antes de escribir para conservar la semántica de valor.
+- Desde el 2026-11-24 ningún test de `tests/lang` lleva `# selfhost-xfail:`: un hueco nuevo del selfhost se marca y se cierra como dice [sal-conformidad](../sal-conformidad/SKILL.md).
 
 No describas el selfhost como equivalente al arranque en lo que el subplan lista como pendiente.
 

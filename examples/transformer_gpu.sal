@@ -1,6 +1,7 @@
 # Una cabeza, dos posiciones, d=2. Pesos en examples/transformer/*.salt.
 # K es la identidad, así que Q @ K es Q @ K^T. Softmax sobre los 4 scores.
-# Cada matmul corre en el actor gpu. La suma de la salida es 3.
+# Cada matmul corre en el actor gpu. La salida es [[0.59, 1.19], [0.41, 0.81]] (suma 3): su
+# mayor elemento es el segundo.
 
 fn main() -> Int ! io, alloc, gpu
     let x: Tensor[F32, 2, 2] on gpu = to gpu load[Tensor[F32, 2, 2] on cpu]("examples/transformer/x.salt")
@@ -28,7 +29,7 @@ fn main() -> Int ! io, alloc, gpu
     let out: Tensor[F32, 2, 2] on gpu = on gpu
         matmul(h, w2)
     g = place_launches(1)
-    msg = d"sum="
-    msg = msg + int_to_str(out) + " gpu=" + g.to_str() + "\n"
+    msg = d"argmax="
+    msg = msg + argmax(out, 4).to_str() + " gpu=" + g.to_str() + "\n"
     _p = print_str(msg)
     0

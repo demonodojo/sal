@@ -108,6 +108,12 @@ struct DC
     # The branch depth (+1) each name was first bound at: a move in a deeper branch moves it on
     # that path only (`bind_branch` in src/drops.rs).
     bbr: NM
+    # Locals bound to a user fn call: name -> which type arguments of its result are Copy
+    # scalars (`retsc:`), so a generic payload bound from them aliases nothing on the heap.
+    lty: NM
+    # Struct values the fn owns (`owned_struct_locals`): name -> handle of the struct's name. A
+    # field moved out of one is released by its new owner (`moved_field_kind`).
+    pst: NM
 
 # An owned copy of the parameter list: the `TFn` it comes from keeps its own.
 fn tparams_copy(xs: &List[TParam]) -> List[TParam] ! alloc
@@ -121,7 +127,7 @@ fn tparams_copy_go(xs: &List[TParam], i: Int, n: Int, out: List[TParam]) -> List
         _a = out.push(TParam(p.name.dup(), p.ty.dup(), p.mode))
         tparams_copy_go(xs, i + 1, n, out)
 
-fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
+fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[String], copy_ok: List[Int], pst: NM) -> DC ! alloc
     cells = list_new[Int]()
     _a = list_push(&mut cells, 0)
     _b = list_push(&mut cells, 0)
@@ -133,7 +139,7 @@ fn dr_new(variants: Int, ro: Int, lists: NM, ps: &List[TParam], scalars: List[St
     _h = list_push(&mut cells, 0)
     # Branch depth, reset by loops: an identifier tail moves on that path only.
     cells.push(0)
-    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), list_new[String](), list_new[Int](), list_new[String](), list_new[String](), list_new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new())
+    DC(nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), lists, nm_new(), nm_new(), List.new[String](), List.new[Int](), List.new[String](), List.new[String](), List.new[String](), cells, variants, ro, tparams_copy(ps), scalars, copy_ok, nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), nm_new(), pst)
 
 # The local `DC` is dropped at the end of its scope, which releases these lists.
 # Freeing them here as well is a double free.
@@ -494,19 +500,28 @@ fn dr_owned_name(vm: Int, name: &String) -> Int ! alloc
     else
         0
 
+# Repeats `owned_fns_put` until no fn is added: a call to an owned fn is fresh too, so the set
+# grows to the fixed point of `owned_return_fns` in src/drops.rs.
+fn owned_fns_fix(m: Int, own: &List[TFn], others: &List[TFn]) -> Int ! alloc
+    added = owned_fns_put(m, own, 0, own.len()) + owned_fns_put(m, others, 0, others.len())
+    if added > 0
+        owned_fns_fix(m, own, others)
+    else
+        0
+
+# Adds `ownfn:<name>` for each fn of `fns` that hands out an owned String and is not in yet;
+# returns how many it added.
 fn owned_fns_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        f = list_get(fns, i)
-        _o = if ty_is_string(&f.ret) == 1
-            if owned_fn_body(&f) == 1
-                map_put(m, str_own(&("ownfn:" + f.name)), 1)
-            else
-                0
+        f = fns.get(i)
+        here = if ty_is_string(&f.ret) == 1 && dr_owned_name(m, &f.name) == 0 && owned_fn_body(m, &f) == 1
+            map_put(m, str_own(&("ownfn:" + f.name)), 1)
+            1
         else
             0
-        owned_fns_put(m, fns, i + 1, n)
+        here + owned_fns_put(m, fns, i + 1, n)
 
 # `pass:<fn>:<i>` for every by-value parameter `i` that `fn` returns as the value of a branch tail
 # (`PASSTHRU_FNS` in src/drops.rs): given a fresh temporary, the result is that temporary.
@@ -715,6 +730,22 @@ fn ret_kinds_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         0
     else
         f = list_get(fns, i)
+        pr = dr_ref_params_mask(&f.params, 0, 1, 0)
+        _pr = if pr != 0
+            map_put(m, str_own(&("pref:" + f.name)), pr)
+        else
+            0
+        sc = dr_scalar_args_mask(&f.ret)
+        _sc = if sc != 0
+            map_put(m, str_own(&("retsc:" + f.name)), sc)
+        else
+            0
+        rt = trim_type_piece(&f.ret)
+        if map_get(m, str_own(&("sname:" + rt))) == 1
+            map_put(m, str_own(&("rets:" + f.name)), str_own(&rt))
+        if ty_base(&rt).eq("Tensor") == 1
+            # A tensor returned by value is the caller's (`user_call_kind` in src/drops.rs).
+            map_put(m, str_own(&("rett:" + f.name)), 1)
         k = dr_ret_kind(m, &f.ret)
         if k == 0
             0
@@ -723,8 +754,28 @@ fn ret_kinds_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
             # caller an alias: it is not released.
             0
         else
+            _t = if k == 5
+                map_put(m, str_own(&("tryk:" + f.name)), dr_try_payload_kind(m, &f.ret))
+                map_put(m, str_own(&("retak:" + f.name)), dr_tk_args_packed(m, &f.ret, 0, 1, 0))
+            else
+                0
             map_put(m, str_own(&("retk:" + f.name)), k)
         ret_kinds_put(m, fns, i + 1, n)
+
+# How the payload `try f()` moves out of the `Option`/`Result` that `f` returns is released
+# (`try_payload_kind` in src/drops.rs): 1 a `String`, else as `dr_ret_kind`; 0 for a reference.
+fn dr_try_payload_kind(m: Int, ret: &String) -> Int ! alloc
+    base = ty_base(ret)
+    if base.eq("Option") + base.eq("Result") == 0
+        0
+    else
+        arg = trim_type_piece(&dr_ty_arg0(ret))
+        if arg.len() == 0 || arg.char(0) == 38
+            0
+        elsif ty_base(&arg).eq("String") == 1
+            1
+        else
+            dr_ret_kind(m, &arg)
 
 fn dr_ret_kind(m: Int, ret: &String) -> Int ! alloc
     t = ty_base(ret)
@@ -820,24 +871,34 @@ fn dr_enum_variant_unit(m: Int, name: &String) -> Int ! alloc
 # The body hands out fresh values only (`owned_return_body` in src/drops.rs): the tail and every
 # `return`, at any depth, is a fresh builtin value or a fresh local; a fresh local is bound once
 # at the top level and assigned only fresh values in nested blocks (`out = out + c` in a loop).
-fn owned_fn_body(f: &TFn) -> Int ! alloc
+# It reads the body after `dr_take_payloads`: `match t { V(s) => s }` hands over the payload.
+fn owned_fn_body(vm: Int, f: &TFn) -> Int ! alloc
+    own = dr_tk_owned(vm, &f.params, &f.body)
+    if own.names.len() == 0
+        owned_body_ok(vm, &f.body, &f.params)
+    else
+        b = tc_block(&f.body)
+        dr_tk_block(vm, &b, &own)
+        owned_body_ok(vm, &b, &f.params)
+
+fn owned_body_ok(vm: Int, body: &TBlock, params: &List[TParam]) -> Int ! alloc
     locals = List.new[String]()
-    if owned_scan(&f.body.stmts, 0, f.body.stmts.len(), &mut locals, &f.params) == 0
+    if owned_scan(vm, &body.stmts, 0, body.stmts.len(), &mut locals, params) == 0
         0
     else
-        kept = owned_keep_fresh(&f.body.stmts, &locals)
-        if owned_tail_ok(&f.body.tail, &kept, &f.params) == 0
+        kept = owned_keep_fresh(vm, &body.stmts, &locals)
+        if owned_tail_ok(vm, &body.tail, &kept, params) == 0
             0
         else
-            on_and(on_stmts_returns(&f.body.stmts, &kept, &f.params), on_expr_returns(&f.body.tail, &kept, &f.params))
+            on_and(on_stmts_returns(vm, &body.stmts, &kept, params), on_expr_returns(vm, &body.tail, &kept, params))
 
 # The locals that no nested block rebinds to something other than a fresh value.
-fn owned_keep_fresh(stmts: &List[TStmt], locals: &List[String]) -> List[String] ! alloc
+fn owned_keep_fresh(vm: Int, stmts: &List[TStmt], locals: &List[String]) -> List[String] ! alloc
     out = List.new[String]()
     i = 0
     while i < locals.len()
         name = locals.get(i)
-        if on_stmts_assigns(stmts, name, 0) == 1
+        if on_stmts_assigns(vm, stmts, name, 0) == 1
             out.push(name.dup())
         i = i + 1
     out
@@ -850,167 +911,167 @@ fn on_and(a: Int, b: Int) -> Int
 
 # 1 when every assignment to `name` in a nested block of `stmts` is a fresh builtin value
 # (`nested_assigns_fresh`); `nested` 1 when `stmts` are already inside one.
-fn on_stmts_assigns(stmts: &List[TStmt], name: &String, nested: Int) -> Int ! alloc
+fn on_stmts_assigns(vm: Int, stmts: &List[TStmt], name: &String, nested: Int) -> Int ! alloc
     ok = 1
     i = 0
     while i < stmts.len()
-        if on_stmt_assigns(&stmts.get(i), name, nested) == 0
+        if on_stmt_assigns(vm, &stmts.get(i), name, nested) == 0
             ok = 0
         i = i + 1
     ok
 
-fn on_stmt_assigns(st: &TStmt, name: &String, nested: Int) -> Int ! alloc
-    if st.kind == 1 && nested == 1 && st.name.eq(name) == 1 && owned_fresh_builtin(&st.expr) == 0
+fn on_stmt_assigns(vm: Int, st: &TStmt, name: &String, nested: Int) -> Int ! alloc
+    if st.kind == 1 && nested == 1 && st.name.eq(name) == 1 && owned_fresh_value(vm, &st.expr) == 0
         0
     else
-        on_expr_assigns(&st.expr, name)
+        on_expr_assigns(vm, &st.expr, name)
 
-fn on_block_assigns(b: &TBlock, name: &String) -> Int ! alloc
-    on_and(on_stmts_assigns(&b.stmts, name, 1), on_expr_assigns(&b.tail, name))
+fn on_block_assigns(vm: Int, b: &TBlock, name: &String) -> Int ! alloc
+    on_and(on_stmts_assigns(vm, &b.stmts, name, 1), on_expr_assigns(vm, &b.tail, name))
 
 # The blocks inside `e` (`expr_blocks`: branches, arms, blocks, a `while` body; not a lambda).
-fn on_expr_assigns(e: &Expr, name: &String) -> Int ! alloc
+fn on_expr_assigns(vm: Int, e: &Expr, name: &String) -> Int ! alloc
     match e
-        XIf(cond, then_b, else_b, has_else, elsifs) => on_and(on_and(on_expr_assigns(&cond, name), on_block_assigns(&then_b, name)), on_and(on_block_assigns(&else_b, name), on_elsifs_assigns(&elsifs, name)))
-        XMatch(scrut, arms) => on_and(on_expr_assigns(&scrut, name), on_arms_assigns(&arms, name))
-        XWhile(cond, body) => on_block_assigns(&body, name)
-        XBlock(body) => on_block_assigns(&body, name)
-        XOn(place, body, kern, idx) => on_block_assigns(&body, name)
-        XCall(fname, args, targs, xp) => on_list_assigns(&args, name)
-        XBin(op, l, r) => on_and(on_expr_assigns(&l, name), on_expr_assigns(&r, name))
-        XUnary(op, inner) => on_expr_assigns(&inner, name)
-        XTo(place, inner) => on_expr_assigns(&inner, name)
-        XTry(inner) => on_expr_assigns(&inner, name)
-        XField(base, field) => on_expr_assigns(&base, name)
+        XIf(cond, then_b, else_b, has_else, elsifs) => on_and(on_and(on_expr_assigns(vm, &cond, name), on_block_assigns(vm, &then_b, name)), on_and(on_block_assigns(vm, &else_b, name), on_elsifs_assigns(vm, &elsifs, name)))
+        XMatch(scrut, arms) => on_and(on_expr_assigns(vm, &scrut, name), on_arms_assigns(vm, &arms, name))
+        XWhile(cond, body) => on_block_assigns(vm, &body, name)
+        XBlock(body) => on_block_assigns(vm, &body, name)
+        XOn(place, body, kern, idx) => on_block_assigns(vm, &body, name)
+        XCall(fname, args, targs, xp) => on_list_assigns(vm, &args, name)
+        XBin(op, l, r) => on_and(on_expr_assigns(vm, &l, name), on_expr_assigns(vm, &r, name))
+        XUnary(op, inner) => on_expr_assigns(vm, &inner, name)
+        XTo(place, inner) => on_expr_assigns(vm, &inner, name)
+        XTry(inner) => on_expr_assigns(vm, &inner, name)
+        XField(base, field) => on_expr_assigns(vm, &base, name)
         _ => 1
 
-fn on_elsifs_assigns(xs: &List[TElsif], name: &String) -> Int ! alloc
+fn on_elsifs_assigns(vm: Int, xs: &List[TElsif], name: &String) -> Int ! alloc
     ok = 1
     i = 0
     while i < xs.len()
         a = xs.get(i)
-        ok = on_and(ok, on_and(on_expr_assigns(&a.cond, name), on_block_assigns(&a.body, name)))
+        ok = on_and(ok, on_and(on_expr_assigns(vm, &a.cond, name), on_block_assigns(vm, &a.body, name)))
         i = i + 1
     ok
 
-fn on_arms_assigns(arms: &List[TArm], name: &String) -> Int ! alloc
+fn on_arms_assigns(vm: Int, arms: &List[TArm], name: &String) -> Int ! alloc
     ok = 1
     i = 0
     while i < arms.len()
         a = arms.get(i)
         here = if a.has_suite == 1
-            on_block_assigns(&a.suite, name)
+            on_block_assigns(vm, &a.suite, name)
         else
-            on_expr_assigns(&a.body, name)
+            on_expr_assigns(vm, &a.body, name)
         ok = on_and(ok, here)
         i = i + 1
     ok
 
-fn on_list_assigns(xs: &List[Expr], name: &String) -> Int ! alloc
+fn on_list_assigns(vm: Int, xs: &List[Expr], name: &String) -> Int ! alloc
     ok = 1
     i = 0
     while i < xs.len()
-        ok = on_and(ok, on_expr_assigns(&xs.get(i), name))
+        ok = on_and(ok, on_expr_assigns(vm, &xs.get(i), name))
         i = i + 1
     ok
 
 # 1 when every `return` of `stmts`, at any depth, hands out an owned String (`stmts_returns`).
-fn on_stmts_returns(stmts: &List[TStmt], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn on_stmts_returns(vm: Int, stmts: &List[TStmt], locals: &List[String], params: &List[TParam]) -> Int ! alloc
     ok = 1
     i = 0
     while i < stmts.len()
         st = stmts.get(i)
         here = if st.kind == 2
-            on_and(owned_return_ok(&st.expr, locals, params), on_expr_returns(&st.expr, locals, params))
+            on_and(owned_return_ok(vm, &st.expr, locals, params), on_expr_returns(vm, &st.expr, locals, params))
         else
-            on_expr_returns(&st.expr, locals, params)
+            on_expr_returns(vm, &st.expr, locals, params)
         ok = on_and(ok, here)
         i = i + 1
     ok
 
-fn on_block_returns(b: &TBlock, locals: &List[String], params: &List[TParam]) -> Int ! alloc
-    on_and(on_stmts_returns(&b.stmts, locals, params), on_expr_returns(&b.tail, locals, params))
+fn on_block_returns(vm: Int, b: &TBlock, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    on_and(on_stmts_returns(vm, &b.stmts, locals, params), on_expr_returns(vm, &b.tail, locals, params))
 
-fn on_expr_returns(e: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn on_expr_returns(vm: Int, e: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     match e
-        XIf(cond, then_b, else_b, has_else, elsifs) => on_and(on_and(on_expr_returns(&cond, locals, params), on_block_returns(&then_b, locals, params)), on_and(on_block_returns(&else_b, locals, params), on_elsifs_returns(&elsifs, locals, params)))
-        XMatch(scrut, arms) => on_and(on_expr_returns(&scrut, locals, params), on_arms_returns(&arms, locals, params))
-        XWhile(cond, body) => on_block_returns(&body, locals, params)
-        XBlock(body) => on_block_returns(&body, locals, params)
-        XOn(place, body, kern, idx) => on_block_returns(&body, locals, params)
-        XCall(fname, args, targs, xp) => on_list_returns(&args, locals, params)
-        XBin(op, l, r) => on_and(on_expr_returns(&l, locals, params), on_expr_returns(&r, locals, params))
-        XUnary(op, inner) => on_expr_returns(&inner, locals, params)
-        XTo(place, inner) => on_expr_returns(&inner, locals, params)
-        XTry(inner) => on_expr_returns(&inner, locals, params)
-        XField(base, field) => on_expr_returns(&base, locals, params)
+        XIf(cond, then_b, else_b, has_else, elsifs) => on_and(on_and(on_expr_returns(vm, &cond, locals, params), on_block_returns(vm, &then_b, locals, params)), on_and(on_block_returns(vm, &else_b, locals, params), on_elsifs_returns(vm, &elsifs, locals, params)))
+        XMatch(scrut, arms) => on_and(on_expr_returns(vm, &scrut, locals, params), on_arms_returns(vm, &arms, locals, params))
+        XWhile(cond, body) => on_block_returns(vm, &body, locals, params)
+        XBlock(body) => on_block_returns(vm, &body, locals, params)
+        XOn(place, body, kern, idx) => on_block_returns(vm, &body, locals, params)
+        XCall(fname, args, targs, xp) => on_list_returns(vm, &args, locals, params)
+        XBin(op, l, r) => on_and(on_expr_returns(vm, &l, locals, params), on_expr_returns(vm, &r, locals, params))
+        XUnary(op, inner) => on_expr_returns(vm, &inner, locals, params)
+        XTo(place, inner) => on_expr_returns(vm, &inner, locals, params)
+        XTry(inner) => on_expr_returns(vm, &inner, locals, params)
+        XField(base, field) => on_expr_returns(vm, &base, locals, params)
         _ => 1
 
-fn on_elsifs_returns(xs: &List[TElsif], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn on_elsifs_returns(vm: Int, xs: &List[TElsif], locals: &List[String], params: &List[TParam]) -> Int ! alloc
     ok = 1
     i = 0
     while i < xs.len()
         a = xs.get(i)
-        ok = on_and(ok, on_and(on_expr_returns(&a.cond, locals, params), on_block_returns(&a.body, locals, params)))
+        ok = on_and(ok, on_and(on_expr_returns(vm, &a.cond, locals, params), on_block_returns(vm, &a.body, locals, params)))
         i = i + 1
     ok
 
-fn on_arms_returns(arms: &List[TArm], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn on_arms_returns(vm: Int, arms: &List[TArm], locals: &List[String], params: &List[TParam]) -> Int ! alloc
     ok = 1
     i = 0
     while i < arms.len()
         a = arms.get(i)
         here = if a.has_suite == 1
-            on_block_returns(&a.suite, locals, params)
+            on_block_returns(vm, &a.suite, locals, params)
         else
-            on_expr_returns(&a.body, locals, params)
+            on_expr_returns(vm, &a.body, locals, params)
         ok = on_and(ok, here)
         i = i + 1
     ok
 
-fn on_list_returns(xs: &List[Expr], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn on_list_returns(vm: Int, xs: &List[Expr], locals: &List[String], params: &List[TParam]) -> Int ! alloc
     ok = 1
     i = 0
     while i < xs.len()
-        ok = on_and(ok, on_expr_returns(&xs.get(i), locals, params))
+        ok = on_and(ok, on_expr_returns(vm, &xs.get(i), locals, params))
         i = i + 1
     ok
 
-fn owned_scan(stmts: &List[TStmt], i: Int, n: Int, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_scan(vm: Int, stmts: &List[TStmt], i: Int, n: Int, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
     if i >= n
         1
     else
         st = list_get(stmts, i)
-        ok = owned_stmt(stmts, &st, locals, params)
+        ok = owned_stmt(vm, stmts, &st, locals, params)
         if ok == 0
             0
         else
-            owned_scan(stmts, i + 1, n, locals, params)
+            owned_scan(vm, stmts, i + 1, n, locals, params)
 
 # A binding to an `if`/`match` must hand out an owned String on every branch
 # (`owned_return_body`); the returns of nested blocks are checked by `on_stmts_returns`.
-fn owned_stmt(stmts: &List[TStmt], st: &TStmt, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_stmt(vm: Int, stmts: &List[TStmt], st: &TStmt, locals: &mut List[String], params: &List[TParam]) -> Int ! alloc
     if st.kind == 2
         1
     elsif st.kind == 0
         1
     elsif st.kind == 1
         if owned_branches(&st.expr) == 1
-            if owned_return_ok(&st.expr, locals, params) == 0
+            if owned_return_ok(vm, &st.expr, locals, params) == 0
                 0
             else
                 if owned_binds(stmts, 0, stmts.len(), &st.name) == 1
                     locals.push(st.name.dup())
                 1
         else
-            owned_bind_local(stmts, st, locals)
+            owned_bind_local(vm, stmts, st, locals)
             1
     else
         1
 
 # A binding whose value is fresh and that is bound once is a local the return may hand out.
-fn owned_bind_local(stmts: &List[TStmt], st: &TStmt, locals: &mut List[String]) -> Int ! alloc
-    if owned_fresh_builtin(&st.expr) == 0
+fn owned_bind_local(vm: Int, stmts: &List[TStmt], st: &TStmt, locals: &mut List[String]) -> Int ! alloc
+    if owned_fresh_value(vm, &st.expr) == 0
         0
     elsif owned_binds(stmts, 0, list_len(stmts), &st.name) == 1
         _p = list_push(locals, strdup(st.name))
@@ -1018,31 +1079,31 @@ fn owned_bind_local(stmts: &List[TStmt], st: &TStmt, locals: &mut List[String]) 
     else
         0
 
-fn owned_tail_ok(t: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_tail_ok(vm: Int, t: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     match t
         XNone => 0
-        _ => owned_return_ok(t, locals, params)
+        _ => owned_return_ok(vm, t, locals, params)
 
-fn owned_returns_ok(stmts: &List[TStmt], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_returns_ok(vm: Int, stmts: &List[TStmt], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     if i >= n
         1
     else
         st = list_get(stmts, i)
         r = if st.kind == 2
-            owned_return_ok(&st.expr, locals, params)
+            owned_return_ok(vm, &st.expr, locals, params)
         else
             1
         if r == 0
             0
         else
-            owned_returns_ok(stmts, i + 1, n, locals, params)
+            owned_returns_ok(vm, stmts, i + 1, n, locals, params)
 
-fn owned_return_ok(v: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_return_ok(vm: Int, v: &Expr, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     match v
         XNone => 1
-        XIf(cond, then_b, else_b, has_else, elsifs) => owned_if_ok(&then_b, &else_b, has_else, &elsifs, locals, params)
-        XMatch(scrut, arms) => owned_arms_ok(&arms, 0, arms.len(), locals, params)
-        _ => if owned_fresh_builtin(v) == 1
+        XIf(cond, then_b, else_b, has_else, elsifs) => owned_if_ok(vm, &then_b, &else_b, has_else, &elsifs, locals, params)
+        XMatch(scrut, arms) => owned_arms_ok(vm, &arms, 0, arms.len(), locals, params)
+        _ => if owned_fresh_value(vm, v) == 1
             1
         elsif owned_param_string_field(v, params) == 1
             1
@@ -1051,43 +1112,43 @@ fn owned_return_ok(v: &Expr, locals: &List[String], params: &List[TParam]) -> In
 
 # Every branch hands out an owned String (`owned_string_expr` in src/drops.rs); an `if` needs
 # its `else`.
-fn owned_if_ok(then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_if_ok(vm: Int, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif], locals: &List[String], params: &List[TParam]) -> Int ! alloc
     if has_else == 0
         0
-    elsif owned_block_ok(then_b, locals, params) == 0
+    elsif owned_block_ok(vm, then_b, locals, params) == 0
         0
-    elsif owned_block_ok(else_b, locals, params) == 0
-        0
-    else
-        owned_elsifs_ok(elsifs, 0, elsifs.len(), locals, params)
-
-fn owned_block_ok(b: &TBlock, locals: &List[String], params: &List[TParam]) -> Int ! alloc
-    if owned_returns_ok(&b.stmts, 0, b.stmts.len(), locals, params) == 0
+    elsif owned_block_ok(vm, else_b, locals, params) == 0
         0
     else
-        owned_tail_ok(&b.tail, locals, params)
+        owned_elsifs_ok(vm, elsifs, 0, elsifs.len(), locals, params)
 
-fn owned_elsifs_ok(xs: &List[TElsif], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_block_ok(vm: Int, b: &TBlock, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+    if owned_returns_ok(vm, &b.stmts, 0, b.stmts.len(), locals, params) == 0
+        0
+    else
+        owned_tail_ok(vm, &b.tail, locals, params)
+
+fn owned_elsifs_ok(vm: Int, xs: &List[TElsif], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     if i >= n
         1
-    elsif owned_block_ok(&xs.get(i).body, locals, params) == 0
+    elsif owned_block_ok(vm, &xs.get(i).body, locals, params) == 0
         0
     else
-        owned_elsifs_ok(xs, i + 1, n, locals, params)
+        owned_elsifs_ok(vm, xs, i + 1, n, locals, params)
 
-fn owned_arms_ok(arms: &List[TArm], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
+fn owned_arms_ok(vm: Int, arms: &List[TArm], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     if i >= n
         1
     else
         a = arms.get(i)
         ok = if a.has_suite == 1
-            owned_block_ok(&a.suite, locals, params)
+            owned_block_ok(vm, &a.suite, locals, params)
         else
-            owned_return_ok(&a.body, locals, params)
+            owned_return_ok(vm, &a.body, locals, params)
         if ok == 0
             0
         else
-            owned_arms_ok(arms, i + 1, n, locals, params)
+            owned_arms_ok(vm, arms, i + 1, n, locals, params)
 
 fn owned_param_string_field(v: &Expr, params: &List[TParam]) -> Int ! alloc
     match v
@@ -1125,13 +1186,32 @@ fn owned_binds(stmts: &List[TStmt], i: Int, n: Int, name: &String) -> Int ! allo
             0
         here + owned_binds(stmts, i + 1, n, name)
 
+# A fresh builtin value, or a call to a fn already found owned (`owned_fresh` in src/drops.rs).
+fn owned_fresh_value(vm: Int, e: &Expr) -> Int ! alloc
+    if owned_user_call(vm, e) == 1
+        1
+    else
+        owned_fresh_builtin(e)
+
+fn owned_user_call(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dr_owned_name(vm, &name)
+        _ => 0
+
 # A builtin whose `String` result is fresh, without the user fns (`fresh_builtin` in src/drops.rs).
 fn owned_fresh_builtin(e: &Expr) -> Int ! alloc
     match e
         XStr(s) => 1
-        XCall(name, args, targs, xp) => dr_returns_fresh(&name)
+        XCall(name, args, targs, xp) => dr_returns_fresh(&name) + dr_taken_string(&name, &targs) > 0
         XBin(op, l, r) => dx_add_is_string_chain(e)
         _ => 0
+
+# `enum_take` of a `String` payload (its release kind travels in the type arguments).
+fn dr_taken_string(name: &String, targs: &String) -> Int ! alloc
+    if name.eq("enum_take") == 1 && dr_tk_kind_of(targs) == 1
+        1
+    else
+        0
 
 fn owned_branches(e: &Expr) -> Int ! alloc
     match e
@@ -1147,6 +1227,43 @@ fn dr_fresh_kind(c: &DC, e: &Expr) -> Int ! alloc
         XTensor(nr, nc, data) => 10
         XCall(name, args, targs, xp) => dr_fresh_call(c, e, &name, &targs)
         XBin(op, l, r) => dr_fresh_bin(&op, e)
+        XTry(inner) => dr_fresh_try(c, &inner)
+        XMatch(scrut, arms) => dr_fresh_match(c, &scrut, &arms)
+        _ => 0
+
+# `r = match t { V(s) => s, W => d"x" }` (after `dr_take_payloads`) or
+# `match o { Some(s) => s.clone(), _ => d"?" }`: every arm hands over a fresh value of one release
+# kind, which whoever binds the `match` owns (`fresh_kind` in src/drops.rs).
+fn dr_fresh_match(c: &DC, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
+    if arms.len() == 0 || dr_is_recv_call(scrut) == 1
+        0
+    else
+        first = dr_arm_fresh_kind(c, &arms.get(0))
+        same = 1
+        j = 1
+        while j < arms.len()
+            if dr_arm_fresh_kind(c, &arms.get(j)) != first
+                same = 0
+            j = j + 1
+        first * same
+
+# `dict_get(..)` / `chan_recv(..)` (`is_recv_call` in src/drops.rs).
+fn dr_is_recv_call(e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => name.eq("dict_get") + name.eq("chan_recv") > 0
+        _ => 0
+
+fn dr_arm_fresh_kind(c: &DC, a: &TArm) -> Int ! alloc
+    if a.has_suite == 1
+        0
+    else
+        dr_fresh_kind(c, &a.body)
+
+
+# `try f()` on the box a user fn builds: the payload's release (`tryk:`).
+fn dr_fresh_try(c: &DC, inner: &Expr) -> Int ! alloc
+    match inner
+        XCall(name, args, targs, xp) => map_get(c.variants, str_own(&("tryk:" + name)))
         _ => 0
 
 fn dr_fresh_bin(op: &String, e: &Expr) -> Int ! alloc
@@ -1156,7 +1273,9 @@ fn dr_fresh_bin(op: &String, e: &Expr) -> Int ! alloc
         0
 
 fn dr_fresh_call(c: &DC, e: &Expr, name: &String, targs: &String) -> Int ! alloc
-    if dr_returns_fresh(name) == 1
+    if name.eq("enum_take") == 1
+        dr_tk_kind_of(targs)
+    elsif dr_returns_fresh(name) == 1
         1
     elsif dr_owned_name(c.variants, name) == 1
         1
@@ -1190,6 +1309,8 @@ fn dr_fresh_call(c: &DC, e: &Expr, name: &String, targs: &String) -> Int ! alloc
         3
     elsif dr_any_call_kind(c.variants, &c.ps, name) != 0
         dr_any_call_kind(c.variants, &c.ps, name)
+    elsif map_get(c.variants, str_own(&("rett:" + name))) == 1
+        10
     else
         map_get(c.variants, str_own(&("retk:" + name)))
 
@@ -1301,6 +1422,64 @@ fn dr_note_copy_payload(c: &mut DC, name: &String, e: &Expr) -> Int ! alloc
         XCall(callee, args, targs, xp) => dr_copy_payload_of(c, &callee, &args, &targs)
         _ => 0
     nm_put(&mut c.copy_pay, name, k)
+
+# Records which type arguments of a user fn's result `name` holds are Copy scalars (`retsc:`).
+fn dr_note_local_type(c: &mut DC, name: &String, e: &Expr) -> Int ! alloc
+    k = match e
+        XCall(callee, args, targs, xp) => map_get(c.variants, str_own(&("retsc:" + callee)))
+        _ => 0
+    nm_put(&mut c.lty, name, k)
+
+# Bit `i` set when parameter `i` is a reference (`&T`, `&mut T`).
+fn dr_ref_params_mask(ps: &List[TParam], i: Int, bit: Int, acc: Int) -> Int ! alloc
+    if i >= ps.len() || i > 60
+        acc
+    elsif dr_ty_is_ref(&ps.get(i).ty) == 1
+        dr_ref_params_mask(ps, i + 1, bit * 2, acc + bit)
+    else
+        dr_ref_params_mask(ps, i + 1, bit * 2, acc)
+
+# Bit `j` set when the `j`-th type argument of the type text is `Int`, `Float` or `Bool`.
+fn dr_scalar_args_mask(ty: &String) -> Int ! alloc
+    dr_scalar_args_go(ty, 0, 1, 0)
+
+fn dr_scalar_args_go(ty: &String, j: Int, bit: Int, acc: Int) -> Int ! alloc
+    if j >= 8
+        acc
+    else
+        arg = ty_type_arg(ty, j)
+        if arg.len() == 0
+            acc
+        elsif dr_copy_scalar(&arg) == 1
+            dr_scalar_args_go(ty, j + 1, bit * 2, acc + bit)
+        else
+            dr_scalar_args_go(ty, j + 1, bit * 2, acc)
+
+# The Copy type arguments of the scrutinee `name`: a local bound to a user fn call, or a parameter.
+fn dr_scrut_mask(c: &DC, name: &String) -> Int ! alloc
+    k = nm_get(&c.lty, name)
+    if k != 0
+        k
+    else
+        dr_scalar_args_mask(&dr_param_ty(&c.ps, name, 0, c.ps.len()))
+
+# Field `i` of `variant` is a type parameter of its enum that `mask` says is a Copy scalar
+# (`gvf:`): the binder aliases nothing on the heap (`expr_is_copy_scalar` in src/drops.rs).
+fn dr_generic_copy(c: &DC, variant: &String, i: Int, mask: Int) -> Int ! alloc
+    if mask == 0
+        0
+    else
+        j = map_get(c.variants, str_own(&("gvf:" + variant + ":" + i.to_str())))
+        if j == 0
+            0
+        else
+            (mask / dr_pow2(j - 1)) % 2
+
+fn dr_pow2(n: Int) -> Int
+    if n <= 0
+        1
+    else
+        2 * dr_pow2(n - 1)
 
 fn dr_copy_payload_of(c: &DC, callee: &String, args: &List[Expr], targs: &String) -> Int ! alloc
     match callee
@@ -1680,31 +1859,32 @@ fn dr_field_flag(rec: Int, i: Int) -> Int ! alloc
         1
 
 # Names bound by the variant patterns of `arms` over fields that may own memory, comma terminated.
-fn dr_arms_bound(c: &DC, arms: &List[TArm], i: Int, n: Int, acc: String) -> String ! alloc
+fn dr_arms_bound(c: &DC, arms: &List[TArm], i: Int, n: Int, acc: String, mask: Int) -> String ! alloc
     if i >= n
         acc
     else
-        dr_arms_bound(c, arms, i + 1, n, dr_pat_bound(c, &list_get(arms, i).pat, acc))
+        dr_arms_bound(c, arms, i + 1, n, dr_pat_bound(c, &arms.get(i).pat, acc, mask), mask)
 
-fn dr_pat_bound(c: &DC, pat: &TPat, acc: String) -> String ! alloc
+# `mask` (`dr_scrut_mask`) applies to the top pattern only; a nested one stays conservative.
+fn dr_pat_bound(c: &DC, pat: &TPat, acc: String, mask: Int) -> String ! alloc
     if pat.kind == 3
         rec = map_get(c.variants, str_own(&pat.name))
-        dr_pat_bound_go(c, rec, &pat.args, 0, list_len(&pat.args), acc)
+        dr_pat_bound_go(c, rec, &pat.name, &pat.args, 0, pat.args.len(), acc, mask)
     else
         acc
 
-fn dr_pat_bound_go(c: &DC, rec: Int, args: &List[TPat], i: Int, n: Int, acc: String) -> String ! alloc
+fn dr_pat_bound_go(c: &DC, rec: Int, variant: &String, args: &List[TPat], i: Int, n: Int, acc: String, mask: Int) -> String ! alloc
     if i >= n
         acc
     else
         sub = list_get(args, i)
         if sub.kind == 1
-            if dr_field_flag(rec, i) == 1
-                dr_pat_bound_go(c, rec, args, i + 1, n, (acc + sub.name + ","))
+            if dr_field_flag(rec, i) == 1 && dr_generic_copy(c, variant, i, mask) == 0
+                dr_pat_bound_go(c, rec, variant, args, i + 1, n, (acc + sub.name + ","), mask)
             else
-                dr_pat_bound_go(c, rec, args, i + 1, n, acc)
+                dr_pat_bound_go(c, rec, variant, args, i + 1, n, acc, mask)
         else
-            dr_pat_bound_go(c, rec, args, i + 1, n, dr_pat_bound(c, &sub, acc))
+            dr_pat_bound_go(c, rec, variant, args, i + 1, n, dr_pat_bound(c, &sub, acc, 0), mask)
 
 # A payload bound by a pattern aliases a field of the box; if that name escapes, the
 # scrutinee's box can no longer be freed. Repeats until nothing changes.
@@ -1809,7 +1989,12 @@ fn dr_call(c: &mut DC, name: &String, args: &List[Expr]) -> Int ! alloc
         1
     else
         0
-    _a = dr_call_args(c, name, args, 0, list_len(args), dr_borrows(name), ro, hflag)
+    # `Rows(v)` of a frame reads its columns: `v` stays the local's (SPEC «Memoria»).
+    borrow = if map_get(c.variants, str_own(&("frame:" + name))) == 1
+        1
+    else
+        dr_borrows(name)
+    dr_call_args(c, name, args, 0, args.len(), borrow, ro, hflag)
     if hard != 0
         dr_set(c, 4, dr_cell(c, 4) - 1)
     else
@@ -1958,7 +2143,7 @@ fn dr_match_scrut(c: &mut DC, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
     # A Copy payload (`Some(v) => v` of an `Option[Int]`) leaves the box releasable.
     if dx_is_ident(scrut) == 1 && nm_get(&c.copy_pay, &dx_ident(scrut)) != 2
         _a = list_push(&mut c.m_scrut, strdup(dx_ident(scrut)))
-        h996_3 = dr_arms_bound(c, arms, 0, list_len(arms), "")
+        h996_3 = dr_arms_bound(c, arms, 0, arms.len(), "", dr_scrut_mask(c, &dx_ident(scrut)))
         _b = list_push(&mut c.m_bound, h996_3)
         0
     else
@@ -2237,10 +2422,11 @@ fn dr_stmt_expr(c: &mut DC, ex: &Expr) -> Int ! alloc
 
 fn dr_stmt_bind(c: &mut DC, st: &TStmt) -> Int ! alloc
     dr_note_copy_payload(c, &st.name, &st.expr)
+    dr_note_local_type(c, &st.name, &st.expr)
     if st.is_let == 1
         _b = dr_bind(c, &st.name)
         _k = dr_rebind_note(c, &st.name, &st.expr)
-        dr_top(c, &st.expr, 3)
+        dr_stmt_assign(c, st)
     elsif dr_acc(c, &st.name, &st.expr) == 0
         _b = dr_bind(c, &st.name)
         _k = dr_rebind_note(c, &st.name, &st.expr)
@@ -2262,12 +2448,14 @@ fn dr_rebind_note(c: &mut DC, name: &String, e: &Expr) -> Int ! alloc
         0
 
 # The release fn of a kind, without the "owns its elements" part: 1 `free`, 2 `list_free`,
-# 3 `bytes_free`, 4 `dict_free`; 0 for the kinds a reassignment does not release.
+# 3 `bytes_free`, 4 `dict_free`, 10 `tensor_free`; 0 for the kinds a reassignment does not release.
 fn dr_plain_kind(k: Int) -> Int
     if k == 6
         2
     elsif k == 7
         4
+    elsif k == 10
+        10
     elsif k > 4
         0
     else
@@ -2287,12 +2475,10 @@ fn dr_rebound(c: &DC, name: &String) -> Int ! alloc
         else
             1
 
+# `n = xs.push(v)` binds `Unit`, not an alias of `xs` (`push_stmt` in src/drops.rs).
 fn dr_stmt_assign(c: &mut DC, st: &TStmt) -> Int ! alloc
-    if str_char(st.name, 0) == 95
-        if dr_push_stmt(c, &st.expr) == 1
-            0
-        else
-            dr_top(c, &st.expr, 3)
+    if dr_push_stmt(c, &st.expr) == 1
+        0
     else
         dr_top(c, &st.expr, 3)
 
@@ -2465,7 +2651,7 @@ fn dr_candidate_value(c: &mut DC, name: &String, ty: &String, init: &Expr) -> In
     elsif sd != 0
         8
     else
-        dr_fresh_kind(c, init)
+        dr_fresh_or_moved(c, init)
     if kind == 0
         0
     elsif str_len(ty) != 0
@@ -2869,8 +3055,16 @@ fn dr_xform_expr_stmt(c: &mut DC, st: &TStmt, e: &Expr, out: &mut List[TStmt]) -
     _d = dr_discard(c, e, out)
     if _d == 0
         ne = dr_xform_expr(c, e)
+        dr_pop_drop(&ne)
         dr_push_with_expr(out, st, ne)
     dr_clear_moved(c, st.id, out)
+
+# `xs.pop()` as a statement of its own, from a list the fn does not own (a `&mut List`
+# parameter): the element is dropped where it is discarded (`pop_drop` in src/drops.rs).
+fn dr_pop_drop(e: &Expr) -> Int ! alloc
+    if dx_is_call_named(e, &"list_pop") == 1
+        enum_set(e, 0, "list_pop_drop".dup())
+    0
 
 # The branch tails of an `if` statement that hold something to release become the last
 # statement of their branch (`discard_branch_tails` in src/drops.rs); a nested `if` tail stays
@@ -3090,9 +3284,9 @@ fn dr_xform_block(c: &mut DC, b: &mut TBlock) -> TBlock ! alloc
             _t = dr_truncate(c, mark)
             TBlock(out, tail)
 
-# The first block of a fn releases its by-value `String`, `List`, `Dict` and enum parameters at
-# scope end unless it moved them; a parameter moved on some path sits behind its flag, set on
-# entry (`owned_param_release` in src/drops.rs).
+# The first block of a fn releases its by-value `String`, `List`, `Dict`, tensor and enum
+# parameters at scope end unless it moved them; a parameter moved on some path sits behind its
+# flag, set on entry (`owned_param_release` in src/drops.rs).
 fn dr_seed_live_params(c: &mut DC, out: &mut List[TStmt]) -> Int ! alloc
     if dr_cell(c, 6) == 0
         0
@@ -3128,8 +3322,8 @@ fn dr_seed_one_param(c: &mut DC, out: &mut List[TStmt], name: &String, ty: &Stri
         0
 
 # The release of a by-value parameter of this type (`owned_param_release` in src/drops.rs):
-# `String`, `List`, `Dict` and enum parameters move into the fn, which releases them unless it
-# moves them on.
+# `String`, `List`, `Dict`, tensor and enum parameters move into the fn, which releases them
+# unless it moves them on.
 fn dr_param_kind(c: &DC, ty: &String) -> Int ! alloc
     if dr_param_is_ref(ty) == 1
         0
@@ -3153,6 +3347,8 @@ fn dr_param_generic_kind(variants: Int, head: String) -> Int ! alloc
         2
     elsif head.eq("Dict") == 1
         4
+    elsif head.eq("Tensor") == 1
+        10
     elsif map_get(variants, str_own(&("enum:" + head))) != 0
         5
     else
@@ -3232,8 +3428,8 @@ fn dr_seed_params(c: &mut DC, i: Int, n: Int) -> Int ! alloc
         dr_seed_params(c, i + 1, n)
 
 # Escape facts of a fn body under the read-only assumptions `ro`.
-fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int]) -> DC ! alloc
-    c = dr_new(variants, ro, lists, params, scalars, copy_ok)
+fn dr_facts(params: &List[TParam], body: &TBlock, variants: Int, ro: Int, lists: NM, scalars: List[String], copy_ok: List[Int], pst: NM) -> DC ! alloc
+    c = dr_new(variants, ro, lists, params, scalars, copy_ok, pst)
     dr_ref_then_owned(params, body, &mut c.rto, &mut c.rtop)
     dr_note_spawns(&mut c.spawned, &body.stmts, 0)
     n = c.ps.len()
@@ -3484,7 +3680,7 @@ fn dr_ro_pass(ro: Int, cons: &List[Int], fns: &List[TFn], variants: Int, scalars
         name = f.name.dup()
         mine = dr_list_dup(scalars, 0, scalars.len(), list_new[String]())
         mine_ok = dr_oks_dup(oks, 0, oks.len(), list_new[Int]())
-        c = dr_facts(&f.params, &f.body, variants, ro, nm_new(), mine, mine_ok)
+        c = dr_facts(&f.params, &f.body, variants, ro, nm_new(), mine, mine_ok, nm_new())
         key = name.to_int()
         flags = map_get(ro, key)
         took = cons.get(i)
@@ -3632,6 +3828,10 @@ fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &Str
         # The result of `x.m()` on `any[P]` read by a container builtin (`x.fields().len()`).
         hoist = if dr_reads_container_arg(callee, i) == 1 && dr_any_temp(h, &a) == 1
             1
+        elsif dr_lends_to_user_fn(h.vm, callee, i) == 1 && dr_user_owned_temp(h.vm, &a) == 1
+            # `Opt.of(3).get()`: a value a user fn hands over, lent to another user fn's `&self`
+            # / `&T` parameter, is dropped after the statement (`lends_to_user_fn`).
+            1
         elsif dr_reads_string_arg(callee) + dr_reads_key_arg(callee, i) > 0
             dx_is_fresh_temp_v(h.vm, &a)
         else
@@ -3646,6 +3846,23 @@ fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &Str
             dr_set_arg(args, i, &old, a)
             ()
         dr_hoist_args(h, args, i + 1, n, callee, out)
+
+# Bit `i` of `pref:<callee>`: parameter `i` of the user fn is a reference.
+fn dr_lends_to_user_fn(vm: Int, callee: &String, i: Int) -> Int ! alloc
+    m = map_get(vm, str_own(&("pref:" + callee)))
+    if m == 0 || i > 60
+        0
+    else
+        (m / dr_pow2(i)) % 2
+
+# A user fn call that hands over a value the caller releases (`user_owned_temp`).
+fn dr_user_owned_temp(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dr_owned_name(vm, &name) + dr_ret_owned(vm, &name) > 0
+        _ => 0
+
+fn dr_ret_owned(vm: Int, name: &String) -> Int ! alloc
+    map_get(vm, str_own(&("retk:" + name))) > 1
 
 fn dr_hoist_arms(h: &mut HC, arms: &mut List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
@@ -4361,8 +4578,10 @@ fn drops_body(f: &mut TFn, denv: Int) -> TBlock ! alloc
     h = HC(List.new[Int](), dr_lists_of(&f.params, &f.body, vec_get(denv, 0)), vec_get(denv, 0), tparams_copy(&f.params))
     _h = list_push(&mut h.k, 0)
     hoisted = dr_hoist_block(&mut h, &mut f.body)
+    dr_take_payloads(vec_get(denv, 0), &f.params, &hoisted)
     claimed = dr_claim_fn(f, &mut hoisted, vec_get(denv, 0), &h.lists, vec_get(denv, 3))
-    c = dr_facts(&f.params, &claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, list_new[String](), list_new[Int]())
+    pst = dr_pm_owned(vec_get(denv, 0), &f.params, &claimed)
+    c = dr_facts(&f.params, &claimed, vec_get(denv, 0), vec_get(denv, 2), h.lists, List.new[String](), List.new[Int](), pst)
     _sp = dr_set(&mut c, 6, 1)
     res = dr_xform_block(&mut c, &mut claimed)
     _pp = dr_pin_params(&c.ps)
@@ -4385,6 +4604,8 @@ fn dr_borrows(name: &String) -> Int ! alloc
     if str_eq(name, "str_share") + str_eq(name, "list_push_share") == 1
         1
     elsif dr_sync_borrows(name) == 1
+        1
+    elsif dr_tensor_reads(name) == 1
         1
     elsif dr_is_clone(name) == 1
         # `x.clone()` reads its receiver through `&self` (SPEC «Memoria»).
@@ -4428,6 +4649,8 @@ fn dr_borrows(name: &String) -> Int ! alloc
         1
     elsif str_eq(name, "path_readable") == 1
         1
+    elsif name.eq("regex_valid") == 1
+        1
     elsif str_eq(name, "getenv") == 1
         1
     elsif str_eq(name, "map_get") == 1
@@ -4448,7 +4671,7 @@ fn dr_borrows(name: &String) -> Int ! alloc
         1
     elsif str_eq(name, "dict_has") == 1
         1
-    elsif str_eq(name, "enum_owns") == 1
+    elsif name.eq("enum_owns") + name.eq("enum_take") == 1
         1
     elsif str_eq(name, "enum_box_id") == 1
         1
@@ -4577,11 +4800,16 @@ fn dr_reads_string_arg(name: &String) -> Int ! alloc
         1
     elsif str_eq(name, "path_readable") == 1
         1
+    elsif name.eq("regex_valid") == 1
+        1
     elsif str_eq(name, "getenv") == 1
         1
     elsif str_eq(name, "str_slice") == 1
         1
     elsif str_eq(name, "read_file") == 1
+        1
+    # `load(path)` reads the path, as `read_file` does.
+    elsif name.eq("load") == 1
         1
     else
         0
@@ -4603,6 +4831,23 @@ fn dr_sync_kind(name: &String) -> Int ! alloc
         "sem_new" => str_own(&"sem_free")
         "chan_new" => str_own(&"chan_free")
         "mutex_new" => str_own(&"mutex_free")
+        _ => 0
+
+# The tensor builtins that only read their operands (`borrows_args` in src/drops.rs).
+fn dr_tensor_reads(name: &String) -> Int ! alloc
+    match name
+        "matmul" => 1
+        "qmatmul" => 1
+        "attention" => 1
+        "relu" => 1
+        "silu" => 1
+        "rms_norm" => 1
+        "rope" => 1
+        "softmax" => 1
+        "argmax" => 1
+        "reduce" => 1
+        # `load(path)` reads the path, as `read_file` does.
+        "load" => 1
         _ => 0
 
 # The thread builtins that only read their arguments.
@@ -4671,3 +4916,313 @@ fn dr_note_spawns_in(m: &mut NM, e: &Expr) -> Int ! alloc
             dr_note_spawns(m, &else_b.stmts, 0)
         XWhile(cond, body) => dr_note_spawns(m, &body.stmts, 0)
         _ => 0
+
+# ---- payloads a `match` moves out (`take_moved_payloads` in src/drops.rs) ----
+# `match t { V(s, ..) => s, … }` on an enum value the fn owns: the arm becomes `enum_take(t, i)`,
+# which clears the box's ownership of field `i`, so the scope end releases `t` with what it still
+# owns and whoever binds the result owns the payload (SPEC «Memoria»). The release kind of the
+# payload travels in the call's type arguments (`dr_tk_kind_of`).
+fn dr_take_payloads(vm: Int, params: &List[TParam], body: &TBlock) -> Int ! alloc
+    own = dr_tk_owned(vm, params, body)
+    if own.names.len() == 0
+        0
+    else
+        dr_tk_block(vm, body, &own)
+
+fn dr_tk_kind_of(targs: &String) -> Int ! alloc
+    if targs.len() == 1
+        targs.char(0) - 48
+    else
+        0
+
+# How a payload of the type text `ty` is released: 1 `String`, else as `dr_ret_kind`.
+fn dr_tk_ty_kind(vm: Int, ty: &String) -> Int ! alloc
+    t = trim_type_piece(ty)
+    if t.len() == 0
+        0
+    elsif t.char(0) == 38
+        0
+    elsif t.eq("String") == 1
+        1
+    else
+        dr_ret_kind(vm, &t)
+
+# The release kinds of the type arguments of `ty`, three bits each (argument `j` at `8^j`).
+fn dr_tk_args_packed(vm: Int, ty: &String, j: Int, mul: Int, acc: Int) -> Int ! alloc
+    if j >= 8
+        acc
+    else
+        arg = ty_type_arg(ty, j)
+        if arg.len() == 0
+            acc
+        else
+            dr_tk_args_packed(vm, ty, j + 1, mul * 8, acc + mul * dr_tk_ty_kind(vm, &arg))
+
+# The enum values the fn owns (`owned_enum_locals`): name -> `1 + 2·known + 4·packed`. A by-value
+# parameter of an enum type knows its type arguments; a local bound once knows them when bound to
+# a user fn that builds the enum (`retak:`), not to a variant constructor.
+fn dr_tk_owned(vm: Int, params: &List[TParam], body: &TBlock) -> NM ! alloc
+    own = nm_new()
+    i = 0
+    while i < params.len()
+        p = params.get(i)
+        if dr_ty_is_ref(&p.ty) == 0 && map_get(vm, str_own(&("enum:" + ty_base(&trim_type_piece(&p.ty))))) != 0
+            nm_put(&mut own, &p.name, 3 + 4 * dr_tk_args_packed(vm, &p.ty, 0, 1, 0))
+        i = i + 1
+    cnt = nm_new()
+    cls = nm_new()
+    dr_tk_scan_block(vm, body, &mut cnt, &mut cls, 0)
+    j = 0
+    while j < cnt.names.len()
+        name = cnt.names.get(j)
+        v = nm_get(&cls, &name)
+        if cnt.vals.get(j) == 1 && v != 0 && param_named(params, &name, 0, params.len()) == 0
+            nm_put(&mut own, &name, v)
+        j = j + 1
+    own
+
+# Counts the bindings of each name at any depth (`binding_inits`) and classifies the first one.
+fn dr_tk_scan_block(vm: Int, b: &TBlock, cnt: &mut NM, cls: &mut NM, mode: Int) -> Int ! alloc
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        if st.kind == 1
+            k = nm_get(cnt, &st.name)
+            nm_put(cnt, &st.name, k + 1)
+            if k == 0
+                nm_put(cls, &st.name, dr_tk_class(vm, &st.expr, mode))
+        dr_tk_scan_expr(vm, &st.expr, cnt, cls, mode)
+        i = i + 1
+    dr_tk_scan_expr(vm, &b.tail, cnt, cls, mode)
+
+fn dr_tk_scan_expr(vm: Int, e: &Expr, cnt: &mut NM, cls: &mut NM, mode: Int) -> Int ! alloc
+    match e
+        XBlock(body) => dr_tk_scan_block(vm, &body, cnt, cls, mode)
+        XOn(place, body, kern, idx) => dr_tk_scan_block(vm, &body, cnt, cls, mode)
+        XWhile(cond, body) => dr_tk_scan_block(vm, &body, cnt, cls, mode)
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_tk_scan_if(vm, &then_b, &else_b, &elsifs, cnt, cls, mode)
+        XMatch(scrut, arms) => dr_tk_scan_arms(vm, &arms, cnt, cls, mode)
+        _ => 0
+
+fn dr_tk_scan_if(vm: Int, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], cnt: &mut NM, cls: &mut NM, mode: Int) -> Int ! alloc
+    dr_tk_scan_block(vm, then_b, cnt, cls, mode)
+    i = 0
+    while i < elsifs.len()
+        dr_tk_scan_block(vm, &elsifs.get(i).body, cnt, cls, mode)
+        i = i + 1
+    dr_tk_scan_block(vm, else_b, cnt, cls, mode)
+
+fn dr_tk_scan_arms(vm: Int, arms: &List[TArm], cnt: &mut NM, cls: &mut NM, mode: Int) -> Int ! alloc
+    i = 0
+    while i < arms.len()
+        a = arms.get(i)
+        if a.has_suite == 1
+            dr_tk_scan_block(vm, &a.suite, cnt, cls, mode)
+        else
+            dr_tk_scan_expr(vm, &a.body, cnt, cls, mode)
+        i = i + 1
+    0
+
+# A binding to a variant with fields (1) or to a user fn that builds the enum (with its type
+# arguments' release kinds); 0 otherwise.
+fn dr_tk_class(vm: Int, e: &Expr, mode: Int) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => dr_tk_call_class(vm, &name, mode)
+        _ => 0
+
+fn dr_tk_call_class(vm: Int, name: &String, mode: Int) -> Int ! alloc
+    rec = map_get(vm, str_own(name))
+    if mode == 1
+        dr_pm_call_class(vm, name)
+    elsif rec != 0 && vec_get(rec, 0) == 1
+        1
+    elsif map_get(vm, str_own(&("retk:" + name))) == 5
+        3 + 4 * map_get(vm, str_own(&("retak:" + name)))
+    else
+        0
+
+fn dr_tk_block(vm: Int, b: &TBlock, own: &NM) -> Int ! alloc
+    i = 0
+    while i < b.stmts.len()
+        dr_tk_expr(vm, &b.stmts.get(i).expr, own)
+        i = i + 1
+    dr_tk_expr(vm, &b.tail, own)
+
+fn dr_tk_expr(vm: Int, e: &Expr, own: &NM) -> Int ! alloc
+    match e
+        XMatch(scrut, arms) => dr_tk_match(vm, &scrut, &mut arms, own)
+        XBlock(body) => dr_tk_block(vm, &body, own)
+        XOn(place, body, kern, idx) => dr_tk_block(vm, &body, own)
+        XWhile(cond, body) => dr_tk_expr(vm, &cond, own) + dr_tk_block(vm, &body, own)
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_tk_if(vm, &cond, &then_b, &else_b, &elsifs, own)
+        _ => 0
+
+fn dr_tk_if(vm: Int, cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], own: &NM) -> Int ! alloc
+    dr_tk_expr(vm, cond, own)
+    dr_tk_block(vm, then_b, own)
+    i = 0
+    while i < elsifs.len()
+        dr_tk_block(vm, &elsifs.get(i).body, own)
+        i = i + 1
+    dr_tk_block(vm, else_b, own)
+
+fn dr_tk_match(vm: Int, scrut: &Expr, arms: &mut List[TArm], own: &NM) -> Int ! alloc
+    dr_tk_expr(vm, scrut, own)
+    t = dr_tk_scrut_name(scrut)
+    sv = if t.len() == 0
+        0
+    else
+        nm_get(own, &t)
+    i = 0
+    while i < arms.len()
+        arm = list_get(&mut arms, i)
+        f = if sv == 0 || arm.has_suite == 1
+            0 - 1
+        else
+            dr_tk_field(vm, &arm, sv)
+        if f >= 0
+            args = List.new[Expr]()
+            args.push(XIdent(t.dup()))
+            args.push(XInt(f / 8))
+            dr_drop_expr(&arm.body)
+            arm.body = XCall("enum_take".dup(), args, (f % 8).to_str(), 0)
+        elsif arm.has_suite == 1
+            _b = dr_tk_block(vm, &arm.suite, own)
+        else
+            _e = dr_tk_expr(vm, &arm.body, own)
+        i = i + 1
+    0
+
+fn dr_tk_scrut_name(e: &Expr) -> String ! alloc
+    match e
+        XIdent(name) => name.dup()
+        _ => ""
+
+# The arm is `V(.., s, ..) => s` with `s` an owned field whose release is known: `8·i + kind`,
+# or -1 (`taken_field` in src/drops.rs). A generic field needs the scrutinee's type arguments.
+fn dr_tk_field(vm: Int, a: &TArm, sv: Int) -> Int ! alloc
+    s = dr_tk_scrut_name(&a.body)
+    if s.len() == 0 || a.pat.kind != 3
+        0 - 1
+    else
+        i = dr_tk_binder_index(&a.pat.args, &s, 0)
+        rec = map_get(vm, str_own(&a.pat.name))
+        if i < 0 || rec == 0
+            0 - 1
+        elsif dr_field_flag(rec, i) == 0
+            0 - 1
+        else
+            k = dr_tk_field_kind(vm, &a.pat.name, i, sv)
+            if k == 0
+                0 - 1
+            else
+                8 * i + k
+
+fn dr_tk_field_kind(vm: Int, variant: &String, i: Int, sv: Int) -> Int ! alloc
+    j = map_get(vm, str_own(&("gvf:" + variant + ":" + i.to_str())))
+    if j == 0
+        map_get(vm, str_own(&("vfk:" + variant + ":" + i.to_str())))
+    elsif (sv / 2) % 2 == 0
+        0
+    else
+        (sv / 4 / dr_pow8(j - 1)) % 8
+
+fn dr_pow8(n: Int) -> Int
+    if n <= 0
+        1
+    else
+        8 * dr_pow8(n - 1)
+
+fn dr_tk_binder_index(args: &List[TPat], s: &String, i: Int) -> Int ! alloc
+    if i >= args.len()
+        0 - 1
+    else
+        p = args.get(i)
+        if p.kind == 1 && p.name.eq(s) == 1
+            i
+        else
+            dr_tk_binder_index(args, s, i + 1)
+
+# ---- fields moved out of an owned struct (`moved_field_kind` in src/drops.rs) ----
+# The struct values the fn owns (`owned_struct_locals`): a by-value parameter of a struct without
+# type parameters, or a local bound once to its constructor or to a user fn that returns one.
+fn dr_pm_owned(vm: Int, params: &List[TParam], body: &TBlock) -> NM ! alloc
+    own = nm_new()
+    i = 0
+    while i < params.len()
+        p = params.get(i)
+        t = trim_type_piece(&p.ty)
+        if map_get(vm, str_own(&("sname:" + t))) == 1
+            nm_put(&mut own, &p.name, str_own(&t))
+        i = i + 1
+    cnt = nm_new()
+    cls = nm_new()
+    dr_tk_scan_block(vm, body, &mut cnt, &mut cls, 1)
+    j = 0
+    while j < cnt.names.len()
+        name = cnt.names.get(j)
+        v = nm_get(&cls, &name)
+        if cnt.vals.get(j) == 1 && v != 0 && param_named(params, &name, 0, params.len()) == 0
+            nm_put(&mut own, &name, v)
+        j = j + 1
+    own
+
+fn dr_pm_call_class(vm: Int, name: &String) -> Int ! alloc
+    if map_get(vm, str_own(&("sname:" + name))) == 1
+        str_own(name)
+    else
+        map_get(vm, str_own(&("rets:" + name)))
+
+fn dr_fresh_or_moved(c: &DC, init: &Expr) -> Int ! alloc
+    k = dr_fresh_kind(c, init)
+    if k != 0
+        k
+    else
+        match init
+            XField(base, fld) => dr_pm_field_kind(c, &base, &fld)
+            XTo(place, inner) => dr_to_tensor_kind(c, &inner)
+            _ => 0
+
+# `y = to p e` hands `y` a tensor it owns when `e` is one: a literal, a user fn's tensor result,
+# or a live local released with `tensor_free` that `to` moves (`to_tensor_kind` in src/drops.rs).
+fn dr_to_tensor_kind(c: &DC, e: &Expr) -> Int ! alloc
+    match e
+        XTensor(nr, nc, data) => 10
+        XTo(place, inner) => dr_to_tensor_kind(c, &inner)
+        XCall(name, args, targs, xp) =>
+            if map_get(c.variants, str_own(&("rett:" + name))) == 1
+                10
+            else
+                0
+        XIdent(n) =>
+            if dr_in_live(&c.live, &n, 0, c.live.len()) == 1 && nm_get(&c.kinds, &n) == 10
+                10
+            else
+                0
+        _ => 0
+
+# How the field `fld` of `base` is released once moved out, when `base` is (a field chain of) a
+# struct value the fn owns; 0 otherwise.
+fn dr_pm_field_kind(c: &DC, base: &Expr, fld: &String) -> Int ! alloc
+    st = dr_pm_struct_of(c, base)
+    if st.len() == 0
+        0
+    else
+        map_get(c.variants, str_own(&("fk:" + st + "." + fld)))
+
+fn dr_pm_struct_of(c: &DC, e: &Expr) -> String ! alloc
+    match e
+        XIdent(name) => br_text(&c.pst, &name)
+        XField(base, fld) => dr_pm_nested(c, &base, &fld)
+        _ => ""
+
+fn dr_pm_nested(c: &DC, base: &Expr, fld: &String) -> String ! alloc
+    st = dr_pm_struct_of(c, base)
+    if st.len() == 0
+        ""
+    else
+        h = map_get(c.variants, str_own(&("fst:" + st + "." + fld)))
+        if h == 0
+            ""
+        else
+            str_from_int(h)

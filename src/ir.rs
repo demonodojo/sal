@@ -2525,7 +2525,6 @@ fn emit_struct_string_drops(
         // A clean local (nothing moved, read whole or tainted) is released by the glue of its
         // struct: the same releases, one call. Any other local keeps the inline releases below.
         let clean = !reads.struct_valued.contains(&name)
-            && !reads.heap_moved.contains(&name)
             && reads.strings_moved.get(&name).map_or(true, |s| s.is_empty())
             && reads.container_tainted.get(&name).map_or(true, |s| s.is_empty());
         if clean && struct_glue_has(&sn, strings) {
@@ -2541,7 +2540,7 @@ fn emit_struct_string_drops(
         // double free).
         let glue = Glue {
             nested: !reads.struct_valued.contains(&name),
-            containers: !reads.heap_moved.contains(&name),
+            containers: true,
         };
         let skip = reads.strings_moved.get(&name);
         free_struct_strings(
@@ -2792,9 +2791,7 @@ fn free_struct_strings(
             }
             continue;
         };
-        if matches!(action, FieldDrop::Call("sal_free") | FieldDrop::Call("sal_enum_free"))
-            && strings_moved.is_some_and(|s| s.contains(&path))
-        {
+        if matches!(action, FieldDrop::Call(_)) && strings_moved.is_some_and(|s| s.contains(&path)) {
             continue;
         }
         let ssa = if transparent {
@@ -2870,11 +2867,8 @@ struct FieldReads {
     /// (a field chain that ends in a struct-typed field and is not itself the
     /// base of another field access).
     struct_valued: HashSet<String>,
-    /// Locals whose `List` / `Dict` / `Bytes` field is handed on: let value,
-    /// assignment value, `return`, block tail, or an argument of a call that may
-    /// keep it. The new owner releases it, so the local must not.
-    heap_moved: HashSet<String>,
-    /// Root local -> dot-paths of `String` fields handed out by value (`return n.name`).
+    /// Root local -> dot-paths of `String`, enum, `List`, `Dict` and `Bytes` fields handed out
+    /// by value (`return n.name`, `xs = b.xs`): the new owner releases them.
     strings_moved: HashMap<String, HashSet<String>>,
     /// Root local -> dot-paths of `List[String]` / `Dict` of `String` tainted by a non-fresh store.
     container_tainted: HashMap<String, HashSet<String>>,
@@ -2919,8 +2913,15 @@ fn field_reads(
                 let last = k + 1 == fields.len();
                 if let crate::ast::Type::Named { name, args, .. } = &fd.ty {
                     if last && moving {
+                        // A container handed on is the new owner's; the other fields of the
+                        // local are still its own (SPEC «Memoria»: partial move).
                         if matches!(name.as_str(), "List" | "Dict" | "Bytes") {
-                            self.out.heap_moved.insert(root.to_string());
+                            let path = fields.join(".");
+                            self.out
+                                .strings_moved
+                                .entry(root.to_string())
+                                .or_default()
+                                .insert(path);
                         } else if name == "String" && args.is_empty() {
                             let path = fields.join(".");
                             self.out
@@ -3794,6 +3795,11 @@ fn lower_stmt(
             let mut body_insts = Vec::new();
             let mut body_env = loop_env;
             let mut body_diverged = false;
+            // The body is a scope of its own, as an `if` branch: the struct locals it binds are
+            // released at the end of each pass (Rust drops them per iteration), and a `return`
+            // inside it releases them first.
+            let outer: HashSet<String> = env.keys().cloned().collect();
+            OPEN_BRANCHES.with(|b| b.borrow_mut().push((body.clone(), outer.clone())));
             for st in &body.stmts {
                 if lower_stmt(
                     st,
@@ -3826,6 +3832,10 @@ fn lower_stmt(
                         strings,
                     );
                 }
+            }
+            OPEN_BRANCHES.with(|b| b.borrow_mut().pop());
+            if !body_diverged {
+                block_struct_drops(body, &mut body_insts, &body_env, counter, strings, &outer);
             }
             let mut carried = Vec::new();
             for (name, incoming, dest) in specs {
@@ -4335,7 +4345,7 @@ fn runtime_call_name(fname: &str, fn_names: &HashMap<String, ()>) -> String {
     }
     if matches!(
         fname,
-        "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "dict_new"
+        "list_new" | "list_push" | "list_len" | "list_get" | "list_set" | "list_pop" | "list_pop_drop" | "dict_new"
             | "dict_put" | "dict_get" | "dict_has" | "dict_len" | "dict_remove" | "dict_keys" | "dict_values" | "list_free" | "dict_free" | "enum_free" | "struct_free" | "struct_free_box" | "tensor_free" | "any_free"
     ) {
         return format!("sal_{fname}");
@@ -4375,6 +4385,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "read_file"
             | "write_file"
             | "path_readable"
+            | "regex_valid"
             | "write_png"
             | "image_new"
             | "print_str"
@@ -4427,6 +4438,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "struct_free"
             | "struct_free_box"
             | "enum_owns"
+            | "enum_take"
             | "enum_box_id"
             | "bytes_free"
             | "thread_free"
@@ -4478,6 +4490,7 @@ fn is_runtime_builtin(name: &str) -> bool {
             | "dict_values"
             | "list_set"
             | "list_pop"
+            | "list_pop_drop"
             | "clang"
             | "clang_obj"
             | "link_objs"
@@ -4995,6 +5008,7 @@ fn lower_expr_inner(
                         });
                         return dest;
                     }
+                    let inner_list = matches!(&vt, Some(Type::Named { name, args, .. }) if name == "List" && !args.is_empty());
                     let list_call = Expr::Call {
                         func: Box::new(Expr::Ident { name: "list_new_owned".into(), span: *span }),
                         type_args: vec![TypeArg::Type(vt.unwrap())],
@@ -5002,6 +5016,14 @@ fn lower_expr_inner(
                         span: *span,
                     };
                     let list = lower_expr_simple(&list_call, instructions, env, counter, tensors, fn_names, host_literals, strings);
+                    if inner_list {
+                        // The guarded `List` is the holder's element: `sal_mutex_free` releases it.
+                        instructions.push(IrInst::Call {
+                            dest: None,
+                            func: "sal_list_set_drop".into(),
+                            args: vec![list.clone(), "sal_list_free_elem".into()],
+                        });
+                    }
                     *counter += 1;
                     instructions.push(IrInst::Call {
                         dest: Some(format!("t{counter}")),
@@ -5769,6 +5791,18 @@ fn lower_expr_inner(
                     func: mm_func,
                     args: vec![lhs.clone(), rhs.clone(), m, k, n],
                 });
+                // The region's value is a tensor, as `matmul` outside `on`: `c - k` after
+                // `c = on cpu …` is a tensor op.
+                let out_info = match (
+                    tensor_info_for_ssa(lhs, env, tensors),
+                    tensor_info_for_ssa(rhs, env, tensors),
+                ) {
+                    (Some(li), Some(ri)) => matmul_out_info(&li, &ri),
+                    _ => None,
+                };
+                if let Some(info) = &out_info {
+                    tensors.insert(dest.clone(), info.clone());
+                }
                 if has_epilogue {
                     *counter += 1;
                     let out = format!("t{counter}");
@@ -5777,6 +5811,9 @@ fn lower_expr_inner(
                         func: "sal_relu".into(),
                         args: vec![dest],
                     });
+                    if let Some(info) = out_info {
+                        tensors.insert(out.clone(), info);
+                    }
                     return out;
                 }
                 return dest;
@@ -5833,7 +5870,10 @@ fn lower_expr_inner(
             instructions.push(IrInst::Drop {
                 name: expr_name(expr),
             });
-            if let Some(info) = tensors.get(&src).cloned() {
+            // `to place` puts the tensor on that place, whatever place its source had (an
+            // `on p` result of a call keeps the name `p` until here).
+            if let Some(mut info) = tensors.get(&src).cloned() {
+                info.place = place.clone();
                 tensors.insert(dest.clone(), info);
             }
             dest
@@ -6017,7 +6057,15 @@ fn lower_expr_inner(
             });
             *counter += 1;
             let payload = format!("t{counter}");
-            instructions.push(IrInst::EnumField { dest: payload.clone(), value: v, index: 0 });
+            instructions.push(IrInst::EnumField { dest: payload.clone(), value: v.clone(), index: 0 });
+            // A call's box is a temporary: the payload moves out and the shell is released.
+            if matches!(inner.as_ref(), Expr::Call { .. }) {
+                instructions.push(IrInst::Call {
+                    dest: None,
+                    func: "sal_enum_free_shell".into(),
+                    args: vec![v],
+                });
+            }
             payload
         }
         Expr::Field { base, field, .. } => {
@@ -7279,9 +7327,23 @@ fn tensor_len_operand(
     }
     match dims_elems(info) {
         Ok(n) => push_const_dim(n, instructions, counter),
-        Err(sym) => {
-            let _ = sym;
-            push_const_dim(1, instructions, counter)
+        Err(_) => {
+            // A `?` axis no literal resolves: the runtime reads the length of the buffer
+            // (`sal_tensor_elems(t, bytes of one element)`).
+            let elem_bytes = match info.elem {
+                TensorElem::F32 => 4,
+                TensorElem::F16 | TensorElem::BF16 => 2,
+                TensorElem::I8 => 1,
+            };
+            let eb = push_const_dim(elem_bytes, instructions, counter);
+            *counter += 1;
+            let dest = format!("t{counter}");
+            instructions.push(IrInst::Call {
+                dest: Some(dest.clone()),
+                func: "sal_tensor_elems".into(),
+                args: vec![tensor_ssa.to_string(), eb],
+            });
+            dest
         }
     }
 }

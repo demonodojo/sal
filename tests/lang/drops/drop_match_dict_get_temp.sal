@@ -1,5 +1,4 @@
 # exit: 5
-# selfhost-xfail: con el preludio importado, el selfhost no resuelve `d.get(k)` de un `Dict[_, String]` (queda `sal_d.get`) ni el `s.len()` del brazo
 # `match d.get(k)` without a local: the fresh `Option` (and the copy of the value inside) is
 # released after the match, also when an arm binds the payload.
 import "../../../std/prelude.sal"

@@ -90,6 +90,26 @@ void sal_instrument_init(void) {
     enabled = 1;
 }
 
+/* A block the caller allocated itself (`raw` is NULL) goes back to malloc when released, so
+ * its memory can be handed out again: any such block in quarantine that overlaps the new
+ * `[lo, lo + n)` is stale, and a check of the new block must not report it as freed. */
+static void purge_reused_locked(const void *lo, int64_t n) {
+    const unsigned char *a = (const unsigned char *)lo;
+    const unsigned char *z = a + (n > 0 ? n : 1);
+    Block **cur = &quarantine;
+    while (*cur) {
+        Block *b = *cur;
+        const unsigned char *base = (const unsigned char *)b->user;
+        const unsigned char *end = base + (b->size > 0 ? b->size : 1);
+        if (!b->raw && base < z && a < end) {
+            *cur = b->next;
+            free(b);
+        } else {
+            cur = &b->next;
+        }
+    }
+}
+
 static Block *track_locked(void *p, int64_t size, int place, const char *site) {
     Block *b = (Block *)malloc(sizeof(Block));
     if (!b) {
@@ -121,6 +141,7 @@ void *sal_instrument_malloc(int64_t size, int place, const char *site) {
     poison(raw + SAL_REDZONE + size, SAL_REDZONE);
     void *user = raw + SAL_REDZONE;
     INST_LOCK();
+    purge_reused_locked(raw, (int64_t)raw_size);
     Block *b = track_locked(user, size, place, site);
     if (b) {
         b->raw = raw;
@@ -134,6 +155,9 @@ void sal_instrument_alloc(void *p, int64_t size, int place, const char *site) {
         return;
     }
     INST_LOCK();
+    /* Memory the runtime maps itself (an arena page), or one malloc hands out again, can come
+     * back at an address freed before: it is a new block, not the one in quarantine. */
+    purge_reused_locked(p, size);
     track_locked(p, size, place, site);
     INST_UNLOCK();
 }
@@ -160,6 +184,42 @@ void sal_instrument_free(void *p) {
     b->next = quarantine;
     quarantine = b;
     INST_UNLOCK();
+}
+
+/* Releases `p` when `sal_instrument_malloc` gave it out (1); a block the caller allocated itself
+ * is only untracked (0), and the caller frees it. A block of `sal_instrument_malloc` already in
+ * quarantine (its memory is not reused while there) is a DOUBLE_FREE. */
+int sal_instrument_free_owned(void *p) {
+    if (!enabled || !p) {
+        return 0;
+    }
+    INST_LOCK();
+    Block *gone = find_by_user(quarantine, p);
+    if (gone && gone->raw) {
+        emit_and_die("DOUBLE_FREE", gone->site);
+    }
+    Block *b = find_by_user(live, p);
+    int own = b && b->raw;
+    INST_UNLOCK();
+    if (b) {
+        sal_instrument_free(p);
+    }
+    return own;
+}
+
+/* The size and place of a live block that starts at `p` (1), or 0 when it tracks none. */
+int sal_instrument_block_info(const void *p, int64_t *size, int *place) {
+    if (!enabled || !p) {
+        return 0;
+    }
+    INST_LOCK();
+    Block *b = find_by_user(live, p);
+    if (b) {
+        *size = b->size;
+        *place = b->place;
+    }
+    INST_UNLOCK();
+    return b != NULL;
 }
 
 void sal_instrument_check_index(int64_t index, int64_t len, const char *site) {
@@ -313,6 +373,18 @@ void sal_instrument_alloc(void *p, int64_t size, int place, const char *site) {
 
 void sal_instrument_free(void *p) {
     (void)p;
+}
+
+int sal_instrument_free_owned(void *p) {
+    (void)p;
+    return 0;
+}
+
+int sal_instrument_block_info(const void *p, int64_t *size, int *place) {
+    (void)p;
+    (void)size;
+    (void)place;
+    return 0;
 }
 
 void sal_instrument_check_f32(const float *data, int64_t n, const char *site) {

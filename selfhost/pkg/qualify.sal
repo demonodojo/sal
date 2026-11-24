@@ -4,6 +4,7 @@ import modules
 import "../front/lexer.sal"
 import "../ast/tshape.sal"
 import "../ast/tast.sal"
+import "../ast/tytext.sal"
 
 # One export of a dependency module: which dep, the export name, the link name used in IR/C.
 struct Link
@@ -399,10 +400,26 @@ fn qualify_type_handle(ty: Int, ctx: &QualCtx, links: &List[Link]) -> Int ! allo
     if ty == 0
         0
     else
-        s = ts_trim(&str_from_int(ty))
-        pair = split_qual_member(&s)
+        t = ts_trim(&str_from_int(ty))
+        cut = ty_deref_skip(&t, 0, t.len())
+        if cut > 0
+            # `&one.Pt`, `&mut one.Pt`: the reference keeps its prefix, the referent is qualified.
+            inner = ts_trim(&t.slice(cut, t.len()))
+            neu = qualify_type_handle(inner.to_int(), ctx, links)
+            if neu == inner.to_int()
+                ty
+            else
+                (t.slice(0, cut) + str_from_int(neu)).to_int()
+        else
+            qualify_type_plain(ty, &t, ctx, links)
+
+fn qualify_type_plain(ty: Int, s: &String, ctx: &QualCtx, links: &List[Link]) -> Int ! alloc
+    if ty == 0
+        0
+    else
+        pair = split_qual_member(s)
         if pair == 0
-            renamed = rename_lookup(&ctx.renames, &ty_trim_go(s))
+            renamed = rename_lookup(&ctx.renames, &ty_trim_go(s.clone()))
             if renamed.len() != 0
                 str_as_int(&renamed)
             else
@@ -417,8 +434,8 @@ fn qualify_type_handle(ty: Int, ctx: &QualCtx, links: &List[Link]) -> Int ! allo
                 str_as_int(&lk)
 
 # The body is qualified in place. A node stays in its box. A name is replaced only when the
-# link map renames it, and `M.campo` becomes an identifier. The same nodes the copy used to
-# leave untouched (`lambda`, unary, `try`, a tensor) are still not walked.
+# link map renames it, and `M.campo` becomes an identifier: also under `&`, `try`, a lambda or
+# a block (`f(&one.mk())`). A tensor literal is not walked.
 fn qx_ident_link(ctx: &QualCtx, links: &List[Link], qual: &String, member: &String) -> String ! alloc
     resolve_qualified_item(ctx, links, qual, member)
 
@@ -558,6 +575,11 @@ fn qx(e: &Expr, ctx: &QualCtx, links: &List[Link]) -> Expr ! alloc
         XTo(_, inner) => qx_one(e, 1, &inner, ctx, links)
         XOn(_, body, _, _) => qx_on(e, &mut body, ctx, links)
         XMatch(scrut, arms) => qx_match(e, &scrut, &mut arms, ctx, links)
+        XUnary(_, inner) => qx_one(e, 1, &inner, ctx, links)
+        XTry(inner) => qx_one(e, 0, &inner, ctx, links)
+        XLambda(_, body) => qx_one(e, 1, &body, ctx, links)
+        XLambdaBlock(_, body) => qx_on(e, &mut body, ctx, links)
+        XBlock(body) => qx_on(e, &mut body, ctx, links)
         _ => qx_same(e)
 
 fn qx_bin(e: &Expr, l: &Expr, r: &Expr, ctx: &QualCtx, links: &List[Link]) -> Expr ! alloc
