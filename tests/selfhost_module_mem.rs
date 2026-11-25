@@ -110,7 +110,7 @@ fn leaf_selfhost_modules_report_known_leaks() {
         ("cache_alloc.sal", &["strdup"]),
         ("lexer_alloc.sal", &[]),
         ("result_alloc.sal", &[]),
-        ("thash_alloc.sal", &["strdup"]),
+        ("thash_alloc.sal", &[]),
         ("tshape_alloc.sal", &["strdup"]),
         ("tytext_alloc.sal", &["strdup"]),
     ];
