@@ -2877,8 +2877,8 @@ int64_t sal_any_drop_glue(int64_t raw) {
 /* An `any[P]` has no copy (Rust: `Box<dyn P>` is not `Clone`). */
 int64_t sal_any_clone_glue(int64_t raw) {
     (void)raw;
-    fprintf(stderr, "sal: an any[P] value cannot be cloned\n");
-    abort();
+    sal_panic("an any[P] value cannot be cloned");
+    return 0;
 }
 
 /* Glue of a `Dict` payload field of an enum (`VDict(d)`): the box owns the dict. */
