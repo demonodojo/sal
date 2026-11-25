@@ -946,6 +946,7 @@ fn releases_param_fields(f: &FnDef) -> HashSet<String> {
         for st in &b.stmts {
             match st {
                 Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+                Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
                 Stmt::Break { .. } => {}
                 Stmt::Let { init, .. } => ex(init, out),
                 Stmt::Assign { target, value, .. } => {
@@ -1502,6 +1503,7 @@ fn arena_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
     for st in &b.stmts {
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Let { name, init, .. } => {
                 if let Expr::Ident { name: rhs, .. } = init {
                     out.push((name.clone(), rhs.clone()));
@@ -3043,6 +3045,7 @@ fn field_reads(
             for st in &b.stmts {
                 match st {
                     Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+                    Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
                     Stmt::Let { init, .. } => self.ex(init, true),
                     Stmt::Expr(e) => self.ex(e, false),
                     Stmt::Assign { target, value, .. } => {
@@ -3127,6 +3130,7 @@ fn collect_moved_stmt(
 ) {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => {}
         Stmt::Let { init, .. } => {
             if let Expr::Ident { name, .. } = init {
@@ -3277,6 +3281,7 @@ fn collect_assigned_block(body: &Block, names: &mut HashSet<String>) {
 fn collect_assigned_stmt(st: &Stmt, names: &mut HashSet<String>) {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => {}
         Stmt::Assign { target, value, .. } => {
             match target {
@@ -3414,6 +3419,7 @@ fn lower_stmt(
     }
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => return false,
         Stmt::Let { name, ty, init, .. } => {
             let param_cell = cell_param_alias(init);

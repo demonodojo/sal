@@ -19,7 +19,7 @@ pub fn expand_interpolation(prog: &mut Program) {
 fn block(b: &mut Block) {
     for st in &mut b.stmts {
         match st {
-            Stmt::InlineFor { body, .. } => block(body),
+            Stmt::InlineFor { body, .. } | Stmt::Parallel { body, .. } => block(body),
             Stmt::Break { .. } => {}
             Stmt::Let { init, .. } => expr(init),
             Stmt::Expr(e) => expr(e),

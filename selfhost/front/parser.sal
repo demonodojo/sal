@@ -912,6 +912,10 @@ fn parse_primary(pr: &mut Parser) -> Expr ! alloc
         _a = p_advance(pr)
         _e = p_set_err(pr, "parse error: regex literal is only allowed in a match pattern")
         XNone
+    elsif k == TK_PARALLEL
+        p_advance(pr)
+        p_set_err(pr, "parse error: `parallel` is a line of a block, not an expression")
+        XNone
     elsif k == TK_IF()
         parse_if(pr)
     elsif k == TK_WHILE()
@@ -1265,6 +1269,10 @@ fn parse_block_go(pr: &mut Parser, stmts: List[TStmt]) -> TBlock ! alloc
         stmts.push(st)
         p_skip_nls(pr)
         parse_block_go(pr, stmts)
+    elsif tok_kind(pr, p_peek(pr)) == TK_PARALLEL
+        stmts.push(parse_parallel(pr))
+        p_skip_nls(pr)
+        parse_block_go(pr, stmts)
     elsif tok_kind(pr, p_peek(pr)) == TK_AT()
         flags = parse_stmt_attrs(pr, 0)
         if flags < 0
@@ -1308,6 +1316,16 @@ fn parse_inline_for(pr: &mut Parser) -> TStmt ! alloc
         p_set_err(pr, "parse error: expected indented inline for body")
         empty_block()
     TStmt(5, var, XBlock(body), ty, 0, XNone, 0, 0, p_next_id(pr))
+
+# `"parallel" suite`: statement kind 6, with the body in an `XBlock` (`threads.sal` rewrites it).
+fn parse_parallel(pr: &mut Parser) -> TStmt ! alloc
+    p_advance(pr)
+    body = if p_accept(pr, TK_NL()) == 1 && p_accept(pr, TK_INDENT()) == 1
+        parse_block_after_indent(pr)
+    else
+        p_set_err(pr, "parse error: expected indented parallel body")
+        empty_block()
+    TStmt(6, "", XBlock(body), "", 0, XNone, 0, 0, p_next_id(pr))
 
 # `@frozen` (1) and `@stack` (2) before a `let`; -1 on error.
 fn parse_stmt_attrs(pr: &mut Parser, flags: Int) -> Int ! alloc
@@ -2226,6 +2244,9 @@ fn parse_program_go(pr: &mut Parser, it: &mut Items) -> Int ! alloc
     elsif k == TK_FN()
         _c = list_push(&mut it.fns, parse_fn(pr, 0))
         parse_program_go(pr, it)
+    elsif k == TK_PARALLEL
+        p_set_err(pr, "parse error: `parallel` is a line of a block, not an item")
+        0
     else
         _d = p_advance(pr)
         parse_program_go(pr, it)
@@ -2288,11 +2309,12 @@ fn desugar_inline(tp: TProgram, src: &String, errs: &mut List[String]) -> TProgr
     else
         tp
 
-# `Thread.spawn(f, a…)` → `thread_spawn(f(a…))` (`threads.sal`), after `desugar_break`.
+# `parallel` and `Thread.spawn(f, a…)` → `thread_spawn(f(a…))` (`threads.sal`), after
+# `desugar_break`.
 fn desugar_spawn(tp: TProgram, src: &String, errs: &mut List[String]) -> TProgram ! alloc
     if errs.len() > 0
         tp
-    elsif src.contains("Thread.spawn") == 1
+    elsif src.contains("Thread.spawn") == 1 || src.contains("parallel") == 1
         desugar_thread_spawn(tp, errs)
     else
         tp

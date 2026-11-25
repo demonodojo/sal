@@ -121,6 +121,23 @@ fn soso_rejects_threads() {
 }
 
 #[test]
+fn soso_rejects_parallel() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = root.join("main.sal");
+    std::fs::write(
+        &file,
+        "fn one(n: Int) -> Int\n    n\n\nfn main() -> Int ! alloc\n    parallel\n        a = one(1)\n        b = one(2)\n    a + b\n",
+    )
+    .unwrap();
+    std::fs::create_dir(root.join("sdk")).unwrap();
+    std::fs::write(root.join("sdk/manifest.txt"), "sdk=1").unwrap();
+    let err = compile_file(&file, &options(root, Target::Soso)).expect_err("parallel on soso");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("ETarget") || msg.contains("E_TARGET"), "parallel runs threads:\n{msg}");
+}
+
+#[test]
 fn soso_rejects_regex_match_pattern() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

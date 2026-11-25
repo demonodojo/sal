@@ -1,0 +1,16 @@
+# exit: 18
+# A `parallel` in a loop body runs and joins its lines on every turn.
+fn twice(n: Int) -> Int
+    n * 2
+
+fn main() -> Int ! alloc
+    let total = 0
+    let i = 0
+    while i < 3
+        if i >= 0
+            parallel
+                a = twice(i)
+                b = twice(i + 1)
+            total = total + a + b
+        i = i + 1
+    total

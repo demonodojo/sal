@@ -187,6 +187,9 @@ fn TK_OROR() -> Int
 fn TK_TICK() -> Int
     61
 
+# `parallel` only starts a line of a block (`parse_parallel`); anywhere else it is a parse error.
+TK_PARALLEL = 62
+
 fn is_digit(c: Int) -> Int
     if c < 48 || c > 57
         0
@@ -264,6 +267,7 @@ fn kw_kind(text: &String) -> Int ! alloc
         "kernel" => TK_KERNEL()
         "in" => TK_IN()
         "break" => TK_BREAK()
+        "parallel" => TK_PARALLEL
         _ => TK_IDENT()
 
 fn indent_stack_new() -> List[Int] ! alloc

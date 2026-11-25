@@ -44,7 +44,7 @@ Avisos: `W_DEPRECATED`, uso de un item marcado con `@deprecated`; no es error y 
 
 Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `NAN`, `INF`.
 
-Fuera del arranque, y por tanto `E_PARSE` si aparecen: `parallel`, `@resource`, `@shared`, `@copy`, `@unique`, `@no_gc`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). `@arena` está admitido en `fn`, `method`, `static` e `init`. Las dependencias `path`, `git` y `github` de `Sal.toml`, `Sal.lock` y `sal fetch` / `sal install` / `sal add` están en el arranque; ver [sal-paquetes](../sal-paquetes/SKILL.md).
+Fuera del arranque, y por tanto `E_PARSE` si aparecen: `@resource`, `@shared`, `@copy`, `@unique`, `@no_gc`, diferenciación automática, un **registro central** remoto de paquetes (catálogo fuera de git). `@arena` está admitido en `fn`, `method`, `static` e `init`. `parallel` es una línea de bloque (SPEC «Hilos», `parallel`): cada línea `f(a…)` o `x = f(a…)` corre en un hilo y se unen al final; como expresión o item es `E_PARSE`. Las dependencias `path`, `git` y `github` de `Sal.toml`, `Sal.lock` y `sal fetch` / `sal install` / `sal add` están en el arranque; ver [sal-paquetes](../sal-paquetes/SKILL.md).
 
 ## Atributos (arranque)
 

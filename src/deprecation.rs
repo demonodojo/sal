@@ -175,6 +175,7 @@ impl Walk<'_> {
     fn stmt(&mut self, st: &Stmt) {
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Let { ty, init, .. } => {
                 if let Some(t) = ty {
                     self.ty(t);

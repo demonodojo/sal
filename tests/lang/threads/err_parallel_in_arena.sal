@@ -1,0 +1,12 @@
+# error: E_TYPE
+fn one(n: Int) -> Int
+    n
+
+@arena
+fn run() -> Int ! alloc
+    parallel
+        a = one(1)
+    a
+
+fn main() -> Int ! alloc
+    run()

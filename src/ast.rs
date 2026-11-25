@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::span::Span;
 
-pub const AST_SCHEMA_VERSION: u32 = 8;
+pub const AST_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Program {
@@ -295,6 +295,14 @@ pub enum Stmt {
     InlineFor {
         var: String,
         ty: String,
+        body: Block,
+        span: Span,
+    },
+    /// `parallel` newline indent body: each line of the body (`f(a…)` or `x = f(a…)`) runs in a
+    /// thread of its own, and all of them are joined at the end (SPEC «Hilos», `parallel`).
+    /// `threads::desugar_thread_spawn` rewrites it before type checking, so later passes never
+    /// see it.
+    Parallel {
         body: Block,
         span: Span,
     },

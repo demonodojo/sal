@@ -1,0 +1,9 @@
+# error: E_PARSE
+# `parallel` is a line of a block, not an expression.
+fn one() -> Int
+    1
+
+fn main() -> Int ! alloc
+    a = parallel
+        one()
+    0

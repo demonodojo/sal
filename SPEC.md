@@ -127,6 +127,7 @@ line         → attr_list "let" IDENT (":" type | ε) "=" expr
              | "break"
              | "while" expr suite
              | "inline" "for" IDENT "in" IDENT "." "fields" suite
+             | "parallel" suite
              | expr ("=" expr | ε)
 ```
 
@@ -137,6 +138,8 @@ Si hay `=`, la izquierda tiene que ser un lvalue: `IDENT`, un postfijo que solo 
 `return expr` termina la función con `expr`; el tipo de `expr` tiene que ser el de la función o `E_TYPE`. `return` sin expresión solo si la función devuelve `Unit`. Vale en el cuerpo de la función y, anidado, en `if`, `elsif`, `else`, `while` y `match`. Dentro de `on` o de una lambda es `E_TYPE`. Tras un `return` que siempre se alcanza en el mismo bloque (otra sentencia o la cola) es `E_TYPE`. Un `while` no garantiza el retorno; un `if` sin `else` tampoco. Una rama que retorna no aporta valor al `if`/`match`; el tipo es el de las ramas que sí producen valor. Si todas las ramas retornan, la expresión diverge.
 
 `break` sale del `while` más interno. Es una sentencia del cuerpo de un `while` o de un bloque `if` / `elsif` / `else` dentro de él; en cualquier otro sitio (fuera de un bucle, en un brazo de `match`, en `on`, en una lambda, en el valor de un `let`…) es `E_TYPE`, y también lo es el código que le sigue en el mismo bloque. Tras un `break` la condición del `while` no se vuelve a evaluar. El arranque lo reescribe antes de inferir tipos con una bandera local (`__brkN`); el `fmt` conserva `break`.
+
+`parallel` es una palabra clave (no vale como nombre) y solo empieza una línea de bloque. Su significado está en «Hilos» (`parallel`).
 
 ### Expresiones
 
@@ -338,13 +341,7 @@ Un tipo es de stack si es `Int`, `Float`, `Bool`, `Unit` o un `struct` sin argum
 
 ### Reservado
 
-No forman parte del arranque. El parser que las ve emite `E_PARSE` hasta su fase:
-
-```text
-parallel_expr → "parallel" suite
-```
-
-`@resource`, `@shared`, `@copy`, `@unique` y `@no_gc` usan `attr` pero no están admitidos.
+`@resource`, `@shared`, `@copy`, `@unique` y `@no_gc` usan `attr` pero no forman parte del arranque: el parser que los ve emite `E_PARSE` hasta su fase.
 
 ## Tipos
 
@@ -636,6 +633,17 @@ Un `Thread[R]` guarda los préstamos de sus argumentos como un struct con un cam
 `Mutex.new(v)` mueve `v` a un mutex de tipo `Mutex[T]`. `T` no puede ser una referencia ni un struct de dos o más campos (`E_TYPE`). `m.lock(x => …)` toma el candado, ejecuta la lambda con `x: &mut T` y lo suelta; su valor es el de la lambda. Es el método provisto del protocolo `Lockable[T]` del preludio (`impl Mutex[T] Lockable[T]`), así que hace falta importar `std/prelude.sal`. Por debajo usa `m.enter()`, que toma el candado y da el `&mut T`, y `m.leave()`, que lo suelta. El `&mut T` de `enter` es un préstamo exclusivo de `m` hasta su último uso: `m.leave()` (o cualquier otro uso de `m`) mientras se sigue usando es `E_BORROW`. Un `T` sin bloque propio (`Int`, `Float`, `Bool`, struct de un campo de esos) vive en una celda: el `&mut T` es esa celda. Un `String` (o un struct de un campo alrededor de uno) vive en una lista de un elemento y el `&mut T` es la ranura de ese elemento. El mutex suelta su valor al liberarse.
 
 `Channel.new[T]()` crea un canal de tipo `Channel[T]` (sin argumento de tipo es `E_TYPE`). `ch.send(v)` mueve `v` a la cola (usarlo después es `E_MOVED`); enviar a un canal cerrado es un pánico. `ch.recv()` espera a que haya un valor y lo saca, el más antiguo primero, como `Some(v)`; si el canal está cerrado y vacío devuelve `None` (el `Option` del preludio, como `dict_get`). `ch.close()` cierra el canal y despierta a quien espera en `recv`. Los tres toman `&self`. Un valor de tipo distinto de `T` es `E_TYPE`. Al liberarse el canal suelta los valores que siguen en la cola.
+
+### `parallel`
+
+`parallel` seguido de un bloque es una línea de bloque, no una expresión: ejecuta cada línea del bloque en un hilo propio y espera a todos antes de seguir. Cada línea es una llamada `f(a1, …, an)` o `x = f(a1, …, an)`, con `f` una `fn` de nivel superior escrita por su nombre y `x` un `IDENT`. El bloque equivale a lanzar, en el orden de sus líneas, un `Thread.spawn(f, a1, …, an)` por línea y a unirlos después en el mismo orden: `x = t.join()` en una línea con `x`, y `t.join()` en una sin él, que suelta el resultado con la glue de su tipo. Por eso:
+
+- Los argumentos y el resultado siguen las reglas de `Thread.spawn`, también sus límites de este corte, y los efectos de cada `f` son efectos de quien ejecuta el bloque, además de `alloc`. En destino `soso` es `E_TARGET`; en una función `@arena`, `E_TYPE`.
+- Las líneas corren a la vez: varias pueden prestar `&x` del mismo valor, pero mover o prestar en exclusiva un valor que otra línea presta es `E_BORROW`, y moverlo en dos líneas es `E_MOVED`.
+- Los nombres que liga el bloque existen desde su final. Dentro del bloque, `x` es el `x` de antes (`E_TYPE` si no lo hay). Ligar el mismo nombre en dos líneas es `E_TYPE`.
+- Una línea de otra forma (`let`, `return`, `break`, `while`, otro `parallel`, una asignación a un campo, un método `v.f(…)` o `T.f(…)`, `alias.f(…)`, una llamada con argumentos de tipo o cualquier otra expresión) es `E_TYPE`. `parallel` donde se espera una expresión o un item es `E_PARSE`.
+
+El bloque `parallel` no tiene valor: si es la última línea de un bloque, ese bloque vale `Unit`.
 
 Un pánico en cualquier hilo termina el proceso con el mensaje del pánico. El runtime sirve a varios hilos a la vez: el heap del host es el `malloc` del sistema, la región `@arena` y la región fusionada de tensores son de cada hilo, y los heaps de lugar de los tensores y las sondas de `--instrument` están protegidos con un candado.
 

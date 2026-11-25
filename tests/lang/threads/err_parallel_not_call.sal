@@ -1,0 +1,10 @@
+# error: E_TYPE
+# A `parallel` line is `f(args…)` or `x = f(args…)`.
+fn one() -> Int
+    1
+
+fn main() -> Int ! alloc
+    parallel
+        a = one()
+        b = 1 + 2
+    a + b

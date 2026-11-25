@@ -22,8 +22,8 @@ pub fn format_program_with_comments(p: &Program, source: &str) -> String {
 
 fn format_marked(p: &Program, item_starts: Option<&[u32]>) -> String {
     // The mode analysis runs the semantic passes, which only see a program after
-    // `inline for` is unrolled; such a program is written as parsed.
-    if crate::inline_for::has_inline_for(p) {
+    // `inline for` is unrolled and `parallel` rewritten; such a program is written as parsed.
+    if crate::inline_for::has_inline_for(p) || crate::threads::has_parallel(p) {
         return format_program_raw(p, item_starts);
     }
     let mut annotated = infer_param_modes(p);
@@ -540,13 +540,14 @@ fn format_block(b: &Block, indent: usize) -> String {
 }
 
 /// Start of a statement, used to place the comments written above it.
-fn stmt_span(st: &Stmt) -> &Span {
+pub(crate) fn stmt_span(st: &Stmt) -> &Span {
     match st {
         Stmt::Let { span, .. }
         | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::Break { span }
         | Stmt::InlineFor { span, .. }
+        | Stmt::Parallel { span, .. }
         | Stmt::While { span, .. } => span,
         Stmt::Expr(e) => expr_span(e),
     }
@@ -623,6 +624,14 @@ fn format_stmt(st: &Stmt, indent: usize) -> String {
         Stmt::Break { .. } => "break".to_string(),
         Stmt::InlineFor { var, ty, body, .. } => {
             let mut s = format!("inline for {var} in {ty}.fields\n");
+            s.push_str(&format_block(body, indent + 1));
+            if s.ends_with('\n') {
+                s.pop();
+            }
+            s
+        }
+        Stmt::Parallel { body, .. } => {
+            let mut s = "parallel\n".to_string();
             s.push_str(&format_block(body, indent + 1));
             if s.ends_with('\n') {
                 s.pop();

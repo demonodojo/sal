@@ -79,7 +79,7 @@ Asignación: una línea `expr "=" expr` solo es `Stmt::Assign` si la izquierda e
 
 `load[F32, 4, 4]("w.salt")` guarda `F32` como tipo y `4`, `4` como dimensiones. El JSON lo dice en `schema_version`. Una constante de módulo es `Item::Const`: `schema_version` 6.
 
-Un `@` o la palabra `parallel` en el arranque es `E_PARSE`.
+Un `@` que no es un atributo admitido es `E_PARSE`. `parallel` es una línea de bloque (`Stmt::Parallel`, `schema_version` 9) que `threads.rs` reescribe antes de inferir tipos; en una expresión o como item es `E_PARSE`.
 
 ## Formateador
 

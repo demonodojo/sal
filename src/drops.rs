@@ -804,6 +804,7 @@ impl Hoist {
         for st in b.stmts {
             match st {
                 Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+                Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
                 Stmt::Break { span } => stmts.push(Stmt::Break { span }),
                 Stmt::Let { name, ty, init, frozen, stack, span } => {
                     let init = self.expr(init, &mut stmts);
@@ -2228,6 +2229,7 @@ fn block_with(b: &Block, discard_tail: bool, f: &mut Facts) {
         let live = f.opaque == 0;
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Break { .. } => {}
             Stmt::Let { name, init, span, .. } => {
                 f.cur = live.then(|| stmt_key(*span));
@@ -2446,6 +2448,7 @@ fn binding_inits<'a>(b: &'a Block, out: &mut HashMap<String, Vec<&'a Expr>>) {
     for st in &b.stmts {
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Let { name, init, .. } => {
                 out.entry(name.clone()).or_default().push(init);
                 in_expr(init, out);
@@ -3222,6 +3225,7 @@ fn collect_shared_block(b: &Block, out: &mut HashSet<String>) {
     for st in &b.stmts {
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Let { init, .. } => collect_shared_expr(init, out),
             Stmt::Expr(e) => collect_shared_expr(e, out),
             Stmt::Assign { target, value, .. } => {
@@ -3673,6 +3677,7 @@ fn xform_block_scope(b: Block, cx: &mut Ctx, mark: usize) -> Block {
         }
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Break { span } => stmts.push(Stmt::Break { span }),
             Stmt::Let { name, ty, init, frozen, stack, span } => {
                 let cand = cx.candidate(&name, &ty, &init);

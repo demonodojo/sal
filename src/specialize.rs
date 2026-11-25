@@ -820,6 +820,7 @@ pub fn walk_block(b: &mut Block, fe: &mut dyn FnMut(&mut Expr), fs: &mut dyn FnM
         fs(st);
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Break { .. } => {}
             Stmt::Let { init, .. } => walk_expr(init, fe, fs),
             Stmt::Expr(e) => walk_expr(e, fe, fs),

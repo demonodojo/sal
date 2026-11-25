@@ -584,6 +584,7 @@ fn rename_block_refs(
     for st in &mut block.stmts {
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Break { .. } => {}
             Stmt::Let { name, ty, init, .. } => {
                 if let Some(t) = ty {
@@ -736,6 +737,7 @@ fn qualify_block(block: &mut Block, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diag
 fn qualify_stmt(st: &mut Stmt, ctx: &QualifyCtx<'_>) -> Result<(), Vec<Diagnostic>> {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => {}
         Stmt::Let { ty, init, .. } => {
             if let Some(t) = ty {

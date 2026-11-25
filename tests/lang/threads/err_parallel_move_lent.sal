@@ -1,0 +1,14 @@
+# error: E_BORROW
+# The lines run at the same time: one cannot move what another one lends.
+fn size_ref(s: &String) -> Int
+    s.len()
+
+fn size(s: String) -> Int
+    s.len()
+
+fn main() -> Int ! alloc
+    let s = d"abc"
+    parallel
+        a = size_ref(&s)
+        b = size(s)
+    a + b

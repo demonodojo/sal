@@ -1,0 +1,10 @@
+# error: E_MOVED
+fn size(s: String) -> Int
+    s.len()
+
+fn main() -> Int ! alloc
+    let s = d"abc"
+    parallel
+        a = size(s)
+        b = size(s)
+    a + b

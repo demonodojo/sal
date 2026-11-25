@@ -7,10 +7,14 @@
 #
 # A program that defines its own `Thread` keeps its static `Thread.spawn`. The first argument has
 # to name a fn: anything else (a lambda, a local) is `E_TYPE`.
+#
+# `parallel` (SPEC «Hilos», `parallel`) is rewritten first into the same builtins (`desugar_parallel`
+# below, mirror of the one in `src/threads.rs`).
 import "../ast/tast.sal"
 
 fn desugar_thread_spawn(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
-    if th_own_thread(&tp) == 1
+    tp = desugar_parallel(tp, errs)
+    if errs.len() > 0 || th_own_thread(&tp) == 1
         tp
     else
         th_fns(&tp.fns, 0, errs)
@@ -157,3 +161,306 @@ fn th_copy_args(out: &mut List[Expr], xs: &List[Expr], i: Int) -> Int ! alloc
     else
         out.push(tc_expr(&xs.get(i)))
         th_copy_args(out, xs, i + 1)
+
+# ---- parallel ----
+#
+#   parallel                    let __par0_0 = thread_spawn(f(a))
+#       x = f(a)        →       let __par0_1 = thread_spawn(g(b))
+#       g(b)                    x = thread_join(__par0_0)
+#                               thread_join(__par0_1)
+#
+# The block is statement kind 6, its body in an `XBlock`. Each line is `f(a…)` (a statement of kind 0
+# or the tail) or `x = f(a…)` (kind 1 without `let`), with `f` a plain name and no type arguments, and
+# no name is bound by two lines. Within a body the blocks are numbered in source order, as in the
+# bootstrap. The bodies that hold one are rebuilt as copies. The new calls take the offset of the
+# line's call (`th_rewrite` does the same for `thread_spawn`). Each new statement gets an id of its
+# own (drops keys moves by statement id), from 2^50 up, past the parser's and the `inline for`
+# copies' ids. `cx = [blocks numbered in this body, next statement id]`.
+
+fn desugar_parallel(tp: TProgram, errs: &mut List[String]) -> TProgram ! alloc
+    if pl_has_fns(&tp.fns) == 0 && pl_has_protocols(&tp.protocols) == 0
+        return tp
+    cx = List.new[Int]()
+    cx.push(0)
+    cx.push(1125899906842624)
+    i = 0
+    while i < tp.fns.len()
+        f = tp.fns.get_mut(i)
+        if pl_has_block(&f.body) > 0
+            cx.set(0, 0)
+            nb = pl_block(&f.body, &mut cx, errs)
+            pl_free_body(&f.body)
+            f.body = nb
+        i = i + 1
+    k = 0
+    while k < tp.protocols.len()
+        p = tp.protocols.get_mut(k)
+        j = 0
+        while j < p.methods.len()
+            m = p.methods.get_mut(j)
+            if m.has_body == 1 && pl_has_block(&m.body) > 0
+                cx.set(0, 0)
+                nb = pl_block(&m.body, &mut cx, errs)
+                pl_free_body(&m.body)
+                m.body = nb
+            j = j + 1
+        k = k + 1
+    tp
+
+# The body a rebuilt copy replaces: overwriting a field does not release it when the compiler builds
+# the selfhost (`if_free_body` in inline_for.sal).
+fn pl_free_body(b: &TBlock) -> Int ! alloc
+    list_free(b.stmts)
+    enum_free(b.tail)
+    0
+
+fn pl_has_fns(fs: &List[TFn]) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < fs.len() && found == 0
+        found = pl_has_block(&fs.get(i).body)
+        i = i + 1
+    found
+
+fn pl_has_protocols(ps: &List[TProtocol]) -> Int ! alloc
+    found = 0
+    k = 0
+    while k < ps.len() && found == 0
+        ms = ps.get(k).methods
+        j = 0
+        while j < ms.len() && found == 0
+            if ms.get(j).has_body == 1
+                found = pl_has_block(&ms.get(j).body)
+            j = j + 1
+        k = k + 1
+    found
+
+# How many `parallel` blocks `b` holds, at any depth (0 when none).
+fn pl_has_block(b: &TBlock) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        if st.kind == 6
+            found = found + 1
+        found = found + pl_has_expr(&st.expr) + pl_has_expr(&st.target)
+        i = i + 1
+    found + pl_has_expr(&b.tail)
+
+fn pl_has_list(xs: &List[Expr]) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < xs.len()
+        found = found + pl_has_expr(&xs.get(i))
+        i = i + 1
+    found
+
+fn pl_has_expr(e: &Expr) -> Int ! alloc
+    match e
+        XBin(_, l, r) => pl_has_expr(&l) + pl_has_expr(&r)
+        XCall(_, args, _, _) => pl_has_list(&args)
+        XTo(_, inner) => pl_has_expr(&inner)
+        XOn(_, body, _, _) => pl_has_block(&body)
+        XIf(cond, then_b, else_b, _, elsifs) =>
+            found = pl_has_expr(&cond) + pl_has_block(&then_b) + pl_has_block(&else_b)
+            j = 0
+            while j < elsifs.len()
+                found = found + pl_has_expr(&elsifs.get(j).cond) + pl_has_block(&elsifs.get(j).body)
+                j = j + 1
+            found
+        XWhile(cond, body) => pl_has_expr(&cond) + pl_has_block(&body)
+        XField(base, _) => pl_has_expr(&base)
+        XLambda(_, body) => pl_has_expr(&body)
+        XLambdaBlock(_, body) => pl_has_block(&body)
+        XUnary(_, inner) => pl_has_expr(&inner)
+        XTry(inner) => pl_has_expr(&inner)
+        XBlock(body) => pl_has_block(&body)
+        XMatch(scrut, arms) =>
+            found = pl_has_expr(&scrut)
+            j = 0
+            while j < arms.len()
+                a = arms.get(j)
+                found = found + pl_has_expr(&a.body)
+                if a.has_suite == 1
+                    found = found + pl_has_block(&a.suite)
+                j = j + 1
+            found
+        _ => 0
+
+# A copy of `b` with each `parallel` statement replaced by its spawns and joins.
+fn pl_block(b: &TBlock, cx: &mut List[Int], errs: &mut List[String]) -> TBlock ! alloc
+    out = List.new[TStmt]()
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        if st.kind == 6
+            pl_expand(&st.expr, cx, errs, &mut out)
+        else
+            out.push(TStmt(st.kind, st.name.dup(), pl_expr(&st.expr, cx, errs), st.ty.dup(), st.is_let, pl_expr(&st.target, cx, errs), st.frozen, st.stack, st.id))
+            0
+        i = i + 1
+    TBlock(out, pl_expr(&b.tail, cx, errs))
+
+fn pl_list(xs: &List[Expr], cx: &mut List[Int], errs: &mut List[String]) -> List[Expr] ! alloc
+    out = List.new[Expr]()
+    i = 0
+    while i < xs.len()
+        out.push(pl_expr(&xs.get(i), cx, errs))
+        i = i + 1
+    out
+
+fn pl_expr(e: &Expr, cx: &mut List[Int], errs: &mut List[String]) -> Expr ! alloc
+    match e
+        XBin(op, l, r) => XBin(op.dup(), pl_expr(&l, cx, errs), pl_expr(&r, cx, errs))
+        XCall(name, args, targs, xp) => XCall(name.dup(), pl_list(&args, cx, errs), targs.dup(), xp)
+        XTo(place, inner) => XTo(place.dup(), pl_expr(&inner, cx, errs))
+        XOn(place, body, kern, idx) => XOn(place.dup(), pl_block(&body, cx, errs), kern, idx)
+        XIf(cond, then_b, else_b, has_else, elsifs) =>
+            c = pl_expr(&cond, cx, errs)
+            tb = pl_block(&then_b, cx, errs)
+            eis = pl_elsifs(&elsifs, cx, errs)
+            eb = pl_block(&else_b, cx, errs)
+            XIf(c, tb, eb, has_else, eis)
+        XWhile(cond, body) => XWhile(pl_expr(&cond, cx, errs), pl_block(&body, cx, errs))
+        XField(base, field) => XField(pl_expr(&base, cx, errs), field.dup())
+        XLambda(param, body) => XLambda(param.dup(), pl_expr(&body, cx, errs))
+        XLambdaBlock(param, body) => XLambdaBlock(param.dup(), pl_block(&body, cx, errs))
+        XUnary(op, inner) => XUnary(op.dup(), pl_expr(&inner, cx, errs))
+        XMatch(scrut, arms) => XMatch(pl_expr(&scrut, cx, errs), pl_arms(&arms, cx, errs))
+        XBlock(body) => XBlock(pl_block(&body, cx, errs))
+        XTry(inner) => XTry(pl_expr(&inner, cx, errs))
+        _ => tc_expr(e)
+
+fn pl_elsifs(xs: &List[TElsif], cx: &mut List[Int], errs: &mut List[String]) -> List[TElsif] ! alloc
+    out = List.new[TElsif]()
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        c = pl_expr(&a.cond, cx, errs)
+        out.push(TElsif(c, pl_block(&a.body, cx, errs)))
+        i = i + 1
+    out
+
+fn pl_arms(xs: &List[TArm], cx: &mut List[Int], errs: &mut List[String]) -> List[TArm] ! alloc
+    out = List.new[TArm]()
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        body = pl_expr(&a.body, cx, errs)
+        out.push(TArm(tc_pat(&a.pat), body, pl_block(&a.suite, cx, errs), a.has_suite))
+        i = i + 1
+    out
+
+fn pl_expand(e: &Expr, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
+    match e
+        XBlock(body) => pl_expand_body(&body, cx, errs, out)
+        _ => 0
+
+fn pl_expand_body(body: &TBlock, cx: &mut List[Int], errs: &mut List[String], out: &mut List[TStmt]) -> Int ! alloc
+    n = cx.get(0)
+    cx.set(0, n + 1)
+    names = List.new[String]()
+    lines = List.new[TStmt]()
+    i = 0
+    while i < body.stmts.len()
+        pl_line(&body.stmts.get(i), &mut names, &mut lines)
+        i = i + 1
+    if pl_is_none(&body.tail) == 0
+        tail = TStmt(0, "", tc_expr(&body.tail), "", 0, XNone, 0, 0, 0)
+        pl_line(&tail, &mut names, &mut lines)
+    j = 0
+    while j < lines.len()
+        ln = lines.get(j)
+        if ln.kind < 0
+            pl_fail(errs, &ln.name)
+        else
+            args = List.new[Expr]()
+            args.push(pl_expr(&ln.expr, cx, errs))
+            spawn = XCall("thread_spawn".dup(), args, "".dup(), pl_xp(&ln.expr))
+            out.push(TStmt(1, pl_temp(n, j), spawn, "".dup(), 1, XNone, 0, 0, pl_id(cx)))
+            0
+        j = j + 1
+    j = 0
+    while j < lines.len()
+        ln = lines.get(j)
+        if ln.kind >= 0
+            jargs = List.new[Expr]()
+            jargs.push(XIdent(pl_temp(n, j)))
+            join = XCall("thread_join".dup(), jargs, "".dup(), pl_xp(&ln.expr))
+            if ln.kind == 1
+                out.push(TStmt(1, ln.name.dup(), join, "".dup(), 0, XNone, 0, 0, pl_id(cx)))
+            else
+                out.push(TStmt(0, "".dup(), join, "".dup(), 0, XNone, 0, 0, pl_id(cx)))
+        j = j + 1
+    0
+
+fn pl_fail(errs: &mut List[String], msg: &String) -> Int ! alloc
+    if errs.len() == 0
+        errs.push(msg.dup())
+    0
+
+fn pl_id(cx: &mut List[Int]) -> Int ! alloc
+    id = cx.get(1)
+    cx.set(1, id + 1)
+    id
+
+fn pl_temp(n: Int, j: Int) -> String ! alloc
+    "__par" + n.to_str() + "_" + j.to_str()
+
+fn pl_xp(e: &Expr) -> Int ! alloc
+    match e
+        XCall(_, _, _, xp) => xp
+        _ => 0
+
+fn pl_is_none(e: &Expr) -> Int ! alloc
+    match e
+        XNone => 1
+        _ => 0
+
+# Pushes to `lines` the line `st` as a kind 0 (call) or 1 (`x = call`) statement, or, when it is not
+# a valid line, a statement of kind -1 whose `name` is the error. Numbering skips nothing: only a
+# program without errors is lowered.
+fn pl_line(st: &TStmt, names: &mut List[String], lines: &mut List[TStmt]) -> Int ! alloc
+    shape = 0
+    if st.kind == 0 || st.kind == 1 && st.is_let == 0
+        shape = pl_call_shape(&st.expr)
+    msg = if shape == 0
+        "E_TYPE: a `parallel` line is `f(args…)` or `x = f(args…)`"
+    elsif shape == 2
+        "E_TYPE: a `parallel` line calls a fn by its name: `f(args…)`"
+    elsif shape == 3
+        "E_TYPE: a `parallel` line takes no type arguments"
+    elsif st.kind == 1 && pl_has_name(names, &st.name) == 1
+        "E_TYPE: `" + st.name + "` is bound by two lines of one `parallel`"
+    else
+        ""
+    if msg.len() > 0
+        lines.push(TStmt(0 - 1, msg, XNone, "".dup(), 0, XNone, 0, 0, 0))
+    elsif st.kind == 1
+        names.push(st.name.dup())
+        lines.push(tc_stmt(st))
+    else
+        lines.push(tc_stmt(st))
+    0
+
+fn pl_has_name(names: &List[String], name: &String) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < names.len()
+        if names.get(i).eq(name) == 1
+            found = 1
+        i = i + 1
+    found
+
+# 1 a call of a plain name, 2 a dotted call (a method, `T.f`, `alias.f`), 3 a call with type
+# arguments, 0 anything else.
+fn pl_call_shape(e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, _, targs, _) =>
+            if name.contains(".") == 1
+                2
+            elsif th_type_args(&targs).len() > 0
+                3
+            else
+                1
+        _ => 0

@@ -159,6 +159,37 @@ fn fmt_keeps_multiline_tail_operand_bare() {
 }
 
 #[test]
+fn fmt_parallel_block() {
+    let src = "\
+fn main() -> Int ! alloc
+    parallel
+        a = uno(&xs, 1)
+        dos(b)
+    a
+";
+    let p1 = parse(src).expect("parse");
+    let body = match &p1.items[0] {
+        sal_compiler::ast::Item::Fn(f) => &f.body,
+        _ => panic!("expected fn"),
+    };
+    assert!(matches!(
+        &body.stmts[0],
+        sal_compiler::ast::Stmt::Parallel { body, .. }
+            if body.stmts.len() == 1 && body.tail.is_some()
+    ));
+    let f1 = format_program(&p1);
+    assert_eq!(f1, src);
+    let f2 = format_program(&parse(&f1).expect("re-parse"));
+    assert_eq!(f1, f2);
+    let json = serde_json::to_string(&p1).expect("json");
+    let back: sal_compiler::ast::Program = serde_json::from_str(&json).expect("from json");
+    assert_eq!(back, p1);
+    // `parallel` is a line of a block: as an expression it is `E_PARSE`.
+    let err = parse("fn f() -> Int\n    a = parallel\n        g()\n    a\n").unwrap_err();
+    assert_eq!(err.code.as_str(), "E_PARSE");
+}
+
+#[test]
 fn fmt_inline_for_and_field_of_loop_var() {
     let src = "\
 fn suma(p: &Punto) -> Int

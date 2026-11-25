@@ -1,0 +1,10 @@
+# error: E_TYPE
+# `a` exists from the end of the block: the second line cannot use it.
+fn twice(n: Int) -> Int
+    n * 2
+
+fn main() -> Int ! alloc
+    parallel
+        a = twice(1)
+        b = twice(a)
+    a + b

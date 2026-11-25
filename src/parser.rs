@@ -168,7 +168,7 @@ impl Parser {
         if self.at(TokenKind::Parallel) {
             return Err(Diagnostic::new(
                 ErrorCode::EParse,
-                "parallel is not in this version",
+                "`parallel` is a line of a block, not an item",
                 self.peek().span,
             ));
         }
@@ -1109,6 +1109,21 @@ impl Parser {
                 self.skip_newlines();
                 continue;
             }
+            if self.at(TokenKind::Parallel) {
+                if let Some(e) = pending_expr.take() {
+                    stmts.push(Stmt::Expr(e));
+                }
+                let sp = self.bump().span;
+                self.expect(TokenKind::Newline, "expected newline after parallel")?;
+                self.expect(TokenKind::Indent, "expected indented parallel body")?;
+                let body = self.parse_block_inner()?;
+                if self.at(TokenKind::Dedent) {
+                    self.bump();
+                }
+                stmts.push(Stmt::Parallel { body, span: sp });
+                self.skip_newlines();
+                continue;
+            }
             if self.at(TokenKind::While) {
                 if let Some(e) = pending_expr.take() {
                     stmts.push(Stmt::Expr(e));
@@ -1770,7 +1785,7 @@ impl Parser {
             }
             TokenKind::Parallel => Err(Diagnostic::new(
                 ErrorCode::EParse,
-                "parallel is not in this version",
+                "`parallel` is a line of a block, not an expression",
                 self.peek().span,
             )),
             TokenKind::On => self.parse_on(),

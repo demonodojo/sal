@@ -52,7 +52,7 @@ Ver [SPEC.md](../../SPEC.md) sección Memoria (`String`). La inmutabilidad de `S
 - `cap == 0`: literal rodata, lectura concurrente sin lock.
 - `cap > 0`: un dueño; mover entre tareas, no compartir mutable.
 - `g_arena` (modo sin instrumentación): `_Thread_local`.
-- `--instrument` + `parallel` futuro: lock en instrumentación (fuera de este subplan).
+- `--instrument` con hilos o `parallel`: las sondas van bajo un candado (SPEC «Hilos»).
 
 ## Archivos
 

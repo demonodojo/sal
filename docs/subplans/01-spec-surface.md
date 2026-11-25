@@ -64,4 +64,4 @@ Instrumentación: `LEAK`, `OOB`, `USE_AFTER_FREE`, `DOUBLE_FREE`, `BAD_PLACE`, `
 
 ## Fuera de arranque
 
-`parallel`, `@resource`, `@shared`, `@copy`, `@unique`, `@no_gc`, diferenciación automática y un **registro central** remoto de paquetes (catálogo fuera de git). Las dependencias git declaradas en `Sal.toml` y resueltas con `sal fetch` están en el arranque. Ver lo reservado en el arranque es `E_PARSE`. `@arena` está admitido (ver Atributos).
+`@resource`, `@shared`, `@copy`, `@unique`, `@no_gc`, diferenciación automática y un **registro central** remoto de paquetes (catálogo fuera de git). Las dependencias git declaradas en `Sal.toml` y resueltas con `sal fetch` están en el arranque. Ver lo reservado en el arranque es `E_PARSE`. `@arena` está admitido (ver Atributos).

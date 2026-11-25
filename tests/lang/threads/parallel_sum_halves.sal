@@ -1,0 +1,22 @@
+# exit: 10
+# Two lines read the same list through `&List[Int]` at the same time; the list is usable again
+# after the block, once both have been joined, and each line's result is bound from there on.
+fn sum_from(xs: &List[Int], from: Int, upto: Int) -> Int
+    let s = 0
+    let i = from
+    while i < upto
+        s = s + xs.get(i)
+        i = i + 1
+    s
+
+fn main() -> Int ! alloc
+    let xs = List.new[Int]()
+    xs.push(1)
+    xs.push(2)
+    xs.push(3)
+    xs.push(4)
+    parallel
+        a = sum_from(&xs, 0, 2)
+        b = sum_from(&xs, 2, 4)
+    xs.push(5)
+    a + b + xs.len() - 5

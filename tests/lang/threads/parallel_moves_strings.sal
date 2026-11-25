@@ -1,0 +1,22 @@
+# exit: 7
+# stdout: hola mundo
+# Each line moves its own `String` into its thread. A line without a name hands its result back
+# at its join, where it is released.
+fn size(s: String) -> Int
+    s.len()
+
+fn greet(name: String) -> String ! alloc
+    "hola " + name
+
+fn main() -> Int ! io, alloc
+    let s = d"abc"
+    let t = d"defg"
+    let u = d"mundo"
+    let w = d"nadie"
+    parallel
+        a = size(s)
+        b = size(t)
+        g = greet(u)
+        greet(w)
+    print_str(g)
+    a + b

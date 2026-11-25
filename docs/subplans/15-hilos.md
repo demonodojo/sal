@@ -11,13 +11,15 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 - **Préstamos.** `borrowck::ref_carrying` trata `Thread` como un tipo con lifetime, y `sources` recoge los préstamos de los argumentos de la llamada interior. Un `Thread` que su bloque no une en el nivel superior (fuera de ramas y bucles) se une en su glue al final del bloque: `keep_threads_to_drop` alarga sus préstamos hasta ahí.
 - **`Mutex[T]` con `lock(x => …)`.** El método es el provisto de `protocol Lockable[T]` del preludio (`impl Mutex[T] Lockable[T]`), que usa los builtin `enter`/`leave`; la especialización de lambdas del subplan 14 hace el resto. El `&mut T` de `enter` es un préstamo exclusivo de `m` (`param_kind` `Mut` sin evento de mutación), así que no sobrevive a `leave`. Un `T` sin bloque propio vive en una celda (`sal_cell_*`), que es lo que recibe un parámetro `&mut T`; `ir::is_cell_handle` reconoce el resultado de `mutex_enter`. Cualquier otro `T` va en una `List[T]` de un elemento.
 - **`Channel[T]`.** Cola `List[T]` dueña bajo un mutex y una variable de condición; `recv` construye el `Some` como `dict_get`.
+- **`parallel` es azúcar de `Thread.spawn`.** Cada línea del bloque (`f(a…)` o `x = f(a…)`) pasa a `let __par<n>_<i> = thread_spawn(f(a…))` y, tras la última, a `x = thread_join(__par<n>_<i>)` (o el `thread_join` suelto), en el mismo orden. Así hereda sin reglas nuevas los movimientos, préstamos, efectos, límites y `E_TARGET` de los hilos. La reescritura solo comprueba la forma de cada línea y que ningún nombre se ligue dos veces (`E_TYPE`). `n` cuenta los bloques de cada cuerpo en orden de fuente, igual en los dos compiladores, para que la IR coincida. En el arranque, el borrowck lee los puntos del programa de los desplazamientos de los spans, así que la reescritura no puede inventar posiciones fuera del bloque: un lanzamiento termina donde termina la llamada de su línea, toda unión termina donde termina la de la última línea, y cada nodo nuevo toma un `start` propio de los bytes del texto de `parallel` (`Spans` en `threads.rs`). El selfhost cuenta los puntos con su propio contador y no lo necesita, pero da a cada sentencia nueva un id propio (desde 2^50), porque `drops.sal` asocia los movimientos al id.
 - **soso.** `E_TARGET` en este corte: el kernel tiene `SYS_THREAD_SPAWN` y `SYS_FUTEX`, pero el runtime C no tiene TLS ni candados allí, y `SYS_EXIT` en un hilo solo mata ese hilo.
 
 ## Archivos (arranque)
 
 | Pase | Archivo | Qué |
 |------|---------|-----|
-| Reescritura | `src/threads.rs` | `Thread.spawn(f, a…)` → `thread_spawn(f(a…))`, junto a `desugar_break` (`compile.rs`, `modules.rs`, `main.rs`) |
+| Reescritura | `src/threads.rs` | `Thread.spawn(f, a…)` → `thread_spawn(f(a…))`, junto a `desugar_break` (`compile.rs`, `modules.rs`, `main.rs`); antes, `parallel` (`desugar_parallel`) |
+| Frontend de `parallel` | `src/ast.rs` (`Stmt::Parallel`, `schema_version` 9), `src/parser.rs`, `src/fmt.rs` | línea de bloque; `E_PARSE` como expresión o item; `fmt` la conserva |
 | Tipos | `src/infer.rs` (`infer_sync_builtin`), `src/methods.rs` | tipos `Thread`, `Semaphore`, `Mutex`, `Channel`; métodos y constructores |
 | Protocolos | `src/protocols.rs` | `impl Mutex[T] P` con `enter`/`leave` builtin |
 | Atributos | `src/attrs.rs` | `@arena` no lanza hilos |
@@ -33,7 +35,8 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 
 | Pase | Archivo | Qué |
 |------|---------|-----|
-| Reescritura | `selfhost/front/threads.sal`, `selfhost/front/parser.sal` (`desugar_spawn`) | la misma reescritura, tras `desugar_break` |
+| Reescritura | `selfhost/front/threads.sal`, `selfhost/front/parser.sal` (`desugar_spawn`) | la misma reescritura, tras `desugar_break`; antes, `parallel` (`desugar_parallel`, `pl_*`) |
+| Frontend de `parallel` | `selfhost/front/lexer.sal` (`TK_PARALLEL`), `selfhost/front/parser.sal` (`parse_parallel`: sentencia de tipo 6 con el cuerpo en un `XBlock`) | línea de bloque; error de parse como expresión o item |
 | Tipos | `selfhost/sem/infer.sal` (`mth_sync_builtin`, `infer_t_sync`, `infer_spawn_target`), `selfhost/ast/ttypes.sal` (`tt_sync_type`) | tipos, métodos, constructores y las restricciones del corte |
 | Protocolos | `selfhost/sem/protocols.sal` (`check_mutex_builtin`) | `impl Mutex[T] P` |
 | Lambdas | `selfhost/sem/lambda_specialize.sal` (`lambda_guess_sync_type`, `lambda_subst_bound`) | tipo de `Mutex.new(v)` para especializar `lock`; los argumentos ya ligados tipan los parámetros de la lambda |
@@ -46,6 +49,7 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 
 ## Tests
 
+- `tests/lang/threads/parallel_*.sal` (`parallel_sum_halves`, `parallel_moves_strings`, `parallel_rebinds_name`, `parallel_in_loop`, `parallel_unit_block`) y `err_parallel_*` (`E_TYPE`, `E_MOVED`, `E_BORROW`, `E_EFFECT`), más `tests/lang/syntax/err_parallel_expression.sal` (`E_PARSE`); `tests/parse_and_fmt.rs` (`fmt_parallel_block`); `tests/soso_target.rs` (`soso_rejects_parallel`). Los válidos están en `PARITY_FILES`.
 - `tests/lang/threads/*.sal`: ejecución (`spawn_join_sum`, `spawn_lends_list`, `spawn_moves_string`, `thread_drop_joins`, `thread_join_ends_loan`, `semaphore_*`, `mutex_*`, `channel_*`) y errores (`err_*`: `E_TYPE`, `E_BORROW`, `E_MOVED`, `E_EFFECT`). Los dos compiladores los cumplen sin `xfail` ni `selfhost-xfail`.
 - `tests/selfhost_ir.rs` (`PARITY_FILES`): IR idéntica en los programas válidos de `tests/lang/threads` (incluidos `channel_producer`, `channel_recv_match_temp`, `mutex_string` y `thread_panic_ends_process`).
 - `mutex_string` (`Mutex[String]`: la ranura de la lista es la celda de `&mut String`), `channel_recv_match_temp` (`match ch.recv()` suelta el `Some`), `thread_panic_ends_process` (`exit: 1`, `stdout` vaciado antes de salir).
@@ -59,6 +63,7 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 |-------|----------|----------|
 | Runtime | Hecho | (comparte el runtime) |
 | `Thread`, `Semaphore`, `Channel`, `Mutex` | Hecho | Hecho |
+| `parallel` | Hecho | Hecho |
 
 ## Pendiente
 

@@ -172,6 +172,7 @@ fn stmt(st: &mut Stmt, vars: &[Bound], cx: &mut Cx) -> DiagResult<()> {
             block(body, vars, cx)
         }
         Stmt::InlineFor { span, .. } => Err(err("internal: nested `inline for` not unrolled", *span)),
+        Stmt::Parallel { body, .. } => block(body, vars, cx),
     }
 }
 

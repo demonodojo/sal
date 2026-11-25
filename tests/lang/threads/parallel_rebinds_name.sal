@@ -1,0 +1,12 @@
+# exit: 20
+# Inside the block `a` is the `a` from before it: both lines read 5. The new `a` exists from the
+# end of the block.
+fn twice(n: Int) -> Int
+    n * 2
+
+fn main() -> Int ! alloc
+    let a = 5
+    parallel
+        a = twice(a)
+        b = twice(a)
+    a + b

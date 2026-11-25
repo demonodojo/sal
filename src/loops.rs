@@ -157,6 +157,7 @@ fn stmt_span(st: &Stmt) -> Span {
         | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::Break { span }
+        | Stmt::Parallel { span, .. }
         | Stmt::While { span, .. } => *span,
         Stmt::Expr(e) => e.span(),
     }
@@ -167,6 +168,9 @@ fn stmt_span(st: &Stmt) -> Span {
 fn stmt(st: Stmt, flag: Option<&str>, cx: &mut Cx) -> DiagResult<(Vec<Stmt>, bool, bool)> {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        // Its lines are calls (`threads.rs` rejects any other, a `break` included): nothing to
+        // rewrite, and it never runs a `break` of the enclosing loop.
+        st @ Stmt::Parallel { .. } => Ok((vec![st], false, false)),
         Stmt::Break { span } => match flag {
             Some(f) => Ok((vec![set_flag(f, 1, span)], true, true)),
             None => Err(misplaced(span)),

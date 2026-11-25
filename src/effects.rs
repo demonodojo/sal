@@ -159,6 +159,7 @@ fn scan_block(b: &Block, used: &mut EffectsUsed, strings: &mut StringEnv) {
 fn scan_stmt(st: &Stmt, used: &mut EffectsUsed, strings: &mut StringEnv) {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => {}
         Stmt::Let { name, ty, init, .. } => {
             scan_expr(init, used, strings);

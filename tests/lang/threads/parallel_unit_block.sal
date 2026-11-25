@@ -1,0 +1,18 @@
+# exit: 3
+# stdout: listo
+# A `parallel` as the last line of a block gives that block `Unit`. A line without a name drops
+# its result at its join, whatever its type.
+fn note(s: String) -> Int ! io
+    print_str(s)
+
+fn count(s: String) -> Int
+    s.len()
+
+fn run() -> Unit ! io, alloc
+    parallel
+        note(d"listo")
+        count(d"abc")
+
+fn main() -> Int ! io, alloc
+    run()
+    3

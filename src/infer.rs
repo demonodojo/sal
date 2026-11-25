@@ -567,6 +567,7 @@ fn unit_type(span: Span) -> Type {
 fn stmt_span(st: &Stmt) -> Span {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { span } => *span,
         Stmt::Let { span, .. } => *span,
         Stmt::Expr(e) => e.span(),
@@ -674,6 +675,7 @@ fn check_stmt(
 ) -> DiagResult<bool> {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => Ok(false),
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr(init, env, ctx, types, entries)?;

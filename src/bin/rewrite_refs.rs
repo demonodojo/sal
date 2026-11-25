@@ -308,7 +308,9 @@ fn rewrite_stmt(
             rewrite_expr(cond, fn_name, modes, refs, edits);
             rewrite_block(body, fn_name, modes, refs, edits);
         }
-        Stmt::InlineFor { body, .. } => rewrite_block(body, fn_name, modes, refs, edits),
+        Stmt::InlineFor { body, .. } | Stmt::Parallel { body, .. } => {
+            rewrite_block(body, fn_name, modes, refs, edits)
+        }
         Stmt::Return { value: None, .. } | Stmt::Break { .. } => {}
     }
 }

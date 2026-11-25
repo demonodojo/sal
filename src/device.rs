@@ -51,6 +51,7 @@ fn check_stmt_devices(
 ) -> DiagResult<()> {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => Ok(()),
         Stmt::Let { name, ty, init, .. } => {
             let ity = check_expr_devices(init, env, expected, string_frames)?;

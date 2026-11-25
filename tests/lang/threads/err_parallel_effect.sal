@@ -1,0 +1,9 @@
+# error: E_EFFECT
+# The effects of every line, and `alloc`, belong to the fn that runs the block.
+fn one(n: Int) -> Int
+    n
+
+fn main() -> Int
+    parallel
+        a = one(1)
+    a

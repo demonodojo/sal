@@ -1,0 +1,10 @@
+# error: E_TYPE
+# As with `Thread.spawn`, a line cannot take `&mut`: shared mutable data goes in a `Mutex`.
+fn bump(n: &mut Int) -> Unit
+    *n = *n + 1
+
+fn main() -> Int ! alloc
+    let n = 1
+    parallel
+        bump(&mut n)
+    n

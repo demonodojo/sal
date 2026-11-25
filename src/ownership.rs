@@ -350,6 +350,7 @@ fn track_stmt(
 ) -> DiagResult<bool> {
     match st {
         Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+        Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
         Stmt::Break { .. } => Ok(false),
         Stmt::Let {
             name,
@@ -1004,6 +1005,7 @@ fn collect_alias_pairs(b: &Block, out: &mut Vec<(String, String)>) {
     for st in &b.stmts {
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Let { name, init, .. } => {
                 if let Some(rhs) = ident_name(init) {
                     out.push((name.clone(), rhs.to_string()));
@@ -1131,6 +1133,7 @@ fn walk_calls(
     for st in &b.stmts {
         match st {
             Stmt::InlineFor { .. } => unreachable!("`inline for` is unrolled before this pass"),
+            Stmt::Parallel { .. } => unreachable!("`parallel` is rewritten before this pass"),
             Stmt::Let { init, .. } => walk_calls_expr(init, f)?,
             Stmt::Expr(e) => walk_calls_expr(e, f)?,
             Stmt::Assign { target, value, .. } => {

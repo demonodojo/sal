@@ -1,0 +1,9 @@
+# error: E_TYPE
+fn one() -> Int
+    1
+
+fn main() -> Int ! alloc
+    parallel
+        a = one()
+        a = one()
+    a
