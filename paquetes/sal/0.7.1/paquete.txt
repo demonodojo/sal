@@ -1,0 +1,15 @@
+SOSOPKG v2
+nombre=sal
+version=0.7.1
+abi=1
+destino=sistema
+dep=soso-pkg >=0.3.0
+f cb1a8e3f4558348fe93f57930bbc3f04f6f938245d2a8f9d91d66a85c9669d72 6253638 bin/sal
+f 0ba675a8c7accbcfbda6ea454e0a3eb4b66bf5f4fbb7afe65dcffb1fad626fcd 31760746 lib/sal/bin/sal-llc
+f 67abbd36ecabc511b00bf73ccc99e51bebafeec8a6eade8d757f77c3a973371d 15784 lib/sal/kernels.o
+f 623c1d3c8a0ca6dcb54aff3c405cfa79ef8a76aba0b388e96fa2b7f29b83fe19 1802900 lib/sal/libsal-soso.a
+f 5c8830137cbab731162e1f98708fb135252433361972631aef83f3220c226c34 396 lib/sal/link.ld
+f 81e25d99fb475917b564727a59008ed86a877435d47e799fd2ef6ebc2fdfd406 442 lib/sal/manifest.txt
+f 14601e3b061de386fb6532f82eab64156a2d5880a993d08245e4ad8cdb6ea059 122 lib/sal/origen.txt
+f d1af53e54bdbf43c33613323eb7452d7ab0e3d281b727a52fb81b17aa960abfe 174072 lib/sal/runtime.o
+f 089f43228aa51d302cbac28ece71c853f6a8f1349c657d51a4f14ce4482bc2e8 15819 lib/sal/sal_runtime.h
