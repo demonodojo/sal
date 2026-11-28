@@ -1,0 +1,44 @@
+# exit: 135
+# `match` arms that leave the function with `return` (a conditional one, one in every path, and
+# all arms returning) do not reach the join after the match; the rest of the function still runs
+# for the arms that fall through. Issue #2.
+enum Parsed
+    Ok(Int)
+    Err(String)
+
+fn parse_value(value: &String) -> Parsed ! alloc
+    if value.len() == 0
+        Err(d"empty")
+    elsif value.len() == 2
+        Ok(0 - 5)
+    else
+        Ok(1)
+
+fn project(value: &String) -> Int ! alloc
+    parsed = parse_value(value)
+    match parsed
+        Ok(index) =>
+            if index >= 0
+                return -20 - index
+        Err(_) =>
+            return -3
+    0 - 4
+
+fn classify(p: Parsed) -> Int
+    match p
+        Ok(n) =>
+            return n
+        Err(_) =>
+            return 100
+    0
+
+fn main() -> Int ! alloc
+    x = "x"
+    e = ""
+    ab = "ab"
+    a = project(&x)
+    b = project(&e)
+    c = project(&ab)
+    d = classify(Ok(7))
+    f = classify(Err(d"e"))
+    0 - a - b - c + d + f
