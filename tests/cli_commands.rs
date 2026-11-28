@@ -139,6 +139,18 @@ fn fmt_prints_canonical_source_to_stdout() {
     assert!(out.contains("x = 1 + 2"), "{out}");
 }
 
+/// Issue #1: `sal fmt` keeps every comment of the source (the AST has none, the formatter puts
+/// them back by line), so redirecting its output over the file loses nothing.
+#[test]
+fn fmt_keeps_comments_on_the_command_line() {
+    let d = work("fmt-comments");
+    let src = "# explicación importante\nfn main() -> Int\n    x = 1  # al final\n    x\n";
+    let p = write(&d, "ejemplo.sal", src);
+    let o = sal(&d, &["fmt", p.to_str().unwrap()]);
+    assert!(o.status.success());
+    assert_eq!(text(&o.stdout), src);
+}
+
 #[test]
 fn emit_ast_is_json_that_compile_accepts() {
     let d = work("emit-ast");
