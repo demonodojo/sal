@@ -5789,7 +5789,7 @@ fn emit_inst_list(
                     let lab = format!("sw{id}_{i}");
                     s.push_str(&format!("{lab}:\n"));
                     let mut block = lab.clone();
-                    emit_inst_list(
+                    let (_, _, term) = emit_inst_list(
                         &arm.body,
                         str_globals,
                         user_fns,
@@ -5799,6 +5799,11 @@ fn emit_inst_list(
                         &mut block,
                         tensor.as_deref_mut(),
                     );
+                    // An arm that returns does not reach the join: no edge, no phi entry
+                    // (its value is never defined).
+                    if term {
+                        continue;
+                    }
                     let arm_consts = const_int_map_from(&arm.body);
                     let v = if arm_consts.contains_key(&arm.value)
                         || arm.value.chars().all(|c| c.is_ascii_digit())
@@ -5812,7 +5817,7 @@ fn emit_inst_list(
                 }
                 s.push_str(&format!("{def_l}:\n"));
                 let mut def_block = def_l.clone();
-                emit_inst_list(
+                let (_, _, def_term) = emit_inst_list(
                     default_body,
                     str_globals,
                     user_fns,
@@ -5822,23 +5827,31 @@ fn emit_inst_list(
                     &mut def_block,
                     tensor.as_deref_mut(),
                 );
-                let def_consts = const_int_map_from(default_body);
-                let dv = if def_consts.contains_key(default_val)
-                    || default_val.chars().all(|c| c.is_ascii_digit())
-                {
-                    i64_operand(default_val, &def_consts)
-                } else {
-                    format!("%{default_val}")
-                };
-                s.push_str(&format!("  br label %{join}\n"));
-                incoming.push((dv, def_block));
+                if !def_term {
+                    let def_consts = const_int_map_from(default_body);
+                    let dv = if def_consts.contains_key(default_val)
+                        || default_val.chars().all(|c| c.is_ascii_digit())
+                    {
+                        i64_operand(default_val, &def_consts)
+                    } else {
+                        format!("%{default_val}")
+                    };
+                    s.push_str(&format!("  br label %{join}\n"));
+                    incoming.push((dv, def_block));
+                }
                 s.push_str(&format!("{join}:\n"));
-                let phi = incoming
-                    .iter()
-                    .map(|(v, b)| format!("[ {v}, %{b} ]"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                s.push_str(&format!("  %{dest} = phi i64 {phi}\n"));
+                if incoming.is_empty() {
+                    // Every arm returns: the join is unreachable, but what follows the
+                    // `match` is still emitted after it and may name its value.
+                    s.push_str(&format!("  %{dest} = add i64 0, 0\n"));
+                } else {
+                    let phi = incoming
+                        .iter()
+                        .map(|(v, b)| format!("[ {v}, %{b} ]"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    s.push_str(&format!("  %{dest} = phi i64 {phi}\n"));
+                }
                 *cur_block = join;
             }
             IrInst::While {
