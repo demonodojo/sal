@@ -263,8 +263,13 @@ fn bytes_view_keeps_the_parent_alive() {
         "bytes_view",
         "fn f() -> Int ! alloc\n    b = bytes_new(8)\n    v = bytes_view(b, 0, 4)\n    bytes_len(v)\n",
     );
-    assert!(ir.contains("op: \"eq\""), "{ir}");
+    // SPEC «Bytes»: the view points into `b`, which keeps owning its buffer (`bytes_view` only
+    // reads it): no drop flag, the view's header is released, then `b`.
+    assert!(!ir.contains("op: \"eq\""), "{ir}");
     assert_eq!(ir.matches("func: \"sal_bytes_free\"").count(), 2, "{ir}");
+    let view = ir.find("args: [\"t5\"] }\n  Call { dest: Some(\"t8\")").is_some()
+        || ir.find("func: \"sal_bytes_free\", args: [\"t5\"]") < ir.find("func: \"sal_bytes_free\", args: [\"t2\"]");
+    assert!(view, "the view is released before its parent: {ir}");
 }
 
 #[test]

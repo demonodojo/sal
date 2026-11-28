@@ -450,7 +450,22 @@ fn user_container_call(e: &Expr) -> bool {
 /// The first argument of a builtin that only reads a container (`xs.len()`, `d.get(k)`): a
 /// temporary passed there is still the caller's to release.
 fn reads_container_arg(name: &str, i: usize) -> bool {
-    i == 0 && matches!(name, "list_len" | "list_get" | "dict_len" | "dict_get" | "dict_has" | "dict_keys" | "dict_values")
+    i == 0
+        && matches!(
+            name,
+            "list_len" | "list_get" | "dict_len" | "dict_get" | "dict_has" | "dict_keys" | "dict_values"
+                | "bytes_len" | "bytes_ptr" | "bytes_get_u8" | "bytes_get_u16" | "bytes_get_u32"
+                | "bytes_get_i64" | "bytes_to_str" | "bytes_view"
+        )
+}
+
+/// `Bytes.new(n)`, `bytes_view(..)`, `Bytes.view_mem(..)`: a fresh `Bytes` (a view is a header
+/// of its own) the caller releases; read once (`Bytes.view_mem(p, n).to_str()`), it is a
+/// temporary dropped after the statement, as in Rust.
+fn is_fresh_bytes(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func, .. }
+        if matches!(func.as_ref(), Expr::Ident { name, .. }
+            if matches!(name.as_str(), "bytes_new" | "bytes_view" | "bytes_view_mem")))
 }
 
 /// `same(<fresh temporary>)` where `same` returns that by-value parameter: the caller owns
@@ -522,6 +537,21 @@ fn user_owned_temp(e: &Expr) -> bool {
     let Expr::Call { func, .. } = e else { return false };
     let Expr::Ident { name, .. } = func.as_ref() else { return false };
     is_owned_call(e) || matches!(user_call_kind(name, e), Some("enum_free" | "list_free" | "dict_free" | "bytes_free"))
+}
+
+/// A user fn call (or a struct constructor, `Response(raw)`) whose result is a non-generic
+/// struct with drop glue (`drop.<S>`): the struct.
+fn user_struct_temp(e: &Expr) -> Option<String> {
+    let Expr::Call { func, .. } = e else { return None };
+    let Expr::Ident { name, .. } = func.as_ref() else { return None };
+    let ctor = GLUE_STRUCTS.with(|g| g.borrow().contains(name));
+    if !ctor && !USER_FNS.with(|f| f.borrow().contains(name)) {
+        return None;
+    }
+    match type_at(e)? {
+        Type::Named { name: ty, args, .. } if args.is_empty() && GLUE_STRUCTS.with(|g| g.borrow().contains(&ty)) => Some(ty),
+        _ => None,
+    }
 }
 
 fn is_owned_call(e: &Expr) -> bool {
@@ -656,10 +686,30 @@ impl Hoist {
                         // `x.fields().len()`, `g().len()`: a container a call hands over and a
                         // reader builtin only reads (an `any` method or a user fn).
                         let any_temp = reads_container_arg(&callee, i)
-                            && (any_call_kind(&a).is_some() || user_container_call(&a));
+                            && (any_call_kind(&a).is_some() || user_container_call(&a) || is_fresh_bytes(&a));
                         // `Opt.of(3).get()`: a value a user fn hands over, lent to another
                         // user fn's `&self` / `&T` parameter, is dropped after the statement.
                         let lent = lends_to_user_fn(&callee, i) && user_owned_temp(&a);
+                        // `Path.new(s).parent()`: a struct with glue a user fn hands over, lent
+                        // the same way, is bound to a typed temporary the struct tail releases.
+                        if lends_to_user_fn(&callee, i) {
+                            if let Some(sn) = user_struct_temp(&a) {
+                                self.n += 1;
+                                let name = format!("__tmp_{}_{}", self.fn_name, self.n);
+                                let asp = a.span();
+                                TMP_STRUCTS.with(|t| t.borrow_mut().insert(name.clone(), sn));
+                                let fake = Span { start: u32::MAX - self.n, end: u32::MAX - self.n, line: 0, col: 0 };
+                                out.push(Stmt::Let {
+                                    name: name.clone(),
+                                    ty: None,
+                                    init: a,
+                                    frozen: false,
+                                    stack: false,
+                                    span: fake,
+                                });
+                                return Expr::Ident { name, span: asp };
+                            }
+                        }
                         if ((reads || reads_key_arg(&callee, i)) && is_fresh_temp(&a)) || any_temp || lent {
                             self.n += 1;
                             let name = format!("__tmp{}", self.n);
@@ -784,14 +834,26 @@ impl Hoist {
                 Expr::Match { scrutinee: Box::new(scrutinee), arms, span }
             }
             // The first `if` condition runs once, ahead of the statement: its fresh temporaries are
-            // bound like any other call argument. `elsif` and `while` conditions re-run or run
-            // conditionally, so they are left alone.
+            // bound like any other call argument. An `elsif` condition runs only when the ones
+            // before it fail: its temporaries are bound inside it, in a block that ends with the
+            // condition (as the right operand of `&&`). `while` conditions re-run, so they are left
+            // alone.
             Expr::If { cond, then_block, elsifs, else_block, span } => Expr::If {
                 cond: Box::new(self.expr(*cond, out)),
                 then_block: self.block(then_block),
                 elsifs: elsifs
                     .into_iter()
-                    .map(|a| Elsif { cond: a.cond, body: self.block(a.body), span: a.span })
+                    .map(|a| {
+                        let csp = a.cond.span();
+                        let mut inner = Vec::new();
+                        let c = self.expr(a.cond, &mut inner);
+                        let cond = if inner.is_empty() {
+                            c
+                        } else {
+                            Expr::Block(Block { stmts: inner, tail: Some(Box::new(c)), span: csp })
+                        };
+                        Elsif { cond, body: self.block(a.body), span: a.span }
+                    })
                     .collect(),
                 else_block: else_block.map(|b| self.block(b)),
                 span,
@@ -1456,6 +1518,10 @@ pub(crate) fn borrows_args(name: &str) -> bool {
             | "list_push_share"
             | "str_share"
             | "bytes_len"
+            // `b.ptr()` reads the buffer's address and `bytes_view(b, ..)` points into it; `b`
+            // keeps owning its buffer (SPEC «Bytes»).
+            | "bytes_ptr"
+            | "bytes_view"
             | "bytes_get_u8"
             | "bytes_get_u16"
             | "bytes_get_u32"
@@ -3656,9 +3722,18 @@ fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
         Expr::If { cond, then_block, elsifs, else_block, span } => Expr::If {
             cond: Box::new(xform_logic(*cond, cx)),
             then_block: xform_block(then_block, cx),
+            // The block `Hoist` makes of an `elsif` condition (its temporaries) gets its own
+            // scope, so they are released inside the condition, which runs only when the ones
+            // before it fail.
             elsifs: elsifs
                 .into_iter()
-                .map(|a| Elsif { cond: a.cond, body: xform_block(a.body, cx), span: a.span })
+                .map(|a| {
+                    let cond = match a.cond {
+                        Expr::Block(b) => Expr::Block(xform_block(b, cx)),
+                        c => xform_logic(c, cx),
+                    };
+                    Elsif { cond, body: xform_block(a.body, cx), span: a.span }
+                })
                 .collect(),
             else_block: else_block.map(|b| xform_block(b, cx)),
             span,

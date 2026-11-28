@@ -1,0 +1,9 @@
+# exit: 8
+# `b.ptr()` only reads the address of the buffer: `b` keeps owning it, is still usable after, and
+# is released at the end of its scope (SPEC «Bytes», «Memoria»).
+fn main() -> Int ! alloc
+    buf = Bytes.new(8)
+    p = buf.ptr()
+    q = buf.ptr()
+    buf.set_u8(0, 7)
+    (p == q) + buf.get_u8(0)

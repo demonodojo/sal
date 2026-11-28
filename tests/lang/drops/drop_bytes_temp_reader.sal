@@ -1,0 +1,15 @@
+# exit: 18
+# A fresh `Bytes` read once is a temporary dropped after its statement, as in Rust: a view
+# (`bytes_view`, `Bytes.view_mem`) read by `to_str()`, and one a fn hands over read by `len()`.
+# `bytes_view(out, ..)` only reads `out`, which keeps its buffer (SPEC «Bytes», «Memoria»).
+fn mk(n: Int) -> Bytes ! alloc
+    Bytes.new(n)
+
+fn main() -> Int ! alloc
+    s = "abcd"
+    out = Bytes.new(8)
+    out.write_str(0, &s)
+    a = bytes_view(out, 0, 3).to_str()
+    b = Bytes.view_mem(out.ptr(), 2).to_str()
+    n = mk(5).len()
+    a.len() + b.len() + n + out.len()

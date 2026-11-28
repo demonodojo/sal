@@ -1,0 +1,20 @@
+# exit: 34
+# The temporaries of an `elsif` condition (`p.slice(..)`, `d"/"`, also behind `&&`) are bound
+# inside the condition and released there: it runs only when the conditions before it fail
+# (SPEC «Memoria», «Liberación de locales»).
+fn kind(p: &String) -> Int ! alloc
+    if p.len() == 0
+        0
+    elsif p.slice(0, 1).eq(d"/") == 1
+        1
+    elsif p.len() > 2 && p.slice(1, 2).eq(d"x") == 1
+        2
+    else
+        3
+
+fn main() -> Int ! alloc
+    e = ""
+    s = "/a"
+    t = "axb"
+    u = "zz"
+    kind(&e) + kind(&s) * 2 + kind(&t) * 4 + kind(&u) * 8

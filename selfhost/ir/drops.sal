@@ -1366,6 +1366,9 @@ fn dr_any_temp_call(h: &HC, name: &String) -> Int ! alloc
     k = map_get(h.vm, str_own(&("retk:" + name)))
     if dr_any_call_kind(h.vm, &h.ps, name) != 0
         1
+    elsif name.eq("bytes_new") + name.eq("bytes_view") + name.eq("bytes_view_mem") > 0
+        # A fresh `Bytes` read once (`Bytes.view_mem(p, n).to_str()`): `is_fresh_bytes`.
+        1
     elsif k == 2 || k == 3 || k == 4
         1
     else
@@ -1385,6 +1388,14 @@ fn dr_reads_container_arg(name: &String, i: Int) -> Int ! alloc
             "dict_has" => 1
             "dict_keys" => 1
             "dict_values" => 1
+            "bytes_len" => 1
+            "bytes_ptr" => 1
+            "bytes_get_u8" => 1
+            "bytes_get_u16" => 1
+            "bytes_get_u32" => 1
+            "bytes_get_i64" => 1
+            "bytes_to_str" => 1
+            "bytes_view" => 1
             _ => 0
 
 # `anyret:P.m` for every protocol method whose result the caller owns: 1 a `String`, else the
@@ -2911,6 +2922,13 @@ fn dr_xform_if_arms(c: &mut DC, arms: &mut List[TElsif], i: Int, n: Int) -> Int 
         0
     else
         arm = (&mut arms).get(i)
+        # The block `dr_hoist_arms` makes of the condition gets its own scope (`xform_expr` in
+        # src/drops.rs).
+        if dr_is_block_expr(&arm.cond) == 1
+            arm.cond = XBlock(dr_xform_block_of(c, &arm.cond))
+        else
+            dr_xform_logic_in(c, &arm.cond)
+            ()
         nb = dr_xform_block(c, &mut arm.body)
         dr_free_block(&arm.body)
         arm.body = nb
@@ -3903,9 +3921,10 @@ fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &Str
         # The result of `x.m()` on `any[P]` read by a container builtin (`x.fields().len()`).
         hoist = if dr_reads_container_arg(callee, i) == 1 && dr_any_temp(h, &a) == 1
             1
-        elsif dr_lends_to_user_fn(h.vm, callee, i) == 1 && dr_user_owned_temp(h.vm, &a) == 1
-            # `Opt.of(3).get()`: a value a user fn hands over, lent to another user fn's `&self`
-            # / `&T` parameter, is dropped after the statement (`lends_to_user_fn`).
+        elsif dr_lends_to_user_fn(h.vm, callee, i) == 1 && dr_user_owned_temp(h.vm, &a) + dr_user_struct_temp(h.vm, &a) > 0
+            # `Opt.of(3).get()`, `Path.new(s).parent()`: a value (or a struct with glue) a user fn
+            # hands over, lent to another user fn's `&self` / `&T` parameter, is dropped after
+            # the statement (`lends_to_user_fn`, `user_struct_temp`).
             1
         elsif dr_reads_string_arg(callee) + dr_reads_key_arg(callee, i) > 0
             dx_is_fresh_temp_v(h.vm, &a)
@@ -3936,6 +3955,13 @@ fn dr_user_owned_temp(vm: Int, e: &Expr) -> Int ! alloc
         XCall(name, args, targs, xp) => dr_owned_name(vm, &name) + dr_ret_owned(vm, &name) > 0
         _ => 0
 
+# A user fn call (`dropfn:`) or a struct constructor (`dropkind:`, `Response(raw)`) whose result
+# is a struct with drop glue (`user_struct_temp` in src/drops.rs).
+fn dr_user_struct_temp(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => map_get(vm, str_own(&("dropfn:" + name))) + map_get(vm, str_own(&("dropkind:" + name))) != 0
+        _ => 0
+
 fn dr_ret_owned(vm: Int, name: &String) -> Int ! alloc
     map_get(vm, str_own(&("retk:" + name))) > 1
 
@@ -3944,6 +3970,9 @@ fn dr_hoist_arms(h: &mut HC, arms: &mut List[TElsif], i: Int, n: Int) -> Int ! a
         0
     else
         arm = list_get(&mut arms, i)
+        # An `elsif` condition runs only when the ones before it fail: its temporaries are bound
+        # inside it, in a block that ends with the condition (`Hoist::expr` in src/drops.rs).
+        arm.cond = dr_hoist_cond_operand(h, &arm.cond)
         nb = dr_hoist_block(h, &mut arm.body)
         dr_free_block(&arm.body)
         arm.body = nb
@@ -4233,7 +4262,7 @@ fn dr_hoist_while(h: &mut HC, e: &Expr, body: &mut TBlock) -> Expr ! alloc
 
 fn dr_hoist_if(h: &mut HC, e: &Expr, cond: &Expr, then_b: &mut TBlock, else_b: &mut TBlock, has_else: Int, elsifs: &mut List[TElsif], out: &mut List[TStmt]) -> Expr ! alloc
     # The first condition runs once, ahead of the statement: its fresh temporaries are bound
-    # like any call argument. `elsif` conditions run conditionally and stay as they are.
+    # like any call argument. Those of an `elsif` condition are bound inside it (`dr_hoist_arms`).
     before = list_len(out)
     nc = dr_hoist_expr(h, cond, out)
     # `dr_hoist_expr` hands back a copy: the condition is only replaced when a temporary was bound.
@@ -4787,6 +4816,8 @@ fn dr_borrows(name: &String) -> Int ! alloc
     elsif str_eq(name, "enum_box_id") == 1
         1
     elsif str_eq(name, "bytes_len") == 1
+        1
+    elsif name.eq("bytes_ptr") + name.eq("bytes_view") > 0
         1
     elsif str_eq(name, "bytes_get_u8") == 1
         1

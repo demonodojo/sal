@@ -1,0 +1,21 @@
+# exit: 7
+# A struct with drop glue that a fn or its constructor hands over, lent to a `&self` method
+# (`P.new(s).first()`, `P(s).n()`), is a temporary dropped after the statement, as in Rust
+# (SPEC «Memoria»).
+struct P
+    s: String
+
+static P.new(s: String) -> P
+    P(s)
+
+method P.first(&self) -> String ! alloc
+    self.s.slice(0, 1)
+
+method P.n(&self) -> Int
+    self.s.len()
+
+fn main() -> Int ! alloc
+    f = P.new(d"xyz").first()
+    m = P.new(d"abcd").n()
+    k = P(d"hi").n()
+    f.len() + m + k
