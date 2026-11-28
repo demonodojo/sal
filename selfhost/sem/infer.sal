@@ -1201,7 +1201,8 @@ fn infer_typed_builtin(c: &mut IC, name: &String, tys: &List[String], targs: &St
     elsif name.eq("f64_bits_to_str") == 1
         "String"
     elsif infer_t_is_clone(name) == 1
-        infer_t_arg(tys, 0)
+        # The copy of `&T` is an owned `T`.
+        ty_deref(&infer_t_arg(tys, 0))
     elsif infer_t_is_sync(name) == 1
         infer_t_sync(c, name, tys, targs)
     else
@@ -2167,6 +2168,9 @@ fn infer_add(c: &mut IC, lt: &String, rt: &String) -> String ! alloc
             "String"
         else
             "String"
+    elsif ty_is(rt, &"String") + ty_is(&ty_deref(rt), &"String") > 0 && ty_is(&ty_deref(lt), &"String") == 1
+        # `&String + "x"`: `+` lends its operands and gives a new `String` (SPEC «`String`»).
+        "String"
     elsif ty_is(rt, &"String") == 1
         if ty_is_scalar(lt) == 1
             _f = ic_fail(c, &"string concatenation requires a String on the left")
@@ -2451,11 +2455,30 @@ fn infer_if_join(c: &mut IC, tb: &String, eb: &String) -> String ! alloc
             eb.dup()
     elsif infer_diverged(eb) == 1
         tb.dup()
-    elsif ty_compat(tb, eb) == 0
+    elsif ty_compat(tb, eb) + 1 - ty_ref_owned_clash(tb, eb) < 2
         ic_fail(c, &("expected " + ty_msg(tb) + ", found " + ty_msg(eb)))
         tb.dup()
     else
         tb.dup()
+
+# 1 when one branch gives `&T` and the other a `T` that is not a scalar: a reference is not the
+# owned value (`&String` is not `String`; `types_compatible` in src/infer.rs).
+fn ty_ref_owned_clash(a: &String, b: &String) -> Int ! alloc
+    ra = ts_trim(a).slice(0, 1).eq("&")
+    rb = ts_trim(b).slice(0, 1).eq("&")
+    if ra == rb
+        0
+    elsif ra == 1
+        ty_owned_of_ref(b, a)
+    else
+        ty_owned_of_ref(a, b)
+
+fn ty_owned_of_ref(owned: &String, r: &String) -> Int ! alloc
+    o = ts_trim(owned)
+    if o.eq("Int") + o.eq("Float") + o.eq("Bool") + o.eq("Unit") + o.eq("Unknown") > 0
+        0
+    else
+        ty_deref(r).eq(o)
 
 fn infer_expr(c: &mut IC, e: &Expr) -> String ! alloc
     match e
@@ -2582,8 +2605,23 @@ fn infer_lambda_bind(c: &mut IC, params: &List[String], i: Int) -> Int ! alloc
 
 fn infer_match(c: &mut IC, scrut: &Expr, arms: &List[TArm]) -> String ! alloc
     sty = infer_expr(c, scrut)
-    infer_match_arms(c, arms, 0, arms.len(), &sty)
+    first = List.new[String]()
+    infer_match_arms(c, arms, 0, arms.len(), &sty, &mut first)
     "Unknown"
+
+# Every arm that gives a value gives the type of the first one (`Expr::Match` in src/infer.rs).
+fn infer_match_arm_join(c: &mut IC, t: &String, first: &mut List[String]) -> Int ! alloc
+    if infer_diverged(t) == 1
+        0
+    elsif first.len() == 0
+        first.push(t.dup())
+        0
+    else
+        f = first.get(0)
+        if ty_ref_owned_clash(&f, t) == 1
+            ic_fail(c, &("expected " + ty_msg(&f) + ", found " + ty_msg(t)))
+        else
+            0
 
 # 0 Int, 1 String, 2 enum (name in tnames), 3 other.
 # A match on `&T` classifies by `T` (the patterns are those of `T`).
@@ -2661,7 +2699,12 @@ fn infer_pattern_binds(c: &mut IC, p: &TPat) -> Int ! alloc
 # Binds the names of `p`, which matches a value of type `ty`; a variant's payload binds its field types.
 fn infer_pattern_binds_ty(c: &mut IC, p: &TPat, ty: &String) -> Int ! alloc
     match p.kind
-        1 => tenv_bind(&mut c.env, &p.name, ty)
+        # An `IDENT` that names a variant (`XNone =>`) matches it and binds nothing (SPEC «match»).
+        1 =>
+            if ic_get(&c.arity, &p.name) != 0
+                0
+            else
+                tenv_bind(&mut c.env, &p.name, ty)
         3 =>
             want = ic_get(&c.arity, &p.name)
             infer_pattern_arity(c, p, want)
@@ -2682,7 +2725,7 @@ fn infer_pattern_list(c: &mut IC, p: &TPat, sty: &String, i: Int, n: Int) -> Int
         infer_pattern_binds_ty(c, &(&p.args).get(i), &fty)
         infer_pattern_list(c, p, sty, i + 1, n)
 
-fn infer_match_arms(c: &mut IC, arms: &List[TArm], i: Int, n: Int, sty: &String) -> Int ! alloc
+fn infer_match_arms(c: &mut IC, arms: &List[TArm], i: Int, n: Int, sty: &String, first: &mut List[String]) -> Int ! alloc
     if i >= n
         0
     else
@@ -2690,12 +2733,13 @@ fn infer_match_arms(c: &mut IC, arms: &List[TArm], i: Int, n: Int, sty: &String)
         mark = tenv_len(&c.env)
         infer_pattern_binds_ty(c, &arm.pat, sty)
         infer_match_pat_ok(c, &arm.pat, sty)
-        if arm.has_suite == 1
-            _b = infer_branch(c, &arm.suite)
+        t = if arm.has_suite == 1
+            infer_branch(c, &arm.suite)
         else
-            _b = infer_expr(c, &arm.body)
+            infer_expr(c, &arm.body)
         tenv_truncate(&mut c.env, mark)
-        infer_match_arms(c, arms, i + 1, n, sty)
+        infer_match_arm_join(c, &t, first)
+        infer_match_arms(c, arms, i + 1, n, sty, first)
 
 # ---- statements ----
 # Returns 1 when the statement diverges.

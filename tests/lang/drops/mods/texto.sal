@@ -9,3 +9,15 @@ fn lower(s: &String) -> String ! alloc
         out = out + String.from_char(c)
         i = i + 1
     out
+
+# The digits `0..n` (n <= 10): each `+` concatenates the result of another fn of this module.
+fn digits(n: Int) -> String ! alloc
+    s = d""
+    i = 0
+    while i < n
+        s = s + digit(i)
+        i = i + 1
+    s
+
+fn digit(v: Int) -> String ! alloc
+    String.from_char(48 + v)

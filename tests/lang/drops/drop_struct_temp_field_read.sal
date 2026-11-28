@@ -1,0 +1,14 @@
+# exit: 32
+# The struct a fn returns, of which a statement only reads a field (`f().ss.len()`), is a
+# temporary freed at the end of the statement with all its fields.
+struct Enc
+    ct: Bytes
+    ss: Bytes
+
+fn invalid() -> Enc ! alloc
+    Enc(Bytes.new(0), Bytes.new(32))
+
+fn main() -> Int ! alloc
+    a = invalid().ss.len()
+    b = invalid().ct.len()
+    a + b

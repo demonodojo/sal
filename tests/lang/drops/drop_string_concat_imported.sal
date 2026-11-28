@@ -1,0 +1,14 @@
+# exit: 12
+# stdout: 0123
+# A fn of another module that builds its `String` with `s = s + g(i)` hands it to the caller:
+# the concatenation is owned even though this module's types do not cover that body.
+import "mods/texto.sal"
+
+fn main() -> Int ! alloc, io
+    n = 0
+    i = 0
+    while i < 3
+        n = n + digits(4).len()
+        i = i + 1
+    print(digits(4))
+    n

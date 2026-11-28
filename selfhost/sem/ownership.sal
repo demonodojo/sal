@@ -1312,7 +1312,7 @@ fn ar_expr(e: &Expr, f: &TFn, names: &mut List[String], roots: &mut List[String]
         XMatch(sc, arms) =>
             flags2 = ar_expr(&sc, f, names, roots, table, muts, flags)
             ar_arms(&arms, 0, list_len(&arms), f, names, roots, table, muts, &flags2)
-        _ => flags
+        _ => flags.dup()
 
 fn ar_note(st: &TStmt, names: &mut List[String], roots: &mut List[String]) -> Int ! alloc
     if st.kind != 1

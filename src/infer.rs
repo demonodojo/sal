@@ -1096,9 +1096,11 @@ Expr::Int { .. } => Type::Named {
             let scrut_ty = check_expr(scrutinee, env, ctx, types, entries)?;
             check_match_patterns(arms, &scrut_ty, types)?;
             let mut arm_tys = Vec::new();
+            let mut arm_spans = Vec::new();
             for arm in arms {
                 let mut local = env.clone();
                 bind_pattern(&arm.pattern, &scrut_ty, types, &mut local)?;
+                let n_before = arm_tys.len();
                 // An arm whose block always returns gives no value to the `match` (SPEC «Bloque»).
                 if let Expr::Block(b) = &arm.body {
                     let (div, ty) = check_branch_block(b, &local, ctx, types, entries)?;
@@ -1113,6 +1115,22 @@ Expr::Int { .. } => Type::Named {
                     }
                 } else {
                     arm_tys.push(check_expr(&arm.body, &local, ctx, types, entries)?);
+                }
+                if arm_tys.len() > n_before {
+                    arm_spans.push(arm.body.span());
+                }
+            }
+            // Every arm that gives a value gives the `match`'s type (`&String` is not `String`).
+            if let Some(first) = arm_tys.first() {
+                for (ty, sp) in arm_tys.iter().zip(&arm_spans).skip(1) {
+                    let int_bool = |t: &Type| matches!(t, Type::Named { name, .. } if name == "Int" || name == "Bool");
+                    if !types_compatible(first, ty) && !(int_bool(first) && int_bool(ty)) {
+                        return Err(vec![Diagnostic::new(
+                            ErrorCode::EType,
+                            format!("expected {}, found {}", type_name(first), type_name(ty)),
+                            *sp,
+                        )]);
+                    }
                 }
             }
             if arm_tys.is_empty() && !arms.is_empty() {

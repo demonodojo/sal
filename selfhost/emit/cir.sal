@@ -786,8 +786,32 @@ fn cir_if_assign(cc: Int, dest: Int, val: Int) -> Int ! alloc
     else
         cir_set(cc, dest, &cir_op(cc, val))
 
-# Carried values: `which` selects the then (1) or else (2) source slot.
+# Carried values: `which` selects the then (1) or else (2) source slot. The rows are one
+# parallel copy, like the phis of src/llvm.rs: a row may read the dest of another
+# (`d = c` / `c = e0` in a loop), so every source is read before any dest is written.
 fn cir_carry_assign(cc: Int, carried: &List[Inst], i: Int, which: Int) -> Int ! alloc
+    n = carried.len()
+    if n - i < 2
+        cir_carry_rows(cc, carried, i, which)
+    else
+        cc_line(cc, &"  {\n")
+        idx = i
+        while idx < n
+            c = carried.get(idx)
+            src = if which == 1
+                ih(&c.s1)
+            else
+                ih(&c.s2)
+            cc_line(cc, &("  int64_t pc" + idx.to_str() + " = " + cir_op(cc, src) + ";\n"))
+            idx = idx + 1
+        idx = i
+        while idx < n
+            c = carried.get(idx)
+            cir_set(cc, ih(&c.dest), &("pc" + idx.to_str()))
+            idx = idx + 1
+        cc_line(cc, &"  }\n")
+
+fn cir_carry_rows(cc: Int, carried: &List[Inst], i: Int, which: Int) -> Int ! alloc
     idx = i
     n = carried.len()
     while idx < n

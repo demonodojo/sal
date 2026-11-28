@@ -40,6 +40,8 @@ thread_local! {
     static VARIANT_CTORS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// User fns whose `String` result is always fresh: the caller owns it (see `owned_return_fns`).
     static OWNED_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+    /// User fns declared `-> String`, while `owned_return_fns` reads the bodies.
+    static STRING_RET_FNS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
     /// Per user fn, which parameters are references (`&T`/`&mut T`): a temporary passed there is
     /// still the caller's to release.
     static REF_PARAMS: std::cell::RefCell<HashMap<String, Vec<bool>>> = std::cell::RefCell::new(HashMap::new());
@@ -683,6 +685,23 @@ impl Hoist {
                     .enumerate()
                     .map(|(i, a)| {
                         let a = self.expr(a, out);
+                        // `enc(..).ciphertext.len()`: a field of a struct with glue a fn hands
+                        // over, read by a builtin that only reads it; the struct is a temporary
+                        // dropped after the statement (the field is not moved out).
+                        let reader = reads || reads_key_arg(&callee, i) || reads_container_arg(&callee, i);
+                        let a = match a {
+                            Expr::Field { base, field, span: fsp } if reader && user_struct_temp(&base).is_some() => {
+                                let sn = user_struct_temp(&base).expect("struct");
+                                self.n += 1;
+                                let name = format!("__tmp_{}_{}", self.fn_name, self.n);
+                                let bsp = base.span();
+                                TMP_STRUCTS.with(|t| t.borrow_mut().insert(name.clone(), sn));
+                                let fake = Span { start: u32::MAX - self.n, end: u32::MAX - self.n, line: 0, col: 0 };
+                                out.push(Stmt::Let { name: name.clone(), ty: None, init: *base, frozen: false, stack: false, span: fake });
+                                Expr::Field { base: Box::new(Expr::Ident { name, span: bsp }), field, span: fsp }
+                            }
+                            a => a,
+                        };
                         // `x.fields().len()`, `g().len()`: a container a call hands over and a
                         // reader builtin only reads (an `any` method or a user fn).
                         let any_temp = reads_container_arg(&callee, i)
@@ -1055,16 +1074,23 @@ fn owned_return_fns(prog: &Program, callees: &[&FnDef], variants: &Variants, def
             f
         })
         .collect();
-    let mut set = HashSet::new();
+    // Only while the bodies are read here: a `+` with an operand that calls a fn declared
+    // `-> String` concatenates (`is_string_operand`), even in a fn of another module.
+    STRING_RET_FNS.with(|r| *r.borrow_mut() = fns.iter().map(|f| f.name.clone()).collect());
+    // Greatest fixpoint: every `-> String` fn is assumed owned and dropped when its body hands
+    // out something that is not (a recursive `f(n - 1) + x` stays owned). A `&String` is never
+    // returned as `String` (`E_TYPE`), so no fn of the set returns a borrow.
+    let mut set: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
     loop {
         OWNED_SEED.with(|s| *s.borrow_mut() = set.clone());
-        let next: HashSet<String> = fns.iter().filter(|f| owned_return_body(f)).map(|f| f.name.clone()).collect();
+        let next: HashSet<String> = fns.iter().filter(|f| set.contains(&f.name) && owned_return_body(f)).map(|f| f.name.clone()).collect();
         if next == set {
             break;
         }
         set = next;
     }
     OWNED_SEED.with(|s| s.borrow_mut().clear());
+    STRING_RET_FNS.with(|r| r.borrow_mut().clear());
     set
 }
 
@@ -1768,9 +1794,10 @@ fn add_is_string_chain(e: &Expr) -> bool {
 fn is_string_operand(e: &Expr) -> bool {
     match e {
         Expr::String { .. } => true,
-        Expr::Call { func, .. } => {
-            matches!(func.as_ref(), Expr::Ident { name, .. } if returns_fresh(name))
-        }
+        // While `owned_return_fns` reads the bodies: a user fn declared `-> String` (its
+        // signature, not the span table, which does not type a fn of another module).
+        Expr::Call { func, .. } => matches!(func.as_ref(), Expr::Ident { name, .. }
+            if returns_fresh(name) || STRING_RET_FNS.with(|f| f.borrow().contains(name))),
         _ => false,
     }
 }

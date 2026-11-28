@@ -1464,6 +1464,9 @@ const PARITY_FILES: &[&str] = &[
     "tests/lang/drops/drop_bytes_temp_reader.sal",
     "tests/lang/drops/drop_struct_temp_lent_self.sal",
     "tests/lang/drops/drop_elsif_cond_temporaries.sal",
+    "tests/lang/drops/drop_string_recursive_owned.sal",
+    "tests/lang/drops/drop_string_concat_imported.sal",
+    "tests/lang/drops/drop_struct_temp_field_read.sal",
     // A unit variant arm over a `&Option` (`None`) tests the tag; a `while` tail has no value.
     "tests/lang/drops/drop_match_fresh_enum_call.sal",
     "tests/lang/drops/drop_match_arm_block_local.sal",

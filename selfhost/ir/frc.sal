@@ -546,15 +546,14 @@ fn fr_unary(c: &FRC, op: &String, inner: &Expr, moving: Int) -> Int ! alloc
 
 fn fr_field(c: &FRC, e: &Expr, base: &Expr, moving: Int) -> Int ! alloc
     _n = fr_note(c, e, moving)
-    inner = fr_innermost(base)
-    match inner
-        XIdent(name) => 0
-        _ => fr_ex(c, &inner, 0)
+    fr_innermost_ex(c, base)
 
-fn fr_innermost(e: &Expr) -> Expr ! alloc
+# The innermost base of a field chain: a local is only read; anything else is visited.
+fn fr_innermost_ex(c: &FRC, e: &Expr) -> Int ! alloc
     match e
-        XField(base, field) => fr_innermost(&base)
-        _ => e
+        XField(b, field) => fr_innermost_ex(c, &b)
+        XIdent(name) => 0
+        _ => fr_ex(c, e, 0)
 
 fn fr_pair(c: &FRC, l: &Expr, r: &Expr) -> Int ! alloc
     _a = fr_ex(c, l, 0)

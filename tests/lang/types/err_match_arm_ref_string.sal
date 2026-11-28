@@ -1,0 +1,15 @@
+# error: E_TYPE
+# Every arm of a `match` that gives a value gives the same type: `&String` is not `String`.
+enum E
+    A(Int)
+    B
+
+fn f(e: &E, s: &String) -> String ! alloc
+    match e
+        A(n) => s.clone()
+        _ => s
+
+fn main() -> Int ! alloc
+    a = "abc"
+    b = f(&B, &a)
+    b.len()

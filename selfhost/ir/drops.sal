@@ -500,28 +500,57 @@ fn dr_owned_name(vm: Int, name: &String) -> Int ! alloc
     else
         0
 
-# Repeats `owned_fns_put` until no fn is added: a call to an owned fn is fresh too, so the set
-# grows to the fixed point of `owned_return_fns` in src/drops.rs.
+# The greatest fixed point of `owned_return_fns` in src/drops.rs: every `-> String` fn starts
+# owned (`ownfn:<name>`) and is dropped while its body hands out something that is not (a
+# recursive `f(n - 1) + x` stays owned). A `&String` is never returned as `String` (`E_TYPE`).
 fn owned_fns_fix(m: Int, own: &List[TFn], others: &List[TFn]) -> Int ! alloc
-    added = owned_fns_put(m, own, 0, own.len()) + owned_fns_put(m, others, 0, others.len())
-    if added > 0
-        owned_fns_fix(m, own, others)
+    owned_fns_seed(m, own, 0, own.len())
+    owned_fns_seed(m, others, 0, others.len())
+    owned_fns_shrink(m, own, others)
+
+# One round of the greatest fixed point: a name stays when some fn with it still hands out an
+# owned String (a fn and its copy among the callees are one name, as the set of src/drops.rs).
+fn owned_fns_shrink(m: Int, own: &List[TFn], others: &List[TFn]) -> Int ! alloc
+    ok = map_new()
+    owned_fns_ok(m, ok, own, 0, own.len())
+    owned_fns_ok(m, ok, others, 0, others.len())
+    dropped = owned_fns_drop(m, ok, own, 0, own.len()) + owned_fns_drop(m, ok, others, 0, others.len())
+    if dropped > 0
+        owned_fns_shrink(m, own, others)
     else
         0
 
-# Adds `ownfn:<name>` for each fn of `fns` that hands out an owned String and is not in yet;
-# returns how many it added.
-fn owned_fns_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+fn owned_fns_seed(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = fns.get(i)
-        here = if ty_is_string(&f.ret) == 1 && dr_owned_name(m, &f.name) == 0 && owned_fn_body(m, &f) == 1
+        if ty_is_string(&f.ret) == 1
             map_put(m, str_own(&("ownfn:" + f.name)), 1)
+        owned_fns_seed(m, fns, i + 1, n)
+
+# Marks in `ok` each name still in whose body hands out an owned String under the current set.
+fn owned_fns_ok(m: Int, ok: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = fns.get(i)
+        if dr_owned_name(m, &f.name) == 1 && owned_fn_body(m, &f) == 1
+            map_put(ok, str_own(&f.name), 1)
+        owned_fns_ok(m, ok, fns, i + 1, n)
+
+# Drops `ownfn:<name>` for each name still in that `ok` does not hold; returns how many it dropped.
+fn owned_fns_drop(m: Int, ok: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        f = fns.get(i)
+        here = if dr_owned_name(m, &f.name) == 1 && map_get(ok, str_own(&f.name)) == 0
+            map_put(m, str_own(&("ownfn:" + f.name)), 0)
             1
         else
             0
-        here + owned_fns_put(m, fns, i + 1, n)
+        here + owned_fns_drop(m, ok, fns, i + 1, n)
 
 # `pass:<fn>:<i>` for every by-value parameter `i` that `fn` returns as the value of a branch tail
 # (`PASSTHRU_FNS` in src/drops.rs): given a fresh temporary, the result is that temporary.
@@ -741,6 +770,8 @@ fn ret_kinds_put(m: Int, fns: &List[TFn], i: Int, n: Int) -> Int ! alloc
         else
             0
         rt = trim_type_piece(&f.ret)
+        if ty_is_string(&f.ret) == 1
+            map_put(m, str_own(&("retstr:" + f.name)), 1)
         if map_get(m, str_own(&("sname:" + rt))) == 1
             map_put(m, str_own(&("rets:" + f.name)), str_own(&rt))
         if ty_base(&rt).eq("Tensor") == 1
@@ -1216,8 +1247,35 @@ fn owned_binds(stmts: &List[TStmt], i: Int, n: Int, name: &String) -> Int ! allo
 fn owned_fresh_value(vm: Int, e: &Expr) -> Int ! alloc
     if owned_user_call(vm, e) == 1
         1
+    elsif owned_fresh_builtin(e) == 1
+        1
     else
-        owned_fresh_builtin(e)
+        owned_ret_str_chain(vm, e)
+
+# A `+` chain with an operand that calls a fn declared `-> String` (`retstr:`): a concatenation,
+# even in a fn of another module, whose `+` the span table does not type (`is_string_operand`
+# under `owned_return_fns` in src/drops.rs).
+fn owned_ret_str_chain(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) =>
+            if op.eq("add") == 0
+                0
+            elsif owned_ret_str_leaf(vm, &l) + owned_ret_str_call(vm, &r) > 0
+                1
+            else
+                0
+        _ => 0
+
+# The left operand of a chain: a nested `+` chain, or its leftmost leaf.
+fn owned_ret_str_leaf(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) => owned_ret_str_chain(vm, e)
+        _ => owned_ret_str_call(vm, e)
+
+fn owned_ret_str_call(vm: Int, e: &Expr) -> Int ! alloc
+    match e
+        XCall(name, args, targs, xp) => map_get(vm, str_own(&("retstr:" + name))) == 1
+        _ => 0
 
 fn owned_user_call(vm: Int, e: &Expr) -> Int ! alloc
     match e
@@ -3917,7 +3975,13 @@ fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &Str
         0
     else
         old = list_get(args, i)
-        a = dr_hoist_expr(h, &old, out)
+        a0 = dr_hoist_expr(h, &old, out)
+        # `enc(..).ciphertext.len()`: the struct with glue a fn hands over, whose field a reader
+        # builtin reads, is a temporary dropped after the statement (`Hoist::expr` in src/drops.rs).
+        a = if dr_field_base_temp(h, &a0, callee, i) == 1
+            dr_bind_field_base(h, &a0, out)
+        else
+            a0
         # The result of `x.m()` on `any[P]` read by a container builtin (`x.fields().len()`).
         hoist = if dr_reads_container_arg(callee, i) == 1 && dr_any_temp(h, &a) == 1
             1
@@ -3940,6 +4004,28 @@ fn dr_hoist_args(h: &mut HC, args: &mut List[Expr], i: Int, n: Int, callee: &Str
             dr_set_arg(args, i, &old, a)
             ()
         dr_hoist_args(h, args, i + 1, n, callee, out)
+
+# A field of a struct temporary (`dr_user_struct_temp`) passed where a reader builtin only reads.
+fn dr_field_base_temp(h: &HC, a: &Expr, callee: &String, i: Int) -> Int ! alloc
+    reader = dr_reads_container_arg(callee, i) + dr_reads_string_arg(callee) + dr_reads_key_arg(callee, i)
+    match a
+        XField(base, fld) =>
+            if reader == 0
+                0
+            else
+                dr_user_struct_temp(h.vm, &base)
+        _ => 0
+
+# Binds the base of `a` (a field read) to a temporary and reads the field of that temporary.
+fn dr_bind_field_base(h: &mut HC, a: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
+    match a
+        XField(base, fld) =>
+            k = h.k.get(0) + 1
+            h.k.set(0, k)
+            name = "__tmp" + k.to_str()
+            out.push(TStmt(1, name.dup(), tc_expr(&base), "", 1, XNone, 0, 0, 0 - k))
+            XField(XIdent(name.dup()), fld.dup())
+        _ => tc_expr(a)
 
 # Bit `i` of `pref:<callee>`: parameter `i` of the user fn is a reference.
 fn dr_lends_to_user_fn(vm: Int, callee: &String, i: Int) -> Int ! alloc

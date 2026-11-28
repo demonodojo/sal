@@ -1,0 +1,21 @@
+# exit: 19
+# Locals that a loop rotates (`f = e`, `d = c`, `c = e0`) take the values of the previous
+# iteration: every assignment of the body reads what the names held before it.
+fn main() -> Int
+    a = 1
+    e0 = 2
+    c = 3
+    d = 4
+    e = 5
+    f = 6
+    i = 0
+    while i < 2
+        t1 = d + f
+        f = e
+        e = (d + t1) & 255
+        d = c
+        c = e0
+        e0 = a
+        a = (t1 + 1) & 255
+        i = i + 1
+    a + e0 * 2 + c * 3 + d * 5 + e * 7 + f * 11

@@ -1,0 +1,11 @@
+# exit: 6
+# A recursive fn whose `String` is `f(n - 1) + x` hands it to the caller, who frees it.
+fn rep(n: Int) -> String ! alloc
+    if n == 0
+        d""
+    else
+        rep(n - 1) + "ab"
+
+fn main() -> Int ! alloc
+    s = rep(3)
+    s.len()
