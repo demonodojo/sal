@@ -1,0 +1,215 @@
+# SHA-256 (FIPS 180-4) and HMAC-SHA256 (RFC 2104) one-shot functions.
+#
+# SHA-256 works on 32-bit words kept in the low half of an Int and masked with
+# `SHA256_WORD_MASK` after every addition; the rotation is a logical right
+# shift, which is why the value is always masked first. The message schedule
+# lives in a 256-byte scratch buffer and the compression works on eight locals.
+#
+# HMAC pads the key to one 64-byte block (hashing it first when it is longer)
+# and feeds `ipad`/`opad` to two SHA-256 calls.
+
+SHA256_BLOCK_BYTES = 64
+
+SHA256_DIGEST_BYTES = 32
+
+SHA256_WORD_MASK = 4294967295
+
+fn sha256_rot(v: Int, n: Int) -> Int
+    ((v >> n) | (v << (32 - n))) & SHA256_WORD_MASK
+
+fn sha256_be32(buf: &Bytes, off: Int) -> Int
+    (buf.get_u8(off) << 24) | (buf.get_u8(off + 1) << 16) | (buf.get_u8(off + 2) << 8) | buf.get_u8(off + 3)
+
+fn sha256_put_be32(buf: &mut Bytes, off: Int, v: Int) -> Unit
+    buf.set_u8(off, (v >> 24) & 255)
+    buf.set_u8(off + 1, (v >> 16) & 255)
+    buf.set_u8(off + 2, (v >> 8) & 255)
+    _u = buf.set_u8(off + 3, v & 255)
+
+# The 64 round constants of FIPS 180-4, in big-endian 32-bit slots.
+fn sha256_k() -> Bytes ! alloc
+    k = Bytes.new(256)
+    k.set_u32(0, 1116352408)
+    k.set_u32(4, 1899447441)
+    k.set_u32(8, 3049323471)
+    k.set_u32(12, 3921009573)
+    k.set_u32(16, 961987163)
+    k.set_u32(20, 1508970993)
+    k.set_u32(24, 2453635748)
+    k.set_u32(28, 2870763221)
+    k.set_u32(32, 3624381080)
+    k.set_u32(36, 310598401)
+    k.set_u32(40, 607225278)
+    k.set_u32(44, 1426881987)
+    k.set_u32(48, 1925078388)
+    k.set_u32(52, 2162078206)
+    k.set_u32(56, 2614888103)
+    k.set_u32(60, 3248222580)
+    k.set_u32(64, 3835390401)
+    k.set_u32(68, 4022224774)
+    k.set_u32(72, 264347078)
+    k.set_u32(76, 604807628)
+    k.set_u32(80, 770255983)
+    k.set_u32(84, 1249150122)
+    k.set_u32(88, 1555081692)
+    k.set_u32(92, 1996064986)
+    k.set_u32(96, 2554220882)
+    k.set_u32(100, 2821834349)
+    k.set_u32(104, 2952996808)
+    k.set_u32(108, 3210313671)
+    k.set_u32(112, 3336571891)
+    k.set_u32(116, 3584528711)
+    k.set_u32(120, 113926993)
+    k.set_u32(124, 338241895)
+    k.set_u32(128, 666307205)
+    k.set_u32(132, 773529912)
+    k.set_u32(136, 1294757372)
+    k.set_u32(140, 1396182291)
+    k.set_u32(144, 1695183700)
+    k.set_u32(148, 1986661051)
+    k.set_u32(152, 2177026350)
+    k.set_u32(156, 2456956037)
+    k.set_u32(160, 2730485921)
+    k.set_u32(164, 2820302411)
+    k.set_u32(168, 3259730800)
+    k.set_u32(172, 3345764771)
+    k.set_u32(176, 3516065817)
+    k.set_u32(180, 3600352804)
+    k.set_u32(184, 4094571909)
+    k.set_u32(188, 275423344)
+    k.set_u32(192, 430227734)
+    k.set_u32(196, 506948616)
+    k.set_u32(200, 659060556)
+    k.set_u32(204, 883997877)
+    k.set_u32(208, 958139571)
+    k.set_u32(212, 1322822218)
+    k.set_u32(216, 1537002063)
+    k.set_u32(220, 1747873779)
+    k.set_u32(224, 1955562222)
+    k.set_u32(228, 2024104815)
+    k.set_u32(232, 2227730452)
+    k.set_u32(236, 2361852424)
+    k.set_u32(240, 2428436474)
+    k.set_u32(244, 2756734187)
+    k.set_u32(248, 3204031479)
+    k.set_u32(252, 3329325298)
+    k
+
+fn sha256(data: &Bytes) -> Bytes ! alloc
+    len = data.len()
+    blocks = (len + 9 + SHA256_BLOCK_BYTES - 1) / SHA256_BLOCK_BYTES
+    total = blocks * SHA256_BLOCK_BYTES
+    buf = Bytes.new(total)
+    buf.fill(0, total, 0)
+    buf.copy(0, data, 0, len)
+    buf.set_u8(len, 128)
+    bits = len * 8
+    i = 0
+    while i < 8
+        buf.set_u8(total - 8 + i, (bits >> (56 - 8 * i)) & 255)
+        i = i + 1
+
+    k = sha256_k()
+    w = Bytes.new(256)
+    h0 = 1779033703
+    h1 = 3144134277
+    h2 = 1013904242
+    h3 = 2773480762
+    h4 = 1359893119
+    h5 = 2600822924
+    h6 = 528734635
+    h7 = 1541459225
+
+    b = 0
+    while b < blocks
+        off = b * SHA256_BLOCK_BYTES
+        i = 0
+        while i < 16
+            w.set_u32(i * 4, sha256_be32(&buf, off + i * 4))
+            i = i + 1
+        while i < 64
+            x = w.get_u32((i - 15) * 4)
+            y = w.get_u32((i - 2) * 4)
+            s0 = sha256_rot(x, 7) ^ sha256_rot(x, 18) ^ (x >> 3)
+            s1 = sha256_rot(y, 17) ^ sha256_rot(y, 19) ^ (y >> 10)
+            ma = w.get_u32((i - 16) * 4) + s0 + w.get_u32((i - 7) * 4) + s1
+            w.set_u32(i * 4, ma & SHA256_WORD_MASK)
+            i = i + 1
+
+        a = h0
+        e0 = h1
+        c = h2
+        d = h3
+        e = h4
+        f = h5
+        g = h6
+        h = h7
+        i = 0
+        while i < 64
+            s1 = sha256_rot(e, 6) ^ sha256_rot(e, 11) ^ sha256_rot(e, 25)
+            ch = (e & f) ^ ((e ^ SHA256_WORD_MASK) & g)
+            t1 = (h + s1 + ch + k.get_u32(i * 4) + w.get_u32(i * 4)) & SHA256_WORD_MASK
+            s0 = sha256_rot(a, 2) ^ sha256_rot(a, 13) ^ sha256_rot(a, 22)
+            maj = (a & e0) ^ (a & c) ^ (e0 & c)
+            t2 = (s0 + maj) & SHA256_WORD_MASK
+            h = g
+            g = f
+            f = e
+            e = (d + t1) & SHA256_WORD_MASK
+            d = c
+            c = e0
+            e0 = a
+            a = (t1 + t2) & SHA256_WORD_MASK
+            i = i + 1
+
+        h0 = (h0 + a) & SHA256_WORD_MASK
+        h1 = (h1 + e0) & SHA256_WORD_MASK
+        h2 = (h2 + c) & SHA256_WORD_MASK
+        h3 = (h3 + d) & SHA256_WORD_MASK
+        h4 = (h4 + e) & SHA256_WORD_MASK
+        h5 = (h5 + f) & SHA256_WORD_MASK
+        h6 = (h6 + g) & SHA256_WORD_MASK
+        h7 = (h7 + h) & SHA256_WORD_MASK
+        b = b + 1
+
+    out = Bytes.new(SHA256_DIGEST_BYTES)
+    sha256_put_be32(&mut out, 0, h0)
+    sha256_put_be32(&mut out, 4, h1)
+    sha256_put_be32(&mut out, 8, h2)
+    sha256_put_be32(&mut out, 12, h3)
+    sha256_put_be32(&mut out, 16, h4)
+    sha256_put_be32(&mut out, 20, h5)
+    sha256_put_be32(&mut out, 24, h6)
+    sha256_put_be32(&mut out, 28, h7)
+    out
+
+# The key already padded to one block: a longer key is hashed first, and a
+# shorter one is followed by zeros.
+fn sha256_key_block(key: &Bytes) -> Bytes ! alloc
+    block = Bytes.new(SHA256_BLOCK_BYTES)
+    block.fill(0, SHA256_BLOCK_BYTES, 0)
+    if key.len() > SHA256_BLOCK_BYTES
+        short = sha256(key)
+        block.copy(0, &short, 0, SHA256_DIGEST_BYTES)
+    else
+        block.copy(0, key, 0, key.len())
+    block
+
+fn hmac_sha256(key: &Bytes, data: &Bytes) -> Bytes ! alloc
+    block = sha256_key_block(key)
+
+    inner = Bytes.new(SHA256_BLOCK_BYTES + data.len())
+    i = 0
+    while i < SHA256_BLOCK_BYTES
+        inner.set_u8(i, block.get_u8(i) ^ 54)
+        i = i + 1
+    inner.copy(SHA256_BLOCK_BYTES, data, 0, data.len())
+    digest = sha256(&inner)
+
+    outer = Bytes.new(SHA256_BLOCK_BYTES + SHA256_DIGEST_BYTES)
+    i = 0
+    while i < SHA256_BLOCK_BYTES
+        outer.set_u8(i, block.get_u8(i) ^ 92)
+        i = i + 1
+    outer.copy(SHA256_BLOCK_BYTES, &digest, 0, SHA256_DIGEST_BYTES)
+    sha256(&outer)

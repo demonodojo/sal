@@ -1,0 +1,46 @@
+# HKDF (RFC 5869) with HMAC-SHA256.
+#
+# `hkdf_extract` turns input keying material into a pseudorandom key; a salt
+# that is empty means the zero salt of the RFC, which is the same as HMAC with
+# an empty key. `hkdf_expand` stretches the PRK with the `info` context and
+# returns exactly `len` bytes, up to 255 blocks of 32 bytes (8160). The
+# one-shot `hkdf_sha256` is extract followed by expand.
+#
+# Every call returns a fresh Bytes; a wrong PRK length or an out-of-range `len`
+# returns an empty Bytes.
+
+import "sha256.sal"
+
+HKDF_MAX_BYTES = 8160
+
+fn hkdf_extract(salt: &Bytes, ikm: &Bytes) -> Bytes ! alloc
+    hmac_sha256(salt, ikm)
+
+fn hkdf_expand(prk: &Bytes, info: &Bytes, len: Int) -> Bytes ! alloc
+    if prk.len() != SHA256_DIGEST_BYTES || len < 0 || len > HKDF_MAX_BYTES
+        Bytes.new(0)
+    else
+        out = Bytes.new(len)
+        t = Bytes.new(SHA256_DIGEST_BYTES)
+        tlen = 0
+        off = 0
+        counter = 1
+        while off < len
+            buf = Bytes.new(tlen + info.len() + 1)
+            buf.copy(0, &t, 0, tlen)
+            buf.copy(tlen, info, 0, info.len())
+            buf.set_u8(tlen + info.len(), counter)
+            block = hmac_sha256(prk, &buf)
+            t.copy(0, &block, 0, SHA256_DIGEST_BYTES)
+            tlen = SHA256_DIGEST_BYTES
+            n = len - off
+            if n > SHA256_DIGEST_BYTES
+                n = SHA256_DIGEST_BYTES
+            out.copy(off, &t, 0, n)
+            off = off + n
+            counter = counter + 1
+        out
+
+fn hkdf_sha256(salt: &Bytes, ikm: &Bytes, info: &Bytes, len: Int) -> Bytes ! alloc
+    prk = hkdf_extract(salt, ikm)
+    hkdf_expand(&prk, info, len)

@@ -1,0 +1,30 @@
+# SHA-3 and SHAKE (FIPS 202) one-shot hashes.
+#
+# SHAKE doubles as the XOF of ML-KEM and ML-DSA; those modules use `Keccak`
+# directly when they need to read the stream bit by bit.
+
+import "keccak.sal"
+
+fn sha3_256(data: &Bytes) -> Bytes ! alloc
+    k = Keccak.new(136)
+    k.absorb(data)
+    k.pad(6)
+    k.squeeze(32)
+
+fn sha3_512(data: &Bytes) -> Bytes ! alloc
+    k = Keccak.new(72)
+    k.absorb(data)
+    k.pad(6)
+    k.squeeze(64)
+
+fn shake128(data: &Bytes, n: Int) -> Bytes ! alloc
+    k = Keccak.new(168)
+    k.absorb(data)
+    k.pad(31)
+    k.squeeze(n)
+
+fn shake256(data: &Bytes, n: Int) -> Bytes ! alloc
+    k = Keccak.new(136)
+    k.absorb(data)
+    k.pad(31)
+    k.squeeze(n)

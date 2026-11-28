@@ -1,0 +1,597 @@
+# ML-KEM (FIPS 203): key generation, encapsulation and decapsulation.
+#
+# All functions are deterministic: the caller supplies `d` and `z` (32 bytes
+# each) to `keygen` and the 32-byte message `m` to `encapsulate`, so known
+# answer tests and reproducible deployments are possible. Take those bytes
+# from `std/io/rand.sal` (`getrandom_u64`, or `getrandom_buf` into a Bytes).
+# `keygen_random` and `encapsulate_random` are the same constructions with the
+# seeds drawn from the OS CSPRNG, for callers that do not need fixed seeds.
+#
+# A polynomial of R_q = Z_q[X]/(X^256 + 1) is 256 u32 coefficients (1024
+# bytes), always kept reduced in [0, 3329). A vector or matrix is their
+# concatenation. Coefficients are computed with Int (64-bit), so products and
+# the NTT never overflow.
+
+import "keccak.sal"
+import "sha3.sal"
+import "ml_kem_key_pair.sal"
+import "../io/rand.sal"
+import "ml_kem_encapsulation.sal"
+
+MLKEM_Q = 3329
+
+MLKEM_N = 256
+
+MLKEM_POLY_BYTES = 1024
+
+MLKEM_NTT_F = 3303
+
+struct MlKem
+    k: Int
+    eta1: Int
+    eta2: Int
+    du: Int
+    dv: Int
+
+static MlKem.ml_kem_512() -> MlKem
+    MlKem(2, 3, 2, 10, 4)
+
+static MlKem.ml_kem_768() -> MlKem
+    MlKem(3, 2, 2, 10, 4)
+
+static MlKem.ml_kem_1024() -> MlKem
+    MlKem(4, 2, 2, 11, 5)
+
+method MlKem.encapsulation_key_bytes(&self) -> Int
+    384 * self.k + 32
+
+method MlKem.decapsulation_key_bytes(&self) -> Int
+    768 * self.k + 96
+
+method MlKem.ciphertext_bytes(&self) -> Int
+    32 * (self.du * self.k + self.dv)
+
+method MlKem.keygen(&self, d: &Bytes, z: &Bytes) -> MlKemKeyPair ! alloc
+    seed = Bytes.new(33)
+    kem_copy(&mut seed, 0, d, 0, 32)
+    seed.set_u8(32, self.k)
+    g = sha3_512(&seed)
+    rho = Bytes.new(32)
+    sigma = Bytes.new(32)
+    kem_copy(&mut rho, 0, &g, 0, 32)
+    kem_copy(&mut sigma, 0, &g, 32, 32)
+
+    a = Bytes.new(self.k * self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut a)
+    i = 0
+    while i < self.k
+        j = 0
+        while j < self.k
+            kem_sample_ntt(&mut a, a_off(i, j, self.k), &rho, j, i)
+            j = j + 1
+        i = i + 1
+
+    s = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut s)
+    e = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut e)
+    nn = 0
+    i = 0
+    while i < self.k
+        kem_sample_cbd(&mut s, i * MLKEM_N, &sigma, self.eta1, nn)
+        nn = nn + 1
+        i = i + 1
+    i = 0
+    while i < self.k
+        kem_sample_cbd(&mut e, i * MLKEM_N, &sigma, self.eta1, nn)
+        nn = nn + 1
+        i = i + 1
+
+    i = 0
+    while i < self.k
+        kem_ntt(&mut s, i * MLKEM_N)
+        kem_ntt(&mut e, i * MLKEM_N)
+        i = i + 1
+
+    t = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut t)
+    kem_mat_vec(&mut t, &a, &s, self.k, self.k)
+    kem_add_vec(&mut t, &e, self.k)
+
+    ek = Bytes.new(self.encapsulation_key_bytes())
+    kem_zero(&mut ek)
+    kem_encode_vec(&mut ek, 0, &t, self.k, 12)
+    kem_copy(&mut ek, self.k * 384, &rho, 0, 32)
+
+    dk_pke = Bytes.new(self.k * 384)
+    kem_zero(&mut dk_pke)
+    kem_encode_vec(&mut dk_pke, 0, &s, self.k, 12)
+
+    dk = Bytes.new(self.decapsulation_key_bytes())
+    kem_zero(&mut dk)
+    kem_copy(&mut dk, 0, &dk_pke, 0, self.k * 384)
+    kem_copy(&mut dk, self.k * 384, &ek, 0, self.encapsulation_key_bytes())
+    h = sha3_256(&ek)
+    kem_copy(&mut dk, 768 * self.k + 32, &h, 0, 32)
+    kem_copy(&mut dk, 768 * self.k + 64, z, 0, 32)
+    MlKemKeyPair(ek, dk)
+
+method MlKem.keygen_random(&self) -> MlKemKeyPair ! io, alloc
+    d = rand_bytes(32)
+    z = rand_bytes(32)
+    self.keygen(&d, &z)
+
+method MlKem.encapsulate(&self, ek: &Bytes, m: &Bytes) -> MlKemEncapsulation ! alloc
+    if ek.len() != self.encapsulation_key_bytes() || m.len() != 32
+        kem_invalid_result()
+    elsif !kem_ek_canonical(ek, self.k)
+        kem_invalid_result()
+    else
+        h = sha3_256(ek)
+        seed = Bytes.new(64)
+        kem_copy(&mut seed, 0, m, 0, 32)
+        kem_copy(&mut seed, 32, &h, 0, 32)
+        g = sha3_512(&seed)
+        key = Bytes.new(32)
+        kem_copy(&mut key, 0, &g, 0, 32)
+        r = Bytes.new(32)
+        kem_copy(&mut r, 0, &g, 32, 32)
+        c = self.kem_pke_encrypt(ek, m, &r)
+        MlKemEncapsulation(c, key)
+
+method MlKem.encapsulate_random(&self, ek: &Bytes) -> MlKemEncapsulation ! io, alloc
+    m = rand_bytes(32)
+    self.encapsulate(ek, &m)
+
+method MlKem.decapsulate(&self, dk: &Bytes, c: &Bytes) -> Bytes ! alloc
+    if dk.len() != self.decapsulation_key_bytes() || c.len() != self.ciphertext_bytes()
+        garbage = Bytes.new(32)
+        kem_zero(&mut garbage)
+        garbage
+    else
+        dk_pke = Bytes.new(self.k * 384)
+        kem_copy(&mut dk_pke, 0, dk, 0, self.k * 384)
+        ek = Bytes.new(self.encapsulation_key_bytes())
+        kem_copy(&mut ek, 0, dk, self.k * 384, self.encapsulation_key_bytes())
+        h = Bytes.new(32)
+        kem_copy(&mut h, 0, dk, 768 * self.k + 32, 32)
+        z = Bytes.new(32)
+        kem_copy(&mut z, 0, dk, 768 * self.k + 64, 32)
+        if !kem_bytes_eq(&sha3_256(&ek), &h)
+            bad = Bytes.new(32)
+            kem_zero(&mut bad)
+            return bad
+
+        m_prime = self.kem_pke_decrypt(&dk_pke, c)
+        seed = Bytes.new(64)
+        kem_copy(&mut seed, 0, &m_prime, 0, 32)
+        kem_copy(&mut seed, 32, &h, 0, 32)
+        g = sha3_512(&seed)
+        k_prime = Bytes.new(32)
+        kem_copy(&mut k_prime, 0, &g, 0, 32)
+        r_prime = Bytes.new(32)
+        kem_copy(&mut r_prime, 0, &g, 32, 32)
+
+        zc = Bytes.new(32 + c.len())
+        kem_copy(&mut zc, 0, &z, 0, 32)
+        kem_copy(&mut zc, 32, c, 0, c.len())
+        k_bar = shake256(&zc, 32)
+
+        c_prime = self.kem_pke_encrypt(&ek, &m_prime, &r_prime)
+        if kem_bytes_eq(&c_prime, c)
+            k_prime
+        else
+            k_bar
+
+method MlKem.kem_pke_encrypt(&self, ek: &Bytes, m: &Bytes, r: &Bytes) -> Bytes ! alloc
+    t = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut t)
+    kem_decode_vec(&mut t, 0, ek, self.k, 12)
+    rho = Bytes.new(32)
+    kem_copy(&mut rho, 0, ek, self.k * 384, 32)
+
+    at = Bytes.new(self.k * self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut at)
+    i = 0
+    while i < self.k
+        j = 0
+        while j < self.k
+            kem_sample_ntt(&mut at, a_off(i, j, self.k), &rho, i, j)
+            j = j + 1
+        i = i + 1
+
+    y = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut y)
+    e1 = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut e1)
+    e2 = Bytes.new(MLKEM_POLY_BYTES)
+    kem_zero(&mut e2)
+    nn = 0
+    i = 0
+    while i < self.k
+        kem_sample_cbd(&mut y, i * MLKEM_N, r, self.eta1, nn)
+        nn = nn + 1
+        i = i + 1
+    i = 0
+    while i < self.k
+        kem_sample_cbd(&mut e1, i * MLKEM_N, r, self.eta2, nn)
+        nn = nn + 1
+        i = i + 1
+    kem_sample_cbd(&mut e2, 0, r, self.eta2, nn)
+
+    i = 0
+    while i < self.k
+        kem_ntt(&mut y, i * MLKEM_N)
+        i = i + 1
+
+    u = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut u)
+    kem_mat_vec(&mut u, &at, &y, self.k, self.k)
+    i = 0
+    while i < self.k
+        kem_intt(&mut u, i * MLKEM_N)
+        kem_add(&mut u, i * MLKEM_N, &e1, i * MLKEM_N)
+        i = i + 1
+
+    mu = Bytes.new(MLKEM_POLY_BYTES)
+    kem_zero(&mut mu)
+    kem_decode(&mut mu, 0, m, 0, 1)
+    kem_decompress(&mut mu, 0, 1)
+
+    v = Bytes.new(MLKEM_POLY_BYTES)
+    kem_zero(&mut v)
+    tmp = Bytes.new(MLKEM_POLY_BYTES)
+    kem_zero(&mut tmp)
+    i = 0
+    while i < self.k
+        kem_mul(&mut tmp, 0, &t, i * MLKEM_N, &y, i * MLKEM_N)
+        kem_add(&mut v, 0, &tmp, 0)
+        i = i + 1
+    kem_intt(&mut v, 0)
+    kem_add(&mut v, 0, &e2, 0)
+    kem_add(&mut v, 0, &mu, 0)
+
+    i = 0
+    while i < self.k
+        kem_compress(&mut u, i * MLKEM_N, self.du)
+        i = i + 1
+    kem_compress(&mut v, 0, self.dv)
+
+    out = Bytes.new(self.ciphertext_bytes())
+    kem_zero(&mut out)
+    kem_encode_vec(&mut out, 0, &u, self.k, self.du)
+    kem_encode(&mut out, self.k * self.du * 32, &v, 0, self.dv)
+    out
+
+method MlKem.kem_pke_decrypt(&self, dk_pke: &Bytes, c: &Bytes) -> Bytes ! alloc
+    u = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut u)
+    kem_decode_vec(&mut u, 0, c, self.k, self.du)
+    i = 0
+    while i < self.k
+        kem_decompress(&mut u, i * MLKEM_N, self.du)
+        kem_ntt(&mut u, i * MLKEM_N)
+        i = i + 1
+
+    v = Bytes.new(MLKEM_POLY_BYTES)
+    kem_zero(&mut v)
+    kem_decode(&mut v, 0, c, self.k * self.du * 32, self.dv)
+    kem_decompress(&mut v, 0, self.dv)
+
+    s = Bytes.new(self.k * MLKEM_POLY_BYTES)
+    kem_zero(&mut s)
+    kem_decode_vec(&mut s, 0, dk_pke, self.k, 12)
+
+    w = Bytes.new(MLKEM_POLY_BYTES)
+    kem_zero(&mut w)
+    tmp = Bytes.new(MLKEM_POLY_BYTES)
+    kem_zero(&mut tmp)
+    i = 0
+    while i < self.k
+        kem_mul(&mut tmp, 0, &s, i * MLKEM_N, &u, i * MLKEM_N)
+        kem_add(&mut w, 0, &tmp, 0)
+        i = i + 1
+    kem_intt(&mut w, 0)
+    kem_sub_from(&mut v, 0, &w, 0)
+    kem_compress(&mut v, 0, 1)
+
+    m = Bytes.new(32)
+    kem_zero(&mut m)
+    kem_encode(&mut m, 0, &v, 0, 1)
+    m
+
+fn a_off(i: Int, j: Int, k: Int) -> Int
+    (i * k + j) * MLKEM_N
+
+fn kem_invalid_result() -> MlKemEncapsulation ! alloc
+    empty = Bytes.new(0)
+    k0 = Bytes.new(32)
+    kem_zero(&mut k0)
+    MlKemEncapsulation(empty, k0)
+
+fn kem_ek_canonical(ek: &Bytes, k: Int) -> Bool ! alloc
+    t = Bytes.new(k * MLKEM_POLY_BYTES)
+    kem_zero(&mut t)
+    kem_decode_vec(&mut t, 0, ek, k, 12)
+    enc = Bytes.new(k * 384)
+    kem_zero(&mut enc)
+    kem_encode_vec(&mut enc, 0, &t, k, 12)
+    i = 0
+    same = true
+    while i < k * 384
+        if enc.get_u8(i) != ek.get_u8(i)
+            same = false
+        i = i + 1
+    same
+
+fn kem_copy(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int, n: Int) -> Unit
+    i = 0
+    while i < n
+        dst.set_u8(doff + i, src.get_u8(soff + i))
+        i = i + 1
+
+fn kem_zero(buf: &mut Bytes) -> Unit
+    _z = buf.fill(0, buf.len(), 0)
+
+fn kem_bytes_eq(a: &Bytes, b: &Bytes) -> Bool
+    if a.len() != b.len()
+        false
+    else
+        i = 0
+        same = true
+        while i < a.len()
+            if a.get_u8(i) != b.get_u8(i)
+                same = false
+            i = i + 1
+        same
+
+fn kem_cget(p: &Bytes, i: Int) -> Int
+    p.get_u32(i * 4)
+
+# Coefficients are always stored canonically in [0, q): intermediate NTT
+# values are negative, and Bytes only offers unsigned 32-bit access.
+fn kem_cset(p: &mut Bytes, i: Int, v: Int) -> Unit
+    _s = p.set_u32(i * 4, mod_pos(v, MLKEM_Q))
+
+fn kem_pow_mod(base: Int, exp: Int, m: Int) -> Int
+    r = 1
+    b = base % m
+    e = exp
+    while e > 0
+        if (e & 1) != 0
+            r = (r * b) % m
+        b = (b * b) % m
+        e = e >> 1
+    r
+
+fn kem_brv(i: Int) -> Int
+    r = 0
+    n = i
+    j = 0
+    while j < 7
+        r = (r << 1) | (n & 1)
+        n = n >> 1
+        j = j + 1
+    r
+
+fn kem_zeta(i: Int) -> Int
+    kem_pow_mod(17, kem_brv(i), MLKEM_Q)
+
+fn kem_ntt(p: &mut Bytes, off: Int) -> Unit
+    k = 1
+    l = 128
+    while l >= 2
+        start = 0
+        while start < 256
+            zeta = kem_zeta(k)
+            k = k + 1
+            j = start
+            while j < start + l
+                t = zeta * kem_cget(p, off + j + l)
+                kem_cset(p, off + j + l, kem_cget(p, off + j) - t)
+                kem_cset(p, off + j, kem_cget(p, off + j) + t)
+                j = j + 1
+            start = l + j
+        l = l >> 1
+    i = 0
+    while i < 256
+        kem_cset(p, off + i, mod_pos(kem_cget(p, off + i), MLKEM_Q))
+        i = i + 1
+
+fn kem_intt(p: &mut Bytes, off: Int) -> Unit
+    l = 2
+    k = 127
+    while l <= 128
+        start = 0
+        while start < 256
+            zeta = kem_zeta(k)
+            k = k - 1
+            j = start
+            while j < start + l
+                t = kem_cget(p, off + j)
+                kem_cset(p, off + j, t + kem_cget(p, off + j + l))
+                kem_cset(p, off + j + l, zeta * (kem_cget(p, off + j + l) - t))
+                j = j + 1
+            start = j + l
+        l = l << 1
+    i = 0
+    while i < 256
+        kem_cset(p, off + i, mod_pos(kem_cget(p, off + i) * MLKEM_NTT_F, MLKEM_Q))
+        i = i + 1
+
+fn kem_mul(dst: &mut Bytes, doff: Int, a: &Bytes, aoff: Int, b: &Bytes, boff: Int) -> Unit
+    i = 0
+    while i < 64
+        zeta = kem_zeta(64 + i)
+        a0 = kem_cget(a, aoff + 4 * i)
+        a1 = kem_cget(a, aoff + 4 * i + 1)
+        a2 = kem_cget(a, aoff + 4 * i + 2)
+        a3 = kem_cget(a, aoff + 4 * i + 3)
+        b0 = kem_cget(b, boff + 4 * i)
+        b1 = kem_cget(b, boff + 4 * i + 1)
+        b2 = kem_cget(b, boff + 4 * i + 2)
+        b3 = kem_cget(b, boff + 4 * i + 3)
+        kem_cset(dst, doff + 4 * i, (a0 * b0 + zeta * a1 * b1) % MLKEM_Q)
+        kem_cset(dst, doff + 4 * i + 1, (a1 * b0 + a0 * b1) % MLKEM_Q)
+        kem_cset(dst, doff + 4 * i + 2, mod_pos(a2 * b2 - zeta * a3 * b3, MLKEM_Q))
+        kem_cset(dst, doff + 4 * i + 3, (a3 * b2 + a2 * b3) % MLKEM_Q)
+        i = i + 1
+
+fn kem_add(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int) -> Unit
+    i = 0
+    while i < 256
+        kem_cset(dst, doff + i, (kem_cget(dst, doff + i) + kem_cget(src, soff + i)) % MLKEM_Q)
+        i = i + 1
+
+fn kem_sub_from(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int) -> Unit
+    i = 0
+    while i < 256
+        kem_cset(dst, doff + i, mod_pos(kem_cget(dst, doff + i) - kem_cget(src, soff + i), MLKEM_Q))
+        i = i + 1
+
+fn kem_add_vec(dst: &mut Bytes, src: &Bytes, k: Int) -> Unit
+    i = 0
+    while i < k
+        kem_add(dst, i * MLKEM_N, src, i * MLKEM_N)
+        i = i + 1
+
+fn kem_mat_vec(dst: &mut Bytes, mat: &Bytes, vec: &Bytes, k: Int, cols: Int) -> Unit ! alloc
+    tmp = Bytes.new(MLKEM_POLY_BYTES)
+    i = 0
+    while i < k
+        j = 0
+        while j < cols
+            kem_zero(&mut tmp)
+            kem_mul(&mut tmp, 0, mat, a_off(i, j, cols), vec, j * MLKEM_N)
+            kem_add(dst, i * MLKEM_N, &tmp, 0)
+            j = j + 1
+        i = i + 1
+
+fn kem_prf(dst: &mut Bytes, off: Int, eta: Int, seed: &Bytes, n: Int) -> Unit ! alloc
+    x = Keccak.new(136)
+    x.absorb(seed)
+    x.absorb_byte(n)
+    x.pad(31)
+    i = 0
+    while i < 64 * eta
+        dst.set_u8(off + i, x.squeeze_byte())
+        i = i + 1
+
+fn kem_popcount(v: Int, bits: Int) -> Int
+    c = 0
+    i = 0
+    while i < bits
+        if ((v >> i) & 1) != 0
+            c = c + 1
+        i = i + 1
+    c
+
+fn kem_cbd_coeff(prf: &Bytes, poff: Int, i: Int, eta: Int) -> Int
+    bit = i * 2 * eta
+    v = 0
+    j = 0
+    while j < 2 * eta
+        b = (prf.get_u8(poff + (bit + j) / 8) >> ((bit + j) % 8)) & 1
+        v = v | (b << j)
+        j = j + 1
+    mask = (1 << eta) - 1
+    mod_pos(kem_popcount(v & mask, eta) - kem_popcount((v >> eta) & mask, eta), MLKEM_Q)
+
+fn kem_sample_cbd(dst: &mut Bytes, off: Int, seed: &Bytes, eta: Int, n: Int) -> Unit ! alloc
+    prf = Bytes.new(64 * eta)
+    kem_zero(&mut prf)
+    kem_prf(&mut prf, 0, eta, seed, n)
+    i = 0
+    while i < 256
+        kem_cset(dst, off + i, kem_cbd_coeff(&prf, 0, i, eta))
+        i = i + 1
+
+fn kem_sample_ntt(dst: &mut Bytes, off: Int, rho: &Bytes, x: Int, y: Int) -> Unit ! alloc
+    xk = Keccak.new(168)
+    xk.absorb(rho)
+    xk.absorb_byte(x)
+    xk.absorb_byte(y)
+    xk.pad(31)
+    n = 0
+    while n < 256
+        b0 = xk.squeeze_byte()
+        b1 = xk.squeeze_byte()
+        b2 = xk.squeeze_byte()
+        d1 = b0 + 256 * (b1 % 16)
+        d2 = (b1 / 16) + 16 * b2
+        if d1 < MLKEM_Q
+            kem_cset(dst, off + n, d1)
+            n = n + 1
+        if d2 < MLKEM_Q && n < 256
+            kem_cset(dst, off + n, d2)
+            n = n + 1
+
+fn kem_encode(out: &mut Bytes, ooff: Int, p: &Bytes, poff: Int, d: Int) -> Unit
+    acc = 0
+    nb = 0
+    pos = 0
+    i = 0
+    while i < 256
+        acc = acc | (kem_cget(p, poff + i) << nb)
+        nb = nb + d
+        while nb >= 8
+            out.set_u8(ooff + pos, acc & 255)
+            acc = acc >> 8
+            nb = nb - 8
+            pos = pos + 1
+        i = i + 1
+    if nb > 0
+        out.set_u8(ooff + pos, acc & 255)
+
+fn kem_decode(p: &mut Bytes, poff: Int, data: &Bytes, doff: Int, d: Int) -> Unit
+    acc = 0
+    nb = 0
+    pos = 0
+    mask = (1 << d) - 1
+    i = 0
+    while i < 256
+        while nb < d
+            acc = acc | (data.get_u8(doff + pos) << nb)
+            pos = pos + 1
+            nb = nb + 8
+        v = acc & mask
+        if d == 12
+            v = v % MLKEM_Q
+        kem_cset(p, poff + i, v)
+        acc = acc >> d
+        nb = nb - d
+        i = i + 1
+
+fn kem_encode_vec(out: &mut Bytes, ooff: Int, v: &Bytes, k: Int, d: Int) -> Unit
+    i = 0
+    while i < k
+        kem_encode(out, ooff + i * 32 * d, v, i * MLKEM_N, d)
+        i = i + 1
+
+fn kem_decode_vec(v: &mut Bytes, voff: Int, data: &Bytes, k: Int, d: Int) -> Unit
+    i = 0
+    while i < k
+        kem_decode(v, voff + i * MLKEM_N, data, i * 32 * d, d)
+        i = i + 1
+
+fn kem_compress(p: &mut Bytes, off: Int, d: Int) -> Unit
+    t = 1 << d
+    i = 0
+    while i < 256
+        y = (t * kem_cget(p, off + i) + 1664) / MLKEM_Q
+        kem_cset(p, off + i, y % t)
+        i = i + 1
+
+fn kem_decompress(p: &mut Bytes, off: Int, d: Int) -> Unit
+    t = 1 << (d - 1)
+    i = 0
+    while i < 256
+        kem_cset(p, off + i, (MLKEM_Q * kem_cget(p, off + i) + t) >> d)
+        i = i + 1
+
+fn mod_pos(v: Int, m: Int) -> Int
+    r = v % m
+    if r < 0
+        r + m
+    else
+        r

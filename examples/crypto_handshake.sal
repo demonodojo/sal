@@ -1,0 +1,122 @@
+# ML-KEM-768 + ML-DSA-65 handshake. The server publishes a signing identity
+# and a KEM key; the client encapsulates a shared secret to the KEM key, both
+# sides derive a session key from it and the transcript, and the server signs
+# the transcript so the client can authenticate it. HKDF-SHA256 (RFC 5869) then
+# splits the session key into one key per direction, and each direction seals a
+# message, one with ChaCha20-Poly1305 (RFC 8439) and one with AES-256-GCM
+# (SP 800-38D). Keys, seeds, nonces and the hedged signature randomness come
+# from the OS CSPRNG (std/io/rand.sal).
+#
+#   sal run examples/crypto_handshake.sal
+#
+# Prints the ciphertext/signature lengths and whether both sides derived the
+# same key and the transcript verified; exits 0 only if the handshake holds.
+
+import "std/crypto/aes256_gcm.sal"
+import "std/crypto/chacha20poly1305.sal"
+import "std/crypto/hkdf.sal"
+import "std/crypto/ml_kem.sal"
+import "std/crypto/ml_dsa.sal"
+import "std/crypto/sha3.sal"
+
+fn cat(a: &Bytes, b: &Bytes) -> Bytes ! alloc
+    out = Bytes.new(a.len() + b.len())
+    i = 0
+    while i < a.len()
+        out.set_u8(i, a.get_u8(i))
+        i = i + 1
+    i = 0
+    while i < b.len()
+        out.set_u8(a.len() + i, b.get_u8(i))
+        i = i + 1
+    out
+
+fn bytes_of(s: &String) -> Bytes ! alloc
+    out = Bytes.new(s.len())
+    i = 0
+    while i < s.len()
+        out.set_u8(i, s.char(i))
+        i = i + 1
+    out
+
+fn same(a: &Bytes, b: &Bytes) -> Bool
+    if a.len() != b.len()
+        false
+    else
+        equal = true
+        i = 0
+        while i < a.len()
+            if a.get_u8(i) != b.get_u8(i)
+                equal = false
+            i = i + 1
+        equal
+
+# Bind the KEM secret to the public transcript before using it as a key.
+fn session_key(secret: &Bytes, transcript: &Bytes) -> Bytes ! alloc
+    shake256(&cat(secret, transcript), 32)
+
+fn yes_no(v: Bool) -> String
+    if v
+        "yes"
+    else
+        "no"
+
+fn main() -> Int ! io, alloc
+    kem = MlKem.ml_kem_768()
+    dsa = MlDsa.ml_dsa_65()
+
+    # Server long-term keys: a signing identity and a KEM key.
+    server_id = dsa.keygen_random()
+    server_kem = kem.keygen_random()
+
+    # Client: the server's public keys are known out of band, so it encapsulates
+    # to the KEM key and binds the ciphertext to the transcript.
+    capsule = kem.encapsulate_random(&server_kem.ek)
+    transcript = cat(&server_kem.ek, &capsule.ciphertext)
+    client_key = session_key(&capsule.shared_secret, &transcript)
+
+    # Server: decapsulate the ciphertext and sign the transcript.
+    server_secret = kem.decapsulate(&server_kem.dk, &capsule.ciphertext)
+    server_key = session_key(&server_secret, &transcript)
+    ctx = bytes_of(&d"sal handshake v1")
+    sig = dsa.sign_random(&server_id.sk, &transcript, &ctx)
+
+    # Client: verify the signature with the pinned identity key.
+    trusted = dsa.verify(&server_id.pk, &transcript, &sig, &ctx)
+    agreed = same(&client_key, &server_key)
+
+    # HKDF splits the session key into one key per direction, so the same
+    # (key, nonce) space is never shared by both sides.
+    c2s_info = bytes_of(&d"sal handshake v1 client to server")
+    s2c_info = bytes_of(&d"sal handshake v1 server to client")
+    client_send = hkdf_sha256(&transcript, &client_key, &c2s_info, 32)
+    server_recv = hkdf_sha256(&transcript, &server_key, &c2s_info, 32)
+    server_send = hkdf_sha256(&transcript, &server_key, &s2c_info, 32)
+    client_recv = hkdf_sha256(&transcript, &client_key, &s2c_info, 32)
+    keys_ok = same(&client_send, &server_recv) && same(&server_send, &client_recv) && !same(&client_send, &server_send)
+
+    # Client seals a message with its send key; the server opens it with the
+    # matching receive key.
+    message = bytes_of(&d"attack at dawn")
+    client_aead = ChaCha20Poly1305.new(&client_send)
+    sealed = client_aead.seal(&message, &transcript)
+    server_aead = ChaCha20Poly1305.new(&server_recv)
+    opened = server_aead.open(&sealed, &transcript)
+    chacha_ok = opened.ok && same(&opened.plaintext, &message)
+
+    # The other direction with the AES-256-GCM alternative.
+    aes_message = bytes_of(&d"meet at noon")
+    aes_server = Aes256Gcm.new(&server_send)
+    aes_sealed = aes_server.seal(&aes_message, &transcript)
+    aes_client = Aes256Gcm.new(&client_recv)
+    aes_opened = aes_client.open(&aes_sealed, &transcript)
+    aes_ok = aes_opened.ok && same(&aes_opened.plaintext, &aes_message)
+
+    print_str("ml-kem-768 ciphertext=" + capsule.ciphertext.len().to_str() + " ml-dsa-65 signature=" + sig.len().to_str() + "\n")
+    print_str("session_key_match=" + yes_no(agreed) + " transcript_signed=" + yes_no(trusted) + " direction_keys=" + yes_no(keys_ok) + "\n")
+    print_str("chacha20-poly1305 sealed=" + sealed.ciphertext.len().to_str() + " roundtrip=" + yes_no(chacha_ok) + "\n")
+    print_str("aes-256-gcm sealed=" + aes_sealed.ciphertext.len().to_str() + " roundtrip=" + yes_no(aes_ok) + "\n")
+    if agreed && trusted && keys_ok && chacha_ok && aes_ok
+        0
+    else
+        1

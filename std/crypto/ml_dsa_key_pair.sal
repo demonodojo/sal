@@ -1,0 +1,5 @@
+# Verification key (`pk`) and signing key (`sk`) of ML-DSA.
+
+struct MlDsaKeyPair
+    pk: Bytes
+    sk: Bytes

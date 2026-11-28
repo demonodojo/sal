@@ -1,12 +1,30 @@
 import "abi.sal"
 
 fn getrandom_buf(buf: &Bytes, len: Int) -> Int ! io
-    syscall(NR_GETRANDOM, bytes_ptr(buf), len, 0, 0, 0, 0)
+    syscall(NR_GETRANDOM, buf.ptr(), len, 0, 0, 0, 0)
+
+fn getrandom_at(buf: &Bytes, off: Int, len: Int) -> Int ! io
+    syscall(NR_GETRANDOM, buf.ptr() + off, len, 0, 0, 0, 0)
 
 fn getrandom_u64() -> Int ! io, alloc
-    b = bytes_new(8)
+    b = Bytes.new(8)
     n = getrandom_buf(&b, 8)
     if n < 8
         0
     else
-        bytes_get_i64(b, 0)
+        b.get_i64(0)
+
+# Fills `n` bytes from the kernel CSPRNG, retrying short reads. The buffer is
+# zeroed first, so a kernel failure yields zeros instead of stale memory; treat
+# a failure as fatal in protocols that need unpredictability.
+fn rand_bytes(n: Int) -> Bytes ! io, alloc
+    b = Bytes.new(n)
+    b.fill(0, n, 0)
+    off = 0
+    while off < n
+        got = getrandom_at(&b, off, n - off)
+        if got <= 0
+            off = n
+        else
+            off = off + got
+    b

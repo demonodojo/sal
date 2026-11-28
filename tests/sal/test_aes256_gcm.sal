@@ -1,0 +1,153 @@
+import "std/crypto/aes256_gcm.sal"
+import "support/assert.sal"
+import "support/hex.sal"
+
+# Known answers are test cases 13, 14 and 15 of the GCM specification
+# (McGrew & Viega, "The Galois/Counter Mode of Operation"), also reproduced in
+# NIST CAVP: AES-256 with a 96-bit IV, including empty plaintext, a full block
+# and a 60-byte plaintext with 20 bytes of AAD. The rest covers authentication
+# failures, bad key/nonce lengths and the random-nonce path.
+
+fn fill(buf: &mut Bytes, seed: Int) -> Unit
+    i = 0
+    while i < buf.len()
+        buf.set_u8(i, (seed + i * 7) & 255)
+        i = i + 1
+
+fn copy(b: &Bytes) -> Bytes ! alloc
+    out = Bytes.new(b.len())
+    i = 0
+    while i < b.len()
+        out.set_u8(i, b.get_u8(i))
+        i = i + 1
+    out
+
+fn as_int(v: Bool) -> Int
+    if v
+        1
+    else
+        0
+
+fn assert_ne_str(got: &String, bad: &String, code: Int) -> Int ! io, alloc
+    if got.eq(bad) == 0
+        0
+    else
+        assert_fail(code)
+
+fn gcm_13() -> Int ! io, alloc
+    key = hex_to_bytes(&d"0000000000000000000000000000000000000000000000000000000000000000")
+    nonce = hex_to_bytes(&d"000000000000000000000000")
+    empty = Bytes.new(0)
+    aead = Aes256Gcm.new(&key)
+    sealed = aead.seal_with_nonce(&nonce, &empty, &empty)
+    rc = assert_str_eq(&bytes_to_hex(&sealed), &d"530f8afbc74536b9a963b4f1c4cb738b", 10)
+    opened = aead.open_with_nonce(&nonce, &sealed, &empty)
+    rc = rc + assert_ne(as_int(opened.ok), 0, 11)
+    rc = rc + assert_zero(opened.plaintext.len(), 12)
+    rc
+
+fn gcm_14() -> Int ! io, alloc
+    key = hex_to_bytes(&d"0000000000000000000000000000000000000000000000000000000000000000")
+    nonce = hex_to_bytes(&d"000000000000000000000000")
+    empty = Bytes.new(0)
+    pt = hex_to_bytes(&d"00000000000000000000000000000000")
+    aead = Aes256Gcm.new(&key)
+    sealed = aead.seal_with_nonce(&nonce, &pt, &empty)
+    want = &d"cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab919"
+    rc = assert_str_eq(&bytes_to_hex(&sealed), want, 13)
+    opened = aead.open_with_nonce(&nonce, &sealed, &empty)
+    rc = rc + assert_ne(as_int(opened.ok), 0, 14)
+    rc = rc + assert_str_eq(&bytes_to_hex(&opened.plaintext), &bytes_to_hex(&pt), 15)
+    rc
+
+fn gcm_15() -> Int ! io, alloc
+    key = hex_to_bytes(&d"feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+    nonce = hex_to_bytes(&d"cafebabefacedbaddecaf888")
+    aad = hex_to_bytes(&d"feedfacedeadbeeffeedfacedeadbeefabaddad2")
+    pt = hex_to_bytes(&d"d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39")
+    want = &d"522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f66276fc6ece0f4e1768cddf8853bb2d551b"
+    aead = Aes256Gcm.new(&key)
+    sealed = aead.seal_with_nonce(&nonce, &pt, &aad)
+    rc = assert_str_eq(&bytes_to_hex(&sealed), want, 16)
+    opened = aead.open_with_nonce(&nonce, &sealed, &aad)
+    rc = rc + assert_ne(as_int(opened.ok), 0, 17)
+    rc = rc + assert_str_eq(&bytes_to_hex(&opened.plaintext), &bytes_to_hex(&pt), 18)
+    rc
+
+fn auth_failures() -> Int ! io, alloc
+    key = hex_to_bytes(&d"feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+    nonce = hex_to_bytes(&d"cafebabefacedbaddecaf888")
+    aad = hex_to_bytes(&d"feedfacedeadbeeffeedfacedeadbeefabaddad2")
+    pt = hex_to_bytes(&d"d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39")
+    aead = Aes256Gcm.new(&key)
+    sealed = aead.seal_with_nonce(&nonce, &pt, &aad)
+
+    tampered = copy(&sealed)
+    tampered.set_u8(0, tampered.get_u8(0) ^ 1)
+    tampered_open = aead.open_with_nonce(&nonce, &tampered, &aad)
+    rc = assert_zero(as_int(tampered_open.ok), 20)
+
+    last = copy(&sealed)
+    last.set_u8(last.len() - 1, last.get_u8(last.len() - 1) ^ 1)
+    last_open = aead.open_with_nonce(&nonce, &last, &aad)
+    rc = rc + assert_zero(as_int(last_open.ok), 21)
+
+    other_aad = copy(&aad)
+    other_aad.set_u8(0, other_aad.get_u8(0) ^ 1)
+    aad_open = aead.open_with_nonce(&nonce, &sealed, &other_aad)
+    rc = rc + assert_zero(as_int(aad_open.ok), 22)
+
+    other_nonce = copy(&nonce)
+    other_nonce.set_u8(0, other_nonce.get_u8(0) ^ 1)
+    nonce_open = aead.open_with_nonce(&other_nonce, &sealed, &aad)
+    rc = rc + assert_zero(as_int(nonce_open.ok), 23)
+
+    cut_open = aead.open_with_nonce(&nonce, &Bytes.new(15), &aad)
+    rc = rc + assert_zero(as_int(cut_open.ok), 24)
+
+    wrong_key = Bytes.new(31)
+    short = Aes256Gcm.new(&wrong_key)
+    short_out = short.seal_with_nonce(&nonce, &pt, &aad)
+    rc = rc + assert_zero(short_out.len(), 25)
+    bad_key_open = short.open_with_nonce(&nonce, &sealed, &aad)
+    rc = rc + assert_zero(as_int(bad_key_open.ok), 26)
+
+    short_nonce_out = aead.seal_with_nonce(&Bytes.new(11), &pt, &aad)
+    rc = rc + assert_zero(short_nonce_out.len(), 27)
+
+    empty = Bytes.new(0)
+    empty_sealed = aead.seal_with_nonce(&nonce, &empty, &aad)
+    rc = rc + assert_zero(empty_sealed.len() - 16, 28)
+    empty_open = aead.open_with_nonce(&nonce, &empty_sealed, &aad)
+    rc = rc + assert_ne(as_int(empty_open.ok), 0, 29)
+    rc = rc + assert_zero(empty_open.plaintext.len(), 30)
+    rc
+
+fn random_case() -> Int ! io, alloc
+    key = Bytes.new(32)
+    fill(&mut key, 5)
+    aad = Bytes.new(19)
+    fill(&mut aad, 70)
+    msg = Bytes.new(41)
+    fill(&mut msg, 120)
+    aead = Aes256Gcm.new(&key)
+
+    first = aead.seal(&msg, &aad)
+    second = aead.seal(&msg, &aad)
+    rc = assert_zero(first.nonce.len() - 12, 40)
+    rc = rc + assert_ne_str(&bytes_to_hex(&first.nonce), &bytes_to_hex(&second.nonce), 41)
+    rc = rc + assert_ne_str(&bytes_to_hex(&first.ciphertext), &bytes_to_hex(&second.ciphertext), 42)
+    rc = rc + assert_zero(first.ciphertext.len() - msg.len() - 16, 43)
+
+    opened = aead.open(&first, &aad)
+    rc = rc + assert_ne(as_int(opened.ok), 0, 44)
+    rc = rc + assert_str_eq(&bytes_to_hex(&opened.plaintext), &bytes_to_hex(&msg), 45)
+    rc
+
+fn main() -> Int ! io, alloc
+    rc = gcm_13()
+    rc = rc + gcm_14()
+    rc = rc + gcm_15()
+    rc = rc + auth_failures()
+    rc = rc + random_case()
+    rc

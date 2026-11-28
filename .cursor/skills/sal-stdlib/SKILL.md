@@ -18,6 +18,7 @@ Está escrita en sal y solo usa primitivas del compilador (`syscall`, `Bytes`, `
 | `std/http/` | `client` (petición, cabeceras, cuerpo, chunked), `sse` |
 | `std/json/` | `jsonc`, `arena` (`JsonNode`), `build` |
 | `std/text/` | `strutil`, `glob`, `pattern` |
+| `std/crypto/` | `sha3` (SHA3-256/512, SHAKE128/256), `sha256` (SHA-256 y HMAC-SHA256, FIPS 180-4 / RFC 2104), `hkdf` (HKDF-SHA256, RFC 5869: `hkdf_extract`, `hkdf_expand`, `hkdf_sha256`), `ml_kem` (ML-KEM-512/768/1024, FIPS 203), `ml_dsa` (ML-DSA-44/65/87, FIPS 204), `chacha20poly1305` (AEAD, RFC 8439) y `aes256_gcm` (AEAD, NIST SP 800-38D), estos dos con la misma API (`new`, `seal`, `seal_with_nonce`, `open`, `open_with_nonce`). El núcleo es determinista (semillas y nonces explícitos) y los atajos aleatorios (`keygen_random`, `encapsulate_random`, `sign_random`, `sign_with_rnd`, `seal`) toman la entropía de `std/io/rand.sal` (`rand_bytes`), así que un proyecto externo con `crypto = { std = "crypto" }` declara también `io = { std = "io" }` |
 
 Ver [sal-fuente](../sal-fuente/SKILL.md) para el formato del código.
 

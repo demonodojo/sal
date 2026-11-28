@@ -1,0 +1,896 @@
+# ML-DSA (FIPS 204): key generation, signing and verification.
+#
+# Signatures are deterministic: `rnd` is 32 zero bytes, as allowed by FIPS 204,
+# so `sign` is reproducible. `sign_random` is the hedged variant with `rnd`
+# drawn from the OS CSPRNG (`std/io/rand.sal`), and `sign_with_rnd` takes the
+# 32 bytes explicitly. Messages are formatted with the context string the
+# standard requires (0 || len(ctx) || ctx || msg); pass an empty `ctx` for the
+# plain-ML-DSA use.
+#
+# Coefficients of R_q = Z_q[X]/(X^256 + 1), q = 8380417, are kept canonically
+# in [0, q) as u32 (Bytes). Negative values (t0, s, z, low bits) are recovered
+# with `dsa_signed` when packing or checking bounds.
+
+import "keccak.sal"
+import "sha3.sal"
+import "ml_dsa_key_pair.sal"
+import "../io/rand.sal"
+
+DSA_Q = 8380417
+
+DSA_N = 256
+
+DSA_POLY_BYTES = 1024
+
+DSA_INV_N = 8347681
+
+DSA_KIND_RAW = 0
+
+DSA_KIND_T0 = 1
+
+DSA_KIND_S = 2
+
+DSA_KIND_Z = 3
+
+struct MlDsa
+    k: Int
+    l: Int
+    eta: Int
+    tau: Int
+    omega: Int
+    gamma1: Int
+    gamma2: Int
+    c_tilde_bytes: Int
+
+static MlDsa.ml_dsa_44() -> MlDsa
+    MlDsa(4, 4, 2, 39, 80, 131072, 95232, 32)
+
+static MlDsa.ml_dsa_65() -> MlDsa
+    MlDsa(6, 5, 4, 49, 55, 524288, 261888, 48)
+
+static MlDsa.ml_dsa_87() -> MlDsa
+    MlDsa(8, 7, 2, 60, 75, 524288, 261888, 64)
+
+method MlDsa.public_key_bytes(&self) -> Int
+    32 + 32 * self.k * 10
+
+method MlDsa.secret_key_bytes(&self) -> Int
+    sbytes = dsa_s_bytes(self.eta)
+    2 * 32 + 64 + sbytes * self.l + sbytes * self.k + 416 * self.k
+
+method MlDsa.signature_bytes(&self) -> Int
+    self.c_tilde_bytes + self.l * 32 * dsa_z_bytes(self.gamma1) + self.omega + self.k
+
+method MlDsa.keygen(&self, zeta: &Bytes) -> MlDsaKeyPair ! alloc
+    sep = Bytes.new(34)
+    dsa_copy(&mut sep, 0, zeta, 0, 32)
+    sep.set_u8(32, self.k)
+    sep.set_u8(33, self.l)
+    seed = shake256(&sep, 128)
+    rho = Bytes.new(32)
+    dsa_copy(&mut rho, 0, &seed, 0, 32)
+    rho_prime = Bytes.new(64)
+    dsa_copy(&mut rho_prime, 0, &seed, 32, 64)
+    kk = Bytes.new(32)
+    dsa_copy(&mut kk, 0, &seed, 96, 32)
+
+    a = Bytes.new(self.k * self.l * DSA_POLY_BYTES)
+    dsa_zero(&mut a)
+    i = 0
+    while i < self.k
+        j = 0
+        while j < self.l
+            dsa_sample_ntt(&mut a, dsa_mat_off(i, j, self.l), &rho, i, j)
+            j = j + 1
+        i = i + 1
+
+    s1 = Bytes.new(self.l * DSA_POLY_BYTES)
+    dsa_zero(&mut s1)
+    s2 = Bytes.new(self.k * DSA_POLY_BYTES)
+    dsa_zero(&mut s2)
+    i = 0
+    while i < self.l
+        dsa_sample_bounded(&mut s1, i * DSA_N, &rho_prime, i, self.eta)
+        i = i + 1
+    i = 0
+    while i < self.k
+        dsa_sample_bounded(&mut s2, i * DSA_N, &rho_prime, self.l + i, self.eta)
+        i = i + 1
+
+    s1h = Bytes.new(self.l * DSA_POLY_BYTES)
+    dsa_zero(&mut s1h)
+    dsa_copy(&mut s1h, 0, &s1, 0, self.l * DSA_POLY_BYTES)
+    i = 0
+    while i < self.l
+        dsa_ntt(&mut s1h, i * DSA_N)
+        i = i + 1
+
+    t = Bytes.new(self.k * DSA_POLY_BYTES)
+    dsa_zero(&mut t)
+    dsa_mat_vec(&mut t, &a, &s1h, self.k, self.l)
+    i = 0
+    while i < self.k
+        dsa_intt(&mut t, i * DSA_N)
+        dsa_add(&mut t, i * DSA_N, &s2, i * DSA_N)
+        i = i + 1
+
+    t1 = Bytes.new(self.k * DSA_POLY_BYTES)
+    dsa_zero(&mut t1)
+    t0 = Bytes.new(self.k * DSA_POLY_BYTES)
+    dsa_zero(&mut t0)
+    i = 0
+    while i < self.k
+        j = 0
+        while j < DSA_N
+            c = dsa_cget(&t, i * DSA_N + j) % DSA_Q
+            r0 = dsa_reduce_pm(c, 8192)
+            dsa_cset(&mut t1, i * DSA_N + j, (c - r0) >> 13)
+            dsa_cset(&mut t0, i * DSA_N + j, r0)
+            j = j + 1
+        i = i + 1
+
+    pk = Bytes.new(self.public_key_bytes())
+    dsa_zero(&mut pk)
+    dsa_copy(&mut pk, 0, &rho, 0, 32)
+    dsa_pack_vec(&mut pk, 32, &t1, self.k, 10, DSA_KIND_RAW, 0)
+    tr = shake256(&pk, 64)
+
+    sbytes = dsa_s_bytes(self.eta)
+    sk = Bytes.new(self.secret_key_bytes())
+    dsa_zero(&mut sk)
+    dsa_copy(&mut sk, 0, &rho, 0, 32)
+    dsa_copy(&mut sk, 32, &kk, 0, 32)
+    dsa_copy(&mut sk, 64, &tr, 0, 64)
+    dsa_pack_vec(&mut sk, 128, &s1, self.l, dsa_s_bits(self.eta), DSA_KIND_S, self.eta)
+    dsa_pack_vec(&mut sk, 128 + sbytes * self.l, &s2, self.k, dsa_s_bits(self.eta), DSA_KIND_S, self.eta)
+    dsa_pack_vec(&mut sk, 128 + sbytes * self.l + sbytes * self.k, &t0, self.k, 13, DSA_KIND_T0, 0)
+    MlDsaKeyPair(pk, sk)
+
+method MlDsa.keygen_random(&self) -> MlDsaKeyPair ! io, alloc
+    zeta = rand_bytes(32)
+    self.keygen(&zeta)
+
+method MlDsa.sign(&self, sk: &Bytes, msg: &Bytes, ctx: &Bytes) -> Bytes ! alloc
+    zeros = Bytes.new(32)
+    dsa_zero(&mut zeros)
+    self.sign_with_rnd(sk, msg, ctx, &zeros)
+
+method MlDsa.sign_random(&self, sk: &Bytes, msg: &Bytes, ctx: &Bytes) -> Bytes ! io, alloc
+    rnd = rand_bytes(32)
+    self.sign_with_rnd(sk, msg, ctx, &rnd)
+
+method MlDsa.sign_with_rnd(&self, sk: &Bytes, msg: &Bytes, ctx: &Bytes, rnd: &Bytes) -> Bytes ! alloc
+    if sk.len() != self.secret_key_bytes() || ctx.len() > 255 || rnd.len() != 32
+        empty = Bytes.new(0)
+        empty
+    else
+        rho = Bytes.new(32)
+        dsa_copy(&mut rho, 0, sk, 0, 32)
+        kk = Bytes.new(32)
+        dsa_copy(&mut kk, 0, sk, 32, 32)
+        tr = Bytes.new(64)
+        dsa_copy(&mut tr, 0, sk, 64, 64)
+        s1 = Bytes.new(self.l * DSA_POLY_BYTES)
+        dsa_zero(&mut s1)
+        s2 = Bytes.new(self.k * DSA_POLY_BYTES)
+        dsa_zero(&mut s2)
+        t0 = Bytes.new(self.k * DSA_POLY_BYTES)
+        dsa_zero(&mut t0)
+        sbytes = dsa_s_bytes(self.eta)
+        dsa_unpack_vec(&mut s1, 0, sk, 128, self.l, dsa_s_bits(self.eta), DSA_KIND_S, self.eta)
+        dsa_unpack_vec(&mut s2, 0, sk, 128 + sbytes * self.l, self.k, dsa_s_bits(self.eta), DSA_KIND_S, self.eta)
+        dsa_unpack_vec(&mut t0, 0, sk, 128 + sbytes * self.l + sbytes * self.k, self.k, 13, DSA_KIND_T0, 0)
+
+        s1h = Bytes.new(self.l * DSA_POLY_BYTES)
+        dsa_zero(&mut s1h)
+        dsa_copy(&mut s1h, 0, &s1, 0, self.l * DSA_POLY_BYTES)
+        s2h = Bytes.new(self.k * DSA_POLY_BYTES)
+        dsa_zero(&mut s2h)
+        dsa_copy(&mut s2h, 0, &s2, 0, self.k * DSA_POLY_BYTES)
+        t0h = Bytes.new(self.k * DSA_POLY_BYTES)
+        dsa_zero(&mut t0h)
+        dsa_copy(&mut t0h, 0, &t0, 0, self.k * DSA_POLY_BYTES)
+        i = 0
+        while i < self.l
+            dsa_ntt(&mut s1h, i * DSA_N)
+            i = i + 1
+        i = 0
+        while i < self.k
+            dsa_ntt(&mut s2h, i * DSA_N)
+            dsa_ntt(&mut t0h, i * DSA_N)
+            i = i + 1
+
+        a = Bytes.new(self.k * self.l * DSA_POLY_BYTES)
+        dsa_zero(&mut a)
+        i = 0
+        while i < self.k
+            j = 0
+            while j < self.l
+                dsa_sample_ntt(&mut a, dsa_mat_off(i, j, self.l), &rho, i, j)
+                j = j + 1
+            i = i + 1
+
+        m = dsa_format_msg(msg, ctx)
+        mu = dsa_hash_mu(&tr, &m)
+        rhop_in = Bytes.new(128)
+        dsa_copy(&mut rhop_in, 0, &kk, 0, 32)
+        dsa_copy(&mut rhop_in, 32, rnd, 0, 32)
+        dsa_copy(&mut rhop_in, 64, &mu, 0, 64)
+        rho_prime = shake256(&rhop_in, 64)
+        dsa_sign_try(&rho_prime, &mu, &a, &s1h, &s2h, &t0h, self, 0)
+
+method MlDsa.verify(&self, pk: &Bytes, msg: &Bytes, sig: &Bytes, ctx: &Bytes) -> Bool ! alloc
+    if pk.len() != self.public_key_bytes() || sig.len() != self.signature_bytes() || ctx.len() > 255
+        false
+    else
+        rho = Bytes.new(32)
+        dsa_copy(&mut rho, 0, pk, 0, 32)
+        t1 = Bytes.new(self.k * DSA_POLY_BYTES)
+        dsa_zero(&mut t1)
+        dsa_unpack_vec(&mut t1, 0, pk, 32, self.k, 10, DSA_KIND_RAW, 0)
+
+        c_tilde = Bytes.new(self.c_tilde_bytes)
+        dsa_copy(&mut c_tilde, 0, sig, 0, self.c_tilde_bytes)
+        z = Bytes.new(self.l * DSA_POLY_BYTES)
+        dsa_zero(&mut z)
+        sbytes = dsa_z_bytes(self.gamma1)
+        dsa_unpack_vec(&mut z, 0, sig, self.c_tilde_bytes, self.l, dsa_z_bytes(self.gamma1), DSA_KIND_Z, self.gamma1)
+
+        hoff = self.c_tilde_bytes + self.l * 32 * sbytes
+        h = Bytes.new(self.k * DSA_POLY_BYTES)
+        dsa_zero(&mut h)
+        hok = dsa_unpack_h(&mut h, sig, hoff, self.k, self.omega)
+
+        m = dsa_format_msg(msg, ctx)
+        tr = shake256(pk, 64)
+        mu = dsa_hash_mu(&tr, &m)
+        c = Bytes.new(DSA_POLY_BYTES)
+        dsa_zero(&mut c)
+        dsa_sample_ball(&mut c, &c_tilde, self.tau)
+
+        if !hok || dsa_sum_hint(&h, self.k) > self.omega || !dsa_vec_norm_ok(&z, self.l, self.gamma1 - self.tau * self.eta)
+            false
+        else
+            a = Bytes.new(self.k * self.l * DSA_POLY_BYTES)
+            dsa_zero(&mut a)
+            i = 0
+            while i < self.k
+                j = 0
+                while j < self.l
+                    dsa_sample_ntt(&mut a, dsa_mat_off(i, j, self.l), &rho, i, j)
+                    j = j + 1
+                i = i + 1
+
+            t1s = Bytes.new(self.k * DSA_POLY_BYTES)
+            dsa_zero(&mut t1s)
+            dsa_copy(&mut t1s, 0, &t1, 0, self.k * DSA_POLY_BYTES)
+            i = 0
+            while i < self.k
+                dsa_scale(&mut t1s, i * DSA_N, 8192)
+                dsa_ntt(&mut t1s, i * DSA_N)
+                i = i + 1
+
+            zh = Bytes.new(self.l * DSA_POLY_BYTES)
+            dsa_zero(&mut zh)
+            dsa_copy(&mut zh, 0, &z, 0, self.l * DSA_POLY_BYTES)
+            i = 0
+            while i < self.l
+                dsa_ntt(&mut zh, i * DSA_N)
+                i = i + 1
+            ch = Bytes.new(DSA_POLY_BYTES)
+            dsa_zero(&mut ch)
+            dsa_copy(&mut ch, 0, &c, 0, DSA_POLY_BYTES)
+            dsa_ntt(&mut ch, 0)
+
+            res = Bytes.new(self.k * DSA_POLY_BYTES)
+            dsa_zero(&mut res)
+            dsa_mat_vec(&mut res, &a, &zh, self.k, self.l)
+            i = 0
+            while i < self.k
+                dsa_sub_mul(&mut res, i * DSA_N, &t1s, i * DSA_N, &ch, 0)
+                dsa_intt(&mut res, i * DSA_N)
+                i = i + 1
+
+            wprime = Bytes.new(self.k * DSA_POLY_BYTES)
+            dsa_zero(&mut wprime)
+            i = 0
+            while i < self.k
+                j = 0
+                while j < DSA_N
+                    hv = dsa_cget(&h, i * DSA_N + j)
+                    rv = dsa_cget(&res, i * DSA_N + j)
+                    dsa_cset(&mut wprime, i * DSA_N + j, dsa_use_hint(hv, rv, 2 * self.gamma2))
+                    j = j + 1
+                i = i + 1
+
+            wbytes = dsa_pack_w(&wprime, self.k, self.gamma2)
+            check = Bytes.new(64 + wbytes.len())
+            dsa_copy(&mut check, 0, &mu, 0, 64)
+            dsa_copy(&mut check, 64, &wbytes, 0, wbytes.len())
+            digest = shake256(&check, self.c_tilde_bytes)
+            dsa_bytes_eq(&digest, &c_tilde)
+
+fn dsa_sign_try(rho_prime: &Bytes, mu: &Bytes, a: &Bytes, s1h: &Bytes, s2h: &Bytes, t0h: &Bytes, p: &MlDsa, kappa: Int) -> Bytes ! alloc
+    alpha = 2 * p.gamma2
+    beta = p.tau * p.eta
+    y = Bytes.new(p.l * DSA_POLY_BYTES)
+    dsa_zero(&mut y)
+    i = 0
+    while i < p.l
+        dsa_sample_mask(&mut y, i * DSA_N, rho_prime, kappa + i, p.gamma1)
+        i = i + 1
+    yh = Bytes.new(p.l * DSA_POLY_BYTES)
+    dsa_zero(&mut yh)
+    dsa_copy(&mut yh, 0, &y, 0, p.l * DSA_POLY_BYTES)
+    i = 0
+    while i < p.l
+        dsa_ntt(&mut yh, i * DSA_N)
+        i = i + 1
+
+    w = Bytes.new(p.k * DSA_POLY_BYTES)
+    dsa_zero(&mut w)
+    dsa_mat_vec(&mut w, a, &yh, p.k, p.l)
+    i = 0
+    while i < p.k
+        dsa_intt(&mut w, i * DSA_N)
+        i = i + 1
+
+    w1 = Bytes.new(p.k * DSA_POLY_BYTES)
+    dsa_zero(&mut w1)
+    i = 0
+    while i < p.k
+        j = 0
+        while j < DSA_N
+            dsa_cset(&mut w1, i * DSA_N + j, dsa_high_bits(dsa_cget(&w, i * DSA_N + j), alpha))
+            j = j + 1
+        i = i + 1
+    w1bytes = dsa_pack_w(&w1, p.k, p.gamma2)
+    cin = Bytes.new(64 + w1bytes.len())
+    dsa_copy(&mut cin, 0, mu, 0, 64)
+    dsa_copy(&mut cin, 64, &w1bytes, 0, w1bytes.len())
+    c_tilde = shake256(&cin, p.c_tilde_bytes)
+    c = Bytes.new(DSA_POLY_BYTES)
+    dsa_zero(&mut c)
+    dsa_sample_ball(&mut c, &c_tilde, p.tau)
+    ch = Bytes.new(DSA_POLY_BYTES)
+    dsa_zero(&mut ch)
+    dsa_copy(&mut ch, 0, &c, 0, DSA_POLY_BYTES)
+    dsa_ntt(&mut ch, 0)
+
+    z = Bytes.new(p.l * DSA_POLY_BYTES)
+    dsa_zero(&mut z)
+    i = 0
+    ok = true
+    while i < p.l
+        tmp = Bytes.new(DSA_POLY_BYTES)
+        dsa_zero(&mut tmp)
+        dsa_mul(&mut tmp, 0, s1h, i * DSA_N, &ch, 0)
+        dsa_intt(&mut tmp, 0)
+        dsa_add(&mut z, i * DSA_N, &y, i * DSA_N)
+        dsa_add(&mut z, i * DSA_N, &tmp, 0)
+        i = i + 1
+    if !dsa_vec_norm_ok(&z, p.l, p.gamma1 - beta)
+        ok = false
+
+    r = Bytes.new(p.k * DSA_POLY_BYTES)
+    dsa_zero(&mut r)
+    ct0 = Bytes.new(p.k * DSA_POLY_BYTES)
+    dsa_zero(&mut ct0)
+    if ok
+        i = 0
+        while i < p.k
+            tmp = Bytes.new(DSA_POLY_BYTES)
+            dsa_zero(&mut tmp)
+            dsa_mul(&mut tmp, 0, s2h, i * DSA_N, &ch, 0)
+            dsa_intt(&mut tmp, 0)
+            dsa_copy(&mut r, i * 4 * DSA_N, &w, i * 4 * DSA_N, DSA_POLY_BYTES)
+            dsa_sub_from(&mut r, i * DSA_N, &tmp, 0)
+            i = i + 1
+        if !dsa_vec_low_norm_ok(&r, p.k, alpha, p.gamma2 - beta)
+            ok = false
+
+    if ok
+        i = 0
+        while i < p.k
+            tmp = Bytes.new(DSA_POLY_BYTES)
+            dsa_zero(&mut tmp)
+            dsa_mul(&mut tmp, 0, t0h, i * DSA_N, &ch, 0)
+            dsa_intt(&mut tmp, 0)
+            dsa_copy(&mut ct0, i * 4 * DSA_N, &tmp, 0, DSA_POLY_BYTES)
+            i = i + 1
+        if !dsa_vec_norm_ok(&ct0, p.k, p.gamma2)
+            ok = false
+
+    if !ok
+        dsa_sign_try(rho_prime, mu, a, s1h, s2h, t0h, p, kappa + p.l)
+    else
+        h = Bytes.new(p.k * DSA_POLY_BYTES)
+        dsa_zero(&mut h)
+        i = 0
+        while i < p.k
+            j = 0
+            while j < DSA_N
+                rv = dsa_cget(&r, i * DSA_N + j)
+                t0v = dsa_cget(&ct0, i * DSA_N + j)
+                rhint = (rv + t0v) % DSA_Q
+                hv = dsa_make_hint(dsa_q_minus(t0v), rhint, alpha)
+                dsa_cset(&mut h, i * DSA_N + j, hv)
+                j = j + 1
+            i = i + 1
+        if dsa_sum_hint(&h, p.k) > p.omega
+            dsa_sign_try(rho_prime, mu, a, s1h, s2h, t0h, p, kappa + p.l)
+        else
+            dsa_pack_sig(&c_tilde, &z, &h, p)
+
+fn dsa_pack_sig(c_tilde: &Bytes, z: &Bytes, h: &Bytes, p: &MlDsa) -> Bytes ! alloc
+    out = Bytes.new(p.signature_bytes())
+    dsa_zero(&mut out)
+    dsa_copy(&mut out, 0, c_tilde, 0, p.c_tilde_bytes)
+    dsa_pack_vec(&mut out, p.c_tilde_bytes, z, p.l, dsa_z_bytes(p.gamma1), DSA_KIND_Z, p.gamma1)
+    hpack = dsa_pack_h(h, p.k, p.omega)
+    dsa_copy(&mut out, p.c_tilde_bytes + p.l * 32 * dsa_z_bytes(p.gamma1), &hpack, 0, p.omega + p.k)
+    out
+
+fn dsa_z_bytes(gamma1: Int) -> Int
+    if gamma1 == 131072
+        18
+    else
+        20
+
+fn dsa_s_bytes(eta: Int) -> Int
+    if eta == 2
+        96
+    else
+        128
+
+fn dsa_s_bits(eta: Int) -> Int
+    if eta == 2
+        3
+    else
+        4
+
+fn dsa_mat_off(i: Int, j: Int, cols: Int) -> Int
+    (i * cols + j) * DSA_N
+
+fn dsa_copy(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int, n: Int) -> Unit
+    i = 0
+    while i < n
+        dst.set_u8(doff + i, src.get_u8(soff + i))
+        i = i + 1
+
+fn dsa_zero(buf: &mut Bytes) -> Unit
+    _z = buf.fill(0, buf.len(), 0)
+
+fn dsa_bytes_eq(a: &Bytes, b: &Bytes) -> Bool
+    if a.len() != b.len()
+        false
+    else
+        same = true
+        i = 0
+        while i < a.len()
+            if a.get_u8(i) != b.get_u8(i)
+                same = false
+            i = i + 1
+        same
+
+fn dsa_mod_pos(v: Int, m: Int) -> Int
+    r = v % m
+    if r < 0
+        r + m
+    else
+        r
+
+fn dsa_cget(p: &Bytes, i: Int) -> Int
+    p.get_u32(i * 4)
+
+fn dsa_cset(p: &mut Bytes, i: Int, v: Int) -> Unit
+    _s = p.set_u32(i * 4, dsa_mod_pos(v, DSA_Q))
+
+fn dsa_q_minus(v: Int) -> Int
+    dsa_mod_pos(-v, DSA_Q)
+
+fn dsa_signed(c: Int) -> Int
+    if c > DSA_Q / 2
+        c - DSA_Q
+    else
+        c
+
+fn dsa_pow_mod(base: Int, exp: Int, m: Int) -> Int
+    r = 1
+    b = base % m
+    e = exp
+    while e > 0
+        if (e & 1) != 0
+            r = (r * b) % m
+        b = (b * b) % m
+        e = e >> 1
+    r
+
+fn dsa_brv8(i: Int) -> Int
+    r = 0
+    n = i
+    j = 0
+    while j < 8
+        r = (r << 1) | (n & 1)
+        n = n >> 1
+        j = j + 1
+    r
+
+fn dsa_zeta(i: Int) -> Int
+    dsa_pow_mod(1753, dsa_brv8(i), DSA_Q)
+
+fn dsa_ntt(p: &mut Bytes, off: Int) -> Unit
+    k = 0
+    l = 128
+    while l > 0
+        start = 0
+        while start < DSA_N
+            k = k + 1
+            zeta = dsa_zeta(k)
+            j = start
+            while j < start + l
+                t = zeta * dsa_cget(p, off + j + l)
+                dsa_cset(p, off + j + l, dsa_cget(p, off + j) - t)
+                dsa_cset(p, off + j, dsa_cget(p, off + j) + t)
+                j = j + 1
+            start = j + l
+        l = l >> 1
+
+fn dsa_intt(p: &mut Bytes, off: Int) -> Unit
+    l = 1
+    k = 256
+    while l < DSA_N
+        start = 0
+        while start < DSA_N
+            k = k - 1
+            zeta = dsa_mod_pos(-dsa_zeta(k), DSA_Q)
+            j = start
+            while j < start + l
+                t = dsa_cget(p, off + j)
+                dsa_cset(p, off + j, t + dsa_cget(p, off + j + l))
+                dsa_cset(p, off + j + l, zeta * (t - dsa_cget(p, off + j + l)))
+                j = j + 1
+            start = j + l
+        l = l << 1
+    i = 0
+    while i < DSA_N
+        dsa_cset(p, off + i, dsa_cget(p, off + i) * DSA_INV_N)
+        i = i + 1
+
+fn dsa_mul(dst: &mut Bytes, doff: Int, a: &Bytes, aoff: Int, b: &Bytes, boff: Int) -> Unit
+    i = 0
+    while i < DSA_N
+        dsa_cset(dst, doff + i, dsa_cget(a, aoff + i) * dsa_cget(b, boff + i))
+        i = i + 1
+
+fn dsa_add(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int) -> Unit
+    i = 0
+    while i < DSA_N
+        dsa_cset(dst, doff + i, dsa_cget(dst, doff + i) + dsa_cget(src, soff + i))
+        i = i + 1
+
+fn dsa_sub_from(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int) -> Unit
+    i = 0
+    while i < DSA_N
+        dsa_cset(dst, doff + i, dsa_cget(dst, doff + i) - dsa_cget(src, soff + i))
+        i = i + 1
+
+fn dsa_sub_mul(dst: &mut Bytes, doff: Int, a: &Bytes, aoff: Int, b: &Bytes, boff: Int) -> Unit
+    i = 0
+    while i < DSA_N
+        dsa_cset(dst, doff + i, dsa_cget(dst, doff + i) - dsa_cget(a, aoff + i) * dsa_cget(b, boff + i))
+        i = i + 1
+
+fn dsa_scale(p: &mut Bytes, off: Int, s: Int) -> Unit
+    i = 0
+    while i < DSA_N
+        dsa_cset(p, off + i, dsa_cget(p, off + i) * s)
+        i = i + 1
+
+fn dsa_mat_vec(dst: &mut Bytes, mat: &Bytes, vec: &Bytes, k: Int, cols: Int) -> Unit ! alloc
+    tmp = Bytes.new(DSA_POLY_BYTES)
+    i = 0
+    while i < k
+        j = 0
+        while j < cols
+            dsa_zero(&mut tmp)
+            dsa_mul(&mut tmp, 0, mat, dsa_mat_off(i, j, cols), vec, j * DSA_N)
+            dsa_add(dst, i * DSA_N, &tmp, 0)
+            j = j + 1
+        i = i + 1
+
+fn dsa_sample_ntt(dst: &mut Bytes, off: Int, rho: &Bytes, row: Int, col: Int) -> Unit ! alloc
+    x = Keccak.new(168)
+    x.absorb(rho)
+    x.absorb_byte(col)
+    x.absorb_byte(row)
+    x.pad(31)
+    n = 0
+    while n < DSA_N
+        b0 = x.squeeze_byte()
+        b1 = x.squeeze_byte()
+        b2 = x.squeeze_byte()
+        v = (b0 | (b1 << 8) | (b2 << 16)) & 8388607
+        if v < DSA_Q
+            dsa_cset(dst, off + n, v)
+            n = n + 1
+
+fn dsa_bounded_coeff(j: Int, eta: Int) -> Int
+    if eta == 2
+        if j < 15
+            2 - (j % 5)
+        else
+            1000
+    elsif j < 9
+        4 - j
+    else
+        1000
+
+fn dsa_sample_bounded(dst: &mut Bytes, off: Int, seed: &Bytes, idx: Int, eta: Int) -> Unit ! alloc
+    x = Keccak.new(136)
+    x.absorb(seed)
+    x.absorb_byte(idx & 255)
+    x.absorb_byte((idx >> 8) & 255)
+    x.pad(31)
+    n = 0
+    while n < DSA_N
+        b = x.squeeze_byte()
+        c0 = dsa_bounded_coeff(b % 16, eta)
+        if c0 != 1000
+            dsa_cset(dst, off + n, c0)
+            n = n + 1
+        if n < DSA_N
+            c1 = dsa_bounded_coeff(b / 16, eta)
+            if c1 != 1000
+                dsa_cset(dst, off + n, c1)
+                n = n + 1
+
+fn dsa_bits(data: &Bytes, bitpos: Int, n: Int) -> Int
+    v = 0
+    i = 0
+    while i < n
+        b = (data.get_u8((bitpos + i) / 8) >> ((bitpos + i) % 8)) & 1
+        v = v | (b << i)
+        i = i + 1
+    v
+
+fn dsa_sample_mask(dst: &mut Bytes, off: Int, seed: &Bytes, idx: Int, gamma1: Int) -> Unit ! alloc
+    x = Keccak.new(136)
+    x.absorb(seed)
+    x.absorb_byte(idx & 255)
+    x.absorb_byte((idx >> 8) & 255)
+    x.pad(31)
+    bits = dsa_z_bytes(gamma1)
+    nbytes = DSA_N * bits / 8
+    buf = x.squeeze(nbytes)
+    i = 0
+    while i < DSA_N
+        dsa_cset(dst, off + i, gamma1 - dsa_bits(&buf, bits * i, bits))
+        i = i + 1
+
+fn dsa_sample_ball(p: &mut Bytes, seed: &Bytes, tau: Int) -> Unit ! alloc
+    dsa_zero(p)
+    x = Keccak.new(136)
+    x.absorb(seed)
+    x.pad(31)
+    sign = 0
+    i = 0
+    while i < 8
+        sign = sign | (x.squeeze_byte() << (8 * i))
+        i = i + 1
+    i = DSA_N - tau
+    while i < DSA_N
+        j = 256
+        while j > i
+            j = x.squeeze_byte()
+        dsa_cset(p, i, dsa_cget(p, j))
+        if (sign & 1) == 0
+            dsa_cset(p, j, 1)
+        else
+            dsa_cset(p, j, -1)
+        sign = sign >> 1
+        i = i + 1
+
+fn dsa_reduce_pm(r: Int, n: Int) -> Int
+    v = r % n
+    if v > (n >> 1)
+        v - n
+    else
+        v
+
+fn dsa_decompose_high(r: Int, alpha: Int) -> Int
+    rp = r % DSA_Q
+    r0 = dsa_reduce_pm(rp, alpha)
+    d = rp - r0
+    if d == DSA_Q - 1
+        0
+    else
+        d / alpha
+
+fn dsa_decompose_low(r: Int, alpha: Int) -> Int
+    rp = r % DSA_Q
+    r0 = dsa_reduce_pm(rp, alpha)
+    if rp - r0 == DSA_Q - 1
+        r0 - 1
+    else
+        r0
+
+fn dsa_high_bits(r: Int, alpha: Int) -> Int
+    dsa_decompose_high(r, alpha)
+
+fn dsa_low_bits(r: Int, alpha: Int) -> Int
+    dsa_decompose_low(r, alpha)
+
+fn dsa_make_hint(z: Int, r: Int, alpha: Int) -> Int
+    if dsa_high_bits(r, alpha) != dsa_high_bits(r + z, alpha)
+        1
+    else
+        0
+
+fn dsa_use_hint(h: Int, r: Int, alpha: Int) -> Int
+    if h == 1
+        m = (DSA_Q - 1) / alpha
+        r1 = dsa_decompose_high(r, alpha)
+        r0 = dsa_decompose_low(r, alpha)
+        if r0 > 0
+            (r1 + 1) % m
+        else
+            dsa_mod_pos(r1 - 1, m)
+    else
+        dsa_decompose_high(r, alpha)
+
+fn dsa_norm_bad(c: Int, bound: Int) -> Int
+    x = c % DSA_Q
+    y = DSA_Q - 1 - x
+    v = x
+    if y < v
+        v = y
+    if v >= bound
+        1
+    else
+        0
+
+fn dsa_vec_norm_ok(v: &Bytes, count: Int, bound: Int) -> Bool
+    ok = true
+    i = 0
+    while i < count * DSA_N
+        if dsa_norm_bad(dsa_cget(v, i), bound) == 1
+            ok = false
+        i = i + 1
+    ok
+
+fn dsa_vec_low_norm_ok(v: &Bytes, count: Int, alpha: Int, bound: Int) -> Bool
+    ok = true
+    i = 0
+    while i < count * DSA_N
+        if dsa_norm_bad(dsa_mod_pos(dsa_low_bits(dsa_cget(v, i), alpha), DSA_Q), bound) == 1
+            ok = false
+        i = i + 1
+    ok
+
+fn dsa_sum_hint(h: &Bytes, k: Int) -> Int
+    total = 0
+    i = 0
+    while i < k * DSA_N
+        total = total + dsa_cget(h, i)
+        i = i + 1
+    total
+
+fn dsa_pack_vec(dst: &mut Bytes, doff: Int, v: &Bytes, count: Int, bits: Int, kind: Int, param: Int) -> Unit
+    acc = 0
+    nb = 0
+    pos = doff
+    i = 0
+    while i < count * DSA_N
+        c = dsa_cget(v, i)
+        val = c
+        if kind == DSA_KIND_T0
+            val = 4096 - dsa_signed(c)
+        elsif kind == DSA_KIND_S
+            val = param - dsa_signed(c)
+        elsif kind == DSA_KIND_Z
+            val = param - dsa_signed(c)
+        acc = acc | (val << nb)
+        nb = nb + bits
+        while nb >= 8
+            dst.set_u8(pos, acc & 255)
+            acc = acc >> 8
+            nb = nb - 8
+            pos = pos + 1
+        i = i + 1
+    if nb > 0
+        dst.set_u8(pos, acc & 255)
+
+fn dsa_unpack_vec(v: &mut Bytes, voff: Int, data: &Bytes, doff: Int, count: Int, bits: Int, kind: Int, param: Int) -> Unit
+    acc = 0
+    nb = 0
+    pos = doff
+    mask = (1 << bits) - 1
+    i = 0
+    while i < count * DSA_N
+        while nb < bits
+            acc = acc | (data.get_u8(pos) << nb)
+            pos = pos + 1
+            nb = nb + 8
+        val = acc & mask
+        c = val
+        if kind == DSA_KIND_T0
+            c = 4096 - val
+        elsif kind == DSA_KIND_S
+            c = param - val
+        elsif kind == DSA_KIND_Z
+            c = param - val
+        dsa_cset(v, voff + i, c)
+        acc = acc >> bits
+        nb = nb - bits
+        i = i + 1
+
+fn dsa_pack_w(w: &Bytes, k: Int, gamma2: Int) -> Bytes ! alloc
+    bits = 6
+    if gamma2 != 95232
+        bits = 4
+    out = Bytes.new(k * 32 * bits)
+    dsa_zero(&mut out)
+    dsa_pack_vec(&mut out, 0, w, k, bits, DSA_KIND_RAW, 0)
+    out
+
+fn dsa_pack_h(h: &Bytes, k: Int, omega: Int) -> Bytes ! alloc
+    out = Bytes.new(omega + k)
+    dsa_zero(&mut out)
+    pos = 0
+    i = 0
+    while i < k
+        j = 0
+        while j < DSA_N
+            if dsa_cget(h, i * DSA_N + j) == 1
+                out.set_u8(pos, j)
+                pos = pos + 1
+            j = j + 1
+        i = i + 1
+        out.set_u8(omega + i - 1, pos)
+    out
+
+fn dsa_unpack_h(h: &mut Bytes, data: &Bytes, doff: Int, k: Int, omega: Int) -> Bool
+    dsa_zero(h)
+    ok = true
+    prev = 0
+    i = 0
+    while i < k
+        end = data.get_u8(doff + omega + i)
+        if end < prev || end > omega
+            ok = false
+            end = prev
+        last = 0
+        first = true
+        j = prev
+        while j < end
+            posb = data.get_u8(doff + j)
+            if !first && posb <= last
+                ok = false
+            last = posb
+            first = false
+            dsa_cset(h, i * DSA_N + posb, 1)
+            j = j + 1
+        prev = end
+        i = i + 1
+    j = prev
+    while j < omega
+        if data.get_u8(doff + j) != 0
+            ok = false
+        j = j + 1
+    ok
+
+fn dsa_format_msg(msg: &Bytes, ctx: &Bytes) -> Bytes ! alloc
+    out = Bytes.new(2 + ctx.len() + msg.len())
+    dsa_zero(&mut out)
+    out.set_u8(0, 0)
+    out.set_u8(1, ctx.len())
+    dsa_copy(&mut out, 2, ctx, 0, ctx.len())
+    dsa_copy(&mut out, 2 + ctx.len(), msg, 0, msg.len())
+    out
+
+fn dsa_hash_mu(tr: &Bytes, m: &Bytes) -> Bytes ! alloc
+    buf = Bytes.new(64 + m.len())
+    dsa_copy(&mut buf, 0, tr, 0, 64)
+    dsa_copy(&mut buf, 64, m, 0, m.len())
+    shake256(&buf, 64)

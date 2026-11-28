@@ -370,7 +370,7 @@ standard fix examples/hello.sal   # reescribe el fichero in situ
 | `src/` | Compilador de arranque en Rust (lexer, parser, inferencia, ownership, efectos, drops, IR, fusión, LLVM, paquetes) |
 | `runtime/` | Runtime en C (kernels, instrumentación, destino `soso`) |
 | `selfhost/` | Compilador escrito en sal (espejo de los pases del arranque) |
-| `std/` | Preludio y biblioteca estándar en sal (`std/io`, `http`, `json`, `text`) |
+| `std/` | Preludio y biblioteca estándar en sal (`std/io`, `http`, `json`, `text`, `crypto`) |
 | `standard/` | Linter de estilo, escrito en sal |
 | `corpus/`, `examples/` | Programas de paridad y ejemplos |
 | `tests/` | Tests en Rust, pruebas de conformidad (`tests/lang/`) y tests de `std` (`tests/sal/`) |

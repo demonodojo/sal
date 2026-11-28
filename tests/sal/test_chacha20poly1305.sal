@@ -1,0 +1,118 @@
+import "std/crypto/chacha20poly1305.sal"
+import "support/assert.sal"
+import "support/hex.sal"
+
+# The known answer is the AEAD_CHACHA20_POLY1305 example of RFC 8439, section
+# 2.8.2: ciphertext followed by the 16-byte tag for a fixed key, nonce, AAD and
+# plaintext. The rest covers authentication failures and the random-nonce path.
+
+fn fill(buf: &mut Bytes, seed: Int) -> Unit
+    i = 0
+    while i < buf.len()
+        buf.set_u8(i, (seed + i * 7) & 255)
+        i = i + 1
+
+fn copy(b: &Bytes) -> Bytes ! alloc
+    out = Bytes.new(b.len())
+    i = 0
+    while i < b.len()
+        out.set_u8(i, b.get_u8(i))
+        i = i + 1
+    out
+
+fn as_int(v: Bool) -> Int
+    if v
+        1
+    else
+        0
+
+fn assert_ne_str(got: &String, bad: &String, code: Int) -> Int ! io, alloc
+    if got.eq(bad) == 0
+        0
+    else
+        assert_fail(code)
+
+fn rfc_vector() -> Int ! io, alloc
+    key = hex_to_bytes(&d"808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+    nonce = hex_to_bytes(&d"070000004041424344454647")
+    aad = hex_to_bytes(&d"50515253c0c1c2c3c4c5c6c7")
+    pt = hex_to_bytes(&d"4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e")
+    want = &d"d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd0600691"
+
+    aead = ChaCha20Poly1305.new(&key)
+    sealed = aead.seal_with_nonce(&nonce, &pt, &aad)
+    rc = assert_str_eq(&bytes_to_hex(&sealed), want, 10)
+
+    opened = aead.open_with_nonce(&nonce, &sealed, &aad)
+    rc = rc + assert_ne(as_int(opened.ok), 0, 11)
+    rc = rc + assert_str_eq(&bytes_to_hex(&opened.plaintext), &bytes_to_hex(&pt), 12)
+
+    tampered = copy(&sealed)
+    tampered.set_u8(0, tampered.get_u8(0) ^ 1)
+    tampered_open = aead.open_with_nonce(&nonce, &tampered, &aad)
+    rc = rc + assert_zero(as_int(tampered_open.ok), 13)
+
+    last = copy(&sealed)
+    last.set_u8(last.len() - 1, last.get_u8(last.len() - 1) ^ 1)
+    last_open = aead.open_with_nonce(&nonce, &last, &aad)
+    rc = rc + assert_zero(as_int(last_open.ok), 14)
+
+    other_aad = hex_to_bytes(&d"50515253c0c1c2c3c4c5c6c8")
+    aad_open = aead.open_with_nonce(&nonce, &sealed, &other_aad)
+    rc = rc + assert_zero(as_int(aad_open.ok), 15)
+
+    other_nonce = copy(&nonce)
+    other_nonce.set_u8(0, other_nonce.get_u8(0) ^ 1)
+    nonce_open = aead.open_with_nonce(&other_nonce, &sealed, &aad)
+    rc = rc + assert_zero(as_int(nonce_open.ok), 16)
+
+    short_sealed = Bytes.new(15)
+    cut_open = aead.open_with_nonce(&nonce, &short_sealed, &aad)
+    rc = rc + assert_zero(as_int(cut_open.ok), 17)
+
+    wrong_key = Bytes.new(31)
+    short = ChaCha20Poly1305.new(&wrong_key)
+    short_sealed_out = short.seal_with_nonce(&nonce, &pt, &aad)
+    rc = rc + assert_zero(short_sealed_out.len(), 18)
+    bad_key_open = short.open_with_nonce(&nonce, &sealed, &aad)
+    rc = rc + assert_zero(as_int(bad_key_open.ok), 19)
+
+    short_nonce_out = aead.seal_with_nonce(&Bytes.new(11), &pt, &aad)
+    rc = rc + assert_zero(short_nonce_out.len(), 20)
+
+    empty = Bytes.new(0)
+    empty_sealed = aead.seal_with_nonce(&nonce, &empty, &aad)
+    rc = rc + assert_zero(empty_sealed.len() - 16, 21)
+    empty_open = aead.open_with_nonce(&nonce, &empty_sealed, &aad)
+    rc = rc + assert_ne(as_int(empty_open.ok), 0, 22)
+    rc = rc + assert_zero(empty_open.plaintext.len(), 23)
+    rc
+
+fn random_case() -> Int ! io, alloc
+    key = Bytes.new(32)
+    fill(&mut key, 3)
+    aad = Bytes.new(21)
+    fill(&mut aad, 40)
+    msg = Bytes.new(37)
+    fill(&mut msg, 90)
+    aead = ChaCha20Poly1305.new(&key)
+
+    first = aead.seal(&msg, &aad)
+    second = aead.seal(&msg, &aad)
+    rc = assert_zero(first.nonce.len() - 12, 30)
+    rc = rc + assert_ne_str(&bytes_to_hex(&first.nonce), &bytes_to_hex(&second.nonce), 31)
+    rc = rc + assert_ne_str(&bytes_to_hex(&first.ciphertext), &bytes_to_hex(&second.ciphertext), 32)
+    rc = rc + assert_zero(first.ciphertext.len() - msg.len() - 16, 33)
+
+    opened = aead.open(&first, &aad)
+    rc = rc + assert_ne(as_int(opened.ok), 0, 34)
+    rc = rc + assert_str_eq(&bytes_to_hex(&opened.plaintext), &bytes_to_hex(&msg), 35)
+
+    other_aad = copy(&aad)
+    other_aad.set_u8(0, other_aad.get_u8(0) ^ 1)
+    wrong_open = aead.open(&first, &other_aad)
+    rc = rc + assert_zero(as_int(wrong_open.ok), 36)
+    rc
+
+fn main() -> Int ! io, alloc
+    rfc_vector() + random_case()

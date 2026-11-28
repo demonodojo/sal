@@ -370,7 +370,7 @@ standard fix examples/hello.sal   # rewrites the file in place
 | `src/` | Rust bootstrap compiler (lexer, parser, inference, ownership, effects, drops, IR, fusion, LLVM, packages) |
 | `runtime/` | C runtime (kernels, instrumentation, `soso` target) |
 | `selfhost/` | Compiler written in sal (mirror of the bootstrap passes) |
-| `std/` | Prelude and standard library in sal (`std/io`, `http`, `json`, `text`) |
+| `std/` | Prelude and standard library in sal (`std/io`, `http`, `json`, `text`, `crypto`) |
 | `standard/` | Style linter, written in sal |
 | `corpus/`, `examples/` | Parity programs and examples |
 | `tests/` | Rust tests, conformance tests (`tests/lang/`), and `std` tests (`tests/sal/`) |

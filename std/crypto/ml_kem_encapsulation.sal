@@ -1,0 +1,5 @@
+# Ciphertext and 32-byte shared secret produced by ML-KEM encapsulation.
+
+struct MlKemEncapsulation
+    ciphertext: Bytes
+    shared_secret: Bytes

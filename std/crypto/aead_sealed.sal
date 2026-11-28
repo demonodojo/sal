@@ -1,0 +1,3 @@
+struct AeadSealed
+    nonce: Bytes
+    ciphertext: Bytes

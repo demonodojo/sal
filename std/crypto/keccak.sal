@@ -1,0 +1,204 @@
+# Keccak-f[1600] on 32-bit lanes.
+#
+# The state is 200 bytes: lane i = A[x, y] with i = x + 5*y, its low 32 bits at
+# 8*i and its high 32 bits at 8*i + 4. Sal's Int is signed, so every lane is
+# kept in two unsigned halves in [0, 2^32).
+
+struct Keccak
+    st: Bytes
+    rate: Int
+    pos: Int
+
+static Keccak.new(rate: Int) -> Keccak ! alloc
+    st = Bytes.new(200)
+    st.fill(0, 200, 0)
+    Keccak(st, rate, 0)
+
+method Keccak.absorb_byte(&mut self, b: Int) -> Unit ! alloc
+    self.st.set_u8(self.pos, self.st.get_u8(self.pos) ^ b)
+    self.pos = self.pos + 1
+    if self.pos == self.rate
+        keccak_f(&mut self.st)
+        self.pos = 0
+
+method Keccak.absorb(&mut self, data: &Bytes) -> Unit ! alloc
+    i = 0
+    while i < data.len()
+        self.absorb_byte(data.get_u8(i))
+        i = i + 1
+
+method Keccak.pad(&mut self, domain: Int) -> Unit ! alloc
+    self.st.set_u8(self.pos, self.st.get_u8(self.pos) ^ domain)
+    self.st.set_u8(self.rate - 1, self.st.get_u8(self.rate - 1) ^ 128)
+    keccak_f(&mut self.st)
+    self.pos = 0
+
+method Keccak.squeeze_byte(&mut self) -> Int ! alloc
+    if self.pos == self.rate
+        keccak_f(&mut self.st)
+        self.pos = 0
+    b = self.st.get_u8(self.pos)
+    self.pos = self.pos + 1
+    b
+
+method Keccak.squeeze(&mut self, n: Int) -> Bytes ! alloc
+    out = Bytes.new(n)
+    i = 0
+    while i < n
+        out.set_u8(i, self.squeeze_byte())
+        i = i + 1
+    out
+
+fn lane_lo(st: &Bytes, i: Int) -> Int
+    st.get_u32(i * 8)
+
+fn lane_hi(st: &Bytes, i: Int) -> Int
+    st.get_u32(i * 8 + 4)
+
+fn rot_lo(lo: Int, hi: Int, n: Int) -> Int
+    if n == 0
+        lo
+    elsif n == 32
+        hi
+    elsif n < 32
+        ((lo << n) | (hi >> (32 - n))) & 4294967295
+    else
+        m = n - 32
+        ((hi << m) | (lo >> (32 - m))) & 4294967295
+
+fn rot_hi(lo: Int, hi: Int, n: Int) -> Int
+    if n == 0
+        hi
+    elsif n == 32
+        lo
+    elsif n < 32
+        ((hi << n) | (lo >> (32 - n))) & 4294967295
+    else
+        m = n - 32
+        ((lo << m) | (hi >> (32 - m))) & 4294967295
+
+fn rho_off(i: Int) -> Int
+    match i
+        0 => 0
+        1 => 1
+        2 => 62
+        3 => 28
+        4 => 27
+        5 => 36
+        6 => 44
+        7 => 6
+        8 => 55
+        9 => 20
+        10 => 3
+        11 => 10
+        12 => 43
+        13 => 25
+        14 => 39
+        15 => 41
+        16 => 45
+        17 => 15
+        18 => 21
+        19 => 8
+        20 => 18
+        21 => 2
+        22 => 61
+        23 => 56
+        _ => 14
+
+fn kf_theta(st: &mut Bytes, t: &mut Bytes) -> Unit
+    x = 0
+    while x < 5
+        lo = lane_lo(st, x) ^ lane_lo(st, x + 5) ^ lane_lo(st, x + 10) ^ lane_lo(st, x + 15) ^ lane_lo(st, x + 20)
+        hi = lane_hi(st, x) ^ lane_hi(st, x + 5) ^ lane_hi(st, x + 10) ^ lane_hi(st, x + 15) ^ lane_hi(st, x + 20)
+        t.set_u32(x * 8, lo)
+        t.set_u32(x * 8 + 4, hi)
+        x = x + 1
+    x = 0
+    while x < 5
+        nlo = t.get_u32(((x + 4) % 5) * 8)
+        nhi = t.get_u32(((x + 4) % 5) * 8 + 4)
+        clo = t.get_u32(((x + 1) % 5) * 8)
+        chi = t.get_u32(((x + 1) % 5) * 8 + 4)
+        dlo = nlo ^ rot_lo(clo, chi, 1)
+        dhi = nhi ^ rot_hi(clo, chi, 1)
+        t.set_u32(40 + x * 8, dlo)
+        t.set_u32(40 + x * 8 + 4, dhi)
+        x = x + 1
+    y = 0
+    while y < 5
+        x = 0
+        while x < 5
+            i = x + 5 * y
+            dlo = t.get_u32(40 + x * 8)
+            dhi = t.get_u32(40 + x * 8 + 4)
+            st.set_u32(i * 8, lane_lo(st, i) ^ dlo)
+            st.set_u32(i * 8 + 4, lane_hi(st, i) ^ dhi)
+            x = x + 1
+        y = y + 1
+
+fn kf_rho_pi(st: &mut Bytes, t: &mut Bytes) -> Unit
+    y = 0
+    while y < 5
+        x = 0
+        while x < 5
+            src = x + 5 * y
+            dst = y + 5 * ((2 * x + 3 * y) % 5)
+            n = rho_off(src)
+            lo = lane_lo(st, src)
+            hi = lane_hi(st, src)
+            t.set_u32(80 + dst * 8, rot_lo(lo, hi, n))
+            t.set_u32(80 + dst * 8 + 4, rot_hi(lo, hi, n))
+            x = x + 1
+        y = y + 1
+
+fn kf_chi(st: &mut Bytes, t: &mut Bytes) -> Unit
+    y = 0
+    while y < 5
+        x = 0
+        while x < 5
+            i = x + 5 * y
+            j = (x + 1) % 5 + 5 * y
+            k = (x + 2) % 5 + 5 * y
+            lo = t.get_u32(80 + i * 8) ^ ((t.get_u32(80 + j * 8) ^ 4294967295) & t.get_u32(80 + k * 8))
+            hi = t.get_u32(80 + i * 8 + 4) ^ ((t.get_u32(80 + j * 8 + 4) ^ 4294967295) & t.get_u32(80 + k * 8 + 4))
+            st.set_u32(i * 8, lo)
+            st.set_u32(i * 8 + 4, hi)
+            x = x + 1
+        y = y + 1
+
+fn rc_bit(t: Int) -> Int
+    r = 1
+    i = 0
+    while i < t
+        if (r & 128) != 0
+            r = ((r << 1) ^ 113) & 255
+        else
+            r = (r << 1) & 255
+        i = i + 1
+    r & 1
+
+fn kf_iota(st: &mut Bytes, round: Int) -> Unit
+    lo = lane_lo(st, 0)
+    hi = lane_hi(st, 0)
+    j = 0
+    while j < 7
+        bit = 1 << j
+        pos = bit - 1
+        if rc_bit(round * 7 + j) != 0
+            if pos < 32
+                lo = lo ^ (1 << pos)
+            else
+                hi = hi ^ (1 << (pos - 32))
+        j = j + 1
+    st.set_u32(0, lo)
+    _b = st.set_u32(4, hi)
+
+fn keccak_f(st: &mut Bytes) -> Unit ! alloc
+    t = Bytes.new(280)
+    round = 0
+    while round < 24
+        kf_theta(st, &mut t)
+        kf_rho_pi(st, &mut t)
+        kf_chi(st, &mut t)
+        kf_iota(st, round)
+        round = round + 1

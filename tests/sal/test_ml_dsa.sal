@@ -1,0 +1,105 @@
+import "std/crypto/ml_dsa.sal"
+import "std/crypto/sha3.sal"
+import "support/assert.sal"
+import "support/hex.sal"
+
+# Known answer tests from FIPS 204 through the independent dilithium-py
+# implementation. Signing is deterministic in both, so the digest pins the
+# public key, the secret key and the signature for a fixed seed, message and
+# context.
+
+fn fill(buf: &mut Bytes, seed: Int) -> Unit
+    i = 0
+    while i < buf.len()
+        buf.set_u8(i, (seed + i * 7) & 255)
+        i = i + 1
+
+fn cat(a: &Bytes, b: &Bytes) -> Bytes ! alloc
+    out = Bytes.new(a.len() + b.len())
+    i = 0
+    while i < a.len()
+        out.set_u8(i, a.get_u8(i))
+        i = i + 1
+    i = 0
+    while i < b.len()
+        out.set_u8(a.len() + i, b.get_u8(i))
+        i = i + 1
+    out
+
+fn copy(b: &Bytes) -> Bytes ! alloc
+    out = Bytes.new(b.len())
+    i = 0
+    while i < b.len()
+        out.set_u8(i, b.get_u8(i))
+        i = i + 1
+    out
+
+fn as_int(v: Bool) -> Int
+    if v
+        1
+    else
+        0
+
+fn assert_ne_str(got: &String, bad: &String, code: Int) -> Int ! io, alloc
+    if got.eq(bad) == 0
+        0
+    else
+        assert_fail(code)
+
+fn check(dsa: &MlDsa, seed: Int, want: &String, base: Int) -> Int ! io, alloc
+    zeta = Bytes.new(32)
+    fill(&mut zeta, seed)
+    kp = dsa.keygen(&zeta)
+    msg = hex_to_bytes(&d"68656c6c6f")
+    ctx = hex_to_bytes(&d"637478")
+    sig = dsa.sign(&kp.sk, &msg, &ctx)
+
+    acc = cat(&kp.pk, &kp.sk)
+    acc = cat(&acc, &sig)
+    acc = cat(&acc, &hex_to_bytes(&d"01"))
+    rc = assert_str_eq(&bytes_to_hex(&shake256(&acc, 32)), want, base)
+
+    rc = rc + assert_ne(as_int(dsa.verify(&kp.pk, &msg, &sig, &ctx)), 0, base + 1)
+
+    bad = copy(&sig)
+    bad.set_u8(0, bad.get_u8(0) ^ 1)
+    rc = rc + assert_zero(as_int(dsa.verify(&kp.pk, &msg, &bad, &ctx)), base + 2)
+
+    other = hex_to_bytes(&d"68656c6c70")
+    rc = rc + assert_zero(as_int(dsa.verify(&kp.pk, &other, &sig, &ctx)), base + 3)
+
+    empty_ctx = Bytes.new(0)
+    rc = rc + assert_zero(as_int(dsa.verify(&kp.pk, &msg, &sig, &empty_ctx)), base + 4)
+
+    short = copy(&sig)
+    cut = Bytes.new(short.len() - 1)
+    i = 0
+    while i < cut.len()
+        cut.set_u8(i, short.get_u8(i))
+        i = i + 1
+    rc = rc + assert_zero(as_int(dsa.verify(&kp.pk, &msg, &cut, &ctx)), base + 5)
+    rc
+
+fn check_random(dsa: &MlDsa, base: Int) -> Int ! io, alloc
+    first = dsa.keygen_random()
+    second = dsa.keygen_random()
+    msg = hex_to_bytes(&d"68656c6c6f")
+    ctx = hex_to_bytes(&d"637478")
+    rc = assert_ne_str(&bytes_to_hex(&first.pk), &bytes_to_hex(&second.pk), base)
+    hedged = dsa.sign_random(&first.sk, &msg, &ctx)
+    rc = rc + assert_ne(as_int(dsa.verify(&first.pk, &msg, &hedged, &ctx)), 0, base + 1)
+    hedged_again = dsa.sign_random(&first.sk, &msg, &ctx)
+    rc = rc + assert_ne_str(&bytes_to_hex(&hedged), &bytes_to_hex(&hedged_again), base + 2)
+    zeros = Bytes.new(32)
+    zeros.fill(0, 32, 0)
+    rc = rc + assert_str_eq(&bytes_to_hex(&dsa.sign(&first.sk, &msg, &ctx)), &bytes_to_hex(&dsa.sign_with_rnd(&first.sk, &msg, &ctx, &zeros)), base + 3)
+    rc
+
+fn main() -> Int ! io, alloc
+    a = check(&MlDsa.ml_dsa_44(), 11, &d"142bcc734e8a93c5131c3bb70a0d8161f7f59f1b1abf67065ac90d20a7ffa242", 10)
+    b = check(&MlDsa.ml_dsa_65(), 21, &d"f75455b9297d4cbbb859a68652d25c646a09f1490b684b85703c3b0ca8766acf", 20)
+    c = check(&MlDsa.ml_dsa_87(), 31, &d"9603a719c57c692471d69f4b33c06af69da0c89a45fd4eae82c21cc4d8390d33", 30)
+    d = check_random(&MlDsa.ml_dsa_44(), 40)
+    e = check_random(&MlDsa.ml_dsa_65(), 50)
+    f = check_random(&MlDsa.ml_dsa_87(), 60)
+    a + b + c + d + e + f

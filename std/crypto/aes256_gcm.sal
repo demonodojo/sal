@@ -1,0 +1,340 @@
+# AES-256-GCM AEAD (NIST SP 800-38D): authenticated encryption for the session
+# keys derived from ML-KEM, as an alternative to ChaCha20-Poly1305 on CPUs with
+# AES instructions. `seal` draws the 96-bit nonce from the OS CSPRNG
+# (`std/io/rand.sal`); `seal_with_nonce` is the deterministic form for tests and
+# protocols where the nonce is a counter. Never reuse a (key, nonce) pair.
+#
+# `seal_with_nonce` returns the ciphertext followed by the 16-byte tag, and an
+# empty Bytes if the key or the nonce length is wrong. `open_with_nonce`
+# authenticates before decrypting and reports `ok = false` on any mismatch; its
+# `plaintext` is empty in that case. GCM only needs the forward cipher, so the
+# S-box is computed as x^254 in GF(2^8) and there is no inverse cipher. GHASH
+# works on 128-bit blocks held in Bytes: one bit per step, no 128-bit Ints.
+
+import "aead_sealed.sal"
+import "aead_opened.sal"
+import "../io/rand.sal"
+
+AES_KEY_BYTES = 32
+
+AES_NONCE_BYTES = 12
+
+AES_TAG_BYTES = 16
+
+AES_BLOCK_BYTES = 16
+
+AES_ROUNDS = 14
+
+AES_KEY_WORDS = 60
+
+struct Aes256Gcm
+    round_keys: Bytes
+    h: Bytes
+    ok: Bool
+
+static Aes256Gcm.new(key: &Bytes) -> Aes256Gcm ! alloc
+    if key.len() == AES_KEY_BYTES
+        rk = aes_expand(key)
+        zero = Bytes.new(AES_BLOCK_BYTES)
+        aes_zero(&mut zero)
+        h = Bytes.new(AES_BLOCK_BYTES)
+        aes_encrypt_block(&mut h, &rk, &zero)
+        Aes256Gcm(rk, h, true)
+    else
+        rk = Bytes.new(AES_KEY_WORDS * 4)
+        aes_zero(&mut rk)
+        h = Bytes.new(AES_BLOCK_BYTES)
+        aes_zero(&mut h)
+        Aes256Gcm(rk, h, false)
+
+method Aes256Gcm.seal(&self, plaintext: &Bytes, aad: &Bytes) -> AeadSealed ! io, alloc
+    nonce = rand_bytes(AES_NONCE_BYTES)
+    AeadSealed(nonce, self.seal_with_nonce(&nonce, plaintext, aad))
+
+method Aes256Gcm.seal_with_nonce(&self, nonce: &Bytes, plaintext: &Bytes, aad: &Bytes) -> Bytes ! alloc
+    if !self.ok || nonce.len() != AES_NONCE_BYTES
+        aes_empty()
+    else
+        ct = Bytes.new(plaintext.len())
+        aes_ctr(&mut ct, plaintext, &self.round_keys, nonce, 2)
+        tag = aes_gcm_tag(&self.round_keys, &self.h, nonce, aad, &ct)
+        out = Bytes.new(ct.len() + AES_TAG_BYTES)
+        aes_copy(&mut out, 0, &ct, 0, ct.len())
+        aes_copy(&mut out, ct.len(), &tag, 0, AES_TAG_BYTES)
+        out
+
+method Aes256Gcm.open(&self, sealed: &AeadSealed, aad: &Bytes) -> AeadOpened ! alloc
+    self.open_with_nonce(&sealed.nonce, &sealed.ciphertext, aad)
+
+method Aes256Gcm.open_with_nonce(&self, nonce: &Bytes, sealed: &Bytes, aad: &Bytes) -> AeadOpened ! alloc
+    if !self.ok || nonce.len() != AES_NONCE_BYTES || sealed.len() < AES_TAG_BYTES
+        AeadOpened(false, aes_empty())
+    else
+        n = sealed.len() - AES_TAG_BYTES
+        ct = Bytes.new(n)
+        aes_copy(&mut ct, 0, sealed, 0, n)
+        tag = aes_gcm_tag(&self.round_keys, &self.h, nonce, aad, &ct)
+        if !aes_tag_eq(&tag, 0, sealed, n)
+            AeadOpened(false, aes_empty())
+        else
+            pt = Bytes.new(n)
+            aes_ctr(&mut pt, &ct, &self.round_keys, nonce, 2)
+            AeadOpened(true, pt)
+
+fn aes_empty() -> Bytes ! alloc
+    Bytes.new(0)
+
+fn aes_zero(buf: &mut Bytes) -> Unit
+    _z = buf.fill(0, buf.len(), 0)
+
+fn aes_copy(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int, n: Int) -> Unit
+    i = 0
+    while i < n
+        dst.set_u8(doff + i, src.get_u8(soff + i))
+        i = i + 1
+
+fn aes_tag_eq(a: &Bytes, aoff: Int, b: &Bytes, boff: Int) -> Bool
+    diff = 0
+    i = 0
+    while i < AES_TAG_BYTES
+        diff = diff | (a.get_u8(aoff + i) ^ b.get_u8(boff + i))
+        i = i + 1
+    if diff == 0
+        true
+    else
+        false
+
+fn aes_get_be32(b: &Bytes, off: Int) -> Int
+    (b.get_u8(off) << 24) | (b.get_u8(off + 1) << 16) | (b.get_u8(off + 2) << 8) | b.get_u8(off + 3)
+
+fn aes_set_be32(b: &mut Bytes, off: Int, v: Int) -> Unit
+    b.set_u8(off, (v >> 24) & 255)
+    b.set_u8(off + 1, (v >> 16) & 255)
+    b.set_u8(off + 2, (v >> 8) & 255)
+    _l = b.set_u8(off + 3, v & 255)
+
+fn aes_xtime(a: Int) -> Int
+    x = (a << 1) & 255
+    if (a & 128) != 0
+        x = x ^ 27
+    x
+
+fn aes_gmul(a: Int, b: Int) -> Int
+    p = 0
+    x = a & 255
+    y = b & 255
+    i = 0
+    while i < 8
+        if (y & 1) == 1
+            p = p ^ x
+        hi = x & 128
+        x = (x << 1) & 255
+        if hi != 0
+            x = x ^ 27
+        y = y >> 1
+        i = i + 1
+    p & 255
+
+fn aes_rotl8(v: Int, n: Int) -> Int
+    ((v << n) | (v >> (8 - n))) & 255
+
+fn aes_sbox(x: Int) -> Int
+    v = x & 255
+    inv = 0
+    if v != 0
+        inv = 1
+        base = v
+        e = 254
+        while e > 0
+            if (e & 1) == 1
+                inv = aes_gmul(inv, base)
+            base = aes_gmul(base, base)
+            e = e >> 1
+    # inv is v^254, the multiplicative inverse; then the affine map of FIPS 197.
+    acc = inv ^ aes_rotl8(inv, 1) ^ aes_rotl8(inv, 2) ^ aes_rotl8(inv, 3) ^ aes_rotl8(inv, 4) ^ 99
+    acc & 255
+
+fn aes_sub_word(t: Int) -> Int
+    (aes_sbox((t >> 24) & 255) << 24) | (aes_sbox((t >> 16) & 255) << 16) | (aes_sbox((t >> 8) & 255) << 8) | aes_sbox(t & 255)
+
+fn aes_expand(key: &Bytes) -> Bytes ! alloc
+    w = Bytes.new(AES_KEY_WORDS * 4)
+    i = 0
+    while i < 8
+        aes_set_be32(&mut w, i * 4, aes_get_be32(key, i * 4))
+        i = i + 1
+    rcon = 1
+    i = 8
+    while i < AES_KEY_WORDS
+        t = aes_get_be32(&w, (i - 1) * 4)
+        if i % 8 == 0
+            t = aes_sub_word(((t << 8) | (t >> 24)) & 4294967295) ^ (rcon << 24)
+            rcon = aes_xtime(rcon)
+        elsif i % 8 == 4
+            t = aes_sub_word(t)
+        t = t ^ aes_get_be32(&w, (i - 8) * 4)
+        aes_set_be32(&mut w, i * 4, t)
+        i = i + 1
+    w
+
+fn aes_sub_bytes(st: &mut Bytes) -> Unit
+    i = 0
+    while i < AES_BLOCK_BYTES
+        st.set_u8(i, aes_sbox(st.get_u8(i)))
+        i = i + 1
+
+fn aes_shift_rows(st: &mut Bytes) -> Unit ! alloc
+    src = Bytes.new(AES_BLOCK_BYTES)
+    aes_copy(&mut src, 0, st, 0, AES_BLOCK_BYTES)
+    st.set_u8(1, src.get_u8(5))
+    st.set_u8(5, src.get_u8(9))
+    st.set_u8(9, src.get_u8(13))
+    st.set_u8(13, src.get_u8(1))
+    st.set_u8(2, src.get_u8(10))
+    st.set_u8(6, src.get_u8(14))
+    st.set_u8(10, src.get_u8(2))
+    st.set_u8(14, src.get_u8(6))
+    st.set_u8(3, src.get_u8(15))
+    st.set_u8(7, src.get_u8(3))
+    st.set_u8(11, src.get_u8(7))
+    _u = st.set_u8(15, src.get_u8(11))
+
+fn aes_mix_columns(st: &mut Bytes) -> Unit
+    c = 0
+    while c < 4
+        o = c * 4
+        a0 = st.get_u8(o)
+        a1 = st.get_u8(o + 1)
+        a2 = st.get_u8(o + 2)
+        a3 = st.get_u8(o + 3)
+        t = a0 ^ a1 ^ a2 ^ a3
+        st.set_u8(o, a0 ^ t ^ aes_xtime(a0 ^ a1))
+        st.set_u8(o + 1, a1 ^ t ^ aes_xtime(a1 ^ a2))
+        st.set_u8(o + 2, a2 ^ t ^ aes_xtime(a2 ^ a3))
+        st.set_u8(o + 3, a3 ^ t ^ aes_xtime(a3 ^ a0))
+        c = c + 1
+
+fn aes_encrypt_block(out: &mut Bytes, round_keys: &Bytes, input: &Bytes) -> Unit ! alloc
+    st = Bytes.new(AES_BLOCK_BYTES)
+    i = 0
+    while i < AES_BLOCK_BYTES
+        st.set_u8(i, input.get_u8(i) ^ round_keys.get_u8(i))
+        i = i + 1
+    round = 1
+    while round < AES_ROUNDS
+        aes_sub_bytes(&mut st)
+        aes_shift_rows(&mut st)
+        aes_mix_columns(&mut st)
+        i = 0
+        while i < AES_BLOCK_BYTES
+            st.set_u8(i, st.get_u8(i) ^ round_keys.get_u8(round * AES_BLOCK_BYTES + i))
+            i = i + 1
+        round = round + 1
+    aes_sub_bytes(&mut st)
+    aes_shift_rows(&mut st)
+    i = 0
+    while i < AES_BLOCK_BYTES
+        out.set_u8(i, st.get_u8(i) ^ round_keys.get_u8(AES_ROUNDS * AES_BLOCK_BYTES + i))
+        i = i + 1
+
+fn aes_ctr(out: &mut Bytes, input: &Bytes, round_keys: &Bytes, nonce: &Bytes, counter: Int) -> Unit ! alloc
+    block = Bytes.new(AES_BLOCK_BYTES)
+    ctr = Bytes.new(AES_BLOCK_BYTES)
+    aes_copy(&mut ctr, 0, nonce, 0, AES_NONCE_BYTES)
+    off = 0
+    c = counter
+    while off < input.len()
+        ctr.set_u8(12, (c >> 24) & 255)
+        ctr.set_u8(13, (c >> 16) & 255)
+        ctr.set_u8(14, (c >> 8) & 255)
+        ctr.set_u8(15, c & 255)
+        aes_encrypt_block(&mut block, round_keys, &ctr)
+        n = input.len() - off
+        if n > AES_BLOCK_BYTES
+            n = AES_BLOCK_BYTES
+        i = 0
+        while i < n
+            out.set_u8(off + i, input.get_u8(off + i) ^ block.get_u8(i))
+            i = i + 1
+        off = off + AES_BLOCK_BYTES
+        c = (c + 1) & 4294967295
+
+fn aes_gmul128(x: &Bytes, y: &Bytes) -> Bytes ! alloc
+    z = Bytes.new(AES_BLOCK_BYTES)
+    v = Bytes.new(AES_BLOCK_BYTES)
+    aes_zero(&mut z)
+    aes_copy(&mut v, 0, y, 0, AES_BLOCK_BYTES)
+    i = 0
+    while i < 128
+        bit = (x.get_u8(i >> 3) >> (7 - (i & 7))) & 1
+        if bit == 1
+            j = 0
+            while j < AES_BLOCK_BYTES
+                z.set_u8(j, z.get_u8(j) ^ v.get_u8(j))
+                j = j + 1
+        lsb = v.get_u8(15) & 1
+        j = 15
+        while j > 0
+            v.set_u8(j, ((v.get_u8(j) >> 1) | (v.get_u8(j - 1) << 7)) & 255)
+            j = j - 1
+        v.set_u8(0, v.get_u8(0) >> 1)
+        if lsb == 1
+            v.set_u8(0, v.get_u8(0) ^ 225)
+        i = i + 1
+    z
+
+fn aes_ghash_absorb(y: &mut Bytes, h: &Bytes, data: &Bytes) -> Unit ! alloc
+    off = 0
+    while off < data.len()
+        blk = Bytes.new(AES_BLOCK_BYTES)
+        aes_zero(&mut blk)
+        n = data.len() - off
+        if n > AES_BLOCK_BYTES
+            n = AES_BLOCK_BYTES
+        aes_copy(&mut blk, 0, data, off, n)
+        i = 0
+        while i < AES_BLOCK_BYTES
+            blk.set_u8(i, blk.get_u8(i) ^ y.get_u8(i))
+            i = i + 1
+        g = aes_gmul128(&blk, h)
+        i = 0
+        while i < AES_BLOCK_BYTES
+            y.set_u8(i, g.get_u8(i))
+            i = i + 1
+        off = off + AES_BLOCK_BYTES
+
+fn aes_put_be64(b: &mut Bytes, off: Int, v: Int) -> Unit
+    i = 0
+    while i < 8
+        b.set_u8(off + i, (v >> (56 - i * 8)) & 255)
+        i = i + 1
+
+fn aes_ghash(h: &Bytes, aad: &Bytes, ct: &Bytes) -> Bytes ! alloc
+    y = Bytes.new(AES_BLOCK_BYTES)
+    aes_zero(&mut y)
+    aes_ghash_absorb(&mut y, h, aad)
+    aes_ghash_absorb(&mut y, h, ct)
+    lens = Bytes.new(AES_BLOCK_BYTES)
+    aes_zero(&mut lens)
+    aes_put_be64(&mut lens, 0, aad.len() * 8)
+    aes_put_be64(&mut lens, 8, ct.len() * 8)
+    i = 0
+    while i < AES_BLOCK_BYTES
+        lens.set_u8(i, lens.get_u8(i) ^ y.get_u8(i))
+        i = i + 1
+    aes_gmul128(&lens, h)
+
+fn aes_gcm_tag(round_keys: &Bytes, h: &Bytes, nonce: &Bytes, aad: &Bytes, ct: &Bytes) -> Bytes ! alloc
+    j0 = Bytes.new(AES_BLOCK_BYTES)
+    aes_zero(&mut j0)
+    aes_copy(&mut j0, 0, nonce, 0, AES_NONCE_BYTES)
+    j0.set_u8(15, 1)
+    mask = Bytes.new(AES_BLOCK_BYTES)
+    aes_encrypt_block(&mut mask, round_keys, &j0)
+    s = aes_ghash(h, aad, ct)
+    tag = Bytes.new(AES_TAG_BYTES)
+    i = 0
+    while i < AES_TAG_BYTES
+        tag.set_u8(i, mask.get_u8(i) ^ s.get_u8(i))
+        i = i + 1
+    tag

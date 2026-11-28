@@ -1,0 +1,5 @@
+# Encapsulation key (`ek`) and decapsulation key (`dk`) of ML-KEM.
+
+struct MlKemKeyPair
+    ek: Bytes
+    dk: Bytes

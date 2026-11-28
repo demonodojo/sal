@@ -1,0 +1,81 @@
+import "std/crypto/ml_kem.sal"
+import "std/crypto/sha3.sal"
+import "support/assert.sal"
+import "support/hex.sal"
+
+# Known answer tests come from FIPS 203 through the independent kyber-py
+# implementation: the digest pins ek, dk, ciphertext, shared secret and the
+# decapsulated secret for fixed seeds.
+
+fn fill(buf: &mut Bytes, seed: Int) -> Unit
+    i = 0
+    while i < buf.len()
+        buf.set_u8(i, (seed + i * 7) & 255)
+        i = i + 1
+
+fn cat(a: &Bytes, b: &Bytes) -> Bytes ! alloc
+    out = Bytes.new(a.len() + b.len())
+    i = 0
+    while i < a.len()
+        out.set_u8(i, a.get_u8(i))
+        i = i + 1
+    i = 0
+    while i < b.len()
+        out.set_u8(a.len() + i, b.get_u8(i))
+        i = i + 1
+    out
+
+fn check(kem: &MlKem, want: &String, base: Int) -> Int ! io, alloc
+    d = Bytes.new(32)
+    z = Bytes.new(32)
+    m = Bytes.new(32)
+    fill(&mut d, 1)
+    fill(&mut z, 200)
+    fill(&mut m, 99)
+    kp = kem.keygen(&d, &z)
+    enc = kem.encapsulate(&kp.ek, &m)
+    ss = kem.decapsulate(&kp.dk, &enc.ciphertext)
+
+    acc = cat(&kp.ek, &kp.dk)
+    acc = cat(&acc, &enc.ciphertext)
+    acc = cat(&acc, &enc.shared_secret)
+    acc = cat(&acc, &ss)
+    rc = assert_str_eq(&bytes_to_hex(&shake256(&acc, 32)), want, base)
+
+    rc = rc + assert_str_eq(&bytes_to_hex(&ss), &bytes_to_hex(&enc.shared_secret), base + 1)
+
+    bad = Bytes.new(enc.ciphertext.len())
+    i = 0
+    while i < bad.len()
+        bad.set_u8(i, enc.ciphertext.get_u8(i))
+        i = i + 1
+    bad.set_u8(0, bad.get_u8(0) ^ 1)
+    rc = rc + assert_ne_str(&bytes_to_hex(&kem.decapsulate(&kp.dk, &bad)), &bytes_to_hex(&enc.shared_secret), base + 2)
+
+    short = Bytes.new(16)
+    rc = rc + assert_zero(kem.encapsulate(&short, &m).ciphertext.len(), base + 3)
+    rc = rc + assert_zero(kem.decapsulate(&kp.dk, &short).len() - 32, base + 4)
+    rc
+
+fn check_random(kem: &MlKem, base: Int) -> Int ! io, alloc
+    first = kem.keygen_random()
+    second = kem.keygen_random()
+    rc = assert_ne_str(&bytes_to_hex(&first.ek), &bytes_to_hex(&second.ek), base)
+    enc = kem.encapsulate_random(&first.ek)
+    ss = kem.decapsulate(&first.dk, &enc.ciphertext)
+    rc + assert_str_eq(&bytes_to_hex(&ss), &bytes_to_hex(&enc.shared_secret), base + 1)
+
+fn assert_ne_str(got: &String, bad: &String, code: Int) -> Int ! io, alloc
+    if got.eq(bad) == 0
+        0
+    else
+        assert_fail(code)
+
+fn main() -> Int ! io, alloc
+    a = check(&MlKem.ml_kem_512(), &d"ad4ae42b36042610d2338172647b1d8582cd76bf4ec73baa4e20c18a8390d88d", 10)
+    b = check(&MlKem.ml_kem_768(), &d"dae0697c5bdf4f11a56e03b0a024b30ce004777010e701e6c4f98ce1bc1fed4b", 20)
+    c = check(&MlKem.ml_kem_1024(), &d"4662fbe5b8d3a366acea8f8e5862bb5c945a46a7f55448a956977cfe1c0dc371", 30)
+    d = check_random(&MlKem.ml_kem_512(), 40)
+    e = check_random(&MlKem.ml_kem_768(), 50)
+    f = check_random(&MlKem.ml_kem_1024(), 60)
+    a + b + c + d + e + f

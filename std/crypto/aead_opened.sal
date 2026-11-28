@@ -1,0 +1,3 @@
+struct AeadOpened
+    ok: Bool
+    plaintext: Bytes

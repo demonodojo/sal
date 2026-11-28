@@ -1,0 +1,336 @@
+# ChaCha20-Poly1305 AEAD (RFC 8439): authenticated encryption for the session
+# keys derived from ML-KEM. `seal` draws the 96-bit nonce from the OS CSPRNG
+# (`std/io/rand.sal`); `seal_with_nonce` is the deterministic form for tests
+# and protocols where the nonce is a counter. Never reuse a (key, nonce) pair.
+#
+# `seal_with_nonce` returns the ciphertext followed by the 16-byte tag, and an
+# empty Bytes if the key or the nonce length is wrong. `open_with_nonce`
+# authenticates before decrypting and reports `ok = false` on any mismatch;
+# its `plaintext` is empty in that case. Poly1305 uses five 26-bit limbs so every
+# product fits in a 64-bit Int.
+
+import "aead_sealed.sal"
+import "aead_opened.sal"
+import "../io/rand.sal"
+
+C20P_KEY_BYTES = 32
+
+C20P_NONCE_BYTES = 12
+
+C20P_TAG_BYTES = 16
+
+C20P_BLOCK_BYTES = 64
+
+C20P_LIMB_MASK = 67108863
+
+C20P_R1_MASK = 67108611
+
+C20P_R2_MASK = 67092735
+
+C20P_R3_MASK = 66076671
+
+C20P_R4_MASK = 1048575
+
+struct ChaCha20Poly1305
+    key: Bytes
+    ok: Bool
+
+static ChaCha20Poly1305.new(key: &Bytes) -> ChaCha20Poly1305 ! alloc
+    k = Bytes.new(C20P_KEY_BYTES)
+    c20p_zero(&mut k)
+    ok = false
+    if key.len() == C20P_KEY_BYTES
+        ok = true
+        c20p_copy(&mut k, 0, key, 0, C20P_KEY_BYTES)
+    ChaCha20Poly1305(k, ok)
+
+method ChaCha20Poly1305.seal(&self, plaintext: &Bytes, aad: &Bytes) -> AeadSealed ! io, alloc
+    nonce = rand_bytes(C20P_NONCE_BYTES)
+    AeadSealed(nonce, self.seal_with_nonce(&nonce, plaintext, aad))
+
+method ChaCha20Poly1305.seal_with_nonce(&self, nonce: &Bytes, plaintext: &Bytes, aad: &Bytes) -> Bytes ! alloc
+    if !self.ok || nonce.len() != C20P_NONCE_BYTES
+        c20p_empty()
+    else
+        ct = Bytes.new(plaintext.len())
+        c20p_xor(&mut ct, plaintext, &self.key, nonce, 1)
+        tag = c20p_aead_tag(&self.key, nonce, aad, &ct)
+        out = Bytes.new(ct.len() + C20P_TAG_BYTES)
+        c20p_copy(&mut out, 0, &ct, 0, ct.len())
+        c20p_copy(&mut out, ct.len(), &tag, 0, C20P_TAG_BYTES)
+        out
+
+method ChaCha20Poly1305.open(&self, sealed: &AeadSealed, aad: &Bytes) -> AeadOpened ! alloc
+    self.open_with_nonce(&sealed.nonce, &sealed.ciphertext, aad)
+
+method ChaCha20Poly1305.open_with_nonce(&self, nonce: &Bytes, sealed: &Bytes, aad: &Bytes) -> AeadOpened ! alloc
+    if !self.ok || nonce.len() != C20P_NONCE_BYTES || sealed.len() < C20P_TAG_BYTES
+        AeadOpened(false, c20p_empty())
+    else
+        n = sealed.len() - C20P_TAG_BYTES
+        ct = Bytes.new(n)
+        c20p_copy(&mut ct, 0, sealed, 0, n)
+        tag = c20p_aead_tag(&self.key, nonce, aad, &ct)
+        if !c20p_tag_eq(&tag, 0, sealed, n)
+            AeadOpened(false, c20p_empty())
+        else
+            pt = Bytes.new(n)
+            c20p_xor(&mut pt, &ct, &self.key, nonce, 1)
+            AeadOpened(true, pt)
+
+fn c20p_empty() -> Bytes ! alloc
+    Bytes.new(0)
+
+fn c20p_zero(buf: &mut Bytes) -> Unit
+    _z = buf.fill(0, buf.len(), 0)
+
+fn c20p_copy(dst: &mut Bytes, doff: Int, src: &Bytes, soff: Int, n: Int) -> Unit
+    i = 0
+    while i < n
+        dst.set_u8(doff + i, src.get_u8(soff + i))
+        i = i + 1
+
+fn c20p_state(s: &mut Bytes, key: &Bytes, counter: Int, nonce: &Bytes) -> Unit
+    s.set_u32(0, 1634760805)
+    s.set_u32(4, 857760878)
+    s.set_u32(8, 2036477234)
+    s.set_u32(12, 1797285236)
+    i = 0
+    while i < 8
+        s.set_u32(16 + i * 4, key.get_u32(i * 4))
+        i = i + 1
+    s.set_u32(48, counter & 4294967295)
+    i = 0
+    while i < 3
+        s.set_u32(52 + i * 4, nonce.get_u32(i * 4))
+        i = i + 1
+
+fn c20p_qr(s: &mut Bytes, a: Int, b: Int, c: Int, d: Int) -> Unit
+    xa = s.get_u32(a * 4)
+    xb = s.get_u32(b * 4)
+    xc = s.get_u32(c * 4)
+    xd = s.get_u32(d * 4)
+    xa = (xa + xb) & 4294967295
+    xd = (xd ^ xa)
+    xd = ((xd << 16) | (xd >> 16)) & 4294967295
+    xc = (xc + xd) & 4294967295
+    xb = (xb ^ xc)
+    xb = ((xb << 12) | (xb >> 20)) & 4294967295
+    xa = (xa + xb) & 4294967295
+    xd = (xd ^ xa)
+    xd = ((xd << 8) | (xd >> 24)) & 4294967295
+    xc = (xc + xd) & 4294967295
+    xb = (xb ^ xc)
+    xb = ((xb << 7) | (xb >> 25)) & 4294967295
+    s.set_u32(a * 4, xa)
+    s.set_u32(b * 4, xb)
+    s.set_u32(c * 4, xc)
+    _d = s.set_u32(d * 4, xd)
+
+fn c20p_block(out: &mut Bytes, key: &Bytes, counter: Int, nonce: &Bytes) -> Unit ! alloc
+    st = Bytes.new(C20P_BLOCK_BYTES)
+    c20p_state(&mut st, key, counter, nonce)
+    ws = Bytes.new(C20P_BLOCK_BYTES)
+    c20p_copy(&mut ws, 0, &st, 0, C20P_BLOCK_BYTES)
+    r = 0
+    while r < 10
+        c20p_qr(&mut ws, 0, 4, 8, 12)
+        c20p_qr(&mut ws, 1, 5, 9, 13)
+        c20p_qr(&mut ws, 2, 6, 10, 14)
+        c20p_qr(&mut ws, 3, 7, 11, 15)
+        c20p_qr(&mut ws, 0, 5, 10, 15)
+        c20p_qr(&mut ws, 1, 6, 11, 12)
+        c20p_qr(&mut ws, 2, 7, 8, 13)
+        c20p_qr(&mut ws, 3, 4, 9, 14)
+        r = r + 1
+    i = 0
+    while i < 16
+        out.set_u32(i * 4, (ws.get_u32(i * 4) + st.get_u32(i * 4)) & 4294967295)
+        i = i + 1
+
+fn c20p_xor(out: &mut Bytes, input: &Bytes, key: &Bytes, nonce: &Bytes, counter: Int) -> Unit ! alloc
+    block = Bytes.new(C20P_BLOCK_BYTES)
+    off = 0
+    ctr = counter
+    while off < input.len()
+        c20p_block(&mut block, key, ctr, nonce)
+        n = input.len() - off
+        if n > C20P_BLOCK_BYTES
+            n = C20P_BLOCK_BYTES
+        i = 0
+        while i < n
+            out.set_u8(off + i, input.get_u8(off + i) ^ block.get_u8(i))
+            i = i + 1
+        off = off + C20P_BLOCK_BYTES
+        ctr = ctr + 1
+
+fn c20p_put64(b: &mut Bytes, off: Int, v: Int) -> Unit
+    i = 0
+    while i < 8
+        b.set_u8(off + i, (v >> (i * 8)) & 255)
+        i = i + 1
+
+fn c20p_tag_eq(a: &Bytes, aoff: Int, b: &Bytes, boff: Int) -> Bool
+    diff = 0
+    i = 0
+    while i < C20P_TAG_BYTES
+        diff = diff | (a.get_u8(aoff + i) ^ b.get_u8(boff + i))
+        i = i + 1
+    if diff == 0
+        true
+    else
+        false
+
+fn c20p_aead_tag(key: &Bytes, nonce: &Bytes, aad: &Bytes, ct: &Bytes) -> Bytes ! alloc
+    block = Bytes.new(C20P_BLOCK_BYTES)
+    c20p_block(&mut block, key, 0, nonce)
+    otk = Bytes.new(32)
+    c20p_copy(&mut otk, 0, &block, 0, 32)
+
+    aad_pad = 0
+    if aad.len() % 16 != 0
+        aad_pad = 16 - aad.len() % 16
+    ct_pad = 0
+    if ct.len() % 16 != 0
+        ct_pad = 16 - ct.len() % 16
+    mac = Bytes.new(aad.len() + aad_pad + ct.len() + ct_pad + 16)
+    c20p_zero(&mut mac)
+    c20p_copy(&mut mac, 0, aad, 0, aad.len())
+    off = aad.len() + aad_pad
+    c20p_copy(&mut mac, off, ct, 0, ct.len())
+    off = off + ct.len() + ct_pad
+    c20p_put64(&mut mac, off, aad.len())
+    c20p_put64(&mut mac, off + 8, ct.len())
+    c20p_poly1305(&otk, &mac)
+
+fn c20p_poly1305(key: &Bytes, msg: &Bytes) -> Bytes ! alloc
+    k0 = key.get_u32(0)
+    k1 = key.get_u32(4)
+    k2 = key.get_u32(8)
+    k3 = key.get_u32(12)
+    r0 = k0 & C20P_LIMB_MASK
+    r1 = ((k0 >> 26) | (k1 << 6)) & C20P_R1_MASK
+    r2 = ((k1 >> 20) | (k2 << 12)) & C20P_R2_MASK
+    r3 = ((k2 >> 14) | (k3 << 18)) & C20P_R3_MASK
+    r4 = (k3 >> 8) & C20P_R4_MASK
+    s1 = r1 * 5
+    s2 = r2 * 5
+    s3 = r3 * 5
+    s4 = r4 * 5
+
+    h0 = 0
+    h1 = 0
+    h2 = 0
+    h3 = 0
+    h4 = 0
+    off = 0
+    while off < msg.len()
+        n = msg.len() - off
+        if n > 16
+            n = 16
+        blk = Bytes.new(17)
+        c20p_zero(&mut blk)
+        c20p_copy(&mut blk, 0, msg, off, n)
+        hibit = 16777216
+        if n < 16
+            blk.set_u8(n, 1)
+            hibit = 0
+        m0 = blk.get_u32(0)
+        m1 = blk.get_u32(4)
+        m2 = blk.get_u32(8)
+        m3 = blk.get_u32(12)
+        h0 = h0 + (m0 & C20P_LIMB_MASK)
+        h1 = h1 + (((m0 >> 26) | (m1 << 6)) & C20P_LIMB_MASK)
+        h2 = h2 + (((m1 >> 20) | (m2 << 12)) & C20P_LIMB_MASK)
+        h3 = h3 + (((m2 >> 14) | (m3 << 18)) & C20P_LIMB_MASK)
+        h4 = h4 + (m3 >> 8) + hibit
+
+        d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1
+        d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2
+        d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3
+        d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4
+        d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0
+
+        carry = d0 >> 26
+        h0 = d0 & C20P_LIMB_MASK
+        d1 = d1 + carry
+        carry = d1 >> 26
+        h1 = d1 & C20P_LIMB_MASK
+        d2 = d2 + carry
+        carry = d2 >> 26
+        h2 = d2 & C20P_LIMB_MASK
+        d3 = d3 + carry
+        carry = d3 >> 26
+        h3 = d3 & C20P_LIMB_MASK
+        d4 = d4 + carry
+        carry = d4 >> 26
+        h4 = d4 & C20P_LIMB_MASK
+        h0 = h0 + carry * 5
+        carry = h0 >> 26
+        h0 = h0 & C20P_LIMB_MASK
+        h1 = h1 + carry
+        off = off + n
+
+    carry = h1 >> 26
+    h1 = h1 & C20P_LIMB_MASK
+    h2 = h2 + carry
+    carry = h2 >> 26
+    h2 = h2 & C20P_LIMB_MASK
+    h3 = h3 + carry
+    carry = h3 >> 26
+    h3 = h3 & C20P_LIMB_MASK
+    h4 = h4 + carry
+    carry = h4 >> 26
+    h4 = h4 & C20P_LIMB_MASK
+    h0 = h0 + carry * 5
+    carry = h0 >> 26
+    h0 = h0 & C20P_LIMB_MASK
+    h1 = h1 + carry
+
+    # Select h - p when h >= p: add 5 and drop 2^130.
+    g0 = h0 + 5
+    carry = g0 >> 26
+    g0 = g0 & C20P_LIMB_MASK
+    g1 = h1 + carry
+    carry = g1 >> 26
+    g1 = g1 & C20P_LIMB_MASK
+    g2 = h2 + carry
+    carry = g2 >> 26
+    g2 = g2 & C20P_LIMB_MASK
+    g3 = h3 + carry
+    carry = g3 >> 26
+    g3 = g3 & C20P_LIMB_MASK
+    g4 = h4 + carry - 67108864
+    if g4 >= 0
+        h0 = g0
+        h1 = g1
+        h2 = g2
+        h3 = g3
+        h4 = g4
+
+    f0 = (h0 | (h1 << 26)) & 4294967295
+    f1 = ((h1 >> 6) | (h2 << 20)) & 4294967295
+    f2 = ((h2 >> 12) | (h3 << 14)) & 4294967295
+    f3 = ((h3 >> 18) | (h4 << 8)) & 4294967295
+
+    w0 = key.get_u32(16)
+    w1 = key.get_u32(20)
+    w2 = key.get_u32(24)
+    w3 = key.get_u32(28)
+    sum = f0 + w0
+    t0 = sum & 4294967295
+    carry = sum >> 32
+    sum = f1 + w1 + carry
+    t1 = sum & 4294967295
+    carry = sum >> 32
+    sum = f2 + w2 + carry
+    t2 = sum & 4294967295
+    carry = sum >> 32
+    sum = f3 + w3 + carry
+    t3 = sum & 4294967295
+    tag = Bytes.new(C20P_TAG_BYTES)
+    tag.set_u32(0, t0)
+    tag.set_u32(4, t1)
+    tag.set_u32(8, t2)
+    tag.set_u32(12, t3)
+    tag
