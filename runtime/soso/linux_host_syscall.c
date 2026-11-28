@@ -54,6 +54,7 @@ enum {
     SOSO_O_APPEND = 2,
     SOSO_O_CREAT = 4,
     SOSO_O_TRUNC = 8,
+    SOSO_O_EXCL = 16,
     SOSO_FT_FILE = 1,
     SOSO_FT_DIR = 2,
     SOSO_DIRENT_SIZE = 272,
@@ -130,6 +131,9 @@ static int map_open_flags(int64_t flags) {
     }
     if ((flags & SOSO_O_APPEND) != 0) {
         f |= O_APPEND;
+    }
+    if ((flags & SOSO_O_EXCL) != 0) {
+        f |= O_EXCL;
     }
     return f;
 }

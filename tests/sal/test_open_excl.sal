@@ -1,0 +1,24 @@
+# Issue #3: `O_CREAT + O_EXCL` creates the file only when it does not exist; a second exclusive
+# open of the same path fails (negative errno, EEXIST), so a lock built on it admits one holder.
+import "std/io/abi.sal"
+import "std/io/io.sal"
+import "std/io/fs.sal"
+import "support/assert.sal"
+
+fn main() -> Int ! io, alloc
+    path = d"/tmp/sal-test-open-excl"
+    buf = path_to_buf(&path)
+    unlink_path_ptr(buf.ptr(), path.len())
+    flags = O_WRONLY + O_CREAT + O_EXCL
+    first = open_flags(buf.ptr(), path.len(), flags)
+    second = open_flags(buf.ptr(), path.len(), flags)
+    if first >= 0
+        Fd.new(first).close()
+    if second >= 0
+        Fd.new(second).close()
+    unlink_path_ptr(buf.ptr(), path.len())
+    a = assert_ne(first < 0, 1, 1)
+    if a != 0
+        a
+    else
+        assert_ne(second >= 0, 1, 2)
