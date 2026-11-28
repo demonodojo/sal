@@ -1,0 +1,60 @@
+# exit: 29
+# A `String` a match binder builds with `+` (`(v + w).len()`, `t = s + w`) is a new value
+# released at the end of the arm, whatever the match: by value, over a generic enum
+# (`Option[String]`), through a reference, or under a nested variant (`W(Some(s))`).
+enum Shape
+    A(String)
+    B(Int)
+
+enum Wrap
+    W(Option[String])
+    Z
+
+fn by_value(e: Shape, w: &String) -> Int ! alloc
+    match e
+        A(v) => (v + w).len()
+        B(n) => n
+
+fn by_value_bound(e: Shape, w: &String) -> Int ! alloc
+    match e
+        A(v) =>
+            t = v + w
+            t.len()
+        B(n) => n
+
+fn generic(o: Option[String], w: &String) -> Int ! alloc
+    match o
+        Some(s) => (s + w).len()
+        None => 0
+
+fn generic_ref(o: &Option[String], w: &String) -> Int ! alloc
+    match o
+        Some(s) =>
+            t = s + w
+            t.len()
+        None => 0
+
+fn nested_ref(x: &Wrap, w: &String) -> Int ! alloc
+    match x
+        W(Some(s)) => (s + w).len()
+        W(None) => 1
+        Z => 2
+
+fn nested_value(x: Wrap, w: &String) -> Int ! alloc
+    match x
+        W(Some(s)) => (s + w).len()
+        W(None) => 1
+        Z => 2
+
+fn main() -> Int ! alloc
+    w = d"yz"
+    a = by_value(A(d"xy"), &w)
+    b = by_value_bound(A(d"xyz"), &w)
+    c = generic(Some(d"abc"), &w)
+    o = Some(d"abcd")
+    d = generic_ref(&o, &w)
+    x = W(Some(d"q"))
+    e = nested_ref(&x, &w)
+    f = nested_value(W(Some(d"ab")), &w)
+    g = nested_value(Z, &w)
+    a + b + c + d + e + f + g

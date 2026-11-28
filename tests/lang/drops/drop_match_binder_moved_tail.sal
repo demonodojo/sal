@@ -1,0 +1,18 @@
+# exit: 7
+# A block arm that ends with a binder of a by-value `match` hands that payload to the caller: it
+# is moved out of the enum (`enum_take`), the caller owns and releases the `String`, and the enum
+# is released with what it still owns.
+enum Shape
+    A(String)
+    B(Int)
+
+fn block_tail(e: Shape) -> String ! alloc
+    match e
+        A(v) =>
+            lens = List.new[Int]()
+            lens.push(v.len())
+            v
+        B(n) => d"b"
+
+fn main() -> Int ! alloc
+    block_tail(A(d"hello")).len() + block_tail(B(1)).len() + block_tail(A(d"x")).len()

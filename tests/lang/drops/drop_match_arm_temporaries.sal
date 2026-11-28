@@ -1,0 +1,30 @@
+# exit: 23
+# The `String` a match arm builds and only reads (`(v + &w).len()`) is released at the end of
+# the arm, in an expression arm and in the tail of a block arm, with the pattern binder alive.
+enum Tag
+    Name(String)
+    Empty
+
+fn none() -> String ! alloc
+    d"none"
+
+fn width(t: &Tag, w: &String) -> Int ! alloc
+    match t
+        Name(v) => (v + w).len()
+        Empty => 0
+
+fn padded(t: &Tag) -> Int ! alloc
+    match t
+        Name(v) =>
+            n = v.len()
+            (v + "--").len() + n
+        Empty => (none() + "!").len()
+
+fn main() -> Int ! alloc
+    w = d"yz"
+    a = Name(d"abc")
+    b = Empty
+    local = match &a
+        Name(v) => (v + &w).len()
+        Empty => 0
+    width(&a, &w) + width(&b, &w) + padded(&a) + padded(&b) + local

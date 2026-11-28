@@ -67,7 +67,7 @@ Clases:
 | SPEC «Métodos»: `append` sin semántica | Quitado; `E_TYPE` |
 | SPEC «Memoria»: asas incompletas (solo `str_as_int`, `vec_push`, `map_put`) | Tabla «Frontera de asas» |
 | `03-semantics.md` y `04-ir-runtime.md`: «el derecho de `+` puede no ser `String`» frente a SPEC:275 (`E_TYPE`) | Texto corregido |
-| `src/drops.rs` `add_is_string_chain` decidía por la sintaxis, frente a SPEC:275 (decide el tipo) | Usa el tipo inferido. El selfhost no tiene tipos por expresión en `drops.sal`: divergencia anotada |
+| `src/drops.rs` `add_is_string_chain` decidía por la sintaxis, frente a SPEC:275 (decide el tipo) | Usa el tipo inferido. El selfhost no tiene tipos por expresión en `drops.sal`: divergencia anotada (cerrada después con `selfhost/ir/stradd.sal`) |
 | SPEC «Tipos» (`List`): «`list_get` presta el mismo puntero; copia para una segunda dueña» frente a «Memoria» (`get` es `&T`, sin copia implícita) | **No se cierra aquí** (no es de cadenas): pendiente del subplan 13 |
 
 ### Baseline (antes de tocar nada)
@@ -144,6 +144,8 @@ Marcas:
 | `err_borrow_reassign_while_borrowed` | `# selfhost-xfail` | El selfhost no ejecuta `check_borrows` |
 | `get_alias_accumulate` | `# selfhost-xfail` | El selfhost tipa `get` como `T` |
 
+Las tres marcas ya no están: las cerraron cambios posteriores (el borrowck del selfhost y el préstamo de `get`, y el pase de drops como en Rust).
+
 Otros tests:
 
 - `tests/forward_ir.rs`:
@@ -161,8 +163,7 @@ Espeja la bajada (hojas, plegado, `*_n`, temporales, guarda para parámetros `&`
 
 No espeja:
 
-- **`add_is_string_chain` por tipo.** `drops.sal` no tiene tipos por expresión, así que un `s = a + b` de variables sigue sin soltarse en un programa que compila el selfhost.
-- **La guarda para un local que viene de `get`.** El selfhost tipa `get` como `T` y el acumulador puede escribir en el elemento de la lista. Es el hueco que marca `get_alias_accumulate`.
+- **`add_is_string_chain` por tipo.** Cerrado después: `selfhost/ir/stradd.sal` tipa cada `+` antes de drops (con los mismos tipos que la bajada) y marca como `sadd`/`radd` los que tienen un `String` a la izquierda, así que `s = a + b` de variables se suelta como en el arranque. Una ligadura de patrón toma el tipo del campo que nombra (`sa_arm_pattern`), con los parámetros de un enum genérico sustituidos por los argumentos del tipo del escrutinio (`Some(s)` sobre `Option[String]` liga un `String`), también bajo una variante anidada (`W(Some(s))`); a través de una referencia es `&Campo`. La bajada tipa igual la ligadura anidada (`fuse_variant_field_type_in`, con el tipo del campo y no el del escrutinio). Lo cubre `tests/lang/drops/drop_match_binder_string_concat.sal`. Un parámetro de lambda queda sin tipo en el recorrido; aun así `apply(x => (x + w).len(), &s)` da la misma IR que en el arranque y no pierde memoria.
 
 ## Medidas
 
@@ -224,10 +225,6 @@ Una caché vieja del selfhost (`SAL_SELFHOST_CACHE` por defecto) da diferencias 
 
 - **Frontera de asas.** Sigue permitiendo alias y escrituras (`str_as_int` → `bytes_view_mem`, `str_from_int`, `str_share`, `select_str`). Está documentada. El selfhost la usa unas 200 veces, así que todavía no se puede sacar de la superficie.
 - **`String.to_int()`.** Es un cast de puntero (`str_as_int`), no un parseo.
-- **Selfhost:**
-  - `drops.sal` no tiene tipos por expresión, así que `s = a + b` de variables no se suelta.
-  - Un local que viene de `get` puede acumular sobre el elemento de la lista (`get_alias_accumulate`, marcado `selfhost-xfail`).
-- **Fuga previa con `d.has(k)`** cuando `k` es local (`dict_key_unchanged`, `asan-xfail`).
 - **Fallos que se reportan y no se tocan:** `sal_list_select` comparte punteros entre dos listas dueñas, `sal_ir_text` no suelta su búfer y `sal_char_to_str(0)` devuelve `""`.
 - **Linter.** `Style/Method` reescribe `int_to_str(t)` como `t.to_str()` aunque `t` sea un `Tensor`, y eso es `E_TYPE` (visto en `examples/transformer_gpu.sal`).
 - **Divergencia sin cerrar.** `list_get` en «Tipos» (SPEC) frente a «Memoria»: no es de cadenas, y queda para el subplan 13.

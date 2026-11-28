@@ -1456,6 +1456,10 @@ const PARITY_FILES: &[&str] = &[
     "tests/lang/threads/parallel_rebinds_name.sal",
     "tests/lang/threads/parallel_in_loop.sal",
     "tests/lang/threads/parallel_unit_block.sal",
+    "tests/lang/drops/drop_match_arm_temporaries.sal",
+    "tests/lang/control_flow/and_right_operand_after_guard.sal",
+    "tests/lang/drops/drop_match_binder_string_concat.sal",
+    "tests/lang/drops/drop_match_binder_moved.sal",
     // A unit variant arm over a `&Option` (`None`) tests the tag; a `while` tail has no value.
     "tests/lang/drops/drop_match_fresh_enum_call.sal",
     "tests/lang/drops/drop_match_arm_block_local.sal",

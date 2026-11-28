@@ -201,6 +201,19 @@ fn instrument_strict_to_of_fn_result_moves_it() {
     assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
 }
 
+/// SPEC «Liberación de locales»: the body of a `match` arm is a temporary scope, as in Rust: the
+/// `String` it builds and only reads is released at the end of the arm (expression arm and tail of a
+/// block arm), with the pattern binder still alive.
+#[test]
+fn instrument_strict_match_arm_temporaries_are_freed() {
+    let src = std::fs::read_to_string(root().join("tests/lang/drops/drop_match_arm_temporaries.sal")).expect("read");
+    let out = run_strict(&src, "match_arm_temps");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(23), "match arm temporaries: {stderr}");
+    assert!(!stderr.contains("LEAK"), "unexpected leak: {stderr}");
+    assert!(!stderr.contains("DOUBLE_FREE"), "double free: {stderr}");
+}
+
 /// SPEC «Memoria»: a tensor passed by value moves into the callee, which releases it at scope
 /// end, or hands it back when it returns it (then the caller releases it once).
 #[test]

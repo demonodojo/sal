@@ -1417,7 +1417,7 @@ fn lower_match_chain(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int) -> Int 
     base_snap = snap_binds(binds, 0, n0, vec_new())
     slen = tenv_len(&cx.env)
     _a = cx_begin_body(cx)
-    bind_variant_payloads(cx, scrut, &pat.name, &pat.args, 0, pat.args.len(), pat.kind)
+    bind_variant_payloads(cx, scrut, &tenv_type(&cx.env, &"match:ty"), &pat.name, &pat.args, 0, pat.args.len(), pat.kind)
     if pat.kind == 1
         _bd = cx_bind(cx, str_own(&pat.name), scrut)
     else
@@ -1633,7 +1633,7 @@ fn lower_switch_arms(cx: &mut Cx, scrut: Int, arms: &List[TArm], i: Int, n: Int,
         k = pat.kind
         _i = cx_begin_body(cx)
         tag = switch_pattern_tag(cx, &pat)
-        _p = bind_variant_payloads(cx, scrut, &pat.name, &pat.args, 0, list_len(&pat.args), k)
+        _p = bind_variant_payloads(cx, scrut, &tenv_type(&cx.env, &"match:ty"), &pat.name, &pat.args, 0, list_len(&pat.args), k)
         val = if arm.has_suite == 1
             lower_block_value(cx, &arm.suite)
         else
@@ -1680,8 +1680,9 @@ fn name_variant_tag(name: Int) -> Int ! alloc
     else
         1
 
-# One `EnumField` per bound payload name of a variant pattern.
-fn bind_variant_payloads(cx: &mut Cx, scrut: Int, vname: &String, args: &List[TPat], i: Int, n: Int, k: Int) -> Int ! alloc
+# One `EnumField` per bound payload name of a variant pattern. `sty` is the type of the value the
+# pattern matches: the scrutinee's, or for a nested variant the field it names.
+fn bind_variant_payloads(cx: &mut Cx, scrut: Int, sty: &String, vname: &String, args: &List[TPat], i: Int, n: Int, k: Int) -> Int ! alloc
     if k != 3
         0
     elsif i >= n
@@ -1692,25 +1693,30 @@ fn bind_variant_payloads(cx: &mut Cx, scrut: Int, vname: &String, args: &List[TP
             d = fresh(cx)
             _p = ir_push(cx, ir_efield(d, scrut, i))
             _b = cx_bind(cx, str_own(&a.name), d)
-            h1061_1 = fuse_variant_field_type(cx, vname, i)
+            h1061_1 = fuse_variant_field_type_in(cx, sty, vname, i)
             _t = tenv_bind(&mut cx.env, &a.name, &h1061_1)
-            bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
+            bind_variant_payloads(cx, scrut, sty, vname, args, i + 1, n, k)
         elsif a.kind == 3
             # A nested variant binds from the field it names (`bind_one_match_payload` in src/ir.rs).
             d = fresh(cx)
             _p = ir_push(cx, ir_efield(d, scrut, i))
-            _n = bind_variant_payloads(cx, d, &a.name, &a.args, 0, a.args.len(), 3)
-            bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
+            ft = fuse_variant_field_type_in(cx, sty, vname, i)
+            bind_variant_payloads(cx, d, &ft, &a.name, &a.args, 0, a.args.len(), 3)
+            bind_variant_payloads(cx, scrut, sty, vname, args, i + 1, n, k)
         else
             # `_` or a literal still reads its field, as the bootstrap's `EnumField` per payload
             # slot does.
             d = fresh(cx)
             ir_push(cx, ir_efield(d, scrut, i))
-            bind_variant_payloads(cx, scrut, vname, args, i + 1, n, k)
+            bind_variant_payloads(cx, scrut, sty, vname, args, i + 1, n, k)
 
 # The declared type of field `i` of the variant `vname` ("" when unknown): a payload bound by a
 # pattern has that type, so `p.x` reads a field of it.
 fn fuse_variant_field_type(cx: &Cx, vname: &String, i: Int) -> String ! alloc
+    fuse_variant_field_type_in(cx, &tenv_type(&cx.env, &"match:ty"), vname, i)
+
+# The same, with the type arguments of a generic enum taken from `sty` (the matched value's type).
+fn fuse_variant_field_type_in(cx: &Cx, sty: &String, vname: &String, i: Int) -> String ! alloc
     rec = variant_rec(cx, str_own(vname))
     if rec == 0
         ""
@@ -1724,7 +1730,7 @@ fn fuse_variant_field_type(cx: &Cx, vname: &String, i: Int) -> String ! alloc
             if j < 0
                 ft
             else
-                trim_spaces(tt_arg(&tenv_type(&cx.env, &"match:ty"), j))
+                trim_spaces(tt_arg(sty, j))
 
 fn tparam_index(ps: &List[String], name: &String, i: Int) -> Int ! alloc
     if i >= ps.len()
@@ -3935,7 +3941,10 @@ fn lower_program_typed(tp: &mut TProgram, extra: Int, env_tpl: &TEnv, em: &List[
     fm = map_new()
     _i = fill_fn_map(fm, names, 0, vec_len(names))
     out = List.new[IrFn]()
-    stradd_fns(&tp.fns, env_tpl, 0, tp.fns.len())
+    sa_enums = List.new[TEnum]()
+    sa_enums_push(&mut sa_enums, em, 0, em.len())
+    sa_enums_push(&mut sa_enums, &tp.enums, 0, tp.enums.len())
+    stradd_fns(&tp.fns, env_tpl, &sa_enums, 0, tp.fns.len())
     denv = drop_env_t(tp, &env_tpl.structs, em, seen)
     n_fns = list_len(&tp.fns)
     # The signatures of the whole graph: a callee in another module also takes cells and

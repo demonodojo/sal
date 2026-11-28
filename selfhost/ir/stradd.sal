@@ -6,48 +6,56 @@
 # when its left operand is a name that holds a reference (a `&` parameter, or `xs.get(i)` of an
 # element that is not Copy): still a concatenation, but not the accumulator `x = x + …`, which
 # moves an owned `x` (`string_expr::accumulates_into`). The lowering treats both like `add`.
-# A name the walk cannot type (a `match` payload, a lambda parameter) shadows the outer one as
-# unknown, so a mark is only ever missing, never wrong.
+# A `match` binder takes its field's type (`sa_arm_pattern`). A name the walk cannot type (a
+# lambda parameter) shadows the outer one as unknown, so a mark is only ever missing, never wrong.
 import "../ast/tast.sal"
 import "../ast/tytext.sal"
 import "../ast/ttypes.sal"
 
-fn stradd_fns(fns: &List[TFn], env_tpl: &TEnv, i: Int, n: Int) -> Int ! alloc
+fn stradd_fns(fns: &List[TFn], env_tpl: &TEnv, ens: &List[TEnum], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         f = fns.get(i)
         env = tenv_clone(env_tpl)
         tenv_truncate(&mut env, 0)
-        sa_params(&mut env, &f.params, 0, f.params.len())
-        sa_block(&mut env, &f.body)
-        stradd_fns(fns, env_tpl, i + 1, n)
+        sa_params(&mut env, ens, &f.params, 0, f.params.len())
+        sa_block(&mut env, ens, &f.body)
+        stradd_fns(fns, env_tpl, ens, i + 1, n)
 
-fn sa_params(env: &mut TEnv, ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
+# Copies of the enums of `src` appended to `out` (the graph's and the module's, for `stradd_fns`).
+fn sa_enums_push(out: &mut List[TEnum], src: &List[TEnum], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        out.push(src.get(i).clone())
+        sa_enums_push(out, src, i + 1, n)
+
+fn sa_params(env: &mut TEnv, ens: &List[TEnum], ps: &List[TParam], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         p = ps.get(i)
         tenv_bind(env, &p.name, &p.ty)
-        sa_params(env, ps, i + 1, n)
+        sa_params(env, ens, ps, i + 1, n)
 
-fn sa_block(env: &mut TEnv, b: &TBlock) -> Int ! alloc
+fn sa_block(env: &mut TEnv, ens: &List[TEnum], b: &TBlock) -> Int ! alloc
     mark = tenv_len(env)
-    sa_stmts(env, &b.stmts, 0, b.stmts.len())
-    sa_expr(env, &b.tail)
+    sa_stmts(env, ens, &b.stmts, 0, b.stmts.len())
+    sa_expr(env, ens, &b.tail)
     tenv_truncate(env, mark)
 
-fn sa_stmts(env: &mut TEnv, xs: &List[TStmt], i: Int, n: Int) -> Int ! alloc
+fn sa_stmts(env: &mut TEnv, ens: &List[TEnum], xs: &List[TStmt], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         st = xs.get(i)
-        sa_expr(env, &st.target)
-        sa_expr(env, &st.expr)
+        sa_expr(env, ens, &st.target)
+        sa_expr(env, ens, &st.expr)
         if st.kind == 1
             ty = sa_value_type(env, &st.expr)
             tenv_bind(env, &st.name, &ty)
-        sa_stmts(env, xs, i + 1, n)
+        sa_stmts(env, ens, xs, i + 1, n)
 
 # The type the walk gives a binding: the lowering's, except that `xs.get(i)` of an element that
 # is not Copy lends it (`&T`, as `infer_list_get` in src/infer.rs).
@@ -75,33 +83,33 @@ fn sa_is_copy(t: &String) -> Int ! alloc
         "Bool" => 1
         _ => 0
 
-fn sa_expr(env: &mut TEnv, e: &Expr) -> Int ! alloc
+fn sa_expr(env: &mut TEnv, ens: &List[TEnum], e: &Expr) -> Int ! alloc
     match e
-        XBin(op, l, r) => sa_bin(env, e, &op, &l, &r)
-        XCall(name, args, targs, xp) => sa_args(env, &args, 0, args.len())
-        XTo(place, inner) => sa_expr(env, &inner)
-        XOn(place, body, k, n) => sa_block(env, &body)
-        XIf(cond, then_b, else_b, has_else, elsifs) => sa_if(env, &cond, &then_b, &else_b, has_else, &elsifs)
-        XBlock(body) => sa_block(env, &body)
-        XWhile(cond, body) => sa_while(env, &cond, &body)
-        XField(base, field) => sa_expr(env, &base)
-        XLambda(param, body) => sa_lambda(env, &param, &body)
-        XUnary(op, inner) => sa_expr(env, &inner)
-        XTry(inner) => sa_expr(env, &inner)
-        XMatch(scrut, arms) => sa_match(env, &scrut, &arms)
+        XBin(op, l, r) => sa_bin(env, ens, e, &op, &l, &r)
+        XCall(name, args, targs, xp) => sa_args(env, ens, &args, 0, args.len())
+        XTo(place, inner) => sa_expr(env, ens, &inner)
+        XOn(place, body, k, n) => sa_block(env, ens, &body)
+        XIf(cond, then_b, else_b, has_else, elsifs) => sa_if(env, ens, &cond, &then_b, &else_b, has_else, &elsifs)
+        XBlock(body) => sa_block(env, ens, &body)
+        XWhile(cond, body) => sa_while(env, ens, &cond, &body)
+        XField(base, field) => sa_expr(env, ens, &base)
+        XLambda(param, body) => sa_lambda(env, ens, &param, &body)
+        XUnary(op, inner) => sa_expr(env, ens, &inner)
+        XTry(inner) => sa_expr(env, ens, &inner)
+        XMatch(scrut, arms) => sa_match(env, ens, &scrut, &arms)
         _ => 0
 
-fn sa_args(env: &mut TEnv, xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
+fn sa_args(env: &mut TEnv, ens: &List[TEnum], xs: &List[Expr], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        sa_expr(env, &xs.get(i))
-        sa_args(env, xs, i + 1, n)
+        sa_expr(env, ens, &xs.get(i))
+        sa_args(env, ens, xs, i + 1, n)
 
 # The operands first (a chain marks from the inside out), then this `+`.
-fn sa_bin(env: &mut TEnv, e: &Expr, op: &String, l: &Expr, r: &Expr) -> Int ! alloc
-    sa_expr(env, l)
-    sa_expr(env, r)
+fn sa_bin(env: &mut TEnv, ens: &List[TEnum], e: &Expr, op: &String, l: &Expr, r: &Expr) -> Int ! alloc
+    sa_expr(env, ens, l)
+    sa_expr(env, ens, r)
     if op.eq("add") == 0
         0
     elsif texpr_is_string(env, l) == 0
@@ -122,58 +130,147 @@ fn sa_set_op(e: &Expr, _old: &String, neu: &String) -> Int ! alloc
     enum_set(e, 0, neu.dup())
     0
 
-fn sa_if(env: &mut TEnv, cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Int ! alloc
-    sa_expr(env, cond)
-    sa_block(env, then_b)
+fn sa_if(env: &mut TEnv, ens: &List[TEnum], cond: &Expr, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs: &List[TElsif]) -> Int ! alloc
+    sa_expr(env, ens, cond)
+    sa_block(env, ens, then_b)
     if has_else == 1
-        sa_block(env, else_b)
-    sa_elsifs(env, elsifs, 0, elsifs.len())
+        sa_block(env, ens, else_b)
+    sa_elsifs(env, ens, elsifs, 0, elsifs.len())
 
-fn sa_elsifs(env: &mut TEnv, xs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
+fn sa_elsifs(env: &mut TEnv, ens: &List[TEnum], xs: &List[TElsif], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         a = xs.get(i)
-        sa_expr(env, &a.cond)
-        sa_block(env, &a.body)
-        sa_elsifs(env, xs, i + 1, n)
+        sa_expr(env, ens, &a.cond)
+        sa_block(env, ens, &a.body)
+        sa_elsifs(env, ens, xs, i + 1, n)
 
-fn sa_while(env: &mut TEnv, cond: &Expr, body: &TBlock) -> Int ! alloc
-    sa_expr(env, cond)
-    sa_block(env, body)
+fn sa_while(env: &mut TEnv, ens: &List[TEnum], cond: &Expr, body: &TBlock) -> Int ! alloc
+    sa_expr(env, ens, cond)
+    sa_block(env, ens, body)
 
-fn sa_lambda(env: &mut TEnv, param: &String, body: &Expr) -> Int ! alloc
+fn sa_lambda(env: &mut TEnv, ens: &List[TEnum], param: &String, body: &Expr) -> Int ! alloc
     mark = tenv_len(env)
     tenv_bind(env, param, &"")
-    sa_expr(env, body)
+    sa_expr(env, ens, body)
     tenv_truncate(env, mark)
 
-fn sa_match(env: &mut TEnv, scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
-    sa_expr(env, scrut)
-    sa_arms(env, arms, 0, arms.len())
+fn sa_match(env: &mut TEnv, ens: &List[TEnum], scrut: &Expr, arms: &List[TArm]) -> Int ! alloc
+    sa_expr(env, ens, scrut)
+    byref = sa_is_ref_scrut(env, scrut)
+    sty = ty_deref(&texpr_type(env, scrut))
+    sa_arms(env, ens, byref, &sty, arms, 0, arms.len())
 
-fn sa_arms(env: &mut TEnv, xs: &List[TArm], i: Int, n: Int) -> Int ! alloc
+# A scrutinee matched through a reference: `&x` / `&mut x`, or a name whose type is one.
+fn sa_is_ref_scrut(env: &TEnv, scrut: &Expr) -> Int ! alloc
+    match scrut
+        XUnary(op, inner) => op.eq("ref") + op.eq("refmut")
+        _ => tt_is_ref(&texpr_type(env, scrut))
+
+fn sa_arms(env: &mut TEnv, ens: &List[TEnum], byref: Int, sty: &String, xs: &List[TArm], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
         a = xs.get(i)
         mark = tenv_len(env)
-        sa_pattern(env, &a.pat)
-        sa_expr(env, &a.body)
+        sa_arm_pattern(env, ens, byref, sty, &a.pat)
+        sa_expr(env, ens, &a.body)
         if a.has_suite == 1
-            sa_block(env, &a.suite)
+            sa_block(env, ens, &a.suite)
         tenv_truncate(env, mark)
-        sa_arms(env, xs, i + 1, n)
+        sa_arms(env, ens, byref, sty, xs, i + 1, n)
 
-# The names a pattern binds shadow the outer ones, untyped.
-fn sa_pattern(env: &mut TEnv, p: &TPat) -> Int ! alloc
-    if p.kind == 1
-        tenv_bind(env, &p.name, &"")
-    sa_patterns(env, &p.args, 0, p.args.len())
+# The pattern of an arm over a value of type `sty`. A binder under a variant takes the type of
+# the field it names, with the enum's type parameters replaced by the arguments of `sty`
+# (`Some(s)` over `Option[String]` binds a `String`); a nested variant matches that field's type.
+# Matched through a reference (`match &e`, `match t` with `t: &E`) the binder lends its field,
+# `&F`, as Rust's default binding mode: its `+` is a concatenation and never the accumulator
+# (`radd`). A field the walk cannot find leaves its binder untyped.
+fn sa_arm_pattern(env: &mut TEnv, ens: &List[TEnum], byref: Int, sty: &String, p: &TPat) -> Int ! alloc
+    if p.kind == 3
+        sa_variant_args(env, ens, byref, sty, &p.name, &p.args, 0, p.args.len())
+    else
+        sa_pattern(env, ens, p)
 
-fn sa_patterns(env: &mut TEnv, xs: &List[TPat], i: Int, n: Int) -> Int ! alloc
+fn sa_variant_args(env: &mut TEnv, ens: &List[TEnum], byref: Int, sty: &String, vname: &String, xs: &List[TPat], i: Int, n: Int) -> Int ! alloc
     if i >= n
         0
     else
-        sa_pattern(env, &xs.get(i))
-        sa_patterns(env, xs, i + 1, n)
+        a = xs.get(i)
+        ft = sa_variant_field_type(ens, sty, vname, i)
+        match a.kind
+            1 => tenv_bind(env, &a.name, &sa_binder_type(byref, &ft))
+            3 => sa_arm_pattern(env, ens, byref, &ft, &a)
+            _ => sa_pattern(env, ens, &a)
+        sa_variant_args(env, ens, byref, sty, vname, xs, i + 1, n)
+
+fn sa_binder_type(byref: Int, ft: &String) -> String ! alloc
+    if ft.len() == 0
+        ""
+    elsif byref == 1
+        "&" + ft
+    else
+        ft.dup()
+
+# The type of field `i` of the variant `vname` matched against a value of type `sty` ("" when
+# unknown). The enum named by `sty` wins over another one with a variant of the same name.
+fn sa_variant_field_type(ens: &List[TEnum], sty: &String, vname: &String, i: Int) -> String ! alloc
+    k = sa_enum_of(ens, &ty_base(sty), vname, 0, ens.len(), 0 - 1)
+    if k < 0
+        ""
+    else
+        en = ens.get(k)
+        fields = en.variants.get(sa_variant_index(&en.variants, vname, 0, en.variants.len())).fields.clone()
+        if i >= fields.len()
+            ""
+        else
+            ft = trim_spaces(fields.get(i).dup())
+            j = sa_tparam_index(&en.tparams, &ft, 0, en.tparams.len())
+            if j < 0
+                ft
+            else
+                ty_type_arg(sty, j)
+
+# The enum with the variant `vname`: the one named `base` if it has it, else the first that does.
+fn sa_enum_of(ens: &List[TEnum], base: &String, vname: &String, i: Int, n: Int, first: Int) -> Int ! alloc
+    if i >= n
+        first
+    else
+        en = ens.get(i)
+        has = sa_variant_index(&en.variants, vname, 0, en.variants.len()) >= 0
+        if has && en.name.eq(base) == 1
+            i
+        elsif has && first < 0
+            sa_enum_of(ens, base, vname, i + 1, n, i)
+        else
+            sa_enum_of(ens, base, vname, i + 1, n, first)
+
+fn sa_tparam_index(ps: &List[String], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif ps.get(i).eq(name) == 1
+        i
+    else
+        sa_tparam_index(ps, name, i + 1, n)
+
+fn sa_variant_index(vs: &List[TVariant], name: &String, i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0 - 1
+    elsif vs.get(i).name.eq(name) == 1
+        i
+    else
+        sa_variant_index(vs, name, i + 1, n)
+
+# The names a pattern binds shadow the outer ones, untyped.
+fn sa_pattern(env: &mut TEnv, ens: &List[TEnum], p: &TPat) -> Int ! alloc
+    if p.kind == 1
+        tenv_bind(env, &p.name, &"")
+    sa_patterns(env, ens, &p.args, 0, p.args.len())
+
+fn sa_patterns(env: &mut TEnv, ens: &List[TEnum], xs: &List[TPat], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        sa_pattern(env, ens, &xs.get(i))
+        sa_patterns(env, ens, xs, i + 1, n)

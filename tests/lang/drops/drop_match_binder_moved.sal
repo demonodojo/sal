@@ -1,0 +1,62 @@
+# exit: 33
+# A binder of a by-value `match` that the arm moves to another name (`u = v`) is moved out of
+# the enum, as in Rust: the new owner releases it, and the enum is released with what it still
+# owns. Also when the move is inside an `if`, when the binder goes to a fn that takes it by value
+# or into a list, over a generic enum (`Option[String]`), and over a local bound to a constructor.
+enum Shape
+    A(String)
+    B(Int)
+
+fn renamed(e: Shape) -> Int ! alloc
+    match e
+        A(v) =>
+            u = v
+            u.len()
+        B(n) => n
+
+fn renamed_in_if(e: Shape, keep: Int) -> Int ! alloc
+    match e
+        A(v) =>
+            if keep > 0
+                u = v
+                u.len() + 10
+            else
+                0
+        B(n) => n
+
+fn eat(s: String) -> Int ! alloc
+    s.len()
+
+fn passed(e: Shape) -> Int ! alloc
+    match e
+        A(v) => eat(v)
+        B(n) => n
+
+fn pushed(e: Shape) -> Int ! alloc
+    xs = List.new[String]()
+    match e
+        A(v) => xs.push(v)
+        B(n) => xs.push(d"b")
+    xs.len()
+
+fn generic(o: Option[String]) -> Int ! alloc
+    match o
+        Some(s) =>
+            t = s
+            t.len()
+        None => 0
+
+fn main() -> Int ! alloc
+    a = renamed(A(d"abc"))
+    b = renamed_in_if(A(d"wxyz"), 1)
+    c = renamed_in_if(A(d"wxyz"), 0)
+    g = generic(Some(d"xy"))
+    p = passed(A(d"abcdef"))
+    q = pushed(A(d"q"))
+    local = A(d"local")
+    h = match local
+        A(v) =>
+            w = v
+            w.len()
+        B(n) => n
+    a + b + c + g + h + p + q + renamed(B(2))

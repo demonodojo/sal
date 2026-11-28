@@ -1,0 +1,41 @@
+# exit: 5
+# The right operand of `&&` / `||` runs only when the left one lets it, also when it lends a
+# temporary (`&xs.get(i)`) or builds one (`xs.get(i) + "!"`, released inside the operand), in a
+# statement, in an `if` condition and in a match arm.
+fn big(s: &String) -> Int
+    s.len() > 1
+
+fn at(xs: &List[String], i: Int) -> Bool ! alloc
+    i < xs.len() && big(&xs.get(i))
+
+fn longer(xs: &List[String], i: Int) -> Bool ! alloc
+    i < xs.len() && (xs.get(i) + "!").len() > 2
+
+fn pick(xs: &List[String], k: Int, i: Int) -> Bool ! alloc
+    match k
+        1 => i < xs.len() && big(&xs.get(i))
+        _ => i >= xs.len() || big(&xs.get(i))
+
+fn main() -> Int ! alloc
+    xs = List.new[String]()
+    xs.push(d"ab")
+    n = 0
+    if at(&xs, 0)
+        n = n + 1
+    if at(&xs, 5)
+        n = n + 10
+    if pick(&xs, 1, 0)
+        n = n + 1
+    if pick(&xs, 1, 5)
+        n = n + 10
+    if pick(&xs, 2, 5)
+        n = n + 1
+    if longer(&xs, 0)
+        n = n + 1
+    if longer(&xs, 5)
+        n = n + 10
+    if n > 0 && (xs.get(0) + "?").len() == 3
+        n = n + 1
+    if n > 100 && (xs.get(9) + "?").len() == 3
+        n = n + 10
+    n

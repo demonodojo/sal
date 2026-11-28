@@ -878,7 +878,7 @@ fn owned_fn_body(vm: Int, f: &TFn) -> Int ! alloc
         owned_body_ok(vm, &f.body, &f.params)
     else
         b = tc_block(&f.body)
-        dr_tk_block(vm, &b, &own)
+        dr_tk_block(vm, &b, &mut own)
         owned_body_ok(vm, &b, &f.params)
 
 fn owned_body_ok(vm: Int, body: &TBlock, params: &List[TParam]) -> Int ! alloc
@@ -1122,11 +1122,37 @@ fn owned_if_ok(vm: Int, then_b: &TBlock, else_b: &TBlock, has_else: Int, elsifs:
     else
         owned_elsifs_ok(vm, elsifs, 0, elsifs.len(), locals, params)
 
+# A local the block binds once to a fresh value (`v = enum_take(t, 0)` of `dr_tk_moved_binder`,
+# `s = d"x"`) and hands out as its tail is owned too (`owned_block_string` in src/drops.rs).
 fn owned_block_ok(vm: Int, b: &TBlock, locals: &List[String], params: &List[TParam]) -> Int ! alloc
-    if owned_returns_ok(vm, &b.stmts, 0, b.stmts.len(), locals, params) == 0
+    fresh = locals.clone()
+    ok = 1
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        if st.kind == 2 && owned_return_ok(vm, &st.expr, &fresh, params) == 0
+            ok = 0
+        if st.kind == 1
+            fresh = owned_block_bind(vm, &b.stmts, &st, &fresh)
+        i = i + 1
+    if ok == 0
         0
     else
-        owned_tail_ok(vm, &b.tail, locals, params)
+        owned_tail_ok(vm, &b.tail, &fresh, params)
+
+# `fresh` with the binding `st` of `stmts`: kept when its value is fresh, it is bound once and no
+# nested block rebinds it to something else; dropped otherwise.
+fn owned_block_bind(vm: Int, stmts: &List[TStmt], st: &TStmt, fresh: &List[String]) -> List[String] ! alloc
+    out = List.new[String]()
+    i = 0
+    while i < fresh.len()
+        if fresh.get(i).eq(&st.name) == 0
+            out.push(fresh.get(i).dup())
+        i = i + 1
+    keep = owned_fresh_value(vm, &st.expr) == 1 && owned_binds(stmts, 0, stmts.len(), &st.name) == 1 && on_stmts_assigns(vm, stmts, &st.name, 0) == 1
+    if keep
+        out.push(st.name.dup())
+    out
 
 fn owned_elsifs_ok(vm: Int, xs: &List[TElsif], i: Int, n: Int, locals: &List[String], params: &List[TParam]) -> Int ! alloc
     if i >= n
@@ -2902,11 +2928,59 @@ fn dr_xform_expr(c: &mut DC, e: &Expr) -> Expr ! alloc
             dr_set(c, 8, branches)
             enum_set(e, 1, nb)
             dr_ret(e)
-        _ => dr_alias(e)
+        _ => dr_xform_logic(c, e)
+
+# The block `dr_hoist_cond_operand` makes of the right operand of `&&` / `||` gets its own scope,
+# so its temporaries are released inside the operand (`xform_logic` in src/drops.rs). The walk goes
+# through operators, calls and unary operands to reach those blocks; nothing else changes.
+fn dr_xform_logic(c: &mut DC, e: &Expr) -> Expr ! alloc
+    dr_xform_logic_in(c, e)
+    dr_alias(e)
+
+# The first child of an `if` (its condition) or a `match` (its scrutinee), which the hoist walks.
+fn dr_xform_logic_cond(c: &mut DC, e: &Expr) -> Int ! alloc
+    match e
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_xform_logic_in(c, &cond)
+        XMatch(scrut, arms) => dr_xform_logic_in(c, &scrut)
+        _ => 0
+
+fn dr_xform_logic_in(c: &mut DC, e: &Expr) -> Int ! alloc
+    match e
+        XBin(op, l, r) => dr_xform_logic_bin(c, e, &op, &l, &r)
+        XUnary(op, inner) => dr_xform_logic_in(c, &inner)
+        XCall(name, args, targs, xp) => dr_xform_logic_args(c, &args, 0, args.len())
+        _ => 0
+
+fn dr_xform_logic_bin(c: &mut DC, e: &Expr, op: &String, l: &Expr, r: &Expr) -> Int ! alloc
+    dr_xform_logic_in(c, l)
+    if op.eq("and") + op.eq("or") > 0 && dr_is_block_expr(r) == 1
+        nb = dr_xform_block_of(c, r)
+        enum_set(e, 2, XBlock(nb))
+        0
+    else
+        dr_xform_logic_in(c, r)
+
+fn dr_xform_logic_args(c: &mut DC, args: &List[Expr], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        dr_xform_logic_in(c, &args.get(i))
+        dr_xform_logic_args(c, args, i + 1, n)
+
+fn dr_is_block_expr(e: &Expr) -> Int ! alloc
+    match e
+        XBlock(_) => 1
+        _ => 0
+
+fn dr_xform_block_of(c: &mut DC, e: &Expr) -> TBlock ! alloc
+    match e
+        XBlock(b) => dr_xform_block(c, &mut b)
+        _ => TBlock(List.new[TStmt](), XNone)
 
 # A match arm that returns an outer local moves it only on that path. Clear its live flag in the
 # arm block so lower_match_chain carries the flag across the branches, as xform_expr in drops.rs.
 fn dr_xform_match(c: &mut DC, e: &Expr, arms: &mut List[TArm]) -> Expr ! alloc
+    dr_xform_logic_cond(c, e)
     # The arms of a `match` walked as branches get their own scope first (`dr_match_branches`).
     if dr_is_branch_match(e) == 1
         dr_set(c, 8, dr_cell(c, 8) + 1)
@@ -3012,6 +3086,7 @@ fn dr_arm_clear_suite(name: &String, suite: &TBlock) -> TBlock ! alloc
     TBlock(out, suite.tail.clone())
 
 fn dr_xform_if(c: &mut DC, e: &Expr, then_b: &mut TBlock, else_b: &mut TBlock, has_else: Int, elsifs: &mut List[TElsif]) -> Expr ! alloc
+    dr_xform_logic_cond(c, e)
     dr_set(c, 8, dr_cell(c, 8) + 1)
     tb = dr_xform_block(c, then_b)
     _t = enum_set(e, 1, tb)
@@ -3931,11 +4006,33 @@ fn dr_hoist_match(h: &mut HC, e: &Expr, scrut: &Expr, arms: &mut List[TArm], out
     else
         ns
     _w = dr_set_expr(e, 0, scrut, &s2)
-    # The arms are not hoisted: their temporaries belong to the arm scope, and the
-    # bootstrap (`Hoist::expr` in `src/drops.rs`) does not descend into match arms.
-    # Hoisting `&f(x)` from an arm to before the `switch` leaves pattern binders
-    # out of scope and passes `0` for them to the callee.
+    dr_hoist_match_arms(h, arms, 0, arms.len())
     dr_ret(e)
+
+# The temporaries of a `match` arm are bound inside the arm, where the pattern binders are in
+# scope, and released at its end (`Hoist::arm_body` in src/drops.rs; Rust: the arm body is a
+# temporary scope). Never ahead of the `switch`: there the binders do not exist yet. A block arm
+# is hoisted as a block; an expression arm becomes one only when it binds a temporary.
+fn dr_hoist_match_arms(h: &mut HC, arms: &mut List[TArm], i: Int, n: Int) -> Int ! alloc
+    if i >= n
+        0
+    else
+        arm = (&mut arms).get(i)
+        if arm.has_suite == 1
+            nb = dr_hoist_block(h, &mut arm.suite)
+            dr_free_block(&arm.suite)
+            arm.suite = nb
+        else
+            pre = List.new[TStmt]()
+            nt = dr_hoist_expr(h, &arm.body, &mut pre)
+            if pre.len() > 0
+                dr_free_block(&arm.suite)
+                arm.suite = TBlock(pre, nt)
+                arm.has_suite = 1
+            else
+                list_free(pre)
+                _d = dr_drop_expr(&nt)
+        dr_hoist_match_arms(h, arms, i + 1, n)
 
 # `list_get(xs, i).f` of a list whose element struct a copy can release: the copy is bound to a
 # temporary ahead of the statement (`Hoist` in src/drops.rs). The field name is copied too: the
@@ -4082,12 +4179,26 @@ fn dr_hoist_call(h: &mut HC, e: &Expr, name: &String, args: &mut List[Expr], out
 
 fn dr_hoist_bin(h: &mut HC, e: &Expr, op: &String, l: &Expr, r: &Expr, out: &mut List[TStmt]) -> Expr ! alloc
     nl0 = dr_hoist_expr(h, l, out)
-    nr0 = dr_hoist_expr(h, r, out)
+    # The right operand of `&&` / `||` runs only when the left one lets it: its temporaries are
+    # bound inside it, in a block that ends with the operand (`Hoist::expr` in src/drops.rs).
+    nr0 = if op.eq("and") + op.eq("or") > 0
+        dr_hoist_cond_operand(h, r)
+    else
+        dr_hoist_expr(h, r, out)
     nl = dr_owned_operand(h, op, nl0, out)
     nr = dr_owned_operand(h, op, nr0, out)
     _a = dr_set_expr(e, 1, l, &nl)
     _b = dr_set_expr(e, 2, r, &nr)
     dr_ret(e)
+
+fn dr_hoist_cond_operand(h: &mut HC, r: &Expr) -> Expr ! alloc
+    pre = List.new[TStmt]()
+    nr = dr_hoist_expr(h, r, &mut pre)
+    if pre.len() > 0
+        XBlock(TBlock(pre, nr))
+    else
+        list_free(pre)
+        nr
 
 # `f() + "x"`: the `String` a user fn (or an `any` method) hands over is an operand the
 # concatenation copies from; bound to a local, the scope end releases it (`owned_operand` in
@@ -4927,7 +5038,7 @@ fn dr_take_payloads(vm: Int, params: &List[TParam], body: &TBlock) -> Int ! allo
     if own.names.len() == 0
         0
     else
-        dr_tk_block(vm, body, &own)
+        dr_tk_block(vm, body, &mut own)
 
 fn dr_tk_kind_of(targs: &String) -> Int ! alloc
     if targs.len() == 1
@@ -5041,14 +5152,14 @@ fn dr_tk_call_class(vm: Int, name: &String, mode: Int) -> Int ! alloc
     else
         0
 
-fn dr_tk_block(vm: Int, b: &TBlock, own: &NM) -> Int ! alloc
+fn dr_tk_block(vm: Int, b: &TBlock, own: &mut NM) -> Int ! alloc
     i = 0
     while i < b.stmts.len()
         dr_tk_expr(vm, &b.stmts.get(i).expr, own)
         i = i + 1
     dr_tk_expr(vm, &b.tail, own)
 
-fn dr_tk_expr(vm: Int, e: &Expr, own: &NM) -> Int ! alloc
+fn dr_tk_expr(vm: Int, e: &Expr, own: &mut NM) -> Int ! alloc
     match e
         XMatch(scrut, arms) => dr_tk_match(vm, &scrut, &mut arms, own)
         XBlock(body) => dr_tk_block(vm, &body, own)
@@ -5057,7 +5168,7 @@ fn dr_tk_expr(vm: Int, e: &Expr, own: &NM) -> Int ! alloc
         XIf(cond, then_b, else_b, has_else, elsifs) => dr_tk_if(vm, &cond, &then_b, &else_b, &elsifs, own)
         _ => 0
 
-fn dr_tk_if(vm: Int, cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], own: &NM) -> Int ! alloc
+fn dr_tk_if(vm: Int, cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &List[TElsif], own: &mut NM) -> Int ! alloc
     dr_tk_expr(vm, cond, own)
     dr_tk_block(vm, then_b, own)
     i = 0
@@ -5066,7 +5177,7 @@ fn dr_tk_if(vm: Int, cond: &Expr, then_b: &TBlock, else_b: &TBlock, elsifs: &Lis
         i = i + 1
     dr_tk_block(vm, else_b, own)
 
-fn dr_tk_match(vm: Int, scrut: &Expr, arms: &mut List[TArm], own: &NM) -> Int ! alloc
+fn dr_tk_match(vm: Int, scrut: &Expr, arms: &mut List[TArm], own: &mut NM) -> Int ! alloc
     dr_tk_expr(vm, scrut, own)
     t = dr_tk_scrut_name(scrut)
     sv = if t.len() == 0
@@ -5086,11 +5197,217 @@ fn dr_tk_match(vm: Int, scrut: &Expr, arms: &mut List[TArm], own: &NM) -> Int ! 
             args.push(XInt(f / 8))
             dr_drop_expr(&arm.body)
             arm.body = XCall("enum_take".dup(), args, (f % 8).to_str(), 0)
-        elsif arm.has_suite == 1
-            _b = dr_tk_block(vm, &arm.suite, own)
+            0
         else
-            _e = dr_tk_expr(vm, &arm.body, own)
+            dr_tk_moved_binder(vm, &mut arm, &t, sv, own)
+            if arm.has_suite == 1
+                dr_tk_block(vm, &arm.suite, own)
+            else
+                dr_tk_expr(vm, &arm.body, own)
         i = i + 1
+    0
+
+# `V(.., s, ..) => body` where the body moves the binder `s` of an owned field to another place
+# (`u = s` at any depth, an argument of a call outside `dr_borrows`, or `s` as the tail of the
+# arm's block): `s` is moved out of `t`, as in Rust (`take_moved_binder` in src/drops.rs). The arm
+# starts with `s = enum_take(t, i)` and the pattern leaves that field as `_`, so `s` is a local
+# the arm owns and the scope end releases `t` with what it still owns. The binder must not be
+# bound again in the arm.
+fn dr_tk_moved_binder(vm: Int, arm: &mut TArm, t: &String, sv: Int, own: &mut NM) -> Int ! alloc
+    rec = map_get(vm, str_own(&arm.pat.name))
+    if sv == 0 || arm.pat.kind != 3 || rec == 0
+        0
+    else
+        i = dr_tk_moved_index(vm, arm, rec, sv, 0)
+        if i >= 0
+            dr_tk_take_binder(arm, t, i, dr_tk_field_kind(vm, &arm.pat.name, i, sv), own)
+        0
+
+# The first binder of the arm's pattern that the arm moves and whose release is known, or -1.
+fn dr_tk_moved_index(vm: Int, arm: &TArm, rec: Int, sv: Int, i: Int) -> Int ! alloc
+    if i >= arm.pat.args.len()
+        0 - 1
+    else
+        p = arm.pat.args.get(i)
+        ok = p.kind == 1 && dr_field_flag(rec, i) == 1 && dr_tk_field_kind(vm, &arm.pat.name, i, sv) != 0
+        if ok && dr_bs_arm_moves(arm, &p.name) == 1
+            i
+        else
+            dr_tk_moved_index(vm, arm, rec, sv, i + 1)
+
+fn dr_bs_arm_moves(arm: &TArm, s: &String) -> Int ! alloc
+    if arm.has_suite == 1
+        dr_bs_moved(&arm.suite, s, 1) * (1 - dr_bs_rebound(&arm.suite, s))
+    elsif dr_bs_rebound_expr(&arm.body, s) == 1
+        0
+    elsif dr_bs_is(&arm.body, s) + dr_bs_moved_expr(&arm.body, s) > 0
+        1
+    else
+        0
+
+fn dr_bs_is(e: &Expr, s: &String) -> Int ! alloc
+    match e
+        XIdent(name) => name.eq(s)
+        _ => 0
+
+# 1 when `b` hands `s` to another name (`u = s`) or to a call at any depth, or ends with `s`
+# (`arm` 1: the arm's own block).
+fn dr_bs_moved(b: &TBlock, s: &String, arm: Int) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        if (st.kind == 1 || st.kind == 3) && dr_bs_is(&st.expr, s) == 1
+            found = 1
+        if dr_bs_moved_expr(&st.expr, s) == 1
+            found = 1
+        i = i + 1
+    if arm == 1 && dr_bs_is(&b.tail, s) == 1
+        found = 1
+    if dr_bs_moved_expr(&b.tail, s) == 1
+        found = 1
+    found
+
+fn dr_bs_moved_expr(e: &Expr, s: &String) -> Int ! alloc
+    match e
+        XBlock(body) => dr_bs_moved(&body, s, 0)
+        XOn(place, body, kern, idx) => dr_bs_moved(&body, s, 0)
+        XWhile(cond, body) => dr_bs_moved_expr(&cond, s) + dr_bs_moved(&body, s, 0) > 0
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_bs_moved_expr(&cond, s) + dr_bs_moved(&then_b, s, 0) + dr_bs_moved(&else_b, s, 0) + dr_bs_moved_elsifs(&elsifs, s) > 0
+        XMatch(scrut, arms) => dr_bs_moved_expr(&scrut, s) + dr_bs_moved_arms(&arms, s) > 0
+        XCall(name, args, targs, xp) => dr_bs_moved_args(&args, s, dr_borrows(&name))
+        XBin(op, l, r) => dr_bs_moved_expr(&l, s) + dr_bs_moved_expr(&r, s) > 0
+        XUnary(op, inner) => dr_bs_moved_expr(&inner, s)
+        XTo(place, inner) => dr_bs_moved_expr(&inner, s)
+        XTry(inner) => dr_bs_moved_expr(&inner, s)
+        XField(base, field) => dr_bs_moved_expr(&base, s)
+        _ => 0
+
+# An argument of a call that does not only read it (`eat(s)`, `xs.push(s)`, `Some(s)`) moves it.
+fn dr_bs_moved_args(xs: &List[Expr], s: &String, reads: Int) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < xs.len()
+        if reads == 0 && dr_bs_is(&xs.get(i), s) == 1
+            found = 1
+        if dr_bs_moved_expr(&xs.get(i), s) == 1
+            found = 1
+        i = i + 1
+    found
+
+fn dr_bs_moved_elsifs(xs: &List[TElsif], s: &String) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        if dr_bs_moved_expr(&a.cond, s) + dr_bs_moved(&a.body, s, 0) > 0
+            found = 1
+        i = i + 1
+    found
+
+fn dr_bs_moved_arms(arms: &List[TArm], s: &String) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < arms.len()
+        a = arms.get(i)
+        here = if a.has_suite == 1
+            dr_bs_moved(&a.suite, s, 0)
+        else
+            dr_bs_moved_expr(&a.body, s)
+        if here == 1
+            found = 1
+        i = i + 1
+    found
+
+# 1 when `b` binds `s` again: `s = …`, or a pattern of a nested `match`.
+fn dr_bs_rebound(b: &TBlock, s: &String) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < b.stmts.len()
+        st = b.stmts.get(i)
+        if st.kind == 1 && st.name.eq(s) == 1
+            found = 1
+        if dr_bs_rebound_expr(&st.expr, s) == 1
+            found = 1
+        i = i + 1
+    if dr_bs_rebound_expr(&b.tail, s) == 1
+        found = 1
+    found
+
+fn dr_bs_rebound_expr(e: &Expr, s: &String) -> Int ! alloc
+    match e
+        XBlock(body) => dr_bs_rebound(&body, s)
+        XOn(place, body, kern, idx) => dr_bs_rebound(&body, s)
+        XWhile(cond, body) => dr_bs_rebound_expr(&cond, s) + dr_bs_rebound(&body, s) > 0
+        XIf(cond, then_b, else_b, has_else, elsifs) => dr_bs_rebound_expr(&cond, s) + dr_bs_rebound(&then_b, s) + dr_bs_rebound(&else_b, s) + dr_bs_rebound_elsifs(&elsifs, s) > 0
+        XMatch(scrut, arms) => dr_bs_rebound_expr(&scrut, s) + dr_bs_rebound_arms(&arms, s) > 0
+        _ => 0
+
+fn dr_bs_rebound_elsifs(xs: &List[TElsif], s: &String) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < xs.len()
+        a = xs.get(i)
+        if dr_bs_rebound_expr(&a.cond, s) + dr_bs_rebound(&a.body, s) > 0
+            found = 1
+        i = i + 1
+    found
+
+fn dr_bs_rebound_arms(arms: &List[TArm], s: &String) -> Int ! alloc
+    found = 0
+    i = 0
+    while i < arms.len()
+        a = arms.get(i)
+        here = if a.has_suite == 1
+            dr_bs_rebound(&a.suite, s)
+        else
+            dr_bs_rebound_expr(&a.body, s)
+        if here + dr_bs_pat_binds(&a.pat, s) > 0
+            found = 1
+        i = i + 1
+    found
+
+fn dr_bs_pat_binds(p: &TPat, s: &String) -> Int ! alloc
+    if p.kind == 1
+        p.name.eq(s)
+    elsif p.kind == 3
+        found = 0
+        i = 0
+        while i < p.args.len()
+            if dr_bs_pat_binds(&p.args.get(i), s) == 1
+                found = 1
+            i = i + 1
+        found
+    else
+        0
+
+# Rewrites the arm: field `i` of the pattern becomes `_` and the arm's block starts with
+# `s = enum_take(t, i)`. The statement's id is its own (from 2^51), so the moves the drops pass
+# ties to it do not mix with a parsed statement's.
+fn dr_tk_take_binder(arm: &mut TArm, t: &String, i: Int, k: Int, own: &mut NM) -> Int ! alloc
+    pa = (&mut arm.pat.args).get(i)
+    s = pa.name.dup()
+    pa.kind = 0
+    args = List.new[Expr]()
+    args.push(XIdent(t.dup()))
+    args.push(XInt(i))
+    n = nm_get(own, &"#tk")
+    nm_put(own, &"#tk", n + 1)
+    stmts = List.new[TStmt]()
+    stmts.push(TStmt(1, s, XCall("enum_take".dup(), args, k.to_str(), 0), "", 1, XNone, 0, 0, 2251799813685248 + n))
+    if arm.has_suite == 1
+        j = 0
+        while j < arm.suite.stmts.len()
+            dr_share_stmt(&mut stmts, &arm.suite.stmts.get(j))
+            j = j + 1
+        nb = TBlock(stmts, tc_expr(&arm.suite.tail))
+        dr_free_block(&arm.suite)
+        arm.suite = nb
+    else
+        nb = TBlock(stmts, tc_expr(&arm.body))
+        dr_free_block(&arm.suite)
+        arm.suite = nb
+        arm.has_suite = 1
     0
 
 fn dr_tk_scrut_name(e: &Expr) -> String ! alloc

@@ -70,4 +70,3 @@ Objetivo: lanzar trabajo en paralelo con `Thread.spawn(f, args…)` y coordinarl
 - Structs de varios campos como argumento o resultado de un hilo, y como `T` de `Mutex`.
 - `&mut T` como argumento de `Thread.spawn`.
 - soso.
-- Selfhost: `match d.get(k)` sobre un `Dict[_, String]` con el preludio importado no resuelve el método (`drop_match_dict_get_temp.sal` lleva `selfhost-xfail`); `match ch.recv()` sí lo cumple.

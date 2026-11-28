@@ -1794,7 +1794,7 @@ fn emit_c_from_ast_module(tp: &mut TProgram, callables: Int, externs: Int, allow
     _e1 = enums_push(&mut enums, genums, 0, list_len(genums))
     _e2 = enums_push(&mut enums, &tp.enums, 0, list_len(&tp.enums))
     _vr = pool.register_variants(&enums)
-    stradd_fns(&tp.fns, env, 0, tp.fns.len())
+    stradd_fns(&tp.fns, env, &enums, 0, tp.fns.len())
     _dv = pool.set_drop_env(drop_env_t(tp, &env.structs, &enums, seen))
     _cs = pool.add_cell_sigs(&env.structs, &tp.fns)
     _cz = pool.add_cell_sigs(&env.structs, seen)

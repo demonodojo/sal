@@ -683,7 +683,21 @@ impl Hoist {
             }
             Expr::Binary { op, left, right, span } => {
                 let left = self.expr(*left, out);
-                let right = self.expr(*right, out);
+                // The right operand of `&&` / `||` runs only when the left one lets it (`i < n &&
+                // f(&xs.get(i))`): its temporaries are bound inside it, in a block that ends with
+                // the operand, so they run (and are released) only when the operand does.
+                let right = if matches!(op, BinOp::And | BinOp::Or) {
+                    let rsp = right.span();
+                    let mut inner = Vec::new();
+                    let r = self.expr(*right, &mut inner);
+                    if inner.is_empty() {
+                        r
+                    } else {
+                        Expr::Block(Block { stmts: inner, tail: Some(Box::new(r)), span: rsp })
+                    }
+                } else {
+                    self.expr(*right, out)
+                };
                 // `f() + "x"`: the `String` a user fn (or an `any` method) hands over is an
                 // operand the concatenation copies from; bound to a local, the scope end
                 // releases it (Rust: the temporary is dropped after the statement).
@@ -766,6 +780,7 @@ impl Hoist {
                 } else {
                     scrutinee
                 };
+                let arms = arms.into_iter().map(|a| MatchArm { body: self.arm_body(a.body), ..a }).collect();
                 Expr::Match { scrutinee: Box::new(scrutinee), arms, span }
             }
             // The first `if` condition runs once, ahead of the statement: its fresh temporaries are
@@ -782,6 +797,26 @@ impl Hoist {
                 span,
             },
             other => other,
+        }
+    }
+
+    /// The body of a `match` arm: its temporaries are bound inside the arm, where the pattern
+    /// binders are in scope, and released at the arm's end (Rust: the temporary is dropped after
+    /// the arm's expression). A block arm is a block; an expression arm becomes one only when it
+    /// binds a temporary, so an arm without temporaries keeps its shape.
+    fn arm_body(&mut self, body: Expr) -> Expr {
+        match body {
+            Expr::Block(b) => Expr::Block(self.block(b)),
+            e => {
+                let span = e.span();
+                let mut stmts = Vec::new();
+                let e = self.expr(e, &mut stmts);
+                if stmts.is_empty() {
+                    e
+                } else {
+                    Expr::Block(Block { stmts, tail: Some(Box::new(e)), span })
+                }
+            }
         }
     }
 
@@ -971,17 +1006,25 @@ fn owned_return_fns(prog: &Program, callees: &[&FnDef], variants: &Variants, def
     set
 }
 
+/// A local the block binds once to a fresh value (`v = enum_take(t, 0)` of `take_moved_binder`,
+/// `s = d"x"`) and hands out as its tail is owned too, like a fresh local of the fn's body.
 fn owned_block_string(b: &Block, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
+    let mut fresh = fresh_locals.clone();
     for st in &b.stmts {
         if let Stmt::Return { value: Some(v), .. } = st {
-            if !owned_string_expr(v, params, fresh_locals) {
+            if !owned_string_expr(v, params, &fresh) {
                 return false;
             }
         }
+        if let Stmt::Let { name, init, .. } | Stmt::Assign { target: Expr::Ident { name, .. }, value: init, .. } = st {
+            if owned_fresh(init) && binds_once(&b.stmts, name) && nested_assigns_fresh(&b.stmts, name, false) {
+                fresh.insert(name.clone());
+            } else {
+                fresh.remove(name);
+            }
+        }
     }
-    b.tail
-        .as_ref()
-        .is_some_and(|t| owned_string_expr(t, params, fresh_locals))
+    b.tail.as_ref().is_some_and(|t| owned_string_expr(t, params, &fresh))
 }
 
 fn owned_string_expr(e: &Expr, params: &HashSet<String>, fresh_locals: &HashSet<String>) -> bool {
@@ -3611,7 +3654,7 @@ fn discard_branch_tails(e: &mut Expr, cx: &Ctx) {
 fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
     match e {
         Expr::If { cond, then_block, elsifs, else_block, span } => Expr::If {
-            cond,
+            cond: Box::new(xform_logic(*cond, cx)),
             then_block: xform_block(then_block, cx),
             elsifs: elsifs
                 .into_iter()
@@ -3623,7 +3666,7 @@ fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
         // An arm that hands out a local clears that local's flag first (`walk_match_top`), and
         // the block of an arm walked as a branch gets its own scope.
         Expr::Match { scrutinee, arms, span } => Expr::Match {
-            scrutinee,
+            scrutinee: Box::new(xform_logic(*scrutinee, cx)),
             arms: arms
                 .into_iter()
                 .map(|a| {
@@ -3654,6 +3697,31 @@ fn xform_expr(e: Expr, cx: &mut Ctx) -> Expr {
                     MatchArm { pattern: a.pattern, body, span: a.span }
                 })
                 .collect(),
+            span,
+        },
+        other => xform_logic(other, cx),
+    }
+}
+
+/// The block `Hoist` makes of the right operand of `&&` / `||` (its temporaries) gets its own
+/// scope, so they are released inside the operand, which runs only when the left one lets it.
+/// Only those blocks change: the walk goes through operators, calls and unary operands to reach
+/// them and leaves every other node as it is.
+fn xform_logic(e: Expr, cx: &mut Ctx) -> Expr {
+    match e {
+        Expr::Binary { op, left, right, span } => {
+            let left = xform_logic(*left, cx);
+            let right = match *right {
+                Expr::Block(b) if matches!(op, BinOp::And | BinOp::Or) => Expr::Block(xform_block(b, cx)),
+                r => xform_logic(r, cx),
+            };
+            Expr::Binary { op, left: Box::new(left), right: Box::new(right), span }
+        }
+        Expr::Unary { op, expr, span } => Expr::Unary { op, expr: Box::new(xform_logic(*expr, cx)), span },
+        Expr::Call { func, type_args, args, span } => Expr::Call {
+            func,
+            type_args,
+            args: args.into_iter().map(|a| xform_logic(a, cx)).collect(),
             span,
         },
         other => other,
@@ -3944,6 +4012,7 @@ fn take_expr(e: &mut Expr, owned: &HashMap<String, bool>, variants: &Variants, d
                         };
                         continue;
                     }
+                    take_moved_binder(a, t, *tsp, variants, defs, *known);
                 }
                 take_expr(&mut a.body, owned, variants, defs);
             }
@@ -3978,6 +4047,156 @@ fn taken_field(a: &MatchArm, variants: &Variants, defs: &VariantDefs, known: boo
     }
     taken_kind(&a.body)?;
     Some(i)
+}
+
+/// `V(.., s, ..) => body` where the body moves the binder `s` of an owned field to another
+/// place (`u = s` at any depth, an argument of a call that does not only read it, or `s` as the
+/// tail of the arm's block): `s` is moved out of `t`, as in Rust. The arm starts with
+/// `s = enum_take(t, i)` and the pattern leaves that field as `_`, so `s` is a local the arm owns
+/// (released or moved like any other) and the scope end releases `t` with what it still owns
+/// (SPEC «Memoria»). The binder must not be bound again in
+/// the arm; a generic field needs the type arguments of `t` from a signature, as `taken_field`.
+fn take_moved_binder(a: &mut MatchArm, t: &str, tsp: Span, variants: &Variants, defs: &VariantDefs, known: bool) {
+    let Pattern::Variant { name: v, args, .. } = &a.pattern else { return };
+    let Some((tparams, fields)) = defs.get(v) else { return };
+    let owned = variants.get(v.as_str());
+    let mut found = None;
+    for (i, p) in args.iter().enumerate() {
+        let Pattern::Ident(s, psp) = p else { continue };
+        if !owned.and_then(|o| o.get(i)).copied().unwrap_or(false) {
+            continue;
+        }
+        let generic = matches!(fields.get(i), Some(Type::Named { name, args, .. }) if args.is_empty() && tparams.contains(name));
+        if generic && !known {
+            continue;
+        }
+        let body = arm_block(&a.body);
+        let mut scan = BinderScan { name: s, moved: None, rebound: false };
+        scan.block(&body, true);
+        let Some(occ) = scan.moved.filter(|_| !scan.rebound) else { continue };
+        if taken_kind(&occ).is_none() {
+            continue;
+        }
+        found = Some((i, s.clone(), *psp, occ.span()));
+        break;
+    }
+    let Some((i, s, psp, osp)) = found else { return };
+    if let Pattern::Variant { args, .. } = &mut a.pattern {
+        args[i] = Pattern::Wild(psp);
+    }
+    let take = Stmt::Let {
+        name: s,
+        ty: None,
+        init: Expr::Call {
+            func: Box::new(Expr::Ident { name: "enum_take".into(), span: osp }),
+            type_args: vec![],
+            args: vec![Expr::Ident { name: t.to_string(), span: tsp }, Expr::Int { value: i as i64, span: osp }],
+            span: osp,
+        },
+        frozen: false,
+        stack: false,
+        span: psp,
+    };
+    let mut body = arm_block(&a.body);
+    body.stmts.insert(0, take);
+    a.body = Expr::Block(body);
+}
+
+/// Where an arm moves the name `name` (`take_moved_binder`): the first `u = name` or call argument
+/// outside `borrows_args` at any depth, or `name` as the tail of the arm's block. `rebound` is set when the arm binds `name` again (a
+/// `name = …`, or a pattern of a nested `match`).
+struct BinderScan<'a> {
+    name: &'a str,
+    moved: Option<Expr>,
+    rebound: bool,
+}
+
+impl BinderScan<'_> {
+    fn is_name(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Ident { name, .. } if name == self.name)
+    }
+
+    fn mv(&mut self, e: &Expr) {
+        if self.moved.is_none() && self.is_name(e) {
+            self.moved = Some(e.clone());
+        }
+    }
+
+    fn block(&mut self, b: &Block, arm: bool) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, init, .. } => {
+                    self.mv(init);
+                    self.expr(init);
+                    if name == self.name {
+                        self.rebound = true;
+                    }
+                }
+                Stmt::Assign { target, value, .. } => {
+                    self.mv(value);
+                    self.expr(value);
+                    if self.is_name(target) {
+                        self.rebound = true;
+                    }
+                }
+                Stmt::Expr(e) | Stmt::Return { value: Some(e), .. } => self.expr(e),
+                Stmt::While { cond, body, .. } => {
+                    self.expr(cond);
+                    self.block(body, false);
+                }
+                _ => {}
+            }
+        }
+        if let Some(t) = &b.tail {
+            if arm {
+                self.mv(t);
+            }
+            self.expr(t);
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Block(b) | Expr::On { body: b, .. } => self.block(b, false),
+            Expr::If { cond, then_block, elsifs, else_block, .. } => {
+                self.expr(cond);
+                self.block(then_block, false);
+                for el in elsifs {
+                    self.expr(&el.cond);
+                    self.block(&el.body, false);
+                }
+                if let Some(b) = else_block {
+                    self.block(b, false);
+                }
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                self.expr(scrutinee);
+                for a in arms {
+                    if pattern_binds(&a.pattern, self.name) {
+                        self.rebound = true;
+                    }
+                    self.block(&arm_block(&a.body), false);
+                }
+            }
+            // An argument of a call that does not only read it (`eat(s)`, `xs.push(s)`, `Some(s)`).
+            Expr::Call { func, args, .. } => {
+                let reads = matches!(func.as_ref(), Expr::Ident { name, .. } if borrows_args(name));
+                for a in args {
+                    if !reads {
+                        self.mv(a);
+                    }
+                    self.expr(a);
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Unary { expr, .. } | Expr::To { expr, .. } | Expr::Try { expr, .. } => self.expr(expr),
+            Expr::Field { base, .. } => self.expr(base),
+            _ => {}
+        }
+    }
 }
 
 /// `dict_get(..)` / `chan_recv(..)`: a fresh `Option` box.
